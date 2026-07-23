@@ -1,6 +1,7 @@
 mod export;
 mod initialize;
 mod rpc;
+mod thread;
 
 pub use export::generate_json_schema;
 pub use export::generate_typescript;
@@ -19,6 +20,10 @@ pub use rpc::JsonRpcRequest;
 pub use rpc::JsonRpcResponse;
 pub use rpc::JsonRpcVersion;
 pub use rpc::RequestId;
+pub use thread::Thread;
+pub use thread::ThreadStartParams;
+pub use thread::ThreadStartResponse;
+pub use thread::ThreadStartedNotification;
 
 pub const JSON_RPC_VERSION: &str = "2.0";
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -31,3 +36,4 @@ pub const ERROR_INTERNAL: i32 = -32603;
 pub const ERROR_UNSUPPORTED_PROTOCOL_VERSION: i32 = -32000;
 pub const ERROR_NOT_INITIALIZED: i32 = -32001;
 pub const ERROR_ALREADY_INITIALIZED: i32 = -32002;
+pub const ERROR_DUPLICATE_REQUEST: i32 = -32003;

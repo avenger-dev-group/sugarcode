@@ -14,7 +14,7 @@ where
     let mut session = Session::new();
 
     while let Some(line) = lines.next_line().await? {
-        if let Some(message) = session.process_line(&line) {
+        for message in session.process_line(&line) {
             let encoded = serde_json::to_vec(&message).map_err(io::Error::other)?;
             writer.write_all(&encoded).await?;
             writer.write_all(b"\n").await?;

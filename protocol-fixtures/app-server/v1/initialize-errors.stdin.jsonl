@@ -11,4 +11,4 @@
 {"jsonrpc":"2.0","id":"still-waiting","method":"thread/start","params":{}}
 {"jsonrpc":"2.0","method":"initialized","params":{}}
 {"jsonrpc":"2.0","id":"ack-request","method":"initialized","params":{}}
-{"jsonrpc":"2.0","id":"after-ready","method":"thread/start","params":{}}
+{"jsonrpc":"2.0","id":"after-ready","method":"unknown/method","params":{}}

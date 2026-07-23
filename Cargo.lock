@@ -351,6 +351,8 @@ version = "1.0.0"
 dependencies = [
  "serde_json",
  "sugarcode-app-server-protocol",
+ "sugarcode-core",
+ "sugarcode-protocol",
  "tokio",
 ]
 
@@ -375,6 +377,17 @@ dependencies = [
  "sugarcode-app-server-protocol",
  "tokio",
 ]
+
+[[package]]
+name = "sugarcode-core"
+version = "1.0.0"
+dependencies = [
+ "sugarcode-protocol",
+]
+
+[[package]]
+name = "sugarcode-protocol"
+version = "1.0.0"
 
 [[package]]
 name = "syn"

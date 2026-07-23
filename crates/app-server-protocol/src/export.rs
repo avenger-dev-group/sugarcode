@@ -13,6 +13,10 @@ use crate::PlatformInfo;
 use crate::RequestId;
 use crate::ServerCapabilities;
 use crate::ServerInfo;
+use crate::Thread;
+use crate::ThreadStartParams;
+use crate::ThreadStartResponse;
+use crate::ThreadStartedNotification;
 use schemars::schema_for;
 use std::fs;
 use std::io;
@@ -40,6 +44,10 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         PlatformInfo::decl(),
         ServerCapabilities::decl(),
         InitializeResponse::decl(),
+        Thread::decl(),
+        ThreadStartParams::decl(),
+        ThreadStartResponse::decl(),
+        ThreadStartedNotification::decl(),
     ];
 
     let mut protocol = String::from(GENERATED_HEADER);
@@ -72,6 +80,19 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("InitializeResponse.schema.json"),
         &schema_for!(InitializeResponse),
+    )?;
+    write_schema(out_dir.join("Thread.schema.json"), &schema_for!(Thread))?;
+    write_schema(
+        out_dir.join("ThreadStartParams.schema.json"),
+        &schema_for!(ThreadStartParams),
+    )?;
+    write_schema(
+        out_dir.join("ThreadStartResponse.schema.json"),
+        &schema_for!(ThreadStartResponse),
+    )?;
+    write_schema(
+        out_dir.join("ThreadStartedNotification.schema.json"),
+        &schema_for!(ThreadStartedNotification),
     )
 }
 

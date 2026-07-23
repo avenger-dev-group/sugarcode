@@ -32,3 +32,11 @@ export type ServerCapabilities = Record<string, never>;
 
 export type InitializeResponse = { protocolVersion: number, serverInfo: ServerInfo, platform: PlatformInfo, capabilities: ServerCapabilities, };
 
+export type Thread = { id: string, };
+
+export type ThreadStartParams = Record<string, never>;
+
+export type ThreadStartResponse = { thread: Thread, };
+
+export type ThreadStartedNotification = { thread: Thread, };
+

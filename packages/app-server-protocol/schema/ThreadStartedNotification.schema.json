@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ThreadStartedNotification",
+  "type": "object",
+  "properties": {
+    "thread": {
+      "$ref": "#/$defs/Thread"
+    }
+  },
+  "required": [
+    "thread"
+  ],
+  "$defs": {
+    "Thread": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  }
+}
