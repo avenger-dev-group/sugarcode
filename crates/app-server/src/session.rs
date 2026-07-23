@@ -349,12 +349,19 @@ where
         self.last_core_request_sequence = sequence;
         self.accepted_request_ids.insert(id.clone());
 
-        let events = match self.core.start_turn(core_request_id, thread_id.clone()) {
+        let mut events = match self.core.start_turn(core_request_id, thread_id.clone()) {
             Ok(events) => events,
             Err(_) => {
                 return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
             }
         };
+        let completed_events = match self.core.advance_active_turn(&thread_id) {
+            Ok(events) => events,
+            Err(_) => {
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
+        events.extend(completed_events);
 
         let mapped = match map_turn_lifecycle(events, core_request_id, &thread_id) {
             Ok(mapped) => mapped,
@@ -816,20 +823,23 @@ mod tests {
     }
 
     #[test]
-    fn turn_core_failure_returns_internal_error_without_notification() {
-        let mut session = ready_session(TurnCore::new(TurnCoreBehavior::Fail));
+    fn turn_start_or_advance_failure_returns_internal_error_without_notification() {
+        for behavior in [TurnCoreBehavior::Fail, TurnCoreBehavior::AdvanceFail] {
+            let mut session = ready_session(TurnCore::new(behavior));
 
-        let mut messages = session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing"}}"#,
-        );
+            let mut messages = session.process_line(
+                r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing"}}"#,
+            );
 
-        assert_eq!(messages.len(), 1);
-        let JsonRpcMessage::Error(error) = messages.pop().expect("internal error response") else {
-            panic!("expected error");
-        };
-        assert_eq!(error.error.code, ERROR_INTERNAL);
-        assert_eq!(error.error.message, "Internal error");
-        assert!(error.error.data.is_none());
+            assert_eq!(messages.len(), 1);
+            let JsonRpcMessage::Error(error) = messages.pop().expect("internal error response")
+            else {
+                panic!("expected error");
+            };
+            assert_eq!(error.error.code, ERROR_INTERNAL);
+            assert_eq!(error.error.message, "Internal error");
+            assert!(error.error.data.is_none());
+        }
     }
 
     #[test]
@@ -923,6 +933,13 @@ mod tests {
         ) -> Result<Vec<CoreEvent>, CoreError> {
             Err(CoreError::Internal("sensitive failure".to_string()))
         }
+
+        fn advance_active_turn(
+            &mut self,
+            _thread_id: &ThreadId,
+        ) -> Result<Vec<CoreEvent>, CoreError> {
+            Err(CoreError::Internal("sensitive failure".to_string()))
+        }
     }
 
     struct MismatchedCore;
@@ -948,11 +965,19 @@ mod tests {
         ) -> Result<Vec<CoreEvent>, CoreError> {
             Err(CoreError::Internal("unexpected turn request".to_string()))
         }
+
+        fn advance_active_turn(
+            &mut self,
+            _thread_id: &ThreadId,
+        ) -> Result<Vec<CoreEvent>, CoreError> {
+            Err(CoreError::Internal("unexpected turn advance".to_string()))
+        }
     }
 
     #[derive(Clone, Copy)]
     enum TurnCoreBehavior {
         Fail,
+        AdvanceFail,
         WrongRequest,
         WrongThread,
         WrongEvent,
@@ -961,11 +986,15 @@ mod tests {
 
     struct TurnCore {
         behavior: TurnCoreBehavior,
+        active_request_id: Option<CoreRequestId>,
     }
 
     impl TurnCore {
         fn new(behavior: TurnCoreBehavior) -> Self {
-            Self { behavior }
+            Self {
+                behavior,
+                active_request_id: None,
+            }
         }
     }
 
@@ -992,14 +1021,42 @@ mod tests {
                 TurnCoreBehavior::Fail => {
                     Err(CoreError::Internal("sensitive turn failure".to_string()))
                 }
+                TurnCoreBehavior::AdvanceFail
+                | TurnCoreBehavior::WrongThread
+                | TurnCoreBehavior::WrongEvent
+                | TurnCoreBehavior::WrongCompletedText => {
+                    self.active_request_id = Some(request_id);
+                    Ok(valid_turn_started_events(request_id, thread_id))
+                }
                 TurnCoreBehavior::WrongRequest => {
-                    let mut events = valid_turn_events(request_id, thread_id);
+                    let mut events = valid_turn_started_events(request_id, thread_id);
                     events[2].request_id = CoreRequestId::new(request_id.get() + 1);
+                    self.active_request_id = Some(request_id);
                     Ok(events)
                 }
+            }
+        }
+
+        fn advance_active_turn(
+            &mut self,
+            thread_id: &ThreadId,
+        ) -> Result<Vec<CoreEvent>, CoreError> {
+            let request_id = self
+                .active_request_id
+                .ok_or_else(|| CoreError::Internal("no active test turn".to_string()))?;
+            match self.behavior {
+                TurnCoreBehavior::Fail => {
+                    Err(CoreError::Internal("unexpected turn advance".to_string()))
+                }
+                TurnCoreBehavior::AdvanceFail => {
+                    Err(CoreError::Internal("sensitive advance failure".to_string()))
+                }
+                TurnCoreBehavior::WrongRequest => {
+                    Ok(valid_turn_completed_events(request_id, thread_id.clone()))
+                }
                 TurnCoreBehavior::WrongThread => {
-                    let mut events = valid_turn_events(request_id, thread_id);
-                    events[3].kind = CoreEventKind::ItemCompleted {
+                    let mut events = valid_turn_completed_events(request_id, thread_id.clone());
+                    events[0].kind = CoreEventKind::ItemCompleted {
                         thread_id: ThreadId::new("thr_wrong"),
                         turn_id: TurnId::new("turn_test"),
                         item: completed_test_item(),
@@ -1007,13 +1064,13 @@ mod tests {
                     Ok(events)
                 }
                 TurnCoreBehavior::WrongEvent => {
-                    let mut events = valid_turn_events(request_id, thread_id);
-                    events.swap(2, 3);
+                    let mut events = valid_turn_completed_events(request_id, thread_id.clone());
+                    events.swap(0, 1);
                     Ok(events)
                 }
                 TurnCoreBehavior::WrongCompletedText => {
-                    let mut events = valid_turn_events(request_id, thread_id);
-                    events[3].kind = CoreEventKind::ItemCompleted {
+                    let mut events = valid_turn_completed_events(request_id, thread_id.clone());
+                    events[0].kind = CoreEventKind::ItemCompleted {
                         thread_id: ThreadId::new("thr_existing"),
                         turn_id: TurnId::new("turn_test"),
                         item: CoreItemSnapshot {
@@ -1029,7 +1086,7 @@ mod tests {
         }
     }
 
-    fn valid_turn_events(request_id: CoreRequestId, thread_id: ThreadId) -> Vec<CoreEvent> {
+    fn valid_turn_started_events(request_id: CoreRequestId, thread_id: ThreadId) -> Vec<CoreEvent> {
         let turn_id = TurnId::new("turn_test");
         vec![
             CoreEvent {
@@ -1061,6 +1118,15 @@ mod tests {
                     delta: "test response".to_string(),
                 },
             },
+        ]
+    }
+
+    fn valid_turn_completed_events(
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+    ) -> Vec<CoreEvent> {
+        let turn_id = TurnId::new("turn_test");
+        vec![
             CoreEvent {
                 request_id,
                 kind: CoreEventKind::ItemCompleted {
