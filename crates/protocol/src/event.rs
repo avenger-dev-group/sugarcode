@@ -1,4 +1,5 @@
 use crate::ThreadId;
+use crate::TurnId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CoreRequestId(u64);
@@ -21,5 +22,11 @@ pub struct CoreEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreEventKind {
-    ThreadStarted { thread_id: ThreadId },
+    ThreadStarted {
+        thread_id: ThreadId,
+    },
+    TurnStarted {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    },
 }

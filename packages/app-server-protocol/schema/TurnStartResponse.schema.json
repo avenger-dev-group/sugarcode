@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TurnStartResponse",
+  "type": "object",
+  "properties": {
+    "turn": {
+      "$ref": "#/$defs/Turn"
+    }
+  },
+  "required": [
+    "turn"
+  ],
+  "$defs": {
+    "Turn": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  }
+}

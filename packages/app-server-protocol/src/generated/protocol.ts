@@ -40,3 +40,11 @@ export type ThreadStartResponse = { thread: Thread, };
 
 export type ThreadStartedNotification = { thread: Thread, };
 
+export type Turn = { id: string, };
+
+export type TurnStartParams = { threadId: string, };
+
+export type TurnStartResponse = { turn: Turn, };
+
+export type TurnStartedNotification = { threadId: string, turn: Turn, };
+

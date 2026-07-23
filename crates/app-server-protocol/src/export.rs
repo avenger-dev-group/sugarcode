@@ -17,6 +17,10 @@ use crate::Thread;
 use crate::ThreadStartParams;
 use crate::ThreadStartResponse;
 use crate::ThreadStartedNotification;
+use crate::Turn;
+use crate::TurnStartParams;
+use crate::TurnStartResponse;
+use crate::TurnStartedNotification;
 use schemars::schema_for;
 use std::fs;
 use std::io;
@@ -48,6 +52,10 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         ThreadStartParams::decl(),
         ThreadStartResponse::decl(),
         ThreadStartedNotification::decl(),
+        Turn::decl(),
+        TurnStartParams::decl(),
+        TurnStartResponse::decl(),
+        TurnStartedNotification::decl(),
     ];
 
     let mut protocol = String::from(GENERATED_HEADER);
@@ -93,6 +101,19 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("ThreadStartedNotification.schema.json"),
         &schema_for!(ThreadStartedNotification),
+    )?;
+    write_schema(out_dir.join("Turn.schema.json"), &schema_for!(Turn))?;
+    write_schema(
+        out_dir.join("TurnStartParams.schema.json"),
+        &schema_for!(TurnStartParams),
+    )?;
+    write_schema(
+        out_dir.join("TurnStartResponse.schema.json"),
+        &schema_for!(TurnStartResponse),
+    )?;
+    write_schema(
+        out_dir.join("TurnStartedNotification.schema.json"),
+        &schema_for!(TurnStartedNotification),
     )
 }
 

@@ -9,6 +9,7 @@ use sugarcode_app_server_protocol::ERROR_INVALID_REQUEST;
 use sugarcode_app_server_protocol::ERROR_METHOD_NOT_FOUND;
 use sugarcode_app_server_protocol::ERROR_NOT_INITIALIZED;
 use sugarcode_app_server_protocol::ERROR_PARSE;
+use sugarcode_app_server_protocol::ERROR_THREAD_NOT_FOUND;
 use sugarcode_app_server_protocol::ERROR_UNSUPPORTED_PROTOCOL_VERSION;
 use sugarcode_app_server_protocol::InitializeParams;
 use sugarcode_app_server_protocol::InitializeResponse;
@@ -27,10 +28,15 @@ use sugarcode_app_server_protocol::Thread as PublicThread;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
+use sugarcode_app_server_protocol::Turn as PublicTurn;
+use sugarcode_app_server_protocol::TurnStartParams;
+use sugarcode_app_server_protocol::TurnStartResponse;
+use sugarcode_app_server_protocol::TurnStartedNotification;
 use sugarcode_core::Core;
 use sugarcode_core::CoreApi;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreRequestId;
+use sugarcode_protocol::ThreadId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
@@ -43,7 +49,7 @@ pub enum SessionState {
 pub struct Session<C = Core> {
     state: SessionState,
     core: C,
-    accepted_thread_start_ids: HashSet<RequestId>,
+    accepted_request_ids: HashSet<RequestId>,
     last_core_request_sequence: u64,
 }
 
@@ -67,7 +73,7 @@ where
         Self {
             state: SessionState::Uninitialized,
             core,
-            accepted_thread_start_ids: HashSet::new(),
+            accepted_request_ids: HashSet::new(),
             last_core_request_sequence: 0,
         }
     }
@@ -145,6 +151,20 @@ where
                     )];
                 }
                 self.start_thread(id, object.get("params").cloned())
+            }
+            "turn/start" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.start_turn(id, object.get("params").cloned())
             }
             _ if request_id.is_none() => Vec::new(),
             _ if self.state != SessionState::Ready => vec![error(
@@ -233,7 +253,7 @@ where
             )];
         }
 
-        if self.accepted_thread_start_ids.contains(&id) {
+        if self.accepted_request_ids.contains(&id) {
             return vec![error(
                 Some(id),
                 ERROR_DUPLICATE_REQUEST,
@@ -247,7 +267,7 @@ where
         };
         let core_request_id = CoreRequestId::new(sequence);
         self.last_core_request_sequence = sequence;
-        self.accepted_thread_start_ids.insert(id.clone());
+        self.accepted_request_ids.insert(id.clone());
 
         let event = match self.core.start_thread(core_request_id) {
             Ok(event) if event.request_id == core_request_id => event,
@@ -256,7 +276,12 @@ where
             }
         };
 
-        let CoreEventKind::ThreadStarted { thread_id } = event.kind;
+        let thread_id = match event.kind {
+            CoreEventKind::ThreadStarted { thread_id } => thread_id,
+            CoreEventKind::TurnStarted { .. } => {
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
         let thread = PublicThread {
             id: thread_id.into_string(),
         };
@@ -278,6 +303,90 @@ where
                 params: Some(
                     serde_json::to_value(notification)
                         .expect("thread/started notification must serialize"),
+                ),
+            }),
+        ]
+    }
+
+    fn start_turn(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
+        let params = match params
+            .ok_or(())
+            .and_then(|value| serde_json::from_value::<TurnStartParams>(value).map_err(|_| ()))
+        {
+            Ok(params) => params,
+            Err(()) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
+        };
+
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+
+        let thread_id = ThreadId::new(params.thread_id.clone());
+        if !self.core.contains_thread(&thread_id) {
+            return vec![error(
+                Some(id),
+                ERROR_THREAD_NOT_FOUND,
+                "Thread not found",
+                Some(json!({ "threadId": params.thread_id })),
+            )];
+        }
+
+        let Some(sequence) = self.last_core_request_sequence.checked_add(1) else {
+            return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+        };
+        let core_request_id = CoreRequestId::new(sequence);
+        self.last_core_request_sequence = sequence;
+        self.accepted_request_ids.insert(id.clone());
+
+        let event = match self.core.start_turn(core_request_id, thread_id.clone()) {
+            Ok(event) if event.request_id == core_request_id => event,
+            Ok(_) | Err(_) => {
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
+
+        let turn_id = match event.kind {
+            CoreEventKind::TurnStarted {
+                thread_id: event_thread_id,
+                turn_id,
+            } if event_thread_id == thread_id => turn_id,
+            CoreEventKind::ThreadStarted { .. } | CoreEventKind::TurnStarted { .. } => {
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
+        let turn = PublicTurn {
+            id: turn_id.into_string(),
+        };
+        let response = TurnStartResponse { turn: turn.clone() };
+        let notification = TurnStartedNotification {
+            thread_id: thread_id.into_string(),
+            turn,
+        };
+
+        vec![
+            JsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: JsonRpcVersion::V2,
+                id,
+                result: serde_json::to_value(response).expect("turn/start response must serialize"),
+            }),
+            JsonRpcMessage::Notification(sugarcode_app_server_protocol::JsonRpcNotification {
+                jsonrpc: JsonRpcVersion::V2,
+                method: "turn/started".to_string(),
+                params: Some(
+                    serde_json::to_value(notification)
+                        .expect("turn/started notification must serialize"),
                 ),
             }),
         ]
@@ -317,7 +426,7 @@ mod tests {
     use super::*;
     use sugarcode_core::CoreError;
     use sugarcode_protocol::CoreEvent;
-    use sugarcode_protocol::ThreadId;
+    use sugarcode_protocol::TurnId;
 
     fn initialize_line(version: u32) -> String {
         json!({
@@ -431,6 +540,148 @@ mod tests {
     }
 
     #[test]
+    fn turn_start_returns_response_then_notification() {
+        let mut session = ready_session(Core::new());
+        let thread_messages =
+            session.process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start"}"#);
+        let thread_id = response_thread_id(&thread_messages).to_string();
+
+        let messages = session.process_line(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "turn-1",
+                "method": "turn/start",
+                "params": {
+                    "threadId": thread_id
+                }
+            })
+            .to_string(),
+        );
+
+        assert_eq!(
+            messages
+                .into_iter()
+                .map(|message| serde_json::to_value(message).expect("message serializes"))
+                .collect::<Vec<_>>(),
+            vec![
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "turn-1",
+                    "result": {
+                        "turn": {
+                            "id": "turn_0000000000000001"
+                        }
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thr_0000000000000001",
+                        "turn": {
+                            "id": "turn_0000000000000001"
+                        }
+                    }
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn turn_start_rejects_invalid_params_without_accepting_the_request_id() {
+        let mut session = ready_session(Core::new());
+        let thread_messages =
+            session.process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start"}"#);
+        let thread_id = response_thread_id(&thread_messages).to_string();
+
+        let mut invalid = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":" "}}"#,
+        );
+        let JsonRpcMessage::Error(error) = invalid.pop().expect("invalid params response") else {
+            panic!("expected error");
+        };
+        assert_eq!(error.error.code, ERROR_INVALID_PARAMS);
+
+        let messages = session.process_line(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "retry",
+                "method": "turn/start",
+                "params": {
+                    "threadId": thread_id
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(response_turn_id(&messages), "turn_0000000000000001");
+    }
+
+    #[test]
+    fn turn_start_rejects_missing_thread_without_accepting_the_request_id() {
+        let mut session = ready_session(Core::new());
+
+        let mut missing = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_missing"}}"#,
+        );
+        let JsonRpcMessage::Error(error) = missing.pop().expect("missing thread response") else {
+            panic!("expected error");
+        };
+        assert_eq!(error.error.code, ERROR_THREAD_NOT_FOUND);
+        assert_eq!(error.error.data, Some(json!({"threadId": "thr_missing"})));
+
+        let thread_messages =
+            session.process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start"}"#);
+        let thread_id = response_thread_id(&thread_messages).to_string();
+        let messages = session.process_line(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "retry",
+                "method": "turn/start",
+                "params": {
+                    "threadId": thread_id
+                }
+            })
+            .to_string(),
+        );
+        assert_eq!(response_turn_id(&messages), "turn_0000000000000001");
+    }
+
+    #[test]
+    fn starts_consecutive_turns_in_the_same_thread_and_turns_in_other_threads() {
+        let mut session = ready_session(Core::new());
+        let first_thread =
+            session.process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start"}"#);
+        let first_thread_id = response_thread_id(&first_thread).to_string();
+        let second_thread =
+            session.process_line(r#"{"jsonrpc":"2.0","id":"thread-2","method":"thread/start"}"#);
+        let second_thread_id = response_thread_id(&second_thread).to_string();
+
+        for (id, thread_id, expected_turn_id) in [
+            ("turn-1", first_thread_id.as_str(), "turn_0000000000000001"),
+            ("turn-2", first_thread_id.as_str(), "turn_0000000000000002"),
+            ("turn-3", second_thread_id.as_str(), "turn_0000000000000003"),
+        ] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id
+                    }
+                })
+                .to_string(),
+            );
+            assert_eq!(response_turn_id(&messages), expected_turn_id);
+            assert_eq!(
+                notification_thread_id(&messages),
+                thread_id,
+                "turn notification must identify its owning thread"
+            );
+        }
+    }
+
+    #[test]
     fn duplicate_accepted_request_id_does_not_create_another_thread() {
         let mut session = ready_session(Core::new());
 
@@ -451,6 +702,48 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"start-2","method":"thread/start","params":{}}"#,
         );
         assert_eq!(response_thread_id(&second), "thr_0000000000000002");
+    }
+
+    #[test]
+    fn accepted_request_ids_are_shared_across_lifecycle_methods() {
+        let mut session = ready_session(Core::new());
+
+        let first = session
+            .process_line(r#"{"jsonrpc":"2.0","id":"shared","method":"thread/start","params":{}}"#);
+        let thread_id = response_thread_id(&first).to_string();
+
+        let mut duplicate = session.process_line(
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "shared",
+                "method": "turn/start",
+                "params": {
+                    "threadId": thread_id
+                }
+            })
+            .to_string(),
+        );
+        let JsonRpcMessage::Error(error) = duplicate.pop().expect("duplicate response") else {
+            panic!("expected error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
+
+        let turn = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        assert_eq!(response_turn_id(&turn), "turn_0000000000000001");
+        let mut repeated = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        let JsonRpcMessage::Error(error) = repeated.pop().expect("duplicate response") else {
+            panic!("expected error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
+
+        let second_turn = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        assert_eq!(response_turn_id(&second_turn), "turn_0000000000000002");
     }
 
     #[test]
@@ -486,6 +779,44 @@ mod tests {
         assert_eq!(error.error.code, ERROR_INTERNAL);
     }
 
+    #[test]
+    fn turn_core_failure_returns_internal_error_without_notification() {
+        let mut session = ready_session(TurnCore::new(TurnCoreBehavior::Fail));
+
+        let mut messages = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing"}}"#,
+        );
+
+        assert_eq!(messages.len(), 1);
+        let JsonRpcMessage::Error(error) = messages.pop().expect("internal error response") else {
+            panic!("expected error");
+        };
+        assert_eq!(error.error.code, ERROR_INTERNAL);
+        assert_eq!(error.error.message, "Internal error");
+        assert!(error.error.data.is_none());
+    }
+
+    #[test]
+    fn mismatched_turn_event_correlation_returns_internal_error() {
+        for behavior in [
+            TurnCoreBehavior::WrongRequest,
+            TurnCoreBehavior::WrongThread,
+            TurnCoreBehavior::WrongEvent,
+        ] {
+            let mut session = ready_session(TurnCore::new(behavior));
+            let mut messages = session.process_line(
+                r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing"}}"#,
+            );
+
+            assert_eq!(messages.len(), 1);
+            let JsonRpcMessage::Error(error) = messages.pop().expect("internal error response")
+            else {
+                panic!("expected error");
+            };
+            assert_eq!(error.error.code, ERROR_INTERNAL);
+        }
+    }
+
     fn ready_session<C>(core: C) -> Session<C>
     where
         C: CoreApi,
@@ -513,10 +844,46 @@ mod tests {
             .expect("response thread id")
     }
 
+    fn response_turn_id(messages: &[JsonRpcMessage]) -> &str {
+        let JsonRpcMessage::Response(response) = &messages[0] else {
+            panic!("expected response first");
+        };
+        response
+            .result
+            .get("turn")
+            .and_then(|turn| turn.get("id"))
+            .and_then(Value::as_str)
+            .expect("response turn id")
+    }
+
+    fn notification_thread_id(messages: &[JsonRpcMessage]) -> &str {
+        let JsonRpcMessage::Notification(notification) = &messages[1] else {
+            panic!("expected notification second");
+        };
+        notification
+            .params
+            .as_ref()
+            .and_then(|params| params.get("threadId"))
+            .and_then(Value::as_str)
+            .expect("notification thread id")
+    }
+
     struct FailingCore;
 
     impl CoreApi for FailingCore {
         fn start_thread(&mut self, _request_id: CoreRequestId) -> Result<CoreEvent, CoreError> {
+            Err(CoreError::Internal("sensitive failure".to_string()))
+        }
+
+        fn contains_thread(&self, _thread_id: &ThreadId) -> bool {
+            false
+        }
+
+        fn start_turn(
+            &mut self,
+            _request_id: CoreRequestId,
+            _thread_id: ThreadId,
+        ) -> Result<CoreEvent, CoreError> {
             Err(CoreError::Internal("sensitive failure".to_string()))
         }
     }
@@ -531,6 +898,81 @@ mod tests {
                     thread_id: ThreadId::new("thr_wrong_request"),
                 },
             })
+        }
+
+        fn contains_thread(&self, _thread_id: &ThreadId) -> bool {
+            false
+        }
+
+        fn start_turn(
+            &mut self,
+            _request_id: CoreRequestId,
+            _thread_id: ThreadId,
+        ) -> Result<CoreEvent, CoreError> {
+            Err(CoreError::Internal("unexpected turn request".to_string()))
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum TurnCoreBehavior {
+        Fail,
+        WrongRequest,
+        WrongThread,
+        WrongEvent,
+    }
+
+    struct TurnCore {
+        behavior: TurnCoreBehavior,
+    }
+
+    impl TurnCore {
+        fn new(behavior: TurnCoreBehavior) -> Self {
+            Self { behavior }
+        }
+    }
+
+    impl CoreApi for TurnCore {
+        fn start_thread(&mut self, request_id: CoreRequestId) -> Result<CoreEvent, CoreError> {
+            Ok(CoreEvent {
+                request_id,
+                kind: CoreEventKind::ThreadStarted {
+                    thread_id: ThreadId::new("thr_existing"),
+                },
+            })
+        }
+
+        fn contains_thread(&self, thread_id: &ThreadId) -> bool {
+            thread_id.as_str() == "thr_existing"
+        }
+
+        fn start_turn(
+            &mut self,
+            request_id: CoreRequestId,
+            thread_id: ThreadId,
+        ) -> Result<CoreEvent, CoreError> {
+            match self.behavior {
+                TurnCoreBehavior::Fail => {
+                    Err(CoreError::Internal("sensitive turn failure".to_string()))
+                }
+                TurnCoreBehavior::WrongRequest => Ok(CoreEvent {
+                    request_id: CoreRequestId::new(request_id.get() + 1),
+                    kind: CoreEventKind::TurnStarted {
+                        thread_id,
+                        turn_id: TurnId::new("turn_wrong_request"),
+                    },
+                }),
+                TurnCoreBehavior::WrongThread => Ok(CoreEvent {
+                    request_id,
+                    kind: CoreEventKind::TurnStarted {
+                        thread_id: ThreadId::new("thr_wrong"),
+                        turn_id: TurnId::new("turn_wrong_thread"),
+                    },
+                }),
+                TurnCoreBehavior::WrongEvent => Ok(CoreEvent {
+                    request_id,
+                    kind: CoreEventKind::ThreadStarted { thread_id },
+                }),
+            }
         }
     }
 }

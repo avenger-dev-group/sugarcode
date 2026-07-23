@@ -9,6 +9,10 @@ use sugarcode_app_server_protocol::Thread;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
+use sugarcode_app_server_protocol::Turn;
+use sugarcode_app_server_protocol::TurnStartParams;
+use sugarcode_app_server_protocol::TurnStartResponse;
+use sugarcode_app_server_protocol::TurnStartedNotification;
 
 #[test]
 fn error_envelope_uses_json_rpc_2_and_null_unknown_id() {
@@ -87,6 +91,65 @@ fn thread_start_params_accept_only_an_empty_object() {
         assert!(
             serde_json::from_value::<ThreadStartParams>(invalid).is_err(),
             "non-empty or non-object params must be rejected"
+        );
+    }
+}
+
+#[test]
+fn turn_start_types_use_the_public_turn_dto() {
+    let turn = Turn {
+        id: "turn_0000000000000001".to_string(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(TurnStartResponse { turn: turn.clone() })
+            .expect("response serializes"),
+        json!({
+            "turn": {
+                "id": "turn_0000000000000001"
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(TurnStartedNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn,
+        })
+        .expect("notification serializes"),
+        json!({
+            "threadId": "thr_0000000000000001",
+            "turn": {
+                "id": "turn_0000000000000001"
+            }
+        })
+    );
+}
+
+#[test]
+fn turn_start_params_require_one_non_blank_thread_id() {
+    assert_eq!(
+        serde_json::from_value::<TurnStartParams>(json!({
+            "threadId": "thr_0000000000000001"
+        }))
+        .expect("valid params"),
+        TurnStartParams {
+            thread_id: "thr_0000000000000001".to_string()
+        }
+    );
+
+    for invalid in [
+        json!(null),
+        json!([]),
+        json!("invalid"),
+        json!({}),
+        json!({"threadId": null}),
+        json!({"threadId": ""}),
+        json!({"threadId": "   "}),
+        json!({"threadId": "thr_0000000000000001", "input": []}),
+    ] {
+        assert!(
+            serde_json::from_value::<TurnStartParams>(invalid).is_err(),
+            "missing, blank, or unknown turn/start params must be rejected"
         );
     }
 }

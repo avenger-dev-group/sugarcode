@@ -26,6 +26,16 @@ fn thread_start_failures_match_golden_trace() {
     assert_golden("thread-start-errors");
 }
 
+#[test]
+fn turn_start_happy_path_matches_golden_trace() {
+    assert_golden("turn-start-happy");
+}
+
+#[test]
+fn turn_start_failures_match_golden_trace() {
+    assert_golden("turn-start-errors");
+}
+
 fn assert_golden(name: &str) {
     let fixture_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-fixtures/app-server/v1");

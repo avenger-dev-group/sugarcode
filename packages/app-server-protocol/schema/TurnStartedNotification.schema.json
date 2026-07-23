@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TurnStartedNotification",
+  "type": "object",
+  "properties": {
+    "threadId": {
+      "type": "string"
+    },
+    "turn": {
+      "$ref": "#/$defs/Turn"
+    }
+  },
+  "required": [
+    "threadId",
+    "turn"
+  ],
+  "$defs": {
+    "Turn": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  }
+}
