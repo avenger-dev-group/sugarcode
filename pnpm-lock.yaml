@@ -69,6 +69,12 @@ importers:
         specifier: ^8.1.5
         version: 8.1.5(@types/node@26.1.1)(jiti@2.7.0)(terser@5.49.0)
 
+  packages/app-server-protocol:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
 packages:
 
   '@electron-forge/cli@7.11.2':

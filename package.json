@@ -10,8 +10,8 @@
     "desktop:make": "pnpm --filter @sugarcode/desktop make",
     "desktop:publish": "pnpm --filter @sugarcode/desktop publish",
     "lint": "pnpm --filter @sugarcode/desktop lint",
-    "typecheck": "pnpm --filter @sugarcode/desktop typecheck",
+    "typecheck": "pnpm --filter @sugarcode/desktop typecheck && pnpm --filter @sugarcode/app-server-protocol typecheck",
     "check:rust": "cargo metadata --no-deps --format-version 1 > /dev/null",
-    "check": "pnpm --filter @sugarcode/desktop check && pnpm check:rust"
+    "check": "pnpm --filter @sugarcode/desktop check && pnpm --filter @sugarcode/app-server-protocol check && pnpm check:rust"
   }
 }

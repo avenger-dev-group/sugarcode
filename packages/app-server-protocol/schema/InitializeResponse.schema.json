@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InitializeResponse",
+  "type": "object",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/ServerCapabilities"
+    },
+    "platform": {
+      "$ref": "#/$defs/PlatformInfo"
+    },
+    "protocolVersion": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "serverInfo": {
+      "$ref": "#/$defs/ServerInfo"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "serverInfo",
+    "platform",
+    "capabilities"
+  ],
+  "$defs": {
+    "PlatformInfo": {
+      "type": "object",
+      "properties": {
+        "arch": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "family",
+        "os",
+        "arch"
+      ]
+    },
+    "ServerCapabilities": {
+      "type": "object"
+    },
+    "ServerInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ]
+    }
+  }
+}

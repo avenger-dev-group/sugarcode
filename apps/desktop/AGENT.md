@@ -2,6 +2,48 @@
 
 本文件是 SugarCode 的强制 UI 设计规范。新增或修改界面时，必须优先复用项目主题 token。
 
+## 技术栈与组件选择
+
+- Renderer 使用 React、TypeScript、Tailwind CSS v4 和 shadcn。
+- shadcn 是 SugarCode 的源码级基础组件方案，不是产品视觉规范。生成到仓库中的组件由 SugarCode 维护，必须适配本文件的 token、排版和交互规则。
+- 默认采用 shadcn 官方组件。组件选择顺序固定为：
+  1. 复用项目中已经存在的 SugarCode 组件；
+  2. 添加或复用 shadcn 官方基础组件；
+  3. 组合多个 shadcn 基础组件实现产品组件；
+  4. 仅在前三项无法满足需求时实现自定义基础组件，并在变更中说明原因。
+- 已有 shadcn 对应实现时，不得重复实现 Button、Input、Textarea、Select、Checkbox、Dialog、Dropdown、Popover、Tooltip、Tabs、ScrollArea 等通用基础组件。
+- shadcn Blocks 和示例页面只能作为结构参考，不得直接决定 SugarCode 的信息架构、视觉语言或页面布局。
+- 新增 shadcn 组件时必须审查生成的源码和依赖差异；不得在自动化流程中无审查地跟随浮动的 `latest` 输出。
+- shadcn 基础组件和 SugarCode React 组件统一归属 `apps/desktop/src/renderer/components`。
+
+## Renderer 目录边界
+
+```text
+src/renderer/
+├── main.tsx
+├── app.tsx
+├── components/
+│   ├── ui/          # shadcn 基础组件，不包含领域逻辑
+│   ├── agent/       # Agent 消息、过程和工具活动
+│   ├── thread/      # Thread、Turn 和历史记录
+│   └── workspace/   # 文件、Diff、终端和预览
+├── hooks/
+├── pages/
+├── services/
+├── stores/
+├── lib/
+└── styles/
+    └── globals.css
+```
+
+- 目录按当前切片逐步创建，不得为了匹配目标结构添加空占位文件。
+- `components/ui` 只能包含无业务含义的基础组件和样式变体，不得访问 Store、App Server 或 Electron preload API。
+- 领域组件不得直接依赖 App Server 原始 DTO。先在 Renderer 边界转换为稳定的 view-model，再交给组件渲染。
+- `pages` 负责页面组合，不负责协议解析、进程管理或持久化。
+- `services` 是受约束 preload API、协议客户端和 view-model 映射的 Renderer 边界；不得绕过 preload 使用 Node.js 或 Electron API。
+- `stores` 保存可重建的界面状态和客户端投影，不得成为 Thread 持久化的唯一事实来源。
+- `hooks` 封装可复用的 React 行为，不得隐藏不可见的跨进程副作用。
+
 ## 颜色
 
 中性文字只能使用以下四档语义色：
@@ -50,6 +92,9 @@
 
 ## 新 UI 检查清单
 
+- 是否优先使用已有 SugarCode 组件或 shadcn 官方组件，而不是重复实现基础组件？
+- `components/ui` 是否仍然不包含领域逻辑、Store 和协议访问？
+- App Server DTO 是否先转换为 Renderer view-model，再进入组件？
 - 是否只使用了上述四档中性文字语义，而不是硬编码灰色或任意透明度？
 - 浅色和深色下是否分别保持 `#1A1C1F` / 白色的正确层级？
 - 正文是否为 `14px / 1.5 / 500`？
@@ -57,4 +102,6 @@
 - 说明文字是否使用次级色，元数据和占位符是否使用辅助色？
 - Agent 过程内容是否使用过程色？
 - Markdown 粗体和代码是否符合各自字重、字号规范？
+- 是否覆盖 Loading、Empty、Error、Disabled 和取消状态？
+- 是否可使用键盘完成操作，并具有清晰的 focus-visible 状态和正确的可访问名称？
 - 是否在浅色和深色主题中检查了截断、对比度和布局溢出？

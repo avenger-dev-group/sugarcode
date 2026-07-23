@@ -1,0 +1,11 @@
+[package]
+name = "sugarcode-app-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+sugarcode-app-server-protocol = { path = "../app-server-protocol" }
+tokio.workspace = true

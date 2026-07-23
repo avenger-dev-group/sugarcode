@@ -15,8 +15,9 @@ docs/architecture/  Architecture decisions
 scripts/            Repository and release automation
 ```
 
-The Rust implementation is not started yet. The current repository establishes
-the workspace boundaries and preserves the existing Electron scaffold.
+The first Rust vertical slice provides the `sugarcode` CLI, its local stdio app
+server initialization handshake, and generated public protocol artifacts. Agent
+Core and Desktop sidecar integration remain later slices.
 
 ## Desktop development
 
@@ -41,10 +42,16 @@ pnpm desktop:make
 ```
 
 See [the process architecture](docs/architecture/process-boundary.md) for the
-planned Desktop/CLI boundary.
+Desktop/CLI boundary.
 
 ## Implementation plan
 
 Read [`docs/PLAN.md`](docs/PLAN.md) before starting a new planning or
 implementation session. It records accepted decisions, current baseline,
 phase-by-phase acceptance criteria and a reusable Plan-mode prompt.
+
+The Rust architecture uses [`openai/codex`](https://github.com/openai/codex)
+as its primary design reference. The
+[`Codex reference baseline`](docs/architecture/codex-reference.md) maps the
+relevant upstream components to each SugarCode phase and records which designs
+should not be copied.
