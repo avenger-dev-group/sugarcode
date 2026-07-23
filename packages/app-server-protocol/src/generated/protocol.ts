@@ -32,6 +32,14 @@ export type ServerCapabilities = Record<string, never>;
 
 export type InitializeResponse = { protocolVersion: number, serverInfo: ServerInfo, platform: PlatformInfo, capabilities: ServerCapabilities, };
 
+export type Item = { "type": "agentMessage", id: string, text: string, };
+
+export type ItemStartedNotification = { threadId: string, turnId: string, item: Item, };
+
+export type AgentMessageDeltaNotification = { threadId: string, turnId: string, itemId: string, delta: string, };
+
+export type ItemCompletedNotification = { threadId: string, turnId: string, item: Item, };
+
 export type Thread = { id: string, };
 
 export type ThreadStartParams = Record<string, never>;
@@ -40,11 +48,15 @@ export type ThreadStartResponse = { thread: Thread, };
 
 export type ThreadStartedNotification = { thread: Thread, };
 
-export type Turn = { id: string, };
+export type Turn = { id: string, status: TurnStatus, };
+
+export type TurnStatus = "inProgress" | "completed";
 
 export type TurnStartParams = { threadId: string, };
 
 export type TurnStartResponse = { turn: Turn, };
 
 export type TurnStartedNotification = { threadId: string, turn: Turn, };
+
+export type TurnCompletedNotification = { threadId: string, turn: Turn, };
 

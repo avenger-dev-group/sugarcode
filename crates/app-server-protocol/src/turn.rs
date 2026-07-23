@@ -5,11 +5,20 @@ use serde::Serialize;
 use serde::de;
 use ts_rs::TS;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum TurnStatus {
+    InProgress,
+    Completed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct Turn {
     pub id: String,
+    pub status: TurnStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, TS)]
@@ -51,6 +60,14 @@ pub struct TurnStartResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct TurnStartedNotification {
+    pub thread_id: String,
+    pub turn: Turn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct TurnCompletedNotification {
     pub thread_id: String,
     pub turn: Turn,
 }

@@ -1,3 +1,4 @@
+use crate::event_mapping::map_turn_lifecycle;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashSet;
@@ -28,10 +29,8 @@ use sugarcode_app_server_protocol::Thread as PublicThread;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
-use sugarcode_app_server_protocol::Turn as PublicTurn;
 use sugarcode_app_server_protocol::TurnStartParams;
 use sugarcode_app_server_protocol::TurnStartResponse;
-use sugarcode_app_server_protocol::TurnStartedNotification;
 use sugarcode_core::Core;
 use sugarcode_core::CoreApi;
 use sugarcode_protocol::CoreEventKind;
@@ -278,7 +277,7 @@ where
 
         let thread_id = match event.kind {
             CoreEventKind::ThreadStarted { thread_id } => thread_id,
-            CoreEventKind::TurnStarted { .. } => {
+            _ => {
                 return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
             }
         };
@@ -350,46 +349,31 @@ where
         self.last_core_request_sequence = sequence;
         self.accepted_request_ids.insert(id.clone());
 
-        let event = match self.core.start_turn(core_request_id, thread_id.clone()) {
-            Ok(event) if event.request_id == core_request_id => event,
-            Ok(_) | Err(_) => {
+        let events = match self.core.start_turn(core_request_id, thread_id.clone()) {
+            Ok(events) => events,
+            Err(_) => {
                 return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
             }
         };
 
-        let turn_id = match event.kind {
-            CoreEventKind::TurnStarted {
-                thread_id: event_thread_id,
-                turn_id,
-            } if event_thread_id == thread_id => turn_id,
-            CoreEventKind::ThreadStarted { .. } | CoreEventKind::TurnStarted { .. } => {
+        let mapped = match map_turn_lifecycle(events, core_request_id, &thread_id) {
+            Ok(mapped) => mapped,
+            Err(_) => {
                 return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
             }
         };
-        let turn = PublicTurn {
-            id: turn_id.into_string(),
+        let response = match serde_json::to_value(TurnStartResponse { turn: mapped.turn }) {
+            Ok(response) => response,
+            Err(_) => return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)],
         };
-        let response = TurnStartResponse { turn: turn.clone() };
-        let notification = TurnStartedNotification {
-            thread_id: thread_id.into_string(),
-            turn,
-        };
-
-        vec![
-            JsonRpcMessage::Response(JsonRpcResponse {
-                jsonrpc: JsonRpcVersion::V2,
-                id,
-                result: serde_json::to_value(response).expect("turn/start response must serialize"),
-            }),
-            JsonRpcMessage::Notification(sugarcode_app_server_protocol::JsonRpcNotification {
-                jsonrpc: JsonRpcVersion::V2,
-                method: "turn/started".to_string(),
-                params: Some(
-                    serde_json::to_value(notification)
-                        .expect("turn/started notification must serialize"),
-                ),
-            }),
-        ]
+        let mut messages = Vec::with_capacity(1 + mapped.notifications.len());
+        messages.push(JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: JsonRpcVersion::V2,
+            id,
+            result: response,
+        }));
+        messages.extend(mapped.notifications);
+        messages
     }
 }
 
@@ -426,6 +410,9 @@ mod tests {
     use super::*;
     use sugarcode_core::CoreError;
     use sugarcode_protocol::CoreEvent;
+    use sugarcode_protocol::CoreItemKind;
+    use sugarcode_protocol::CoreItemSnapshot;
+    use sugarcode_protocol::ItemId;
     use sugarcode_protocol::TurnId;
 
     fn initialize_line(version: u32) -> String {
@@ -540,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_start_returns_response_then_notification() {
+    fn turn_start_returns_response_then_complete_lifecycle() {
         let mut session = ready_session(Core::new());
         let thread_messages =
             session.process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start"}"#);
@@ -569,7 +556,8 @@ mod tests {
                     "id": "turn-1",
                     "result": {
                         "turn": {
-                            "id": "turn_0000000000000001"
+                            "id": "turn_0000000000000001",
+                            "status": "inProgress"
                         }
                     }
                 }),
@@ -579,7 +567,55 @@ mod tests {
                     "params": {
                         "threadId": "thr_0000000000000001",
                         "turn": {
-                            "id": "turn_0000000000000001"
+                            "id": "turn_0000000000000001",
+                            "status": "inProgress"
+                        }
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "item/started",
+                    "params": {
+                        "threadId": "thr_0000000000000001",
+                        "turnId": "turn_0000000000000001",
+                        "item": {
+                            "type": "agentMessage",
+                            "id": "item_0000000000000001",
+                            "text": ""
+                        }
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": "thr_0000000000000001",
+                        "turnId": "turn_0000000000000001",
+                        "itemId": "item_0000000000000001",
+                        "delta": "SugarCode deterministic response."
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "thr_0000000000000001",
+                        "turnId": "turn_0000000000000001",
+                        "item": {
+                            "type": "agentMessage",
+                            "id": "item_0000000000000001",
+                            "text": "SugarCode deterministic response."
+                        }
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "thr_0000000000000001",
+                        "turn": {
+                            "id": "turn_0000000000000001",
+                            "status": "completed"
                         }
                     }
                 }),
@@ -802,6 +838,7 @@ mod tests {
             TurnCoreBehavior::WrongRequest,
             TurnCoreBehavior::WrongThread,
             TurnCoreBehavior::WrongEvent,
+            TurnCoreBehavior::WrongCompletedText,
         ] {
             let mut session = ready_session(TurnCore::new(behavior));
             let mut messages = session.process_line(
@@ -883,7 +920,7 @@ mod tests {
             &mut self,
             _request_id: CoreRequestId,
             _thread_id: ThreadId,
-        ) -> Result<CoreEvent, CoreError> {
+        ) -> Result<Vec<CoreEvent>, CoreError> {
             Err(CoreError::Internal("sensitive failure".to_string()))
         }
     }
@@ -908,7 +945,7 @@ mod tests {
             &mut self,
             _request_id: CoreRequestId,
             _thread_id: ThreadId,
-        ) -> Result<CoreEvent, CoreError> {
+        ) -> Result<Vec<CoreEvent>, CoreError> {
             Err(CoreError::Internal("unexpected turn request".to_string()))
         }
     }
@@ -919,6 +956,7 @@ mod tests {
         WrongRequest,
         WrongThread,
         WrongEvent,
+        WrongCompletedText,
     }
 
     struct TurnCore {
@@ -949,30 +987,101 @@ mod tests {
             &mut self,
             request_id: CoreRequestId,
             thread_id: ThreadId,
-        ) -> Result<CoreEvent, CoreError> {
+        ) -> Result<Vec<CoreEvent>, CoreError> {
             match self.behavior {
                 TurnCoreBehavior::Fail => {
                     Err(CoreError::Internal("sensitive turn failure".to_string()))
                 }
-                TurnCoreBehavior::WrongRequest => Ok(CoreEvent {
-                    request_id: CoreRequestId::new(request_id.get() + 1),
-                    kind: CoreEventKind::TurnStarted {
-                        thread_id,
-                        turn_id: TurnId::new("turn_wrong_request"),
-                    },
-                }),
-                TurnCoreBehavior::WrongThread => Ok(CoreEvent {
-                    request_id,
-                    kind: CoreEventKind::TurnStarted {
+                TurnCoreBehavior::WrongRequest => {
+                    let mut events = valid_turn_events(request_id, thread_id);
+                    events[2].request_id = CoreRequestId::new(request_id.get() + 1);
+                    Ok(events)
+                }
+                TurnCoreBehavior::WrongThread => {
+                    let mut events = valid_turn_events(request_id, thread_id);
+                    events[3].kind = CoreEventKind::ItemCompleted {
                         thread_id: ThreadId::new("thr_wrong"),
-                        turn_id: TurnId::new("turn_wrong_thread"),
-                    },
-                }),
-                TurnCoreBehavior::WrongEvent => Ok(CoreEvent {
-                    request_id,
-                    kind: CoreEventKind::ThreadStarted { thread_id },
-                }),
+                        turn_id: TurnId::new("turn_test"),
+                        item: completed_test_item(),
+                    };
+                    Ok(events)
+                }
+                TurnCoreBehavior::WrongEvent => {
+                    let mut events = valid_turn_events(request_id, thread_id);
+                    events.swap(2, 3);
+                    Ok(events)
+                }
+                TurnCoreBehavior::WrongCompletedText => {
+                    let mut events = valid_turn_events(request_id, thread_id);
+                    events[3].kind = CoreEventKind::ItemCompleted {
+                        thread_id: ThreadId::new("thr_existing"),
+                        turn_id: TurnId::new("turn_test"),
+                        item: CoreItemSnapshot {
+                            id: ItemId::new("item_test"),
+                            kind: CoreItemKind::AgentMessage {
+                                text: "contradictory text".to_string(),
+                            },
+                        },
+                    };
+                    Ok(events)
+                }
             }
+        }
+    }
+
+    fn valid_turn_events(request_id: CoreRequestId, thread_id: ThreadId) -> Vec<CoreEvent> {
+        let turn_id = TurnId::new("turn_test");
+        vec![
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::TurnStarted {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                },
+            },
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::ItemStarted {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item: CoreItemSnapshot {
+                        id: ItemId::new("item_test"),
+                        kind: CoreItemKind::AgentMessage {
+                            text: String::new(),
+                        },
+                    },
+                },
+            },
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::AgentMessageDelta {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item_id: ItemId::new("item_test"),
+                    delta: "test response".to_string(),
+                },
+            },
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::ItemCompleted {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item: completed_test_item(),
+                },
+            },
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::TurnCompleted { thread_id, turn_id },
+            },
+        ]
+    }
+
+    fn completed_test_item() -> CoreItemSnapshot {
+        CoreItemSnapshot {
+            id: ItemId::new("item_test"),
+            kind: CoreItemKind::AgentMessage {
+                text: "test response".to_string(),
+            },
         }
     }
 }

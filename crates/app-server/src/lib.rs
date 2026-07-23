@@ -1,3 +1,4 @@
+mod event_mapping;
 mod session;
 mod stdio;
 

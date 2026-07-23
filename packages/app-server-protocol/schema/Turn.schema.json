@@ -5,9 +5,22 @@
   "properties": {
     "id": {
       "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/TurnStatus"
     }
   },
   "required": [
-    "id"
-  ]
+    "id",
+    "status"
+  ],
+  "$defs": {
+    "TurnStatus": {
+      "type": "string",
+      "enum": [
+        "inProgress",
+        "completed"
+      ]
+    }
+  }
 }

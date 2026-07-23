@@ -1,3 +1,5 @@
+use crate::CoreItemSnapshot;
+use crate::ItemId;
 use crate::ThreadId;
 use crate::TurnId;
 
@@ -26,6 +28,26 @@ pub enum CoreEventKind {
         thread_id: ThreadId,
     },
     TurnStarted {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    },
+    ItemStarted {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        item: CoreItemSnapshot,
+    },
+    AgentMessageDelta {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        item_id: ItemId,
+        delta: String,
+    },
+    ItemCompleted {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        item: CoreItemSnapshot,
+    },
+    TurnCompleted {
         thread_id: ThreadId,
         turn_id: TurnId,
     },

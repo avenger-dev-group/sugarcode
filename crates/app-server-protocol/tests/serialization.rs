@@ -1,5 +1,9 @@
 use serde_json::json;
+use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
 use sugarcode_app_server_protocol::ERROR_PARSE;
+use sugarcode_app_server_protocol::Item;
+use sugarcode_app_server_protocol::ItemCompletedNotification;
+use sugarcode_app_server_protocol::ItemStartedNotification;
 use sugarcode_app_server_protocol::JsonRpcError;
 use sugarcode_app_server_protocol::JsonRpcErrorObject;
 use sugarcode_app_server_protocol::JsonRpcMessage;
@@ -10,9 +14,11 @@ use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
 use sugarcode_app_server_protocol::Turn;
+use sugarcode_app_server_protocol::TurnCompletedNotification;
 use sugarcode_app_server_protocol::TurnStartParams;
 use sugarcode_app_server_protocol::TurnStartResponse;
 use sugarcode_app_server_protocol::TurnStartedNotification;
+use sugarcode_app_server_protocol::TurnStatus;
 
 #[test]
 fn error_envelope_uses_json_rpc_2_and_null_unknown_id() {
@@ -99,6 +105,7 @@ fn thread_start_params_accept_only_an_empty_object() {
 fn turn_start_types_use_the_public_turn_dto() {
     let turn = Turn {
         id: "turn_0000000000000001".to_string(),
+        status: TurnStatus::InProgress,
     };
 
     assert_eq!(
@@ -106,7 +113,8 @@ fn turn_start_types_use_the_public_turn_dto() {
             .expect("response serializes"),
         json!({
             "turn": {
-                "id": "turn_0000000000000001"
+                "id": "turn_0000000000000001",
+                "status": "inProgress"
             }
         })
     );
@@ -119,7 +127,90 @@ fn turn_start_types_use_the_public_turn_dto() {
         json!({
             "threadId": "thr_0000000000000001",
             "turn": {
-                "id": "turn_0000000000000001"
+                "id": "turn_0000000000000001",
+                "status": "inProgress"
+            }
+        })
+    );
+}
+
+#[test]
+fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
+    let thread_id = "thr_0000000000000001".to_string();
+    let turn_id = "turn_0000000000000001".to_string();
+    let item_id = "item_0000000000000001".to_string();
+    let started_item = Item::AgentMessage {
+        id: item_id.clone(),
+        text: String::new(),
+    };
+    let completed_item = Item::AgentMessage {
+        id: item_id.clone(),
+        text: "SugarCode deterministic response.".to_string(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(ItemStartedNotification {
+            thread_id: thread_id.clone(),
+            turn_id: turn_id.clone(),
+            item: started_item,
+        })
+        .expect("item/started serializes"),
+        json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "item": {
+                "type": "agentMessage",
+                "id": item_id,
+                "text": ""
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(AgentMessageDeltaNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn_id: "turn_0000000000000001".to_string(),
+            item_id: "item_0000000000000001".to_string(),
+            delta: "SugarCode deterministic response.".to_string(),
+        })
+        .expect("agent message delta serializes"),
+        json!({
+            "threadId": "thr_0000000000000001",
+            "turnId": "turn_0000000000000001",
+            "itemId": "item_0000000000000001",
+            "delta": "SugarCode deterministic response."
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ItemCompletedNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn_id: "turn_0000000000000001".to_string(),
+            item: completed_item,
+        })
+        .expect("item/completed serializes"),
+        json!({
+            "threadId": "thr_0000000000000001",
+            "turnId": "turn_0000000000000001",
+            "item": {
+                "type": "agentMessage",
+                "id": "item_0000000000000001",
+                "text": "SugarCode deterministic response."
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(TurnCompletedNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn: Turn {
+                id: "turn_0000000000000001".to_string(),
+                status: TurnStatus::Completed,
+            },
+        })
+        .expect("turn/completed serializes"),
+        json!({
+            "threadId": "thr_0000000000000001",
+            "turn": {
+                "id": "turn_0000000000000001",
+                "status": "completed"
             }
         })
     );

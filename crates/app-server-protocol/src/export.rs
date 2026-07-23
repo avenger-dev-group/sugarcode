@@ -1,7 +1,11 @@
+use crate::AgentMessageDeltaNotification;
 use crate::ClientInfo;
 use crate::InitializeCapabilities;
 use crate::InitializeParams;
 use crate::InitializeResponse;
+use crate::Item;
+use crate::ItemCompletedNotification;
+use crate::ItemStartedNotification;
 use crate::JsonRpcError;
 use crate::JsonRpcErrorObject;
 use crate::JsonRpcMessage;
@@ -18,9 +22,11 @@ use crate::ThreadStartParams;
 use crate::ThreadStartResponse;
 use crate::ThreadStartedNotification;
 use crate::Turn;
+use crate::TurnCompletedNotification;
 use crate::TurnStartParams;
 use crate::TurnStartResponse;
 use crate::TurnStartedNotification;
+use crate::TurnStatus;
 use schemars::schema_for;
 use std::fs;
 use std::io;
@@ -48,14 +54,20 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         PlatformInfo::decl(),
         ServerCapabilities::decl(),
         InitializeResponse::decl(),
+        Item::decl(),
+        ItemStartedNotification::decl(),
+        AgentMessageDeltaNotification::decl(),
+        ItemCompletedNotification::decl(),
         Thread::decl(),
         ThreadStartParams::decl(),
         ThreadStartResponse::decl(),
         ThreadStartedNotification::decl(),
         Turn::decl(),
+        TurnStatus::decl(),
         TurnStartParams::decl(),
         TurnStartResponse::decl(),
         TurnStartedNotification::decl(),
+        TurnCompletedNotification::decl(),
     ];
 
     let mut protocol = String::from(GENERATED_HEADER);
@@ -89,6 +101,19 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
         out_dir.join("InitializeResponse.schema.json"),
         &schema_for!(InitializeResponse),
     )?;
+    write_schema(out_dir.join("Item.schema.json"), &schema_for!(Item))?;
+    write_schema(
+        out_dir.join("ItemStartedNotification.schema.json"),
+        &schema_for!(ItemStartedNotification),
+    )?;
+    write_schema(
+        out_dir.join("AgentMessageDeltaNotification.schema.json"),
+        &schema_for!(AgentMessageDeltaNotification),
+    )?;
+    write_schema(
+        out_dir.join("ItemCompletedNotification.schema.json"),
+        &schema_for!(ItemCompletedNotification),
+    )?;
     write_schema(out_dir.join("Thread.schema.json"), &schema_for!(Thread))?;
     write_schema(
         out_dir.join("ThreadStartParams.schema.json"),
@@ -114,6 +139,10 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("TurnStartedNotification.schema.json"),
         &schema_for!(TurnStartedNotification),
+    )?;
+    write_schema(
+        out_dir.join("TurnCompletedNotification.schema.json"),
+        &schema_for!(TurnCompletedNotification),
     )
 }
 

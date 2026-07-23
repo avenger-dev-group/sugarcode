@@ -8,11 +8,23 @@
 {"jsonrpc":"2.0","id":"retry","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_missing"}}}
 {"jsonrpc":"2.0","id":"thread-1","result":{"thread":{"id":"thr_0000000000000001"}}}
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","id":"retry","result":{"turn":{"id":"turn_0000000000000001"}}}
-{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001"}}}
+{"jsonrpc":"2.0","id":"retry","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000001","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000001","threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000001","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"completed"}}}
 {"jsonrpc":"2.0","id":"thread-1","error":{"code":-32003,"message":"Duplicate request id"}}
-{"jsonrpc":"2.0","id":"duplicate-turn","result":{"turn":{"id":"turn_0000000000000002"}}}
-{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002"}}}
+{"jsonrpc":"2.0","id":"duplicate-turn","result":{"turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000002","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000002","threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002","status":"completed"}}}
 {"jsonrpc":"2.0","id":"duplicate-turn","error":{"code":-32003,"message":"Duplicate request id"}}
-{"jsonrpc":"2.0","id":"turn-next","result":{"turn":{"id":"turn_0000000000000003"}}}
-{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000003"}}}
+{"jsonrpc":"2.0","id":"turn-next","result":{"turn":{"id":"turn_0000000000000003","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000003","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000003","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000003"}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000003","threadId":"thr_0000000000000001","turnId":"turn_0000000000000003"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000003","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000003"}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000003","status":"completed"}}}
