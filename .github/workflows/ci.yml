@@ -1,4 +1,4 @@
-name: Phase 1 CI
+name: SugarCode CI
 
 on:
   pull_request:
@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  phase1:
-    name: Phase 1 / ${{ matrix.os }}
+  workspace:
+    name: Workspace / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -53,3 +53,9 @@ jobs:
 
       - name: Test Rust workspace
         run: cargo test --workspace --locked
+
+      - name: Build development CLI
+        run: pnpm build:cli:dev
+
+      - name: Test real Desktop CLI handshake
+        run: pnpm --filter @sugarcode/desktop test:integration
