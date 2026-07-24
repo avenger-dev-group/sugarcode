@@ -2,21 +2,23 @@ import { constants as fsConstants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-export type DevelopmentCli = Readonly<{
+export type ResolvedCli = Readonly<{
   executablePath: string;
-  repositoryRoot: string;
+  workingDirectory: string;
 }>;
 
-export type DevelopmentCliErrorCode =
+export type CliResolutionErrorCode =
   | 'development-cli-missing'
-  | 'development-cli-not-executable';
+  | 'development-cli-not-executable'
+  | 'packaged-cli-missing'
+  | 'packaged-cli-not-executable';
 
-export class DevelopmentCliError extends Error {
-  readonly code: DevelopmentCliErrorCode;
+export class CliResolutionError extends Error {
+  readonly code: CliResolutionErrorCode;
 
-  constructor(code: DevelopmentCliErrorCode, message: string) {
+  constructor(code: CliResolutionErrorCode, message: string) {
     super(message);
-    this.name = 'DevelopmentCliError';
+    this.name = 'CliResolutionError';
     this.code = code;
   }
 }
@@ -31,7 +33,7 @@ const assertRepositoryRoot = async (repositoryRoot: string): Promise<void> => {
       throw new Error('Workspace markers are not files.');
     }
   } catch {
-    throw new DevelopmentCliError(
+    throw new CliResolutionError(
       'development-cli-missing',
       'SugarCode development workspace could not be resolved.',
     );
@@ -41,7 +43,7 @@ const assertRepositoryRoot = async (repositoryRoot: string): Promise<void> => {
 export const resolveDevelopmentCli = async (
   desktopAppPath: string,
   platform: NodeJS.Platform = process.platform,
-): Promise<DevelopmentCli> => {
+): Promise<ResolvedCli> => {
   const repositoryRoot = path.resolve(desktopAppPath, '..', '..');
   await assertRepositoryRoot(repositoryRoot);
 
@@ -59,7 +61,7 @@ export const resolveDevelopmentCli = async (
       throw new Error('Development CLI is not a file.');
     }
   } catch {
-    throw new DevelopmentCliError(
+    throw new CliResolutionError(
       'development-cli-missing',
       'The SugarCode development CLI has not been built.',
     );
@@ -69,14 +71,68 @@ export const resolveDevelopmentCli = async (
     try {
       await access(executablePath, fsConstants.X_OK);
     } catch {
-      throw new DevelopmentCliError(
+      throw new CliResolutionError(
         'development-cli-not-executable',
         'The SugarCode development CLI is not executable.',
       );
     }
   }
 
-  return { executablePath, repositoryRoot };
+  return { executablePath, workingDirectory: repositoryRoot };
+};
+
+export const resolvePackagedCli = async (
+  resourcesPath: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<ResolvedCli> => {
+  const executableName = platform === 'win32' ? 'sugarcode.exe' : 'sugarcode';
+  const executablePath = path.join(
+    resourcesPath,
+    'sugarcode-sidecar',
+    'bin',
+    executableName,
+  );
+
+  try {
+    const metadata = await stat(executablePath);
+    if (!metadata.isFile()) {
+      throw new Error('Packaged CLI is not a file.');
+    }
+  } catch {
+    throw new CliResolutionError(
+      'packaged-cli-missing',
+      'The packaged SugarCode CLI is unavailable.',
+    );
+  }
+
+  if (platform !== 'win32') {
+    try {
+      await access(executablePath, fsConstants.X_OK);
+    } catch {
+      throw new CliResolutionError(
+        'packaged-cli-not-executable',
+        'The packaged SugarCode CLI is not executable.',
+      );
+    }
+  }
+
+  return { executablePath, workingDirectory: resourcesPath };
+};
+
+export type CliResolutionOptions = Readonly<{
+  isPackaged: boolean;
+  desktopAppPath: string;
+  resourcesPath: string;
+  platform?: NodeJS.Platform;
+}>;
+
+export const resolveCli = (
+  options: CliResolutionOptions,
+): Promise<ResolvedCli> => {
+  const platform = options.platform ?? process.platform;
+  return options.isPackaged
+    ? resolvePackagedCli(options.resourcesPath, platform)
+    : resolveDevelopmentCli(options.desktopAppPath, platform);
 };
 
 const copyEnvironmentValue = (
@@ -90,7 +146,7 @@ const copyEnvironmentValue = (
   }
 };
 
-export const createDevelopmentCliEnvironment = (
+export const createCliEnvironment = (
   source: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv => {

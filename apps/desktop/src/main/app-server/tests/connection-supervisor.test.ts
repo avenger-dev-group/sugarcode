@@ -9,7 +9,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConnectionSupervisor } from '../connection-supervisor';
-import { DevelopmentCliError } from '../development-cli';
+import { CliResolutionError } from '../cli-resolution';
 
 class FakeChild extends EventEmitter {
   readonly stdin = new PassThrough();
@@ -110,7 +110,7 @@ const createSupervisor = (
     platform: 'darwin',
     resolveCli: async () => ({
       executablePath: '/workspace/target/debug/sugarcode',
-      repositoryRoot: '/workspace',
+      workingDirectory: '/workspace',
     }),
     spawnProcess,
   });
@@ -186,7 +186,7 @@ describe('ConnectionSupervisor', () => {
       clientVersion: '1.0.0',
       desktopAppPath: '/workspace/apps/desktop',
       resolveCli: async () => {
-        throw new DevelopmentCliError(
+        throw new CliResolutionError(
           'development-cli-missing',
           'missing',
         );
@@ -203,7 +203,7 @@ describe('ConnectionSupervisor', () => {
       desktopAppPath: '/workspace/apps/desktop',
       resolveCli: async () => ({
         executablePath: '/workspace/target/debug/sugarcode',
-        repositoryRoot: '/workspace',
+        workingDirectory: '/workspace',
       }),
       spawnProcess: () => {
         throw new Error('spawn failed');
@@ -213,6 +213,52 @@ describe('ConnectionSupervisor', () => {
     expect(spawnFailure.getSnapshot()).toMatchObject({
       status: 'failed',
       diagnostic: { code: 'spawn-failed' },
+    });
+  });
+
+  it('passes the packaged resources boundary to the CLI resolver', async () => {
+    const child = new FakeChild();
+    attachInitializeServer(child);
+    const resolveCli = vi.fn(async () => ({
+      executablePath: '/package/resources/sugarcode-sidecar/bin/sugarcode',
+      workingDirectory: '/package/resources',
+    }));
+    const supervisor = new ConnectionSupervisor({
+      arch: 'arm64',
+      clientVersion: SUGARCODE_PRODUCT_VERSION,
+      desktopAppPath: '/package/resources/app.asar',
+      environment: {},
+      isPackaged: true,
+      platform: 'darwin',
+      resourcesPath: '/package/resources',
+      resolveCli,
+      spawnProcess: () => child.asChildProcess(),
+    });
+
+    await supervisor.start();
+    expect(resolveCli).toHaveBeenCalledWith({
+      desktopAppPath: '/package/resources/app.asar',
+      isPackaged: true,
+      platform: 'darwin',
+      resourcesPath: '/package/resources',
+    });
+    expect(supervisor.getSnapshot().status).toBe('ready');
+    supervisor.shutdown();
+  });
+
+  it('rejects a mismatched Desktop product version before resolving the CLI', async () => {
+    const resolveCli = vi.fn();
+    const supervisor = new ConnectionSupervisor({
+      clientVersion: '9.9.9',
+      desktopAppPath: '/workspace/apps/desktop',
+      resolveCli,
+    });
+
+    await supervisor.start();
+    expect(resolveCli).not.toHaveBeenCalled();
+    expect(supervisor.getSnapshot()).toMatchObject({
+      status: 'failed',
+      diagnostic: { code: 'product-version-mismatch' },
     });
   });
 

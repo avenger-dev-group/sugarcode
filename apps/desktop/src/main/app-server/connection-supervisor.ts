@@ -21,11 +21,16 @@ import type {
 } from '@/shared/connection';
 
 import {
-  createDevelopmentCliEnvironment,
-  DevelopmentCliError,
-  resolveDevelopmentCli,
-  type DevelopmentCli,
-} from './development-cli';
+  CliResolutionError,
+  createCliEnvironment,
+  resolveCli,
+  type CliResolutionOptions,
+  type ResolvedCli,
+} from './cli-resolution';
+import {
+  getCliTarget,
+  type ExpectedCliPlatform,
+} from './cli-platform';
 import { DiagnosticTailBuffer } from './diagnostics';
 import {
   ConnectionClosedError,
@@ -41,21 +46,14 @@ type SpawnProcess = (
 
 type ConnectionSupervisorOptions = Readonly<{
   desktopAppPath: string;
+  isPackaged?: boolean;
+  resourcesPath?: string;
   clientVersion: string;
   platform?: NodeJS.Platform;
   arch?: string;
   environment?: NodeJS.ProcessEnv;
-  resolveCli?: (
-    desktopAppPath: string,
-    platform: NodeJS.Platform,
-  ) => Promise<DevelopmentCli>;
+  resolveCli?: (options: CliResolutionOptions) => Promise<ResolvedCli>;
   spawnProcess?: SpawnProcess;
-}>;
-
-type ExpectedPlatform = Readonly<{
-  family: string;
-  os: string;
-  arch: string;
 }>;
 
 const DIAGNOSTIC_SUMMARIES: Record<ConnectionDiagnosticCode, string> = {
@@ -63,6 +61,10 @@ const DIAGNOSTIC_SUMMARIES: Record<ConnectionDiagnosticCode, string> = {
     'The development CLI is unavailable. Build it before starting SugarCode.',
   'development-cli-not-executable':
     'The development CLI cannot be executed on this host.',
+  'packaged-cli-missing':
+    'The packaged CLI is unavailable in the application resources.',
+  'packaged-cli-not-executable':
+    'The packaged CLI cannot be executed on this host.',
   'spawn-failed': 'SugarCode could not start its local CLI.',
   'initialize-rejected': 'The local CLI rejected the initialization request.',
   'protocol-invalid': 'The local CLI returned an invalid protocol message.',
@@ -76,31 +78,6 @@ const DIAGNOSTIC_SUMMARIES: Record<ConnectionDiagnosticCode, string> = {
   'server-crashed': 'The local CLI stopped unexpectedly.',
 };
 
-const getExpectedPlatform = (
-  platform: NodeJS.Platform,
-  arch: string,
-): ExpectedPlatform | null => {
-  const osByPlatform: Partial<Record<NodeJS.Platform, string>> = {
-    darwin: 'macos',
-    linux: 'linux',
-    win32: 'windows',
-  };
-  const archByNode: Record<string, string> = {
-    arm64: 'aarch64',
-    x64: 'x86_64',
-  };
-  const os = osByPlatform[platform];
-  const rustArch = archByNode[arch];
-  if (!os || !rustArch) {
-    return null;
-  }
-  return {
-    family: platform === 'win32' ? 'windows' : 'unix',
-    os,
-    arch: rustArch,
-  };
-};
-
 const createDiagnostic = (
   code: ConnectionDiagnosticCode,
 ): ConnectionDiagnostic => ({
@@ -110,9 +87,15 @@ const createDiagnostic = (
 
 export class ConnectionSupervisor {
   private readonly options: Required<
-    Pick<ConnectionSupervisorOptions, 'platform' | 'arch' | 'environment'>
+    Pick<
+      ConnectionSupervisorOptions,
+      'platform' | 'arch' | 'environment' | 'isPackaged' | 'resourcesPath'
+    >
   > &
-    Omit<ConnectionSupervisorOptions, 'platform' | 'arch' | 'environment'>;
+    Omit<
+      ConnectionSupervisorOptions,
+      'platform' | 'arch' | 'environment' | 'isPackaged' | 'resourcesPath'
+    >;
   private readonly listeners = new Set<ConnectionStateListener>();
   private readonly stderr = new DiagnosticTailBuffer();
   private snapshot: ConnectionStateSnapshot = {
@@ -135,6 +118,8 @@ export class ConnectionSupervisor {
       platform: options.platform ?? process.platform,
       arch: options.arch ?? process.arch,
       environment: options.environment ?? process.env,
+      isPackaged: options.isPackaged ?? false,
+      resourcesPath: options.resourcesPath ?? '',
     };
   }
 
@@ -177,25 +162,34 @@ export class ConnectionSupervisor {
   getDiagnosticTailForTesting = (): string => this.stderr.toString();
 
   private connect = async (): Promise<void> => {
-    const expectedPlatform = getExpectedPlatform(
+    const target = getCliTarget(
       this.options.platform,
       this.options.arch,
     );
-    if (!expectedPlatform) {
+    if (!target) {
       this.fail('platform-mismatch');
       return;
     }
+    if (this.options.clientVersion !== SUGARCODE_PRODUCT_VERSION) {
+      this.fail('product-version-mismatch');
+      return;
+    }
 
-    let cli: DevelopmentCli;
+    let cli: ResolvedCli;
     try {
-      cli = await (
-        this.options.resolveCli ?? resolveDevelopmentCli
-      )(this.options.desktopAppPath, this.options.platform);
+      cli = await (this.options.resolveCli ?? resolveCli)({
+        isPackaged: this.options.isPackaged,
+        desktopAppPath: this.options.desktopAppPath,
+        resourcesPath: this.options.resourcesPath,
+        platform: this.options.platform,
+      });
     } catch (error) {
       this.fail(
-        error instanceof DevelopmentCliError
+        error instanceof CliResolutionError
           ? error.code
-          : 'development-cli-missing',
+          : this.options.isPackaged
+            ? 'packaged-cli-missing'
+            : 'development-cli-missing',
       );
       return;
     }
@@ -206,9 +200,9 @@ export class ConnectionSupervisor {
         cli.executablePath,
         ['app-server', '--stdio'],
         {
-          cwd: cli.repositoryRoot,
+          cwd: cli.workingDirectory,
           detached: false,
-          env: createDevelopmentCliEnvironment(
+          env: createCliEnvironment(
             this.options.environment,
             this.options.platform,
           ),
@@ -261,7 +255,7 @@ export class ConnectionSupervisor {
       );
       const mismatch = this.validateInitializeResponse(
         response,
-        expectedPlatform,
+        target.expectedPlatform,
       );
       if (mismatch) {
         this.failAndTerminate(mismatch);
@@ -297,7 +291,7 @@ export class ConnectionSupervisor {
 
   private validateInitializeResponse = (
     response: InitializeResponse,
-    expectedPlatform: ExpectedPlatform,
+    expectedPlatform: ExpectedCliPlatform,
   ): ConnectionDiagnosticCode | null => {
     if (response.protocolVersion !== PROTOCOL_VERSION) {
       return 'protocol-version-mismatch';

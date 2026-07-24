@@ -68,6 +68,8 @@ const startApplication = async (): Promise<void> => {
   await app.whenReady();
   supervisor = new ConnectionSupervisor({
     desktopAppPath: app.getAppPath(),
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
     clientVersion: app.getVersion(),
   });
   disposeConnectionIpc = registerConnectionIpc({

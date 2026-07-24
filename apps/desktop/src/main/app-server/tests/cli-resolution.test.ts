@@ -5,9 +5,11 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  createDevelopmentCliEnvironment,
+  createCliEnvironment,
+  resolveCli,
   resolveDevelopmentCli,
-} from '../development-cli';
+  resolvePackagedCli,
+} from '../cli-resolution';
 
 const temporaryRoots: string[] = [];
 
@@ -60,7 +62,7 @@ describe('resolveDevelopmentCli', () => {
       resolveDevelopmentCli(workspace.desktopAppPath, process.platform),
     ).resolves.toEqual({
       executablePath: workspace.executablePath,
-      repositoryRoot: workspace.repositoryRoot,
+      workingDirectory: workspace.repositoryRoot,
     });
   });
 
@@ -92,10 +94,10 @@ describe('resolveDevelopmentCli', () => {
   );
 });
 
-describe('createDevelopmentCliEnvironment', () => {
+describe('createCliEnvironment', () => {
   it('allowlists platform essentials and omits PATH and secrets', () => {
     expect(
-      createDevelopmentCliEnvironment(
+      createCliEnvironment(
         {
           LANG: 'en_US.UTF-8',
           PATH: '/untrusted',
@@ -109,4 +111,70 @@ describe('createDevelopmentCliEnvironment', () => {
       TMPDIR: '/tmp',
     });
   });
+});
+
+describe('resolvePackagedCli', () => {
+  it('resolves only the fixed resources sidecar path', async () => {
+    const resourcesPath = await import('node:fs/promises').then(({ mkdtemp }) =>
+      mkdtemp(path.join(tmpdir(), 'sugarcode-resources-test-')),
+    );
+    temporaryRoots.push(resourcesPath);
+    const executableName =
+      process.platform === 'win32' ? 'sugarcode.exe' : 'sugarcode';
+    const executablePath = path.join(
+      resourcesPath,
+      'sugarcode-sidecar',
+      'bin',
+      executableName,
+    );
+    await mkdir(path.dirname(executablePath), { recursive: true });
+    await writeFile(executablePath, '#!/bin/sh\n');
+    await chmod(executablePath, 0o755);
+
+    await expect(
+      resolvePackagedCli(resourcesPath, process.platform),
+    ).resolves.toEqual({
+      executablePath,
+      workingDirectory: resourcesPath,
+    });
+  });
+
+  it('uses an explicit packaged branch without falling back to development', async () => {
+    await expect(
+      resolveCli({
+        isPackaged: true,
+        desktopAppPath: '/workspace/apps/desktop',
+        resourcesPath: '/missing/resources',
+        platform: process.platform,
+      }),
+    ).rejects.toMatchObject({
+      code: 'packaged-cli-missing',
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'fails explicitly when the packaged CLI is not executable on POSIX',
+    async () => {
+      const resourcesPath = await import('node:fs/promises').then(
+        ({ mkdtemp }) =>
+          mkdtemp(path.join(tmpdir(), 'sugarcode-resources-test-')),
+      );
+      temporaryRoots.push(resourcesPath);
+      const executablePath = path.join(
+        resourcesPath,
+        'sugarcode-sidecar',
+        'bin',
+        'sugarcode',
+      );
+      await mkdir(path.dirname(executablePath), { recursive: true });
+      await writeFile(executablePath, 'not executable\n');
+      await chmod(executablePath, 0o644);
+
+      await expect(
+        resolvePackagedCli(resourcesPath, process.platform),
+      ).rejects.toMatchObject({
+        code: 'packaged-cli-not-executable',
+      });
+    },
+  );
 });

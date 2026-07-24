@@ -11,6 +11,8 @@ export type ConnectionStatus =
 export type ConnectionDiagnosticCode =
   | 'development-cli-missing'
   | 'development-cli-not-executable'
+  | 'packaged-cli-missing'
+  | 'packaged-cli-not-executable'
   | 'spawn-failed'
   | 'initialize-rejected'
   | 'protocol-invalid'
@@ -54,6 +56,8 @@ const CONNECTION_STATUSES = new Set<ConnectionStatus>([
 const CONNECTION_DIAGNOSTIC_CODES = new Set<ConnectionDiagnosticCode>([
   'development-cli-missing',
   'development-cli-not-executable',
+  'packaged-cli-missing',
+  'packaged-cli-not-executable',
   'spawn-failed',
   'initialize-rejected',
   'protocol-invalid',
