@@ -31,7 +31,7 @@ src/renderer/
 ├── pages/
 ├── services/
 ├── stores/
-├── lib/
+├── utils/
 └── styles/
     └── globals.css
 ```
@@ -43,6 +43,15 @@ src/renderer/
 - `services` 是受约束 preload API、协议客户端和 view-model 映射的 Renderer 边界；不得绕过 preload 使用 Node.js 或 Electron API。
 - `stores` 保存可重建的界面状态和客户端投影，不得成为 Thread 持久化的唯一事实来源。
 - `hooks` 封装可复用的 React 行为，不得隐藏不可见的跨进程副作用。
+- 每个领域模块必须在自己的目录中提供 `types.ts`，集中定义该模块专属的 Props、view-model、状态和联合类型；跨模块公共协议类型仍应保留在其既定边界，不得复制进各模块。
+- 每个含交互的领域模块必须提供自己的 `use-store.ts`，并统一导出名为 `useStore` 的 Hook，集中管理该模块的 `useState`、派生交互状态和事件处理器。展示组件只消费这个 Hook 返回的强类型接口，不得把模块交互逻辑重新散落到页面组件中。
+- 被两个或更多模块复用的纯工具方法必须按职责定义在 `src/renderer/utils/` 下；只服务单个模块的方法必须留在该模块目录中，不得提前提升为全局工具。
+
+## TypeScript 与命名
+
+- 新增和修改的 TypeScript 必须保持强类型。React 状态必须为 `useState` 显式提供类型参数，尤其是空数组、空对象、可空值、联合类型和领域模型，例如 `useState<ThreadSummary[]>([])`、`useState<ThreadSummary | null>(null)`；不得依赖不完整推断或使用 `any` 绕过类型约束。
+- React 组件、事件处理器和普通方法优先使用 ES6 箭头函数，例如 `const ThreadList = (props: ThreadListProps) => {}`；仅在提升、生成器、明确的 `this` 绑定或框架 API 等确有需要时使用 `function` 声明，并在上下文中保持一致。
+- 新增源码文件和目录统一使用 kebab-case（烤串命名），例如 `thread-list.tsx`、`use-thread-state.ts`、`app-server-client.ts`。框架约定文件、工具生成且不宜改名的文件，以及单个单词的文件名除外。
 
 ## 颜色
 
@@ -95,6 +104,10 @@ src/renderer/
 - 是否优先使用已有 SugarCode 组件或 shadcn 官方组件，而不是重复实现基础组件？
 - `components/ui` 是否仍然不包含领域逻辑、Store 和协议访问？
 - App Server DTO 是否先转换为 Renderer view-model，再进入组件？
+- 领域模块是否具有自己的 `types.ts`，含交互的模块是否通过自己的 `use-store.ts` 管理交互逻辑？
+- 工具方法是否按实际复用范围放在模块目录或 `utils/`，而不是形成无边界的公共杂物文件？
+- `useState` 等状态写入是否具有明确、完整的类型？
+- 新增组件和方法是否优先使用箭头函数，源码文件和目录是否遵循 kebab-case？
 - 是否只使用了上述四档中性文字语义，而不是硬编码灰色或任意透明度？
 - 浅色和深色下是否分别保持 `#1A1C1F` / 白色的正确层级？
 - 正文是否为 `14px / 1.5 / 500`？
