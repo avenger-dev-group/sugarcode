@@ -1,56 +1,108 @@
 import { app, BrowserWindow } from 'electron';
-import path from 'node:path';
 import started from 'electron-squirrel-startup';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-// Handle creating/removing shortcuts on Windows when installing/uninstalling.
-if (started) {
-  app.quit();
-}
+import { registerConnectionIpc } from '@/main/app-server/connection-ipc';
+import { ConnectionSupervisor } from '@/main/app-server/connection-supervisor';
 
-const createWindow = () => {
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-    },
-  });
+let mainWindow: BrowserWindow | null = null;
+let supervisor: ConnectionSupervisor | null = null;
+let disposeConnectionIpc: (() => void) | null = null;
 
-  // and load the index.html of the app.
+const rendererFilePath = path.join(
+  __dirname,
+  `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
+);
+
+const isAllowedRendererUrl = (url: string): boolean => {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
-  } else {
-    mainWindow.loadFile(
-      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
-    );
+    try {
+      return (
+        new URL(url).origin ===
+        new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).origin
+      );
+    } catch {
+      return false;
+    }
   }
-
-  // Open the DevTools.
-  mainWindow.webContents.openDevTools();
+  return url === pathToFileURL(rendererFilePath).toString();
 };
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-app.on('ready', createWindow);
+const createWindow = (): void => {
+  const window = new BrowserWindow({
+    width: 800,
+    height: 600,
+    minWidth: 560,
+    minHeight: 480,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.js'),
+      sandbox: true,
+    },
+  });
+  mainWindow = window;
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedRendererUrl(url)) {
+      event.preventDefault();
+    }
+  });
+  window.once('closed', () => {
+    if (mainWindow === window) {
+      mainWindow = null;
+    }
+  });
+
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    void window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+    window.webContents.openDevTools();
+  } else {
+    void window.loadFile(rendererFilePath);
   }
-});
+};
 
-app.on('activate', () => {
-  // On OS X it's common to re-create a window in the app when the
-  // dock icon is clicked and there are no other windows open.
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
-});
+const startApplication = async (): Promise<void> => {
+  await app.whenReady();
+  supervisor = new ConnectionSupervisor({
+    desktopAppPath: app.getAppPath(),
+    clientVersion: app.getVersion(),
+  });
+  disposeConnectionIpc = registerConnectionIpc({
+    supervisor,
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  createWindow();
+  void supervisor.start();
+};
 
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and import them here.
+if (started) {
+  app.quit();
+} else {
+  void startApplication();
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit();
+    }
+  });
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+
+  app.on('before-quit', () => {
+    supervisor?.shutdown();
+  });
+
+  app.on('will-quit', () => {
+    supervisor?.shutdown();
+    disposeConnectionIpc?.();
+    disposeConnectionIpc = null;
+  });
+}

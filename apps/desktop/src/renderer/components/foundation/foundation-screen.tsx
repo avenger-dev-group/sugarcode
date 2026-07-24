@@ -1,5 +1,6 @@
 import { Moon, Sun } from 'lucide-react';
 
+import { ConnectionStatus } from '@/renderer/components/connection/connection-status';
 import { Button } from '@/renderer/components/ui/button';
 
 import { useStore } from './use-store';
@@ -23,14 +24,18 @@ export const FoundationScreen = () => {
             id="foundation-title"
             className="max-w-xs text-2xl font-medium tracking-[-0.03em]"
           >
-            Desktop UI foundation.
+            Local runtime, in view.
           </h1>
           <p className="mt-3 text-secondary">
-            React, Tailwind CSS, and Radix primitives are ready.
+            SugarCode Desktop verifies its native CLI before work begins.
           </p>
 
+          <div className="mt-8">
+            <ConnectionStatus />
+          </div>
+
           <Button
-            className="mt-8"
+            className="mt-6"
             type="button"
             aria-pressed={isDark}
             onClick={toggleTheme}
