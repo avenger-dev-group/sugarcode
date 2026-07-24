@@ -1,4 +1,5 @@
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -16,7 +17,7 @@ const createWorkspace = async (): Promise<{
   repositoryRoot: string;
 }> => {
   const repositoryRoot = await import('node:fs/promises').then(({ mkdtemp }) =>
-    mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sugarcode-cli-test-')),
+    mkdtemp(path.join(tmpdir(), 'sugarcode-cli-test-')),
   );
   temporaryRoots.push(repositoryRoot);
   const desktopAppPath = path.join(repositoryRoot, 'apps', 'desktop');
