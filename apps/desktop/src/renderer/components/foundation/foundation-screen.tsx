@@ -1,0 +1,49 @@
+import { Moon, Sun } from 'lucide-react';
+
+import { Button } from '@/renderer/components/ui/button';
+
+import { useFoundationStore } from './use-store';
+
+export const FoundationScreen = () => {
+  const { isDark, themeLabel, toggleTheme } = useFoundationStore();
+
+  return (
+    <div className={isDark ? 'dark' : undefined}>
+      <main className="flex min-h-screen items-center justify-center bg-background px-6 py-12 text-foreground transition-colors">
+        <section className="w-full max-w-sm" aria-labelledby="foundation-title">
+          <div className="mb-10 flex items-center gap-2.5">
+            <span
+              className="size-2 rounded-full bg-primary"
+              aria-hidden="true"
+            />
+            <p className="text-sm font-medium tracking-[-0.01em]">SugarCode</p>
+          </div>
+
+          <h1
+            id="foundation-title"
+            className="max-w-xs text-2xl font-medium tracking-[-0.03em]"
+          >
+            Desktop UI foundation.
+          </h1>
+          <p className="mt-3 text-secondary">
+            React, Tailwind CSS, and Radix primitives are ready.
+          </p>
+
+          <Button
+            className="mt-8"
+            type="button"
+            aria-pressed={isDark}
+            onClick={toggleTheme}
+          >
+            {isDark ? (
+              <Sun aria-hidden="true" />
+            ) : (
+              <Moon aria-hidden="true" />
+            )}
+            {themeLabel}
+          </Button>
+        </section>
+      </main>
+    </div>
+  );
+};
