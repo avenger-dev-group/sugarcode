@@ -5,13 +5,25 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 
-pub async fn serve<R, W>(reader: R, mut writer: W) -> io::Result<()>
+pub async fn serve<R, W>(reader: R, writer: W) -> io::Result<()>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    serve_with_session(reader, writer, Session::new()).await
+}
+
+pub async fn serve_with_session<R, W, C>(
+    reader: R,
+    mut writer: W,
+    mut session: Session<C>,
+) -> io::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+    C: sugarcode_core::CoreApi,
+{
     let mut lines = reader.lines();
-    let mut session = Session::new();
 
     while let Some(line) = lines.next_line().await? {
         for message in session.process_line(&line) {

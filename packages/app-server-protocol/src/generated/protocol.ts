@@ -54,6 +54,14 @@ export type ThreadStartResponse = { thread: Thread, };
 
 export type ThreadStartedNotification = { thread: Thread, };
 
+export type ThreadResumeParams = { threadId: string, };
+
+export type TurnSnapshotStatus = "completed";
+
+export type TurnSnapshot = { id: string, status: TurnSnapshotStatus, items: Array<Item>, };
+
+export type ThreadResumeResponse = { thread: Thread, turns: Array<TurnSnapshot>, };
+
 export type Turn = { id: string, status: TurnStatus, };
 
 export type TurnStatus = "inProgress" | "completed";

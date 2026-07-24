@@ -6,8 +6,11 @@ use sugarcode_app_server_protocol::ItemStartedNotification;
 use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcNotification;
 use sugarcode_app_server_protocol::JsonRpcVersion;
+use sugarcode_app_server_protocol::ThreadResumeResponse;
 use sugarcode_app_server_protocol::Turn as PublicTurn;
 use sugarcode_app_server_protocol::TurnCompletedNotification;
+use sugarcode_app_server_protocol::TurnSnapshot;
+use sugarcode_app_server_protocol::TurnSnapshotStatus;
 use sugarcode_app_server_protocol::TurnStartedNotification;
 use sugarcode_app_server_protocol::TurnStatus;
 use sugarcode_protocol::CoreEvent;
@@ -15,6 +18,8 @@ use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreItemKind;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::ThreadId;
+use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableThreadSnapshot;
 
 #[derive(Debug)]
 pub(crate) struct EventMappingError;
@@ -183,6 +188,34 @@ pub(crate) fn map_turn_lifecycle(
         turn,
         notifications,
     })
+}
+
+pub(crate) fn map_thread_snapshot(snapshot: DurableThreadSnapshot) -> ThreadResumeResponse {
+    ThreadResumeResponse {
+        thread: sugarcode_app_server_protocol::Thread {
+            id: snapshot.id.into_string(),
+        },
+        turns: snapshot
+            .turns
+            .into_iter()
+            .map(|turn| TurnSnapshot {
+                id: turn.id.into_string(),
+                status: TurnSnapshotStatus::Completed,
+                items: turn
+                    .items
+                    .into_iter()
+                    .map(|item| match item {
+                        DurableItemSnapshot::AgentMessage { id, text } => {
+                            PublicItem::AgentMessage {
+                                id: id.into_string(),
+                                text,
+                            }
+                        }
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 fn notification(method: &str, params: serde_json::Value) -> JsonRpcMessage {

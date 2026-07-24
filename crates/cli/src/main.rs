@@ -90,8 +90,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::AppServer(args) => match (args.stdio, args.command) {
             (true, None) => {
-                let _effective_config = sugarcode_state::load_effective_config(home)?;
-                sugarcode_app_server::run_stdio().await?;
+                let effective_config = sugarcode_state::load_effective_config(home)?;
+                sugarcode_app_server::run_stdio(effective_config).await?;
             }
             (false, Some(AppServerCommand::GenerateTs(args))) => {
                 sugarcode_app_server::generate_typescript(&args.out)?;

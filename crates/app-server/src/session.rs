@@ -1,3 +1,4 @@
+use crate::event_mapping::map_thread_snapshot;
 use crate::event_mapping::map_turn_lifecycle;
 use serde_json::Value;
 use serde_json::json;
@@ -10,6 +11,7 @@ use sugarcode_app_server_protocol::ERROR_INVALID_REQUEST;
 use sugarcode_app_server_protocol::ERROR_METHOD_NOT_FOUND;
 use sugarcode_app_server_protocol::ERROR_NOT_INITIALIZED;
 use sugarcode_app_server_protocol::ERROR_PARSE;
+use sugarcode_app_server_protocol::ERROR_STATE_UNAVAILABLE;
 use sugarcode_app_server_protocol::ERROR_THREAD_NOT_FOUND;
 use sugarcode_app_server_protocol::ERROR_UNSUPPORTED_PROTOCOL_VERSION;
 use sugarcode_app_server_protocol::InitializeParams;
@@ -27,6 +29,7 @@ use sugarcode_app_server_protocol::SUGARCODE_PRODUCT_VERSION;
 use sugarcode_app_server_protocol::ServerCapabilities;
 use sugarcode_app_server_protocol::ServerInfo;
 use sugarcode_app_server_protocol::Thread as PublicThread;
+use sugarcode_app_server_protocol::ThreadResumeParams;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
@@ -34,6 +37,7 @@ use sugarcode_app_server_protocol::TurnStartParams;
 use sugarcode_app_server_protocol::TurnStartResponse;
 use sugarcode_core::Core;
 use sugarcode_core::CoreApi;
+use sugarcode_core::CoreError;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::ThreadId;
@@ -151,6 +155,20 @@ where
                     )];
                 }
                 self.start_thread(id, object.get("params").cloned())
+            }
+            "thread/resume" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.resume_thread(id, object.get("params").cloned())
             }
             "turn/start" => {
                 let Some(id) = request_id else {
@@ -271,6 +289,14 @@ where
 
         let event = match self.core.start_thread(core_request_id) {
             Ok(event) if event.request_id == core_request_id => event,
+            Err(CoreError::StateUnavailable) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )];
+            }
             Ok(_) | Err(_) => {
                 return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
             }
@@ -306,6 +332,62 @@ where
                 ),
             }),
         ]
+    }
+
+    fn resume_thread(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
+        let params = match params
+            .ok_or(())
+            .and_then(|value| serde_json::from_value::<ThreadResumeParams>(value).map_err(|_| ()))
+        {
+            Ok(params) => params,
+            Err(()) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+
+        let thread_id = ThreadId::new(params.thread_id.clone());
+        let snapshot = match self.core.resume_thread(&thread_id) {
+            Ok(snapshot) => snapshot,
+            Err(CoreError::ThreadNotFound(_)) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_THREAD_NOT_FOUND,
+                    "Thread not found",
+                    Some(json!({ "threadId": params.thread_id })),
+                )];
+            }
+            Err(CoreError::StateUnavailable) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )];
+            }
+            Err(_) => {
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
+        self.accepted_request_ids.insert(id.clone());
+        let response = map_thread_snapshot(snapshot);
+        vec![JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: JsonRpcVersion::V2,
+            id,
+            result: serde_json::to_value(response).expect("thread/resume response must serialize"),
+        })]
     }
 
     fn start_turn(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
@@ -350,19 +432,20 @@ where
         self.last_core_request_sequence = sequence;
         self.accepted_request_ids.insert(id.clone());
 
-        let mut events = match self.core.start_turn(core_request_id, thread_id.clone()) {
+        let events = match self.core.start_turn(core_request_id, thread_id.clone()) {
             Ok(events) => events,
+            Err(CoreError::StateUnavailable) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )];
+            }
             Err(_) => {
                 return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
             }
         };
-        let completed_events = match self.core.advance_active_turn(&thread_id) {
-            Ok(events) => events,
-            Err(_) => {
-                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
-            }
-        };
-        events.extend(completed_events);
 
         let mapped = match map_turn_lifecycle(events, core_request_id, &thread_id) {
             Ok(mapped) => mapped,
@@ -514,6 +597,41 @@ mod tests {
                     }
                 }),
             ]
+        );
+    }
+
+    #[test]
+    fn thread_resume_returns_the_complete_snapshot_without_notifications() {
+        let mut session = ready_session(Core::new());
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
+        );
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+
+        let messages = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"resume-1","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&messages[0]).expect("message serializes"),
+            json!({
+                "jsonrpc": "2.0",
+                "id": "resume-1",
+                "result": {
+                    "thread": {"id": "thr_0000000000000001"},
+                    "turns": [{
+                        "id": "turn_0000000000000001",
+                        "status": "completed",
+                        "items": [{
+                            "type": "agentMessage",
+                            "id": "item_0000000000000001",
+                            "text": "SugarCode deterministic response."
+                        }]
+                    }]
+                }
+            })
         );
     }
 
@@ -809,6 +927,25 @@ mod tests {
     }
 
     #[test]
+    fn durable_state_failures_use_the_stable_public_error_without_details() {
+        for request in [
+            r#"{"jsonrpc":"2.0","id":"start","method":"thread/start","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+        ] {
+            let mut session = ready_session(StateUnavailableCore);
+            let mut messages = session.process_line(request);
+            assert_eq!(messages.len(), 1);
+            let JsonRpcMessage::Error(error) = messages.pop().expect("state error response") else {
+                panic!("expected error");
+            };
+            assert_eq!(error.error.code, ERROR_STATE_UNAVAILABLE);
+            assert_eq!(error.error.message, "State unavailable");
+            assert!(error.error.data.is_none());
+        }
+    }
+
+    #[test]
     fn mismatched_core_request_id_returns_internal_error() {
         let mut session = ready_session(MismatchedCore);
 
@@ -824,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_start_or_advance_failure_returns_internal_error_without_notification() {
+    fn turn_start_failure_returns_internal_error_without_notification() {
         for behavior in [TurnCoreBehavior::Fail, TurnCoreBehavior::AdvanceFail] {
             let mut session = ready_session(TurnCore::new(behavior));
 
@@ -927,17 +1064,17 @@ mod tests {
             false
         }
 
+        fn resume_thread(
+            &mut self,
+            thread_id: &ThreadId,
+        ) -> Result<sugarcode_state::DurableThreadSnapshot, CoreError> {
+            Err(CoreError::ThreadNotFound(thread_id.clone()))
+        }
+
         fn start_turn(
             &mut self,
             _request_id: CoreRequestId,
             _thread_id: ThreadId,
-        ) -> Result<Vec<CoreEvent>, CoreError> {
-            Err(CoreError::Internal("sensitive failure".to_string()))
-        }
-
-        fn advance_active_turn(
-            &mut self,
-            _thread_id: &ThreadId,
         ) -> Result<Vec<CoreEvent>, CoreError> {
             Err(CoreError::Internal("sensitive failure".to_string()))
         }
@@ -959,6 +1096,13 @@ mod tests {
             false
         }
 
+        fn resume_thread(
+            &mut self,
+            thread_id: &ThreadId,
+        ) -> Result<sugarcode_state::DurableThreadSnapshot, CoreError> {
+            Err(CoreError::ThreadNotFound(thread_id.clone()))
+        }
+
         fn start_turn(
             &mut self,
             _request_id: CoreRequestId,
@@ -966,12 +1110,32 @@ mod tests {
         ) -> Result<Vec<CoreEvent>, CoreError> {
             Err(CoreError::Internal("unexpected turn request".to_string()))
         }
+    }
 
-        fn advance_active_turn(
+    struct StateUnavailableCore;
+
+    impl CoreApi for StateUnavailableCore {
+        fn start_thread(&mut self, _request_id: CoreRequestId) -> Result<CoreEvent, CoreError> {
+            Err(CoreError::StateUnavailable)
+        }
+
+        fn contains_thread(&self, _thread_id: &ThreadId) -> bool {
+            true
+        }
+
+        fn resume_thread(
             &mut self,
             _thread_id: &ThreadId,
+        ) -> Result<sugarcode_state::DurableThreadSnapshot, CoreError> {
+            Err(CoreError::StateUnavailable)
+        }
+
+        fn start_turn(
+            &mut self,
+            _request_id: CoreRequestId,
+            _thread_id: ThreadId,
         ) -> Result<Vec<CoreEvent>, CoreError> {
-            Err(CoreError::Internal("unexpected turn advance".to_string()))
+            Err(CoreError::StateUnavailable)
         }
     }
 
@@ -987,15 +1151,11 @@ mod tests {
 
     struct TurnCore {
         behavior: TurnCoreBehavior,
-        active_request_id: Option<CoreRequestId>,
     }
 
     impl TurnCore {
         fn new(behavior: TurnCoreBehavior) -> Self {
-            Self {
-                behavior,
-                active_request_id: None,
-            }
+            Self { behavior }
         }
     }
 
@@ -1013,6 +1173,13 @@ mod tests {
             thread_id.as_str() == "thr_existing"
         }
 
+        fn resume_thread(
+            &mut self,
+            thread_id: &ThreadId,
+        ) -> Result<sugarcode_state::DurableThreadSnapshot, CoreError> {
+            Err(CoreError::ThreadNotFound(thread_id.clone()))
+        }
+
         fn start_turn(
             &mut self,
             request_id: CoreRequestId,
@@ -1022,42 +1189,17 @@ mod tests {
                 TurnCoreBehavior::Fail => {
                     Err(CoreError::Internal("sensitive turn failure".to_string()))
                 }
-                TurnCoreBehavior::AdvanceFail
-                | TurnCoreBehavior::WrongThread
-                | TurnCoreBehavior::WrongEvent
-                | TurnCoreBehavior::WrongCompletedText => {
-                    self.active_request_id = Some(request_id);
-                    Ok(valid_turn_started_events(request_id, thread_id))
-                }
+                TurnCoreBehavior::AdvanceFail => Err(CoreError::Internal(
+                    "sensitive completion failure".to_string(),
+                )),
                 TurnCoreBehavior::WrongRequest => {
-                    let mut events = valid_turn_started_events(request_id, thread_id);
+                    let mut events = valid_turn_events(request_id, thread_id);
                     events[2].request_id = CoreRequestId::new(request_id.get() + 1);
-                    self.active_request_id = Some(request_id);
                     Ok(events)
                 }
-            }
-        }
-
-        fn advance_active_turn(
-            &mut self,
-            thread_id: &ThreadId,
-        ) -> Result<Vec<CoreEvent>, CoreError> {
-            let request_id = self
-                .active_request_id
-                .ok_or_else(|| CoreError::Internal("no active test turn".to_string()))?;
-            match self.behavior {
-                TurnCoreBehavior::Fail => {
-                    Err(CoreError::Internal("unexpected turn advance".to_string()))
-                }
-                TurnCoreBehavior::AdvanceFail => {
-                    Err(CoreError::Internal("sensitive advance failure".to_string()))
-                }
-                TurnCoreBehavior::WrongRequest => {
-                    Ok(valid_turn_completed_events(request_id, thread_id.clone()))
-                }
                 TurnCoreBehavior::WrongThread => {
-                    let mut events = valid_turn_completed_events(request_id, thread_id.clone());
-                    events[0].kind = CoreEventKind::ItemCompleted {
+                    let mut events = valid_turn_events(request_id, thread_id);
+                    events[3].kind = CoreEventKind::ItemCompleted {
                         thread_id: ThreadId::new("thr_wrong"),
                         turn_id: TurnId::new("turn_test"),
                         item: completed_test_item(),
@@ -1065,13 +1207,13 @@ mod tests {
                     Ok(events)
                 }
                 TurnCoreBehavior::WrongEvent => {
-                    let mut events = valid_turn_completed_events(request_id, thread_id.clone());
-                    events.swap(0, 1);
+                    let mut events = valid_turn_events(request_id, thread_id);
+                    events.swap(3, 4);
                     Ok(events)
                 }
                 TurnCoreBehavior::WrongCompletedText => {
-                    let mut events = valid_turn_completed_events(request_id, thread_id.clone());
-                    events[0].kind = CoreEventKind::ItemCompleted {
+                    let mut events = valid_turn_events(request_id, thread_id);
+                    events[3].kind = CoreEventKind::ItemCompleted {
                         thread_id: ThreadId::new("thr_existing"),
                         turn_id: TurnId::new("turn_test"),
                         item: CoreItemSnapshot {
@@ -1087,9 +1229,9 @@ mod tests {
         }
     }
 
-    fn valid_turn_started_events(request_id: CoreRequestId, thread_id: ThreadId) -> Vec<CoreEvent> {
+    fn valid_turn_events(request_id: CoreRequestId, thread_id: ThreadId) -> Vec<CoreEvent> {
         let turn_id = TurnId::new("turn_test");
-        vec![
+        let mut events = vec![
             CoreEvent {
                 request_id,
                 kind: CoreEventKind::TurnStarted {
@@ -1119,15 +1261,8 @@ mod tests {
                     delta: "test response".to_string(),
                 },
             },
-        ]
-    }
-
-    fn valid_turn_completed_events(
-        request_id: CoreRequestId,
-        thread_id: ThreadId,
-    ) -> Vec<CoreEvent> {
-        let turn_id = TurnId::new("turn_test");
-        vec![
+        ];
+        events.extend([
             CoreEvent {
                 request_id,
                 kind: CoreEventKind::ItemCompleted {
@@ -1140,7 +1275,8 @@ mod tests {
                 request_id,
                 kind: CoreEventKind::TurnCompleted { thread_id, turn_id },
             },
-        ]
+        ]);
+        events
     }
 
     fn completed_test_item() -> CoreItemSnapshot {

@@ -10,11 +10,15 @@ use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::RequestId;
 use sugarcode_app_server_protocol::Thread;
+use sugarcode_app_server_protocol::ThreadResumeParams;
+use sugarcode_app_server_protocol::ThreadResumeResponse;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
 use sugarcode_app_server_protocol::Turn;
 use sugarcode_app_server_protocol::TurnCompletedNotification;
+use sugarcode_app_server_protocol::TurnSnapshot;
+use sugarcode_app_server_protocol::TurnSnapshotStatus;
 use sugarcode_app_server_protocol::TurnStartParams;
 use sugarcode_app_server_protocol::TurnStartResponse;
 use sugarcode_app_server_protocol::TurnStartedNotification;
@@ -242,5 +246,60 @@ fn turn_start_params_require_one_non_blank_thread_id() {
             serde_json::from_value::<TurnStartParams>(invalid).is_err(),
             "missing, blank, or unknown turn/start params must be rejected"
         );
+    }
+}
+
+#[test]
+fn thread_resume_returns_a_complete_snapshot() {
+    let response = ThreadResumeResponse {
+        thread: Thread {
+            id: "thr_0000000000000001".to_string(),
+        },
+        turns: vec![TurnSnapshot {
+            id: "turn_0000000000000001".to_string(),
+            status: TurnSnapshotStatus::Completed,
+            items: vec![Item::AgentMessage {
+                id: "item_0000000000000001".to_string(),
+                text: "SugarCode deterministic response.".to_string(),
+            }],
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("response serializes"),
+        json!({
+            "thread": {"id": "thr_0000000000000001"},
+            "turns": [{
+                "id": "turn_0000000000000001",
+                "status": "completed",
+                "items": [{
+                    "type": "agentMessage",
+                    "id": "item_0000000000000001",
+                    "text": "SugarCode deterministic response."
+                }]
+            }]
+        })
+    );
+}
+
+#[test]
+fn thread_resume_requires_a_canonical_thread_id() {
+    assert_eq!(
+        serde_json::from_value::<ThreadResumeParams>(json!({
+            "threadId": "thr_0000000000000001"
+        }))
+        .expect("valid params"),
+        ThreadResumeParams {
+            thread_id: "thr_0000000000000001".to_string()
+        }
+    );
+    for invalid in [
+        json!({}),
+        json!({"threadId": ""}),
+        json!({"threadId": "thr_missing"}),
+        json!({"threadId": "../thr_0000000000000001"}),
+        json!({"threadId": "thr_00000000000000001"}),
+        json!({"threadId": "thr_0000000000000001", "path": "/tmp"}),
+    ] {
+        assert!(serde_json::from_value::<ThreadResumeParams>(invalid).is_err());
     }
 }

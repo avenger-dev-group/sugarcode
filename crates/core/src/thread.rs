@@ -9,6 +9,12 @@ use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::ItemId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
+use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableThreadSnapshot;
+use sugarcode_state::DurableTurnSnapshot;
+use sugarcode_state::IdSequences;
+use sugarcode_state::RolloutError;
+use sugarcode_state::ThreadRepository;
 
 const DETERMINISTIC_AGENT_MESSAGE: &str = "SugarCode deterministic response.";
 
@@ -153,6 +159,7 @@ pub enum CoreError {
     },
     TurnNotInProgress(TurnId),
     ItemNotInProgress(ItemId),
+    StateUnavailable,
     Internal(String),
 }
 
@@ -176,6 +183,7 @@ impl fmt::Display for CoreError {
             Self::ItemNotInProgress(item_id) => {
                 write!(formatter, "item is not in progress: {item_id}")
             }
+            Self::StateUnavailable => formatter.write_str("durable state is unavailable"),
             Self::Internal(message) => formatter.write_str(message),
         }
     }
@@ -186,25 +194,37 @@ impl Error for CoreError {}
 pub trait CoreApi {
     fn start_thread(&mut self, request_id: CoreRequestId) -> Result<CoreEvent, CoreError>;
     fn contains_thread(&self, thread_id: &ThreadId) -> bool;
+    fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError>;
     fn start_turn(
         &mut self,
         request_id: CoreRequestId,
         thread_id: ThreadId,
     ) -> Result<Vec<CoreEvent>, CoreError>;
-    fn advance_active_turn(&mut self, thread_id: &ThreadId) -> Result<Vec<CoreEvent>, CoreError>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Core {
     threads: BTreeMap<ThreadId, Thread>,
     last_thread_sequence: u64,
     last_turn_sequence: u64,
     last_item_sequence: u64,
+    repository: Box<dyn ThreadRepository>,
 }
 
 impl Core {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_repository(Box::new(MemoryThreadRepository::default()))
+    }
+
+    pub fn with_repository(repository: Box<dyn ThreadRepository>) -> Self {
+        let sequences = repository.id_sequences();
+        Self {
+            threads: BTreeMap::new(),
+            last_thread_sequence: sequences.thread,
+            last_turn_sequence: sequences.turn,
+            last_item_sequence: sequences.item,
+            repository,
+        }
     }
 
     pub fn thread_count(&self) -> usize {
@@ -231,6 +251,12 @@ impl Core {
     }
 }
 
+impl Default for Core {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CoreApi for Core {
     fn start_thread(&mut self, request_id: CoreRequestId) -> Result<CoreEvent, CoreError> {
         let sequence = self
@@ -244,6 +270,9 @@ impl CoreApi for Core {
             active_turn_id: None,
         };
 
+        self.repository
+            .create_thread(&thread_id)
+            .map_err(map_repository_error)?;
         self.threads.insert(thread_id.clone(), thread);
         self.last_thread_sequence = sequence;
 
@@ -255,6 +284,48 @@ impl CoreApi for Core {
 
     fn contains_thread(&self, thread_id: &ThreadId) -> bool {
         Self::contains_thread(self, thread_id)
+    }
+
+    fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
+        if let Some(thread) = self.threads.get(thread_id) {
+            return Ok(durable_thread_snapshot(thread));
+        }
+        let snapshot = self
+            .repository
+            .load_thread(thread_id)
+            .map_err(map_repository_error)?
+            .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
+        let mut turns = BTreeMap::new();
+        for durable_turn in &snapshot.turns {
+            let mut items = BTreeMap::new();
+            for durable_item in &durable_turn.items {
+                let item = match durable_item {
+                    DurableItemSnapshot::AgentMessage { id, text } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::AgentMessage { text: text.clone() },
+                    },
+                };
+                items.insert(item.id.clone(), item);
+            }
+            let turn = Turn {
+                id: durable_turn.id.clone(),
+                request_id: CoreRequestId::new(0),
+                state: TurnState::Completed,
+                items,
+                active_item_id: None,
+            };
+            turns.insert(turn.id.clone(), turn);
+        }
+        self.threads.insert(
+            thread_id.clone(),
+            Thread {
+                id: thread_id.clone(),
+                turns,
+                active_turn_id: None,
+            },
+        );
+        Ok(snapshot)
     }
 
     fn start_turn(
@@ -290,13 +361,20 @@ impl CoreApi for Core {
         item.append_agent_message_delta(DETERMINISTIC_AGENT_MESSAGE)?;
         let delta = DETERMINISTIC_AGENT_MESSAGE.to_string();
         turn.add_item(item)?;
+        let item_completed = turn.complete_active_item_and_turn()?;
+        let durable_turn = DurableTurnSnapshot {
+            id: turn_id.clone(),
+            items: vec![durable_item_snapshot(&item_completed)],
+        };
+        self.repository
+            .append_completed_turn(&thread_id, &durable_turn)
+            .map_err(map_repository_error)?;
 
-        let thread = self
-            .threads
+        self.threads
             .get_mut(&thread_id)
-            .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
-        thread.active_turn_id = Some(turn_id.clone());
-        thread.turns.insert(turn_id.clone(), turn);
+            .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?
+            .turns
+            .insert(turn_id.clone(), turn);
         self.last_turn_sequence = turn_sequence;
         self.last_item_sequence = item_sequence;
 
@@ -325,27 +403,6 @@ impl CoreApi for Core {
                     delta,
                 },
             },
-        ])
-    }
-
-    fn advance_active_turn(&mut self, thread_id: &ThreadId) -> Result<Vec<CoreEvent>, CoreError> {
-        let thread = self
-            .threads
-            .get_mut(thread_id)
-            .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
-        let turn_id = thread
-            .active_turn_id
-            .clone()
-            .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
-        let turn = thread
-            .turns
-            .get_mut(&turn_id)
-            .ok_or_else(|| CoreError::Internal("active turn is missing".to_string()))?;
-        let request_id = turn.request_id;
-        let item_completed = turn.complete_active_item_and_turn()?;
-        thread.active_turn_id = None;
-
-        Ok(vec![
             CoreEvent {
                 request_id,
                 kind: CoreEventKind::ItemCompleted {
@@ -362,6 +419,101 @@ impl CoreApi for Core {
                 },
             },
         ])
+    }
+}
+
+fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnapshot {
+    match &item.kind {
+        CoreItemKind::AgentMessage { text } => DurableItemSnapshot::AgentMessage {
+            id: item.id.clone(),
+            text: text.clone(),
+        },
+    }
+}
+
+fn durable_thread_snapshot(thread: &Thread) -> DurableThreadSnapshot {
+    DurableThreadSnapshot {
+        id: thread.id.clone(),
+        turns: thread
+            .turns
+            .values()
+            .map(|turn| DurableTurnSnapshot {
+                id: turn.id.clone(),
+                items: turn
+                    .items
+                    .values()
+                    .map(|item| durable_item_snapshot(&item.snapshot()))
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+fn map_repository_error(_error: RolloutError) -> CoreError {
+    CoreError::StateUnavailable
+}
+
+#[derive(Debug, Default)]
+struct MemoryThreadRepository {
+    threads: BTreeMap<ThreadId, DurableThreadSnapshot>,
+    sequences: IdSequences,
+}
+
+impl ThreadRepository for MemoryThreadRepository {
+    fn id_sequences(&self) -> IdSequences {
+        self.sequences
+    }
+
+    fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+        let sequence = thread_id
+            .as_str()
+            .strip_prefix("thr_")
+            .and_then(|digits| digits.parse::<u64>().ok())
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if self.threads.contains_key(thread_id) {
+            return Err(RolloutError::Collision { kind: "thread" });
+        }
+        self.threads.insert(
+            thread_id.clone(),
+            DurableThreadSnapshot {
+                id: thread_id.clone(),
+                turns: Vec::new(),
+            },
+        );
+        self.sequences.thread = sequence;
+        Ok(())
+    }
+
+    fn append_completed_turn(
+        &mut self,
+        thread_id: &ThreadId,
+        turn: &DurableTurnSnapshot,
+    ) -> Result<(), RolloutError> {
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        thread.turns.push(turn.clone());
+        self.sequences.turn = turn
+            .id
+            .as_str()
+            .strip_prefix("turn_")
+            .and_then(|digits| digits.parse().ok())
+            .ok_or(RolloutError::InvalidId { kind: "turn" })?;
+        self.sequences.item = turn
+            .items
+            .last()
+            .and_then(|item| item.id().as_str().strip_prefix("item_"))
+            .and_then(|digits| digits.parse().ok())
+            .ok_or(RolloutError::InvalidId { kind: "item" })?;
+        Ok(())
+    }
+
+    fn load_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<DurableThreadSnapshot>, RolloutError> {
+        Ok(self.threads.get(thread_id).cloned())
     }
 }
 
@@ -402,29 +554,25 @@ mod tests {
     }
 
     #[test]
-    fn splits_deterministic_agent_message_lifecycle_at_an_active_turn_boundary() {
+    fn commits_a_complete_deterministic_agent_message_lifecycle() {
         let mut core = Core::new();
         let thread_id = start_thread(&mut core, 1);
         let request_id = CoreRequestId::new(2);
 
-        let started_events = core
+        let events = core
             .start_turn(request_id, thread_id.clone())
             .expect("turn starts");
 
-        assert_eq!(started_events.len(), 3);
-        assert!(
-            started_events
-                .iter()
-                .all(|event| event.request_id == request_id)
-        );
-        let turn_id = turn_id(&started_events);
+        assert_eq!(events.len(), 5);
+        assert!(events.iter().all(|event| event.request_id == request_id));
+        let turn_id = turn_id(&events);
         assert_eq!(turn_id.as_str(), "turn_0000000000000001");
 
         let CoreEventKind::ItemStarted {
             thread_id: started_thread_id,
             turn_id: started_turn_id,
             item: started_item,
-        } = &started_events[1].kind
+        } = &events[1].kind
         else {
             panic!("expected item started second");
         };
@@ -443,7 +591,7 @@ mod tests {
             turn_id: delta_turn_id,
             item_id,
             delta,
-        } = &started_events[2].kind
+        } = &events[2].kind
         else {
             panic!("expected agent message delta third");
         };
@@ -452,33 +600,11 @@ mod tests {
         assert_eq!(item_id, &started_item.id);
         assert_eq!(delta, DETERMINISTIC_AGENT_MESSAGE);
 
-        assert!(core.contains_turn(&thread_id, &turn_id));
-        let stored_turn = &core.threads[&thread_id].turns[&turn_id];
-        assert_eq!(stored_turn.state, TurnState::InProgress);
-        assert_eq!(
-            stored_turn.items[&started_item.id].state,
-            ItemState::InProgress
-        );
-        assert_eq!(
-            core.threads[&thread_id].active_turn_id.as_ref(),
-            Some(&turn_id)
-        );
-
-        let completed_events = core
-            .advance_active_turn(&thread_id)
-            .expect("active turn completes");
-        assert_eq!(completed_events.len(), 2);
-        assert!(
-            completed_events
-                .iter()
-                .all(|event| event.request_id == request_id)
-        );
-
         let CoreEventKind::ItemCompleted {
             thread_id: completed_thread_id,
             turn_id: completed_turn_id,
             item: completed_item,
-        } = &completed_events[0].kind
+        } = &events[3].kind
         else {
             panic!("expected item completed first");
         };
@@ -493,7 +619,7 @@ mod tests {
         );
 
         assert_eq!(
-            completed_events[1].kind,
+            events[4].kind,
             CoreEventKind::TurnCompleted {
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone()
@@ -517,18 +643,12 @@ mod tests {
         let first = core
             .start_turn(CoreRequestId::new(3), first_thread_id.clone())
             .expect("first turn starts");
-        core.advance_active_turn(&first_thread_id)
-            .expect("first turn completes");
         let second = core
             .start_turn(CoreRequestId::new(4), first_thread_id.clone())
             .expect("second turn starts");
-        core.advance_active_turn(&first_thread_id)
-            .expect("second turn completes");
         let third = core
             .start_turn(CoreRequestId::new(5), second_thread_id.clone())
             .expect("third turn starts");
-        core.advance_active_turn(&second_thread_id)
-            .expect("third turn completes");
 
         assert_eq!(turn_id(&first).as_str(), "turn_0000000000000001");
         assert_eq!(turn_id(&second).as_str(), "turn_0000000000000002");
@@ -555,21 +675,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_another_turn_while_the_thread_has_an_active_turn() {
+    fn consecutive_turns_are_allowed_after_each_durable_completion() {
         let mut core = Core::new();
         let thread_id = start_thread(&mut core, 1);
-        let started = core
+        let first = core
             .start_turn(CoreRequestId::new(2), thread_id.clone())
             .expect("turn starts");
-        let active_turn_id = turn_id(&started);
-
-        assert_eq!(
-            core.start_turn(CoreRequestId::new(3), thread_id.clone()),
-            Err(CoreError::TurnAlreadyActive {
-                thread_id,
-                turn_id: active_turn_id
-            })
-        );
+        let second = core
+            .start_turn(CoreRequestId::new(3), thread_id)
+            .expect("next turn starts");
+        assert_eq!(turn_id(&first).as_str(), "turn_0000000000000001");
+        assert_eq!(turn_id(&second).as_str(), "turn_0000000000000002");
     }
 
     #[test]
@@ -640,27 +756,97 @@ mod tests {
     }
 
     #[test]
-    fn advance_requires_an_existing_thread_with_an_active_turn() {
+    fn resumes_a_persisted_completed_history() {
         let mut core = Core::new();
-        let missing_thread_id = ThreadId::new("thr_missing");
-        assert_eq!(
-            core.advance_active_turn(&missing_thread_id),
-            Err(CoreError::ThreadNotFound(missing_thread_id))
-        );
-
         let thread_id = start_thread(&mut core, 1);
-        assert_eq!(
-            core.advance_active_turn(&thread_id),
-            Err(CoreError::NoActiveTurn(thread_id.clone()))
-        );
-
         core.start_turn(CoreRequestId::new(2), thread_id.clone())
             .expect("turn starts");
-        core.advance_active_turn(&thread_id)
-            .expect("turn completes");
+        let snapshot = core
+            .resume_thread(&thread_id)
+            .expect("resume loaded thread");
+        assert_eq!(snapshot.id, thread_id);
+        assert_eq!(snapshot.turns.len(), 1);
+        assert_eq!(snapshot.turns[0].id.as_str(), "turn_0000000000000001");
+    }
+
+    #[test]
+    fn failed_thread_write_does_not_commit_memory_or_advance_ids() {
+        let mut core = Core::with_repository(Box::new(FailingRepository {
+            fail_create: true,
+            fail_append: false,
+            ..Default::default()
+        }));
+
         assert_eq!(
-            core.advance_active_turn(&thread_id),
-            Err(CoreError::NoActiveTurn(thread_id))
+            core.start_thread(CoreRequestId::new(1)),
+            Err(CoreError::StateUnavailable)
         );
+        assert_eq!(core.thread_count(), 0);
+        assert_eq!(core.last_thread_sequence, 0);
+    }
+
+    #[test]
+    fn failed_turn_write_does_not_commit_memory_or_advance_ids() {
+        let mut core = Core::with_repository(Box::new(FailingRepository {
+            fail_create: false,
+            fail_append: true,
+            ..Default::default()
+        }));
+        let thread_id = start_thread(&mut core, 1);
+
+        assert_eq!(
+            core.start_turn(CoreRequestId::new(2), thread_id.clone()),
+            Err(CoreError::StateUnavailable)
+        );
+        assert_eq!(core.turn_count(&thread_id), 0);
+        assert_eq!(core.last_turn_sequence, 0);
+        assert_eq!(core.last_item_sequence, 0);
+    }
+
+    #[derive(Debug, Default)]
+    struct FailingRepository {
+        fail_create: bool,
+        fail_append: bool,
+        threads: BTreeMap<ThreadId, DurableThreadSnapshot>,
+        sequences: IdSequences,
+    }
+
+    impl ThreadRepository for FailingRepository {
+        fn id_sequences(&self) -> IdSequences {
+            self.sequences
+        }
+
+        fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+            if self.fail_create {
+                return Err(RolloutError::Poisoned);
+            }
+            self.threads.insert(
+                thread_id.clone(),
+                DurableThreadSnapshot {
+                    id: thread_id.clone(),
+                    turns: Vec::new(),
+                },
+            );
+            Ok(())
+        }
+
+        fn append_completed_turn(
+            &mut self,
+            _thread_id: &ThreadId,
+            _turn: &DurableTurnSnapshot,
+        ) -> Result<(), RolloutError> {
+            if self.fail_append {
+                Err(RolloutError::Poisoned)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn load_thread(
+            &self,
+            thread_id: &ThreadId,
+        ) -> Result<Option<DurableThreadSnapshot>, RolloutError> {
+            Ok(self.threads.get(thread_id).cloned())
+        }
     }
 }

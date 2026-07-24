@@ -442,6 +442,7 @@ dependencies = [
  "sugarcode-app-server-protocol",
  "sugarcode-core",
  "sugarcode-protocol",
+ "sugarcode-state",
  "tokio",
 ]
 
@@ -474,6 +475,7 @@ name = "sugarcode-core"
 version = "1.0.0"
 dependencies = [
  "sugarcode-protocol",
+ "sugarcode-state",
 ]
 
 [[package]]
@@ -485,6 +487,9 @@ name = "sugarcode-state"
 version = "1.0.0"
 dependencies = [
  "dirs",
+ "serde",
+ "serde_json",
+ "sugarcode-protocol",
  "tempfile",
  "toml",
 ]

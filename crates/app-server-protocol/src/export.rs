@@ -18,11 +18,15 @@ use crate::RequestId;
 use crate::ServerCapabilities;
 use crate::ServerInfo;
 use crate::Thread;
+use crate::ThreadResumeParams;
+use crate::ThreadResumeResponse;
 use crate::ThreadStartParams;
 use crate::ThreadStartResponse;
 use crate::ThreadStartedNotification;
 use crate::Turn;
 use crate::TurnCompletedNotification;
+use crate::TurnSnapshot;
+use crate::TurnSnapshotStatus;
 use crate::TurnStartParams;
 use crate::TurnStartResponse;
 use crate::TurnStartedNotification;
@@ -62,6 +66,10 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         ThreadStartParams::decl(),
         ThreadStartResponse::decl(),
         ThreadStartedNotification::decl(),
+        ThreadResumeParams::decl(),
+        TurnSnapshotStatus::decl(),
+        TurnSnapshot::decl(),
+        ThreadResumeResponse::decl(),
         Turn::decl(),
         TurnStatus::decl(),
         TurnStartParams::decl(),
@@ -138,6 +146,22 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("ThreadStartedNotification.schema.json"),
         &schema_for!(ThreadStartedNotification),
+    )?;
+    write_schema(
+        out_dir.join("ThreadResumeParams.schema.json"),
+        &schema_for!(ThreadResumeParams),
+    )?;
+    write_schema(
+        out_dir.join("TurnSnapshotStatus.schema.json"),
+        &schema_for!(TurnSnapshotStatus),
+    )?;
+    write_schema(
+        out_dir.join("TurnSnapshot.schema.json"),
+        &schema_for!(TurnSnapshot),
+    )?;
+    write_schema(
+        out_dir.join("ThreadResumeResponse.schema.json"),
+        &schema_for!(ThreadResumeResponse),
     )?;
     write_schema(out_dir.join("Turn.schema.json"), &schema_for!(Turn))?;
     write_schema(

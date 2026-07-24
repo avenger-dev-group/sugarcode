@@ -10,4 +10,5 @@ serde_json.workspace = true
 sugarcode-app-server-protocol = { path = "../app-server-protocol" }
 sugarcode-core = { path = "../core" }
 sugarcode-protocol = { path = "../protocol" }
+sugarcode-state = { path = "../state" }
 tokio.workspace = true

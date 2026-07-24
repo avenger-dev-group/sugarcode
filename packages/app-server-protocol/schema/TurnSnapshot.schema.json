@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TurnSnapshot",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Item"
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/TurnSnapshotStatus"
+    }
+  },
+  "required": [
+    "id",
+    "status",
+    "items"
+  ],
+  "$defs": {
+    "Item": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "agentMessage"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "text"
+          ]
+        }
+      ]
+    },
+    "TurnSnapshotStatus": {
+      "type": "string",
+      "enum": [
+        "completed"
+      ]
+    }
+  }
+}

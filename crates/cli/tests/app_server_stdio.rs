@@ -36,6 +36,11 @@ fn turn_start_failures_match_golden_trace() {
     assert_golden("turn-start-errors");
 }
 
+#[test]
+fn thread_resume_failures_match_golden_trace() {
+    assert_golden("thread-resume-errors");
+}
+
 fn assert_golden(name: &str) {
     let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
     let fixture_root =
