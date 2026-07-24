@@ -9,6 +9,11 @@ import type { ConnectionStateListener } from '@/shared/connection';
 
 import { useStore } from '../use-store';
 
+Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+  configurable: true,
+  value: true,
+});
+
 const boundary = vi.hoisted(() => ({
   getConnectionState: vi.fn(),
   onConnectionStateChanged: vi.fn(),

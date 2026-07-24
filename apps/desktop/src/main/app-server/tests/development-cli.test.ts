@@ -11,7 +11,9 @@ import {
 
 const temporaryRoots: string[] = [];
 
-const createWorkspace = async (): Promise<{
+const createWorkspace = async (
+  platform: NodeJS.Platform = process.platform,
+): Promise<{
   desktopAppPath: string;
   executablePath: string;
   repositoryRoot: string;
@@ -21,11 +23,12 @@ const createWorkspace = async (): Promise<{
   );
   temporaryRoots.push(repositoryRoot);
   const desktopAppPath = path.join(repositoryRoot, 'apps', 'desktop');
+  const executableName = platform === 'win32' ? 'sugarcode.exe' : 'sugarcode';
   const executablePath = path.join(
     repositoryRoot,
     'target',
     'debug',
-    'sugarcode',
+    executableName,
   );
   await Promise.all([
     mkdir(desktopAppPath, { recursive: true }),
@@ -54,28 +57,39 @@ describe('resolveDevelopmentCli', () => {
     const workspace = await createWorkspace();
 
     await expect(
-      resolveDevelopmentCli(workspace.desktopAppPath, 'darwin'),
+      resolveDevelopmentCli(workspace.desktopAppPath, process.platform),
     ).resolves.toEqual({
       executablePath: workspace.executablePath,
       repositoryRoot: workspace.repositoryRoot,
     });
   });
 
-  it('fails explicitly when the CLI is missing or not executable', async () => {
+  it('fails explicitly when the CLI is missing', async () => {
     const workspace = await createWorkspace();
-    await chmod(workspace.executablePath, 0o644);
 
     await expect(
-      resolveDevelopmentCli(workspace.desktopAppPath, 'linux'),
-    ).rejects.toMatchObject({
-      code: 'development-cli-not-executable',
-    });
-    await expect(
-      resolveDevelopmentCli(path.join(workspace.repositoryRoot, 'missing')),
+      resolveDevelopmentCli(
+        path.join(workspace.repositoryRoot, 'missing'),
+        process.platform,
+      ),
     ).rejects.toMatchObject({
       code: 'development-cli-missing',
     });
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'fails explicitly when the CLI is not executable on POSIX',
+    async () => {
+      const workspace = await createWorkspace();
+      await chmod(workspace.executablePath, 0o644);
+
+      await expect(
+        resolveDevelopmentCli(workspace.desktopAppPath, process.platform),
+      ).rejects.toMatchObject({
+        code: 'development-cli-not-executable',
+      });
+    },
+  );
 });
 
 describe('createDevelopmentCliEnvironment', () => {
