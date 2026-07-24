@@ -1,5 +1,6 @@
 use serde_json::Value;
 use serde_json::json;
+use std::fs;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
@@ -71,7 +72,12 @@ impl RunningServer {
         self.send(json!({"jsonrpc": "2.0", "method": "initialized"}), 0);
     }
 
-    fn finish(mut self) {
+    fn finish(self) {
+        let stderr = self.finish_with_diagnostics();
+        assert!(stderr.is_empty(), "unexpected diagnostics: {stderr}");
+    }
+
+    fn finish_with_diagnostics(mut self) -> String {
         drop(self.stdin);
         let mut remaining_stdout = String::new();
         self.stdout
@@ -87,7 +93,7 @@ impl RunningServer {
             .read_to_string(&mut stderr)
             .expect("read stderr");
         assert!(status.success(), "app-server failed: {status:?}: {stderr}");
-        assert!(stderr.is_empty(), "unexpected diagnostics: {stderr}");
+        stderr
     }
 }
 
@@ -122,9 +128,22 @@ fn resumes_completed_history_across_two_cli_processes() {
     let completed_turn = turn_messages[5]["params"]["turn"].clone();
     let completed_item = turn_messages[4]["params"]["item"].clone();
     first.finish();
+    fs::remove_file(home.path().join("projections/v1/thread-discovery.sqlite3"))
+        .expect("remove disposable projection");
 
     let mut second = RunningServer::spawn(home.path());
     second.initialize();
+    let listed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "list-1",
+            "method": "thread/list",
+            "params": {}
+        }),
+        1,
+    );
+    assert_eq!(listed[0]["result"]["data"], json!([{"id": thread_id}]));
+    assert_eq!(listed[0]["result"]["nextCursor"], Value::Null);
     let resumed = second.send(
         json!({
             "jsonrpc": "2.0",
@@ -160,6 +179,68 @@ fn resumes_completed_history_across_two_cli_processes() {
         "item_0000000000000002"
     );
     second.finish();
+}
+
+#[test]
+fn rebuilds_an_invalid_projection_then_lists_and_resumes_without_leaking_contents() {
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let mut first = RunningServer::spawn(home.path());
+    first.initialize();
+    let started = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "thread-1",
+            "method": "thread/start"
+        }),
+        2,
+    );
+    let thread_id = started[0]["result"]["thread"]["id"]
+        .as_str()
+        .expect("thread id")
+        .to_string();
+    let lifecycle = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn-1",
+            "method": "turn/start",
+            "params": {"threadId": thread_id}
+        }),
+        6,
+    );
+    let expected_item = lifecycle[4]["params"]["item"].clone();
+    first.finish();
+
+    let projection = home.path().join("projections/v1/thread-discovery.sqlite3");
+    let sentinel = "projection-secret-must-not-leak";
+    fs::write(&projection, sentinel).expect("replace projection with invalid header");
+
+    let mut second = RunningServer::spawn(home.path());
+    second.initialize();
+    let listed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "list",
+            "method": "thread/list"
+        }),
+        1,
+    );
+    assert_eq!(listed[0]["result"]["data"], json!([{"id": thread_id}]));
+    let resumed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "resume",
+            "method": "thread/resume",
+            "params": {"threadId": thread_id}
+        }),
+        1,
+    );
+    assert_eq!(resumed[0]["result"]["turns"][0]["items"][0], expected_item);
+    let stderr = second.finish_with_diagnostics();
+    assert!(stderr.contains("thread-discovery.sqlite3"));
+    assert!(stderr.contains("thread discovery rebuild"));
+    assert!(stderr.contains("invalidHeaderRecovered"));
+    assert!(!stderr.contains(sentinel));
+    assert!(!stderr.contains("SugarCode deterministic response."));
 }
 
 #[test]

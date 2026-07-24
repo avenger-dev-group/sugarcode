@@ -1,3 +1,4 @@
+use super::DurableThreadPage;
 use super::DurableThreadSnapshot;
 use super::DurableTurnSnapshot;
 use super::IdSequences;
@@ -18,6 +19,7 @@ use super::replay::sync_parent;
 use super::replay::unavailable;
 use crate::HomeSource;
 use crate::SugarCodeHome;
+use crate::thread_discovery::ThreadDiscoveryProjection;
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::File;
@@ -41,6 +43,7 @@ pub struct RolloutRepository {
     diagnostics: Vec<RolloutDiagnostic>,
     total_bytes: u64,
     total_records: usize,
+    projection: ThreadDiscoveryProjection,
     poisoned: bool,
 }
 
@@ -62,6 +65,8 @@ impl RolloutRepository {
             }
         }
         let replay = replay_all(&root)?;
+        let projection =
+            ThreadDiscoveryProjection::open(home, &replay.threads, replay.record_count)?;
         Ok(Self {
             root,
             _writer_lock: writer_lock,
@@ -70,12 +75,17 @@ impl RolloutRepository {
             diagnostics: replay.diagnostics,
             total_bytes: replay.retained_bytes,
             total_records: replay.record_count,
+            projection,
             poisoned: false,
         })
     }
 
     pub fn diagnostics(&self) -> &[RolloutDiagnostic] {
         &self.diagnostics
+    }
+
+    pub fn projection_diagnostics(&self) -> &[super::ProjectionDiagnostic] {
+        self.projection.diagnostics()
     }
 
     fn ensure_available(&self) -> Result<(), RolloutError> {
@@ -217,6 +227,7 @@ impl ThreadRepository for RolloutRepository {
             },
         );
         self.sequences.thread = thread_sequence;
+        let _ = self.projection.record_thread_created(thread_id);
         Ok(())
     }
 
@@ -265,6 +276,9 @@ impl ThreadRepository for RolloutRepository {
             .push(turn.clone());
         self.sequences.turn = turn_sequence;
         self.sequences.item = item_sequence;
+        let _ = self
+            .projection
+            .record_turn_completed(thread_id, record_sequence);
         Ok(())
     }
 
@@ -275,6 +289,16 @@ impl ThreadRepository for RolloutRepository {
         self.ensure_available()?;
         parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
         Ok(self.threads.get(thread_id).cloned())
+    }
+
+    fn list_threads(
+        &mut self,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, RolloutError> {
+        self.ensure_available()?;
+        self.projection
+            .list_threads(&self.threads, self.total_records, cursor, limit)
     }
 }
 

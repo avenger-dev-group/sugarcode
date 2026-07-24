@@ -18,6 +18,8 @@ use crate::RequestId;
 use crate::ServerCapabilities;
 use crate::ServerInfo;
 use crate::Thread;
+use crate::ThreadListParams;
+use crate::ThreadListResponse;
 use crate::ThreadResumeParams;
 use crate::ThreadResumeResponse;
 use crate::ThreadStartParams;
@@ -63,6 +65,8 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         AgentMessageDeltaNotification::decl(),
         ItemCompletedNotification::decl(),
         Thread::decl(),
+        ThreadListParams::decl(),
+        ThreadListResponse::decl(),
         ThreadStartParams::decl(),
         ThreadStartResponse::decl(),
         ThreadStartedNotification::decl(),
@@ -135,6 +139,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
         &schema_for!(ItemCompletedNotification),
     )?;
     write_schema(out_dir.join("Thread.schema.json"), &schema_for!(Thread))?;
+    write_schema(
+        out_dir.join("ThreadListParams.schema.json"),
+        &schema_for!(ThreadListParams),
+    )?;
+    write_schema(
+        out_dir.join("ThreadListResponse.schema.json"),
+        &schema_for!(ThreadListResponse),
+    )?;
     write_schema(
         out_dir.join("ThreadStartParams.schema.json"),
         &schema_for!(ThreadStartParams),

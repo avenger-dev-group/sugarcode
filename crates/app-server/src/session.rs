@@ -3,6 +3,7 @@ use crate::event_mapping::map_turn_lifecycle;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashSet;
+use sugarcode_app_server_protocol::DEFAULT_THREAD_LIST_LIMIT;
 use sugarcode_app_server_protocol::ERROR_ALREADY_INITIALIZED;
 use sugarcode_app_server_protocol::ERROR_DUPLICATE_REQUEST;
 use sugarcode_app_server_protocol::ERROR_INTERNAL;
@@ -29,6 +30,8 @@ use sugarcode_app_server_protocol::SUGARCODE_PRODUCT_VERSION;
 use sugarcode_app_server_protocol::ServerCapabilities;
 use sugarcode_app_server_protocol::ServerInfo;
 use sugarcode_app_server_protocol::Thread as PublicThread;
+use sugarcode_app_server_protocol::ThreadListParams;
+use sugarcode_app_server_protocol::ThreadListResponse;
 use sugarcode_app_server_protocol::ThreadResumeParams;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
@@ -155,6 +158,20 @@ where
                     )];
                 }
                 self.start_thread(id, object.get("params").cloned())
+            }
+            "thread/list" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.list_threads(id, object.get("params").cloned())
             }
             "thread/resume" => {
                 let Some(id) = request_id else {
@@ -387,6 +404,64 @@ where
             jsonrpc: JsonRpcVersion::V2,
             id,
             result: serde_json::to_value(response).expect("thread/resume response must serialize"),
+        })]
+    }
+
+    fn list_threads(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
+        let params = match params {
+            Some(value) => match serde_json::from_value::<ThreadListParams>(value) {
+                Ok(params) => params,
+                Err(_) => {
+                    return vec![error(
+                        Some(id),
+                        ERROR_INVALID_PARAMS,
+                        "Invalid params",
+                        None,
+                    )];
+                }
+            },
+            None => ThreadListParams::default(),
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+
+        let cursor = params.cursor.as_deref().map(ThreadId::new);
+        let limit = params.limit.unwrap_or(DEFAULT_THREAD_LIST_LIMIT) as usize;
+        let page = match self.core.list_threads(cursor.as_ref(), limit) {
+            Ok(page) => page,
+            Err(CoreError::StateUnavailable) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )];
+            }
+            Err(_) => {
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
+        self.accepted_request_ids.insert(id.clone());
+        let response = ThreadListResponse {
+            data: page
+                .data
+                .into_iter()
+                .map(|summary| PublicThread {
+                    id: summary.id.into_string(),
+                })
+                .collect(),
+            next_cursor: page.next_cursor.map(ThreadId::into_string),
+        };
+        vec![JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: JsonRpcVersion::V2,
+            id,
+            result: serde_json::to_value(response).expect("thread/list response must serialize"),
         })]
     }
 
@@ -1029,6 +1104,78 @@ mod tests {
             .expect("response thread id")
     }
 
+    #[test]
+    fn thread_list_is_descending_bounded_and_cursor_paginated() {
+        let mut session = ready_session(Core::new());
+        for id in ["start-1", "start-2", "start-3"] {
+            let messages = session.process_line(&format!(
+                r#"{{"jsonrpc":"2.0","id":"{id}","method":"thread/start","params":{{}}}}"#
+            ));
+            assert_eq!(messages.len(), 2);
+        }
+
+        let first = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"list-1","method":"thread/list","params":{"limit":2}}"#,
+        );
+        let JsonRpcMessage::Response(first) = &first[0] else {
+            panic!("expected list response");
+        };
+        assert_eq!(
+            first.result,
+            json!({
+                "data": [
+                    {"id": "thr_0000000000000003"},
+                    {"id": "thr_0000000000000002"}
+                ],
+                "nextCursor": "thr_0000000000000002"
+            })
+        );
+
+        let second = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"list-2","method":"thread/list","params":{"cursor":"thr_0000000000000002","limit":2}}"#,
+        );
+        let JsonRpcMessage::Response(second) = &second[0] else {
+            panic!("expected second list response");
+        };
+        assert_eq!(
+            second.result,
+            json!({
+                "data": [{"id": "thr_0000000000000001"}],
+                "nextCursor": null
+            })
+        );
+    }
+
+    #[test]
+    fn thread_list_rejects_invalid_params_and_maps_state_failure() {
+        let mut session = ready_session(Core::new());
+        for (index, params) in [
+            r#"{"limit":0}"#,
+            r#"{"limit":101}"#,
+            r#"{"cursor":"thr_missing"}"#,
+            r#"{"search":"later"}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let messages = session.process_line(&format!(
+                r#"{{"jsonrpc":"2.0","id":"invalid-{index}","method":"thread/list","params":{params}}}"#
+            ));
+            let JsonRpcMessage::Error(error) = &messages[0] else {
+                panic!("expected invalid params");
+            };
+            assert_eq!(error.error.code, ERROR_INVALID_PARAMS);
+        }
+
+        let mut unavailable = ready_session(StateUnavailableCore);
+        let messages =
+            unavailable.process_line(r#"{"jsonrpc":"2.0","id":"list","method":"thread/list"}"#);
+        let JsonRpcMessage::Error(error) = &messages[0] else {
+            panic!("expected state error");
+        };
+        assert_eq!(error.error.code, ERROR_STATE_UNAVAILABLE);
+    }
+
     fn response_turn_id(messages: &[JsonRpcMessage]) -> &str {
         let JsonRpcMessage::Response(response) = &messages[0] else {
             panic!("expected response first");
@@ -1064,6 +1211,17 @@ mod tests {
             false
         }
 
+        fn list_threads(
+            &mut self,
+            _cursor: Option<&ThreadId>,
+            _limit: usize,
+        ) -> Result<sugarcode_state::DurableThreadPage, CoreError> {
+            Ok(sugarcode_state::DurableThreadPage {
+                data: Vec::new(),
+                next_cursor: None,
+            })
+        }
+
         fn resume_thread(
             &mut self,
             thread_id: &ThreadId,
@@ -1096,6 +1254,17 @@ mod tests {
             false
         }
 
+        fn list_threads(
+            &mut self,
+            _cursor: Option<&ThreadId>,
+            _limit: usize,
+        ) -> Result<sugarcode_state::DurableThreadPage, CoreError> {
+            Ok(sugarcode_state::DurableThreadPage {
+                data: Vec::new(),
+                next_cursor: None,
+            })
+        }
+
         fn resume_thread(
             &mut self,
             thread_id: &ThreadId,
@@ -1121,6 +1290,14 @@ mod tests {
 
         fn contains_thread(&self, _thread_id: &ThreadId) -> bool {
             true
+        }
+
+        fn list_threads(
+            &mut self,
+            _cursor: Option<&ThreadId>,
+            _limit: usize,
+        ) -> Result<sugarcode_state::DurableThreadPage, CoreError> {
+            Err(CoreError::StateUnavailable)
         }
 
         fn resume_thread(
@@ -1171,6 +1348,17 @@ mod tests {
 
         fn contains_thread(&self, thread_id: &ThreadId) -> bool {
             thread_id.as_str() == "thr_existing"
+        }
+
+        fn list_threads(
+            &mut self,
+            _cursor: Option<&ThreadId>,
+            _limit: usize,
+        ) -> Result<sugarcode_state::DurableThreadPage, CoreError> {
+            Ok(sugarcode_state::DurableThreadPage {
+                data: Vec::new(),
+                next_cursor: None,
+            })
         }
 
         fn resume_thread(

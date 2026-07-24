@@ -10,6 +10,8 @@ use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::RequestId;
 use sugarcode_app_server_protocol::Thread;
+use sugarcode_app_server_protocol::ThreadListParams;
+use sugarcode_app_server_protocol::ThreadListResponse;
 use sugarcode_app_server_protocol::ThreadResumeParams;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
 use sugarcode_app_server_protocol::ThreadStartParams;
@@ -103,6 +105,52 @@ fn thread_start_params_accept_only_an_empty_object() {
             "non-empty or non-object params must be rejected"
         );
     }
+}
+
+#[test]
+fn thread_list_params_are_bounded_and_canonical() {
+    assert_eq!(
+        serde_json::from_value::<ThreadListParams>(json!({})).expect("defaults"),
+        ThreadListParams::default()
+    );
+    assert_eq!(
+        serde_json::from_value::<ThreadListParams>(json!({
+            "cursor": "thr_0000000000000009",
+            "limit": 25
+        }))
+        .expect("valid page"),
+        ThreadListParams {
+            cursor: Some("thr_0000000000000009".to_string()),
+            limit: Some(25),
+        }
+    );
+    for invalid in [
+        json!(null),
+        json!([]),
+        json!({"limit": 0}),
+        json!({"limit": 101}),
+        json!({"cursor": "thr_missing"}),
+        json!({"cursor": "thr_0000000000000009", "search": "later"}),
+    ] {
+        assert!(serde_json::from_value::<ThreadListParams>(invalid).is_err());
+    }
+}
+
+#[test]
+fn thread_list_response_contains_only_durable_identity_and_cursor() {
+    assert_eq!(
+        serde_json::to_value(ThreadListResponse {
+            data: vec![Thread {
+                id: "thr_0000000000000010".to_string(),
+            }],
+            next_cursor: Some("thr_0000000000000010".to_string()),
+        })
+        .expect("response serializes"),
+        json!({
+            "data": [{"id": "thr_0000000000000010"}],
+            "nextCursor": "thr_0000000000000010"
+        })
+    );
 }
 
 #[test]

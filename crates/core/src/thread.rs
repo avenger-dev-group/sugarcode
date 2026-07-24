@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -10,7 +11,9 @@ use sugarcode_protocol::ItemId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
 use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableThreadPage;
 use sugarcode_state::DurableThreadSnapshot;
+use sugarcode_state::DurableThreadSummary;
 use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::IdSequences;
 use sugarcode_state::RolloutError;
@@ -194,6 +197,11 @@ impl Error for CoreError {}
 pub trait CoreApi {
     fn start_thread(&mut self, request_id: CoreRequestId) -> Result<CoreEvent, CoreError>;
     fn contains_thread(&self, thread_id: &ThreadId) -> bool;
+    fn list_threads(
+        &mut self,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, CoreError>;
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError>;
     fn start_turn(
         &mut self,
@@ -284,6 +292,16 @@ impl CoreApi for Core {
 
     fn contains_thread(&self, thread_id: &ThreadId) -> bool {
         Self::contains_thread(self, thread_id)
+    }
+
+    fn list_threads(
+        &mut self,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, CoreError> {
+        self.repository
+            .list_threads(cursor, limit)
+            .map_err(map_repository_error)
     }
 
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
@@ -515,6 +533,44 @@ impl ThreadRepository for MemoryThreadRepository {
     ) -> Result<Option<DurableThreadSnapshot>, RolloutError> {
         Ok(self.threads.get(thread_id).cloned())
     }
+
+    fn list_threads(
+        &mut self,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, RolloutError> {
+        let cursor_sequence = cursor.map(parse_thread_sequence).transpose()?;
+        let mut threads = self
+            .threads
+            .keys()
+            .map(|id| Ok((parse_thread_sequence(id)?, id.clone())))
+            .collect::<Result<Vec<_>, RolloutError>>()?;
+        threads.sort_unstable_by_key(|thread| Reverse(thread.0));
+        let mut ids = threads
+            .into_iter()
+            .filter(|(sequence, _)| cursor_sequence.is_none_or(|cursor| *sequence < cursor))
+            .map(|(_, id)| id)
+            .take(limit + 1)
+            .collect::<Vec<_>>();
+        let has_more = ids.len() > limit;
+        ids.truncate(limit);
+        Ok(DurableThreadPage {
+            next_cursor: has_more.then(|| ids.last().cloned()).flatten(),
+            data: ids
+                .into_iter()
+                .map(|id| DurableThreadSummary { id })
+                .collect(),
+        })
+    }
+}
+
+fn parse_thread_sequence(thread_id: &ThreadId) -> Result<u64, RolloutError> {
+    thread_id
+        .as_str()
+        .strip_prefix("thr_")
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .filter(|sequence| format!("{sequence:016}") == thread_id.as_str()[4..])
+        .ok_or(RolloutError::InvalidId { kind: "thread" })
 }
 
 #[cfg(test)]
@@ -770,6 +826,34 @@ mod tests {
     }
 
     #[test]
+    fn lists_durable_threads_without_loading_history_into_core_memory() {
+        let mut core = Core::new();
+        for request_id in 1..=3 {
+            start_thread(&mut core, request_id);
+        }
+        let first = core.list_threads(None, 2).expect("first page");
+        assert_eq!(
+            first
+                .data
+                .iter()
+                .map(|thread| thread.id.as_str())
+                .collect::<Vec<_>>(),
+            ["thr_0000000000000003", "thr_0000000000000002"]
+        );
+        let second = core
+            .list_threads(first.next_cursor.as_ref(), 2)
+            .expect("second page");
+        assert_eq!(
+            second
+                .data
+                .iter()
+                .map(|thread| thread.id.as_str())
+                .collect::<Vec<_>>(),
+            ["thr_0000000000000001"]
+        );
+    }
+
+    #[test]
     fn failed_thread_write_does_not_commit_memory_or_advance_ids() {
         let mut core = Core::with_repository(Box::new(FailingRepository {
             fail_create: true,
@@ -847,6 +931,14 @@ mod tests {
             thread_id: &ThreadId,
         ) -> Result<Option<DurableThreadSnapshot>, RolloutError> {
             Ok(self.threads.get(thread_id).cloned())
+        }
+
+        fn list_threads(
+            &mut self,
+            _cursor: Option<&ThreadId>,
+            _limit: usize,
+        ) -> Result<DurableThreadPage, RolloutError> {
+            Err(RolloutError::Poisoned)
         }
     }
 }

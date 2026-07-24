@@ -41,6 +41,16 @@ fn thread_resume_failures_match_golden_trace() {
     assert_golden("thread-resume-errors");
 }
 
+#[test]
+fn thread_list_happy_path_matches_golden_trace() {
+    assert_golden("thread-list-happy");
+}
+
+#[test]
+fn thread_list_failures_match_golden_trace() {
+    assert_golden("thread-list-errors");
+}
+
 fn assert_golden(name: &str) {
     let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
     let fixture_root =

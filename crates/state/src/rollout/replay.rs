@@ -245,7 +245,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
     })
 }
 
-pub(super) fn parse_canonical_id(
+pub(crate) fn parse_canonical_id(
     value: &str,
     prefix: &str,
     kind: &'static str,

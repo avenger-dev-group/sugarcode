@@ -10,6 +10,9 @@ use ts_rs::TS;
 
 use crate::Item;
 
+pub const DEFAULT_THREAD_LIST_LIMIT: u32 = 50;
+pub const MAX_THREAD_LIST_LIMIT: u32 = 100;
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
@@ -56,6 +59,59 @@ impl<'de> Visitor<'de> for ThreadStartParamsVisitor {
 #[ts(rename_all = "camelCase")]
 pub struct ThreadStartResponse {
     pub thread: Thread,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadListParams {
+    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    #[schemars(range(min = 1, max = 100))]
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+impl<'de> Deserialize<'de> for ThreadListParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let params = ThreadListParamsWire::deserialize(deserializer)?;
+        if params
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| !is_canonical_thread_id(cursor))
+        {
+            return Err(de::Error::custom("cursor must be a canonical Thread ID"));
+        }
+        if params
+            .limit
+            .is_some_and(|limit| limit == 0 || limit > MAX_THREAD_LIST_LIMIT)
+        {
+            return Err(de::Error::custom("limit must be between 1 and 100"));
+        }
+        Ok(Self {
+            cursor: params.cursor,
+            limit: params.limit,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ThreadListParamsWire {
+    cursor: Option<String>,
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadListResponse {
+    pub data: Vec<Thread>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

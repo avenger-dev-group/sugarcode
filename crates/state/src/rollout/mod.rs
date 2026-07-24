@@ -2,6 +2,7 @@ mod format;
 mod replay;
 mod repository;
 
+pub(crate) use replay::parse_canonical_id;
 pub use repository::RolloutRepository;
 
 use std::error::Error;
@@ -30,6 +31,17 @@ pub struct IdSequences {
 pub struct DurableThreadSnapshot {
     pub id: ThreadId,
     pub turns: Vec<DurableTurnSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableThreadSummary {
+    pub id: ThreadId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableThreadPage {
+    pub data: Vec<DurableThreadSummary>,
+    pub next_cursor: Option<ThreadId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +75,11 @@ pub trait ThreadRepository: fmt::Debug + Send {
         &self,
         thread_id: &ThreadId,
     ) -> Result<Option<DurableThreadSnapshot>, RolloutError>;
+    fn list_threads(
+        &mut self,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, RolloutError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +97,25 @@ impl fmt::Display for RolloutDiagnostic {
             self.path.display(),
             self.kind,
             self.offset
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionDiagnostic {
+    pub path: PathBuf,
+    pub operation: &'static str,
+    pub kind: &'static str,
+}
+
+impl fmt::Display for ProjectionDiagnostic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}: thread discovery {} ({})",
+            self.path.display(),
+            self.operation,
+            self.kind
         )
     }
 }
@@ -107,6 +143,7 @@ pub enum RolloutError {
     Collision {
         kind: &'static str,
     },
+    Projection(ProjectionDiagnostic),
     Poisoned,
 }
 
@@ -132,6 +169,7 @@ impl fmt::Display for RolloutError {
             Self::InvalidId { kind } => write!(formatter, "invalid {kind} ID"),
             Self::InvalidRecord { kind } => write!(formatter, "invalid rollout record ({kind})"),
             Self::Collision { kind } => write!(formatter, "duplicate {kind} ID"),
+            Self::Projection(diagnostic) => diagnostic.fmt(formatter),
             Self::Poisoned => formatter.write_str("rollout state is unavailable"),
         }
     }

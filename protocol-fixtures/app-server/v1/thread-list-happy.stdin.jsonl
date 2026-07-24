@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"golden-client","version":"1.0.0"}}}
+{"jsonrpc":"2.0","method":"initialized"}
+{"jsonrpc":"2.0","id":"start-1","method":"thread/start"}
+{"jsonrpc":"2.0","id":"start-2","method":"thread/start"}
+{"jsonrpc":"2.0","id":"start-3","method":"thread/start"}
+{"jsonrpc":"2.0","id":"list-1","method":"thread/list","params":{"limit":2}}
+{"jsonrpc":"2.0","id":"list-2","method":"thread/list","params":{"cursor":"thr_0000000000000002","limit":2}}
