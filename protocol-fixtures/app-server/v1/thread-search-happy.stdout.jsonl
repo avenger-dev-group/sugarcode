@@ -1,0 +1,22 @@
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
+{"jsonrpc":"2.0","id":"start-1","result":{"thread":{"id":"thr_0000000000000001"}}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
+{"jsonrpc":"2.0","id":"turn-1","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001","item":{"type":"agentMessage","id":"item_0000000000000001","text":""}}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001","itemId":"item_0000000000000001","delta":"SugarCode deterministic response."}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001","item":{"type":"agentMessage","id":"item_0000000000000001","text":"SugarCode deterministic response."}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"completed"}}}
+{"jsonrpc":"2.0","id":"start-2","result":{"thread":{"id":"thr_0000000000000002"}}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000002"}}}
+{"jsonrpc":"2.0","id":"turn-2","result":{"turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000002","turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"thr_0000000000000002","turnId":"turn_0000000000000002","item":{"type":"agentMessage","id":"item_0000000000000002","text":""}}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thr_0000000000000002","turnId":"turn_0000000000000002","itemId":"item_0000000000000002","delta":"SugarCode deterministic response."}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr_0000000000000002","turnId":"turn_0000000000000002","item":{"type":"agentMessage","id":"item_0000000000000002","text":"SugarCode deterministic response."}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000002","turn":{"id":"turn_0000000000000002","status":"completed"}}}
+{"jsonrpc":"2.0","id":"start-3","result":{"thread":{"id":"thr_0000000000000003"}}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000003"}}}
+{"jsonrpc":"2.0","id":"search-1","result":{"data":[{"id":"thr_0000000000000002"}],"nextCursor":"thr_0000000000000002"}}
+{"jsonrpc":"2.0","id":"search-2","result":{"data":[{"id":"thr_0000000000000001"}],"nextCursor":null}}
+{"jsonrpc":"2.0","id":"search-empty","result":{"data":[],"nextCursor":null}}

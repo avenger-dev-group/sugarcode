@@ -1,3 +1,4 @@
+use super::DurableThreadLifecycle;
 use super::DurableThreadPage;
 use super::DurableThreadSnapshot;
 use super::DurableTurnSnapshot;
@@ -11,6 +12,7 @@ use super::MAX_TOTAL_REPLAY_RECORDS;
 use super::RolloutDiagnostic;
 use super::RolloutError;
 use super::ThreadRepository;
+use super::format::encode_thread_archived;
 use super::format::encode_thread_created;
 use super::format::encode_turn_completed;
 use super::replay::parse_canonical_id;
@@ -20,6 +22,7 @@ use super::replay::unavailable;
 use crate::HomeSource;
 use crate::SugarCodeHome;
 use crate::thread_discovery::ThreadDiscoveryProjection;
+use crate::thread_search::ThreadSearchProjection;
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::File;
@@ -44,6 +47,7 @@ pub struct RolloutRepository {
     total_bytes: u64,
     total_records: usize,
     projection: ThreadDiscoveryProjection,
+    search_projection: ThreadSearchProjection,
     poisoned: bool,
 }
 
@@ -67,6 +71,8 @@ impl RolloutRepository {
         let replay = replay_all(&root)?;
         let projection =
             ThreadDiscoveryProjection::open(home, &replay.threads, replay.record_count)?;
+        let search_projection =
+            ThreadSearchProjection::open(home, &replay.threads, replay.record_count);
         Ok(Self {
             root,
             _writer_lock: writer_lock,
@@ -76,6 +82,7 @@ impl RolloutRepository {
             total_bytes: replay.retained_bytes,
             total_records: replay.record_count,
             projection,
+            search_projection,
             poisoned: false,
         })
     }
@@ -85,7 +92,14 @@ impl RolloutRepository {
     }
 
     pub fn projection_diagnostics(&self) -> &[super::ProjectionDiagnostic] {
+        // Kept for compatibility with callers that report diagnostics at startup.
+        // Search diagnostics are exposed separately because the projections have
+        // independent availability and recovery.
         self.projection.diagnostics()
+    }
+
+    pub fn search_projection_diagnostics(&self) -> &[super::ProjectionDiagnostic] {
+        self.search_projection.diagnostics()
     }
 
     fn ensure_available(&self) -> Result<(), RolloutError> {
@@ -224,10 +238,12 @@ impl ThreadRepository for RolloutRepository {
             DurableThreadSnapshot {
                 id: thread_id.clone(),
                 turns: Vec::new(),
+                lifecycle: DurableThreadLifecycle::Active,
             },
         );
         self.sequences.thread = thread_sequence;
         let _ = self.projection.record_thread_created(thread_id);
+        let _ = self.search_projection.record_thread_created(thread_id);
         Ok(())
     }
 
@@ -240,6 +256,15 @@ impl ThreadRepository for RolloutRepository {
         if turn.items.is_empty() {
             return Err(RolloutError::InvalidRecord {
                 kind: "completedTurnWithoutItems",
+            });
+        }
+        if self
+            .threads
+            .get(thread_id)
+            .is_some_and(|thread| thread.lifecycle == DurableThreadLifecycle::Archived)
+        {
+            return Err(RolloutError::InvalidRecord {
+                kind: "recordAfterThreadArchive",
             });
         }
         let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")?;
@@ -279,6 +304,40 @@ impl ThreadRepository for RolloutRepository {
         let _ = self
             .projection
             .record_turn_completed(thread_id, record_sequence);
+        let _ = self
+            .search_projection
+            .record_turn_completed(thread_id, record_sequence, turn);
+        Ok(())
+    }
+
+    fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+        self.ensure_available()?;
+        let thread = self
+            .threads
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread.lifecycle == DurableThreadLifecycle::Archived {
+            return Ok(());
+        }
+        let record_sequence = thread.turns.len() as u64 + 2;
+        let next_file_record_count =
+            usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutRecords",
+            })?;
+        let path = self.thread_path(thread_id)?;
+        let bytes = encode_thread_archived(record_sequence, thread_id)?;
+        self.append_record(&path, &bytes, false, next_file_record_count)?;
+        self.threads
+            .get_mut(thread_id)
+            .expect("validated thread exists")
+            .lifecycle = DurableThreadLifecycle::Archived;
+        let _ = self
+            .projection
+            .record_thread_archived(thread_id, record_sequence);
+        let _ = self
+            .search_projection
+            .record_thread_archived(thread_id, record_sequence);
         Ok(())
     }
 
@@ -299,6 +358,22 @@ impl ThreadRepository for RolloutRepository {
         self.ensure_available()?;
         self.projection
             .list_threads(&self.threads, self.total_records, cursor, limit)
+    }
+
+    fn search_threads(
+        &mut self,
+        query: &str,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, RolloutError> {
+        self.ensure_available()?;
+        self.search_projection.search_threads(
+            &self.threads,
+            self.total_records,
+            query,
+            cursor,
+            limit,
+        )
     }
 }
 

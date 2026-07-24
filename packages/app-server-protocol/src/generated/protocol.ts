@@ -48,9 +48,17 @@ export type ItemCompletedNotification = { threadId: string, turnId: string, item
 
 export type Thread = { id: string, };
 
+export type ThreadArchiveParams = { threadId: string, };
+
+export type ThreadArchiveResponse = Record<string, never>;
+
 export type ThreadListParams = { cursor?: string | null, limit?: number | null, };
 
 export type ThreadListResponse = { data: Array<Thread>, nextCursor: string | null, };
+
+export type ThreadSearchParams = { query: string, cursor?: string | null, limit?: number | null, };
+
+export type ThreadSearchResponse = { data: Array<Thread>, nextCursor: string | null, };
 
 export type ThreadStartParams = Record<string, never>;
 

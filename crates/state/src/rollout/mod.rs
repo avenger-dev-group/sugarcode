@@ -31,6 +31,13 @@ pub struct IdSequences {
 pub struct DurableThreadSnapshot {
     pub id: ThreadId,
     pub turns: Vec<DurableTurnSnapshot>,
+    pub lifecycle: DurableThreadLifecycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableThreadLifecycle {
+    Active,
+    Archived,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,12 +78,19 @@ pub trait ThreadRepository: fmt::Debug + Send {
         thread_id: &ThreadId,
         turn: &DurableTurnSnapshot,
     ) -> Result<(), RolloutError>;
+    fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
     fn load_thread(
         &self,
         thread_id: &ThreadId,
     ) -> Result<Option<DurableThreadSnapshot>, RolloutError>;
     fn list_threads(
         &mut self,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, RolloutError>;
+    fn search_threads(
+        &mut self,
+        query: &str,
         cursor: Option<&ThreadId>,
         limit: usize,
     ) -> Result<DurableThreadPage, RolloutError>;
@@ -110,9 +124,15 @@ pub struct ProjectionDiagnostic {
 
 impl fmt::Display for ProjectionDiagnostic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let projection = self
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| name.contains("thread-search"))
+            .map_or("thread discovery", |_| "thread search");
         write!(
             formatter,
-            "{}: thread discovery {} ({})",
+            "{}: {projection} {} ({})",
             self.path.display(),
             self.operation,
             self.kind

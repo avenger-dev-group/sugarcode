@@ -244,6 +244,271 @@ fn rebuilds_an_invalid_projection_then_lists_and_resumes_without_leaking_content
 }
 
 #[test]
+fn rebuilds_search_across_processes_without_affecting_list_or_resume() {
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let mut first = RunningServer::spawn(home.path());
+    first.initialize();
+    for sequence in 1..=3 {
+        first.send(
+            json!({
+                "jsonrpc": "2.0",
+                "id": format!("thread-{sequence}"),
+                "method": "thread/start",
+                "params": {}
+            }),
+            2,
+        );
+        if sequence < 3 {
+            first.send(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": format!("turn-{sequence}"),
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": format!("thr_{sequence:016}")
+                    }
+                }),
+                6,
+            );
+        }
+    }
+    first.finish();
+
+    let projection = home.path().join("projections/v1/thread-search.sqlite3");
+    let corruption_sentinel = "search-corruption-secret-must-not-leak";
+    fs::write(&projection, corruption_sentinel).expect("corrupt search projection");
+
+    let mut second = RunningServer::spawn(home.path());
+    second.initialize();
+    let query_sentinel = "private-query-sentinel";
+    let empty = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "private-search",
+            "method": "thread/search",
+            "params": {"query": query_sentinel}
+        }),
+        1,
+    );
+    assert_eq!(empty[0]["result"]["data"], json!([]));
+    let searched = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "search",
+            "method": "thread/search",
+            "params": {"query": "SugarCode deterministic", "limit": 50}
+        }),
+        1,
+    );
+    assert_eq!(
+        searched[0]["result"]["data"],
+        json!([
+            {"id": "thr_0000000000000002"},
+            {"id": "thr_0000000000000001"}
+        ])
+    );
+    assert_eq!(searched[0]["result"]["nextCursor"], Value::Null);
+
+    let listed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "list",
+            "method": "thread/list"
+        }),
+        1,
+    );
+    assert_eq!(
+        listed[0]["result"]["data"]
+            .as_array()
+            .expect("threads")
+            .len(),
+        3
+    );
+    let resumed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "resume",
+            "method": "thread/resume",
+            "params": {"threadId": "thr_0000000000000001"}
+        }),
+        1,
+    );
+    assert_eq!(
+        resumed[0]["result"]["turns"][0]["items"][0]["text"],
+        "SugarCode deterministic response."
+    );
+
+    let stderr = second.finish_with_diagnostics();
+    assert!(stderr.contains("thread-search.sqlite3"));
+    assert!(stderr.contains("thread search rebuild"));
+    assert!(stderr.contains("invalidHeaderRecovered"));
+    assert!(!stderr.contains(corruption_sentinel));
+    assert!(!stderr.contains(query_sentinel));
+    assert!(
+        !fs::read(&projection)
+            .expect("read rebuilt projection")
+            .windows(query_sentinel.len())
+            .any(|window| window == query_sentinel.as_bytes())
+    );
+}
+
+#[test]
+fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let mut first = RunningServer::spawn(home.path());
+    first.initialize();
+    for sequence in 1..=3 {
+        first.send(
+            json!({
+                "jsonrpc": "2.0",
+                "id": format!("thread-{sequence}"),
+                "method": "thread/start",
+                "params": {}
+            }),
+            2,
+        );
+        if sequence < 3 {
+            first.send(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": format!("turn-{sequence}"),
+                    "method": "turn/start",
+                    "params": {"threadId": format!("thr_{sequence:016}")}
+                }),
+                6,
+            );
+        }
+    }
+
+    let archived = "thr_0000000000000002";
+    let archive = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "archive",
+            "method": "thread/archive",
+            "params": {"threadId": archived}
+        }),
+        1,
+    );
+    assert_eq!(archive[0]["result"], json!({}));
+    let idempotent = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "archive-again",
+            "method": "thread/archive",
+            "params": {"threadId": archived}
+        }),
+        1,
+    );
+    assert_eq!(idempotent[0]["result"], json!({}));
+    assert_active_archive_views(&mut first, "first");
+    first.finish();
+
+    let projections = home.path().join("projections/v1");
+    fs::remove_file(projections.join("thread-discovery.sqlite3"))
+        .expect("remove discovery projection");
+    let search_projection = projections.join("thread-search.sqlite3");
+    let sentinel = "archived-search-corruption-secret-must-not-leak";
+    fs::write(&search_projection, sentinel).expect("corrupt search projection");
+
+    let mut second = RunningServer::spawn(home.path());
+    second.initialize();
+    assert_active_archive_views(&mut second, "second");
+    let resumed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "resume-active",
+            "method": "thread/resume",
+            "params": {"threadId": "thr_0000000000000001"}
+        }),
+        1,
+    );
+    assert_eq!(
+        resumed[0]["result"]["turns"][0]["items"][0]["text"],
+        "SugarCode deterministic response."
+    );
+    let next = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "thread-4",
+            "method": "thread/start",
+            "params": {}
+        }),
+        2,
+    );
+    assert_eq!(next[0]["result"]["thread"]["id"], "thr_0000000000000004");
+    let next_turn = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn-3",
+            "method": "turn/start",
+            "params": {"threadId": "thr_0000000000000004"}
+        }),
+        6,
+    );
+    assert_eq!(
+        next_turn[0]["result"]["turn"]["id"],
+        "turn_0000000000000003"
+    );
+    assert_eq!(
+        next_turn[2]["params"]["item"]["id"],
+        "item_0000000000000003"
+    );
+
+    let stderr = second.finish_with_diagnostics();
+    assert!(stderr.contains("thread-search.sqlite3"));
+    assert!(stderr.contains("thread search rebuild"));
+    assert!(stderr.contains("invalidHeaderRecovered"));
+    assert!(!stderr.contains(sentinel));
+    assert!(!stderr.contains("SugarCode deterministic response."));
+}
+
+fn assert_active_archive_views(server: &mut RunningServer, request_prefix: &str) {
+    let listed = server.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": format!("{request_prefix}-list"),
+            "method": "thread/list"
+        }),
+        1,
+    );
+    assert_eq!(
+        listed[0]["result"]["data"],
+        json!([
+            {"id": "thr_0000000000000003"},
+            {"id": "thr_0000000000000001"}
+        ])
+    );
+    let searched = server.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": format!("{request_prefix}-search"),
+            "method": "thread/search",
+            "params": {"query": "SugarCode deterministic"}
+        }),
+        1,
+    );
+    assert_eq!(
+        searched[0]["result"]["data"],
+        json!([{"id": "thr_0000000000000001"}])
+    );
+    let resume_archived = server.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": format!("{request_prefix}-resume-archived"),
+            "method": "thread/resume",
+            "params": {"threadId": "thr_0000000000000002"}
+        }),
+        1,
+    );
+    assert_eq!(resume_archived[0]["error"]["code"], -32004);
+    assert_eq!(
+        resume_archived[0]["error"]["data"],
+        json!({"threadId": "thr_0000000000000002"})
+    );
+}
+
+#[test]
 fn rejects_a_second_app_server_using_the_same_home() {
     let home = tempfile::tempdir().expect("isolated SugarCode home");
     let mut first = RunningServer::spawn(home.path());

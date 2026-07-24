@@ -4,6 +4,7 @@ use sugarcode_protocol::ItemId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
 use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableThreadLifecycle;
 use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::HomeResolutionInputs;
 use sugarcode_state::RolloutError;
@@ -60,6 +61,97 @@ fn persists_and_replays_completed_thread_history() {
     assert_eq!(repository.id_sequences().thread, 1);
     assert_eq!(repository.id_sequences().turn, 1);
     assert_eq!(repository.id_sequences().item, 1);
+}
+
+#[test]
+fn archives_with_one_v1_record_and_rebuilds_active_only_views() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let rollout = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .append_completed_turn(&thread_id, &completed_turn(1))
+            .expect("turn");
+        repository.archive_thread(&thread_id).expect("archive");
+        let archived_bytes = fs::read(&rollout).expect("read archived rollout");
+
+        repository
+            .archive_thread(&thread_id)
+            .expect("archive is idempotent");
+        assert_eq!(
+            fs::read(&rollout).expect("read idempotent rollout"),
+            archived_bytes,
+            "an idempotent archive must not append another record"
+        );
+        assert_eq!(
+            repository
+                .load_thread(&thread_id)
+                .expect("load")
+                .expect("thread")
+                .lifecycle,
+            DurableThreadLifecycle::Archived
+        );
+        assert!(
+            repository
+                .list_threads(None, 50)
+                .expect("list")
+                .data
+                .is_empty()
+        );
+        assert!(
+            repository
+                .search_threads("SugarCode", None, 50)
+                .expect("search")
+                .data
+                .is_empty()
+        );
+        assert!(matches!(
+            repository.append_completed_turn(&thread_id, &completed_turn(2)),
+            Err(RolloutError::InvalidRecord {
+                kind: "recordAfterThreadArchive"
+            })
+        ));
+    }
+
+    assert!(
+        fs::read_to_string(&rollout)
+            .expect("read rollout")
+            .ends_with(
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+            )
+    );
+    for database in ["thread-discovery.sqlite3", "thread-search.sqlite3"] {
+        fs::remove_file(directory.path().join("projections/v1").join(database))
+            .expect("remove projection");
+    }
+
+    let mut repository = RolloutRepository::open(&home).expect("rebuild from rollout");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.lifecycle, DurableThreadLifecycle::Archived);
+    assert_eq!(snapshot.turns, vec![completed_turn(1)]);
+    assert!(
+        repository
+            .list_threads(None, 50)
+            .expect("list rebuilt data")
+            .data
+            .is_empty()
+    );
+    assert!(
+        repository
+            .search_threads("SugarCode", None, 50)
+            .expect("search rebuilt data")
+            .data
+            .is_empty()
+    );
 }
 
 #[test]
@@ -249,6 +341,60 @@ fn projection_write_failure_does_not_erase_a_durable_rollout_commit() {
         thread_id
     );
     assert!(repository.load_thread(&thread_id).expect("load").is_some());
+}
+
+#[test]
+fn archive_projection_failure_does_not_erase_the_durable_commit() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    let database = directory
+        .path()
+        .join("projections/v1/thread-discovery.sqlite3");
+    let blocker = rusqlite::Connection::open(&database).expect("open projection");
+    blocker
+        .execute_batch("BEGIN EXCLUSIVE")
+        .expect("hold exclusive database lock");
+
+    repository
+        .archive_thread(&thread_id)
+        .expect("durable archive remains successful");
+    assert_eq!(
+        repository
+            .load_thread(&thread_id)
+            .expect("load")
+            .expect("thread")
+            .lifecycle,
+        DurableThreadLifecycle::Archived
+    );
+    assert!(matches!(
+        repository.list_threads(None, 50),
+        Err(RolloutError::Projection(_))
+    ));
+
+    blocker
+        .execute_batch("ROLLBACK")
+        .expect("release database lock");
+    drop(blocker);
+    drop(repository);
+    let mut repository = RolloutRepository::open(&home).expect("rebuild stale projection");
+    assert!(
+        repository
+            .list_threads(None, 50)
+            .expect("list")
+            .data
+            .is_empty()
+    );
+    assert_eq!(
+        repository
+            .load_thread(&thread_id)
+            .expect("load")
+            .expect("thread")
+            .lifecycle,
+        DurableThreadLifecycle::Archived
+    );
 }
 
 #[cfg(unix)]
@@ -460,6 +606,50 @@ fn rejects_unknown_versions_types_sequences_and_non_utf8_records() {
             panic!("{name}: expected corruption");
         };
         assert_eq!(diagnostic.kind, expected_kind, "{name}");
+    }
+}
+
+#[test]
+fn rejects_duplicate_archive_and_records_after_archive_without_echoing_content() {
+    for (name, records, expected_kind) in [
+        (
+            "duplicate archive",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+            ),
+            "duplicateThreadArchive",
+        ),
+        (
+            "turn after archive",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"turnCompleted\",\"threadId\":\"thr_0000000000000001\",\"turn\":{\"id\":\"turn_0000000000000001\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"item_0000000000000001\",\"text\":\"private-archive-sentinel\"}]}}\n"
+            ),
+            "recordAfterThreadArchive",
+        ),
+    ] {
+        let directory = tempdir().expect("home");
+        let home = resolved_temp_home(&directory);
+        {
+            let _repository = RolloutRepository::open(&home).expect("create layout");
+        }
+        fs::write(
+            directory
+                .path()
+                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            records,
+        )
+        .expect("write invalid rollout");
+
+        let error = RolloutRepository::open(&home).expect_err(name);
+        let RolloutError::Corrupt(diagnostic) = error else {
+            panic!("{name}: expected corruption");
+        };
+        assert_eq!(diagnostic.kind, expected_kind, "{name}");
+        assert!(!diagnostic.to_string().contains("private-archive-sentinel"));
     }
 }
 

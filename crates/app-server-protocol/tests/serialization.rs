@@ -10,10 +10,14 @@ use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::RequestId;
 use sugarcode_app_server_protocol::Thread;
+use sugarcode_app_server_protocol::ThreadArchiveParams;
+use sugarcode_app_server_protocol::ThreadArchiveResponse;
 use sugarcode_app_server_protocol::ThreadListParams;
 use sugarcode_app_server_protocol::ThreadListResponse;
 use sugarcode_app_server_protocol::ThreadResumeParams;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
+use sugarcode_app_server_protocol::ThreadSearchParams;
+use sugarcode_app_server_protocol::ThreadSearchResponse;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
@@ -108,6 +112,33 @@ fn thread_start_params_accept_only_an_empty_object() {
 }
 
 #[test]
+fn thread_archive_uses_a_canonical_thread_id_and_empty_response() {
+    assert_eq!(
+        serde_json::from_value::<ThreadArchiveParams>(json!({
+            "threadId": "thr_0000000000000001"
+        }))
+        .expect("valid params"),
+        ThreadArchiveParams {
+            thread_id: "thr_0000000000000001".to_string()
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(ThreadArchiveResponse {}).expect("response serializes"),
+        json!({})
+    );
+    for invalid in [
+        json!({}),
+        json!({"threadId": ""}),
+        json!({"threadId": "thr_missing"}),
+        json!({"threadId": "../thr_0000000000000001"}),
+        json!({"threadId": "thr_00000000000000001"}),
+        json!({"threadId": "thr_0000000000000001", "includeArchived": true}),
+    ] {
+        assert!(serde_json::from_value::<ThreadArchiveParams>(invalid).is_err());
+    }
+}
+
+#[test]
 fn thread_list_params_are_bounded_and_canonical() {
     assert_eq!(
         serde_json::from_value::<ThreadListParams>(json!({})).expect("defaults"),
@@ -140,6 +171,55 @@ fn thread_list_params_are_bounded_and_canonical() {
 fn thread_list_response_contains_only_durable_identity_and_cursor() {
     assert_eq!(
         serde_json::to_value(ThreadListResponse {
+            data: vec![Thread {
+                id: "thr_0000000000000010".to_string(),
+            }],
+            next_cursor: Some("thr_0000000000000010".to_string()),
+        })
+        .expect("response serializes"),
+        json!({
+            "data": [{"id": "thr_0000000000000010"}],
+            "nextCursor": "thr_0000000000000010"
+        })
+    );
+}
+
+#[test]
+fn thread_search_params_are_bounded_trimmed_and_canonical() {
+    assert_eq!(
+        serde_json::from_value::<ThreadSearchParams>(json!({
+            "query": "  SugarCode release  ",
+            "cursor": "thr_0000000000000009",
+            "limit": 25
+        }))
+        .expect("valid search"),
+        ThreadSearchParams {
+            query: "SugarCode release".to_string(),
+            cursor: Some("thr_0000000000000009".to_string()),
+            limit: Some(25),
+        }
+    );
+    for invalid in [
+        json!({}),
+        json!({"query": ""}),
+        json!({"query": "   "}),
+        json!({"query": "private\nquery"}),
+        json!({"query": "x".repeat(257)}),
+        json!({"query": "界".repeat(86)}),
+        json!({"query": (0..17).map(|_| "term").collect::<Vec<_>>().join(" ")}),
+        json!({"query": "valid", "limit": 0}),
+        json!({"query": "valid", "limit": 101}),
+        json!({"query": "valid", "cursor": "thr_missing"}),
+        json!({"query": "valid", "score": true}),
+    ] {
+        assert!(serde_json::from_value::<ThreadSearchParams>(invalid).is_err());
+    }
+}
+
+#[test]
+fn thread_search_response_exposes_only_thread_identity_and_cursor() {
+    assert_eq!(
+        serde_json::to_value(ThreadSearchResponse {
             data: vec![Thread {
                 id: "thr_0000000000000010".to_string(),
             }],

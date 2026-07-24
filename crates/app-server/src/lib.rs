@@ -20,6 +20,9 @@ pub async fn run_stdio(config: EffectiveConfig) -> io::Result<()> {
     for diagnostic in repository.projection_diagnostics() {
         eprintln!("sugarcode: {diagnostic}");
     }
+    for diagnostic in repository.search_projection_diagnostics() {
+        eprintln!("sugarcode: {diagnostic}");
+    }
     let session = Session::with_core(Core::with_repository(Box::new(repository)));
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());

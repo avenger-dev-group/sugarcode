@@ -351,12 +351,15 @@ mod tests {
         let config = home.path().join("config.toml");
         let rollout = home.path().join("rollouts/v1/thread.jsonl");
         let projection = home.path().join("projections/v1/thread-discovery.sqlite3");
+        let search_projection = home.path().join("projections/v1/thread-search.sqlite3");
         fs::create_dir_all(rollout.parent().expect("rollout parent")).expect("rollout directory");
         fs::create_dir_all(projection.parent().expect("projection parent"))
             .expect("projection directory");
         fs::write(&config, "schema_version = 1\n").expect("config");
         fs::write(&rollout, b"safe rollout fixture\n").expect("rollout");
         fs::write(&projection, b"safe projection fixture").expect("projection");
+        fs::write(&search_projection, b"safe search projection fixture")
+            .expect("search projection");
 
         let store = MemoryCredentialStore::default();
         let sentinel = b"ordinary-state-secret-sentinel";
@@ -370,7 +373,7 @@ mod tests {
         )
         .expect("store credential");
 
-        for path in [&config, &rollout, &projection] {
+        for path in [&config, &rollout, &projection, &search_projection] {
             assert_file_does_not_contain(path, sentinel);
         }
     }

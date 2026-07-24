@@ -2,6 +2,7 @@ mod config;
 mod home;
 mod rollout;
 mod thread_discovery;
+mod thread_search;
 
 pub use config::CONFIG_FILE_NAME;
 pub use config::CURRENT_CONFIG_SCHEMA_VERSION;
@@ -18,6 +19,7 @@ pub use home::SugarCodeHome;
 pub use home::resolve_sugarcode_home;
 pub use home::resolve_sugarcode_home_from_process;
 pub use rollout::DurableItemSnapshot;
+pub use rollout::DurableThreadLifecycle;
 pub use rollout::DurableThreadPage;
 pub use rollout::DurableThreadSnapshot;
 pub use rollout::DurableThreadSummary;

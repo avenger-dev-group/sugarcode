@@ -12,6 +12,10 @@ use crate::Item;
 
 pub const DEFAULT_THREAD_LIST_LIMIT: u32 = 50;
 pub const MAX_THREAD_LIST_LIMIT: u32 = 100;
+pub const DEFAULT_THREAD_SEARCH_LIMIT: u32 = 50;
+pub const MAX_THREAD_SEARCH_LIMIT: u32 = 100;
+pub const MAX_THREAD_SEARCH_QUERY_BYTES: usize = 256;
+pub const MAX_THREAD_SEARCH_QUERY_TERMS: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +64,40 @@ impl<'de> Visitor<'de> for ThreadStartParamsVisitor {
 pub struct ThreadStartResponse {
     pub thread: Thread,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadArchiveParams {
+    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    pub thread_id: String,
+}
+
+impl<'de> Deserialize<'de> for ThreadArchiveParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let params = ThreadArchiveParamsWire::deserialize(deserializer)?;
+        if !is_canonical_thread_id(&params.thread_id) {
+            return Err(de::Error::custom("threadId must be a canonical Thread ID"));
+        }
+        Ok(Self {
+            thread_id: params.thread_id,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ThreadArchiveParamsWire {
+    thread_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadArchiveResponse {}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -114,6 +152,68 @@ pub struct ThreadListResponse {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadSearchParams {
+    #[schemars(length(min = 1, max = 256))]
+    pub query: String,
+    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
+    #[schemars(range(min = 1, max = 100))]
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+}
+
+impl<'de> Deserialize<'de> for ThreadSearchParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let params = ThreadSearchParamsWire::deserialize(deserializer)?;
+        if !is_valid_search_query(&params.query) {
+            return Err(de::Error::custom(
+                "query must contain 1 to 16 terms and be at most 256 UTF-8 bytes",
+            ));
+        }
+        if params
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| !is_canonical_thread_id(cursor))
+        {
+            return Err(de::Error::custom("cursor must be a canonical Thread ID"));
+        }
+        if params
+            .limit
+            .is_some_and(|limit| limit == 0 || limit > MAX_THREAD_SEARCH_LIMIT)
+        {
+            return Err(de::Error::custom("limit must be between 1 and 100"));
+        }
+        Ok(Self {
+            query: params.query.trim().to_string(),
+            cursor: params.cursor,
+            limit: params.limit,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ThreadSearchParamsWire {
+    query: String,
+    cursor: Option<String>,
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadSearchResponse {
+    pub data: Vec<Thread>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
@@ -159,6 +259,16 @@ fn is_canonical_thread_id(value: &str) -> bool {
     digits
         .parse::<u64>()
         .is_ok_and(|sequence| format!("{sequence:016}") == digits)
+}
+
+fn is_valid_search_query(value: &str) -> bool {
+    if value.chars().any(char::is_control) {
+        return false;
+    }
+    let query = value.trim();
+    !query.is_empty()
+        && query.len() <= MAX_THREAD_SEARCH_QUERY_BYTES
+        && query.split_whitespace().count() <= MAX_THREAD_SEARCH_QUERY_TERMS
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

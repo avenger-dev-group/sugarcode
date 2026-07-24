@@ -51,6 +51,26 @@ fn thread_list_failures_match_golden_trace() {
     assert_golden("thread-list-errors");
 }
 
+#[test]
+fn thread_search_happy_path_matches_golden_trace() {
+    assert_golden("thread-search-happy");
+}
+
+#[test]
+fn thread_search_failures_match_golden_trace() {
+    assert_golden("thread-search-errors");
+}
+
+#[test]
+fn thread_archive_happy_path_matches_golden_trace() {
+    assert_golden("thread-archive-happy");
+}
+
+#[test]
+fn thread_archive_failures_match_golden_trace() {
+    assert_golden("thread-archive-errors");
+}
+
 fn assert_golden(name: &str) {
     let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
     let fixture_root =

@@ -11,6 +11,7 @@ use sugarcode_protocol::ItemId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
 use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableThreadLifecycle;
 use sugarcode_state::DurableThreadPage;
 use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableThreadSummary;
@@ -26,6 +27,7 @@ struct Thread {
     id: ThreadId,
     turns: BTreeMap<TurnId, Turn>,
     active_turn_id: Option<TurnId>,
+    lifecycle: DurableThreadLifecycle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +204,17 @@ pub trait CoreApi {
         cursor: Option<&ThreadId>,
         limit: usize,
     ) -> Result<DurableThreadPage, CoreError>;
+    fn search_threads(
+        &mut self,
+        _query: &str,
+        _cursor: Option<&ThreadId>,
+        _limit: usize,
+    ) -> Result<DurableThreadPage, CoreError> {
+        Err(CoreError::StateUnavailable)
+    }
+    fn archive_thread(&mut self, _thread_id: &ThreadId) -> Result<(), CoreError> {
+        Err(CoreError::StateUnavailable)
+    }
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError>;
     fn start_turn(
         &mut self,
@@ -240,9 +253,9 @@ impl Core {
     }
 
     pub fn contains_thread(&self, thread_id: &ThreadId) -> bool {
-        self.threads
-            .get(thread_id)
-            .is_some_and(|thread| &thread.id == thread_id)
+        self.threads.get(thread_id).is_some_and(|thread| {
+            &thread.id == thread_id && thread.lifecycle == DurableThreadLifecycle::Active
+        })
     }
 
     pub fn turn_count(&self, thread_id: &ThreadId) -> usize {
@@ -276,6 +289,7 @@ impl CoreApi for Core {
             id: thread_id.clone(),
             turns: BTreeMap::new(),
             active_turn_id: None,
+            lifecycle: DurableThreadLifecycle::Active,
         };
 
         self.repository
@@ -304,8 +318,45 @@ impl CoreApi for Core {
             .map_err(map_repository_error)
     }
 
+    fn search_threads(
+        &mut self,
+        query: &str,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, CoreError> {
+        self.repository
+            .search_threads(query, cursor, limit)
+            .map_err(map_repository_error)
+    }
+
+    fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        let lifecycle = match self.threads.get(thread_id) {
+            Some(thread) => thread.lifecycle,
+            None => {
+                self.repository
+                    .load_thread(thread_id)
+                    .map_err(map_repository_error)?
+                    .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?
+                    .lifecycle
+            }
+        };
+        if lifecycle == DurableThreadLifecycle::Archived {
+            return Ok(());
+        }
+        self.repository
+            .archive_thread(thread_id)
+            .map_err(map_repository_error)?;
+        if let Some(thread) = self.threads.get_mut(thread_id) {
+            thread.lifecycle = DurableThreadLifecycle::Archived;
+        }
+        Ok(())
+    }
+
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
         if let Some(thread) = self.threads.get(thread_id) {
+            if thread.lifecycle == DurableThreadLifecycle::Archived {
+                return Err(CoreError::ThreadNotFound(thread_id.clone()));
+            }
             return Ok(durable_thread_snapshot(thread));
         }
         let snapshot = self
@@ -313,6 +364,9 @@ impl CoreApi for Core {
             .load_thread(thread_id)
             .map_err(map_repository_error)?
             .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
+        if snapshot.lifecycle == DurableThreadLifecycle::Archived {
+            return Err(CoreError::ThreadNotFound(thread_id.clone()));
+        }
         let mut turns = BTreeMap::new();
         for durable_turn in &snapshot.turns {
             let mut items = BTreeMap::new();
@@ -341,6 +395,7 @@ impl CoreApi for Core {
                 id: thread_id.clone(),
                 turns,
                 active_turn_id: None,
+                lifecycle: DurableThreadLifecycle::Active,
             },
         );
         Ok(snapshot)
@@ -355,6 +410,9 @@ impl CoreApi for Core {
             .threads
             .get(&thread_id)
             .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
+        if thread.lifecycle == DurableThreadLifecycle::Archived {
+            return Err(CoreError::ThreadNotFound(thread_id));
+        }
         if let Some(turn_id) = &thread.active_turn_id {
             return Err(CoreError::TurnAlreadyActive {
                 thread_id,
@@ -452,6 +510,7 @@ fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnapshot {
 fn durable_thread_snapshot(thread: &Thread) -> DurableThreadSnapshot {
     DurableThreadSnapshot {
         id: thread.id.clone(),
+        lifecycle: thread.lifecycle,
         turns: thread
             .turns
             .values()
@@ -496,6 +555,7 @@ impl ThreadRepository for MemoryThreadRepository {
             DurableThreadSnapshot {
                 id: thread_id.clone(),
                 turns: Vec::new(),
+                lifecycle: DurableThreadLifecycle::Active,
             },
         );
         self.sequences.thread = sequence;
@@ -511,6 +571,11 @@ impl ThreadRepository for MemoryThreadRepository {
             .threads
             .get_mut(thread_id)
             .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread.lifecycle == DurableThreadLifecycle::Archived {
+            return Err(RolloutError::InvalidRecord {
+                kind: "recordAfterThreadArchive",
+            });
+        }
         thread.turns.push(turn.clone());
         self.sequences.turn = turn
             .id
@@ -534,6 +599,15 @@ impl ThreadRepository for MemoryThreadRepository {
         Ok(self.threads.get(thread_id).cloned())
     }
 
+    fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        thread.lifecycle = DurableThreadLifecycle::Archived;
+        Ok(())
+    }
+
     fn list_threads(
         &mut self,
         cursor: Option<&ThreadId>,
@@ -542,8 +616,9 @@ impl ThreadRepository for MemoryThreadRepository {
         let cursor_sequence = cursor.map(parse_thread_sequence).transpose()?;
         let mut threads = self
             .threads
-            .keys()
-            .map(|id| Ok((parse_thread_sequence(id)?, id.clone())))
+            .values()
+            .filter(|thread| thread.lifecycle == DurableThreadLifecycle::Active)
+            .map(|thread| Ok((parse_thread_sequence(&thread.id)?, thread.id.clone())))
             .collect::<Result<Vec<_>, RolloutError>>()?;
         threads.sort_unstable_by_key(|thread| Reverse(thread.0));
         let mut ids = threads
@@ -562,6 +637,76 @@ impl ThreadRepository for MemoryThreadRepository {
                 .collect(),
         })
     }
+
+    fn search_threads(
+        &mut self,
+        query: &str,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, RolloutError> {
+        if limit == 0 || limit > 100 {
+            return Err(RolloutError::InvalidRecord {
+                kind: "threadSearchLimit",
+            });
+        }
+        let terms = validate_search_query(query)?;
+        let cursor_sequence = cursor.map(parse_thread_sequence).transpose()?;
+        let mut matches = self
+            .threads
+            .values()
+            .filter(|thread| thread.lifecycle == DurableThreadLifecycle::Active)
+            .filter(|thread| {
+                thread
+                    .turns
+                    .iter()
+                    .flat_map(|turn| &turn.items)
+                    .any(|item| {
+                        let DurableItemSnapshot::AgentMessage { text, .. } = item;
+                        let text = text.to_lowercase();
+                        terms.iter().all(|term| text.contains(term))
+                    })
+            })
+            .map(|thread| {
+                Ok((
+                    parse_thread_sequence(&thread.id)?,
+                    DurableThreadSummary {
+                        id: thread.id.clone(),
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, RolloutError>>()?;
+        matches.sort_unstable_by_key(|(sequence, _)| Reverse(*sequence));
+        let mut data = matches
+            .into_iter()
+            .filter(|(sequence, _)| cursor_sequence.is_none_or(|cursor| *sequence < cursor))
+            .map(|(_, summary)| summary)
+            .take(limit + 1)
+            .collect::<Vec<_>>();
+        let has_more = data.len() > limit;
+        data.truncate(limit);
+        Ok(DurableThreadPage {
+            next_cursor: has_more
+                .then(|| data.last().map(|thread| thread.id.clone()))
+                .flatten(),
+            data,
+        })
+    }
+}
+
+fn validate_search_query(query: &str) -> Result<Vec<String>, RolloutError> {
+    if query.chars().any(char::is_control) {
+        return Err(RolloutError::InvalidRecord {
+            kind: "threadSearchQuery",
+        });
+    }
+    let query = query.trim();
+    let terms = query.split_whitespace().collect::<Vec<_>>();
+    if query.is_empty() || query.len() > 256 || terms.len() > 16 {
+        return Err(RolloutError::InvalidRecord {
+            kind: "threadSearchQuery",
+        });
+    }
+    Ok(terms.into_iter().map(str::to_lowercase).collect())
 }
 
 fn parse_thread_sequence(thread_id: &ThreadId) -> Result<u64, RolloutError> {
@@ -607,6 +752,63 @@ mod tests {
         assert_eq!(second_thread_id.as_str(), "thr_0000000000000002");
         assert!(core.contains_thread(&second_thread_id));
         assert_eq!(core.thread_count(), 2);
+    }
+
+    #[test]
+    fn search_returns_only_completed_matching_threads_in_descending_id_order() {
+        let mut core = Core::new();
+        let first = start_thread(&mut core, 1);
+        core.start_turn(CoreRequestId::new(2), first.clone())
+            .expect("first completed turn");
+        let second = start_thread(&mut core, 3);
+        core.start_turn(CoreRequestId::new(4), second.clone())
+            .expect("second completed turn");
+        let empty = start_thread(&mut core, 5);
+
+        let page = core
+            .search_threads("SugarCode response", None, 50)
+            .expect("search");
+        assert_eq!(
+            page.data
+                .iter()
+                .map(|summary| summary.id.clone())
+                .collect::<Vec<_>>(),
+            [second, first]
+        );
+        assert!(
+            page.data.iter().all(|summary| summary.id != empty),
+            "empty threads are not searchable"
+        );
+    }
+
+    #[test]
+    fn archive_is_idempotent_and_hides_thread_without_reusing_ids() {
+        let mut core = Core::new();
+        let archived = start_thread(&mut core, 1);
+        core.start_turn(CoreRequestId::new(2), archived.clone())
+            .expect("completed turn");
+
+        core.archive_thread(&archived).expect("archive");
+        core.archive_thread(&archived).expect("idempotent archive");
+        assert!(!core.contains_thread(&archived));
+        assert_eq!(
+            core.resume_thread(&archived),
+            Err(CoreError::ThreadNotFound(archived.clone()))
+        );
+        assert_eq!(
+            core.start_turn(CoreRequestId::new(3), archived.clone()),
+            Err(CoreError::ThreadNotFound(archived.clone()))
+        );
+        assert!(core.list_threads(None, 50).expect("list").data.is_empty());
+        assert!(
+            core.search_threads("SugarCode", None, 50)
+                .expect("search")
+                .data
+                .is_empty()
+        );
+
+        let next = start_thread(&mut core, 4);
+        assert_eq!(next.as_str(), "thr_0000000000000002");
     }
 
     #[test]
@@ -887,6 +1089,24 @@ mod tests {
         assert_eq!(core.last_item_sequence, 0);
     }
 
+    #[test]
+    fn failed_archive_write_does_not_hide_the_in_memory_thread() {
+        let mut core = Core::with_repository(Box::new(FailingRepository {
+            fail_create: false,
+            fail_append: false,
+            ..Default::default()
+        }));
+        let thread_id = start_thread(&mut core, 1);
+
+        assert_eq!(
+            core.archive_thread(&thread_id),
+            Err(CoreError::StateUnavailable)
+        );
+        assert!(core.contains_thread(&thread_id));
+        core.start_turn(CoreRequestId::new(2), thread_id)
+            .expect("thread stays active");
+    }
+
     #[derive(Debug, Default)]
     struct FailingRepository {
         fail_create: bool,
@@ -909,6 +1129,7 @@ mod tests {
                 DurableThreadSnapshot {
                     id: thread_id.clone(),
                     turns: Vec::new(),
+                    lifecycle: DurableThreadLifecycle::Active,
                 },
             );
             Ok(())
@@ -926,6 +1147,10 @@ mod tests {
             }
         }
 
+        fn archive_thread(&mut self, _thread_id: &ThreadId) -> Result<(), RolloutError> {
+            Err(RolloutError::Poisoned)
+        }
+
         fn load_thread(
             &self,
             thread_id: &ThreadId,
@@ -935,6 +1160,15 @@ mod tests {
 
         fn list_threads(
             &mut self,
+            _cursor: Option<&ThreadId>,
+            _limit: usize,
+        ) -> Result<DurableThreadPage, RolloutError> {
+            Err(RolloutError::Poisoned)
+        }
+
+        fn search_threads(
+            &mut self,
+            _query: &str,
             _cursor: Option<&ThreadId>,
             _limit: usize,
         ) -> Result<DurableThreadPage, RolloutError> {

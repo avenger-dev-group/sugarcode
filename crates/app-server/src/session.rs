@@ -4,6 +4,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::HashSet;
 use sugarcode_app_server_protocol::DEFAULT_THREAD_LIST_LIMIT;
+use sugarcode_app_server_protocol::DEFAULT_THREAD_SEARCH_LIMIT;
 use sugarcode_app_server_protocol::ERROR_ALREADY_INITIALIZED;
 use sugarcode_app_server_protocol::ERROR_DUPLICATE_REQUEST;
 use sugarcode_app_server_protocol::ERROR_INTERNAL;
@@ -30,9 +31,13 @@ use sugarcode_app_server_protocol::SUGARCODE_PRODUCT_VERSION;
 use sugarcode_app_server_protocol::ServerCapabilities;
 use sugarcode_app_server_protocol::ServerInfo;
 use sugarcode_app_server_protocol::Thread as PublicThread;
+use sugarcode_app_server_protocol::ThreadArchiveParams;
+use sugarcode_app_server_protocol::ThreadArchiveResponse;
 use sugarcode_app_server_protocol::ThreadListParams;
 use sugarcode_app_server_protocol::ThreadListResponse;
 use sugarcode_app_server_protocol::ThreadResumeParams;
+use sugarcode_app_server_protocol::ThreadSearchParams;
+use sugarcode_app_server_protocol::ThreadSearchResponse;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
@@ -172,6 +177,34 @@ where
                     )];
                 }
                 self.list_threads(id, object.get("params").cloned())
+            }
+            "thread/archive" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.archive_thread(id, object.get("params").cloned())
+            }
+            "thread/search" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.search_threads(id, object.get("params").cloned())
             }
             "thread/resume" => {
                 let Some(id) = request_id else {
@@ -407,6 +440,64 @@ where
         })]
     }
 
+    fn archive_thread(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
+        let params = match params
+            .ok_or(())
+            .and_then(|value| serde_json::from_value::<ThreadArchiveParams>(value).map_err(|_| ()))
+        {
+            Ok(params) => params,
+            Err(()) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+
+        let thread_id = ThreadId::new(params.thread_id.clone());
+        match self.core.archive_thread(&thread_id) {
+            Ok(()) => {
+                self.accepted_request_ids.insert(id.clone());
+                let response = ThreadArchiveResponse {};
+                vec![JsonRpcMessage::Response(JsonRpcResponse {
+                    jsonrpc: JsonRpcVersion::V2,
+                    id,
+                    result: serde_json::to_value(response)
+                        .expect("thread/archive response must serialize"),
+                })]
+            }
+            Err(CoreError::ThreadNotFound(_)) => vec![error(
+                Some(id),
+                ERROR_THREAD_NOT_FOUND,
+                "Thread not found",
+                Some(json!({ "threadId": params.thread_id })),
+            )],
+            Err(CoreError::StateUnavailable) => {
+                self.accepted_request_ids.insert(id.clone());
+                vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )]
+            }
+            Err(_) => {
+                self.accepted_request_ids.insert(id.clone());
+                vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)]
+            }
+        }
+    }
+
     fn list_threads(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
         let params = match params {
             Some(value) => match serde_json::from_value::<ThreadListParams>(value) {
@@ -462,6 +553,67 @@ where
             jsonrpc: JsonRpcVersion::V2,
             id,
             result: serde_json::to_value(response).expect("thread/list response must serialize"),
+        })]
+    }
+
+    fn search_threads(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
+        let params = match params
+            .ok_or(())
+            .and_then(|value| serde_json::from_value::<ThreadSearchParams>(value).map_err(|_| ()))
+        {
+            Ok(params) => params,
+            Err(()) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+
+        let cursor = params.cursor.as_deref().map(ThreadId::new);
+        let limit = params.limit.unwrap_or(DEFAULT_THREAD_SEARCH_LIMIT) as usize;
+        let page = match self
+            .core
+            .search_threads(&params.query, cursor.as_ref(), limit)
+        {
+            Ok(page) => page,
+            Err(CoreError::StateUnavailable) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )];
+            }
+            Err(_) => {
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
+        self.accepted_request_ids.insert(id.clone());
+        let response = ThreadSearchResponse {
+            data: page
+                .data
+                .into_iter()
+                .map(|summary| PublicThread {
+                    id: summary.id.into_string(),
+                })
+                .collect(),
+            next_cursor: page.next_cursor.map(ThreadId::into_string),
+        };
+        vec![JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: JsonRpcVersion::V2,
+            id,
+            result: serde_json::to_value(response).expect("thread/search response must serialize"),
         })]
     }
 
@@ -708,6 +860,107 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn thread_archive_excludes_the_thread_and_is_idempotent() {
+        let mut session = ready_session(Core::new());
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
+        );
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+
+        for request_id in ["archive-1", "archive-2"] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "thread/archive",
+                    "params": {"threadId": "thr_0000000000000001"}
+                })
+                .to_string(),
+            );
+            assert_eq!(
+                serde_json::to_value(&messages[0]).expect("message serializes"),
+                json!({"jsonrpc": "2.0", "id": request_id, "result": {}})
+            );
+        }
+
+        let list = session
+            .process_line(r#"{"jsonrpc":"2.0","id":"list","method":"thread/list","params":{}}"#);
+        let JsonRpcMessage::Response(list) = &list[0] else {
+            panic!("expected list response");
+        };
+        assert_eq!(list.result, json!({"data": [], "nextCursor": null}));
+
+        let search = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"search","method":"thread/search","params":{"query":"SugarCode"}}"#,
+        );
+        let JsonRpcMessage::Response(search) = &search[0] else {
+            panic!("expected search response");
+        };
+        assert_eq!(search.result, json!({"data": [], "nextCursor": null}));
+
+        for method in ["thread/resume", "turn/start"] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": format!("{method}-after-archive"),
+                    "method": method,
+                    "params": {"threadId": "thr_0000000000000001"}
+                })
+                .to_string(),
+            );
+            let JsonRpcMessage::Error(error) = &messages[0] else {
+                panic!("expected not found error");
+            };
+            assert_eq!(error.error.code, ERROR_THREAD_NOT_FOUND);
+        }
+    }
+
+    #[test]
+    fn thread_archive_rejects_invalid_and_missing_targets_without_consuming_request_id() {
+        let mut session = ready_session(Core::new());
+
+        for params in [
+            json!({"threadId": "thr_missing"}),
+            json!({"threadId": "thr_0000000000000001", "path": "/tmp"}),
+        ] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": "retry",
+                    "method": "thread/archive",
+                    "params": params
+                })
+                .to_string(),
+            );
+            let JsonRpcMessage::Error(error) = &messages[0] else {
+                panic!("expected archive error");
+            };
+            assert!(
+                error.error.code == ERROR_INVALID_PARAMS
+                    || error.error.code == ERROR_THREAD_NOT_FOUND
+            );
+        }
+
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
+        );
+        let success = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        assert!(matches!(success[0], JsonRpcMessage::Response(_)));
+
+        let duplicate = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        let JsonRpcMessage::Error(error) = &duplicate[0] else {
+            panic!("expected duplicate error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
     }
 
     #[test]
@@ -1005,6 +1258,7 @@ mod tests {
     fn durable_state_failures_use_the_stable_public_error_without_details() {
         for request in [
             r#"{"jsonrpc":"2.0","id":"start","method":"thread/start","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
         ] {
@@ -1018,6 +1272,24 @@ mod tests {
             assert_eq!(error.error.message, "State unavailable");
             assert!(error.error.data.is_none());
         }
+    }
+
+    #[test]
+    fn an_uncertain_archive_attempt_consumes_its_request_id() {
+        let mut session = ready_session(StateUnavailableCore);
+        let request = r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#;
+
+        let first = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &first[0] else {
+            panic!("expected state error");
+        };
+        assert_eq!(error.error.code, ERROR_STATE_UNAVAILABLE);
+
+        let second = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &second[0] else {
+            panic!("expected duplicate error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
     }
 
     #[test]
@@ -1174,6 +1446,91 @@ mod tests {
             panic!("expected state error");
         };
         assert_eq!(error.error.code, ERROR_STATE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn thread_search_returns_only_matching_threads_in_stable_id_order() {
+        let mut session = ready_session(Core::new());
+        for sequence in 1..=3 {
+            session.process_line(&format!(
+                r#"{{"jsonrpc":"2.0","id":"start-{sequence}","method":"thread/start","params":{{}}}}"#
+            ));
+            if sequence < 3 {
+                session.process_line(&format!(
+                    r#"{{"jsonrpc":"2.0","id":"turn-{sequence}","method":"turn/start","params":{{"threadId":"thr_{sequence:016}"}}}}"#
+                ));
+            }
+        }
+
+        let first = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"search-1","method":"thread/search","params":{"query":"SugarCode response","limit":1}}"#,
+        );
+        let JsonRpcMessage::Response(first) = &first[0] else {
+            panic!("expected search response");
+        };
+        assert_eq!(
+            first.result,
+            json!({
+                "data": [{"id": "thr_0000000000000002"}],
+                "nextCursor": "thr_0000000000000002"
+            })
+        );
+
+        let second = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"search-2","method":"thread/search","params":{"query":"SugarCode response","cursor":"thr_0000000000000002","limit":1}}"#,
+        );
+        let JsonRpcMessage::Response(second) = &second[0] else {
+            panic!("expected second search response");
+        };
+        assert_eq!(
+            second.result,
+            json!({
+                "data": [{"id": "thr_0000000000000001"}],
+                "nextCursor": null
+            })
+        );
+    }
+
+    #[test]
+    fn thread_search_rejects_invalid_params_and_redacts_state_failures() {
+        let mut session = ready_session(Core::new());
+        for (index, params) in [
+            r#"{}"#,
+            r#"{"query":""}"#,
+            r#"{"query":"private\nquery"}"#,
+            r#"{"query":"valid","limit":0}"#,
+            r#"{"query":"valid","limit":101}"#,
+            r#"{"query":"valid","cursor":"thr_missing"}"#,
+            r#"{"query":"valid","score":true}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let messages = session.process_line(&format!(
+                r#"{{"jsonrpc":"2.0","id":"invalid-search-{index}","method":"thread/search","params":{params}}}"#
+            ));
+            let JsonRpcMessage::Error(error) = &messages[0] else {
+                panic!("expected invalid params");
+            };
+            assert_eq!(error.error.code, ERROR_INVALID_PARAMS);
+            assert!(error.error.data.is_none());
+        }
+
+        let mut unavailable = ready_session(StateUnavailableCore);
+        let messages = unavailable.process_line(
+            r#"{"jsonrpc":"2.0","id":"search","method":"thread/search","params":{"query":"private-query-sentinel"}}"#,
+        );
+        let JsonRpcMessage::Error(error) = &messages[0] else {
+            panic!("expected state error");
+        };
+        assert_eq!(error.error.code, ERROR_STATE_UNAVAILABLE);
+        assert_eq!(error.error.message, "State unavailable");
+        assert!(error.error.data.is_none());
+        assert!(
+            !serde_json::to_string(error)
+                .expect("serialize")
+                .contains("private-query-sentinel")
+        );
     }
 
     fn response_turn_id(messages: &[JsonRpcMessage]) -> &str {

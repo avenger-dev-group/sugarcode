@@ -18,10 +18,14 @@ use crate::RequestId;
 use crate::ServerCapabilities;
 use crate::ServerInfo;
 use crate::Thread;
+use crate::ThreadArchiveParams;
+use crate::ThreadArchiveResponse;
 use crate::ThreadListParams;
 use crate::ThreadListResponse;
 use crate::ThreadResumeParams;
 use crate::ThreadResumeResponse;
+use crate::ThreadSearchParams;
+use crate::ThreadSearchResponse;
 use crate::ThreadStartParams;
 use crate::ThreadStartResponse;
 use crate::ThreadStartedNotification;
@@ -65,8 +69,12 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         AgentMessageDeltaNotification::decl(),
         ItemCompletedNotification::decl(),
         Thread::decl(),
+        ThreadArchiveParams::decl(),
+        ThreadArchiveResponse::decl(),
         ThreadListParams::decl(),
         ThreadListResponse::decl(),
+        ThreadSearchParams::decl(),
+        ThreadSearchResponse::decl(),
         ThreadStartParams::decl(),
         ThreadStartResponse::decl(),
         ThreadStartedNotification::decl(),
@@ -140,12 +148,28 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     )?;
     write_schema(out_dir.join("Thread.schema.json"), &schema_for!(Thread))?;
     write_schema(
+        out_dir.join("ThreadArchiveParams.schema.json"),
+        &schema_for!(ThreadArchiveParams),
+    )?;
+    write_schema(
+        out_dir.join("ThreadArchiveResponse.schema.json"),
+        &schema_for!(ThreadArchiveResponse),
+    )?;
+    write_schema(
         out_dir.join("ThreadListParams.schema.json"),
         &schema_for!(ThreadListParams),
     )?;
     write_schema(
         out_dir.join("ThreadListResponse.schema.json"),
         &schema_for!(ThreadListResponse),
+    )?;
+    write_schema(
+        out_dir.join("ThreadSearchParams.schema.json"),
+        &schema_for!(ThreadSearchParams),
+    )?;
+    write_schema(
+        out_dir.join("ThreadSearchResponse.schema.json"),
+        &schema_for!(ThreadSearchResponse),
     )?;
     write_schema(
         out_dir.join("ThreadStartParams.schema.json"),

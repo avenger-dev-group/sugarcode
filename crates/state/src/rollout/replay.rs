@@ -1,3 +1,4 @@
+use super::DurableThreadLifecycle;
 use super::DurableThreadSnapshot;
 use super::IdSequences;
 use super::MAX_ROLLOUT_FILE_BYTES;
@@ -184,6 +185,9 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     if thread_id != expected_thread_id {
                         return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
                     }
+                    if thread.lifecycle == DurableThreadLifecycle::Archived {
+                        return Err(corrupt(&path, offset as u64, "recordAfterThreadArchive"));
+                    }
                     let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")
                         .map_err(|_| corrupt(&path, offset as u64, "invalidTurnId"))?;
                     if !turn_ids.insert(turn.id.clone()) {
@@ -202,6 +206,21 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                         sequences.item = sequences.item.max(item_sequence);
                     }
                     thread.turns.push(turn);
+                }
+                DecodedRecord::ThreadArchived {
+                    thread_id,
+                    sequence: _,
+                } => {
+                    let thread = snapshot
+                        .as_mut()
+                        .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
+                    if thread_id != expected_thread_id {
+                        return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
+                    }
+                    if thread.lifecycle == DurableThreadLifecycle::Archived {
+                        return Err(corrupt(&path, offset as u64, "duplicateThreadArchive"));
+                    }
+                    thread.lifecycle = DurableThreadLifecycle::Archived;
                 }
             }
             expected_sequence = expected_sequence
