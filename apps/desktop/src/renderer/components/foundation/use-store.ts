@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 import type { FoundationStore, Theme } from './types';
 
-export const useFoundationStore = (): FoundationStore => {
+export const useStore = (): FoundationStore => {
   const [theme, setTheme] = useState<Theme>('light');
   const isDark = theme === 'dark';
 

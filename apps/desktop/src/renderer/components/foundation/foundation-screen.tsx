@@ -2,10 +2,10 @@ import { Moon, Sun } from 'lucide-react';
 
 import { Button } from '@/renderer/components/ui/button';
 
-import { useFoundationStore } from './use-store';
+import { useStore } from './use-store';
 
 export const FoundationScreen = () => {
-  const { isDark, themeLabel, toggleTheme } = useFoundationStore();
+  const { isDark, themeLabel, toggleTheme } = useStore();
 
   return (
     <div className={isDark ? 'dark' : undefined}>
