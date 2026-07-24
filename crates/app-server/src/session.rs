@@ -23,6 +23,7 @@ use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::PROTOCOL_VERSION;
 use sugarcode_app_server_protocol::PlatformInfo;
 use sugarcode_app_server_protocol::RequestId;
+use sugarcode_app_server_protocol::SUGARCODE_PRODUCT_VERSION;
 use sugarcode_app_server_protocol::ServerCapabilities;
 use sugarcode_app_server_protocol::ServerInfo;
 use sugarcode_app_server_protocol::Thread as PublicThread;
@@ -222,7 +223,7 @@ where
             protocol_version: PROTOCOL_VERSION,
             server_info: ServerInfo {
                 name: "sugarcode".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                version: SUGARCODE_PRODUCT_VERSION.to_string(),
             },
             platform: PlatformInfo {
                 family: std::env::consts::FAMILY.to_string(),

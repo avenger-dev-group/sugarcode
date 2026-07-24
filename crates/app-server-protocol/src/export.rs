@@ -74,6 +74,18 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
     protocol.push_str(
         "export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };\n\n",
     );
+    protocol.push_str(&format!(
+        "export const JSON_RPC_VERSION = {:?} as const;\n\n",
+        crate::JSON_RPC_VERSION
+    ));
+    protocol.push_str(&format!(
+        "export const PROTOCOL_VERSION = {} as const;\n\n",
+        crate::PROTOCOL_VERSION
+    ));
+    protocol.push_str(&format!(
+        "export const SUGARCODE_PRODUCT_VERSION = {:?} as const;\n\n",
+        crate::SUGARCODE_PRODUCT_VERSION
+    ));
     for declaration in declarations {
         protocol.push_str("export ");
         protocol.push_str(&declaration);

@@ -39,6 +39,7 @@ pub use turn::TurnStatus;
 
 pub const JSON_RPC_VERSION: &str = "2.0";
 pub const PROTOCOL_VERSION: u32 = 1;
+pub const SUGARCODE_PRODUCT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const ERROR_PARSE: i32 = -32700;
 pub const ERROR_INVALID_REQUEST: i32 = -32600;

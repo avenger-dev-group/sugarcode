@@ -52,7 +52,10 @@ async fn main() {
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Version => {
-            println!("sugarcode {}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "sugarcode {}",
+                sugarcode_app_server_protocol::SUGARCODE_PRODUCT_VERSION
+            );
             println!(
                 "app-server-protocol {}",
                 sugarcode_app_server_protocol::PROTOCOL_VERSION
