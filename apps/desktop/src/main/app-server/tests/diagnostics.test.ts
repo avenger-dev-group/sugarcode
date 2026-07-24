@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DiagnosticTailBuffer } from './diagnostics';
+import { DiagnosticTailBuffer } from '../diagnostics';
 
 describe('DiagnosticTailBuffer', () => {
   it('retains only the configured byte tail', () => {

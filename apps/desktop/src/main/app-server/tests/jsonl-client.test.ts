@@ -3,7 +3,7 @@ import { PassThrough, Writable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { JsonlClient } from './jsonl-client';
+import { JsonlClient } from '../jsonl-client';
 
 const initializeParams = {
   protocolVersion: 1,

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ConnectionStateListener } from '@/shared/connection';
 
-import { useStore } from './use-store';
+import { useStore } from '../use-store';
 
 const boundary = vi.hoisted(() => ({
   getConnectionState: vi.fn(),

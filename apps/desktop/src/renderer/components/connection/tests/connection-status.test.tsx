@@ -2,8 +2,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import { describe, expect, it } from 'vitest';
 
-import { ConnectionStatusView } from './connection-status';
-import { toConnectionViewModel } from './use-store';
+import { ConnectionStatusView } from '../connection-status';
+import { toConnectionViewModel } from '../use-store';
 
 describe('ConnectionStatusView', () => {
   it.each([

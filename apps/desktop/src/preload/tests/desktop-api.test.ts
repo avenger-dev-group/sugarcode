@@ -10,7 +10,7 @@ import {
 import {
   createDesktopApi,
   type IpcRendererBoundary,
-} from './desktop-api';
+} from '../desktop-api';
 
 const createIpcBoundary = () => {
   const listeners = new Map<

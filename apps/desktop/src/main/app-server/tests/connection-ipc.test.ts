@@ -19,8 +19,8 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { registerConnectionIpc } from './connection-ipc';
-import type { ConnectionSupervisor } from './connection-supervisor';
+import { registerConnectionIpc } from '../connection-ipc';
+import type { ConnectionSupervisor } from '../connection-supervisor';
 
 describe('registerConnectionIpc', () => {
   it('accepts only the owned main frame and pushes bounded snapshots', () => {

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createDevelopmentCliEnvironment,
   resolveDevelopmentCli,
-} from './development-cli';
+} from '../development-cli';
 
 const temporaryRoots: string[] = [];
 

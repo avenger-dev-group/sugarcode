@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "pnpm test:unit && pnpm test:integration",
     "test:unit": "vitest run --exclude \"**/*.integration.test.ts\"",
-    "test:integration": "vitest run src/main/app-server/app-server-handshake.integration.test.ts",
+    "test:integration": "vitest run src/main/app-server/tests/app-server-handshake.integration.test.ts",
     "check": "pnpm lint && pnpm typecheck && pnpm test:unit"
   },
   "keywords": [],
