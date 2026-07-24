@@ -64,6 +64,7 @@ type ProcessResult = Readonly<{
 
 type PreparedSidecar = Readonly<{
   temporaryRoot: string;
+  verificationHome: string;
   resourceDirectory: string;
   sourceExecutablePath: string;
   target: CliTarget;
@@ -179,10 +180,18 @@ const verifyVersion = async (
   executablePath: string,
   workingDirectory: string,
   target: CliTarget,
+  verificationHome: string,
 ): Promise<void> => {
+  const environment = createCliEnvironment(
+    {
+      ...process.env,
+      SUGARCODE_HOME: verificationHome,
+    },
+    target.platform,
+  );
   const result = await runProcess(executablePath, ['version'], {
     cwd: workingDirectory,
-    env: createCliEnvironment(process.env, target.platform),
+    env: environment,
     timeoutMs: VERSION_TIMEOUT_MS,
   });
   const expected =
@@ -223,11 +232,19 @@ const verifyHandshake = async (
   executablePath: string,
   workingDirectory: string,
   target: CliTarget,
+  verificationHome: string,
 ): Promise<void> => {
+  const environment = createCliEnvironment(
+    {
+      ...process.env,
+      SUGARCODE_HOME: verificationHome,
+    },
+    target.platform,
+  );
   const child = spawn(executablePath, ['app-server', '--stdio'], {
     cwd: workingDirectory,
     detached: false,
-    env: createCliEnvironment(process.env, target.platform),
+    env: environment,
     shell: false,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
@@ -288,10 +305,21 @@ const verifyExecutable = async (
   executablePath: string,
   workingDirectory: string,
   target: CliTarget,
+  verificationHome: string,
 ): Promise<void> => {
   await assertFile(executablePath, target.platform, true);
-  await verifyVersion(executablePath, workingDirectory, target);
-  await verifyHandshake(executablePath, workingDirectory, target);
+  await verifyVersion(
+    executablePath,
+    workingDirectory,
+    target,
+    verificationHome,
+  );
+  await verifyHandshake(
+    executablePath,
+    workingDirectory,
+    target,
+    verificationHome,
+  );
 };
 
 const readDesktopPackage = async (
@@ -343,6 +371,11 @@ export const preparePackagedSidecar = async (
   );
   registerTemporaryRoot(temporaryRoot);
   try {
+    const verificationHome = path.join(
+      temporaryRoot,
+      'verification-home',
+    );
+    await mkdir(verificationHome);
     const cargoTarget = path.join(temporaryRoot, 'cargo-target');
     await runProcess(
       'cargo',
@@ -376,6 +409,7 @@ export const preparePackagedSidecar = async (
       sourceExecutablePath,
       options.workspaceRoot,
       target,
+      verificationHome,
     );
 
     const resourceDirectory = path.join(
@@ -416,6 +450,7 @@ export const preparePackagedSidecar = async (
     );
     return {
       temporaryRoot,
+      verificationHome,
       resourceDirectory,
       sourceExecutablePath,
       target,
@@ -528,6 +563,7 @@ export const smokePackagedSidecar = async (
     packagedCli.executablePath,
     packagedCli.workingDirectory,
     prepared.target,
+    prepared.verificationHome,
   );
 };
 

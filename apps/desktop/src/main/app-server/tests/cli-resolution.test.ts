@@ -99,16 +99,38 @@ describe('createCliEnvironment', () => {
     expect(
       createCliEnvironment(
         {
+          HOME: '/home/tester',
           LANG: 'en_US.UTF-8',
           PATH: '/untrusted',
           SECRET_TOKEN: 'secret',
+          SUGARCODE_HOME: '/home/tester/.sugarcode-test',
           TMPDIR: '/tmp',
         },
         'linux',
       ),
     ).toEqual({
+      HOME: '/home/tester',
       LANG: 'en_US.UTF-8',
+      SUGARCODE_HOME: '/home/tester/.sugarcode-test',
       TMPDIR: '/tmp',
+    });
+  });
+
+  it('forwards only the explicit SugarCode home on Windows', () => {
+    expect(
+      createCliEnvironment(
+        {
+          PATH: 'C:\\untrusted',
+          SECRET_TOKEN: 'secret',
+          SUGARCODE_HOME: 'C:\\Users\\tester\\.sugarcode-test',
+          SYSTEMROOT: 'C:\\Windows',
+          USERPROFILE: 'C:\\Users\\tester',
+        },
+        'win32',
+      ),
+    ).toEqual({
+      SUGARCODE_HOME: 'C:\\Users\\tester\\.sugarcode-test',
+      SYSTEMROOT: 'C:\\Windows',
     });
   });
 });

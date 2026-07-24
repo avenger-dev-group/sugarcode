@@ -153,8 +153,8 @@ export const createCliEnvironment = (
   const environment: NodeJS.ProcessEnv = {};
   const keys =
     platform === 'win32'
-      ? ['SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP']
-      : ['TMPDIR', 'LANG', 'LC_ALL'];
+      ? ['SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'SUGARCODE_HOME']
+      : ['HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'SUGARCODE_HOME'];
   for (const key of keys) {
     copyEnvironmentValue(source, environment, key);
   }

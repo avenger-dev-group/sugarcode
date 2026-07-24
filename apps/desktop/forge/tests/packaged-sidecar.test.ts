@@ -75,6 +75,7 @@ const createPackagedFixture = async (): Promise<{
       sourceExecutablePath: path.join(outputPath, 'built-sugarcode'),
       target,
       temporaryRoot: path.join(outputPath, 'temporary-sidecar'),
+      verificationHome: path.join(outputPath, 'verification-home'),
     },
     resourceDirectory,
     resourcesPath,
