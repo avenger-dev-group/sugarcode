@@ -1,7 +1,11 @@
+mod credential;
+
 use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
+use std::io::IsTerminal;
 use std::path::PathBuf;
+use sugarcode_credential_store::OsCredentialStore;
 
 #[derive(Debug, Parser)]
 #[command(name = "sugarcode", version)]
@@ -19,6 +23,8 @@ enum Command {
     Version,
     /// Validate SugarCode's non-secret configuration.
     Config(ConfigArgs),
+    /// Manage secrets in the operating-system credential store.
+    Credential(CredentialArgs),
     /// Run the local app server or generate its public protocol artifacts.
     AppServer(AppServerArgs),
 }
@@ -33,6 +39,34 @@ struct ConfigArgs {
 enum ConfigCommand {
     /// Validate the effective non-secret configuration.
     Validate,
+}
+
+#[derive(Debug, Args)]
+struct CredentialArgs {
+    #[command(subcommand)]
+    command: CredentialCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CredentialCommand {
+    /// Read a secret from standard input and store it.
+    Set {
+        /// Non-secret logical credential reference.
+        reference: String,
+        /// Require secret input on standard input.
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Report whether a credential is present without displaying it.
+    Status {
+        /// Non-secret logical credential reference.
+        reference: String,
+    },
+    /// Delete a credential if it is present.
+    Delete {
+        /// Non-secret logical credential reference.
+        reference: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -87,6 +121,30 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 "SugarCode configuration is valid (schema version {}).",
                 config.schema_version()
             );
+        }
+        Command::Credential(args) => {
+            let config = sugarcode_state::load_effective_config(home)?;
+            let store = OsCredentialStore::new(config.home().path());
+            let action = match args.command {
+                CredentialCommand::Set { reference, stdin } => credential::CredentialAction::Set {
+                    reference,
+                    read_stdin: stdin,
+                },
+                CredentialCommand::Status { reference } => {
+                    credential::CredentialAction::Status { reference }
+                }
+                CredentialCommand::Delete { reference } => {
+                    credential::CredentialAction::Delete { reference }
+                }
+            };
+            let stdin_is_terminal = std::io::stdin().is_terminal();
+            credential::run_credential_action(
+                action,
+                &store,
+                &mut std::io::stdin().lock(),
+                stdin_is_terminal,
+                &mut std::io::stdout().lock(),
+            )?;
         }
         Command::AppServer(args) => match (args.stdio, args.command) {
             (true, None) => {
