@@ -7,7 +7,12 @@
     "esModuleInterop": true,
     "noImplicitAny": true,
     "sourceMap": true,
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
     "outDir": "dist",
     "moduleResolution": "Bundler",
     "resolveJsonModule": true
