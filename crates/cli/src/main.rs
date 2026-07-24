@@ -6,6 +6,9 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "sugarcode", version)]
 struct Cli {
+    /// Override the SugarCode home directory.
+    #[arg(long, global = true, value_name = "DIR")]
+    home: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -14,8 +17,22 @@ struct Cli {
 enum Command {
     /// Print product and app-server protocol versions.
     Version,
+    /// Validate SugarCode's non-secret configuration.
+    Config(ConfigArgs),
     /// Run the local app server or generate its public protocol artifacts.
     AppServer(AppServerArgs),
+}
+
+#[derive(Debug, Args)]
+struct ConfigArgs {
+    #[command(subcommand)]
+    command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Validate the effective non-secret configuration.
+    Validate,
 }
 
 #[derive(Debug, Args)]
@@ -50,7 +67,8 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    match cli.command {
+    let Cli { home, command } = cli;
+    match command {
         Command::Version => {
             println!(
                 "sugarcode {}",
@@ -61,8 +79,20 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 sugarcode_app_server_protocol::PROTOCOL_VERSION
             );
         }
+        Command::Config(ConfigArgs {
+            command: ConfigCommand::Validate,
+        }) => {
+            let config = sugarcode_state::load_effective_config(home)?;
+            println!(
+                "SugarCode configuration is valid (schema version {}).",
+                config.schema_version()
+            );
+        }
         Command::AppServer(args) => match (args.stdio, args.command) {
-            (true, None) => sugarcode_app_server::run_stdio().await?,
+            (true, None) => {
+                let _effective_config = sugarcode_state::load_effective_config(home)?;
+                sugarcode_app_server::run_stdio().await?;
+            }
             (false, Some(AppServerCommand::GenerateTs(args))) => {
                 sugarcode_app_server::generate_typescript(&args.out)?;
             }

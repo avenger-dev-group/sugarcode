@@ -13,7 +13,9 @@ path = "src/main.rs"
 clap.workspace = true
 sugarcode-app-server = { path = "../app-server" }
 sugarcode-app-server-protocol = { path = "../app-server-protocol" }
+sugarcode-state = { path = "../state" }
 tokio.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile.workspace = true

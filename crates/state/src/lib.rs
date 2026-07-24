@@ -1,0 +1,56 @@
+mod config;
+mod home;
+
+pub use config::CONFIG_FILE_NAME;
+pub use config::CURRENT_CONFIG_SCHEMA_VERSION;
+pub use config::ConfigError;
+pub use config::EffectiveConfig;
+pub use config::MAX_CONFIG_BYTES;
+pub use config::load_effective_config;
+pub use config::load_effective_config_for_home;
+pub use home::HomeError;
+pub use home::HomeResolutionInputs;
+pub use home::HomeSource;
+pub use home::SUGARCODE_HOME_ENV;
+pub use home::SugarCodeHome;
+pub use home::resolve_sugarcode_home;
+pub use home::resolve_sugarcode_home_from_process;
+
+use std::error::Error;
+use std::fmt;
+
+#[derive(Debug)]
+pub enum StateError {
+    Home(HomeError),
+    Config(ConfigError),
+}
+
+impl fmt::Display for StateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Home(error) => error.fmt(formatter),
+            Self::Config(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for StateError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Home(error) => Some(error),
+            Self::Config(error) => Some(error),
+        }
+    }
+}
+
+impl From<HomeError> for StateError {
+    fn from(error: HomeError) -> Self {
+        Self::Home(error)
+    }
+}
+
+impl From<ConfigError> for StateError {
+    fn from(error: ConfigError) -> Self {
+        Self::Config(error)
+    }
+}

@@ -37,6 +37,7 @@ fn turn_start_failures_match_golden_trace() {
 }
 
 fn assert_golden(name: &str) {
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
     let fixture_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-fixtures/app-server/v1");
     let input =
@@ -46,6 +47,7 @@ fn assert_golden(name: &str) {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["app-server", "--stdio"])
+        .env("SUGARCODE_HOME", sugarcode_home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
