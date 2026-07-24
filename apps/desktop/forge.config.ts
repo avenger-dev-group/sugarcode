@@ -6,12 +6,24 @@ import { MakerRpm } from '@electron-forge/maker-rpm';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import path from 'node:path';
+
+import { createPackagedSidecarHooks } from './forge/packaged-sidecar';
+
+const sidecarHooks = createPackagedSidecarHooks({
+  desktopRoot: __dirname,
+  workspaceRoot: path.resolve(__dirname, '..', '..'),
+});
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
   },
   rebuildConfig: {},
+  hooks: {
+    prePackage: sidecarHooks.prePackage,
+    postPackage: sidecarHooks.postPackage,
+  },
   makers: [
     new MakerSquirrel({}),
     new MakerZIP({}, ['darwin']),
