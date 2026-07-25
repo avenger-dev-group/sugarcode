@@ -10,6 +10,8 @@ pub use secret::SecretValue;
 use std::error::Error;
 use std::fmt;
 
+pub const MODEL_TOKEN_CREDENTIAL_REFERENCE: &str = "model-api-token";
+
 pub trait CredentialStore: fmt::Debug + Send + Sync {
     fn get(
         &self,

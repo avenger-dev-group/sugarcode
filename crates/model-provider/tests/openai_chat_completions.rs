@@ -189,6 +189,76 @@ async fn data_after_finish_reason_is_a_protocol_error() {
 }
 
 #[tokio::test]
+async fn usage_only_chunk_after_finish_reason_is_accepted_once() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert_eq!(
+        events,
+        vec![
+            Ok(ModelEvent::Usage(sugarcode_model_provider::ModelUsage {
+                input_tokens: Some(2),
+                output_tokens: Some(3),
+                total_tokens: Some(5),
+                ..Default::default()
+            })),
+            Ok(ModelEvent::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn mixed_content_and_tool_output_is_rejected_before_any_delta() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"must-not-emit\",\"tool_calls\":[]},\"finish_reason\":null}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert_eq!(events.len(), 1);
+    let error = events[0].as_ref().expect_err("unsupported output");
+    assert_eq!(error.kind(), ModelErrorKind::UnsupportedOutput);
+}
+
+#[tokio::test]
+async fn unsupported_secondary_choice_is_rejected_before_primary_delta() {
+    let body = concat!(
+        "data: {\"choices\":[",
+        "{\"index\":0,\"delta\":{\"content\":\"must-not-emit\"},\"finish_reason\":null},",
+        "{\"index\":1,\"delta\":{\"tool_calls\":[]},\"finish_reason\":\"tool_calls\"}",
+        "]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert_eq!(events.len(), 1);
+    let error = events[0].as_ref().expect_err("unsupported output");
+    assert_eq!(error.kind(), ModelErrorKind::UnsupportedOutput);
+}
+
+#[tokio::test]
 async fn oversized_sse_event_is_rejected_without_unbounded_buffering() {
     let body = format!("data: {}\n\n", "x".repeat(256 * 1024));
     let (endpoint, server) = response_server(body.into_bytes(), Vec::new()).await;
@@ -365,6 +435,44 @@ async fn disconnect_before_done_is_retryable_transport_failure() {
 
     assert_eq!(events[0], Ok(ModelEvent::TextDelta("partial".to_string())));
     let error = *events[1].as_ref().expect_err("disconnect error");
+    assert_eq!(error.kind(), ModelErrorKind::Disconnected);
+    assert!(error.retryable());
+}
+
+#[tokio::test]
+async fn truncated_http_body_after_delta_is_retryable_disconnect_not_protocol() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind truncated server");
+    let address = listener.local_addr().expect("truncated server address");
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept request");
+        read_request(&mut socket, true).await;
+        let event = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n";
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    event.len() + 1024,
+                    event
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write truncated response");
+        socket.shutdown().await.expect("close truncated response");
+    });
+    let endpoint =
+        Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint");
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert_eq!(events[0], Ok(ModelEvent::TextDelta("partial".to_string())));
+    let error = events[1].as_ref().expect_err("disconnect");
     assert_eq!(error.kind(), ModelErrorKind::Disconnected);
     assert!(error.retryable());
 }
@@ -553,6 +661,7 @@ async fn read_request(socket: &mut TcpStream, expect_auth: bool) {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         keys,
-        std::collections::BTreeSet::from(["messages", "model", "stream"])
+        std::collections::BTreeSet::from(["messages", "model", "stream", "stream_options"])
     );
+    assert_eq!(body["stream_options"]["include_usage"], true);
 }

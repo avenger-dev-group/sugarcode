@@ -70,8 +70,14 @@ struct TurnDone {
 
 impl TurnDone {
     async fn wait(&self) {
-        while self.complete.load(Ordering::Acquire) == 0 {
-            self.notify.notified().await;
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.complete.load(Ordering::Acquire) != 0 {
+                return;
+            }
+            notified.await;
         }
     }
 
@@ -166,18 +172,22 @@ impl CoreApi for CoreRuntime {
     }
 
     fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        self.reject_active_turn(thread_id)?;
         self.lock_core()?.archive_thread(thread_id)
     }
 
     fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        self.reject_active_turn(thread_id)?;
         self.lock_core()?.unarchive_thread(thread_id)
     }
 
     fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        self.reject_active_turn(thread_id)?;
         self.lock_core()?.delete_thread(thread_id)
     }
 
     fn fork_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
+        self.reject_active_turn(thread_id)?;
         self.lock_core()?.fork_thread(thread_id)
     }
 
@@ -288,6 +298,23 @@ impl CoreApi for CoreRuntime {
             Ok(())
         }
         .boxed()
+    }
+}
+
+impl CoreRuntime {
+    fn reject_active_turn(&self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        let active = self
+            .active
+            .lock()
+            .map_err(|_| CoreError::Internal("active turn lock is unavailable".to_string()))?;
+        if let Some(turn) = active.get(thread_id) {
+            Err(CoreError::TurnAlreadyActive {
+                thread_id: thread_id.clone(),
+                turn_id: turn.turn_id.clone(),
+            })
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -673,10 +700,9 @@ fn clear_active(runtime: &CoreRuntime, thread_id: &ThreadId, turn_id: &TurnId) {
         && active
             .get(thread_id)
             .is_some_and(|active| &active.turn_id == turn_id)
+        && let Some(active) = active.remove(thread_id)
     {
-        if let Some(active) = active.remove(thread_id) {
-            active.done.finish();
-        }
+        active.done.finish();
     }
 }
 
@@ -959,6 +985,65 @@ mod tests {
                 .status,
             DurableTurnStatus::Interrupted
         );
+    }
+
+    #[tokio::test]
+    async fn active_turn_rejects_thread_lifecycle_and_fork_until_terminal() {
+        let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
+            events: vec![Ok(ModelEvent::TextDelta("partial".to_string()))],
+            stay_open: true,
+        });
+        let TurnStartOutcome::Accepted { turn_id } = runtime
+            .start_text_turn(
+                CoreRequestId::new(2),
+                thread_id.clone(),
+                Some("Hello".to_string()),
+            )
+            .expect("start text turn")
+        else {
+            panic!("asynchronous turn");
+        };
+        loop {
+            if matches!(
+                events.recv().await.expect("pre-lifecycle event").kind,
+                CoreEventKind::AgentMessageDelta { .. }
+            ) {
+                break;
+            }
+        }
+
+        for error in [
+            runtime.archive_thread(&thread_id).expect_err("archive"),
+            runtime.delete_thread(&thread_id).expect_err("delete"),
+            runtime.fork_thread(&thread_id).expect_err("fork"),
+        ] {
+            assert!(matches!(
+                error,
+                CoreError::TurnAlreadyActive {
+                    thread_id: ref active_thread,
+                    turn_id: ref active_turn,
+                } if active_thread == &thread_id && active_turn == &turn_id
+            ));
+        }
+
+        assert_eq!(
+            runtime
+                .interrupt_turn(&thread_id, &turn_id)
+                .expect("interrupt"),
+            TurnInterruptOutcome::Accepted
+        );
+        loop {
+            if matches!(
+                events.recv().await.expect("terminal event").kind,
+                CoreEventKind::TurnInterrupted { .. }
+            ) {
+                break;
+            }
+        }
+        runtime.shutdown().await.expect("terminal cleanup");
+        runtime
+            .archive_thread(&thread_id)
+            .expect("archive terminal thread");
     }
 
     #[tokio::test]

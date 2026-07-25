@@ -10,7 +10,12 @@ futures-util.workspace = true
 serde_json.workspace = true
 sugarcode-app-server-protocol = { path = "../app-server-protocol" }
 sugarcode-core = { path = "../core" }
+sugarcode-credential-store = { path = "../credential-store" }
 sugarcode-model-provider = { path = "../model-provider" }
 sugarcode-protocol = { path = "../protocol" }
 sugarcode-state = { path = "../state" }
 tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

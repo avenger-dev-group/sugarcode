@@ -198,6 +198,9 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     mut turn,
                     sequence,
                 } => {
+                    if pending_turn_id.is_some() {
+                        return Err(corrupt(&path, offset as u64, "duplicateTurnStarted"));
+                    }
                     let thread = snapshot
                         .as_mut()
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
@@ -242,6 +245,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                         };
                         return Err(corrupt(&path, offset as u64, kind));
                     }
+                    validate_terminal_turn(&turn, &path, offset as u64)?;
                     if pending_turn_id.as_ref() == Some(&turn.id) {
                         let pending = thread
                             .turns
@@ -256,8 +260,16 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                             .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))? =
                             sequence;
                         pending_turn_id = None;
+                    } else if pending_turn_id.is_some() {
+                        return Err(corrupt(
+                            &path,
+                            offset as u64,
+                            "turnCompletedWhileAnotherTurnPending",
+                        ));
                     } else {
-                        pending_turn_id = None;
+                        if turn.status != super::DurableTurnStatus::Completed {
+                            return Err(corrupt(&path, offset as u64, "legacyTurnMustBeCompleted"));
+                        }
                         validate_new_turn(
                             &turn,
                             &path,
@@ -274,7 +286,13 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     thread_id,
                     sequence: _,
                 } => {
-                    pending_turn_id = None;
+                    if pending_turn_id.is_some() {
+                        return Err(corrupt(
+                            &path,
+                            offset as u64,
+                            "threadLifecycleWhileTurnPending",
+                        ));
+                    }
                     let thread = snapshot
                         .as_mut()
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
@@ -297,7 +315,13 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     thread_id,
                     sequence: _,
                 } => {
-                    pending_turn_id = None;
+                    if pending_turn_id.is_some() {
+                        return Err(corrupt(
+                            &path,
+                            offset as u64,
+                            "threadLifecycleWhileTurnPending",
+                        ));
+                    }
                     let thread = snapshot
                         .as_mut()
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
@@ -324,7 +348,13 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     thread_id,
                     sequence: _,
                 } => {
-                    pending_turn_id = None;
+                    if pending_turn_id.is_some() {
+                        return Err(corrupt(
+                            &path,
+                            offset as u64,
+                            "threadLifecycleWhileTurnPending",
+                        ));
+                    }
                     let thread = snapshot
                         .as_mut()
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
@@ -482,6 +512,25 @@ fn valid_started_items(items: &[super::DurableItemSnapshot]) -> bool {
             super::DurableItemSnapshot::AgentMessage { text, .. },
         ] => text.is_empty(),
         _ => false,
+    }
+}
+
+fn validate_terminal_turn(
+    turn: &super::DurableTurnSnapshot,
+    path: &Path,
+    offset: u64,
+) -> Result<(), RolloutError> {
+    let valid = !turn.items.is_empty()
+        && match turn.status {
+            super::DurableTurnStatus::InProgress => false,
+            super::DurableTurnStatus::Completed => turn.error.is_none(),
+            super::DurableTurnStatus::Failed => turn.error.is_some(),
+            super::DurableTurnStatus::Interrupted => turn.error.is_none(),
+        };
+    if valid {
+        Ok(())
+    } else {
+        Err(corrupt(path, offset, "invalidTerminalTurn"))
     }
 }
 

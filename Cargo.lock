@@ -1862,10 +1862,12 @@ dependencies = [
  "serde_json",
  "sugarcode-app-server-protocol",
  "sugarcode-core",
+ "sugarcode-credential-store",
  "sugarcode-model-provider",
  "sugarcode-protocol",
  "sugarcode-state",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]

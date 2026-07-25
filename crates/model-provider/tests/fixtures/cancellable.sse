@@ -1,2 +1,3 @@
 data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}
 
+: fixture terminator

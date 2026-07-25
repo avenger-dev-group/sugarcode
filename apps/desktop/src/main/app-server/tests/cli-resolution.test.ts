@@ -100,19 +100,23 @@ describe('createCliEnvironment', () => {
       createCliEnvironment(
         {
           HOME: '/home/tester',
+          DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
           LANG: 'en_US.UTF-8',
           PATH: '/untrusted',
           SECRET_TOKEN: 'secret',
           SUGARCODE_HOME: '/home/tester/.sugarcode-test',
           TMPDIR: '/tmp',
+          XDG_RUNTIME_DIR: '/run/user/1000',
         },
         'linux',
       ),
     ).toEqual({
       HOME: '/home/tester',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
       LANG: 'en_US.UTF-8',
       SUGARCODE_HOME: '/home/tester/.sugarcode-test',
       TMPDIR: '/tmp',
+      XDG_RUNTIME_DIR: '/run/user/1000',
     });
   });
 

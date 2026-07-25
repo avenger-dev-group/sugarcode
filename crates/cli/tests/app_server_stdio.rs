@@ -198,6 +198,20 @@ fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
         json!({
             "jsonrpc": "2.0",
             "id": "interrupt",
+            "method": "thread/fork",
+            "params": {"threadId": thread_id}
+        }),
+    );
+    let active_error = read_json(&mut stdout);
+    assert_eq!(active_error["id"], "interrupt");
+    assert_eq!(active_error["error"]["code"], -32009);
+    assert_eq!(active_error["error"]["data"]["turnId"], turn_id);
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "interrupt",
             "method": "turn/interrupt",
             "params": {"threadId": thread_id, "turnId": turn_id}
         }),
@@ -242,6 +256,149 @@ fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
         .read_to_string(&mut stderr)
         .expect("read stderr");
     assert!(stderr.is_empty(), "unexpected diagnostics: {stderr}");
+}
+
+#[test]
+fn stdin_eof_interrupts_active_stream_flushes_terminal_and_replays_it_once() {
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let provider = BlockingMockProvider::start(home.path());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home.path())
+        .args(["app-server", "--stdio"])
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn app-server");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {"name": "eof-test", "version": "1.0.0"}
+            }
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "initialize");
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "initialized"}),
+    );
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": "thread", "method": "thread/start"}),
+    );
+    let thread_response = read_json(&mut stdout);
+    let thread_id = thread_response["result"]["thread"]["id"]
+        .as_str()
+        .expect("thread id")
+        .to_string();
+    assert_eq!(read_json(&mut stdout)["method"], "thread/started");
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn",
+            "method": "turn/start",
+            "params": {"threadId": thread_id, "input": "Hello"}
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "turn");
+    for expected in [
+        "turn/started",
+        "item/started",
+        "item/completed",
+        "item/started",
+        "item/agentMessage/delta",
+    ] {
+        assert_eq!(read_json(&mut stdout)["method"], expected);
+    }
+    provider.wait_until_delta_sent();
+
+    drop(stdin);
+    let mut trailing = String::new();
+    stdout
+        .read_to_string(&mut trailing)
+        .expect("drain shutdown output");
+    let trailing = trailing
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("shutdown JSON"))
+        .collect::<Vec<_>>();
+    assert_eq!(trailing.len(), 2);
+    assert_eq!(trailing[0]["method"], "item/completed");
+    assert_eq!(trailing[1]["method"], "turn/completed");
+    assert_eq!(trailing[1]["params"]["turn"]["status"], "interrupted");
+    provider.wait_until_connection_closed();
+    assert!(child.wait().expect("wait app-server").success());
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stderr");
+    assert!(stderr.is_empty(), "{stderr}");
+    drop(provider);
+
+    let mut restarted = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home.path())
+        .args(["app-server", "--stdio"])
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("restart app-server");
+    let mut restarted_stdin = restarted.stdin.take().expect("restart stdin");
+    let mut restarted_stdout = BufReader::new(restarted.stdout.take().expect("restart stdout"));
+    send_json(
+        &mut restarted_stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {"name": "eof-restart-test", "version": "1.0.0"}
+            }
+        }),
+    );
+    assert_eq!(read_json(&mut restarted_stdout)["id"], "initialize");
+    send_json(
+        &mut restarted_stdin,
+        json!({"jsonrpc": "2.0", "method": "initialized"}),
+    );
+    send_json(
+        &mut restarted_stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "resume",
+            "method": "thread/resume",
+            "params": {"threadId": thread_id}
+        }),
+    );
+    let resumed = read_json(&mut restarted_stdout);
+    assert_eq!(
+        resumed["result"]["turns"].as_array().expect("turns").len(),
+        1
+    );
+    assert_eq!(resumed["result"]["turns"][0]["status"], "interrupted");
+    drop(restarted_stdin);
+    assert!(
+        restarted
+            .wait()
+            .expect("wait restarted app-server")
+            .success()
+    );
 }
 
 #[test]
@@ -445,11 +602,7 @@ fn serve_recorded_response(stream: &mut TcpStream, body: &str) {
     }
     let headers = String::from_utf8_lossy(&request);
     assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
-    assert!(
-        headers
-            .to_ascii_lowercase()
-            .contains("authorization: bearer fixture-token\r\n")
-    );
+    assert!(!headers.to_ascii_lowercase().contains("authorization:"));
     let header_end = request
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -573,7 +726,6 @@ fn read_provider_request(stream: &mut TcpStream) {
 }
 
 fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
-    let token = "fixture-token";
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home)
@@ -589,8 +741,7 @@ fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
         json!({
             "apiFormat": "openai-chat-completions",
             "endpoint": format!("http://{address}/v1/chat/completions"),
-            "model": "fixture-model",
-            "token": token
+            "model": "fixture-model"
         })
     )
     .expect("write model config");
@@ -600,8 +751,7 @@ fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
         "model config failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!String::from_utf8_lossy(&output.stdout).contains(token));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains(token));
+    assert!(output.stderr.is_empty());
 }
 
 fn send_json(stdin: &mut impl Write, value: Value) {

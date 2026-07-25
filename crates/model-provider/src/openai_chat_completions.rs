@@ -7,6 +7,7 @@ use crate::ModelProvider;
 use crate::ModelRequest;
 use crate::ModelRole;
 use crate::ModelUsage;
+use eventsource_stream::EventStreamError;
 use eventsource_stream::Eventsource;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
@@ -16,6 +17,7 @@ use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
 use std::time::Duration;
@@ -152,6 +154,7 @@ async fn process_stream(
     });
     let mut stream = bounded_bytes.eventsource();
     let mut clean_finish = false;
+    let mut usage_seen = false;
     loop {
         let next = tokio::select! {
             _ = sender.closed() => return,
@@ -166,8 +169,20 @@ async fn process_stream(
                 send_error(&sender, ModelError::new(ModelErrorKind::Disconnected, true)).await;
                 return;
             }
-            Ok(Some(Err(_))) => {
-                send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
+            Ok(Some(Err(error))) => {
+                let error = match error {
+                    EventStreamError::Transport(error)
+                        if error.kind() != io::ErrorKind::InvalidData =>
+                    {
+                        ModelError::new(ModelErrorKind::Disconnected, true)
+                    }
+                    EventStreamError::Transport(_)
+                    | EventStreamError::Utf8(_)
+                    | EventStreamError::Parser(_) => {
+                        ModelError::new(ModelErrorKind::Protocol, false)
+                    }
+                };
+                send_error(&sender, error).await;
                 return;
             }
             Ok(Some(Ok(event))) => event,
@@ -180,11 +195,6 @@ async fn process_stream(
             }
             return;
         }
-        if clean_finish {
-            send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
-            return;
-        }
-
         let chunk = match serde_json::from_str::<ChatChunk>(&event.data) {
             Ok(chunk) => chunk,
             Err(_) => {
@@ -196,18 +206,56 @@ async fn process_stream(
             send_error(&sender, ModelError::new(ModelErrorKind::Server, true)).await;
             return;
         }
-        if let Some(usage) = chunk.usage
-            && sender
+        if clean_finish {
+            let Some(usage) = chunk.usage else {
+                send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
+                return;
+            };
+            if usage_seen || !chunk.choices.is_empty() {
+                send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
+                return;
+            }
+            usage_seen = true;
+            if sender
                 .send(Ok(ModelEvent::Usage(usage.into())))
                 .await
                 .is_err()
+            {
+                return;
+            }
+            continue;
+        }
+        if let Some(usage) = chunk.usage {
+            if usage_seen {
+                send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
+                return;
+            }
+            usage_seen = true;
+            if sender
+                .send(Ok(ModelEvent::Usage(usage.into())))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        if chunk
+            .choices
+            .iter()
+            .any(|choice| choice.delta.has_unsupported_output())
         {
+            send_error(
+                &sender,
+                ModelError::new(ModelErrorKind::UnsupportedOutput, false),
+            )
+            .await;
+            return;
+        }
+        if chunk.choices.iter().any(|choice| choice.index != 0) {
+            send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
             return;
         }
         for choice in chunk.choices {
-            if choice.index != 0 {
-                continue;
-            }
             if let Some(content) = choice.delta.content
                 && !content.is_empty()
                 && sender
@@ -215,14 +263,6 @@ async fn process_stream(
                     .await
                     .is_err()
             {
-                return;
-            }
-            if choice.delta.tool_calls.is_some() || choice.delta.function_call.is_some() {
-                send_error(
-                    &sender,
-                    ModelError::new(ModelErrorKind::UnsupportedOutput, false),
-                )
-                .await;
                 return;
             }
             if let Some(reason) = choice.finish_reason.as_deref() {
@@ -286,6 +326,12 @@ struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
+    stream_options: StreamOptions,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 impl From<ModelRequest> for ChatRequest {
@@ -294,6 +340,9 @@ impl From<ModelRequest> for ChatRequest {
             model: request.model,
             messages: request.messages.into_iter().map(Into::into).collect(),
             stream: true,
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
         }
     }
 }
@@ -335,8 +384,24 @@ struct ChatChoice {
 #[derive(Default, Deserialize)]
 struct ChatDelta {
     content: Option<String>,
+    role: Option<String>,
     tool_calls: Option<serde_json::Value>,
     function_call: Option<serde_json::Value>,
+    refusal: Option<serde_json::Value>,
+    audio: Option<serde_json::Value>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl ChatDelta {
+    fn has_unsupported_output(&self) -> bool {
+        self.tool_calls.is_some()
+            || self.function_call.is_some()
+            || self.refusal.is_some()
+            || self.audio.is_some()
+            || self.role.as_deref().is_some_and(|role| role != "assistant")
+            || !self.extra.is_empty()
+    }
 }
 
 #[derive(Deserialize)]

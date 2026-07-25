@@ -3,10 +3,9 @@ use sugarcode_state::CURRENT_CONFIG_SCHEMA_VERSION;
 use sugarcode_state::ConfigError;
 use sugarcode_state::HomeResolutionInputs;
 use sugarcode_state::MAX_CONFIG_BYTES;
-use sugarcode_state::MAX_MODEL_TOKEN_BYTES;
+use sugarcode_state::MAX_CREDENTIAL_REFERENCE_BYTES;
 use sugarcode_state::ModelApiFormat;
 use sugarcode_state::ModelConfig;
-use sugarcode_state::ModelToken;
 use sugarcode_state::load_effective_config_for_home;
 use sugarcode_state::resolve_sugarcode_home;
 use sugarcode_state::save_model_config;
@@ -169,28 +168,109 @@ fn model_endpoint_requires_https_except_for_exact_loopback_hosts() {
 }
 
 #[test]
-fn model_token_is_bounded_header_safe_and_debug_redacted() {
-    assert!(
-        ModelToken::parse(String::new())
-            .expect("empty token")
-            .is_none()
-    );
-    let token = ModelToken::parse("fixture-secret".to_string())
-        .expect("valid token")
-        .expect("present token");
-    assert_eq!(format!("{token:?}"), "ModelToken(<redacted>)");
-    assert!(
-        ModelToken::parse("a".repeat(MAX_MODEL_TOKEN_BYTES))
-            .expect("maximum token")
-            .is_some()
-    );
-    for invalid in [
-        "a".repeat(MAX_MODEL_TOKEN_BYTES + 1),
-        "contains space".to_string(),
-        "contains\nnewline".to_string(),
-        "contains\rreturn".to_string(),
-        "contains\0nul".to_string(),
+fn model_config_accepts_only_non_secret_credential_references() {
+    for reference in [
+        "model-api-token",
+        "a",
+        &"a".repeat(MAX_CREDENTIAL_REFERENCE_BYTES),
     ] {
-        assert!(ModelToken::parse(invalid).is_err());
+        let model = ModelConfig::new(
+            ModelApiFormat::OpenAiChatCompletions,
+            Url::parse("https://example.com/v1/chat/completions").expect("URL"),
+            "fixture-model".to_string(),
+            Some(reference.to_string()),
+        )
+        .expect("credential reference");
+        assert_eq!(model.credential_reference(), Some(reference));
     }
+    for invalid in [
+        String::new(),
+        "Uppercase".to_string(),
+        "contains_underscore".to_string(),
+        "a".repeat(MAX_CREDENTIAL_REFERENCE_BYTES + 1),
+    ] {
+        assert!(
+            ModelConfig::new(
+                ModelApiFormat::OpenAiChatCompletions,
+                Url::parse("https://example.com/v1/chat/completions").expect("URL"),
+                "fixture-model".to_string(),
+                Some(invalid),
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn model_config_persists_only_the_non_secret_credential_reference() {
+    let (directory, home) = resolved_home();
+    let model = ModelConfig::new(
+        ModelApiFormat::OpenAiChatCompletions,
+        Url::parse("https://example.com/v1/chat/completions").expect("URL"),
+        "fixture-model".to_string(),
+        Some("model-api-token".to_string()),
+    )
+    .expect("model config");
+    let config = save_model_config(&home, &model).expect("save config");
+    assert_eq!(
+        config.model().and_then(ModelConfig::credential_reference),
+        Some("model-api-token")
+    );
+    let stored = fs::read_to_string(directory.path().join("config.toml")).expect("stored config");
+    assert!(stored.contains("credential = \"model-api-token\""));
+    assert!(!stored.contains("token ="));
+}
+
+#[test]
+fn saving_model_config_atomically_replaces_an_existing_regular_file() {
+    let (directory, home) = resolved_home();
+    let first = ModelConfig::new(
+        ModelApiFormat::OpenAiChatCompletions,
+        Url::parse("https://first.example/v1/chat/completions").expect("URL"),
+        "first-model".to_string(),
+        None,
+    )
+    .expect("first model config");
+    save_model_config(&home, &first).expect("initial save");
+
+    let replacement = ModelConfig::new(
+        ModelApiFormat::OpenAiChatCompletions,
+        Url::parse("https://second.example/v1/chat/completions").expect("URL"),
+        "second-model".to_string(),
+        Some("model-api-token".to_string()),
+    )
+    .expect("replacement model config");
+    let loaded = save_model_config(&home, &replacement).expect("replacement save");
+
+    let model = loaded.model().expect("saved model");
+    assert_eq!(model.endpoint(), replacement.endpoint());
+    assert_eq!(model.model(), "second-model");
+    assert_eq!(model.credential_reference(), Some("model-api-token"));
+    let entries = fs::read_dir(directory.path())
+        .expect("read home")
+        .map(|entry| entry.expect("home entry").file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(entries, vec![std::ffi::OsString::from("config.toml")]);
+}
+
+#[test]
+fn legacy_plaintext_model_token_is_rejected_without_echoing_it() {
+    let (directory, home) = resolved_home();
+    let sentinel = "do-not-leak-legacy-token";
+    fs::write(
+        directory.path().join("config.toml"),
+        format!(
+            "schema_version = 1\n\
+             [model]\n\
+             api_format = \"openai-chat-completions\"\n\
+             endpoint = \"https://example.com/v1/chat/completions\"\n\
+             model = \"fixture-model\"\n\
+             token = \"{sentinel}\"\n"
+        ),
+    )
+    .expect("write legacy config");
+
+    let error = load_effective_config_for_home(home).expect_err("plaintext token is unknown");
+    assert!(matches!(error, ConfigError::UnknownField { .. }));
+    assert!(!error.to_string().contains(sentinel));
 }

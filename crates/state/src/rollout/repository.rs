@@ -343,6 +343,11 @@ impl ThreadRepository for RolloutRepository {
                 kind: "materializedThreadNotActive",
             });
         }
+        if snapshot.turns.iter().any(|turn| !valid_terminal_turn(turn)) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidTerminalTurn",
+            });
+        }
         let thread_sequence = parse_canonical_id(snapshot.id.as_str(), "thr_", "thread")?;
         if self.threads.contains_key(&snapshot.id) || thread_sequence <= self.sequences.thread {
             return Err(RolloutError::Collision { kind: "thread" });
@@ -691,6 +696,11 @@ impl ThreadRepository for RolloutRepository {
 
     fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
         self.ensure_available()?;
+        if self.pending_turns.contains_key(thread_id) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "threadLifecycleWhileTurnActive",
+            });
+        }
         let thread = self
             .threads
             .get(thread_id)
@@ -735,6 +745,11 @@ impl ThreadRepository for RolloutRepository {
 
     fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
         self.ensure_available()?;
+        if self.pending_turns.contains_key(thread_id) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "threadLifecycleWhileTurnActive",
+            });
+        }
         let thread = self
             .threads
             .get(thread_id)
@@ -779,6 +794,11 @@ impl ThreadRepository for RolloutRepository {
 
     fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
         self.ensure_available()?;
+        if self.pending_turns.contains_key(thread_id) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "threadLifecycleWhileTurnActive",
+            });
+        }
         let thread = self
             .threads
             .get(thread_id)
@@ -879,6 +899,16 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                 ) => started_id == terminal_id,
                 _ => false,
             })
+}
+
+fn valid_terminal_turn(turn: &DurableTurnSnapshot) -> bool {
+    !turn.items.is_empty()
+        && match turn.status {
+            DurableTurnStatus::InProgress => false,
+            DurableTurnStatus::Completed => turn.error.is_none(),
+            DurableTurnStatus::Failed => turn.error.is_some(),
+            DurableTurnStatus::Interrupted => turn.error.is_none(),
+        }
 }
 
 fn ensure_home(home: &SugarCodeHome) -> Result<(), RolloutError> {

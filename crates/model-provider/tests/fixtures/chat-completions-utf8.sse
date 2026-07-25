@@ -7,4 +7,3 @@ data: {"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 data: [DONE]
 
 : fixture terminator
-

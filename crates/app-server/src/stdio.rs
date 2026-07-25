@@ -7,6 +7,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 const STDOUT_QUEUE_CAPACITY: usize = 64;
+const STDOUT_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub async fn serve<R, W>(reader: R, writer: W) -> io::Result<()>
 where
@@ -28,7 +29,7 @@ where
     C: sugarcode_core::CoreApi,
 {
     let (output_tx, mut output_rx) = mpsc::channel(STDOUT_QUEUE_CAPACITY);
-    let writer_task = tokio::spawn(async move {
+    let mut writer_task = tokio::spawn(async move {
         let mut writer = writer;
         while let Some(message) = output_rx.recv().await {
             write_message(&mut writer, &message).await?;
@@ -39,13 +40,21 @@ where
     let shutdown = loop {
         tokio::select! {
             line = lines.next_line() => {
-                let Some(line) = line? else {
-                    break session.shutdown();
+                let line = match line {
+                    Ok(line) => line,
+                    Err(error) => {
+                        writer_task.abort();
+                        let _ = shutdown_discard_events(&mut session, &mut events).await;
+                        return Err(error);
+                    }
                 };
+                let Some(line) = line else { break session.shutdown(); };
                 for message in session.process_line(&line) {
-                    output_tx.send(message).await.map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "stdout writer closed")
-                    })?;
+                    if let Err(error) = queue_message(&output_tx, message).await {
+                        writer_task.abort();
+                        let _ = shutdown_discard_events(&mut session, &mut events).await;
+                        return Err(error);
+                    }
                 }
             }
             event = events.recv() => {
@@ -55,9 +64,11 @@ where
                 let messages = session.process_core_event(event)
                     .map_err(|_| io::Error::other("core event mapping failed"))?;
                 for message in messages {
-                    output_tx.send(message).await.map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "stdout writer closed")
-                    })?;
+                    if let Err(error) = queue_message(&output_tx, message).await {
+                        writer_task.abort();
+                        let _ = shutdown_discard_events(&mut session, &mut events).await;
+                        return Err(error);
+                    }
                 }
             }
         }
@@ -72,32 +83,88 @@ where
                         .process_core_event(event)
                         .map_err(|_| io::Error::other("core event mapping failed"))?
                     {
-                        output_tx.send(message).await.map_err(|_| {
-                            io::Error::new(io::ErrorKind::BrokenPipe, "stdout writer closed")
-                        })?;
+                        if let Err(error) = queue_message(&output_tx, message).await {
+                            writer_task.abort();
+                            let _ = shutdown_discard_events(&mut session, &mut events).await;
+                            return Err(error);
+                        }
                     }
                 }
                 break;
             }
             event = events.recv() => {
                 let Some(event) = event else {
-                    continue;
+                    (&mut shutdown).await.map_err(io::Error::other)?;
+                    break;
                 };
                 for message in session
                     .process_core_event(event)
                     .map_err(|_| io::Error::other("core event mapping failed"))?
                 {
-                    output_tx.send(message).await.map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "stdout writer closed")
-                    })?;
+                    if let Err(error) = queue_message(&output_tx, message).await {
+                        writer_task.abort();
+                        let _ = shutdown_discard_events(&mut session, &mut events).await;
+                        return Err(error);
+                    }
                 }
             }
         }
     }
     drop(output_tx);
-    writer_task
-        .await
-        .map_err(|_| io::Error::other("stdout writer task failed"))?
+    match tokio::time::timeout(STDOUT_STALL_TIMEOUT, &mut writer_task).await {
+        Ok(result) => result.map_err(|_| io::Error::other("stdout writer task failed"))?,
+        Err(_) => {
+            writer_task.abort();
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "stdout writer stalled",
+            ))
+        }
+    }
+}
+
+async fn queue_message(
+    output: &mpsc::Sender<sugarcode_app_server_protocol::JsonRpcMessage>,
+    message: sugarcode_app_server_protocol::JsonRpcMessage,
+) -> io::Result<()> {
+    match tokio::time::timeout(STDOUT_STALL_TIMEOUT, output.send(message)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "stdout writer closed",
+        )),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "stdout writer stalled",
+        )),
+    }
+}
+
+async fn shutdown_discard_events<C>(
+    session: &mut Session<C>,
+    events: &mut mpsc::Receiver<sugarcode_protocol::CoreEvent>,
+) -> Result<(), sugarcode_core::CoreError>
+where
+    C: sugarcode_core::CoreApi,
+{
+    let shutdown = session.shutdown();
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            result = &mut shutdown => {
+                while let Ok(event) = events.try_recv() {
+                    let _ = session.process_core_event(event);
+                }
+                return result;
+            }
+            event = events.recv() => {
+                let Some(event) = event else {
+                    return (&mut shutdown).await;
+                };
+                let _ = session.process_core_event(event);
+            }
+        }
+    }
 }
 
 pub async fn serve_with_session<R, W, C>(
@@ -137,6 +204,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::Context;
+    use std::task::Poll;
+
+    struct StalledWriter;
+
+    impl AsyncWrite for StalledWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     #[tokio::test]
     async fn malformed_json_returns_error_and_processing_continues() {
@@ -149,5 +239,27 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains(r#""code":-32700"#));
         assert!(lines[1].contains(r#""code":-32001"#));
+    }
+
+    #[tokio::test]
+    async fn stalled_stdout_times_out_instead_of_deadlocking_after_eof() {
+        tokio::time::pause();
+        let input = b"{broken\n";
+        let reader = tokio::io::BufReader::new(&input[..]);
+        let (runtime, events) =
+            sugarcode_core::CoreRuntime::without_model(sugarcode_core::Core::new());
+        let task = tokio::spawn(serve_with_events(
+            reader,
+            StalledWriter,
+            Session::with_core(runtime),
+            events,
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(STDOUT_STALL_TIMEOUT + std::time::Duration::from_secs(1)).await;
+        let error = task
+            .await
+            .expect("server task")
+            .expect_err("stdout timeout");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 }

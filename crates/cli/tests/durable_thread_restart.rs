@@ -14,6 +14,7 @@ use std::process::ChildStdout;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -23,7 +24,7 @@ struct RunningServer {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    _provider: MockProvider,
+    provider: MockProvider,
 }
 
 impl RunningServer {
@@ -45,7 +46,7 @@ impl RunningServer {
             child,
             stdin,
             stdout,
-            _provider: provider,
+            provider,
         }
     }
 
@@ -82,6 +83,10 @@ impl RunningServer {
         self.send(json!({"jsonrpc": "2.0", "method": "initialized"}), 0);
     }
 
+    fn provider_requests(&self) -> Vec<Value> {
+        self.provider.requests()
+    }
+
     fn finish(self) {
         let stderr = self.finish_with_diagnostics();
         assert!(stderr.is_empty(), "unexpected diagnostics: {stderr}");
@@ -110,6 +115,7 @@ impl RunningServer {
 struct MockProvider {
     address: std::net::SocketAddr,
     stop: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<Value>>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -119,26 +125,33 @@ impl MockProvider {
         let address = listener.local_addr().expect("mock provider address");
         configure_model(home, address);
         let stop = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = stop.clone();
+        let thread_requests = requests.clone();
         let thread = thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 let (mut stream, _) = listener.accept().expect("accept provider request");
                 if thread_stop.load(Ordering::Acquire) {
                     break;
                 }
-                serve_recorded_response(&mut stream);
+                let request = serve_recorded_response(&mut stream);
+                thread_requests.lock().expect("request lock").push(request);
             }
         });
         Self {
             address,
             stop,
+            requests,
             thread: Some(thread),
         }
+    }
+
+    fn requests(&self) -> Vec<Value> {
+        self.requests.lock().expect("request lock").clone()
     }
 }
 
 fn configure_model(home: &Path, address: std::net::SocketAddr) {
-    let token = "fixture-token";
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home)
@@ -154,8 +167,7 @@ fn configure_model(home: &Path, address: std::net::SocketAddr) {
         json!({
             "apiFormat": "openai-chat-completions",
             "endpoint": format!("http://{address}/v1/chat/completions"),
-            "model": "fixture-model",
-            "token": token
+            "model": "fixture-model"
         })
     )
     .expect("write model config");
@@ -165,8 +177,7 @@ fn configure_model(home: &Path, address: std::net::SocketAddr) {
         "model config failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!String::from_utf8_lossy(&output.stdout).contains(token));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains(token));
+    assert!(output.stderr.is_empty());
 }
 
 impl Drop for MockProvider {
@@ -179,7 +190,7 @@ impl Drop for MockProvider {
     }
 }
 
-fn serve_recorded_response(stream: &mut TcpStream) {
+fn serve_recorded_response(stream: &mut TcpStream) -> Value {
     let mut request = Vec::new();
     let mut buffer = [0u8; 4096];
     let header_end = loop {
@@ -196,11 +207,7 @@ fn serve_recorded_response(stream: &mut TcpStream) {
     };
     let headers = String::from_utf8_lossy(&request[..header_end]);
     assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
-    assert!(
-        headers
-            .to_ascii_lowercase()
-            .contains("authorization: bearer fixture-token\r\n")
-    );
+    assert!(!headers.to_ascii_lowercase().contains("authorization:"));
     let content_length = headers
         .lines()
         .find_map(|line| {
@@ -217,6 +224,20 @@ fn serve_recorded_response(stream: &mut TcpStream) {
         assert!(read > 0, "provider request body ended early");
         request.extend_from_slice(&buffer[..read]);
     }
+    let request_body: Value =
+        serde_json::from_slice(&request[header_end..header_end + content_length])
+            .expect("provider request JSON");
+    assert_eq!(request_body["stream"], true);
+    assert_eq!(request_body["stream_options"]["include_usage"], true);
+    for forbidden in [
+        "tools",
+        "tool_choice",
+        "response_format",
+        "modalities",
+        "audio",
+    ] {
+        assert!(request_body.get(forbidden).is_none(), "{forbidden}");
+    }
     let body = include_str!("../../model-provider/tests/fixtures/completed.sse");
     write!(
         stream,
@@ -226,6 +247,7 @@ fn serve_recorded_response(stream: &mut TcpStream) {
     )
     .expect("write provider response");
     stream.flush().expect("flush provider response");
+    request_body
 }
 
 #[test]
@@ -308,6 +330,17 @@ fn resumes_completed_history_across_two_cli_processes() {
     assert_eq!(
         next_turn[4]["params"]["item"]["id"],
         "item_0000000000000004"
+    );
+    assert_eq!(
+        second.provider_requests()[0]["messages"],
+        json!([
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "assistant",
+                "content": "SugarCode deterministic response."
+            },
+            {"role": "user", "content": "Hello"}
+        ])
     );
     second.finish();
 }

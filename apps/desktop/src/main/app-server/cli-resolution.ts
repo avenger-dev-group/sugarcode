@@ -154,7 +154,16 @@ export const createCliEnvironment = (
   const keys =
     platform === 'win32'
       ? ['SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'SUGARCODE_HOME']
-      : ['HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'SUGARCODE_HOME'];
+      : [
+          'HOME',
+          'TMPDIR',
+          'LANG',
+          'LC_ALL',
+          'SUGARCODE_HOME',
+          ...(platform === 'linux'
+            ? ['DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR']
+            : []),
+        ];
   for (const key of keys) {
     copyEnvironmentValue(source, environment, key);
   }

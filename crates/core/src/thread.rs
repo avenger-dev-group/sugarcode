@@ -731,6 +731,16 @@ impl CoreApi for Core {
     }
 
     fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        if let Some(turn_id) = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.active_turn_id.clone())
+        {
+            return Err(CoreError::TurnAlreadyActive {
+                thread_id: thread_id.clone(),
+                turn_id,
+            });
+        }
         let lifecycle = match self.threads.get(thread_id) {
             Some(thread) => thread.lifecycle,
             None => {
@@ -757,6 +767,16 @@ impl CoreApi for Core {
     }
 
     fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        if let Some(turn_id) = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.active_turn_id.clone())
+        {
+            return Err(CoreError::TurnAlreadyActive {
+                thread_id: thread_id.clone(),
+                turn_id,
+            });
+        }
         let mut snapshot = match self.threads.get(thread_id) {
             Some(thread) => durable_thread_snapshot(thread),
             None => self
@@ -779,6 +799,16 @@ impl CoreApi for Core {
     }
 
     fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        if let Some(turn_id) = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.active_turn_id.clone())
+        {
+            return Err(CoreError::TurnAlreadyActive {
+                thread_id: thread_id.clone(),
+                turn_id,
+            });
+        }
         let lifecycle = match self.threads.get(thread_id) {
             Some(thread) => thread.lifecycle,
             None => {
@@ -802,6 +832,16 @@ impl CoreApi for Core {
     }
 
     fn fork_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
+        if let Some(turn_id) = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.active_turn_id.clone())
+        {
+            return Err(CoreError::TurnAlreadyActive {
+                thread_id: thread_id.clone(),
+                turn_id,
+            });
+        }
         let source = match self.threads.get(thread_id) {
             Some(thread) => durable_thread_snapshot(thread),
             None => self
@@ -1070,6 +1110,10 @@ impl ThreadRepository for MemoryThreadRepository {
     ) -> Result<(), RolloutError> {
         if snapshot.lifecycle != DurableThreadLifecycle::Active
             || self.threads.contains_key(&snapshot.id)
+            || snapshot
+                .turns
+                .iter()
+                .any(|turn| turn.status == DurableTurnStatus::InProgress)
         {
             return Err(RolloutError::Collision { kind: "thread" });
         }
@@ -1175,6 +1219,15 @@ impl ThreadRepository for MemoryThreadRepository {
             .threads
             .get_mut(thread_id)
             .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread
+            .turns
+            .last()
+            .is_some_and(|turn| turn.status == DurableTurnStatus::InProgress)
+        {
+            return Err(RolloutError::InvalidRecord {
+                kind: "threadLifecycleWhileTurnActive",
+            });
+        }
         thread.lifecycle = DurableThreadLifecycle::Archived;
         Ok(())
     }
@@ -1184,6 +1237,15 @@ impl ThreadRepository for MemoryThreadRepository {
             .threads
             .get_mut(thread_id)
             .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread
+            .turns
+            .last()
+            .is_some_and(|turn| turn.status == DurableTurnStatus::InProgress)
+        {
+            return Err(RolloutError::InvalidRecord {
+                kind: "threadLifecycleWhileTurnActive",
+            });
+        }
         thread.lifecycle = DurableThreadLifecycle::Active;
         Ok(())
     }
@@ -1193,6 +1255,15 @@ impl ThreadRepository for MemoryThreadRepository {
             .threads
             .get_mut(thread_id)
             .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread
+            .turns
+            .last()
+            .is_some_and(|turn| turn.status == DurableTurnStatus::InProgress)
+        {
+            return Err(RolloutError::InvalidRecord {
+                kind: "threadLifecycleWhileTurnActive",
+            });
+        }
         thread.lifecycle = DurableThreadLifecycle::Deleted;
         Ok(())
     }
@@ -1248,6 +1319,7 @@ impl ThreadRepository for MemoryThreadRepository {
                 thread
                     .turns
                     .iter()
+                    .filter(|turn| turn.status == DurableTurnStatus::Completed)
                     .flat_map(|turn| &turn.items)
                     .any(|item| match item {
                         DurableItemSnapshot::AgentMessage { text, .. } => {

@@ -10,13 +10,12 @@ use std::path::Path;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 use url::Url;
-use zeroize::Zeroizing;
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 pub const MAX_MODEL_NAME_BYTES: usize = 256;
-pub const MAX_MODEL_TOKEN_BYTES: usize = 2048;
+pub const MAX_CREDENTIAL_REFERENCE_BYTES: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelApiFormat {
@@ -32,43 +31,11 @@ impl ModelApiFormat {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct ModelToken(Zeroizing<String>);
-
-impl ModelToken {
-    pub fn parse(value: String) -> Result<Option<Self>, &'static str> {
-        if value.is_empty() {
-            return Ok(None);
-        }
-        if value.len() > MAX_MODEL_TOKEN_BYTES {
-            return Err("tokenTooLarge");
-        }
-        if !value.bytes().all(|byte| matches!(byte, 0x21..=0x7e)) {
-            return Err("invalidToken");
-        }
-        Ok(Some(Self(Zeroizing::new(value))))
-    }
-
-    pub fn expose(&self) -> &str {
-        self.0.as_str()
-    }
-
-    pub fn clone_secret(&self) -> Zeroizing<String> {
-        Zeroizing::new(self.0.as_str().to_owned())
-    }
-}
-
-impl fmt::Debug for ModelToken {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("ModelToken(<redacted>)")
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
 pub struct ModelConfig {
     api_format: ModelApiFormat,
     endpoint: Url,
     model: String,
-    token: Option<ModelToken>,
+    credential_reference: Option<String>,
 }
 
 impl ModelConfig {
@@ -76,15 +43,18 @@ impl ModelConfig {
         api_format: ModelApiFormat,
         endpoint: Url,
         model: String,
-        token: Option<ModelToken>,
+        credential_reference: Option<String>,
     ) -> Result<Self, &'static str> {
         validate_endpoint(api_format, &endpoint)?;
         validate_model(&model)?;
+        if let Some(reference) = credential_reference.as_deref() {
+            validate_credential_reference(reference)?;
+        }
         Ok(Self {
             api_format,
             endpoint,
             model,
-            token,
+            credential_reference,
         })
     }
 
@@ -100,8 +70,8 @@ impl ModelConfig {
         &self.model
     }
 
-    pub fn token(&self) -> Option<&ModelToken> {
-        self.token.as_ref()
+    pub fn credential_reference(&self) -> Option<&str> {
+        self.credential_reference.as_deref()
     }
 }
 
@@ -112,7 +82,7 @@ impl fmt::Debug for ModelConfig {
             .field("api_format", &self.api_format)
             .field("endpoint", &"<redacted>")
             .field("model", &"<redacted>")
-            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("credential_reference", &self.credential_reference)
             .finish()
     }
 }
@@ -568,7 +538,12 @@ fn parse_model_config(
         .ok_or_else(|| invalid_model_field(path, contents, "model", "expectedTable"))?;
     let mut unknown = table
         .keys()
-        .filter(|key| !matches!(key.as_str(), "api_format" | "endpoint" | "model" | "token"))
+        .filter(|key| {
+            !matches!(
+                key.as_str(),
+                "api_format" | "endpoint" | "model" | "credential"
+            )
+        })
         .cloned()
         .collect::<Vec<_>>();
     unknown.sort();
@@ -601,20 +576,23 @@ fn parse_model_config(
         .map_err(|kind| invalid_model_field(path, contents, "endpoint", kind))?;
     let model = required_model_string(table, "model", contents, path)?.to_owned();
     validate_model(&model).map_err(|kind| invalid_model_field(path, contents, "model", kind))?;
-    let token = match table.get("token") {
+    let credential_reference = match table.get("credential") {
         None => None,
-        Some(toml::Value::String(token)) => ModelToken::parse(token.clone())
-            .map_err(|kind| invalid_model_field(path, contents, "token", kind))?,
+        Some(toml::Value::String(reference)) => {
+            validate_credential_reference(reference)
+                .map_err(|kind| invalid_model_field(path, contents, "credential", kind))?;
+            Some(reference.clone())
+        }
         Some(_) => {
             return Err(invalid_model_field(
                 path,
                 contents,
-                "token",
+                "credential",
                 "expectedString",
             ));
         }
     };
-    ModelConfig::new(api_format, endpoint, model, token)
+    ModelConfig::new(api_format, endpoint, model, credential_reference)
         .map_err(|kind| invalid_model_field(path, contents, "model", kind))
 }
 
@@ -669,6 +647,21 @@ fn validate_model(model: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn validate_credential_reference(reference: &str) -> Result<(), &'static str> {
+    let bytes = reference.as_bytes();
+    let valid = !bytes.is_empty()
+        && bytes.len() <= MAX_CREDENTIAL_REFERENCE_BYTES
+        && bytes[0].is_ascii_lowercase()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-');
+    if valid {
+        Ok(())
+    } else {
+        Err("invalidCredentialReference")
+    }
+}
+
 fn invalid_model_field(
     path: &Path,
     contents: &str,
@@ -685,18 +678,17 @@ fn invalid_model_field(
     }
 }
 
-fn encode_model_config(model: &ModelConfig) -> Result<Zeroizing<String>, ConfigError> {
-    let mut output = Zeroizing::new(format!(
+fn encode_model_config(model: &ModelConfig) -> Result<String, ConfigError> {
+    let mut output = format!(
         "schema_version = {}\n\n[model]\napi_format = {}\nendpoint = {}\nmodel = {}\n",
         CURRENT_CONFIG_SCHEMA_VERSION,
         toml_string(model.api_format.as_str()),
         toml_string(model.endpoint.as_str()),
         toml_string(model.model())
-    ));
-    if let Some(token) = model.token() {
-        let encoded_token = Zeroizing::new(toml_string(token.expose()));
-        output.push_str("token = ");
-        output.push_str(encoded_token.as_str());
+    );
+    if let Some(reference) = model.credential_reference() {
+        output.push_str("credential = ");
+        output.push_str(&toml_string(reference));
         output.push('\n');
     }
     Ok(output)

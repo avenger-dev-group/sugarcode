@@ -1,3 +1,4 @@
+use crate::event_mapping::EventMappingError;
 use crate::event_mapping::map_core_event;
 use crate::event_mapping::map_fork_snapshot;
 use crate::event_mapping::map_thread_snapshot;
@@ -19,6 +20,7 @@ use sugarcode_app_server_protocol::ERROR_NOT_INITIALIZED;
 use sugarcode_app_server_protocol::ERROR_PARSE;
 use sugarcode_app_server_protocol::ERROR_STATE_UNAVAILABLE;
 use sugarcode_app_server_protocol::ERROR_THREAD_NOT_FOUND;
+use sugarcode_app_server_protocol::ERROR_TURN_ACTIVE;
 use sugarcode_app_server_protocol::ERROR_TURN_NOT_ACTIVE;
 use sugarcode_app_server_protocol::ERROR_UNSUPPORTED_PROTOCOL_VERSION;
 use sugarcode_app_server_protocol::InitializeParams;
@@ -119,17 +121,17 @@ where
         self.process_value(value)
     }
 
-    pub fn process_core_event(
+    pub(crate) fn process_core_event(
         &mut self,
         event: sugarcode_protocol::CoreEvent,
-    ) -> Result<Vec<JsonRpcMessage>, ()> {
+    ) -> Result<Vec<JsonRpcMessage>, EventMappingError> {
         let interrupted = match &event.kind {
             CoreEventKind::TurnInterrupted { thread_id, turn_id } => {
                 Some((thread_id.as_str().to_string(), turn_id.as_str().to_string()))
             }
             _ => None,
         };
-        let notification = map_core_event(event).map_err(|_| ())?;
+        let notification = map_core_event(event)?;
         let mut messages = vec![notification];
         if let Some(key) = interrupted
             && let Some(id) = self.pending_interrupts.remove(&key)
@@ -584,6 +586,15 @@ where
                 "Thread not found",
                 Some(json!({ "threadId": params.thread_id })),
             )],
+            Err(CoreError::TurnAlreadyActive { turn_id, .. }) => vec![error(
+                Some(id),
+                ERROR_TURN_ACTIVE,
+                "Turn active",
+                Some(json!({
+                    "threadId": params.thread_id,
+                    "turnId": turn_id.into_string(),
+                })),
+            )],
             Err(CoreError::StateUnavailable) => {
                 self.accepted_request_ids.insert(id.clone());
                 vec![error(
@@ -640,6 +651,15 @@ where
                 ERROR_THREAD_NOT_FOUND,
                 "Thread not found",
                 Some(json!({ "threadId": params.thread_id })),
+            )],
+            Err(CoreError::TurnAlreadyActive { turn_id, .. }) => vec![error(
+                Some(id),
+                ERROR_TURN_ACTIVE,
+                "Turn active",
+                Some(json!({
+                    "threadId": params.thread_id,
+                    "turnId": turn_id.into_string(),
+                })),
             )],
             Err(CoreError::StateUnavailable) => {
                 self.accepted_request_ids.insert(id.clone());
@@ -699,6 +719,15 @@ where
                 "Thread not found",
                 Some(json!({ "threadId": params.thread_id })),
             )],
+            Err(CoreError::TurnAlreadyActive { turn_id, .. }) => vec![error(
+                Some(id),
+                ERROR_TURN_ACTIVE,
+                "Turn active",
+                Some(json!({
+                    "threadId": params.thread_id,
+                    "turnId": turn_id.into_string(),
+                })),
+            )],
             Err(CoreError::StateUnavailable) => {
                 self.accepted_request_ids.insert(id.clone());
                 vec![error(
@@ -748,6 +777,17 @@ where
                     ERROR_THREAD_NOT_FOUND,
                     "Thread not found",
                     Some(json!({ "threadId": params.thread_id })),
+                )];
+            }
+            Err(CoreError::TurnAlreadyActive { turn_id, .. }) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_TURN_ACTIVE,
+                    "Turn active",
+                    Some(json!({
+                        "threadId": params.thread_id,
+                        "turnId": turn_id.into_string(),
+                    })),
                 )];
             }
             Err(CoreError::StateUnavailable) => {
@@ -953,6 +993,7 @@ where
             {
                 Ok(outcome) => outcome,
                 Err(CoreError::StateUnavailable) => {
+                    self.accepted_request_ids.insert(id.clone());
                     return vec![error(
                         Some(id),
                         ERROR_STATE_UNAVAILABLE,
@@ -2057,6 +2098,24 @@ mod tests {
     fn an_uncertain_archive_attempt_consumes_its_request_id() {
         let mut session = ready_session(StateUnavailableCore);
         let request = r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#;
+
+        let first = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &first[0] else {
+            panic!("expected state error");
+        };
+        assert_eq!(error.error.code, ERROR_STATE_UNAVAILABLE);
+
+        let second = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &second[0] else {
+            panic!("expected duplicate error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
+    }
+
+    #[test]
+    fn an_uncertain_turn_start_attempt_consumes_its_request_id() {
+        let mut session = ready_session(StateUnavailableCore);
+        let request = r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#;
 
         let first = session.process_line(request);
         let JsonRpcMessage::Error(error) = &first[0] else {

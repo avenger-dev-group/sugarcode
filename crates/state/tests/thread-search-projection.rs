@@ -5,6 +5,8 @@ use sugarcode_protocol::TurnId;
 use sugarcode_state::DurableItemSnapshot;
 use sugarcode_state::DurableThreadLifecycle;
 use sugarcode_state::DurableThreadSnapshot;
+use sugarcode_state::DurableTurnError;
+use sugarcode_state::DurableTurnErrorKind;
 use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::HomeResolutionInputs;
@@ -49,6 +51,25 @@ fn seed(repository: &mut RolloutRepository) {
         .append_completed_turn(&thread(2), &turn(2, "SugarCode release notes"))
         .expect("second turn");
     repository.create_thread(&thread(3)).expect("empty thread");
+}
+
+fn started_turn(sequence: u64, input: &str) -> DurableTurnSnapshot {
+    DurableTurnSnapshot {
+        id: TurnId::new(format!("turn_{sequence:016}")),
+        status: DurableTurnStatus::InProgress,
+        items: vec![
+            DurableItemSnapshot::UserMessage {
+                id: ItemId::new(format!("item_{:016}", sequence * 2 - 1)),
+                text: input.to_string(),
+            },
+            DurableItemSnapshot::AgentMessage {
+                id: ItemId::new(format!("item_{:016}", sequence * 2)),
+                text: String::new(),
+            },
+        ],
+        error: None,
+        usage: None,
+    }
 }
 
 #[test]
@@ -104,6 +125,63 @@ fn searches_completed_messages_with_unicode_terms_and_stable_id_paging() {
         .query_row("SELECT text FROM search_fts LIMIT 1", [], |row| row.get(0))
         .expect("contentless FTS row");
     assert_eq!(stored_text, None, "FTS must not expose a content column");
+}
+
+#[test]
+fn failed_and_interrupted_partial_output_is_never_searchable_even_after_rebuild() {
+    let directory = tempdir().expect("home");
+    let resolved_home = home(&directory);
+    {
+        let mut repository = RolloutRepository::open(&resolved_home).expect("repository");
+        for (sequence, status) in [
+            (1, DurableTurnStatus::Failed),
+            (2, DurableTurnStatus::Interrupted),
+        ] {
+            let thread_id = thread(sequence);
+            repository.create_thread(&thread_id).expect("thread");
+            let started = started_turn(sequence, "private input");
+            repository
+                .begin_turn(&thread_id, &started)
+                .expect("turn start");
+            let mut terminal = started;
+            terminal.status = status;
+            let DurableItemSnapshot::AgentMessage { text, .. } = &mut terminal.items[1] else {
+                panic!("agent item");
+            };
+            *text = format!("partial-secret-{sequence}");
+            if status == DurableTurnStatus::Failed {
+                terminal.error = Some(DurableTurnError {
+                    kind: DurableTurnErrorKind::Protocol,
+                    retryable: false,
+                });
+            }
+            repository
+                .finish_turn(&thread_id, &terminal)
+                .expect("turn terminal");
+        }
+        assert!(
+            repository
+                .search_threads("partial-secret", None, 50)
+                .expect("search")
+                .data
+                .is_empty()
+        );
+    }
+
+    fs::remove_file(
+        directory
+            .path()
+            .join("projections/v1/thread-search.sqlite3"),
+    )
+    .expect("remove projection");
+    let mut repository = RolloutRepository::open(&resolved_home).expect("rebuild");
+    assert!(
+        repository
+            .search_threads("partial-secret", None, 50)
+            .expect("rebuilt search")
+            .data
+            .is_empty()
+    );
 }
 
 #[test]

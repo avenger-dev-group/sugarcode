@@ -2,6 +2,7 @@ use crate::DurableItemSnapshot;
 use crate::DurableThreadLifecycle;
 use crate::DurableThreadPage;
 use crate::DurableThreadSummary;
+use crate::DurableTurnStatus;
 use crate::ProjectionDiagnostic;
 use crate::RolloutError;
 use crate::SugarCodeHome;
@@ -298,6 +299,9 @@ impl ThreadSearchProjection {
                 for (turn, record_sequence) in
                     snapshot.turns.iter().zip(&state.turn_record_sequences)
                 {
+                    if turn.status != DurableTurnStatus::Completed {
+                        continue;
+                    }
                     let record_sequence = i64::try_from(*record_sequence).map_err(|_| {
                         RolloutError::InvalidRecord {
                             kind: "projectionSequence",
@@ -556,11 +560,7 @@ impl ThreadSearchProjection {
                 kind: "projectionSequence",
             })?;
         let previous_sequence = current_sequence - 1;
-        let added_items = turn
-            .items
-            .iter()
-            .filter(|item| matches!(item, DurableItemSnapshot::AgentMessage { .. }))
-            .count();
+        let added_items = searchable_turn_item_count(turn);
         let database_path = self.database_path.clone();
         let result = (|| {
             let connection = self
@@ -597,6 +597,9 @@ impl ThreadSearchProjection {
                     .prepare("INSERT INTO search_fts(rowid, text) VALUES (?1, ?2)")
                     .map_err(|error| sqlite_error(&database_path, "update", error))?;
                 for (item_index, item) in turn.items.iter().enumerate() {
+                    if turn.status != DurableTurnStatus::Completed {
+                        break;
+                    }
                     let DurableItemSnapshot::AgentMessage { id, text } = item else {
                         continue;
                     };
@@ -998,6 +1001,9 @@ fn build_database(
             )
             .map_err(|error| sqlite_error(path, "rebuild", error))?;
         for (turn, record_sequence) in snapshot.turns.iter().zip(&state.turn_record_sequences) {
+            if turn.status != DurableTurnStatus::Completed {
+                continue;
+            }
             let rollout_sequence = i64::try_from(*record_sequence)
                 .map_err(|_| projection_error(path, "rebuild", "rolloutRecordLimit"))?;
             for (item_index, item) in turn.items.iter().enumerate() {
@@ -1186,6 +1192,9 @@ fn expected_documents(
     for state in threads.values() {
         let snapshot = &state.snapshot;
         for (turn, record_sequence) in snapshot.turns.iter().zip(&state.turn_record_sequences) {
+            if turn.status != DurableTurnStatus::Completed {
+                continue;
+            }
             for (item_index, item) in turn.items.iter().enumerate() {
                 let DurableItemSnapshot::AgentMessage { id, text } = item else {
                     continue;
@@ -1231,6 +1240,9 @@ fn searchable_item_count(
 }
 
 fn searchable_turn_item_count(turn: &crate::DurableTurnSnapshot) -> usize {
+    if turn.status != DurableTurnStatus::Completed {
+        return 0;
+    }
     turn.items
         .iter()
         .filter(|item| matches!(item, DurableItemSnapshot::AgentMessage { .. }))

@@ -74,9 +74,8 @@ fn invalid_configuration_has_no_stdout_and_redacts_values() {
 }
 
 #[test]
-fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
+fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() {
     let home = tempdir().expect("SugarCode home");
-    let token = "fixture-secret-token";
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home.path())
@@ -93,8 +92,7 @@ fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
         serde_json::json!({
             "apiFormat": "openai-chat-completions",
             "endpoint": "http://127.0.0.1:18080/custom/v1/chat/completions",
-            "model": "custom-model",
-            "token": token
+            "model": "custom-model"
         })
     )
     .expect("write model config");
@@ -104,11 +102,12 @@ fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
         String::from_utf8(set.stdout).expect("UTF-8 stdout"),
         "Model configuration saved.\n"
     );
-    assert!(!String::from_utf8_lossy(&set.stderr).contains(token));
+    assert!(set.stderr.is_empty());
 
     let stored = fs::read_to_string(home.path().join("config.toml")).expect("stored config");
     assert!(stored.contains("endpoint = \"http://127.0.0.1:18080/"));
-    assert!(stored.contains(token));
+    assert!(!stored.contains("token"));
+    assert!(!stored.contains("credential"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -122,7 +121,6 @@ fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
         );
     }
 
-    let replacement_token = "replacement-secret-token";
     let mut replacement = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home.path())
@@ -139,8 +137,7 @@ fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
         serde_json::json!({
             "apiFormat": "openai-chat-completions",
             "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
-            "model": "replacement-model",
-            "token": replacement_token
+            "model": "replacement-model"
         })
     )
     .expect("write replacement model config");
@@ -148,8 +145,7 @@ fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
         .wait_with_output()
         .expect("wait for replacement config");
     assert!(replacement.status.success(), "{replacement:?}");
-    assert!(!String::from_utf8_lossy(&replacement.stdout).contains(replacement_token));
-    assert!(!String::from_utf8_lossy(&replacement.stderr).contains(replacement_token));
+    assert!(replacement.stderr.is_empty());
 
     let show = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
@@ -160,15 +156,13 @@ fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
         .expect("run model config show");
     assert!(show.status.success(), "{show:?}");
     let stdout = String::from_utf8(show.stdout).expect("UTF-8 stdout");
-    assert!(!stdout.contains(token));
-    assert!(!stdout.contains(replacement_token));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&stdout).expect("show JSON"),
         serde_json::json!({
             "apiFormat": "openai-chat-completions",
             "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
             "model": "replacement-model",
-            "hasToken": true
+            "hasToken": false
         })
     );
 }

@@ -167,6 +167,91 @@ fn a_started_turn_is_replaced_by_its_single_terminal_record() {
 }
 
 #[test]
+fn active_turn_rejects_lifecycle_records_and_non_terminal_fork_snapshots() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    repository
+        .begin_turn(&thread_id, &started_text_turn())
+        .expect("turn start");
+
+    for error in [
+        repository.archive_thread(&thread_id).expect_err("archive"),
+        repository
+            .unarchive_thread(&thread_id)
+            .expect_err("unarchive"),
+        repository.delete_thread(&thread_id).expect_err("delete"),
+    ] {
+        assert!(matches!(
+            error,
+            RolloutError::InvalidRecord {
+                kind: "threadLifecycleWhileTurnActive"
+            }
+        ));
+    }
+    let mut in_progress = started_text_turn();
+    in_progress.id = TurnId::new("turn_0000000000000002");
+    in_progress.items[0] = DurableItemSnapshot::UserMessage {
+        id: ItemId::new("item_0000000000000003"),
+        text: "copied input".to_string(),
+    };
+    in_progress.items[1] = DurableItemSnapshot::AgentMessage {
+        id: ItemId::new("item_0000000000000004"),
+        text: String::new(),
+    };
+    assert!(matches!(
+        repository
+            .create_thread_snapshot(&DurableThreadSnapshot {
+                id: ThreadId::new("thr_0000000000000002"),
+                turns: vec![in_progress],
+                lifecycle: DurableThreadLifecycle::Active,
+            })
+            .expect_err("in-progress fork"),
+        RolloutError::InvalidRecord {
+            kind: "invalidTerminalTurn"
+        }
+    ));
+}
+
+#[test]
+fn replay_rejects_lifecycle_record_while_turn_is_pending() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(&thread_id, &started_text_turn())
+            .expect("turn start");
+    }
+    let rollout = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    writeln!(
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&rollout)
+            .expect("rollout"),
+        "{}",
+        serde_json::json!({
+            "schemaVersion": 1,
+            "sequence": 3,
+            "type": "threadArchived",
+            "threadId": thread_id.as_str()
+        })
+    )
+    .expect("append invalid lifecycle");
+    let error = RolloutRepository::open(&home).expect_err("corrupt rollout");
+    let RolloutError::Corrupt(diagnostic) = error else {
+        panic!("corrupt diagnostic");
+    };
+    assert_eq!(diagnostic.kind, "threadLifecycleWhileTurnPending");
+}
+
+#[test]
 fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);

@@ -4,13 +4,19 @@ use std::error::Error;
 use std::fmt;
 use std::io::Read;
 use std::io::Write;
+use sugarcode_credential_store::CredentialReference;
+use sugarcode_credential_store::CredentialStore;
+use sugarcode_credential_store::CredentialStoreErrorKind;
+use sugarcode_credential_store::MAX_SECRET_BYTES;
+use sugarcode_credential_store::MODEL_TOKEN_CREDENTIAL_REFERENCE;
+use sugarcode_credential_store::SecretValue;
 use sugarcode_state::EffectiveConfig;
 use sugarcode_state::MAX_CONFIG_BYTES;
 use sugarcode_state::ModelApiFormat;
 use sugarcode_state::ModelConfig;
-use sugarcode_state::ModelToken;
 use sugarcode_state::SugarCodeHome;
 use url::Url;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelConfigCommandError {
@@ -19,6 +25,7 @@ pub enum ModelConfigCommandError {
     InvalidInput,
     InvalidConfiguration,
     MissingConfiguration,
+    CredentialFailed(CredentialStoreErrorKind),
     WriteFailed,
 }
 
@@ -30,6 +37,7 @@ impl fmt::Display for ModelConfigCommandError {
             Self::InvalidInput => "model configuration input is invalid",
             Self::InvalidConfiguration => "model configuration is invalid",
             Self::MissingConfiguration => "model configuration is not set",
+            Self::CredentialFailed(_) => "model credential could not be updated",
             Self::WriteFailed => "model configuration could not be saved",
         })
     }
@@ -39,31 +47,66 @@ impl Error for ModelConfigCommandError {}
 
 pub fn set_model_config(
     home: &SugarCodeHome,
+    store: &dyn CredentialStore,
     input: &mut dyn Read,
     output: &mut dyn Write,
 ) -> Result<(), ModelConfigCommandError> {
     let mut bounded = input.take(MAX_CONFIG_BYTES + 1);
-    let mut bytes = Vec::new();
+    let mut bytes = Zeroizing::new(Vec::new());
     bounded
         .read_to_end(&mut bytes)
         .map_err(|_| ModelConfigCommandError::InvalidInput)?;
     if bytes.len() as u64 > MAX_CONFIG_BYTES {
         return Err(ModelConfigCommandError::InputTooLarge);
     }
-    let input = serde_json::from_slice::<ModelConfigInput>(&bytes)
+    let input = serde_json::from_slice::<ModelConfigInput>(bytes.as_slice())
         .map_err(|_| ModelConfigCommandError::InvalidInput)?;
-    let api_format = match input.api_format.as_str() {
+    let ModelConfigInput {
+        api_format,
+        endpoint,
+        model,
+        token,
+    } = input;
+    let token = token.map(Zeroizing::new);
+    let api_format = match api_format.as_str() {
         "openai-chat-completions" => ModelApiFormat::OpenAiChatCompletions,
         _ => return Err(ModelConfigCommandError::InvalidConfiguration),
     };
     let endpoint =
-        Url::parse(&input.endpoint).map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
-    let token = ModelToken::parse(input.token)
-        .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
-    let model = ModelConfig::new(api_format, endpoint, input.model, token)
+        Url::parse(&endpoint).map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
+    let existing_reference = sugarcode_state::load_effective_config_for_home(home.clone())
+        .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?
+        .model()
+        .and_then(ModelConfig::credential_reference)
+        .map(str::to_owned);
+    let reference = CredentialReference::parse(MODEL_TOKEN_CREDENTIAL_REFERENCE)
+        .expect("model token credential reference is valid");
+    let (credential_reference, clear_credential) = match token {
+        None => (existing_reference, false),
+        Some(token) if token.is_empty() => (None, true),
+        Some(token) => {
+            if token.len() > MAX_SECRET_BYTES
+                || !token.bytes().all(|byte| matches!(byte, 0x21..=0x7e))
+            {
+                return Err(ModelConfigCommandError::InvalidConfiguration);
+            }
+            let secret = SecretValue::from_zeroizing(Zeroizing::new(token.as_bytes().to_vec()))
+                .map_err(|error| ModelConfigCommandError::CredentialFailed(error.kind()))?;
+            store
+                .set(&reference, &secret)
+                .map_err(|error| ModelConfigCommandError::CredentialFailed(error.kind()))?;
+            (Some(MODEL_TOKEN_CREDENTIAL_REFERENCE.to_string()), false)
+        }
+    };
+    let model = ModelConfig::new(api_format, endpoint, model, credential_reference)
         .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
     sugarcode_state::save_model_config(home, &model)
         .map_err(|_| ModelConfigCommandError::WriteFailed)?;
+    if clear_credential {
+        store
+            .delete(&reference)
+            .map_err(|error| ModelConfigCommandError::CredentialFailed(error.kind()))?;
+    }
     writeln!(output, "Model configuration saved.").map_err(|_| ModelConfigCommandError::WriteFailed)
 }
 
@@ -78,7 +121,7 @@ pub fn show_model_config(
         api_format: model.api_format().as_str(),
         endpoint: model.endpoint().as_str(),
         model: model.model(),
-        has_token: model.token().is_some(),
+        has_token: model.credential_reference().is_some(),
     };
     serde_json::to_writer(&mut *output, &view).map_err(|_| ModelConfigCommandError::WriteFailed)?;
     writeln!(output).map_err(|_| ModelConfigCommandError::WriteFailed)
@@ -90,7 +133,7 @@ struct ModelConfigInput {
     api_format: String,
     endpoint: String,
     model: String,
-    token: String,
+    token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -100,4 +143,120 @@ struct ModelConfigView<'a> {
     endpoint: &'a str,
     model: &'a str,
     has_token: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    use sugarcode_credential_store::CredentialStoreError;
+    use sugarcode_state::HomeResolutionInputs;
+
+    #[derive(Debug, Default)]
+    struct MemoryCredentialStore {
+        values: Mutex<BTreeMap<String, Vec<u8>>>,
+    }
+
+    impl CredentialStore for MemoryCredentialStore {
+        fn get(
+            &self,
+            reference: &CredentialReference,
+        ) -> Result<Option<SecretValue>, CredentialStoreError> {
+            self.values
+                .lock()
+                .expect("credential lock")
+                .get(reference.as_str())
+                .cloned()
+                .map(SecretValue::new)
+                .transpose()
+        }
+
+        fn set(
+            &self,
+            reference: &CredentialReference,
+            secret: &SecretValue,
+        ) -> Result<(), CredentialStoreError> {
+            self.values
+                .lock()
+                .expect("credential lock")
+                .insert(reference.as_str().to_string(), secret.expose().to_vec());
+            Ok(())
+        }
+
+        fn delete(&self, reference: &CredentialReference) -> Result<bool, CredentialStoreError> {
+            Ok(self
+                .values
+                .lock()
+                .expect("credential lock")
+                .remove(reference.as_str())
+                .is_some())
+        }
+    }
+
+    #[test]
+    fn model_set_routes_token_to_store_and_only_reference_to_toml() {
+        let directory = tempfile::tempdir().expect("home");
+        let home = sugarcode_state::resolve_sugarcode_home(HomeResolutionInputs {
+            cli_override: Some(directory.path().to_path_buf()),
+            ..Default::default()
+        })
+        .expect("resolved home");
+        let store = MemoryCredentialStore::default();
+        let sentinel = "credential-secret-sentinel";
+        let input = serde_json::to_vec(&serde_json::json!({
+            "apiFormat": "openai-chat-completions",
+            "endpoint": "http://127.0.0.1:18080/v1/chat/completions",
+            "model": "fixture-model",
+            "token": sentinel
+        }))
+        .expect("input JSON");
+        let mut output = Vec::new();
+        set_model_config(&home, &store, &mut input.as_slice(), &mut output).expect("set model");
+
+        assert_eq!(output, b"Model configuration saved.\n");
+        assert_eq!(
+            store
+                .values
+                .lock()
+                .expect("credential lock")
+                .get(MODEL_TOKEN_CREDENTIAL_REFERENCE)
+                .map(Vec::as_slice),
+            Some(sentinel.as_bytes())
+        );
+        let stored =
+            std::fs::read_to_string(directory.path().join("config.toml")).expect("config TOML");
+        assert!(stored.contains("credential = \"model-api-token\""));
+        assert!(!stored.contains(sentinel));
+        assert!(!stored.contains("token ="));
+    }
+
+    #[test]
+    fn model_token_validation_happens_before_store_mutation() {
+        let directory = tempfile::tempdir().expect("home");
+        let home = sugarcode_state::resolve_sugarcode_home(HomeResolutionInputs {
+            cli_override: Some(directory.path().to_path_buf()),
+            ..Default::default()
+        })
+        .expect("resolved home");
+        let store = MemoryCredentialStore::default();
+        for token in [
+            "contains space".to_string(),
+            "contains\nnewline".to_string(),
+            "a".repeat(MAX_SECRET_BYTES + 1),
+        ] {
+            let input = serde_json::to_vec(&serde_json::json!({
+                "apiFormat": "openai-chat-completions",
+                "endpoint": "http://127.0.0.1:18080/v1/chat/completions",
+                "model": "fixture-model",
+                "token": token
+            }))
+            .expect("input JSON");
+            assert_eq!(
+                set_model_config(&home, &store, &mut input.as_slice(), &mut Vec::new()),
+                Err(ModelConfigCommandError::InvalidConfiguration)
+            );
+        }
+        assert!(store.values.lock().expect("credential lock").is_empty());
+    }
 }

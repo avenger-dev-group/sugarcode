@@ -157,8 +157,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Err(Box::new(config::ModelConfigCommandError::StdinRequired));
             }
             let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
+            let store = OsCredentialStore::new(resolved_home.path());
             config::set_model_config(
                 &resolved_home,
+                &store,
                 &mut std::io::stdin().lock(),
                 &mut std::io::stdout().lock(),
             )?;
