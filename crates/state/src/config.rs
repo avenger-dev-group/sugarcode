@@ -714,9 +714,10 @@ fn reject_unsafe_config_target(path: &Path) -> Result<(), ConfigError> {
     }
 }
 
-fn sync_config_parent(path: &Path) -> Result<(), ConfigError> {
+fn sync_config_parent(_path: &Path) -> Result<(), ConfigError> {
     #[cfg(unix)]
     {
+        let path = _path;
         let parent = path.parent().ok_or_else(|| ConfigError::WriteFailed {
             path: path.to_path_buf(),
             kind: io::ErrorKind::InvalidInput,

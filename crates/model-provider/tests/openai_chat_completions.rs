@@ -6,6 +6,8 @@ use sugarcode_model_provider::ModelMessage;
 use sugarcode_model_provider::ModelProvider;
 use sugarcode_model_provider::ModelRequest;
 use sugarcode_model_provider::ModelRole;
+use sugarcode_model_provider::ModelToolCall;
+use sugarcode_model_provider::ModelToolDefinition;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -45,6 +47,36 @@ async fn recorded_success_stream_normalizes_text_and_usage() {
                 output_tokens: Some(3),
                 total_tokens: Some(4),
                 ..Default::default()
+            })),
+            Ok(ModelEvent::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn fragmented_single_tool_call_is_assembled_into_one_typed_event() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/\",\"arguments\":\"{\\\"path\\\":\\\"READ\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read\",\"arguments\":\"ME.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+
+    assert_eq!(
+        events,
+        vec![
+            Ok(ModelEvent::ToolCall(ModelToolCall {
+                id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({ "path": "README.txt" }),
             })),
             Ok(ModelEvent::Completed),
         ]
@@ -533,11 +565,26 @@ fn provider(endpoint: Url) -> Arc<dyn ModelProvider> {
 fn request() -> ModelRequest {
     ModelRequest {
         model: "fixture-model".to_string(),
-        messages: vec![ModelMessage {
+        messages: vec![ModelMessage::Text {
             role: ModelRole::User,
             text: "Hello".to_string(),
         }],
+        tools: Vec::new(),
     }
+}
+
+fn tool_request() -> ModelRequest {
+    let mut request = request();
+    request.tools.push(ModelToolDefinition {
+        name: "workspace/read".to_string(),
+        description: "Read a workspace file".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"]
+        }),
+    });
+    request
 }
 
 async fn response_server(
@@ -659,9 +706,13 @@ async fn read_request(socket: &mut TcpStream, expect_auth: bool) {
         .keys()
         .map(String::as_str)
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(
-        keys,
-        std::collections::BTreeSet::from(["messages", "model", "stream", "stream_options"])
-    );
+    let mut expected =
+        std::collections::BTreeSet::from(["messages", "model", "stream", "stream_options"]);
+    if body.get("tools").is_some() {
+        expected.insert("tools");
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["function"]["name"], "workspace/read");
+    }
+    assert_eq!(keys, expected);
     assert_eq!(body["stream_options"]["include_usage"], true);
 }

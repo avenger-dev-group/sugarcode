@@ -226,6 +226,43 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     thread.turns.push(turn);
                     turn_record_sequences.push(sequence);
                 }
+                DecodedRecord::TurnItemAdded {
+                    thread_id,
+                    turn_id,
+                    item,
+                    sequence: _,
+                } => {
+                    let thread = snapshot
+                        .as_mut()
+                        .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
+                    if thread_id != expected_thread_id {
+                        return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
+                    }
+                    if pending_turn_id.as_ref() != Some(&turn_id) {
+                        return Err(corrupt(&path, offset as u64, "turnItemAddedWhileInactive"));
+                    }
+                    if matches!(item, super::DurableItemSnapshot::UserMessage { .. })
+                        || matches!(
+                            item,
+                            super::DurableItemSnapshot::AgentMessage { ref text, .. }
+                                if !text.is_empty()
+                        )
+                    {
+                        return Err(corrupt(&path, offset as u64, "invalidIncrementalItem"));
+                    }
+                    let item_sequence = parse_canonical_id(item.id().as_str(), "item_", "item")
+                        .map_err(|_| corrupt(&path, offset as u64, "invalidItemId"))?;
+                    if item_sequence <= sequences.item || !item_ids.insert(item.id().clone()) {
+                        return Err(corrupt(&path, offset as u64, "duplicateItemId"));
+                    }
+                    sequences.item = item_sequence;
+                    thread
+                        .turns
+                        .last_mut()
+                        .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))?
+                        .items
+                        .push(item);
+                }
                 DecodedRecord::TurnCompleted {
                     thread_id,
                     turn,
@@ -500,12 +537,21 @@ fn terminal_items_match(
                         id: terminal_id, ..
                     },
                 ) => started_id == terminal_id,
+                (
+                    super::DurableItemSnapshot::ToolCall { .. },
+                    super::DurableItemSnapshot::ToolCall { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::ToolResult { .. },
+                    super::DurableItemSnapshot::ToolResult { .. },
+                ) => started == terminal,
                 _ => false,
             })
 }
 
 fn valid_started_items(items: &[super::DurableItemSnapshot]) -> bool {
     match items {
+        [] | [super::DurableItemSnapshot::UserMessage { .. }] => true,
         [super::DurableItemSnapshot::AgentMessage { text, .. }] => text.is_empty(),
         [
             super::DurableItemSnapshot::UserMessage { .. },
@@ -619,9 +665,10 @@ pub(super) fn corrupt(path: &Path, offset: u64, kind: &'static str) -> RolloutEr
     })
 }
 
-pub(super) fn sync_parent(path: &Path) -> Result<(), RolloutError> {
+pub(super) fn sync_parent(_path: &Path) -> Result<(), RolloutError> {
     #[cfg(unix)]
     {
+        let path = _path;
         let parent = path
             .parent()
             .ok_or_else(|| unavailable(path, io::Error::other("no parent")))?;

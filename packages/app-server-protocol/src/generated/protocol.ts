@@ -38,7 +38,9 @@ export type ServerCapabilities = Record<string, never>;
 
 export type InitializeResponse = { protocolVersion: number, serverInfo: ServerInfo, platform: PlatformInfo, capabilities: ServerCapabilities, };
 
-export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, };
+export type ToolResult = { "type": "success", content: string, bytes: bigint, } | { "type": "error", kind: string, };
+
+export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
 
 export type ItemStartedNotification = { threadId: string, turnId: string, item: Item, };
 

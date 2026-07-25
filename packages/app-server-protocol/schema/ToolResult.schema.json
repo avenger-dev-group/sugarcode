@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ToolResult",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "content": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "success"
+        }
+      },
+      "required": [
+        "type",
+        "content",
+        "bytes"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "error"
+        }
+      },
+      "required": [
+        "type",
+        "kind"
+      ]
+    }
+  ]
+}

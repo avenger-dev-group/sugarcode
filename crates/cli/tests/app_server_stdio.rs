@@ -56,6 +56,31 @@ fn provider_terminal_error_matches_golden_trace() {
 }
 
 #[test]
+fn workspace_read_tool_lifecycle_matches_golden_trace() {
+    const TOOL_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\\\"path\\\":\\\"context.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const FINAL_ANSWER: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Read succeeded.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("create isolated workspace");
+    fs::write(workspace.path().join("context.txt"), "fixture context")
+        .expect("write workspace fixture");
+    let _provider =
+        MockProvider::start_with_bodies(sugarcode_home.path(), vec![TOOL_CALL, FINAL_ANSWER]);
+    run_golden(
+        "turn-workspace-read",
+        &sugarcode_home,
+        Some(workspace.path()),
+    );
+}
+
+#[test]
 fn missing_model_still_serves_threads_and_returns_stable_turn_error() {
     let home = tempfile::tempdir().expect("isolated SugarCode home");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
@@ -476,6 +501,10 @@ fn assert_golden(name: &str) {
 fn assert_golden_with_body(name: &str, provider_body: &'static str) {
     let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
     let _provider = MockProvider::start_with_body(sugarcode_home.path(), provider_body);
+    run_golden(name, &sugarcode_home, None);
+}
+
+fn run_golden(name: &str, sugarcode_home: &tempfile::TempDir, workspace: Option<&std::path::Path>) {
     let fixture_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-fixtures/app-server/v1");
     let input = fs::read_to_string(fixture_root.join(format!("{name}.stdin.jsonl")))
@@ -483,8 +512,12 @@ fn assert_golden_with_body(name: &str, provider_body: &'static str) {
     let expected = fs::read_to_string(fixture_root.join(format!("{name}.stdout.jsonl")))
         .expect("read golden stdout");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
-        .args(["app-server", "--stdio"])
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sugarcode"));
+    command.args(["app-server", "--stdio"]);
+    if let Some(workspace) = workspace {
+        command.arg("--workspace").arg(workspace);
+    }
+    let mut child = command
         .env("SUGARCODE_HOME", sugarcode_home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -564,6 +597,30 @@ impl MockProvider {
                 if thread_stop.load(Ordering::Acquire) {
                     break;
                 }
+                serve_recorded_response(&mut stream, body);
+            }
+        });
+        Self {
+            address,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn start_with_bodies(home: &std::path::Path, bodies: Vec<&'static str>) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock provider");
+        let address = listener.local_addr().expect("mock provider address");
+        configure_model(home, address);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread = thread::spawn(move || {
+            let mut bodies = bodies.into_iter();
+            while !thread_stop.load(Ordering::Acquire) {
+                let (mut stream, _) = listener.accept().expect("accept provider request");
+                if thread_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                let body = bodies.next().expect("recorded provider response");
                 serve_recorded_response(&mut stream, body);
             }
         });

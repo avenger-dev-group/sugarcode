@@ -137,6 +137,58 @@ fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
 }
 
 #[test]
+fn a_durable_tool_call_survives_recovery_without_an_unwritten_result() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let tool_call = DurableItemSnapshot::ToolCall {
+        id: ItemId::new("item_0000000000000002"),
+        call_id: "call_1".to_string(),
+        name: "workspace/read".to_string(),
+        path: "README.txt".to_string(),
+    };
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(
+                &thread_id,
+                &DurableTurnSnapshot {
+                    id: turn_id.clone(),
+                    status: DurableTurnStatus::InProgress,
+                    items: vec![DurableItemSnapshot::UserMessage {
+                        id: ItemId::new("item_0000000000000001"),
+                        text: "Read it".to_string(),
+                    }],
+                    error: None,
+                    usage: None,
+                },
+            )
+            .expect("turn start");
+        repository
+            .append_turn_item(&thread_id, &turn_id, &tool_call)
+            .expect("durable tool call");
+    }
+
+    let repository = RolloutRepository::open(&home).expect("recover");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.turns.len(), 1);
+    assert_eq!(snapshot.turns[0].status, DurableTurnStatus::Interrupted);
+    assert_eq!(snapshot.turns[0].items.last(), Some(&tool_call));
+    assert!(
+        !snapshot.turns[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, DurableItemSnapshot::ToolResult { .. }))
+    );
+    assert_eq!(repository.id_sequences().item, 2);
+}
+
+#[test]
 fn a_started_turn_is_replaced_by_its_single_terminal_record() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);

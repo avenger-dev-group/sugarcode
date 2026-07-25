@@ -8,6 +8,7 @@ use sugarcode_app_server_protocol::JsonRpcNotification;
 use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
+use sugarcode_app_server_protocol::ToolResult as PublicToolResult;
 use sugarcode_app_server_protocol::Turn as PublicTurn;
 use sugarcode_app_server_protocol::TurnCompletedNotification;
 use sugarcode_app_server_protocol::TurnError;
@@ -247,6 +248,28 @@ fn map_snapshot_parts(
                                 text,
                             }
                         }
+                        DurableItemSnapshot::ToolCall {
+                            id,
+                            call_id,
+                            name,
+                            path,
+                        } => PublicItem::ToolCall {
+                            id: id.into_string(),
+                            call_id,
+                            name,
+                            path,
+                        },
+                        DurableItemSnapshot::ToolResult {
+                            id,
+                            call_id,
+                            name,
+                            result,
+                        } => PublicItem::ToolResult {
+                            id: id.into_string(),
+                            call_id,
+                            name,
+                            result: map_durable_tool_result(result),
+                        },
                     })
                     .collect(),
                 error: turn.error.map(map_durable_error),
@@ -363,6 +386,42 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             id: item.id.into_string(),
             text,
         },
+        CoreItemKind::ToolCall {
+            call_id,
+            name,
+            path,
+        } => PublicItem::ToolCall {
+            id: item.id.into_string(),
+            call_id,
+            name,
+            path,
+        },
+        CoreItemKind::ToolResult {
+            call_id,
+            name,
+            result,
+        } => PublicItem::ToolResult {
+            id: item.id.into_string(),
+            call_id,
+            name,
+            result: match result {
+                sugarcode_protocol::CoreToolResult::Success { content, bytes } => {
+                    PublicToolResult::Success { content, bytes }
+                }
+                sugarcode_protocol::CoreToolResult::Error { kind } => {
+                    PublicToolResult::Error { kind }
+                }
+            },
+        },
+    }
+}
+
+fn map_durable_tool_result(result: sugarcode_state::DurableToolResult) -> PublicToolResult {
+    match result {
+        sugarcode_state::DurableToolResult::Success { content, bytes } => {
+            PublicToolResult::Success { content, bytes }
+        }
+        sugarcode_state::DurableToolResult::Error { kind } => PublicToolResult::Error { kind },
     }
 }
 

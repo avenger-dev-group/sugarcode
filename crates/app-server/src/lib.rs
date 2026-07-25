@@ -21,7 +21,16 @@ use sugarcode_state::ModelApiFormat;
 use sugarcode_state::RolloutRepository;
 use zeroize::Zeroizing;
 
-pub async fn run_stdio(config: EffectiveConfig) -> io::Result<()> {
+pub async fn run_stdio(
+    config: EffectiveConfig,
+    workspace: Option<std::path::PathBuf>,
+) -> io::Result<()> {
+    let workspace_read = workspace
+        .as_deref()
+        .map(sugarcode_tools::WorkspaceReadTool::open)
+        .transpose()
+        .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
+        .map(Arc::new);
     let model = config.model().cloned();
     let model_token = model
         .as_ref()
@@ -52,7 +61,12 @@ pub async fn run_stdio(config: EffectiveConfig) -> io::Result<()> {
                             .map_err(io::Error::other)?,
                     ),
                 };
-            CoreRuntime::new(core, provider, model.model().to_string())
+            CoreRuntime::new_with_workspace(
+                core,
+                provider,
+                model.model().to_string(),
+                workspace_read,
+            )
         }
         (None, Ok(None)) => CoreRuntime::without_model(core),
         (None, Ok(Some(_))) | (None, Err(_)) => unreachable!("token lookup requires a model"),

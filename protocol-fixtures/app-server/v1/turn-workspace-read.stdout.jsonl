@@ -1,0 +1,15 @@
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":{},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
+{"id":"thread-1","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000001"}}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
+{"id":"turn-1","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000001","text":"Read context.txt","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000001","text":"Read context.txt","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"callId":"call_fixture","id":"item_0000000000000002","name":"workspace/read","path":"context.txt","type":"toolCall"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"callId":"call_fixture","id":"item_0000000000000002","name":"workspace/read","path":"context.txt","type":"toolCall"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"callId":"call_fixture","id":"item_0000000000000003","name":"workspace/read","result":{"bytes":15,"content":"fixture context","type":"success"},"type":"toolResult"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"callId":"call_fixture","id":"item_0000000000000003","name":"workspace/read","result":{"bytes":15,"content":"fixture context","type":"success"},"type":"toolResult"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000004","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"Read succeeded.","itemId":"item_0000000000000004","threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000004","text":"Read succeeded.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"completed"}}}

@@ -99,6 +99,9 @@ struct AppServerArgs {
     /// Serve newline-delimited JSON-RPC over stdin/stdout.
     #[arg(long)]
     stdio: bool,
+    /// Explicit workspace root available to bounded read-only model tools.
+    #[arg(long, value_name = "DIR")]
+    workspace: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<AppServerCommand>,
 }
@@ -201,15 +204,15 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &mut std::io::stdout().lock(),
             )?;
         }
-        Command::AppServer(args) => match (args.stdio, args.command) {
-            (true, None) => {
+        Command::AppServer(args) => match (args.stdio, args.command, args.workspace) {
+            (true, None, workspace) => {
                 let effective_config = sugarcode_state::load_effective_config(home)?;
-                sugarcode_app_server::run_stdio(effective_config).await?;
+                sugarcode_app_server::run_stdio(effective_config, workspace).await?;
             }
-            (false, Some(AppServerCommand::GenerateTs(args))) => {
+            (false, Some(AppServerCommand::GenerateTs(args)), None) => {
                 sugarcode_app_server::generate_typescript(&args.out)?;
             }
-            (false, Some(AppServerCommand::GenerateJsonSchema(args))) => {
+            (false, Some(AppServerCommand::GenerateJsonSchema(args)), None) => {
                 sugarcode_app_server::generate_json_schema(&args.out)?;
             }
             _ => {

@@ -10,6 +10,7 @@ pub type BoxModelFuture<'a> = BoxFuture<'a, Result<ModelStream, ModelError>>;
 pub struct ModelRequest {
     pub model: String,
     pub messages: Vec<ModelMessage>,
+    pub tools: Vec<ModelToolDefinition>,
 }
 
 impl fmt::Debug for ModelRequest {
@@ -18,23 +19,33 @@ impl fmt::Debug for ModelRequest {
             .debug_struct("ModelRequest")
             .field("model", &"<redacted>")
             .field("message_count", &self.messages.len())
+            .field("tool_count", &self.tools.len())
             .finish()
     }
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct ModelMessage {
-    pub role: ModelRole,
-    pub text: String,
+pub enum ModelMessage {
+    Text { role: ModelRole, text: String },
+    ToolCall(ModelToolCall),
+    ToolResult { call_id: String, content: String },
 }
 
 impl fmt::Debug for ModelMessage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ModelMessage")
-            .field("role", &self.role)
-            .field("text", &"<redacted>")
-            .finish()
+        match self {
+            Self::Text { role, .. } => formatter
+                .debug_struct("Text")
+                .field("role", role)
+                .field("text", &"<redacted>")
+                .finish(),
+            Self::ToolCall(call) => formatter.debug_tuple("ToolCall").field(call).finish(),
+            Self::ToolResult { call_id, .. } => formatter
+                .debug_struct("ToolResult")
+                .field("call_id", call_id)
+                .field("content", &"<redacted>")
+                .finish(),
+        }
     }
 }
 
@@ -47,6 +58,7 @@ pub enum ModelRole {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ModelEvent {
     TextDelta(String),
+    ToolCall(ModelToolCall),
     Usage(ModelUsage),
     Completed,
 }
@@ -58,9 +70,46 @@ impl fmt::Debug for ModelEvent {
                 .debug_tuple("TextDelta")
                 .field(&format_args!("{} bytes", delta.len()))
                 .finish(),
+            Self::ToolCall(call) => formatter.debug_tuple("ToolCall").field(call).finish(),
             Self::Usage(usage) => formatter.debug_tuple("Usage").field(usage).finish(),
             Self::Completed => formatter.write_str("Completed"),
         }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ModelToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+impl fmt::Debug for ModelToolDefinition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModelToolDefinition")
+            .field("name", &self.name)
+            .field("description", &"<redacted>")
+            .field("parameters", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ModelToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl fmt::Debug for ModelToolCall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModelToolCall")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("arguments", &"<redacted>")
+            .finish()
     }
 }
 

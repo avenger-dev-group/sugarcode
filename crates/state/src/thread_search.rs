@@ -20,6 +20,7 @@ use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(unix)]
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::path::Path;
@@ -1357,9 +1358,10 @@ fn remove_regular_file_if_present(path: &Path) -> Result<(), RolloutError> {
     }
 }
 
-fn sync_parent(path: &Path) -> Result<(), RolloutError> {
+fn sync_parent(_path: &Path) -> Result<(), RolloutError> {
     #[cfg(unix)]
     {
+        let path = _path;
         let parent = path
             .parent()
             .ok_or_else(|| projection_error(path, "sync", "invalidPath"))?;

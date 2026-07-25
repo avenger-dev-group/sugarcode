@@ -18,6 +18,7 @@ pub use item::AgentMessageDeltaNotification;
 pub use item::Item;
 pub use item::ItemCompletedNotification;
 pub use item::ItemStartedNotification;
+pub use item::ToolResult;
 pub use rpc::JsonRpcError;
 pub use rpc::JsonRpcErrorObject;
 pub use rpc::JsonRpcMessage;

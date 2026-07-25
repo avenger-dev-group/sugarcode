@@ -31,6 +31,26 @@ pub struct CoreItemSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreItemKind {
-    UserMessage { text: String },
-    AgentMessage { text: String },
+    UserMessage {
+        text: String,
+    },
+    AgentMessage {
+        text: String,
+    },
+    ToolCall {
+        call_id: String,
+        name: String,
+        path: String,
+    },
+    ToolResult {
+        call_id: String,
+        name: String,
+        result: CoreToolResult,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreToolResult {
+    Success { content: String, bytes: u64 },
+    Error { kind: String },
 }

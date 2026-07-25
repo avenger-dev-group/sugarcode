@@ -7,8 +7,38 @@ use ts_rs::TS;
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type", rename_all = "camelCase")]
 pub enum Item {
-    UserMessage { id: String, text: String },
-    AgentMessage { id: String, text: String },
+    UserMessage {
+        id: String,
+        text: String,
+    },
+    AgentMessage {
+        id: String,
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        #[serde(rename = "callId")]
+        #[ts(rename = "callId")]
+        call_id: String,
+        name: String,
+        path: String,
+    },
+    ToolResult {
+        id: String,
+        #[serde(rename = "callId")]
+        #[ts(rename = "callId")]
+        call_id: String,
+        name: String,
+        result: ToolResult,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase")]
+pub enum ToolResult {
+    Success { content: String, bytes: u64 },
+    Error { kind: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

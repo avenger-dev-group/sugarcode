@@ -60,6 +60,104 @@
             "id",
             "text"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "callId": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "toolCall"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "callId",
+            "name",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "callId": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/$defs/ToolResult"
+            },
+            "type": {
+              "type": "string",
+              "const": "toolResult"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "callId",
+            "name",
+            "result"
+          ]
+        }
+      ]
+    },
+    "ToolResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "content": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "success"
+            }
+          },
+          "required": [
+            "type",
+            "content",
+            "bytes"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "required": [
+            "type",
+            "kind"
+          ]
         }
       ]
     }

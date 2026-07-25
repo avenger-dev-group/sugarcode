@@ -37,7 +37,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.96.0
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
@@ -47,6 +47,9 @@ jobs:
 
       - name: Check Rust workspace
         run: cargo check --workspace --locked
+
+      - name: Lint Rust workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Check TypeScript workspace
         run: pnpm check

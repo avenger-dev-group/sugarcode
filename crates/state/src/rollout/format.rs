@@ -1,6 +1,7 @@
 use super::CURRENT_ROLLOUT_SCHEMA_VERSION;
 use super::DurableItemSnapshot;
 use super::DurableThreadSnapshot;
+use super::DurableToolResult;
 use super::DurableTurnError;
 use super::DurableTurnErrorKind;
 use super::DurableTurnSnapshot;
@@ -48,6 +49,18 @@ pub(super) struct TurnStartedRecord<'a> {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct TurnItemAddedRecord<'a> {
+    pub schema_version: u32,
+    pub sequence: u64,
+    #[serde(rename = "type")]
+    pub record_type: &'static str,
+    pub thread_id: &'a str,
+    pub turn_id: &'a str,
+    pub item: StoredItemRef<'a>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct ThreadArchivedRecord<'a> {
     pub schema_version: u32,
     pub sequence: u64,
@@ -91,8 +104,76 @@ pub(super) struct StoredTurnRef<'a> {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(super) enum StoredItemRef<'a> {
-    UserMessage { id: &'a str, text: &'a str },
-    AgentMessage { id: &'a str, text: &'a str },
+    UserMessage {
+        id: &'a str,
+        text: &'a str,
+    },
+    AgentMessage {
+        id: &'a str,
+        text: &'a str,
+    },
+    ToolCall {
+        id: &'a str,
+        call_id: &'a str,
+        name: &'a str,
+        path: &'a str,
+    },
+    ToolResult {
+        id: &'a str,
+        call_id: &'a str,
+        name: &'a str,
+        result: StoredToolResultRef<'a>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(super) enum StoredToolResultRef<'a> {
+    Success { content: &'a str, bytes: u64 },
+    Error { kind: &'a str },
+}
+
+impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
+    fn from(item: &'a DurableItemSnapshot) -> Self {
+        match item {
+            DurableItemSnapshot::UserMessage { id, text } => Self::UserMessage {
+                id: id.as_str(),
+                text,
+            },
+            DurableItemSnapshot::AgentMessage { id, text } => Self::AgentMessage {
+                id: id.as_str(),
+                text,
+            },
+            DurableItemSnapshot::ToolCall {
+                id,
+                call_id,
+                name,
+                path,
+            } => Self::ToolCall {
+                id: id.as_str(),
+                call_id,
+                name,
+                path,
+            },
+            DurableItemSnapshot::ToolResult {
+                id,
+                call_id,
+                name,
+                result,
+            } => Self::ToolResult {
+                id: id.as_str(),
+                call_id,
+                name,
+                result: match result {
+                    DurableToolResult::Success { content, bytes } => StoredToolResultRef::Success {
+                        content,
+                        bytes: *bytes,
+                    },
+                    DurableToolResult::Error { kind } => StoredToolResultRef::Error { kind },
+                },
+            },
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -127,20 +208,7 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
                 DurableTurnStatus::Failed => "failed",
                 DurableTurnStatus::Interrupted => "interrupted",
             },
-            items: turn
-                .items
-                .iter()
-                .map(|item| match item {
-                    DurableItemSnapshot::UserMessage { id, text } => StoredItemRef::UserMessage {
-                        id: id.as_str(),
-                        text,
-                    },
-                    DurableItemSnapshot::AgentMessage { id, text } => StoredItemRef::AgentMessage {
-                        id: id.as_str(),
-                        text,
-                    },
-                })
-                .collect(),
+            items: turn.items.iter().map(StoredItemRef::from).collect(),
             error: turn.error.as_ref().map(|error| StoredTurnErrorRef {
                 kind: stored_error_kind(error.kind),
                 retryable: error.retryable,
@@ -214,6 +282,18 @@ struct StoredTurnStarted {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredTurnItemAdded {
+    schema_version: u32,
+    sequence: u64,
+    #[serde(rename = "type")]
+    record_type: TurnItemAddedType,
+    thread_id: String,
+    turn_id: String,
+    item: StoredItem,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredThreadArchived {
     schema_version: u32,
     sequence: u64,
@@ -252,6 +332,12 @@ enum TurnCompletedType {
 enum TurnStartedType {
     #[serde(rename = "turnStarted")]
     TurnStarted,
+}
+
+#[derive(Debug, Deserialize)]
+enum TurnItemAddedType {
+    #[serde(rename = "turnItemAdded")]
+    TurnItemAdded,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,20 +380,35 @@ enum StoredTurnStatus {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StoredItem {
-    #[serde(rename = "type")]
-    item_type: StoredItemType,
-    id: String,
-    text: String,
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+enum StoredItem {
+    UserMessage {
+        id: String,
+        text: String,
+    },
+    AgentMessage {
+        id: String,
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        call_id: String,
+        name: String,
+        path: String,
+    },
+    ToolResult {
+        id: String,
+        call_id: String,
+        name: String,
+        result: StoredToolResult,
+    },
 }
 
 #[derive(Debug, Deserialize)]
-enum StoredItemType {
-    #[serde(rename = "userMessage")]
-    UserMessage,
-    #[serde(rename = "agentMessage")]
-    AgentMessage,
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+enum StoredToolResult {
+    Success { content: String, bytes: u64 },
+    Error { kind: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -360,6 +461,12 @@ pub(super) enum DecodedRecord {
         thread_id: ThreadId,
         turn: DurableTurnSnapshot,
     },
+    TurnItemAdded {
+        sequence: u64,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        item: DurableItemSnapshot,
+    },
     TurnCompleted {
         sequence: u64,
         thread_id: ThreadId,
@@ -384,6 +491,7 @@ impl DecodedRecord {
         match self {
             Self::ThreadCreated { sequence, .. }
             | Self::TurnStarted { sequence, .. }
+            | Self::TurnItemAdded { sequence, .. }
             | Self::TurnCompleted { sequence, .. }
             | Self::ThreadArchived { sequence, .. }
             | Self::ThreadUnarchived { sequence, .. }
@@ -437,6 +545,7 @@ pub(super) fn decode_record(
         record_type,
         "threadCreated"
             | "turnStarted"
+            | "turnItemAdded"
             | "turnCompleted"
             | "threadArchived"
             | "threadUnarchived"
@@ -559,6 +668,30 @@ pub(super) fn decode_record(
                 },
             })
         }
+        "turnItemAdded" => {
+            let record = serde_json::from_value::<StoredTurnItemAdded>(value).map_err(|_| {
+                RolloutError::Corrupt(RolloutDiagnostic {
+                    path: path.to_path_buf(),
+                    offset,
+                    kind: "invalidRecordShape",
+                })
+            })?;
+            let StoredTurnItemAdded {
+                schema_version,
+                sequence,
+                thread_id,
+                turn_id,
+                item,
+                record_type: TurnItemAddedType::TurnItemAdded,
+            } = record;
+            debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
+            Ok(DecodedRecord::TurnItemAdded {
+                sequence,
+                thread_id: ThreadId::new(thread_id),
+                turn_id: TurnId::new(turn_id),
+                item: decode_item(item),
+            })
+        }
         "threadArchived" => {
             let record = serde_json::from_value::<StoredThreadArchived>(value).map_err(|_| {
                 RolloutError::Corrupt(RolloutDiagnostic {
@@ -624,27 +757,47 @@ pub(super) fn decode_record(
 }
 
 fn decode_items(items: Vec<StoredItem>) -> Vec<DurableItemSnapshot> {
-    items
-        .into_iter()
-        .map(|item| match item {
-            StoredItem {
-                item_type: StoredItemType::UserMessage,
-                id,
-                text,
-            } => DurableItemSnapshot::UserMessage {
-                id: ItemId::new(id),
-                text,
+    items.into_iter().map(decode_item).collect()
+}
+
+fn decode_item(item: StoredItem) -> DurableItemSnapshot {
+    match item {
+        StoredItem::UserMessage { id, text } => DurableItemSnapshot::UserMessage {
+            id: ItemId::new(id),
+            text,
+        },
+        StoredItem::AgentMessage { id, text } => DurableItemSnapshot::AgentMessage {
+            id: ItemId::new(id),
+            text,
+        },
+        StoredItem::ToolCall {
+            id,
+            call_id,
+            name,
+            path,
+        } => DurableItemSnapshot::ToolCall {
+            id: ItemId::new(id),
+            call_id,
+            name,
+            path,
+        },
+        StoredItem::ToolResult {
+            id,
+            call_id,
+            name,
+            result,
+        } => DurableItemSnapshot::ToolResult {
+            id: ItemId::new(id),
+            call_id,
+            name,
+            result: match result {
+                StoredToolResult::Success { content, bytes } => {
+                    DurableToolResult::Success { content, bytes }
+                }
+                StoredToolResult::Error { kind } => DurableToolResult::Error { kind },
             },
-            StoredItem {
-                item_type: StoredItemType::AgentMessage,
-                id,
-                text,
-            } => DurableItemSnapshot::AgentMessage {
-                id: ItemId::new(id),
-                text,
-            },
-        })
-        .collect()
+        },
+    }
 }
 
 fn decode_error(error: StoredTurnError) -> DurableTurnError {
@@ -721,6 +874,23 @@ pub(super) fn encode_turn_completed(
         record_type: "turnCompleted",
         thread_id: thread_id.as_str(),
         turn: turn.into(),
+    })
+    .map_err(|_| RolloutError::Poisoned)
+}
+
+pub(super) fn encode_turn_item_added(
+    sequence: u64,
+    thread_id: &ThreadId,
+    turn_id: &TurnId,
+    item: &DurableItemSnapshot,
+) -> Result<Vec<u8>, RolloutError> {
+    serde_json::to_vec(&TurnItemAddedRecord {
+        schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
+        sequence,
+        record_type: "turnItemAdded",
+        thread_id: thread_id.as_str(),
+        turn_id: turn_id.as_str(),
+        item: item.into(),
     })
     .map_err(|_| RolloutError::Poisoned)
 }

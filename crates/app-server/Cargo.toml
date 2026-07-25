@@ -14,6 +14,7 @@ sugarcode-credential-store = { path = "../credential-store" }
 sugarcode-model-provider = { path = "../model-provider" }
 sugarcode-protocol = { path = "../protocol" }
 sugarcode-state = { path = "../state" }
+sugarcode-tools = { path = "../tools" }
 tokio.workspace = true
 zeroize.workspace = true
 

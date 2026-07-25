@@ -110,14 +110,41 @@ pub struct DurableUsage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DurableItemSnapshot {
-    UserMessage { id: ItemId, text: String },
-    AgentMessage { id: ItemId, text: String },
+    UserMessage {
+        id: ItemId,
+        text: String,
+    },
+    AgentMessage {
+        id: ItemId,
+        text: String,
+    },
+    ToolCall {
+        id: ItemId,
+        call_id: String,
+        name: String,
+        path: String,
+    },
+    ToolResult {
+        id: ItemId,
+        call_id: String,
+        name: String,
+        result: DurableToolResult,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableToolResult {
+    Success { content: String, bytes: u64 },
+    Error { kind: String },
 }
 
 impl DurableItemSnapshot {
     pub fn id(&self) -> &ItemId {
         match self {
-            Self::UserMessage { id, .. } | Self::AgentMessage { id, .. } => id,
+            Self::UserMessage { id, .. }
+            | Self::AgentMessage { id, .. }
+            | Self::ToolCall { id, .. }
+            | Self::ToolResult { id, .. } => id,
         }
     }
 }
@@ -149,6 +176,16 @@ pub trait ThreadRepository: fmt::Debug + Send {
         turn: &DurableTurnSnapshot,
     ) -> Result<(), RolloutError> {
         self.append_completed_turn(thread_id, turn)
+    }
+    fn append_turn_item(
+        &mut self,
+        _thread_id: &ThreadId,
+        _turn_id: &TurnId,
+        _item: &DurableItemSnapshot,
+    ) -> Result<(), RolloutError> {
+        Err(RolloutError::InvalidRecord {
+            kind: "incrementalItemsUnsupported",
+        })
     }
     fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
     fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;

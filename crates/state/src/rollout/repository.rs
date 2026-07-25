@@ -20,6 +20,7 @@ use super::format::encode_thread_created;
 use super::format::encode_thread_deleted;
 use super::format::encode_thread_unarchived;
 use super::format::encode_turn_completed;
+use super::format::encode_turn_item_added;
 use super::format::encode_turn_started;
 use super::replay::parse_canonical_id;
 use super::replay::replay_all;
@@ -554,7 +555,6 @@ impl ThreadRepository for RolloutRepository {
     ) -> Result<(), RolloutError> {
         self.ensure_available()?;
         if turn.status != DurableTurnStatus::InProgress
-            || turn.items.is_empty()
             || turn.items.len() > 2
             || turn.error.is_some()
             || turn.usage.is_some()
@@ -564,6 +564,7 @@ impl ThreadRepository for RolloutRepository {
             });
         }
         let valid_items = match turn.items.as_slice() {
+            [] | [DurableItemSnapshot::UserMessage { .. }] => true,
             [DurableItemSnapshot::AgentMessage { text, .. }] => text.is_empty(),
             [
                 DurableItemSnapshot::UserMessage { .. },
@@ -621,6 +622,83 @@ impl ThreadRepository for RolloutRepository {
             .last_record_sequence = record_sequence;
         self.pending_turns.insert(thread_id.clone(), turn.clone());
         self.sequences.turn = turn_sequence;
+        self.sequences.item = item_sequence;
+        let _ = self
+            .projection
+            .record_turn_completed(thread_id, record_sequence);
+        let _ = self
+            .search_projection
+            .record_turn_started(thread_id, record_sequence);
+        Ok(())
+    }
+
+    fn append_turn_item(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &sugarcode_protocol::TurnId,
+        item: &DurableItemSnapshot,
+    ) -> Result<(), RolloutError> {
+        self.ensure_available()?;
+        let pending = self
+            .pending_turns
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidRecord {
+                kind: "turnNotActive",
+            })?;
+        if &pending.id != turn_id {
+            return Err(RolloutError::InvalidRecord {
+                kind: "turnIdMismatch",
+            });
+        }
+        if pending
+            .items
+            .iter()
+            .any(|existing| existing.id() == item.id())
+        {
+            return Err(RolloutError::Collision { kind: "item" });
+        }
+        if matches!(item, DurableItemSnapshot::UserMessage { .. }) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidIncrementalItem",
+            });
+        }
+        if matches!(item, DurableItemSnapshot::AgentMessage { text, .. } if !text.is_empty()) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidIncrementalItem",
+            });
+        }
+        let item_sequence = parse_canonical_id(item.id().as_str(), "item_", "item")?;
+        if item_sequence <= self.sequences.item {
+            return Err(RolloutError::Collision { kind: "item" });
+        }
+        let thread = self
+            .threads
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        let record_sequence =
+            thread
+                .last_record_sequence
+                .checked_add(1)
+                .ok_or(RolloutError::InvalidRecord {
+                    kind: "recordSequenceOverflow",
+                })?;
+        let next_file_record_count =
+            usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutRecords",
+            })?;
+        let path = self.thread_path(thread_id)?;
+        let bytes = encode_turn_item_added(record_sequence, thread_id, turn_id, item)?;
+        self.append_record(&path, &bytes, false, next_file_record_count)?;
+        self.pending_turns
+            .get_mut(thread_id)
+            .expect("validated pending turn")
+            .items
+            .push(item.clone());
+        self.threads
+            .get_mut(thread_id)
+            .expect("validated thread exists")
+            .last_record_sequence = record_sequence;
         self.sequences.item = item_sequence;
         let _ = self
             .projection
@@ -897,6 +975,11 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                         id: terminal_id, ..
                     },
                 ) => started_id == terminal_id,
+                (DurableItemSnapshot::ToolCall { .. }, DurableItemSnapshot::ToolCall { .. })
+                | (
+                    DurableItemSnapshot::ToolResult { .. },
+                    DurableItemSnapshot::ToolResult { .. },
+                ) => started == terminal,
                 _ => false,
             })
 }

@@ -10,6 +10,7 @@ pub use event::CoreTurnError;
 pub use event::CoreTurnErrorKind;
 pub use item::CoreItemKind;
 pub use item::CoreItemSnapshot;
+pub use item::CoreToolResult;
 pub use item::ItemId;
 pub use thread::ThreadId;
 pub use turn::TurnId;

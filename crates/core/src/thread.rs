@@ -9,6 +9,7 @@ use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreItemKind;
 use sugarcode_protocol::CoreItemSnapshot;
 use sugarcode_protocol::CoreRequestId;
+use sugarcode_protocol::CoreToolResult;
 use sugarcode_protocol::ItemId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
@@ -17,6 +18,7 @@ use sugarcode_state::DurableThreadLifecycle;
 use sugarcode_state::DurableThreadPage;
 use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableThreadSummary;
+use sugarcode_state::DurableToolResult;
 use sugarcode_state::DurableTurnError;
 use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::DurableTurnStatus;
@@ -36,14 +38,24 @@ pub struct PreparedTextTurn {
     pub thread_id: ThreadId,
     pub turn_id: TurnId,
     pub user_item: Option<CoreItemSnapshot>,
-    pub agent_item: CoreItemSnapshot,
     pub history: Vec<PreparedMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PreparedMessage {
-    pub role: PreparedMessageRole,
-    pub text: String,
+pub enum PreparedMessage {
+    Text {
+        role: PreparedMessageRole,
+        text: String,
+    },
+    ToolCall {
+        call_id: String,
+        name: String,
+        path: String,
+    },
+    ToolResult {
+        call_id: String,
+        content: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,8 +169,22 @@ struct Item {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ItemKind {
-    UserMessage { text: String },
-    AgentMessage { text: String },
+    UserMessage {
+        text: String,
+    },
+    AgentMessage {
+        text: String,
+    },
+    ToolCall {
+        call_id: String,
+        name: String,
+        path: String,
+    },
+    ToolResult {
+        call_id: String,
+        name: String,
+        result: CoreToolResult,
+    },
 }
 
 impl Item {
@@ -184,6 +210,9 @@ impl Item {
             ItemKind::UserMessage { .. } => Err(CoreError::Internal(
                 "cannot append an agent delta to a user message".to_string(),
             )),
+            ItemKind::ToolCall { .. } | ItemKind::ToolResult { .. } => Err(CoreError::Internal(
+                "cannot append an agent delta to a tool item".to_string(),
+            )),
         }
     }
 
@@ -199,6 +228,24 @@ impl Item {
         let kind = match &self.kind {
             ItemKind::UserMessage { text } => CoreItemKind::UserMessage { text: text.clone() },
             ItemKind::AgentMessage { text } => CoreItemKind::AgentMessage { text: text.clone() },
+            ItemKind::ToolCall {
+                call_id,
+                name,
+                path,
+            } => CoreItemKind::ToolCall {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                path: path.clone(),
+            },
+            ItemKind::ToolResult {
+                call_id,
+                name,
+                result,
+            } => CoreItemKind::ToolResult {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                result: result.clone(),
+            },
         };
         CoreItemSnapshot {
             id: self.id.clone(),
@@ -379,6 +426,34 @@ impl Core {
                         state: ItemState::Completed,
                         kind: ItemKind::AgentMessage { text: text.clone() },
                     },
+                    DurableItemSnapshot::ToolCall {
+                        id,
+                        call_id,
+                        name,
+                        path,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::ToolCall {
+                            call_id: call_id.clone(),
+                            name: name.clone(),
+                            path: path.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::ToolResult {
+                        id,
+                        call_id,
+                        name,
+                        result,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::ToolResult {
+                            call_id: call_id.clone(),
+                            name: name.clone(),
+                            result: core_tool_result(result),
+                        },
+                    },
                 };
                 items.insert(item.id.clone(), item);
             }
@@ -441,20 +516,37 @@ impl Core {
             .filter(|turn| turn.state == TurnState::Completed)
             .flat_map(|turn| {
                 turn.items.values().filter_map(|item| match &item.kind {
-                    ItemKind::UserMessage { text } => Some(PreparedMessage {
+                    ItemKind::UserMessage { text } => Some(PreparedMessage::Text {
                         role: PreparedMessageRole::User,
                         text: text.clone(),
                     }),
-                    ItemKind::AgentMessage { text } if !text.is_empty() => Some(PreparedMessage {
-                        role: PreparedMessageRole::Assistant,
-                        text: text.clone(),
-                    }),
+                    ItemKind::AgentMessage { text } if !text.is_empty() => {
+                        Some(PreparedMessage::Text {
+                            role: PreparedMessageRole::Assistant,
+                            text: text.clone(),
+                        })
+                    }
                     ItemKind::AgentMessage { .. } => None,
+                    ItemKind::ToolCall {
+                        call_id,
+                        name,
+                        path,
+                    } => Some(PreparedMessage::ToolCall {
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        path: path.clone(),
+                    }),
+                    ItemKind::ToolResult {
+                        call_id, result, ..
+                    } => Some(PreparedMessage::ToolResult {
+                        call_id: call_id.clone(),
+                        content: tool_result_content(result),
+                    }),
                 })
             })
             .collect::<Vec<_>>();
         if let Some(input) = input.as_ref() {
-            history.push(PreparedMessage {
+            history.push(PreparedMessage::Text {
                 role: PreparedMessageRole::User,
                 text: input.clone(),
             });
@@ -462,7 +554,15 @@ impl Core {
             return Err(CoreError::InvalidInput);
         }
         let history_bytes = history.iter().try_fold(0usize, |total, message| {
-            total.checked_add(message.text.len())
+            total.checked_add(match message {
+                PreparedMessage::Text { text, .. } => text.len(),
+                PreparedMessage::ToolCall {
+                    call_id,
+                    name,
+                    path,
+                } => call_id.len() + name.len() + path.len(),
+                PreparedMessage::ToolResult { call_id, content } => call_id.len() + content.len(),
+            })
         });
         if history_bytes.is_none_or(|bytes| bytes > MAX_PROVIDER_HISTORY_BYTES) {
             return Err(CoreError::ContextTooLarge);
@@ -472,22 +572,18 @@ impl Core {
             .last_turn_sequence
             .checked_add(1)
             .ok_or(CoreError::TurnIdExhausted)?;
-        let first_item_sequence = self
-            .last_item_sequence
-            .checked_add(1)
-            .ok_or(CoreError::ItemIdExhausted)?;
-        let agent_item_sequence = if input.is_some() {
-            first_item_sequence
-                .checked_add(1)
-                .ok_or(CoreError::ItemIdExhausted)?
-        } else {
-            first_item_sequence
-        };
         let turn_id = TurnId::new(format!("turn_{turn_sequence:016}"));
-        let user_item_id = input
-            .as_ref()
-            .map(|_| ItemId::new(format!("item_{first_item_sequence:016}")));
-        let agent_item_id = ItemId::new(format!("item_{agent_item_sequence:016}"));
+        let user_item_sequence = if input.is_some() {
+            Some(
+                self.last_item_sequence
+                    .checked_add(1)
+                    .ok_or(CoreError::ItemIdExhausted)?,
+            )
+        } else {
+            None
+        };
+        let user_item_id =
+            user_item_sequence.map(|sequence| ItemId::new(format!("item_{sequence:016}")));
         let user_item = input
             .as_ref()
             .zip(user_item_id.as_ref())
@@ -497,17 +593,10 @@ impl Core {
                     text: input.clone(),
                 },
             });
-        let agent_item = CoreItemSnapshot {
-            id: agent_item_id.clone(),
-            kind: CoreItemKind::AgentMessage {
-                text: String::new(),
-            },
-        };
-        let mut durable_items = Vec::with_capacity(if user_item.is_some() { 2 } else { 1 });
+        let mut durable_items = Vec::with_capacity(usize::from(user_item.is_some()));
         if let Some(user_item) = user_item.as_ref() {
             durable_items.push(durable_item_snapshot(user_item));
         }
-        durable_items.push(durable_item_snapshot(&agent_item));
         let durable_turn = DurableTurnSnapshot {
             id: turn_id.clone(),
             status: DurableTurnStatus::InProgress,
@@ -529,22 +618,18 @@ impl Core {
                     kind: ItemKind::UserMessage {
                         text: match &user_item.kind {
                             CoreItemKind::UserMessage { text } => text.clone(),
-                            CoreItemKind::AgentMessage { .. } => unreachable!(),
+                            _ => unreachable!(),
                         },
                     },
                 },
             );
         }
-        items.insert(
-            agent_item_id.clone(),
-            Item::new_agent_message(agent_item_id),
-        );
         let turn = Turn {
             id: turn_id.clone(),
             request_id,
             state: TurnState::InProgress,
             items,
-            active_item_id: Some(agent_item.id.clone()),
+            active_item_id: None,
             error: None,
             usage: None,
         };
@@ -555,16 +640,85 @@ impl Core {
         thread.active_turn_id = Some(turn_id.clone());
         thread.turns.insert(turn_id.clone(), turn);
         self.last_turn_sequence = turn_sequence;
-        self.last_item_sequence = agent_item_sequence;
+        if let Some(sequence) = user_item_sequence {
+            self.last_item_sequence = sequence;
+        }
 
         Ok(PreparedTextTurn {
             request_id,
             thread_id,
             turn_id,
             user_item,
-            agent_item,
             history,
         })
+    }
+
+    pub fn start_agent_message(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &TurnId,
+    ) -> Result<CoreItemSnapshot, CoreError> {
+        let sequence = self
+            .last_item_sequence
+            .checked_add(1)
+            .ok_or(CoreError::ItemIdExhausted)?;
+        let item_id = ItemId::new(format!("item_{sequence:016}"));
+        let snapshot = CoreItemSnapshot {
+            id: item_id.clone(),
+            kind: CoreItemKind::AgentMessage {
+                text: String::new(),
+            },
+        };
+        self.repository
+            .append_turn_item(thread_id, turn_id, &durable_item_snapshot(&snapshot))
+            .map_err(map_repository_error)?;
+        let turn = self
+            .threads
+            .get_mut(thread_id)
+            .and_then(|thread| thread.turns.get_mut(turn_id))
+            .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
+        turn.add_item(Item::new_agent_message(item_id))?;
+        self.last_item_sequence = sequence;
+        Ok(snapshot)
+    }
+
+    pub fn append_completed_item(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &TurnId,
+        kind: CoreItemKind,
+    ) -> Result<CoreItemSnapshot, CoreError> {
+        if !matches!(
+            kind,
+            CoreItemKind::ToolCall { .. } | CoreItemKind::ToolResult { .. }
+        ) {
+            return Err(CoreError::Internal(
+                "only completed tool items may be appended".to_string(),
+            ));
+        }
+        let sequence = self
+            .last_item_sequence
+            .checked_add(1)
+            .ok_or(CoreError::ItemIdExhausted)?;
+        let snapshot = CoreItemSnapshot {
+            id: ItemId::new(format!("item_{sequence:016}")),
+            kind,
+        };
+        self.repository
+            .append_turn_item(thread_id, turn_id, &durable_item_snapshot(&snapshot))
+            .map_err(map_repository_error)?;
+        let item = item_from_snapshot(&snapshot, ItemState::Completed);
+        let turn = self
+            .threads
+            .get_mut(thread_id)
+            .and_then(|thread| thread.turns.get_mut(turn_id))
+            .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
+        if turn.state != TurnState::InProgress || turn.active_item_id.is_some() {
+            return Err(CoreError::TurnNotInProgress(turn_id.clone()));
+        }
+        turn.items.insert(item.id.clone(), item);
+        self.last_item_sequence = sequence;
+        Ok(snapshot)
     }
 
     pub fn append_text_delta(
@@ -573,6 +727,14 @@ impl Core {
         turn_id: &TurnId,
         delta: &str,
     ) -> Result<CoreItemSnapshot, CoreError> {
+        let needs_item = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.turns.get(turn_id))
+            .is_some_and(|turn| turn.active_item_id.is_none());
+        if needs_item {
+            self.start_agent_message(thread_id, turn_id)?;
+        }
         let turn = self
             .threads
             .get_mut(thread_id)
@@ -588,7 +750,9 @@ impl Core {
             .ok_or_else(|| CoreError::Internal("active item is missing".to_string()))?;
         let current_len = match &item.kind {
             ItemKind::AgentMessage { text } => text.len(),
-            ItemKind::UserMessage { .. } => {
+            ItemKind::UserMessage { .. }
+            | ItemKind::ToolCall { .. }
+            | ItemKind::ToolResult { .. } => {
                 return Err(CoreError::Internal(
                     "active item is not an agent message".to_string(),
                 ));
@@ -612,6 +776,18 @@ impl Core {
         error: Option<DurableTurnError>,
         usage: Option<DurableUsage>,
     ) -> Result<CoreItemSnapshot, CoreError> {
+        self.finish_turn(thread_id, turn_id, status, error, usage)?
+            .ok_or_else(|| CoreError::Internal("turn has no active agent item".to_string()))
+    }
+
+    pub fn finish_turn(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &TurnId,
+        status: DurableTurnStatus,
+        error: Option<DurableTurnError>,
+        usage: Option<DurableUsage>,
+    ) -> Result<Option<CoreItemSnapshot>, CoreError> {
         let thread = self
             .threads
             .get(thread_id)
@@ -623,15 +799,16 @@ impl Core {
             .turns
             .get(turn_id)
             .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
-        let item_id = turn
-            .active_item_id
-            .clone()
-            .ok_or_else(|| CoreError::TurnNotInProgress(turn_id.clone()))?;
-        let item = turn
-            .items
-            .get(&item_id)
-            .ok_or_else(|| CoreError::Internal("active item is missing".to_string()))?;
-        let completed_item = item.snapshot();
+        let item_id = turn.active_item_id.clone();
+        let completed_item = item_id
+            .as_ref()
+            .map(|item_id| {
+                turn.items
+                    .get(item_id)
+                    .ok_or_else(|| CoreError::Internal("active item is missing".to_string()))
+                    .map(Item::snapshot)
+            })
+            .transpose()?;
         let durable_turn = DurableTurnSnapshot {
             id: turn_id.clone(),
             status,
@@ -655,10 +832,12 @@ impl Core {
             .turns
             .get_mut(turn_id)
             .expect("validated turn exists");
-        turn.items
-            .get_mut(&item_id)
-            .expect("validated item exists")
-            .complete()?;
+        if let Some(item_id) = item_id {
+            turn.items
+                .get_mut(&item_id)
+                .expect("validated item exists")
+                .complete()?;
+        }
         turn.active_item_id = None;
         turn.state = match status {
             DurableTurnStatus::InProgress => unreachable!("repository rejected non-terminal turn"),
@@ -860,8 +1039,12 @@ impl CoreApi for Core {
             .ok_or(CoreError::ThreadIdExhausted)?;
         let mut turn_sequence = self.last_turn_sequence;
         let mut item_sequence = self.last_item_sequence;
-        let mut turns = Vec::with_capacity(source.turns.len());
-        for source_turn in &source.turns {
+        let completed_turns = source
+            .turns
+            .iter()
+            .filter(|turn| turn.status == DurableTurnStatus::Completed);
+        let mut turns = Vec::new();
+        for source_turn in completed_turns {
             turn_sequence = turn_sequence
                 .checked_add(1)
                 .ok_or(CoreError::TurnIdExhausted)?;
@@ -883,6 +1066,28 @@ impl CoreApi for Core {
                             text: text.clone(),
                         }
                     }
+                    DurableItemSnapshot::ToolCall {
+                        call_id,
+                        name,
+                        path,
+                        ..
+                    } => DurableItemSnapshot::ToolCall {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        path: path.clone(),
+                    },
+                    DurableItemSnapshot::ToolResult {
+                        call_id,
+                        name,
+                        result,
+                        ..
+                    } => DurableItemSnapshot::ToolResult {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        result: result.clone(),
+                    },
                 };
                 items.push(item);
             }
@@ -1038,6 +1243,83 @@ fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnapshot {
             id: item.id.clone(),
             text: text.clone(),
         },
+        CoreItemKind::ToolCall {
+            call_id,
+            name,
+            path,
+        } => DurableItemSnapshot::ToolCall {
+            id: item.id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            path: path.clone(),
+        },
+        CoreItemKind::ToolResult {
+            call_id,
+            name,
+            result,
+        } => DurableItemSnapshot::ToolResult {
+            id: item.id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            result: durable_tool_result(result),
+        },
+    }
+}
+
+fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) -> Item {
+    let kind = match &snapshot.kind {
+        CoreItemKind::UserMessage { text } => ItemKind::UserMessage { text: text.clone() },
+        CoreItemKind::AgentMessage { text } => ItemKind::AgentMessage { text: text.clone() },
+        CoreItemKind::ToolCall {
+            call_id,
+            name,
+            path,
+        } => ItemKind::ToolCall {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            path: path.clone(),
+        },
+        CoreItemKind::ToolResult {
+            call_id,
+            name,
+            result,
+        } => ItemKind::ToolResult {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            result: result.clone(),
+        },
+    };
+    Item {
+        id: snapshot.id.clone(),
+        state,
+        kind,
+    }
+}
+
+fn durable_tool_result(result: &CoreToolResult) -> DurableToolResult {
+    match result {
+        CoreToolResult::Success { content, bytes } => DurableToolResult::Success {
+            content: content.clone(),
+            bytes: *bytes,
+        },
+        CoreToolResult::Error { kind } => DurableToolResult::Error { kind: kind.clone() },
+    }
+}
+
+fn core_tool_result(result: &DurableToolResult) -> CoreToolResult {
+    match result {
+        DurableToolResult::Success { content, bytes } => CoreToolResult::Success {
+            content: content.clone(),
+            bytes: *bytes,
+        },
+        DurableToolResult::Error { kind } => CoreToolResult::Error { kind: kind.clone() },
+    }
+}
+
+fn tool_result_content(result: &CoreToolResult) -> String {
+    match result {
+        CoreToolResult::Success { content, .. } => content.clone(),
+        CoreToolResult::Error { kind } => format!("workspace/read error: {kind}"),
     }
 }
 
@@ -1170,12 +1452,14 @@ impl ThreadRepository for MemoryThreadRepository {
             .strip_prefix("turn_")
             .and_then(|digits| digits.parse().ok())
             .ok_or(RolloutError::InvalidId { kind: "turn" })?;
-        self.sequences.item = turn
-            .items
-            .last()
-            .and_then(|item| item.id().as_str().strip_prefix("item_"))
-            .and_then(|digits| digits.parse().ok())
-            .ok_or(RolloutError::InvalidId { kind: "item" })?;
+        if let Some(item) = turn.items.last() {
+            self.sequences.item = item
+                .id()
+                .as_str()
+                .strip_prefix("item_")
+                .and_then(|digits| digits.parse().ok())
+                .ok_or(RolloutError::InvalidId { kind: "item" })?;
+        }
         Ok(())
     }
 
@@ -1204,6 +1488,33 @@ impl ThreadRepository for MemoryThreadRepository {
                 kind: "turnNotActive",
             })?;
         *stored = turn.clone();
+        Ok(())
+    }
+
+    fn append_turn_item(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &TurnId,
+        item: &DurableItemSnapshot,
+    ) -> Result<(), RolloutError> {
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        let turn = thread
+            .turns
+            .last_mut()
+            .filter(|turn| &turn.id == turn_id && turn.status == DurableTurnStatus::InProgress)
+            .ok_or(RolloutError::InvalidRecord {
+                kind: "turnNotActive",
+            })?;
+        turn.items.push(item.clone());
+        self.sequences.item = item
+            .id()
+            .as_str()
+            .strip_prefix("item_")
+            .and_then(|digits| digits.parse().ok())
+            .ok_or(RolloutError::InvalidId { kind: "item" })?;
         Ok(())
     }
 
@@ -1327,6 +1638,8 @@ impl ThreadRepository for MemoryThreadRepository {
                             terms.iter().all(|term| text.contains(term))
                         }
                         DurableItemSnapshot::UserMessage { .. } => false,
+                        DurableItemSnapshot::ToolCall { .. }
+                        | DurableItemSnapshot::ToolResult { .. } => false,
                     })
             })
             .map(|thread| {
@@ -1631,6 +1944,103 @@ mod tests {
     }
 
     #[test]
+    fn fork_copies_completed_tool_history_and_excludes_failed_tool_turns() {
+        let mut core = Core::new();
+        let source = start_thread(&mut core, 1);
+        let completed = core
+            .prepare_text_turn(
+                CoreRequestId::new(2),
+                source.clone(),
+                Some("read".to_string()),
+            )
+            .expect("completed tool turn");
+        core.append_completed_item(
+            &source,
+            &completed.turn_id,
+            CoreItemKind::ToolCall {
+                call_id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                path: "README.txt".to_string(),
+            },
+        )
+        .expect("tool call");
+        core.append_completed_item(
+            &source,
+            &completed.turn_id,
+            CoreItemKind::ToolResult {
+                call_id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                result: CoreToolResult::Success {
+                    content: "context".to_string(),
+                    bytes: 7,
+                },
+            },
+        )
+        .expect("tool result");
+        core.append_text_delta(&source, &completed.turn_id, "answer")
+            .expect("answer");
+        core.finish_text_turn(
+            &source,
+            &completed.turn_id,
+            DurableTurnStatus::Completed,
+            None,
+            None,
+        )
+        .expect("complete");
+
+        let failed = core
+            .prepare_text_turn(
+                CoreRequestId::new(3),
+                source.clone(),
+                Some("excluded".to_string()),
+            )
+            .expect("failed tool turn");
+        core.append_completed_item(
+            &source,
+            &failed.turn_id,
+            CoreItemKind::ToolCall {
+                call_id: "call_2".to_string(),
+                name: "workspace/read".to_string(),
+                path: "missing.txt".to_string(),
+            },
+        )
+        .expect("failed call");
+        core.finish_turn(
+            &source,
+            &failed.turn_id,
+            DurableTurnStatus::Failed,
+            Some(DurableTurnError {
+                kind: sugarcode_state::DurableTurnErrorKind::Server,
+                retryable: true,
+            }),
+            None,
+        )
+        .expect("fail turn");
+
+        let source_snapshot = core.resume_thread(&source).expect("source");
+        let fork = core.fork_thread(&source).expect("fork");
+        assert_eq!(source_snapshot.turns.len(), 2);
+        assert_eq!(fork.turns.len(), 1);
+        assert_eq!(fork.turns[0].status, DurableTurnStatus::Completed);
+        assert!(matches!(
+            fork.turns[0].items.as_slice(),
+            [
+                DurableItemSnapshot::UserMessage { .. },
+                DurableItemSnapshot::ToolCall { call_id, .. },
+                DurableItemSnapshot::ToolResult { .. },
+                DurableItemSnapshot::AgentMessage { text, .. }
+            ] if call_id == "call_1" && text == "answer"
+        ));
+        assert!(
+            source_snapshot.turns[0]
+                .items
+                .iter()
+                .zip(&fork.turns[0].items)
+                .all(|(source, fork)| source.id() != fork.id())
+        );
+    }
+
+    #[test]
     fn fork_rejects_inactive_or_missing_sources_without_allocating_ids() {
         let mut core = Core::new();
         let archived = start_thread(&mut core, 1);
@@ -1846,7 +2256,7 @@ mod tests {
             .expect("prepare next turn");
         assert_eq!(
             prepared.history,
-            vec![PreparedMessage {
+            vec![PreparedMessage::Text {
                 role: PreparedMessageRole::User,
                 text: "included".to_string(),
             }]
@@ -1916,11 +2326,11 @@ mod tests {
         assert_eq!(
             continuation.history,
             vec![
-                PreparedMessage {
+                PreparedMessage::Text {
                     role: PreparedMessageRole::User,
                     text: "Hello".to_string(),
                 },
-                PreparedMessage {
+                PreparedMessage::Text {
                     role: PreparedMessageRole::Assistant,
                     text: "Answer".to_string(),
                 },

@@ -6,6 +6,7 @@ use crate::ModelMessage;
 use crate::ModelProvider;
 use crate::ModelRequest;
 use crate::ModelRole;
+use crate::ModelToolCall;
 use crate::ModelUsage;
 use eventsource_stream::EventStreamError;
 use eventsource_stream::Eventsource;
@@ -31,6 +32,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_SSE_EVENT_BYTES: usize = 256 * 1024;
+const MAX_TOOL_CALL_ID_BYTES: usize = 128;
+const MAX_TOOL_NAME_BYTES: usize = 128;
+const MAX_TOOL_ARGUMENT_BYTES: usize = 32 * 1024;
 
 pub struct OpenAiChatCompletionsProvider {
     client: reqwest::Client,
@@ -72,6 +76,7 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
     fn stream(&self, request: ModelRequest) -> BoxModelFuture<'_> {
         async move {
             let body = ChatRequest::from(request);
+            let allow_tools = !body.tools.is_empty();
             let mut builder = self.client.post(self.endpoint.clone()).json(&body);
             if let Some(token) = &self.token {
                 let encoded = Zeroizing::new(format!("Bearer {}", token.as_str()));
@@ -102,7 +107,7 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
             }
 
             let (sender, receiver) = mpsc::channel(MODEL_STREAM_CAPACITY);
-            tokio::spawn(process_stream(response, sender));
+            tokio::spawn(process_stream(response, sender, allow_tools));
             Ok(ReceiverStream::new(receiver).boxed())
         }
         .boxed()
@@ -132,6 +137,7 @@ fn validate_endpoint(endpoint: &Url) -> Result<(), ModelError> {
 async fn process_stream(
     response: reqwest::Response,
     sender: mpsc::Sender<Result<ModelEvent, ModelError>>,
+    allow_tools: bool,
 ) {
     let mut event_bytes = 0usize;
     let mut suffix = [0u8; 4];
@@ -155,6 +161,9 @@ async fn process_stream(
     let mut stream = bounded_bytes.eventsource();
     let mut clean_finish = false;
     let mut usage_seen = false;
+    let mut text_seen = false;
+    let mut tool_assembler: Option<ToolCallAssembler> = None;
+    let mut completed_tool_call = None;
     loop {
         let next = tokio::select! {
             _ = sender.closed() => return,
@@ -189,6 +198,11 @@ async fn process_stream(
         };
         if event.data == "[DONE]" {
             if clean_finish {
+                if let Some(call) = completed_tool_call
+                    && sender.send(Ok(ModelEvent::ToolCall(call))).await.is_err()
+                {
+                    return;
+                }
                 let _ = sender.send(Ok(ModelEvent::Completed)).await;
             } else {
                 send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
@@ -242,7 +256,7 @@ async fn process_stream(
         if chunk
             .choices
             .iter()
-            .any(|choice| choice.delta.has_unsupported_output())
+            .any(|choice| choice.delta.has_unsupported_output(allow_tools))
         {
             send_error(
                 &sender,
@@ -256,18 +270,45 @@ async fn process_stream(
             return;
         }
         for choice in chunk.choices {
+            if let Some(tool_calls) = choice.delta.tool_calls {
+                if !allow_tools || text_seen || tool_calls.len() != 1 {
+                    send_error(
+                        &sender,
+                        ModelError::new(ModelErrorKind::UnsupportedOutput, false),
+                    )
+                    .await;
+                    return;
+                }
+                let assembler = tool_assembler.get_or_insert_with(ToolCallAssembler::default);
+                if let Err(error) = assembler.push(tool_calls.into_iter().next().expect("one call"))
+                {
+                    send_error(&sender, error).await;
+                    return;
+                }
+            }
             if let Some(content) = choice.delta.content
                 && !content.is_empty()
-                && sender
+            {
+                if tool_assembler.is_some() {
+                    send_error(
+                        &sender,
+                        ModelError::new(ModelErrorKind::UnsupportedOutput, false),
+                    )
+                    .await;
+                    return;
+                }
+                text_seen = true;
+                if sender
                     .send(Ok(ModelEvent::TextDelta(content)))
                     .await
                     .is_err()
-            {
-                return;
+                {
+                    return;
+                }
             }
             if let Some(reason) = choice.finish_reason.as_deref() {
                 match reason {
-                    "stop" => clean_finish = true,
+                    "stop" if tool_assembler.is_none() => clean_finish = true,
                     "length" => {
                         send_error(&sender, ModelError::new(ModelErrorKind::Incomplete, false))
                             .await;
@@ -277,7 +318,24 @@ async fn process_stream(
                         send_error(&sender, ModelError::new(ModelErrorKind::Filtered, false)).await;
                         return;
                     }
-                    "tool_calls" | "function_call" => {
+                    "tool_calls" if allow_tools && !text_seen => {
+                        let Some(assembler) = tool_assembler.take() else {
+                            send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false))
+                                .await;
+                            return;
+                        };
+                        match assembler.finish() {
+                            Ok(call) => {
+                                completed_tool_call = Some(call);
+                                clean_finish = true;
+                            }
+                            Err(error) => {
+                                send_error(&sender, error).await;
+                                return;
+                            }
+                        }
+                    }
+                    "tool_calls" | "function_call" | "stop" => {
                         send_error(
                             &sender,
                             ModelError::new(ModelErrorKind::UnsupportedOutput, false),
@@ -327,6 +385,8 @@ struct ChatRequest {
     messages: Vec<ChatMessage>,
     stream: bool,
     stream_options: StreamOptions,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<ChatToolDefinition>,
 }
 
 #[derive(Serialize)]
@@ -343,6 +403,18 @@ impl From<ModelRequest> for ChatRequest {
             stream_options: StreamOptions {
                 include_usage: true,
             },
+            tools: request
+                .tools
+                .into_iter()
+                .map(|tool| ChatToolDefinition {
+                    kind: "function",
+                    function: ChatFunctionDefinition {
+                        name: tool.name,
+                        description: tool.description,
+                        parameters: tool.parameters,
+                    },
+                })
+                .collect(),
         }
     }
 }
@@ -350,19 +422,76 @@ impl From<ModelRequest> for ChatRequest {
 #[derive(Serialize)]
 struct ChatMessage {
     role: &'static str,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<ChatToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
 }
 
 impl From<ModelMessage> for ChatMessage {
     fn from(message: ModelMessage) -> Self {
-        Self {
-            role: match message.role {
-                ModelRole::User => "user",
-                ModelRole::Assistant => "assistant",
+        match message {
+            ModelMessage::Text { role, text } => Self {
+                role: match role {
+                    ModelRole::User => "user",
+                    ModelRole::Assistant => "assistant",
+                },
+                content: Some(text),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             },
-            content: message.text,
+            ModelMessage::ToolCall(call) => Self {
+                role: "assistant",
+                content: None,
+                tool_calls: vec![ChatToolCall {
+                    id: call.id,
+                    kind: "function",
+                    function: ChatFunctionCall {
+                        name: call.name,
+                        arguments: serde_json::to_string(&call.arguments)
+                            .expect("tool arguments serialize"),
+                    },
+                }],
+                tool_call_id: None,
+            },
+            ModelMessage::ToolResult { call_id, content } => Self {
+                role: "tool",
+                content: Some(content),
+                tool_calls: Vec::new(),
+                tool_call_id: Some(call_id),
+            },
         }
     }
+}
+
+#[derive(Serialize)]
+struct ChatToolDefinition {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: ChatFunctionDefinition,
+}
+
+#[derive(Serialize)]
+struct ChatFunctionDefinition {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct ChatToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: ChatFunctionCall,
+}
+
+#[derive(Serialize)]
+struct ChatFunctionCall {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Deserialize)]
@@ -385,7 +514,7 @@ struct ChatChoice {
 struct ChatDelta {
     content: Option<String>,
     role: Option<String>,
-    tool_calls: Option<serde_json::Value>,
+    tool_calls: Option<Vec<ChatToolCallDelta>>,
     function_call: Option<serde_json::Value>,
     refusal: Option<serde_json::Value>,
     audio: Option<serde_json::Value>,
@@ -394,13 +523,106 @@ struct ChatDelta {
 }
 
 impl ChatDelta {
-    fn has_unsupported_output(&self) -> bool {
-        self.tool_calls.is_some()
+    fn has_unsupported_output(&self, allow_tools: bool) -> bool {
+        (!allow_tools && self.tool_calls.is_some())
             || self.function_call.is_some()
             || self.refusal.is_some()
             || self.audio.is_some()
             || self.role.as_deref().is_some_and(|role| role != "assistant")
             || !self.extra.is_empty()
+    }
+}
+
+#[derive(Deserialize)]
+struct ChatToolCallDelta {
+    index: u64,
+    id: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    function: Option<ChatFunctionCallDelta>,
+}
+
+#[derive(Deserialize)]
+struct ChatFunctionCallDelta {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Default)]
+struct ToolCallAssembler {
+    id: Option<String>,
+    name: String,
+    arguments: String,
+    saw_function: bool,
+}
+
+impl ToolCallAssembler {
+    fn push(&mut self, delta: ChatToolCallDelta) -> Result<(), ModelError> {
+        if delta.index != 0 {
+            return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
+        }
+        if let Some(kind) = delta.kind
+            && kind != "function"
+        {
+            return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
+        }
+        if let Some(id) = delta.id {
+            if self.id.is_some()
+                || id.is_empty()
+                || id.len() > MAX_TOOL_CALL_ID_BYTES
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            {
+                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+            }
+            self.id = Some(id);
+        }
+        if let Some(function) = delta.function {
+            self.saw_function = true;
+            if let Some(name) = function.name {
+                if self
+                    .name
+                    .len()
+                    .checked_add(name.len())
+                    .is_none_or(|length| length > MAX_TOOL_NAME_BYTES)
+                {
+                    return Err(ModelError::new(ModelErrorKind::Protocol, false));
+                }
+                self.name.push_str(&name);
+            }
+            if let Some(arguments) = function.arguments {
+                if self
+                    .arguments
+                    .len()
+                    .checked_add(arguments.len())
+                    .is_none_or(|length| length > MAX_TOOL_ARGUMENT_BYTES)
+                {
+                    return Err(ModelError::new(ModelErrorKind::OutputTooLarge, false));
+                }
+                self.arguments.push_str(&arguments);
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<ModelToolCall, ModelError> {
+        let id = self
+            .id
+            .ok_or_else(|| ModelError::new(ModelErrorKind::Protocol, false))?;
+        if !self.saw_function || self.name.is_empty() || self.arguments.is_empty() {
+            return Err(ModelError::new(ModelErrorKind::Protocol, false));
+        }
+        let arguments: serde_json::Value = serde_json::from_str(&self.arguments)
+            .map_err(|_| ModelError::new(ModelErrorKind::Protocol, false))?;
+        if !arguments.is_object() {
+            return Err(ModelError::new(ModelErrorKind::Protocol, false));
+        }
+        Ok(ModelToolCall {
+            id,
+            name: self.name,
+            arguments,
+        })
     }
 }
 

@@ -35,6 +35,7 @@ use crate::ThreadStartResponse;
 use crate::ThreadStartedNotification;
 use crate::ThreadUnarchiveParams;
 use crate::ThreadUnarchiveResponse;
+use crate::ToolResult;
 use crate::Turn;
 use crate::TurnCompletedNotification;
 use crate::TurnError;
@@ -74,6 +75,7 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         PlatformInfo::decl(),
         ServerCapabilities::decl(),
         InitializeResponse::decl(),
+        ToolResult::decl(),
         Item::decl(),
         ItemStartedNotification::decl(),
         AgentMessageDeltaNotification::decl(),
@@ -152,6 +154,10 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("InitializeResponse.schema.json"),
         &schema_for!(InitializeResponse),
+    )?;
+    write_schema(
+        out_dir.join("ToolResult.schema.json"),
+        &schema_for!(ToolResult),
     )?;
     write_schema(out_dir.join("Item.schema.json"), &schema_for!(Item))?;
     write_schema(

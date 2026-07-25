@@ -9,6 +9,7 @@ license = "MIT"
 rust-version = "1.96"
 
 [workspace.dependencies]
+cap-std = "4.0.2"
 eventsource-stream = "0.2.3"
 futures-util = "0.3.31"
 clap = { version = "4.5.41", features = ["derive"] }

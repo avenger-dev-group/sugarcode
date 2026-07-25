@@ -27,6 +27,7 @@ use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
 use sugarcode_app_server_protocol::ThreadUnarchiveParams;
 use sugarcode_app_server_protocol::ThreadUnarchiveResponse;
+use sugarcode_app_server_protocol::ToolResult;
 use sugarcode_app_server_protocol::Turn;
 use sugarcode_app_server_protocol::TurnCompletedNotification;
 use sugarcode_app_server_protocol::TurnError;
@@ -462,6 +463,49 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
             "turn": {
                 "id": "turn_0000000000000001",
                 "status": "completed"
+            }
+        })
+    );
+}
+
+#[test]
+fn tool_items_use_provider_neutral_camel_case_public_fields() {
+    assert_eq!(
+        serde_json::to_value(Item::ToolCall {
+            id: "item_0000000000000002".to_string(),
+            call_id: "call_1".to_string(),
+            name: "workspace/read".to_string(),
+            path: "README.txt".to_string(),
+        })
+        .expect("tool call serializes"),
+        json!({
+            "type": "toolCall",
+            "id": "item_0000000000000002",
+            "callId": "call_1",
+            "name": "workspace/read",
+            "path": "README.txt"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(Item::ToolResult {
+            id: "item_0000000000000003".to_string(),
+            call_id: "call_1".to_string(),
+            name: "workspace/read".to_string(),
+            result: ToolResult::Success {
+                content: "context".to_string(),
+                bytes: 7,
+            },
+        })
+        .expect("tool result serializes"),
+        json!({
+            "type": "toolResult",
+            "id": "item_0000000000000003",
+            "callId": "call_1",
+            "name": "workspace/read",
+            "result": {
+                "type": "success",
+                "content": "context",
+                "bytes": 7
             }
         })
     );

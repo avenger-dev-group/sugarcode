@@ -28,6 +28,7 @@ pub use rollout::DurableThreadLifecycle;
 pub use rollout::DurableThreadPage;
 pub use rollout::DurableThreadSnapshot;
 pub use rollout::DurableThreadSummary;
+pub use rollout::DurableToolResult;
 pub use rollout::DurableTurnError;
 pub use rollout::DurableTurnErrorKind;
 pub use rollout::DurableTurnSnapshot;

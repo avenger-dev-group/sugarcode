@@ -12,4 +12,6 @@ pub use types::ModelProvider;
 pub use types::ModelRequest;
 pub use types::ModelRole;
 pub use types::ModelStream;
+pub use types::ModelToolCall;
+pub use types::ModelToolDefinition;
 pub use types::ModelUsage;
