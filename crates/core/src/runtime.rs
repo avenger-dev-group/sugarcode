@@ -4,11 +4,14 @@ use crate::CoreError;
 use crate::PreparedMessageRole;
 use crate::TurnInterruptOutcome;
 use crate::TurnStartOutcome;
+use futures_util::FutureExt;
 use futures_util::StreamExt;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use sugarcode_model_provider::ModelError;
 use sugarcode_model_provider::ModelErrorKind;
 use sugarcode_model_provider::ModelEvent;
@@ -31,6 +34,7 @@ use sugarcode_state::DurableTurnError;
 use sugarcode_state::DurableTurnErrorKind;
 use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableUsage;
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -39,23 +43,56 @@ const CORE_EVENT_CAPACITY: usize = 64;
 #[derive(Clone)]
 pub struct CoreRuntime {
     core: Arc<Mutex<Core>>,
-    provider: Arc<dyn ModelProvider>,
-    model: Arc<str>,
+    model_gateway: Option<ModelGateway>,
     event_tx: mpsc::Sender<CoreEvent>,
     active: Arc<Mutex<BTreeMap<ThreadId, ActiveTurn>>>,
+}
+
+#[derive(Clone)]
+struct ModelGateway {
+    provider: Arc<dyn ModelProvider>,
+    model: Arc<str>,
 }
 
 #[derive(Clone)]
 struct ActiveTurn {
     turn_id: TurnId,
     cancellation: CancellationToken,
+    terminal_state: Arc<Mutex<TurnPhase>>,
+    done: Arc<TurnDone>,
+}
+
+#[derive(Default)]
+struct TurnDone {
+    complete: AtomicU8,
+    notify: Notify,
+}
+
+impl TurnDone {
+    async fn wait(&self) {
+        while self.complete.load(Ordering::Acquire) == 0 {
+            self.notify.notified().await;
+        }
+    }
+
+    fn finish(&self) {
+        self.complete.store(1, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TurnPhase {
+    Running,
+    InterruptRequested,
+    TerminalClaimed,
 }
 
 impl fmt::Debug for CoreRuntime {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("CoreRuntime")
-            .field("model", &"<redacted>")
+            .field("model_available", &self.model_gateway.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -70,8 +107,23 @@ impl CoreRuntime {
         (
             Self {
                 core: Arc::new(Mutex::new(core)),
-                provider,
-                model: Arc::from(model),
+                model_gateway: Some(ModelGateway {
+                    provider,
+                    model: Arc::from(model),
+                }),
+                event_tx,
+                active: Arc::new(Mutex::new(BTreeMap::new())),
+            },
+            event_rx,
+        )
+    }
+
+    pub fn without_model(core: Core) -> (Self, mpsc::Receiver<CoreEvent>) {
+        let (event_tx, event_rx) = mpsc::channel(CORE_EVENT_CAPACITY);
+        (
+            Self {
+                core: Arc::new(Mutex::new(core)),
+                model_gateway: None,
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -147,12 +199,17 @@ impl CoreApi for CoreRuntime {
         &mut self,
         request_id: CoreRequestId,
         thread_id: ThreadId,
-        input: String,
+        input: Option<String>,
     ) -> Result<TurnStartOutcome, CoreError> {
+        if self.model_gateway.is_none() {
+            return Err(CoreError::ModelUnavailable);
+        }
         let prepared = self
             .lock_core()?
             .prepare_text_turn(request_id, thread_id.clone(), input)?;
         let cancellation = CancellationToken::new();
+        let terminal_state = Arc::new(Mutex::new(TurnPhase::Running));
+        let done = Arc::new(TurnDone::default());
         self.active
             .lock()
             .map_err(|_| CoreError::Internal("active turn lock is unavailable".to_string()))?
@@ -161,12 +218,14 @@ impl CoreApi for CoreRuntime {
                 ActiveTurn {
                     turn_id: prepared.turn_id.clone(),
                     cancellation: cancellation.clone(),
+                    terminal_state: terminal_state.clone(),
+                    done,
                 },
             );
         let runtime = self.clone();
         let turn_id = prepared.turn_id.clone();
         tokio::spawn(async move {
-            run_turn(runtime, prepared, cancellation).await;
+            run_turn(runtime, prepared, cancellation, terminal_state).await;
         });
         Ok(TurnStartOutcome::Accepted { turn_id })
     }
@@ -180,10 +239,19 @@ impl CoreApi for CoreRuntime {
             .active
             .lock()
             .map_err(|_| CoreError::Internal("active turn lock is unavailable".to_string()))?;
-        match active.get(thread_id) {
+        match active.get(thread_id).cloned() {
             Some(active) if &active.turn_id == turn_id => {
-                active.cancellation.cancel();
-                Ok(TurnInterruptOutcome::Accepted)
+                let mut phase = active.terminal_state.lock().map_err(|_| {
+                    CoreError::Internal("turn phase lock is unavailable".to_string())
+                })?;
+                if *phase == TurnPhase::Running {
+                    *phase = TurnPhase::InterruptRequested;
+                    drop(phase);
+                    active.cancellation.cancel();
+                    Ok(TurnInterruptOutcome::Accepted)
+                } else {
+                    Ok(TurnInterruptOutcome::AlreadyTerminal)
+                }
             }
             Some(_) => Err(CoreError::NoActiveTurn(thread_id.clone())),
             None if self.lock_core()?.contains_turn(thread_id, turn_id) => {
@@ -192,28 +260,68 @@ impl CoreApi for CoreRuntime {
             None => Err(CoreError::NoActiveTurn(thread_id.clone())),
         }
     }
+
+    fn shutdown(&mut self) -> futures_util::future::BoxFuture<'static, Result<(), CoreError>> {
+        let active = match self.active.lock() {
+            Ok(active) => active.values().cloned().collect::<Vec<_>>(),
+            Err(_) => {
+                return async {
+                    Err(CoreError::Internal(
+                        "active turn lock is unavailable".to_string(),
+                    ))
+                }
+                .boxed();
+            }
+        };
+        for turn in &active {
+            if let Ok(mut phase) = turn.terminal_state.lock()
+                && *phase == TurnPhase::Running
+            {
+                *phase = TurnPhase::InterruptRequested;
+            }
+            turn.cancellation.cancel();
+        }
+        async move {
+            for turn in active {
+                turn.done.wait().await;
+            }
+            Ok(())
+        }
+        .boxed()
+    }
 }
 
 async fn run_turn(
     runtime: CoreRuntime,
     prepared: crate::PreparedTextTurn,
     cancellation: CancellationToken,
+    terminal_state: Arc<Mutex<TurnPhase>>,
 ) {
     let request_id = prepared.request_id;
     let thread_id = prepared.thread_id.clone();
     let turn_id = prepared.turn_id.clone();
     let agent_item = prepared.agent_item.clone();
-    let opening = [
-        CoreEventKind::TurnStarted {
+    let mut opening = vec![CoreEventKind::TurnStarted {
+        thread_id: thread_id.clone(),
+        turn_id: turn_id.clone(),
+    }];
+    if let Some(user_item) = prepared.user_item.as_ref() {
+        opening.push(CoreEventKind::ItemStarted {
             thread_id: thread_id.clone(),
             turn_id: turn_id.clone(),
-        },
-        CoreEventKind::ItemStarted {
+            item: user_item.clone(),
+        });
+        opening.push(CoreEventKind::ItemCompleted {
             thread_id: thread_id.clone(),
             turn_id: turn_id.clone(),
-            item: agent_item.clone(),
-        },
-    ];
+            item: user_item.clone(),
+        });
+    }
+    opening.push(CoreEventKind::ItemStarted {
+        thread_id: thread_id.clone(),
+        turn_id: turn_id.clone(),
+        item: agent_item.clone(),
+    });
     for kind in opening {
         if runtime
             .event_tx
@@ -221,14 +329,25 @@ async fn run_turn(
             .await
             .is_err()
         {
-            finish_interrupted(&runtime, &prepared).await;
+            finish_interrupted(&runtime, &prepared, None).await;
             clear_active(&runtime, &thread_id, &turn_id);
             return;
         }
     }
 
+    let Some(model_gateway) = runtime.model_gateway.as_ref() else {
+        finish_failed_and_emit(
+            &runtime,
+            &prepared,
+            ModelError::new(ModelErrorKind::InvalidRequest, false),
+            None,
+        )
+        .await;
+        clear_active(&runtime, &thread_id, &turn_id);
+        return;
+    };
     let request = ModelRequest {
-        model: runtime.model.to_string(),
+        model: model_gateway.model.to_string(),
         messages: prepared
             .history
             .iter()
@@ -244,16 +363,24 @@ async fn run_turn(
     let stream = tokio::select! {
         biased;
         _ = cancellation.cancelled() => {
-            finish_interrupted_and_emit(&runtime, &prepared).await;
+            finish_interrupted_and_emit(&runtime, &prepared, None).await;
             clear_active(&runtime, &thread_id, &turn_id);
             return;
         }
-        result = runtime.provider.stream(request) => result,
+        result = model_gateway.provider.stream(request) => result,
     };
     let mut stream = match stream {
         Ok(stream) => stream,
         Err(error) => {
-            finish_failed_and_emit(&runtime, &prepared, error).await;
+            match claim_terminal(&terminal_state, Terminal::Failed(error)) {
+                Terminal::Failed(error) => {
+                    finish_failed_and_emit(&runtime, &prepared, error, None).await;
+                }
+                Terminal::Interrupted => {
+                    finish_interrupted_and_emit(&runtime, &prepared, None).await;
+                }
+                Terminal::Completed | Terminal::StateUnavailable => unreachable!(),
+            }
             clear_active(&runtime, &thread_id, &turn_id);
             return;
         }
@@ -267,6 +394,11 @@ async fn run_turn(
         };
         match next {
             Some(Ok(ModelEvent::TextDelta(delta))) if !delta.is_empty() => {
+                let phase = match terminal_state.lock() {
+                    Ok(phase) if *phase == TurnPhase::Running => phase,
+                    Ok(_) => break Terminal::Interrupted,
+                    Err(_) => break Terminal::StateUnavailable,
+                };
                 let snapshot = match runtime
                     .lock_core()
                     .and_then(|mut core| core.append_text_delta(&thread_id, &turn_id, &delta))
@@ -280,6 +412,7 @@ async fn run_turn(
                     }
                     Err(_) => break Terminal::StateUnavailable,
                 };
+                drop(phase);
                 let _ = snapshot;
                 if !send_event(
                     &runtime,
@@ -302,19 +435,43 @@ async fn run_turn(
             Some(Ok(ModelEvent::Completed)) => break Terminal::Completed,
             Some(Err(error)) => break Terminal::Failed(error),
             None => {
-                break Terminal::Failed(ModelError::new(ModelErrorKind::Transport, true));
+                break Terminal::Failed(ModelError::new(ModelErrorKind::Disconnected, true));
             }
         }
     };
+    let terminal = claim_terminal(&terminal_state, terminal);
     match terminal {
         Terminal::Completed => finish_completed_and_emit(&runtime, &prepared, usage).await,
-        Terminal::Failed(error) => finish_failed_and_emit(&runtime, &prepared, error).await,
-        Terminal::Interrupted => finish_interrupted_and_emit(&runtime, &prepared).await,
+        Terminal::Failed(error) => {
+            finish_failed_and_emit(&runtime, &prepared, error, usage).await;
+        }
+        Terminal::Interrupted => finish_interrupted_and_emit(&runtime, &prepared, usage).await,
         Terminal::StateUnavailable => {
             finish_state_unavailable_and_emit(&runtime, &prepared).await;
         }
     }
     clear_active(&runtime, &thread_id, &turn_id);
+}
+
+fn claim_terminal(terminal_state: &Mutex<TurnPhase>, terminal: Terminal) -> Terminal {
+    let Ok(mut phase) = terminal_state.lock() else {
+        return Terminal::StateUnavailable;
+    };
+    match terminal {
+        Terminal::Interrupted => {
+            *phase = TurnPhase::TerminalClaimed;
+            Terminal::Interrupted
+        }
+        terminal => {
+            if *phase == TurnPhase::Running {
+                *phase = TurnPhase::TerminalClaimed;
+                terminal
+            } else {
+                *phase = TurnPhase::TerminalClaimed;
+                Terminal::Interrupted
+            }
+        }
+    }
 }
 
 enum Terminal {
@@ -349,7 +506,7 @@ async fn finish_completed_and_emit(
             )
             .await;
         }
-        Err(_) => finish_state_unavailable_and_emit(runtime, prepared).await,
+        Err(_) => emit_runtime_failure(runtime, prepared.request_id).await,
     }
 }
 
@@ -357,6 +514,7 @@ async fn finish_failed_and_emit(
     runtime: &CoreRuntime,
     prepared: &crate::PreparedTextTurn,
     error: ModelError,
+    usage: Option<ModelUsage>,
 ) {
     let core_error = map_model_error(error);
     let durable_error = map_durable_error(core_error);
@@ -365,7 +523,7 @@ async fn finish_failed_and_emit(
         prepared,
         DurableTurnStatus::Failed,
         Some(durable_error),
-        None,
+        usage.map(map_usage),
     ) {
         emit_terminal(
             runtime,
@@ -378,11 +536,17 @@ async fn finish_failed_and_emit(
             },
         )
         .await;
+    } else {
+        emit_runtime_failure(runtime, prepared.request_id).await;
     }
 }
 
-async fn finish_interrupted_and_emit(runtime: &CoreRuntime, prepared: &crate::PreparedTextTurn) {
-    if let Some(item) = finish_interrupted(runtime, prepared).await {
+async fn finish_interrupted_and_emit(
+    runtime: &CoreRuntime,
+    prepared: &crate::PreparedTextTurn,
+    usage: Option<ModelUsage>,
+) {
+    if let Some(item) = finish_interrupted(runtime, prepared, usage).await {
         emit_terminal(
             runtime,
             prepared,
@@ -393,19 +557,22 @@ async fn finish_interrupted_and_emit(runtime: &CoreRuntime, prepared: &crate::Pr
             },
         )
         .await;
+    } else {
+        emit_runtime_failure(runtime, prepared.request_id).await;
     }
 }
 
 async fn finish_interrupted(
     runtime: &CoreRuntime,
     prepared: &crate::PreparedTextTurn,
+    usage: Option<ModelUsage>,
 ) -> Option<CoreItemSnapshot> {
     finish(
         runtime,
         prepared,
         DurableTurnStatus::Interrupted,
         None,
-        None,
+        usage.map(map_usage),
     )
     .ok()
 }
@@ -436,7 +603,19 @@ async fn finish_state_unavailable_and_emit(
             },
         )
         .await;
+    } else {
+        emit_runtime_failure(runtime, prepared.request_id).await;
     }
+}
+
+async fn emit_runtime_failure(runtime: &CoreRuntime, request_id: CoreRequestId) {
+    let _ = runtime
+        .event_tx
+        .send(CoreEvent {
+            request_id,
+            kind: CoreEventKind::RuntimeFailed,
+        })
+        .await;
 }
 
 fn finish(
@@ -495,7 +674,9 @@ fn clear_active(runtime: &CoreRuntime, thread_id: &ThreadId, turn_id: &TurnId) {
             .get(thread_id)
             .is_some_and(|active| &active.turn_id == turn_id)
     {
-        active.remove(thread_id);
+        if let Some(active) = active.remove(thread_id) {
+            active.done.finish();
+        }
     }
 }
 
@@ -507,6 +688,7 @@ fn map_model_error(error: ModelError) -> CoreTurnError {
             ModelErrorKind::RateLimited => CoreTurnErrorKind::RateLimited,
             ModelErrorKind::Timeout => CoreTurnErrorKind::Timeout,
             ModelErrorKind::Transport => CoreTurnErrorKind::Transport,
+            ModelErrorKind::Disconnected => CoreTurnErrorKind::Disconnected,
             ModelErrorKind::Server => CoreTurnErrorKind::Server,
             ModelErrorKind::Protocol => CoreTurnErrorKind::Protocol,
             ModelErrorKind::Incomplete => CoreTurnErrorKind::Incomplete,
@@ -526,6 +708,7 @@ fn map_durable_error(error: CoreTurnError) -> DurableTurnError {
             CoreTurnErrorKind::RateLimited => DurableTurnErrorKind::RateLimited,
             CoreTurnErrorKind::Timeout => DurableTurnErrorKind::Timeout,
             CoreTurnErrorKind::Transport => DurableTurnErrorKind::Transport,
+            CoreTurnErrorKind::Disconnected => DurableTurnErrorKind::Disconnected,
             CoreTurnErrorKind::Server => DurableTurnErrorKind::Server,
             CoreTurnErrorKind::Protocol => DurableTurnErrorKind::Protocol,
             CoreTurnErrorKind::Incomplete => DurableTurnErrorKind::Incomplete,
@@ -611,7 +794,7 @@ mod tests {
             .start_text_turn(
                 CoreRequestId::new(2),
                 thread_id.clone(),
-                "Hello".to_string(),
+                Some("Hello".to_string()),
             )
             .expect("start text turn");
         let TurnStartOutcome::Accepted { turn_id } = outcome else {
@@ -629,7 +812,7 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(event.kind, CoreEventKind::ItemCompleted { .. }))
                 .count(),
-            1
+            2
         );
         assert_eq!(
             lifecycle
@@ -653,6 +836,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn output_limit_fails_once_without_committing_the_oversized_delta() {
+        let oversized = "x".repeat(crate::thread::MAX_AGENT_MESSAGE_BYTES + 1);
+        let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
+            events: vec![
+                Ok(ModelEvent::TextDelta(oversized)),
+                Ok(ModelEvent::Completed),
+            ],
+            stay_open: false,
+        });
+        let TurnStartOutcome::Accepted { turn_id } = runtime
+            .start_text_turn(
+                CoreRequestId::new(2),
+                thread_id.clone(),
+                Some("Hello".to_string()),
+            )
+            .expect("start text turn")
+        else {
+            panic!("asynchronous turn");
+        };
+
+        let mut lifecycle = Vec::new();
+        while lifecycle
+            .last()
+            .is_none_or(|event: &CoreEvent| !matches!(event.kind, CoreEventKind::TurnFailed { .. }))
+        {
+            lifecycle.push(events.recv().await.expect("core event"));
+        }
+        assert!(
+            !lifecycle
+                .iter()
+                .any(|event| matches!(event.kind, CoreEventKind::AgentMessageDelta { .. }))
+        );
+        let CoreEventKind::TurnFailed { error, .. } =
+            lifecycle.last().expect("failed terminal").kind.clone()
+        else {
+            panic!("failed terminal");
+        };
+        assert_eq!(error.kind, CoreTurnErrorKind::OutputTooLarge);
+        assert!(!error.retryable);
+
+        let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+        let turn = snapshot
+            .turns
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .expect("persisted turn");
+        assert_eq!(turn.status, DurableTurnStatus::Failed);
+        assert_eq!(
+            turn.error.as_ref().map(|error| error.kind),
+            Some(DurableTurnErrorKind::OutputTooLarge)
+        );
+        assert!(matches!(
+            turn.items.last(),
+            Some(sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. })
+                if text.is_empty()
+        ));
+    }
+
+    #[tokio::test]
     async fn interrupt_cancels_a_pending_stream_and_emits_one_interrupted_terminal() {
         let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
             events: vec![Ok(ModelEvent::TextDelta("partial".to_string()))],
@@ -662,7 +904,7 @@ mod tests {
             .start_text_turn(
                 CoreRequestId::new(2),
                 thread_id.clone(),
-                "Hello".to_string(),
+                Some("Hello".to_string()),
             )
             .expect("start text turn")
         else {
@@ -717,5 +959,45 @@ mod tests {
                 .status,
             DurableTurnStatus::Interrupted
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_active_turn_to_persist_interrupted() {
+        let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
+            events: vec![Ok(ModelEvent::TextDelta("partial".to_string()))],
+            stay_open: true,
+        });
+        let TurnStartOutcome::Accepted { turn_id } = runtime
+            .start_text_turn(
+                CoreRequestId::new(2),
+                thread_id.clone(),
+                Some("Hello".to_string()),
+            )
+            .expect("start text turn")
+        else {
+            panic!("asynchronous turn");
+        };
+        loop {
+            if matches!(
+                events.recv().await.expect("pre-shutdown event").kind,
+                CoreEventKind::AgentMessageDelta { .. }
+            ) {
+                break;
+            }
+        }
+
+        runtime.shutdown().await.expect("graceful shutdown");
+        let mut interrupted = false;
+        while let Ok(event) = events.try_recv() {
+            interrupted |= matches!(event.kind, CoreEventKind::TurnInterrupted { .. });
+        }
+        assert!(interrupted);
+        let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+        let turn = snapshot
+            .turns
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .expect("persisted turn");
+        assert_eq!(turn.status, DurableTurnStatus::Interrupted);
     }
 }

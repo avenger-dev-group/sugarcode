@@ -326,7 +326,9 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         CoreEventKind::TurnInterrupted { thread_id, turn_id } => {
             terminal_notification(thread_id, turn_id, TurnStatus::Interrupted, None)?
         }
-        CoreEventKind::ThreadStarted { .. } => return Err(EventMappingError),
+        CoreEventKind::ThreadStarted { .. } | CoreEventKind::RuntimeFailed => {
+            return Err(EventMappingError);
+        }
     };
     Ok(notification)
 }
@@ -372,6 +374,7 @@ fn map_core_error(error: CoreTurnError) -> TurnError {
             CoreTurnErrorKind::RateLimited => TurnErrorKind::RateLimited,
             CoreTurnErrorKind::Timeout => TurnErrorKind::Timeout,
             CoreTurnErrorKind::Transport => TurnErrorKind::Transport,
+            CoreTurnErrorKind::Disconnected => TurnErrorKind::Disconnected,
             CoreTurnErrorKind::Server => TurnErrorKind::Server,
             CoreTurnErrorKind::Protocol => TurnErrorKind::Protocol,
             CoreTurnErrorKind::Incomplete => TurnErrorKind::Incomplete,
@@ -392,6 +395,7 @@ fn map_durable_error(error: DurableTurnError) -> TurnError {
             DurableTurnErrorKind::RateLimited => TurnErrorKind::RateLimited,
             DurableTurnErrorKind::Timeout => TurnErrorKind::Timeout,
             DurableTurnErrorKind::Transport => TurnErrorKind::Transport,
+            DurableTurnErrorKind::Disconnected => TurnErrorKind::Disconnected,
             DurableTurnErrorKind::Server => TurnErrorKind::Server,
             DurableTurnErrorKind::Protocol => TurnErrorKind::Protocol,
             DurableTurnErrorKind::Incomplete => TurnErrorKind::Incomplete,

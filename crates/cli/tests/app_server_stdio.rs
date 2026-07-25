@@ -51,8 +51,69 @@ fn turn_start_failures_match_golden_trace() {
 fn provider_terminal_error_matches_golden_trace() {
     assert_golden_with_body(
         "turn-provider-error",
-        include_str!("../../model-provider/tests/fixtures/chat-completions-terminal-error.sse"),
+        include_str!("../../model-provider/tests/fixtures/terminal-error.sse"),
     );
+}
+
+#[test]
+fn missing_model_still_serves_threads_and_returns_stable_turn_error() {
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home.path())
+        .args(["app-server", "--stdio"])
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn app-server");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {"name": "model-missing-test", "version": "1.0.0"}
+            }
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "initialize");
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "initialized"}),
+    );
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": "thread", "method": "thread/start"}),
+    );
+    let thread = read_json(&mut stdout);
+    let thread_id = thread["result"]["thread"]["id"]
+        .as_str()
+        .expect("thread id")
+        .to_string();
+    assert_eq!(read_json(&mut stdout)["method"], "thread/started");
+    let turn = json!({
+        "jsonrpc": "2.0",
+        "id": "retry",
+        "method": "turn/start",
+        "params": {"threadId": thread_id, "input": "Hello"}
+    });
+    for _ in 0..2 {
+        send_json(&mut stdin, turn.clone());
+        let error = read_json(&mut stdout);
+        assert_eq!(error["id"], "retry");
+        assert_eq!(error["error"]["code"], -32007);
+        assert!(error["error"].get("data").is_none());
+    }
+    drop(stdin);
+    let output = child.wait_with_output().expect("wait for app-server");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty());
 }
 
 #[test]
@@ -117,10 +178,19 @@ fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
         read_json(&mut stdout),
         read_json(&mut stdout),
         read_json(&mut stdout),
+        read_json(&mut stdout),
+        read_json(&mut stdout),
     ];
     assert_eq!(before_interrupt[0]["method"], "turn/started");
     assert_eq!(before_interrupt[1]["method"], "item/started");
-    assert_eq!(before_interrupt[2]["method"], "item/agentMessage/delta");
+    assert_eq!(before_interrupt[1]["params"]["item"]["type"], "userMessage");
+    assert_eq!(before_interrupt[2]["method"], "item/completed");
+    assert_eq!(before_interrupt[3]["method"], "item/started");
+    assert_eq!(
+        before_interrupt[3]["params"]["item"]["type"],
+        "agentMessage"
+    );
+    assert_eq!(before_interrupt[4]["method"], "item/agentMessage/delta");
     provider.wait_until_delta_sent();
 
     send_json(
@@ -144,6 +214,9 @@ fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
             .count(),
         1
     );
+    assert_eq!(after_interrupt[0]["method"], "item/completed");
+    assert_eq!(after_interrupt[1]["method"], "turn/completed");
+    assert_eq!(after_interrupt[2]["id"], "interrupt");
     assert_eq!(
         after_interrupt
             .iter()
@@ -239,7 +312,7 @@ fn thread_fork_failures_match_golden_trace() {
 fn assert_golden(name: &str) {
     assert_golden_with_body(
         name,
-        include_str!("../../model-provider/tests/fixtures/chat-completions-success.sse"),
+        include_str!("../../model-provider/tests/fixtures/completed.sse"),
     );
 }
 
@@ -325,13 +398,7 @@ impl MockProvider {
     fn start_with_body(home: &std::path::Path, body: &'static str) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock provider");
         let address = listener.local_addr().expect("mock provider address");
-        fs::write(
-            home.join("config.toml"),
-            format!(
-                "schema_version = 1\n\n[model]\napi_format = \"openai-chat-completions\"\nendpoint = \"http://{address}/v1/chat/completions\"\nmodel = \"fixture-model\"\ntoken = \"fixture-token\"\n"
-            ),
-        )
-        .expect("write model configuration");
+        configure_model(home, address);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let thread = thread::spawn(move || {
@@ -427,13 +494,7 @@ impl BlockingMockProvider {
     fn start(home: &std::path::Path) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind blocking provider");
         let address = listener.local_addr().expect("blocking provider address");
-        fs::write(
-            home.join("config.toml"),
-            format!(
-                "schema_version = 1\n\n[model]\napi_format = \"openai-chat-completions\"\nendpoint = \"http://{address}/v1/chat/completions\"\nmodel = \"fixture-model\"\ntoken = \"fixture-token\"\n"
-            ),
-        )
-        .expect("write model configuration");
+        configure_model(home, address);
         let (delta_tx, delta_sent) = mpsc::channel();
         let (closed_tx, connection_closed) = mpsc::channel();
         let thread = thread::spawn(move || {
@@ -509,6 +570,38 @@ fn read_provider_request(stream: &mut TcpStream) {
         assert!(read > 0, "provider request body ended early");
         request.extend_from_slice(&buffer[..read]);
     }
+}
+
+fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
+    let token = "fixture-token";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home)
+        .args(["config", "model", "set", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn model config command");
+    writeln!(
+        child.stdin.take().expect("config stdin"),
+        "{}",
+        json!({
+            "apiFormat": "openai-chat-completions",
+            "endpoint": format!("http://{address}/v1/chat/completions"),
+            "model": "fixture-model",
+            "token": token
+        })
+    )
+    .expect("write model config");
+    let output = child.wait_with_output().expect("wait for model config");
+    assert!(
+        output.status.success(),
+        "model config failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(token));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(token));
 }
 
 fn send_json(stdin: &mut impl Write, value: Value) {

@@ -83,6 +83,7 @@ pub enum DurableTurnErrorKind {
     RateLimited,
     Timeout,
     Transport,
+    Disconnected,
     Server,
     Protocol,
     Incomplete,

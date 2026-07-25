@@ -550,11 +550,25 @@ impl ThreadRepository for RolloutRepository {
         self.ensure_available()?;
         if turn.status != DurableTurnStatus::InProgress
             || turn.items.is_empty()
+            || turn.items.len() > 2
             || turn.error.is_some()
             || turn.usage.is_some()
         {
             return Err(RolloutError::InvalidRecord {
                 kind: "invalidStartedTurn",
+            });
+        }
+        let valid_items = match turn.items.as_slice() {
+            [DurableItemSnapshot::AgentMessage { text, .. }] => text.is_empty(),
+            [
+                DurableItemSnapshot::UserMessage { .. },
+                DurableItemSnapshot::AgentMessage { text, .. },
+            ] => text.is_empty(),
+            _ => false,
+        };
+        if !valid_items {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidStartedTurnItems",
             });
         }
         if self.pending_turns.contains_key(thread_id) {
@@ -621,8 +635,8 @@ impl ThreadRepository for RolloutRepository {
         let valid_terminal = match turn.status {
             DurableTurnStatus::InProgress => false,
             DurableTurnStatus::Completed => turn.error.is_none(),
-            DurableTurnStatus::Failed => turn.error.is_some() && turn.usage.is_none(),
-            DurableTurnStatus::Interrupted => turn.error.is_none() && turn.usage.is_none(),
+            DurableTurnStatus::Failed => turn.error.is_some(),
+            DurableTurnStatus::Interrupted => turn.error.is_none(),
         };
         if turn.items.is_empty() || !valid_terminal {
             return Err(RolloutError::InvalidRecord {
@@ -634,13 +648,7 @@ impl ThreadRepository for RolloutRepository {
                 kind: "turnNotActive",
             });
         };
-        if pending.id != turn.id
-            || pending
-                .items
-                .iter()
-                .map(DurableItemSnapshot::id)
-                .ne(turn.items.iter().map(DurableItemSnapshot::id))
-        {
+        if pending.id != turn.id || !terminal_items_match(&pending.items, &turn.items) {
             return Err(RolloutError::InvalidRecord {
                 kind: "turnItemMismatch",
             });
@@ -845,6 +853,32 @@ impl ThreadRepository for RolloutRepository {
             limit,
         )
     }
+}
+
+fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItemSnapshot]) -> bool {
+    started.len() == terminal.len()
+        && started
+            .iter()
+            .zip(terminal)
+            .all(|(started, terminal)| match (started, terminal) {
+                (
+                    DurableItemSnapshot::UserMessage {
+                        id: started_id,
+                        text: started_text,
+                    },
+                    DurableItemSnapshot::UserMessage {
+                        id: terminal_id,
+                        text: terminal_text,
+                    },
+                ) => started_id == terminal_id && started_text == terminal_text,
+                (
+                    DurableItemSnapshot::AgentMessage { id: started_id, .. },
+                    DurableItemSnapshot::AgentMessage {
+                        id: terminal_id, ..
+                    },
+                ) => started_id == terminal_id,
+                _ => false,
+            })
 }
 
 fn ensure_home(home: &SugarCodeHome) -> Result<(), RolloutError> {

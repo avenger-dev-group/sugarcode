@@ -63,6 +63,7 @@
         "rateLimited",
         "timeout",
         "transport",
+        "disconnected",
         "server",
         "protocol",
         "incomplete",

@@ -51,6 +51,10 @@ impl ModelToken {
     pub fn expose(&self) -> &str {
         self.0.as_str()
     }
+
+    pub fn clone_secret(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.0.as_str().to_owned())
+    }
 }
 
 impl fmt::Debug for ModelToken {
@@ -311,18 +315,10 @@ pub fn load_effective_config_for_home(home: SugarCodeHome) -> Result<EffectiveCo
         }
     };
 
-    let target_metadata = if metadata.file_type().is_symlink() {
-        fs::metadata(&config_path).map_err(|error| ConfigError::Unreadable {
-            path: config_path.clone(),
-            kind: error.kind(),
-        })?
-    } else {
-        metadata
-    };
-    if !target_metadata.is_file() {
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(ConfigError::NotRegularFile { path: config_path });
     }
-    if target_metadata.len() > MAX_CONFIG_BYTES {
+    if metadata.len() > MAX_CONFIG_BYTES {
         return Err(ConfigError::TooLarge { path: config_path });
     }
 
@@ -437,6 +433,16 @@ pub fn save_model_config(
             path: config_path.clone(),
             kind: error.kind(),
         })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temp.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| ConfigError::WriteFailed {
+                path: config_path.clone(),
+                kind: error.kind(),
+            })?;
+    }
     temp.write_all(encoded.as_bytes())
         .map_err(|error| ConfigError::WriteFailed {
             path: config_path.clone(),
@@ -452,28 +458,75 @@ pub fn save_model_config(
             path: config_path.clone(),
             kind: error.kind(),
         })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temp.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| ConfigError::WriteFailed {
-                path: config_path.clone(),
-                kind: error.kind(),
-            })?;
-    }
-    temp.persist(&config_path)
-        .map_err(|error| ConfigError::WriteFailed {
-            path: config_path.clone(),
-            kind: error.error.kind(),
-        })?;
+    persist_config_temp(temp, &config_path)?;
     sync_config_parent(&config_path)?;
     load_effective_config_for_home(home.clone())
 }
 
+fn persist_config_temp(temp: NamedTempFile, config_path: &Path) -> Result<(), ConfigError> {
+    #[cfg(not(windows))]
+    {
+        temp.persist(config_path)
+            .map_err(|error| ConfigError::WriteFailed {
+                path: config_path.to_path_buf(),
+                kind: error.error.kind(),
+            })?;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
+        use windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING;
+        use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        use windows_sys::Win32::Storage::FileSystem::SetFileAttributesW;
+
+        let temp_path = temp
+            .path()
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect::<Vec<_>>();
+        let target_path = config_path
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect::<Vec<_>>();
+        let moved = unsafe {
+            SetFileAttributesW(temp_path.as_ptr(), FILE_ATTRIBUTE_NORMAL) != 0
+                && MoveFileExW(
+                    temp_path.as_ptr(),
+                    target_path.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                ) != 0
+        };
+        if !moved {
+            return Err(ConfigError::WriteFailed {
+                path: config_path.to_path_buf(),
+                kind: io::Error::last_os_error().kind(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn ensure_config_home(home: &SugarCodeHome) -> Result<(), ConfigError> {
     match fs::symlink_metadata(home.path()) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o777 != 0o700 {
+                    fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).map_err(
+                        |error| ConfigError::WriteFailed {
+                            path: home.path().to_path_buf(),
+                            kind: error.kind(),
+                        },
+                    )?;
+                }
+            }
+            Ok(())
+        }
         Ok(_) => Err(ConfigError::WriteFailed {
             path: home.path().to_path_buf(),
             kind: io::ErrorKind::NotADirectory,
@@ -590,6 +643,14 @@ fn validate_endpoint(api_format: ModelApiFormat, endpoint: &Url) -> Result<(), &
     {
         return Err("unsafeEndpoint");
     }
+    if endpoint.scheme() == "http" {
+        let host = endpoint
+            .host_str()
+            .expect("host presence was validated above");
+        if !matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]") {
+            return Err("insecureEndpoint");
+        }
+    }
     if api_format == ModelApiFormat::OpenAiChatCompletions
         && !endpoint.path().ends_with("/chat/completions")
     {
@@ -624,17 +685,18 @@ fn invalid_model_field(
     }
 }
 
-fn encode_model_config(model: &ModelConfig) -> Result<String, ConfigError> {
-    let mut output = format!(
+fn encode_model_config(model: &ModelConfig) -> Result<Zeroizing<String>, ConfigError> {
+    let mut output = Zeroizing::new(format!(
         "schema_version = {}\n\n[model]\napi_format = {}\nendpoint = {}\nmodel = {}\n",
         CURRENT_CONFIG_SCHEMA_VERSION,
         toml_string(model.api_format.as_str()),
         toml_string(model.endpoint.as_str()),
         toml_string(model.model())
-    );
+    ));
     if let Some(token) = model.token() {
+        let encoded_token = Zeroizing::new(toml_string(token.expose()));
         output.push_str("token = ");
-        output.push_str(&toml_string(token.expose()));
+        output.push_str(encoded_token.as_str());
         output.push('\n');
     }
     Ok(output)

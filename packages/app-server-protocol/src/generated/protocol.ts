@@ -90,11 +90,11 @@ export type Turn = { id: string, status: TurnStatus, error?: TurnError, };
 
 export type TurnStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
-export type TurnErrorKind = "authentication" | "invalidRequest" | "rateLimited" | "timeout" | "transport" | "server" | "protocol" | "incomplete" | "filtered" | "unsupportedOutput" | "outputTooLarge" | "stateUnavailable";
+export type TurnErrorKind = "authentication" | "invalidRequest" | "rateLimited" | "timeout" | "transport" | "disconnected" | "server" | "protocol" | "incomplete" | "filtered" | "unsupportedOutput" | "outputTooLarge" | "stateUnavailable";
 
 export type TurnError = { kind: TurnErrorKind, retryable: boolean, };
 
-export type TurnStartParams = { threadId: string, input: string, };
+export type TurnStartParams = { threadId: string, input?: string, };
 
 export type TurnStartResponse = { turn: Turn, };
 

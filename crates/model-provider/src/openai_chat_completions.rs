@@ -12,10 +12,12 @@ use futures_util::FutureExt;
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::AUTHORIZATION;
+use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use serde::Serialize;
 use std::fmt;
+use std::io;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -26,6 +28,7 @@ const MODEL_STREAM_CAPACITY: usize = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_SSE_EVENT_BYTES: usize = 256 * 1024;
 
 pub struct OpenAiChatCompletionsProvider {
     client: reqwest::Client,
@@ -35,6 +38,10 @@ pub struct OpenAiChatCompletionsProvider {
 
 impl OpenAiChatCompletionsProvider {
     pub fn new(endpoint: Url, token: Option<String>) -> Result<Self, ModelError> {
+        Self::new_secret(endpoint, token.map(Zeroizing::new))
+    }
+
+    pub fn new_secret(endpoint: Url, token: Option<Zeroizing<String>>) -> Result<Self, ModelError> {
         validate_endpoint(&endpoint)?;
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
@@ -44,7 +51,7 @@ impl OpenAiChatCompletionsProvider {
         Ok(Self {
             client,
             endpoint,
-            token: token.map(Zeroizing::new),
+            token: token.filter(|token| !token.is_empty()),
         })
     }
 }
@@ -65,8 +72,10 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
             let body = ChatRequest::from(request);
             let mut builder = self.client.post(self.endpoint.clone()).json(&body);
             if let Some(token) = &self.token {
-                let value = HeaderValue::from_str(&format!("Bearer {}", token.as_str()))
+                let encoded = Zeroizing::new(format!("Bearer {}", token.as_str()));
+                let mut value = HeaderValue::from_str(encoded.as_str())
                     .map_err(|_| ModelError::new(ModelErrorKind::Authentication, false))?;
+                value.set_sensitive(true);
                 builder = builder.header(AUTHORIZATION, value);
             }
             let response = tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, builder.send())
@@ -75,6 +84,19 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
                 .map_err(map_reqwest_error)?;
             if !response.status().is_success() {
                 return Err(map_status(response.status()));
+            }
+            let is_event_stream = response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| {
+                    value
+                        .split(';')
+                        .next()
+                        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+                });
+            if !is_event_stream {
+                return Err(ModelError::new(ModelErrorKind::Protocol, false));
             }
 
             let (sender, receiver) = mpsc::channel(MODEL_STREAM_CAPACITY);
@@ -86,7 +108,12 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
 }
 
 fn validate_endpoint(endpoint: &Url) -> Result<(), ModelError> {
-    let valid = matches!(endpoint.scheme(), "http" | "https")
+    let transport_is_safe = endpoint.scheme() == "https"
+        || (endpoint.scheme() == "http"
+            && endpoint
+                .host_str()
+                .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]")));
+    let valid = transport_is_safe
         && endpoint.host_str().is_some()
         && endpoint.username().is_empty()
         && endpoint.password().is_none()
@@ -104,7 +131,26 @@ async fn process_stream(
     response: reqwest::Response,
     sender: mpsc::Sender<Result<ModelEvent, ModelError>>,
 ) {
-    let mut stream = response.bytes_stream().eventsource();
+    let mut event_bytes = 0usize;
+    let mut suffix = [0u8; 4];
+    let bounded_bytes = response.bytes_stream().map(move |chunk| {
+        let chunk = chunk.map_err(io::Error::other)?;
+        for byte in chunk.iter().copied() {
+            event_bytes = event_bytes.saturating_add(1);
+            suffix.rotate_left(1);
+            suffix[3] = byte;
+            if suffix[2..] == *b"\n\n" || suffix[2..] == *b"\r\r" || suffix == *b"\r\n\r\n" {
+                event_bytes = 0;
+            } else if event_bytes > MAX_SSE_EVENT_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "SSE event exceeds the size limit",
+                ));
+            }
+        }
+        Ok(chunk)
+    });
+    let mut stream = bounded_bytes.eventsource();
     let mut clean_finish = false;
     loop {
         let next = tokio::select! {
@@ -117,7 +163,7 @@ async fn process_stream(
                 return;
             }
             Ok(None) => {
-                send_error(&sender, ModelError::new(ModelErrorKind::Transport, true)).await;
+                send_error(&sender, ModelError::new(ModelErrorKind::Disconnected, true)).await;
                 return;
             }
             Ok(Some(Err(_))) => {
@@ -132,6 +178,10 @@ async fn process_stream(
             } else {
                 send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
             }
+            return;
+        }
+        if clean_finish {
+            send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
             return;
         }
 
@@ -165,6 +215,14 @@ async fn process_stream(
                     .await
                     .is_err()
             {
+                return;
+            }
+            if choice.delta.tool_calls.is_some() || choice.delta.function_call.is_some() {
+                send_error(
+                    &sender,
+                    ModelError::new(ModelErrorKind::UnsupportedOutput, false),
+                )
+                .await;
                 return;
             }
             if let Some(reason) = choice.finish_reason.as_deref() {
@@ -211,11 +269,14 @@ fn map_reqwest_error(error: reqwest::Error) -> ModelError {
 
 fn map_status(status: StatusCode) -> ModelError {
     match status.as_u16() {
-        400 | 404 | 409 | 413 | 422 => ModelError::new(ModelErrorKind::InvalidRequest, false),
+        300..=399 | 400 | 404 | 409 | 413 | 422 => {
+            ModelError::new(ModelErrorKind::InvalidRequest, false)
+        }
         401 | 403 => ModelError::new(ModelErrorKind::Authentication, false),
         408 => ModelError::new(ModelErrorKind::Timeout, true),
         429 => ModelError::new(ModelErrorKind::RateLimited, true),
         500..=599 => ModelError::new(ModelErrorKind::Server, true),
+        400..=499 => ModelError::new(ModelErrorKind::InvalidRequest, false),
         _ => ModelError::new(ModelErrorKind::Server, false),
     }
 }
@@ -274,6 +335,8 @@ struct ChatChoice {
 #[derive(Default, Deserialize)]
 struct ChatDelta {
     content: Option<String>,
+    tool_calls: Option<serde_json::Value>,
+    function_call: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]

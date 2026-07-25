@@ -117,13 +117,7 @@ impl MockProvider {
     fn start(home: &Path) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock provider");
         let address = listener.local_addr().expect("mock provider address");
-        fs::write(
-            home.join("config.toml"),
-            format!(
-                "schema_version = 1\n\n[model]\napi_format = \"openai-chat-completions\"\nendpoint = \"http://{address}/v1/chat/completions\"\nmodel = \"fixture-model\"\ntoken = \"fixture-token\"\n"
-            ),
-        )
-        .expect("write model configuration");
+        configure_model(home, address);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let thread = thread::spawn(move || {
@@ -141,6 +135,38 @@ impl MockProvider {
             thread: Some(thread),
         }
     }
+}
+
+fn configure_model(home: &Path, address: std::net::SocketAddr) {
+    let token = "fixture-token";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home)
+        .args(["config", "model", "set", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn model config command");
+    writeln!(
+        child.stdin.take().expect("config stdin"),
+        "{}",
+        json!({
+            "apiFormat": "openai-chat-completions",
+            "endpoint": format!("http://{address}/v1/chat/completions"),
+            "model": "fixture-model",
+            "token": token
+        })
+    )
+    .expect("write model config");
+    let output = child.wait_with_output().expect("wait for model config");
+    assert!(
+        output.status.success(),
+        "model config failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(token));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(token));
 }
 
 impl Drop for MockProvider {
@@ -191,7 +217,7 @@ fn serve_recorded_response(stream: &mut TcpStream) {
         assert!(read > 0, "provider request body ended early");
         request.extend_from_slice(&buffer[..read]);
     }
-    let body = include_str!("../../model-provider/tests/fixtures/chat-completions-success.sse");
+    let body = include_str!("../../model-provider/tests/fixtures/completed.sse");
     write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -228,10 +254,10 @@ fn resumes_completed_history_across_two_cli_processes() {
             "method": "turn/start",
             "params": {"threadId": thread_id, "input": "Hello"}
         }),
-        6,
+        8,
     );
-    let completed_turn = turn_messages[5]["params"]["turn"].clone();
-    let completed_item = turn_messages[4]["params"]["item"].clone();
+    let completed_turn = turn_messages[7]["params"]["turn"].clone();
+    let completed_item = turn_messages[6]["params"]["item"].clone();
     first.finish();
     fs::remove_file(home.path().join("projections/v1/thread-discovery.sqlite3"))
         .expect("remove disposable projection");
@@ -273,14 +299,14 @@ fn resumes_completed_history_across_two_cli_processes() {
             "method": "turn/start",
             "params": {"threadId": thread_id, "input": "Hello"}
         }),
-        6,
+        8,
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
         "turn_0000000000000002"
     );
     assert_eq!(
-        next_turn[2]["params"]["item"]["id"],
+        next_turn[4]["params"]["item"]["id"],
         "item_0000000000000004"
     );
     second.finish();
@@ -308,7 +334,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "method": "turn/start",
                 "params": {"threadId": "thr_0000000000000001", "input": "Hello"}
             }),
-            6,
+            8,
         );
     }
 
@@ -417,14 +443,14 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "method": "turn/start",
             "params": {"threadId": "thr_0000000000000002", "input": "Hello"}
         }),
-        6,
+        8,
     );
     assert_eq!(
         continued[0]["result"]["turn"]["id"],
         "turn_0000000000000005"
     );
     assert_eq!(
-        continued[2]["params"]["item"]["id"],
+        continued[4]["params"]["item"]["id"],
         "item_0000000000000010"
     );
     first.finish();
@@ -508,14 +534,14 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "method": "turn/start",
             "params": {"threadId": "thr_0000000000000002", "input": "Hello"}
         }),
-        6,
+        8,
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
         "turn_0000000000000006"
     );
     assert_eq!(
-        next_turn[2]["params"]["item"]["id"],
+        next_turn[4]["params"]["item"]["id"],
         "item_0000000000000012"
     );
     let next_thread = second.send(
@@ -537,14 +563,14 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "method": "turn/start",
             "params": {"threadId": "thr_0000000000000003", "input": "Hello"}
         }),
-        6,
+        8,
     );
     assert_eq!(
         other_turn[0]["result"]["turn"]["id"],
         "turn_0000000000000007"
     );
     assert_eq!(
-        other_turn[2]["params"]["item"]["id"],
+        other_turn[4]["params"]["item"]["id"],
         "item_0000000000000014"
     );
 
@@ -580,9 +606,9 @@ fn rebuilds_an_invalid_projection_then_lists_and_resumes_without_leaking_content
             "method": "turn/start",
             "params": {"threadId": thread_id, "input": "Hello"}
         }),
-        6,
+        8,
     );
-    let expected_item = lifecycle[4]["params"]["item"].clone();
+    let expected_item = lifecycle[6]["params"]["item"].clone();
     first.finish();
 
     let projection = home.path().join("projections/v1/thread-discovery.sqlite3");
@@ -644,7 +670,7 @@ fn rebuilds_search_across_processes_without_affecting_list_or_resume() {
                         "input": "Hello"
                     }
                 }),
-                6,
+                8,
             );
         }
     }
@@ -751,7 +777,7 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                     "method": "turn/start",
                     "params": {"threadId": format!("thr_{sequence:016}"), "input": "Hello"}
                 }),
-                6,
+                8,
             );
         }
     }
@@ -820,14 +846,14 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
             "method": "turn/start",
             "params": {"threadId": "thr_0000000000000004", "input": "Hello"}
         }),
-        6,
+        8,
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
         "turn_0000000000000003"
     );
     assert_eq!(
-        next_turn[2]["params"]["item"]["id"],
+        next_turn[4]["params"]["item"]["id"],
         "item_0000000000000006"
     );
 
@@ -861,7 +887,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
                 "method": "turn/start",
                 "params": {"threadId": format!("thr_{sequence:016}"), "input": "Hello"}
             }),
-            6,
+            8,
         );
     }
 
@@ -924,7 +950,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
             "method": "turn/start",
             "params": {"threadId": restored, "input": "Hello"}
         }),
-        6,
+        8,
     );
     assert_eq!(
         turn_after_restore[0]["result"]["turn"]["id"],
@@ -1003,14 +1029,14 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
             "method": "turn/start",
             "params": {"threadId": restored, "input": "Hello"}
         }),
-        6,
+        8,
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
         "turn_0000000000000004"
     );
     assert_eq!(
-        next_turn[2]["params"]["item"]["id"],
+        next_turn[4]["params"]["item"]["id"],
         "item_0000000000000008"
     );
 
@@ -1044,7 +1070,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "method": "turn/start",
                 "params": {"threadId": format!("thr_{sequence:016}"), "input": "Hello"}
             }),
-            6,
+            8,
         );
     }
 
@@ -1153,14 +1179,14 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
             "method": "turn/start",
             "params": {"threadId": "thr_0000000000000004", "input": "Hello"}
         }),
-        6,
+        8,
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
         "turn_0000000000000004"
     );
     assert_eq!(
-        next_turn[2]["params"]["item"]["id"],
+        next_turn[4]["params"]["item"]["id"],
         "item_0000000000000008"
     );
 

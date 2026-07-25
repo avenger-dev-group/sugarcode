@@ -24,6 +24,7 @@ pub enum TurnErrorKind {
     RateLimited,
     Timeout,
     Transport,
+    Disconnected,
     Server,
     Protocol,
     Incomplete,
@@ -57,7 +58,9 @@ pub struct Turn {
 #[ts(rename_all = "camelCase")]
 pub struct TurnStartParams {
     pub thread_id: String,
-    pub input: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub input: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for TurnStartParams {
@@ -69,11 +72,13 @@ impl<'de> Deserialize<'de> for TurnStartParams {
         if params.thread_id.trim().is_empty() {
             return Err(de::Error::custom("threadId must not be blank"));
         }
-        if params.input.trim().is_empty() {
-            return Err(de::Error::custom("input must not be blank"));
-        }
-        if params.input.len() > MAX_TURN_INPUT_BYTES {
-            return Err(de::Error::custom("input is too large"));
+        if let Some(input) = params.input.as_ref() {
+            if input.trim().is_empty() {
+                return Err(de::Error::custom("input must not be blank"));
+            }
+            if input.len() > MAX_TURN_INPUT_BYTES {
+                return Err(de::Error::custom("input is too large"));
+            }
         }
         Ok(Self {
             thread_id: params.thread_id,
@@ -86,10 +91,10 @@ impl<'de> Deserialize<'de> for TurnStartParams {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct TurnStartParamsWire {
     thread_id: String,
-    input: String,
+    input: Option<String>,
 }
 
-pub const MAX_TURN_INPUT_BYTES: usize = 256 * 1024;
+pub const MAX_TURN_INPUT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

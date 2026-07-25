@@ -1,3 +1,5 @@
+use futures_util::FutureExt;
+use futures_util::future::BoxFuture;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -24,15 +26,16 @@ use sugarcode_state::RolloutError;
 use sugarcode_state::ThreadRepository;
 
 const DETERMINISTIC_AGENT_MESSAGE: &str = "SugarCode deterministic response.";
-pub const MAX_AGENT_MESSAGE_BYTES: usize = 1024 * 1024;
-pub const MAX_USER_MESSAGE_BYTES: usize = 256 * 1024;
+pub const MAX_AGENT_MESSAGE_BYTES: usize = 512 * 1024;
+pub const MAX_PROVIDER_HISTORY_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedTextTurn {
     pub request_id: CoreRequestId,
     pub thread_id: ThreadId,
     pub turn_id: TurnId,
-    pub user_item: CoreItemSnapshot,
+    pub user_item: Option<CoreItemSnapshot>,
     pub agent_item: CoreItemSnapshot,
     pub history: Vec<PreparedMessage>,
 }
@@ -218,6 +221,8 @@ pub enum CoreError {
     TurnNotInProgress(TurnId),
     ItemNotInProgress(ItemId),
     InvalidInput,
+    ContextTooLarge,
+    ModelUnavailable,
     OutputTooLarge,
     StateUnavailable,
     Internal(String),
@@ -244,6 +249,8 @@ impl fmt::Display for CoreError {
                 write!(formatter, "item is not in progress: {item_id}")
             }
             Self::InvalidInput => formatter.write_str("invalid user input"),
+            Self::ContextTooLarge => formatter.write_str("model context is too large"),
+            Self::ModelUnavailable => formatter.write_str("model is unavailable"),
             Self::OutputTooLarge => formatter.write_str("model output is too large"),
             Self::StateUnavailable => formatter.write_str("durable state is unavailable"),
             Self::Internal(message) => formatter.write_str(message),
@@ -291,7 +298,7 @@ pub trait CoreApi {
         &mut self,
         request_id: CoreRequestId,
         thread_id: ThreadId,
-        _input: String,
+        _input: Option<String>,
     ) -> Result<TurnStartOutcome, CoreError> {
         self.start_turn(request_id, thread_id)
             .map(TurnStartOutcome::Immediate)
@@ -302,6 +309,9 @@ pub trait CoreApi {
         _turn_id: &TurnId,
     ) -> Result<TurnInterruptOutcome, CoreError> {
         Ok(TurnInterruptOutcome::AlreadyTerminal)
+    }
+    fn shutdown(&mut self) -> BoxFuture<'static, Result<(), CoreError>> {
+        async { Ok(()) }.boxed()
     }
 }
 
@@ -403,9 +413,12 @@ impl Core {
         &mut self,
         request_id: CoreRequestId,
         thread_id: ThreadId,
-        input: String,
+        input: Option<String>,
     ) -> Result<PreparedTextTurn, CoreError> {
-        if input.trim().is_empty() || input.len() > MAX_USER_MESSAGE_BYTES {
+        if input
+            .as_ref()
+            .is_some_and(|input| input.trim().is_empty() || input.len() > MAX_USER_MESSAGE_BYTES)
+        {
             return Err(CoreError::InvalidInput);
         }
         let thread = self
@@ -422,49 +435,10 @@ impl Core {
             });
         }
 
-        let turn_sequence = self
-            .last_turn_sequence
-            .checked_add(1)
-            .ok_or(CoreError::TurnIdExhausted)?;
-        let user_item_sequence = self
-            .last_item_sequence
-            .checked_add(1)
-            .ok_or(CoreError::ItemIdExhausted)?;
-        let agent_item_sequence = user_item_sequence
-            .checked_add(1)
-            .ok_or(CoreError::ItemIdExhausted)?;
-        let turn_id = TurnId::new(format!("turn_{turn_sequence:016}"));
-        let user_item_id = ItemId::new(format!("item_{user_item_sequence:016}"));
-        let agent_item_id = ItemId::new(format!("item_{agent_item_sequence:016}"));
-        let user_item = CoreItemSnapshot {
-            id: user_item_id.clone(),
-            kind: CoreItemKind::UserMessage {
-                text: input.clone(),
-            },
-        };
-        let agent_item = CoreItemSnapshot {
-            id: agent_item_id.clone(),
-            kind: CoreItemKind::AgentMessage {
-                text: String::new(),
-            },
-        };
-        let durable_turn = DurableTurnSnapshot {
-            id: turn_id.clone(),
-            status: DurableTurnStatus::InProgress,
-            items: vec![
-                durable_item_snapshot(&user_item),
-                durable_item_snapshot(&agent_item),
-            ],
-            error: None,
-            usage: None,
-        };
-        self.repository
-            .begin_turn(&thread_id, &durable_turn)
-            .map_err(map_repository_error)?;
-
-        let history = thread
+        let mut history = thread
             .turns
             .values()
+            .filter(|turn| turn.state == TurnState::Completed)
             .flat_map(|turn| {
                 turn.items.values().filter_map(|item| match &item.kind {
                     ItemKind::UserMessage { text } => Some(PreparedMessage {
@@ -478,26 +452,89 @@ impl Core {
                     ItemKind::AgentMessage { .. } => None,
                 })
             })
-            .chain(std::iter::once(PreparedMessage {
+            .collect::<Vec<_>>();
+        if let Some(input) = input.as_ref() {
+            history.push(PreparedMessage {
                 role: PreparedMessageRole::User,
-                text: input,
-            }))
-            .collect();
+                text: input.clone(),
+            });
+        } else if history.is_empty() {
+            return Err(CoreError::InvalidInput);
+        }
+        let history_bytes = history.iter().try_fold(0usize, |total, message| {
+            total.checked_add(message.text.len())
+        });
+        if history_bytes.is_none_or(|bytes| bytes > MAX_PROVIDER_HISTORY_BYTES) {
+            return Err(CoreError::ContextTooLarge);
+        }
+
+        let turn_sequence = self
+            .last_turn_sequence
+            .checked_add(1)
+            .ok_or(CoreError::TurnIdExhausted)?;
+        let first_item_sequence = self
+            .last_item_sequence
+            .checked_add(1)
+            .ok_or(CoreError::ItemIdExhausted)?;
+        let agent_item_sequence = if input.is_some() {
+            first_item_sequence
+                .checked_add(1)
+                .ok_or(CoreError::ItemIdExhausted)?
+        } else {
+            first_item_sequence
+        };
+        let turn_id = TurnId::new(format!("turn_{turn_sequence:016}"));
+        let user_item_id = input
+            .as_ref()
+            .map(|_| ItemId::new(format!("item_{first_item_sequence:016}")));
+        let agent_item_id = ItemId::new(format!("item_{agent_item_sequence:016}"));
+        let user_item = input
+            .as_ref()
+            .zip(user_item_id.as_ref())
+            .map(|(input, user_item_id)| CoreItemSnapshot {
+                id: user_item_id.clone(),
+                kind: CoreItemKind::UserMessage {
+                    text: input.clone(),
+                },
+            });
+        let agent_item = CoreItemSnapshot {
+            id: agent_item_id.clone(),
+            kind: CoreItemKind::AgentMessage {
+                text: String::new(),
+            },
+        };
+        let mut durable_items = Vec::with_capacity(if user_item.is_some() { 2 } else { 1 });
+        if let Some(user_item) = user_item.as_ref() {
+            durable_items.push(durable_item_snapshot(user_item));
+        }
+        durable_items.push(durable_item_snapshot(&agent_item));
+        let durable_turn = DurableTurnSnapshot {
+            id: turn_id.clone(),
+            status: DurableTurnStatus::InProgress,
+            items: durable_items,
+            error: None,
+            usage: None,
+        };
+        self.repository
+            .begin_turn(&thread_id, &durable_turn)
+            .map_err(map_repository_error)?;
 
         let mut items = BTreeMap::new();
-        items.insert(
-            user_item_id,
-            Item {
-                id: user_item.id.clone(),
-                state: ItemState::Completed,
-                kind: ItemKind::UserMessage {
-                    text: match &user_item.kind {
-                        CoreItemKind::UserMessage { text } => text.clone(),
-                        CoreItemKind::AgentMessage { .. } => unreachable!(),
+        if let (Some(user_item_id), Some(user_item)) = (user_item_id, user_item.as_ref()) {
+            items.insert(
+                user_item_id,
+                Item {
+                    id: user_item.id.clone(),
+                    state: ItemState::Completed,
+                    kind: ItemKind::UserMessage {
+                        text: match &user_item.kind {
+                            CoreItemKind::UserMessage { text } => text.clone(),
+                            CoreItemKind::AgentMessage { .. } => unreachable!(),
+                        },
                     },
                 },
-            },
-        );
+            );
+        }
         items.insert(
             agent_item_id.clone(),
             Item::new_agent_message(agent_item_id),
@@ -1699,6 +1736,122 @@ mod tests {
                 "item_0000000000000001",
                 "item_0000000000000002",
                 "item_0000000000000003"
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_history_excludes_failed_and_interrupted_partial_turns() {
+        let mut core = Core::new();
+        let thread_id = start_thread(&mut core, 1);
+        for (request, status) in [
+            (2, DurableTurnStatus::Failed),
+            (3, DurableTurnStatus::Interrupted),
+        ] {
+            let prepared = core
+                .prepare_text_turn(
+                    CoreRequestId::new(request),
+                    thread_id.clone(),
+                    Some(format!("excluded-{request}")),
+                )
+                .expect("prepare excluded turn");
+            core.append_text_delta(&thread_id, &prepared.turn_id, "partial")
+                .expect("append partial");
+            let error = (status == DurableTurnStatus::Failed).then_some(DurableTurnError {
+                kind: sugarcode_state::DurableTurnErrorKind::Server,
+                retryable: true,
+            });
+            core.finish_text_turn(&thread_id, &prepared.turn_id, status, error, None)
+                .expect("finish excluded turn");
+        }
+
+        let prepared = core
+            .prepare_text_turn(
+                CoreRequestId::new(4),
+                thread_id,
+                Some("included".to_string()),
+            )
+            .expect("prepare next turn");
+        assert_eq!(
+            prepared.history,
+            vec![PreparedMessage {
+                role: PreparedMessageRole::User,
+                text: "included".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn provider_history_fails_instead_of_truncating_over_four_mib() {
+        let mut core = Core::new();
+        let thread_id = start_thread(&mut core, 1);
+        let maximum_output = "x".repeat(MAX_AGENT_MESSAGE_BYTES);
+        for request in 2..=9 {
+            let prepared = core
+                .prepare_text_turn(
+                    CoreRequestId::new(request),
+                    thread_id.clone(),
+                    Some("u".to_string()),
+                )
+                .expect("history remains within limit before completion");
+            core.append_text_delta(&thread_id, &prepared.turn_id, &maximum_output)
+                .expect("maximum output");
+            core.finish_text_turn(
+                &thread_id,
+                &prepared.turn_id,
+                DurableTurnStatus::Completed,
+                None,
+                None,
+            )
+            .expect("complete turn");
+        }
+        assert_eq!(
+            core.prepare_text_turn(
+                CoreRequestId::new(10),
+                thread_id,
+                Some("over-limit".to_string()),
+            ),
+            Err(CoreError::ContextTooLarge)
+        );
+    }
+
+    #[test]
+    fn omitted_input_continues_completed_history_without_a_user_item() {
+        let mut core = Core::new();
+        let thread_id = start_thread(&mut core, 1);
+        let first = core
+            .prepare_text_turn(
+                CoreRequestId::new(2),
+                thread_id.clone(),
+                Some("Hello".to_string()),
+            )
+            .expect("first turn");
+        core.append_text_delta(&thread_id, &first.turn_id, "Answer")
+            .expect("answer");
+        core.finish_text_turn(
+            &thread_id,
+            &first.turn_id,
+            DurableTurnStatus::Completed,
+            None,
+            None,
+        )
+        .expect("complete first turn");
+
+        let continuation = core
+            .prepare_text_turn(CoreRequestId::new(3), thread_id, None)
+            .expect("continuation");
+        assert!(continuation.user_item.is_none());
+        assert_eq!(
+            continuation.history,
+            vec![
+                PreparedMessage {
+                    role: PreparedMessageRole::User,
+                    text: "Hello".to_string(),
+                },
+                PreparedMessage {
+                    role: PreparedMessageRole::Assistant,
+                    text: "Answer".to_string(),
+                },
             ]
         );
     }

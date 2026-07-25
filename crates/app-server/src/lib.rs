@@ -18,10 +18,7 @@ use sugarcode_state::ModelApiFormat;
 use sugarcode_state::RolloutRepository;
 
 pub async fn run_stdio(config: EffectiveConfig) -> io::Result<()> {
-    let model = config
-        .model()
-        .ok_or_else(|| io::Error::other("model configuration is required"))?
-        .clone();
+    let model = config.model().cloned();
     let repository = RolloutRepository::open(config.home()).map_err(io::Error::other)?;
     for diagnostic in repository.diagnostics() {
         eprintln!("sugarcode: {diagnostic}");
@@ -32,20 +29,23 @@ pub async fn run_stdio(config: EffectiveConfig) -> io::Result<()> {
     for diagnostic in repository.search_projection_diagnostics() {
         eprintln!("sugarcode: {diagnostic}");
     }
-    let provider: Arc<dyn sugarcode_model_provider::ModelProvider> = match model.api_format() {
-        ModelApiFormat::OpenAiChatCompletions => Arc::new(
-            OpenAiChatCompletionsProvider::new(
-                model.endpoint().clone(),
-                model.token().map(|token| token.expose().to_string()),
-            )
-            .map_err(io::Error::other)?,
-        ),
+    let core = Core::with_repository(Box::new(repository));
+    let (runtime, events) = match model {
+        Some(model) => {
+            let provider: Arc<dyn sugarcode_model_provider::ModelProvider> =
+                match model.api_format() {
+                    ModelApiFormat::OpenAiChatCompletions => Arc::new(
+                        OpenAiChatCompletionsProvider::new_secret(
+                            model.endpoint().clone(),
+                            model.token().map(sugarcode_state::ModelToken::clone_secret),
+                        )
+                        .map_err(io::Error::other)?,
+                    ),
+                };
+            CoreRuntime::new(core, provider, model.model().to_string())
+        }
+        None => CoreRuntime::without_model(core),
     };
-    let (runtime, events) = CoreRuntime::new(
-        Core::with_repository(Box::new(repository)),
-        provider,
-        model.model().to_string(),
-    );
     let session = Session::with_core(runtime);
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());

@@ -5,18 +5,24 @@
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000002"}}}
 {"id":"turn-1","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000002","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000002","threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"completed"}}}
 {"id":"turn-2","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000003","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000003","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
 {"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000004","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
 {"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000004","threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000004","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002","status":"completed"}}}
 {"id":"turn-3","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000003","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000002","turn":{"id":"turn_0000000000000003","status":"inProgress"}}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000005","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000002","turnId":"turn_0000000000000003"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000005","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000002","turnId":"turn_0000000000000003"}}
 {"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000006","text":"","type":"agentMessage"},"threadId":"thr_0000000000000002","turnId":"turn_0000000000000003"}}
 {"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000006","threadId":"thr_0000000000000002","turnId":"turn_0000000000000003"}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000006","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000002","turnId":"turn_0000000000000003"}}

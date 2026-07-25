@@ -14,12 +14,13 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use url::Url;
 
-const SUCCESS: &str = include_str!("fixtures/chat-completions-success.sse");
+const SUCCESS: &str = include_str!("fixtures/completed.sse");
+const COMPLETED_CHUNKS: &str = include_str!("fixtures/completed.chunks.json");
 const UTF8: &str = include_str!("fixtures/chat-completions-utf8.sse");
-const TERMINAL_ERROR: &str = include_str!("fixtures/chat-completions-terminal-error.sse");
-const MALFORMED: &str = include_str!("fixtures/chat-completions-malformed.sse");
+const TERMINAL_ERROR: &str = include_str!("fixtures/terminal-error.sse");
+const MALFORMED: &str = include_str!("fixtures/malformed.sse");
 const DISCONNECT: &str = include_str!("fixtures/chat-completions-disconnect.sse");
-const CANCELLATION: &str = include_str!("fixtures/chat-completions-cancellation.sse");
+const CANCELLATION: &str = include_str!("fixtures/cancellable.sse");
 
 #[tokio::test]
 async fn recorded_success_stream_normalizes_text_and_usage() {
@@ -57,7 +58,9 @@ async fn utf8_survives_arbitrary_network_chunk_boundaries() {
         .windows("你".len())
         .position(|window| window == "你".as_bytes())
         .expect("UTF-8 fixture");
-    let split_points = vec![1, 7, first_utf8 + 1, first_utf8 + 2, bytes.len() - 3];
+    let mut split_points =
+        serde_json::from_str::<Vec<usize>>(COMPLETED_CHUNKS).expect("chunk fixture");
+    split_points.extend([first_utf8 + 1, first_utf8 + 2, bytes.len() - 3]);
     let (endpoint, server) = response_server(bytes, split_points).await;
     let provider = provider(endpoint);
     let events = provider
@@ -116,6 +119,238 @@ async fn malformed_recorded_event_is_a_non_retryable_protocol_error() {
     assert!(!error.retryable());
 }
 
+#[test]
+fn remote_plaintext_http_endpoint_is_rejected() {
+    let endpoint =
+        Url::parse("http://example.com/v1/chat/completions").expect("remote HTTP endpoint");
+    let error = OpenAiChatCompletionsProvider::new(endpoint, None)
+        .expect_err("remote plaintext HTTP must fail");
+    assert_eq!(error.kind(), ModelErrorKind::InvalidRequest);
+    assert!(!error.retryable());
+}
+
+#[tokio::test]
+async fn non_event_stream_content_type_is_rejected() {
+    let (endpoint, server) = response_server_with_options(
+        SUCCESS.as_bytes().to_vec(),
+        Vec::new(),
+        "application/json",
+        true,
+    )
+    .await;
+    let error = match provider(endpoint).stream(request()).await {
+        Ok(_) => panic!("non-SSE response must fail"),
+        Err(error) => error,
+    };
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::Protocol);
+    assert!(!error.retryable());
+}
+
+#[tokio::test]
+async fn empty_token_sends_no_authorization_header() {
+    let (endpoint, server) = response_server_with_options(
+        SUCCESS.as_bytes().to_vec(),
+        Vec::new(),
+        "text/event-stream",
+        false,
+    )
+    .await;
+    let provider =
+        OpenAiChatCompletionsProvider::new(endpoint, Some(String::new())).expect("provider");
+    let events = provider
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert!(matches!(events.last(), Some(Ok(ModelEvent::Completed))));
+}
+
+#[tokio::test]
+async fn data_after_finish_reason_is_a_protocol_error() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"late\"},\"finish_reason\":null}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let error = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .next()
+        .await
+        .expect("terminal event")
+        .expect_err("late data must fail");
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::Protocol);
+}
+
+#[tokio::test]
+async fn oversized_sse_event_is_rejected_without_unbounded_buffering() {
+    let body = format!("data: {}\n\n", "x".repeat(256 * 1024));
+    let (endpoint, server) = response_server(body.into_bytes(), Vec::new()).await;
+    let error = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .next()
+        .await
+        .expect("terminal event")
+        .expect_err("oversized event must fail");
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::Protocol);
+}
+
+#[tokio::test]
+async fn http_statuses_map_to_stable_retryable_errors() {
+    for (status, kind, retryable) in [
+        (400, ModelErrorKind::InvalidRequest, false),
+        (401, ModelErrorKind::Authentication, false),
+        (408, ModelErrorKind::Timeout, true),
+        (429, ModelErrorKind::RateLimited, true),
+        (500, ModelErrorKind::Server, true),
+    ] {
+        let (endpoint, server) = status_server(status).await;
+        let error = match provider(endpoint).stream(request()).await {
+            Ok(_) => panic!("HTTP {status} must fail"),
+            Err(error) => error,
+        };
+        server.await.expect("mock server");
+        assert_eq!(error.kind(), kind, "HTTP {status}");
+        assert_eq!(error.retryable(), retryable, "HTTP {status}");
+    }
+}
+
+#[tokio::test]
+async fn terminal_reason_matrix_maps_to_stable_non_retryable_errors() {
+    for (terminal, kind) in [
+        (
+            "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}",
+            ModelErrorKind::Incomplete,
+        ),
+        (
+            "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"content_filter\"}]}",
+            ModelErrorKind::Filtered,
+        ),
+        (
+            "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
+            ModelErrorKind::UnsupportedOutput,
+        ),
+        (
+            "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[]},\"finish_reason\":null}]}",
+            ModelErrorKind::UnsupportedOutput,
+        ),
+        (
+            "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"fixture_unknown\"}]}",
+            ModelErrorKind::Protocol,
+        ),
+    ] {
+        let body = format!("data: {terminal}\n\ndata: [DONE]\n\n");
+        let (endpoint, server) = response_server(body.into_bytes(), Vec::new()).await;
+        let error = provider(endpoint)
+            .stream(request())
+            .await
+            .expect("stream starts")
+            .next()
+            .await
+            .expect("terminal event")
+            .expect_err("terminal reason must fail");
+        server.await.expect("mock server");
+        assert_eq!(error.kind(), kind);
+        assert!(!error.retryable());
+    }
+}
+
+#[tokio::test]
+async fn done_without_finish_reason_is_a_protocol_error() {
+    let (endpoint, server) = response_server(b"data: [DONE]\n\n".to_vec(), Vec::new()).await;
+    let error = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .next()
+        .await
+        .expect("terminal event")
+        .expect_err("DONE without finish must fail");
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::Protocol);
+    assert!(!error.retryable());
+}
+
+#[tokio::test]
+async fn response_header_timeout_uses_virtual_time() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind header timeout server");
+    let address = listener.local_addr().expect("header timeout address");
+    let (accepted_tx, accepted_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (_socket, _) = listener.accept().await.expect("accept request");
+        let _ = accepted_tx.send(());
+        let _ = release_rx.await;
+    });
+    let endpoint =
+        Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint");
+    let client = tokio::spawn(async move { provider(endpoint).stream(request()).await });
+    accepted_rx.await.expect("request accepted");
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(31)).await;
+    let error = match client.await.expect("provider task") {
+        Ok(_) => panic!("missing response headers must time out"),
+        Err(error) => error,
+    };
+    let _ = release_tx.send(());
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::Timeout);
+    assert!(error.retryable());
+}
+
+#[tokio::test]
+async fn stream_idle_timeout_uses_virtual_time() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind idle timeout server");
+    let address = listener.local_addr().expect("idle timeout address");
+    let (headers_tx, headers_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept request");
+        read_request(&mut socket, true).await;
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("write response headers");
+        socket.flush().await.expect("flush response headers");
+        let _ = headers_tx.send(());
+        let _ = release_rx.await;
+    });
+    let endpoint =
+        Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint");
+    let client = tokio::spawn(async move { provider(endpoint).stream(request()).await });
+    headers_rx.await.expect("headers sent");
+    let mut stream = client.await.expect("provider task").expect("stream starts");
+    tokio::task::yield_now().await;
+    tokio::time::pause();
+    let next = tokio::spawn(async move { stream.next().await });
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(61)).await;
+    let error = next
+        .await
+        .expect("stream task")
+        .expect("terminal event")
+        .expect_err("idle stream must time out");
+    let _ = release_tx.send(());
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::Timeout);
+    assert!(error.retryable());
+}
+
 #[tokio::test]
 async fn disconnect_before_done_is_retryable_transport_failure() {
     let (endpoint, server) = response_server(DISCONNECT.as_bytes().to_vec(), Vec::new()).await;
@@ -130,7 +365,7 @@ async fn disconnect_before_done_is_retryable_transport_failure() {
 
     assert_eq!(events[0], Ok(ModelEvent::TextDelta("partial".to_string())));
     let error = *events[1].as_ref().expect_err("disconnect error");
-    assert_eq!(error.kind(), ModelErrorKind::Transport);
+    assert_eq!(error.kind(), ModelErrorKind::Disconnected);
     assert!(error.retryable());
 }
 
@@ -143,7 +378,7 @@ async fn dropping_the_stream_closes_the_upstream_response_without_sleep() {
     let (closed_tx, closed_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("accept request");
-        read_request(&mut socket).await;
+        read_request(&mut socket, true).await;
         let event = CANCELLATION;
         socket
             .write_all(
@@ -201,17 +436,26 @@ async fn response_server(
     body: Vec<u8>,
     split_points: Vec<usize>,
 ) -> (Url, tokio::task::JoinHandle<()>) {
+    response_server_with_options(body, split_points, "text/event-stream", true).await
+}
+
+async fn response_server_with_options(
+    body: Vec<u8>,
+    split_points: Vec<usize>,
+    content_type: &'static str,
+    expect_auth: bool,
+) -> (Url, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("bind mock server");
     let address = listener.local_addr().expect("mock address");
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("accept request");
-        read_request(&mut socket).await;
+        read_request(&mut socket, expect_auth).await;
         socket
             .write_all(
                 format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 )
                 .as_bytes(),
@@ -241,7 +485,32 @@ async fn response_server(
     )
 }
 
-async fn read_request(socket: &mut TcpStream) {
+async fn status_server(status: u16) -> (Url, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind status server");
+    let address = listener.local_addr().expect("status server address");
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept request");
+        read_request(&mut socket, true).await;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write status response");
+        socket.flush().await.expect("flush status response");
+    });
+    (
+        Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint"),
+        server,
+    )
+}
+
+async fn read_request(socket: &mut TcpStream, expect_auth: bool) {
     let mut request = Vec::new();
     let mut buffer = [0u8; 4096];
     let header_end = loop {
@@ -255,11 +524,10 @@ async fn read_request(socket: &mut TcpStream) {
     };
     let headers = String::from_utf8_lossy(&request[..header_end]);
     assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
-    assert!(
-        headers
-            .to_ascii_lowercase()
-            .contains("authorization: bearer fixture-token\r\n")
-    );
+    let has_auth = headers
+        .to_ascii_lowercase()
+        .contains("authorization: bearer fixture-token\r\n");
+    assert_eq!(has_auth, expect_auth);
     let content_length = headers
         .lines()
         .find_map(|line| {
@@ -274,4 +542,17 @@ async fn read_request(socket: &mut TcpStream) {
         assert!(read > 0, "request body ended early");
         request.extend_from_slice(&buffer[..read]);
     }
+    let body: serde_json::Value =
+        serde_json::from_slice(&request[header_end..header_end + content_length])
+            .expect("JSON request body");
+    let keys = body
+        .as_object()
+        .expect("request object")
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        keys,
+        std::collections::BTreeSet::from(["messages", "model", "stream"])
+    );
 }

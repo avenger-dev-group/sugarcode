@@ -1,11 +1,12 @@
 use crate::Session;
-use crate::event_mapping::map_core_event;
 use std::io;
 use tokio::io::AsyncBufRead;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWrite;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
+
+const STDOUT_QUEUE_CAPACITY: usize = 64;
 
 pub async fn serve<R, W>(reader: R, writer: W) -> io::Result<()>
 where
@@ -17,37 +18,86 @@ where
 
 pub async fn serve_with_events<R, W, C>(
     reader: R,
-    mut writer: W,
+    writer: W,
     mut session: Session<C>,
     mut events: mpsc::Receiver<sugarcode_protocol::CoreEvent>,
 ) -> io::Result<()>
 where
     R: AsyncBufRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
     C: sugarcode_core::CoreApi,
 {
+    let (output_tx, mut output_rx) = mpsc::channel(STDOUT_QUEUE_CAPACITY);
+    let writer_task = tokio::spawn(async move {
+        let mut writer = writer;
+        while let Some(message) = output_rx.recv().await {
+            write_message(&mut writer, &message).await?;
+        }
+        writer.flush().await
+    });
     let mut lines = reader.lines();
-    loop {
+    let shutdown = loop {
         tokio::select! {
             line = lines.next_line() => {
                 let Some(line) = line? else {
-                    break;
+                    break session.shutdown();
                 };
                 for message in session.process_line(&line) {
-                    write_message(&mut writer, &message).await?;
+                    output_tx.send(message).await.map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "stdout writer closed")
+                    })?;
                 }
             }
             event = events.recv() => {
                 let Some(event) = event else {
-                    break;
+                    break session.shutdown();
                 };
-                let message = map_core_event(event)
+                let messages = session.process_core_event(event)
                     .map_err(|_| io::Error::other("core event mapping failed"))?;
-                write_message(&mut writer, &message).await?;
+                for message in messages {
+                    output_tx.send(message).await.map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "stdout writer closed")
+                    })?;
+                }
+            }
+        }
+    };
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            result = &mut shutdown => {
+                result.map_err(io::Error::other)?;
+                while let Ok(event) = events.try_recv() {
+                    for message in session
+                        .process_core_event(event)
+                        .map_err(|_| io::Error::other("core event mapping failed"))?
+                    {
+                        output_tx.send(message).await.map_err(|_| {
+                            io::Error::new(io::ErrorKind::BrokenPipe, "stdout writer closed")
+                        })?;
+                    }
+                }
+                break;
+            }
+            event = events.recv() => {
+                let Some(event) = event else {
+                    continue;
+                };
+                for message in session
+                    .process_core_event(event)
+                    .map_err(|_| io::Error::other("core event mapping failed"))?
+                {
+                    output_tx.send(message).await.map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "stdout writer closed")
+                    })?;
+                }
             }
         }
     }
-    writer.flush().await
+    drop(output_tx);
+    writer_task
+        .await
+        .map_err(|_| io::Error::other("stdout writer task failed"))?
 }
 
 pub async fn serve_with_session<R, W, C>(

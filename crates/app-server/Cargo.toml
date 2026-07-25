@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+futures-util.workspace = true
 serde_json.workspace = true
 sugarcode-app-server-protocol = { path = "../app-server-protocol" }
 sugarcode-core = { path = "../core" }

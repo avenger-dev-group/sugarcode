@@ -4,7 +4,10 @@
   "type": "object",
   "properties": {
     "input": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "threadId": {
       "type": "string"
@@ -12,7 +15,6 @@
   },
   "additionalProperties": false,
   "required": [
-    "threadId",
-    "input"
+    "threadId"
   ]
 }

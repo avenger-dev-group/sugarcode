@@ -13,10 +13,12 @@ use super::RolloutThreadState;
 use super::format::DecodedRecord;
 use super::format::decode_record;
 use super::format::empty_thread;
+use super::format::encode_turn_completed;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::Path;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
@@ -205,6 +207,9 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     if thread.lifecycle != DurableThreadLifecycle::Active {
                         return Err(corrupt(&path, offset as u64, "turnStartedWhileInactive"));
                     }
+                    if !valid_started_items(&turn.items) {
+                        return Err(corrupt(&path, offset as u64, "invalidStartedTurnItems"));
+                    }
                     validate_new_turn(
                         &turn,
                         &path,
@@ -242,12 +247,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                             .turns
                             .last_mut()
                             .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))?;
-                        if pending
-                            .items
-                            .iter()
-                            .map(|item| item.id())
-                            .ne(turn.items.iter().map(|item| item.id()))
-                        {
+                        if !terminal_items_match(&pending.items, &turn.items) {
                             return Err(corrupt(&path, offset as u64, "turnItemMismatch"));
                         }
                         *pending = turn;
@@ -358,12 +358,73 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                 kind: "truncatedTailRecovered",
             });
         }
+        let recovery_bytes = if pending_turn_id.is_some() {
+            let interrupted = snapshot
+                .turns
+                .last()
+                .ok_or_else(|| corrupt(&path, 0, "missingStartedTurn"))?;
+            let encoded = encode_turn_completed(expected_sequence, &snapshot.id, interrupted)?;
+            if encoded.len() > MAX_ROLLOUT_RECORD_BYTES {
+                return Err(RolloutError::LimitExceeded {
+                    path,
+                    kind: "rolloutRecordBytes",
+                });
+            }
+            let added_bytes =
+                u64::try_from(encoded.len() + 1).map_err(|_| RolloutError::LimitExceeded {
+                    path: path.clone(),
+                    kind: "rolloutFileBytes",
+                })?;
+            let retained_file_bytes = u64::try_from(bytes.len())
+                .ok()
+                .and_then(|length| length.checked_add(added_bytes));
+            if retained_file_bytes.is_none_or(|length| length > MAX_ROLLOUT_FILE_BYTES)
+                || record_count >= MAX_ROLLOUT_RECORDS_PER_FILE
+                || total_records >= MAX_TOTAL_REPLAY_RECORDS
+            {
+                return Err(RolloutError::LimitExceeded {
+                    path: path.clone(),
+                    kind: "recoveredTerminalRecord",
+                });
+            }
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .map_err(|error| unavailable(&path, error))?;
+            file.write_all(&encoded)
+                .and_then(|()| file.write_all(b"\n"))
+                .and_then(|()| file.flush())
+                .and_then(|()| file.sync_all())
+                .map_err(|error| unavailable(&path, error))?;
+            *turn_record_sequences
+                .last_mut()
+                .ok_or_else(|| corrupt(&path, 0, "missingStartedTurn"))? = expected_sequence;
+            expected_sequence = expected_sequence
+                .checked_add(1)
+                .ok_or_else(|| corrupt(&path, 0, "invalidSequence"))?;
+            total_records += 1;
+            diagnostics.push(RolloutDiagnostic {
+                path: path.clone(),
+                offset: bytes.len() as u64,
+                kind: "danglingTurnRecovered",
+            });
+            added_bytes
+        } else {
+            0
+        };
         retained_bytes = retained_bytes
             .checked_add(bytes.len() as u64)
+            .and_then(|bytes| bytes.checked_add(recovery_bytes))
             .ok_or_else(|| RolloutError::LimitExceeded {
                 path: root.to_path_buf(),
                 kind: "totalReplayBytes",
             })?;
+        if retained_bytes > MAX_TOTAL_REPLAY_BYTES {
+            return Err(RolloutError::LimitExceeded {
+                path: root.to_path_buf(),
+                kind: "totalReplayBytes",
+            });
+        }
         let thread_id = snapshot.id.clone();
         let state = RolloutThreadState {
             snapshot,
@@ -382,6 +443,46 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
         retained_bytes,
         record_count: total_records,
     })
+}
+
+fn terminal_items_match(
+    started: &[super::DurableItemSnapshot],
+    terminal: &[super::DurableItemSnapshot],
+) -> bool {
+    started.len() == terminal.len()
+        && started
+            .iter()
+            .zip(terminal)
+            .all(|(started, terminal)| match (started, terminal) {
+                (
+                    super::DurableItemSnapshot::UserMessage {
+                        id: started_id,
+                        text: started_text,
+                    },
+                    super::DurableItemSnapshot::UserMessage {
+                        id: terminal_id,
+                        text: terminal_text,
+                    },
+                ) => started_id == terminal_id && started_text == terminal_text,
+                (
+                    super::DurableItemSnapshot::AgentMessage { id: started_id, .. },
+                    super::DurableItemSnapshot::AgentMessage {
+                        id: terminal_id, ..
+                    },
+                ) => started_id == terminal_id,
+                _ => false,
+            })
+}
+
+fn valid_started_items(items: &[super::DurableItemSnapshot]) -> bool {
+    match items {
+        [super::DurableItemSnapshot::AgentMessage { text, .. }] => text.is_empty(),
+        [
+            super::DurableItemSnapshot::UserMessage { .. },
+            super::DurableItemSnapshot::AgentMessage { text, .. },
+        ] => text.is_empty(),
+        _ => false,
+    }
 }
 
 fn validate_new_turn(

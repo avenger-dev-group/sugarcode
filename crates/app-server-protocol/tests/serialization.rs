@@ -468,7 +468,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
 }
 
 #[test]
-fn turn_start_params_require_thread_id_and_text_input() {
+fn turn_start_params_require_thread_id_and_accept_optional_text_input() {
     assert_eq!(
         serde_json::from_value::<TurnStartParams>(json!({
             "threadId": "thr_0000000000000001",
@@ -477,7 +477,17 @@ fn turn_start_params_require_thread_id_and_text_input() {
         .expect("valid params"),
         TurnStartParams {
             thread_id: "thr_0000000000000001".to_string(),
-            input: "Hello".to_string(),
+            input: Some("Hello".to_string()),
+        }
+    );
+    assert_eq!(
+        serde_json::from_value::<TurnStartParams>(json!({
+            "threadId": "thr_0000000000000001"
+        }))
+        .expect("optional input"),
+        TurnStartParams {
+            thread_id: "thr_0000000000000001".to_string(),
+            input: None,
         }
     );
 

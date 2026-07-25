@@ -122,6 +122,35 @@ fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
         );
     }
 
+    let replacement_token = "replacement-secret-token";
+    let mut replacement = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home.path())
+        .args(["config", "model", "set", "--stdin"])
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run replacement model config set");
+    write!(
+        replacement.stdin.take().expect("replacement stdin"),
+        "{}",
+        serde_json::json!({
+            "apiFormat": "openai-chat-completions",
+            "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
+            "model": "replacement-model",
+            "token": replacement_token
+        })
+    )
+    .expect("write replacement model config");
+    let replacement = replacement
+        .wait_with_output()
+        .expect("wait for replacement config");
+    assert!(replacement.status.success(), "{replacement:?}");
+    assert!(!String::from_utf8_lossy(&replacement.stdout).contains(replacement_token));
+    assert!(!String::from_utf8_lossy(&replacement.stderr).contains(replacement_token));
+
     let show = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home.path())
@@ -132,12 +161,13 @@ fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
     assert!(show.status.success(), "{show:?}");
     let stdout = String::from_utf8(show.stdout).expect("UTF-8 stdout");
     assert!(!stdout.contains(token));
+    assert!(!stdout.contains(replacement_token));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&stdout).expect("show JSON"),
         serde_json::json!({
             "apiFormat": "openai-chat-completions",
-            "endpoint": "http://127.0.0.1:18080/custom/v1/chat/completions",
-            "model": "custom-model",
+            "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
+            "model": "replacement-model",
             "hasToken": true
         })
     );

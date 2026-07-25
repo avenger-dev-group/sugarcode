@@ -109,6 +109,31 @@ fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
     assert_eq!(snapshot.turns[0].status, DurableTurnStatus::Interrupted);
     assert_eq!(snapshot.turns[0].items.len(), 2);
     assert!(snapshot.turns[0].error.is_none());
+    assert!(
+        repository
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "danglingTurnRecovered")
+    );
+    drop(repository);
+
+    let rollout = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    assert_eq!(
+        fs::read_to_string(&rollout)
+            .expect("read recovered rollout")
+            .lines()
+            .count(),
+        3
+    );
+    let reopened = RolloutRepository::open(&home).expect("reopen recovered repository");
+    assert!(
+        !reopened
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "danglingTurnRecovered")
+    );
 }
 
 #[test]

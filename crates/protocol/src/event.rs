@@ -60,6 +60,7 @@ pub enum CoreEventKind {
         thread_id: ThreadId,
         turn_id: TurnId,
     },
+    RuntimeFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +76,7 @@ pub enum CoreTurnErrorKind {
     RateLimited,
     Timeout,
     Transport,
+    Disconnected,
     Server,
     Protocol,
     Incomplete,
