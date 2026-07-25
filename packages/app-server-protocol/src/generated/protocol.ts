@@ -52,6 +52,10 @@ export type ThreadArchiveParams = { threadId: string, };
 
 export type ThreadArchiveResponse = Record<string, never>;
 
+export type ThreadUnarchiveParams = { threadId: string, };
+
+export type ThreadUnarchiveResponse = Record<string, never>;
+
 export type ThreadListParams = { cursor?: string | null, limit?: number | null, };
 
 export type ThreadListResponse = { data: Array<Thread>, nextCursor: string | null, };

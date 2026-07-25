@@ -34,6 +34,13 @@ pub struct DurableThreadSnapshot {
     pub lifecycle: DurableThreadLifecycle,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RolloutThreadState {
+    pub snapshot: DurableThreadSnapshot,
+    pub last_record_sequence: u64,
+    pub turn_record_sequences: Vec<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurableThreadLifecycle {
     Active,
@@ -79,6 +86,7 @@ pub trait ThreadRepository: fmt::Debug + Send {
         turn: &DurableTurnSnapshot,
     ) -> Result<(), RolloutError>;
     fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
+    fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
     fn load_thread(
         &self,
         thread_id: &ThreadId,

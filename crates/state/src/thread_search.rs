@@ -1,13 +1,13 @@
 use crate::DurableItemSnapshot;
 use crate::DurableThreadLifecycle;
 use crate::DurableThreadPage;
-use crate::DurableThreadSnapshot;
 use crate::DurableThreadSummary;
 use crate::ProjectionDiagnostic;
 use crate::RolloutError;
 use crate::SugarCodeHome;
 use crate::rollout::CURRENT_ROLLOUT_SCHEMA_VERSION;
 use crate::rollout::MAX_ROLLOUT_FILES;
+use crate::rollout::RolloutThreadState;
 use crate::rollout::parse_canonical_id;
 use rusqlite::Connection;
 use rusqlite::ErrorCode;
@@ -103,7 +103,7 @@ pub(crate) struct ThreadSearchProjection {
 impl ThreadSearchProjection {
     pub(crate) fn open(
         home: &SugarCodeHome,
-        threads: &BTreeMap<ThreadId, DurableThreadSnapshot>,
+        threads: &BTreeMap<ThreadId, RolloutThreadState>,
         total_records: usize,
     ) -> Self {
         let root = home
@@ -131,7 +131,7 @@ impl ThreadSearchProjection {
     fn try_open(
         root: PathBuf,
         database_path: PathBuf,
-        threads: &BTreeMap<ThreadId, DurableThreadSnapshot>,
+        threads: &BTreeMap<ThreadId, RolloutThreadState>,
         total_records: usize,
     ) -> Result<Self, RolloutError> {
         checked_directory(
@@ -296,6 +296,68 @@ impl ThreadSearchProjection {
         result
     }
 
+    pub(crate) fn record_thread_unarchived(
+        &mut self,
+        thread_id: &ThreadId,
+        record_sequence: u64,
+    ) -> Result<(), RolloutError> {
+        if self.dirty {
+            return Ok(());
+        }
+        let current_sequence =
+            i64::try_from(record_sequence).map_err(|_| RolloutError::InvalidRecord {
+                kind: "projectionSequence",
+            })?;
+        let previous_sequence = current_sequence - 1;
+        let database_path = self.database_path.clone();
+        let result = (|| {
+            let connection = self
+                .connection
+                .as_mut()
+                .ok_or_else(|| projection_error(&database_path, "update", "unavailable"))?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            require_one(
+                transaction
+                    .execute(
+                        "UPDATE thread_watermarks
+                         SET last_rollout_sequence = ?2, archived = 0
+                         WHERE thread_id = ?1
+                           AND last_rollout_sequence = ?3
+                           AND archived = 1",
+                        params![thread_id.as_str(), current_sequence, previous_sequence],
+                    )
+                    .map_err(|error| sqlite_error(&database_path, "update", error))?,
+                &database_path,
+                "update",
+            )?;
+            require_one(
+                transaction
+                    .execute(
+                        "UPDATE projection_metadata
+                         SET rollout_record_count = rollout_record_count + 1
+                         WHERE singleton = 1",
+                        [],
+                    )
+                    .map_err(|error| sqlite_error(&database_path, "update", error))?,
+                &database_path,
+                "update",
+            )?;
+            transaction
+                .commit()
+                .map_err(|error| sqlite_error(&database_path, "update", error))
+        })();
+        if let Err(error) = &result {
+            self.mark_dirty(
+                "update",
+                projection_error_kind(error),
+                is_rebuildable_projection_error(error),
+            );
+        }
+        result
+    }
+
     pub(crate) fn record_turn_completed(
         &mut self,
         thread_id: &ThreadId,
@@ -393,7 +455,7 @@ impl ThreadSearchProjection {
 
     pub(crate) fn search_threads(
         &mut self,
-        source_threads: &BTreeMap<ThreadId, DurableThreadSnapshot>,
+        source_threads: &BTreeMap<ThreadId, RolloutThreadState>,
         total_records: usize,
         query: &str,
         cursor: Option<&ThreadId>,
@@ -501,7 +563,7 @@ impl ThreadSearchProjection {
 
     fn open_and_validate(
         &self,
-        threads: &BTreeMap<ThreadId, DurableThreadSnapshot>,
+        threads: &BTreeMap<ThreadId, RolloutThreadState>,
         total_records: usize,
     ) -> Result<Connection, DatabaseValidationError> {
         let connection = open_existing_database(&self.database_path)
@@ -515,7 +577,7 @@ impl ThreadSearchProjection {
 
     fn rebuild(
         &mut self,
-        threads: &BTreeMap<ThreadId, DurableThreadSnapshot>,
+        threads: &BTreeMap<ThreadId, RolloutThreadState>,
         total_records: usize,
     ) -> Result<(), RolloutError> {
         self.connection = None;
@@ -630,7 +692,7 @@ impl DatabaseValidationError {
 
 fn build_database(
     path: &Path,
-    threads: &BTreeMap<ThreadId, DurableThreadSnapshot>,
+    threads: &BTreeMap<ThreadId, RolloutThreadState>,
     total_records: usize,
 ) -> Result<(), RolloutError> {
     let searchable_items = searchable_item_count(threads)?;
@@ -665,7 +727,8 @@ fn build_database(
             ],
         )
         .map_err(|error| sqlite_error(path, "rebuild", error))?;
-    for snapshot in threads.values() {
+    for state in threads.values() {
+        let snapshot = &state.snapshot;
         transaction
             .execute(
                 "INSERT INTO thread_watermarks (
@@ -674,19 +737,15 @@ fn build_database(
                 params![
                     snapshot.id.as_str(),
                     thread_order_key(&snapshot.id)?,
-                    bounded_i64(
-                        snapshot.turns.len()
-                            + 1
-                            + usize::from(snapshot.lifecycle == DurableThreadLifecycle::Archived),
-                        path,
-                        "rolloutRecords",
-                    )?,
+                    i64::try_from(state.last_record_sequence)
+                        .map_err(|_| { projection_error(path, "rebuild", "rolloutRecordLimit") })?,
                     i64::from(snapshot.lifecycle == DurableThreadLifecycle::Archived),
                 ],
             )
             .map_err(|error| sqlite_error(path, "rebuild", error))?;
-        for (turn_index, turn) in snapshot.turns.iter().enumerate() {
-            let rollout_sequence = bounded_i64(turn_index + 2, path, "rolloutRecords")?;
+        for (turn, record_sequence) in snapshot.turns.iter().zip(&state.turn_record_sequences) {
+            let rollout_sequence = i64::try_from(*record_sequence)
+                .map_err(|_| projection_error(path, "rebuild", "rolloutRecordLimit"))?;
             for (item_index, item) in turn.items.iter().enumerate() {
                 let DurableItemSnapshot::AgentMessage { id, text } = item;
                 let document_id = item_document_id(id.as_str())?;
@@ -731,7 +790,7 @@ fn build_database(
 
 fn validate_projection(
     connection: &Connection,
-    threads: &BTreeMap<ThreadId, DurableThreadSnapshot>,
+    threads: &BTreeMap<ThreadId, RolloutThreadState>,
     total_records: usize,
 ) -> rusqlite::Result<()> {
     require_fts5(connection)?;
@@ -800,14 +859,14 @@ fn validate_projection(
         let order_key: String = row.get(1)?;
         let sequence: i64 = row.get(2)?;
         let archived: i64 = row.get(3)?;
-        let Some(snapshot) = threads.get(&ThreadId::new(thread_id)) else {
+        let Some(state) = threads.get(&ThreadId::new(thread_id)) else {
             return Err(rusqlite::Error::InvalidQuery);
         };
+        let snapshot = &state.snapshot;
         if order_key != thread_order_key(&snapshot.id).map_err(|_| rusqlite::Error::InvalidQuery)?
             || sequence
-                != snapshot.turns.len() as i64
-                    + 1
-                    + i64::from(snapshot.lifecycle == DurableThreadLifecycle::Archived)
+                != i64::try_from(state.last_record_sequence)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?
             || archived != i64::from(snapshot.lifecycle == DurableThreadLifecycle::Archived)
         {
             return Err(rusqlite::Error::InvalidQuery);
@@ -865,18 +924,19 @@ struct ExpectedDocument {
 }
 
 fn expected_documents(
-    threads: &BTreeMap<ThreadId, DurableThreadSnapshot>,
+    threads: &BTreeMap<ThreadId, RolloutThreadState>,
 ) -> rusqlite::Result<Vec<ExpectedDocument>> {
     let mut documents = Vec::new();
-    for snapshot in threads.values() {
-        for (turn_index, turn) in snapshot.turns.iter().enumerate() {
+    for state in threads.values() {
+        let snapshot = &state.snapshot;
+        for (turn, record_sequence) in snapshot.turns.iter().zip(&state.turn_record_sequences) {
             for (item_index, item) in turn.items.iter().enumerate() {
                 let DurableItemSnapshot::AgentMessage { id, text } = item;
                 documents.push(ExpectedDocument {
                     document_id: item_document_id(id.as_str())
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
                     thread_id: snapshot.id.as_str().to_string(),
-                    rollout_sequence: i64::try_from(turn_index + 2)
+                    rollout_sequence: i64::try_from(*record_sequence)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
                     item_index: i64::try_from(item_index)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -891,11 +951,11 @@ fn expected_documents(
 }
 
 fn searchable_item_count(
-    threads: &BTreeMap<ThreadId, DurableThreadSnapshot>,
+    threads: &BTreeMap<ThreadId, RolloutThreadState>,
 ) -> Result<usize, RolloutError> {
     let count = threads
         .values()
-        .flat_map(|thread| &thread.turns)
+        .flat_map(|thread| &thread.snapshot.turns)
         .try_fold(0usize, |count, turn| count.checked_add(turn.items.len()))
         .ok_or_else(|| {
             projection_error(Path::new(DATABASE_FILE), "rebuild", "searchableItemLimit")
@@ -1019,12 +1079,16 @@ fn remove_regular_file_if_present(path: &Path) -> Result<(), RolloutError> {
 }
 
 fn sync_parent(path: &Path) -> Result<(), RolloutError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| projection_error(path, "sync", "invalidPath"))?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| projection_error(parent, "sync", io_error_kind(&error)))
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| projection_error(path, "sync", "invalidPath"))?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| projection_error(parent, "sync", io_error_kind(&error)))?;
+    }
+    Ok(())
 }
 
 fn sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {

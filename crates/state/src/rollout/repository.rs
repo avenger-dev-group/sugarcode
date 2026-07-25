@@ -11,9 +11,11 @@ use super::MAX_TOTAL_REPLAY_BYTES;
 use super::MAX_TOTAL_REPLAY_RECORDS;
 use super::RolloutDiagnostic;
 use super::RolloutError;
+use super::RolloutThreadState;
 use super::ThreadRepository;
 use super::format::encode_thread_archived;
 use super::format::encode_thread_created;
+use super::format::encode_thread_unarchived;
 use super::format::encode_turn_completed;
 use super::replay::parse_canonical_id;
 use super::replay::replay_all;
@@ -41,7 +43,7 @@ const WRITER_LOCK_FILE: &str = ".writer.lock";
 pub struct RolloutRepository {
     root: PathBuf,
     _writer_lock: File,
-    threads: BTreeMap<ThreadId, DurableThreadSnapshot>,
+    threads: BTreeMap<ThreadId, RolloutThreadState>,
     sequences: IdSequences,
     diagnostics: Vec<RolloutDiagnostic>,
     total_bytes: u64,
@@ -235,10 +237,14 @@ impl ThreadRepository for RolloutRepository {
         self.append_record(&path, &bytes, true, 1)?;
         self.threads.insert(
             thread_id.clone(),
-            DurableThreadSnapshot {
-                id: thread_id.clone(),
-                turns: Vec::new(),
-                lifecycle: DurableThreadLifecycle::Active,
+            RolloutThreadState {
+                snapshot: DurableThreadSnapshot {
+                    id: thread_id.clone(),
+                    turns: Vec::new(),
+                    lifecycle: DurableThreadLifecycle::Active,
+                },
+                last_record_sequence: 1,
+                turn_record_sequences: Vec::new(),
             },
         );
         self.sequences.thread = thread_sequence;
@@ -261,7 +267,7 @@ impl ThreadRepository for RolloutRepository {
         if self
             .threads
             .get(thread_id)
-            .is_some_and(|thread| thread.lifecycle == DurableThreadLifecycle::Archived)
+            .is_some_and(|thread| thread.snapshot.lifecycle == DurableThreadLifecycle::Archived)
         {
             return Err(RolloutError::InvalidRecord {
                 kind: "recordAfterThreadArchive",
@@ -283,9 +289,11 @@ impl ThreadRepository for RolloutRepository {
             .threads
             .get(thread_id)
             .ok_or(RolloutError::InvalidId { kind: "thread" })?
-            .turns
-            .len() as u64
-            + 2;
+            .last_record_sequence
+            .checked_add(1)
+            .ok_or(RolloutError::InvalidRecord {
+                kind: "recordSequenceOverflow",
+            })?;
         let next_file_record_count =
             usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
                 path: self.root.clone(),
@@ -294,11 +302,13 @@ impl ThreadRepository for RolloutRepository {
         let path = self.thread_path(thread_id)?;
         let bytes = encode_turn_completed(record_sequence, thread_id, turn)?;
         self.append_record(&path, &bytes, false, next_file_record_count)?;
-        self.threads
+        let thread = self
+            .threads
             .get_mut(thread_id)
-            .expect("validated thread exists")
-            .turns
-            .push(turn.clone());
+            .expect("validated thread exists");
+        thread.snapshot.turns.push(turn.clone());
+        thread.turn_record_sequences.push(record_sequence);
+        thread.last_record_sequence = record_sequence;
         self.sequences.turn = turn_sequence;
         self.sequences.item = item_sequence;
         let _ = self
@@ -316,10 +326,16 @@ impl ThreadRepository for RolloutRepository {
             .threads
             .get(thread_id)
             .ok_or(RolloutError::InvalidId { kind: "thread" })?;
-        if thread.lifecycle == DurableThreadLifecycle::Archived {
+        if thread.snapshot.lifecycle == DurableThreadLifecycle::Archived {
             return Ok(());
         }
-        let record_sequence = thread.turns.len() as u64 + 2;
+        let record_sequence =
+            thread
+                .last_record_sequence
+                .checked_add(1)
+                .ok_or(RolloutError::InvalidRecord {
+                    kind: "recordSequenceOverflow",
+                })?;
         let next_file_record_count =
             usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
                 path: self.root.clone(),
@@ -328,10 +344,12 @@ impl ThreadRepository for RolloutRepository {
         let path = self.thread_path(thread_id)?;
         let bytes = encode_thread_archived(record_sequence, thread_id)?;
         self.append_record(&path, &bytes, false, next_file_record_count)?;
-        self.threads
+        let thread = self
+            .threads
             .get_mut(thread_id)
-            .expect("validated thread exists")
-            .lifecycle = DurableThreadLifecycle::Archived;
+            .expect("validated thread exists");
+        thread.snapshot.lifecycle = DurableThreadLifecycle::Archived;
+        thread.last_record_sequence = record_sequence;
         let _ = self
             .projection
             .record_thread_archived(thread_id, record_sequence);
@@ -341,13 +359,55 @@ impl ThreadRepository for RolloutRepository {
         Ok(())
     }
 
+    fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+        self.ensure_available()?;
+        let thread = self
+            .threads
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread.snapshot.lifecycle == DurableThreadLifecycle::Active {
+            return Ok(());
+        }
+        let record_sequence =
+            thread
+                .last_record_sequence
+                .checked_add(1)
+                .ok_or(RolloutError::InvalidRecord {
+                    kind: "recordSequenceOverflow",
+                })?;
+        let next_file_record_count =
+            usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutRecords",
+            })?;
+        let path = self.thread_path(thread_id)?;
+        let bytes = encode_thread_unarchived(record_sequence, thread_id)?;
+        self.append_record(&path, &bytes, false, next_file_record_count)?;
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .expect("validated thread exists");
+        thread.snapshot.lifecycle = DurableThreadLifecycle::Active;
+        thread.last_record_sequence = record_sequence;
+        let _ = self
+            .projection
+            .record_thread_unarchived(thread_id, record_sequence);
+        let _ = self
+            .search_projection
+            .record_thread_unarchived(thread_id, record_sequence);
+        Ok(())
+    }
+
     fn load_thread(
         &self,
         thread_id: &ThreadId,
     ) -> Result<Option<DurableThreadSnapshot>, RolloutError> {
         self.ensure_available()?;
         parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
-        Ok(self.threads.get(thread_id).cloned())
+        Ok(self
+            .threads
+            .get(thread_id)
+            .map(|thread| thread.snapshot.clone()))
     }
 
     fn list_threads(

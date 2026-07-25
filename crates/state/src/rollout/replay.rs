@@ -9,6 +9,7 @@ use super::MAX_TOTAL_REPLAY_BYTES;
 use super::MAX_TOTAL_REPLAY_RECORDS;
 use super::RolloutDiagnostic;
 use super::RolloutError;
+use super::RolloutThreadState;
 use super::format::DecodedRecord;
 use super::format::decode_record;
 use super::format::empty_thread;
@@ -21,7 +22,7 @@ use sugarcode_protocol::ThreadId;
 
 #[derive(Debug)]
 pub(super) struct ReplayResult {
-    pub threads: BTreeMap<ThreadId, DurableThreadSnapshot>,
+    pub threads: BTreeMap<ThreadId, RolloutThreadState>,
     pub sequences: IdSequences,
     pub diagnostics: Vec<RolloutDiagnostic>,
     pub retained_bytes: u64,
@@ -125,6 +126,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                 .map_err(|_| corrupt(&path, 0, "invalidThreadId"))?,
         );
         let mut snapshot: Option<DurableThreadSnapshot> = None;
+        let mut turn_record_sequences = Vec::new();
         let mut expected_sequence = 1u64;
         let mut offset = 0usize;
         let mut record_count = 0usize;
@@ -177,7 +179,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                 DecodedRecord::TurnCompleted {
                     thread_id,
                     turn,
-                    sequence: _,
+                    sequence,
                 } => {
                     let thread = snapshot
                         .as_mut()
@@ -206,6 +208,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                         sequences.item = sequences.item.max(item_sequence);
                     }
                     thread.turns.push(turn);
+                    turn_record_sequences.push(sequence);
                 }
                 DecodedRecord::ThreadArchived {
                     thread_id,
@@ -221,6 +224,21 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                         return Err(corrupt(&path, offset as u64, "duplicateThreadArchive"));
                     }
                     thread.lifecycle = DurableThreadLifecycle::Archived;
+                }
+                DecodedRecord::ThreadUnarchived {
+                    thread_id,
+                    sequence: _,
+                } => {
+                    let thread = snapshot
+                        .as_mut()
+                        .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
+                    if thread_id != expected_thread_id {
+                        return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
+                    }
+                    if thread.lifecycle == DurableThreadLifecycle::Active {
+                        return Err(corrupt(&path, offset as u64, "threadUnarchiveWhileActive"));
+                    }
+                    thread.lifecycle = DurableThreadLifecycle::Active;
                 }
             }
             expected_sequence = expected_sequence
@@ -250,7 +268,13 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                 path: root.to_path_buf(),
                 kind: "totalReplayBytes",
             })?;
-        if threads.insert(snapshot.id.clone(), snapshot).is_some() {
+        let thread_id = snapshot.id.clone();
+        let state = RolloutThreadState {
+            snapshot,
+            last_record_sequence: expected_sequence - 1,
+            turn_record_sequences,
+        };
+        if threads.insert(thread_id, state).is_some() {
             return Err(corrupt(&path, 0, "duplicateThreadId"));
         }
     }

@@ -153,6 +153,64 @@ fn archived_threads_are_excluded_before_and_after_search_rebuild() {
 }
 
 #[test]
+fn unarchived_threads_restore_search_with_exact_turn_record_sequences() {
+    let directory = tempdir().expect("home");
+    let resolved_home = home(&directory);
+    let database = directory
+        .path()
+        .join("projections/v1/thread-search.sqlite3");
+    {
+        let mut repository = RolloutRepository::open(&resolved_home).expect("repository");
+        repository.create_thread(&thread(1)).expect("thread");
+        repository
+            .append_completed_turn(&thread(1), &turn(1, "before archive"))
+            .expect("first turn");
+        repository.archive_thread(&thread(1)).expect("archive");
+        repository.unarchive_thread(&thread(1)).expect("unarchive");
+        repository
+            .append_completed_turn(&thread(1), &turn(2, "after restore"))
+            .expect("second turn");
+        assert_eq!(
+            repository
+                .search_threads("restore", None, 50)
+                .expect("restored search")
+                .data[0]
+                .id,
+            thread(1)
+        );
+        let connection = rusqlite::Connection::open(&database).expect("open projection");
+        let sequence: i64 = connection
+            .query_row(
+                "SELECT rollout_sequence FROM search_documents WHERE item_id = ?1",
+                ["item_0000000000000002"],
+                |row| row.get(0),
+            )
+            .expect("second turn sequence");
+        assert_eq!(sequence, 5);
+    }
+
+    fs::remove_file(&database).expect("remove projection");
+    let mut repository = RolloutRepository::open(&resolved_home).expect("rebuild");
+    assert_eq!(
+        repository
+            .search_threads("restore", None, 50)
+            .expect("rebuilt restored search")
+            .data[0]
+            .id,
+        thread(1)
+    );
+    let connection = rusqlite::Connection::open(database).expect("open rebuilt projection");
+    let sequence: i64 = connection
+        .query_row(
+            "SELECT rollout_sequence FROM search_documents WHERE item_id = ?1",
+            ["item_0000000000000002"],
+            |row| row.get(0),
+        )
+        .expect("rebuilt second turn sequence");
+    assert_eq!(sequence, 5);
+}
+
+#[test]
 fn rejects_unbounded_or_control_character_queries_without_writing_them() {
     let directory = tempdir().expect("home");
     let mut repository = RolloutRepository::open(&home(&directory)).expect("repository");
@@ -382,6 +440,62 @@ fn an_archive_search_update_failure_never_rolls_back_the_durable_commit() {
             .expect("rebuilt search")
             .data
             .is_empty()
+    );
+}
+
+#[test]
+fn an_unarchive_search_update_failure_never_rolls_back_the_durable_commit() {
+    let directory = tempdir().expect("home");
+    let resolved_home = home(&directory);
+    let mut repository = RolloutRepository::open(&resolved_home).expect("repository");
+    repository.create_thread(&thread(1)).expect("thread");
+    repository
+        .append_completed_turn(&thread(1), &turn(1, "SugarCode restore proof"))
+        .expect("turn");
+    repository.archive_thread(&thread(1)).expect("archive");
+    let database = directory
+        .path()
+        .join("projections/v1/thread-search.sqlite3");
+    let blocker = rusqlite::Connection::open(&database).expect("projection");
+    blocker
+        .execute_batch("BEGIN EXCLUSIVE")
+        .expect("hold search lock");
+
+    repository
+        .unarchive_thread(&thread(1))
+        .expect("durable unarchive remains successful");
+    assert_eq!(
+        repository
+            .load_thread(&thread(1))
+            .expect("load")
+            .expect("thread")
+            .lifecycle,
+        DurableThreadLifecycle::Active
+    );
+    assert_eq!(
+        repository
+            .list_threads(None, 50)
+            .expect("discovery remains available")
+            .data[0]
+            .id,
+        thread(1)
+    );
+    assert!(matches!(
+        repository.search_threads("restore", None, 50),
+        Err(RolloutError::Projection(_))
+    ));
+
+    blocker.execute_batch("ROLLBACK").expect("release lock");
+    drop(blocker);
+    drop(repository);
+    let mut repository = RolloutRepository::open(&resolved_home).expect("stale search rebuilds");
+    assert_eq!(
+        repository
+            .search_threads("restore", None, 50)
+            .expect("rebuilt search")
+            .data[0]
+            .id,
+        thread(1)
     );
 }
 

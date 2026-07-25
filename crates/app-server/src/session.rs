@@ -41,6 +41,8 @@ use sugarcode_app_server_protocol::ThreadSearchResponse;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
+use sugarcode_app_server_protocol::ThreadUnarchiveParams;
+use sugarcode_app_server_protocol::ThreadUnarchiveResponse;
 use sugarcode_app_server_protocol::TurnStartParams;
 use sugarcode_app_server_protocol::TurnStartResponse;
 use sugarcode_core::Core;
@@ -191,6 +193,20 @@ where
                     )];
                 }
                 self.archive_thread(id, object.get("params").cloned())
+            }
+            "thread/unarchive" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.unarchive_thread(id, object.get("params").cloned())
             }
             "thread/search" => {
                 let Some(id) = request_id else {
@@ -474,6 +490,63 @@ where
                     id,
                     result: serde_json::to_value(response)
                         .expect("thread/archive response must serialize"),
+                })]
+            }
+            Err(CoreError::ThreadNotFound(_)) => vec![error(
+                Some(id),
+                ERROR_THREAD_NOT_FOUND,
+                "Thread not found",
+                Some(json!({ "threadId": params.thread_id })),
+            )],
+            Err(CoreError::StateUnavailable) => {
+                self.accepted_request_ids.insert(id.clone());
+                vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )]
+            }
+            Err(_) => {
+                self.accepted_request_ids.insert(id.clone());
+                vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)]
+            }
+        }
+    }
+
+    fn unarchive_thread(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
+        let params = match params.ok_or(()).and_then(|value| {
+            serde_json::from_value::<ThreadUnarchiveParams>(value).map_err(|_| ())
+        }) {
+            Ok(params) => params,
+            Err(()) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+
+        let thread_id = ThreadId::new(params.thread_id.clone());
+        match self.core.unarchive_thread(&thread_id) {
+            Ok(()) => {
+                self.accepted_request_ids.insert(id.clone());
+                let response = ThreadUnarchiveResponse {};
+                vec![JsonRpcMessage::Response(JsonRpcResponse {
+                    jsonrpc: JsonRpcVersion::V2,
+                    id,
+                    result: serde_json::to_value(response)
+                        .expect("thread/unarchive response must serialize"),
                 })]
             }
             Err(CoreError::ThreadNotFound(_)) => vec![error(
@@ -964,6 +1037,97 @@ mod tests {
     }
 
     #[test]
+    fn thread_unarchive_restores_list_search_resume_and_turn_start() {
+        let mut session = ready_session(Core::new());
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
+        );
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+
+        let restored = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        assert_eq!(
+            serde_json::to_value(&restored[0]).expect("message serializes"),
+            json!({"jsonrpc": "2.0", "id": "unarchive", "result": {}})
+        );
+
+        for (id, method, params) in [
+            ("list", "thread/list", json!({})),
+            ("search", "thread/search", json!({"query": "SugarCode"})),
+            (
+                "resume",
+                "thread/resume",
+                json!({"threadId": "thr_0000000000000001"}),
+            ),
+            (
+                "turn-2",
+                "turn/start",
+                json!({"threadId": "thr_0000000000000001"}),
+            ),
+        ] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": method,
+                    "params": params
+                })
+                .to_string(),
+            );
+            assert!(
+                matches!(messages[0], JsonRpcMessage::Response(_)),
+                "{method} must succeed after unarchive"
+            );
+        }
+    }
+
+    #[test]
+    fn thread_unarchive_validates_before_consuming_and_active_noop_consumes_request_id() {
+        let mut session = ready_session(Core::new());
+        for params in [
+            json!({"threadId": "thr_missing"}),
+            json!({"threadId": "thr_0000000000000001", "resume": true}),
+        ] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": "retry",
+                    "method": "thread/unarchive",
+                    "params": params
+                })
+                .to_string(),
+            );
+            let JsonRpcMessage::Error(error) = &messages[0] else {
+                panic!("expected unarchive error");
+            };
+            assert!(
+                error.error.code == ERROR_INVALID_PARAMS
+                    || error.error.code == ERROR_THREAD_NOT_FOUND
+            );
+        }
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
+        );
+        let success = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        assert!(matches!(success[0], JsonRpcMessage::Response(_)));
+        let duplicate = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        let JsonRpcMessage::Error(error) = &duplicate[0] else {
+            panic!("expected duplicate error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
+    }
+
+    #[test]
     fn invalid_params_do_not_reach_core() {
         let mut session = ready_session(Core::new());
 
@@ -1259,6 +1423,7 @@ mod tests {
         for request in [
             r#"{"jsonrpc":"2.0","id":"start","method":"thread/start","params":{}}"#,
             r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
         ] {
@@ -1278,6 +1443,24 @@ mod tests {
     fn an_uncertain_archive_attempt_consumes_its_request_id() {
         let mut session = ready_session(StateUnavailableCore);
         let request = r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#;
+
+        let first = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &first[0] else {
+            panic!("expected state error");
+        };
+        assert_eq!(error.error.code, ERROR_STATE_UNAVAILABLE);
+
+        let second = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &second[0] else {
+            panic!("expected duplicate error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
+    }
+
+    #[test]
+    fn an_uncertain_unarchive_attempt_consumes_its_request_id() {
+        let mut session = ready_session(StateUnavailableCore);
+        let request = r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#;
 
         let first = session.process_line(request);
         let JsonRpcMessage::Error(error) = &first[0] else {

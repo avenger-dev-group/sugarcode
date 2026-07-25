@@ -44,6 +44,8 @@ pub use thread::ThreadSearchResponse;
 pub use thread::ThreadStartParams;
 pub use thread::ThreadStartResponse;
 pub use thread::ThreadStartedNotification;
+pub use thread::ThreadUnarchiveParams;
+pub use thread::ThreadUnarchiveResponse;
 pub use thread::TurnSnapshot;
 pub use thread::TurnSnapshotStatus;
 pub use turn::Turn;

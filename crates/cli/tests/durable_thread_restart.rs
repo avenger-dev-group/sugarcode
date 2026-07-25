@@ -463,6 +463,189 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
     assert!(!stderr.contains("SugarCode deterministic response."));
 }
 
+#[test]
+fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let mut first = RunningServer::spawn(home.path());
+    first.initialize();
+    for sequence in 1..=2 {
+        first.send(
+            json!({
+                "jsonrpc": "2.0",
+                "id": format!("thread-{sequence}"),
+                "method": "thread/start",
+                "params": {}
+            }),
+            2,
+        );
+        first.send(
+            json!({
+                "jsonrpc": "2.0",
+                "id": format!("turn-{sequence}"),
+                "method": "turn/start",
+                "params": {"threadId": format!("thr_{sequence:016}")}
+            }),
+            6,
+        );
+    }
+
+    let restored = "thr_0000000000000002";
+    assert_eq!(
+        first.send(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "archive",
+                "method": "thread/archive",
+                "params": {"threadId": restored}
+            }),
+            1,
+        )[0]["result"],
+        json!({})
+    );
+    let hidden = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "hidden-list",
+            "method": "thread/list"
+        }),
+        1,
+    );
+    assert_eq!(
+        hidden[0]["result"]["data"],
+        json!([{"id": "thr_0000000000000001"}])
+    );
+    assert_eq!(
+        first.send(
+            json!({
+                "jsonrpc": "2.0",
+                "id": "unarchive",
+                "method": "thread/unarchive",
+                "params": {"threadId": restored}
+            }),
+            1,
+        )[0]["result"],
+        json!({})
+    );
+    let restored_list = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "restored-list",
+            "method": "thread/list"
+        }),
+        1,
+    );
+    assert_eq!(
+        restored_list[0]["result"]["data"],
+        json!([
+            {"id": "thr_0000000000000002"},
+            {"id": "thr_0000000000000001"}
+        ])
+    );
+    let turn_after_restore = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn-after-restore",
+            "method": "turn/start",
+            "params": {"threadId": restored}
+        }),
+        6,
+    );
+    assert_eq!(
+        turn_after_restore[0]["result"]["turn"]["id"],
+        "turn_0000000000000003"
+    );
+    first.finish();
+
+    let projections = home.path().join("projections/v1");
+    fs::remove_file(projections.join("thread-discovery.sqlite3"))
+        .expect("remove discovery projection");
+    let search_projection = projections.join("thread-search.sqlite3");
+    let sentinel = "unarchive-search-corruption-secret-must-not-leak";
+    fs::write(&search_projection, sentinel).expect("corrupt search projection");
+
+    let mut second = RunningServer::spawn(home.path());
+    second.initialize();
+    let listed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "list-after-restart",
+            "method": "thread/list"
+        }),
+        1,
+    );
+    assert_eq!(
+        listed[0]["result"]["data"],
+        json!([
+            {"id": "thr_0000000000000002"},
+            {"id": "thr_0000000000000001"}
+        ])
+    );
+    let searched = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "search-after-restart",
+            "method": "thread/search",
+            "params": {"query": "SugarCode deterministic"}
+        }),
+        1,
+    );
+    assert_eq!(
+        searched[0]["result"]["data"],
+        json!([
+            {"id": "thr_0000000000000002"},
+            {"id": "thr_0000000000000001"}
+        ])
+    );
+    let resumed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "resume-after-restart",
+            "method": "thread/resume",
+            "params": {"threadId": restored}
+        }),
+        1,
+    );
+    assert_eq!(
+        resumed[0]["result"]["turns"]
+            .as_array()
+            .expect("restored turns")
+            .len(),
+        2
+    );
+    assert_eq!(
+        resumed[0]["result"]["turns"][0]["id"],
+        "turn_0000000000000002"
+    );
+    assert_eq!(
+        resumed[0]["result"]["turns"][1]["id"],
+        "turn_0000000000000003"
+    );
+    let next_turn = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn-after-restart",
+            "method": "turn/start",
+            "params": {"threadId": restored}
+        }),
+        6,
+    );
+    assert_eq!(
+        next_turn[0]["result"]["turn"]["id"],
+        "turn_0000000000000004"
+    );
+    assert_eq!(
+        next_turn[2]["params"]["item"]["id"],
+        "item_0000000000000004"
+    );
+
+    let stderr = second.finish_with_diagnostics();
+    assert!(stderr.contains("thread-search.sqlite3"));
+    assert!(stderr.contains("thread search rebuild"));
+    assert!(stderr.contains("invalidHeaderRecovered"));
+    assert!(!stderr.contains(sentinel));
+    assert!(!stderr.contains("SugarCode deterministic response."));
+}
+
 fn assert_active_archive_views(server: &mut RunningServer, request_prefix: &str) {
     let listed = server.send(
         json!({

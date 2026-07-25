@@ -29,6 +29,8 @@ use crate::ThreadSearchResponse;
 use crate::ThreadStartParams;
 use crate::ThreadStartResponse;
 use crate::ThreadStartedNotification;
+use crate::ThreadUnarchiveParams;
+use crate::ThreadUnarchiveResponse;
 use crate::Turn;
 use crate::TurnCompletedNotification;
 use crate::TurnSnapshot;
@@ -71,6 +73,8 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         Thread::decl(),
         ThreadArchiveParams::decl(),
         ThreadArchiveResponse::decl(),
+        ThreadUnarchiveParams::decl(),
+        ThreadUnarchiveResponse::decl(),
         ThreadListParams::decl(),
         ThreadListResponse::decl(),
         ThreadSearchParams::decl(),
@@ -154,6 +158,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("ThreadArchiveResponse.schema.json"),
         &schema_for!(ThreadArchiveResponse),
+    )?;
+    write_schema(
+        out_dir.join("ThreadUnarchiveParams.schema.json"),
+        &schema_for!(ThreadUnarchiveParams),
+    )?;
+    write_schema(
+        out_dir.join("ThreadUnarchiveResponse.schema.json"),
+        &schema_for!(ThreadUnarchiveResponse),
     )?;
     write_schema(
         out_dir.join("ThreadListParams.schema.json"),

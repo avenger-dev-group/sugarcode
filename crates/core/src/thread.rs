@@ -215,6 +215,9 @@ pub trait CoreApi {
     fn archive_thread(&mut self, _thread_id: &ThreadId) -> Result<(), CoreError> {
         Err(CoreError::StateUnavailable)
     }
+    fn unarchive_thread(&mut self, _thread_id: &ThreadId) -> Result<(), CoreError> {
+        Err(CoreError::StateUnavailable)
+    }
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError>;
     fn start_turn(
         &mut self,
@@ -269,6 +272,40 @@ impl Core {
             .get(thread_id)
             .and_then(|thread| thread.turns.get(turn_id))
             .is_some_and(|turn| &turn.id == turn_id)
+    }
+
+    fn materialize_snapshot(&mut self, snapshot: &DurableThreadSnapshot) {
+        let mut turns = BTreeMap::new();
+        for durable_turn in &snapshot.turns {
+            let mut items = BTreeMap::new();
+            for durable_item in &durable_turn.items {
+                let item = match durable_item {
+                    DurableItemSnapshot::AgentMessage { id, text } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::AgentMessage { text: text.clone() },
+                    },
+                };
+                items.insert(item.id.clone(), item);
+            }
+            let turn = Turn {
+                id: durable_turn.id.clone(),
+                request_id: CoreRequestId::new(0),
+                state: TurnState::Completed,
+                items,
+                active_item_id: None,
+            };
+            turns.insert(turn.id.clone(), turn);
+        }
+        self.threads.insert(
+            snapshot.id.clone(),
+            Thread {
+                id: snapshot.id.clone(),
+                turns,
+                active_turn_id: None,
+                lifecycle: snapshot.lifecycle,
+            },
+        );
     }
 }
 
@@ -352,6 +389,25 @@ impl CoreApi for Core {
         Ok(())
     }
 
+    fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        let mut snapshot = match self.threads.get(thread_id) {
+            Some(thread) => durable_thread_snapshot(thread),
+            None => self
+                .repository
+                .load_thread(thread_id)
+                .map_err(map_repository_error)?
+                .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?,
+        };
+        if snapshot.lifecycle == DurableThreadLifecycle::Archived {
+            self.repository
+                .unarchive_thread(thread_id)
+                .map_err(map_repository_error)?;
+            snapshot.lifecycle = DurableThreadLifecycle::Active;
+        }
+        self.materialize_snapshot(&snapshot);
+        Ok(())
+    }
+
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
         if let Some(thread) = self.threads.get(thread_id) {
             if thread.lifecycle == DurableThreadLifecycle::Archived {
@@ -367,37 +423,7 @@ impl CoreApi for Core {
         if snapshot.lifecycle == DurableThreadLifecycle::Archived {
             return Err(CoreError::ThreadNotFound(thread_id.clone()));
         }
-        let mut turns = BTreeMap::new();
-        for durable_turn in &snapshot.turns {
-            let mut items = BTreeMap::new();
-            for durable_item in &durable_turn.items {
-                let item = match durable_item {
-                    DurableItemSnapshot::AgentMessage { id, text } => Item {
-                        id: id.clone(),
-                        state: ItemState::Completed,
-                        kind: ItemKind::AgentMessage { text: text.clone() },
-                    },
-                };
-                items.insert(item.id.clone(), item);
-            }
-            let turn = Turn {
-                id: durable_turn.id.clone(),
-                request_id: CoreRequestId::new(0),
-                state: TurnState::Completed,
-                items,
-                active_item_id: None,
-            };
-            turns.insert(turn.id.clone(), turn);
-        }
-        self.threads.insert(
-            thread_id.clone(),
-            Thread {
-                id: thread_id.clone(),
-                turns,
-                active_turn_id: None,
-                lifecycle: DurableThreadLifecycle::Active,
-            },
-        );
+        self.materialize_snapshot(&snapshot);
         Ok(snapshot)
     }
 
@@ -608,6 +634,15 @@ impl ThreadRepository for MemoryThreadRepository {
         Ok(())
     }
 
+    fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        thread.lifecycle = DurableThreadLifecycle::Active;
+        Ok(())
+    }
+
     fn list_threads(
         &mut self,
         cursor: Option<&ThreadId>,
@@ -809,6 +844,49 @@ mod tests {
 
         let next = start_thread(&mut core, 4);
         assert_eq!(next.as_str(), "thr_0000000000000002");
+    }
+
+    #[test]
+    fn unarchive_is_idempotent_restores_history_and_allows_the_next_turn() {
+        let mut core = Core::new();
+        let thread_id = start_thread(&mut core, 1);
+        core.start_turn(CoreRequestId::new(2), thread_id.clone())
+            .expect("first turn");
+        core.archive_thread(&thread_id).expect("archive");
+
+        core.unarchive_thread(&thread_id).expect("unarchive");
+        core.unarchive_thread(&thread_id)
+            .expect("idempotent unarchive");
+        assert!(core.contains_thread(&thread_id));
+        assert_eq!(
+            core.list_threads(None, 50).expect("list").data[0].id,
+            thread_id
+        );
+        assert_eq!(
+            core.search_threads("SugarCode", None, 50)
+                .expect("search")
+                .data[0]
+                .id,
+            thread_id
+        );
+        assert_eq!(
+            core.resume_thread(&thread_id)
+                .expect("resume restored history")
+                .turns
+                .len(),
+            1
+        );
+        let events = core
+            .start_turn(CoreRequestId::new(3), thread_id.clone())
+            .expect("turn after unarchive");
+        assert_eq!(turn_id(&events).as_str(), "turn_0000000000000002");
+        assert_eq!(core.turn_count(&thread_id), 2);
+
+        let missing = ThreadId::new("thr_0000000000000099");
+        assert_eq!(
+            core.unarchive_thread(&missing),
+            Err(CoreError::ThreadNotFound(missing))
+        );
     }
 
     #[test]
@@ -1107,6 +1185,30 @@ mod tests {
             .expect("thread stays active");
     }
 
+    #[test]
+    fn failed_unarchive_write_does_not_restore_the_thread_in_memory() {
+        let thread_id = ThreadId::new("thr_0000000000000001");
+        let mut threads = BTreeMap::new();
+        threads.insert(
+            thread_id.clone(),
+            DurableThreadSnapshot {
+                id: thread_id.clone(),
+                turns: Vec::new(),
+                lifecycle: DurableThreadLifecycle::Archived,
+            },
+        );
+        let mut core = Core::with_repository(Box::new(FailingRepository {
+            threads,
+            ..Default::default()
+        }));
+
+        assert_eq!(
+            core.unarchive_thread(&thread_id),
+            Err(CoreError::StateUnavailable)
+        );
+        assert!(!core.contains_thread(&thread_id));
+    }
+
     #[derive(Debug, Default)]
     struct FailingRepository {
         fail_create: bool,
@@ -1148,6 +1250,10 @@ mod tests {
         }
 
         fn archive_thread(&mut self, _thread_id: &ThreadId) -> Result<(), RolloutError> {
+            Err(RolloutError::Poisoned)
+        }
+
+        fn unarchive_thread(&mut self, _thread_id: &ThreadId) -> Result<(), RolloutError> {
             Err(RolloutError::Poisoned)
         }
 
