@@ -22,6 +22,8 @@ use crate::ThreadArchiveParams;
 use crate::ThreadArchiveResponse;
 use crate::ThreadDeleteParams;
 use crate::ThreadDeleteResponse;
+use crate::ThreadForkParams;
+use crate::ThreadForkResponse;
 use crate::ThreadListParams;
 use crate::ThreadListResponse;
 use crate::ThreadResumeParams;
@@ -77,6 +79,8 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         ThreadArchiveResponse::decl(),
         ThreadDeleteParams::decl(),
         ThreadDeleteResponse::decl(),
+        ThreadForkParams::decl(),
+        ThreadForkResponse::decl(),
         ThreadUnarchiveParams::decl(),
         ThreadUnarchiveResponse::decl(),
         ThreadListParams::decl(),
@@ -170,6 +174,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("ThreadDeleteResponse.schema.json"),
         &schema_for!(ThreadDeleteResponse),
+    )?;
+    write_schema(
+        out_dir.join("ThreadForkParams.schema.json"),
+        &schema_for!(ThreadForkParams),
+    )?;
+    write_schema(
+        out_dir.join("ThreadForkResponse.schema.json"),
+        &schema_for!(ThreadForkResponse),
     )?;
     write_schema(
         out_dir.join("ThreadUnarchiveParams.schema.json"),

@@ -6,6 +6,7 @@ use sugarcode_app_server_protocol::ItemStartedNotification;
 use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcNotification;
 use sugarcode_app_server_protocol::JsonRpcVersion;
+use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
 use sugarcode_app_server_protocol::Turn as PublicTurn;
 use sugarcode_app_server_protocol::TurnCompletedNotification;
@@ -191,11 +192,23 @@ pub(crate) fn map_turn_lifecycle(
 }
 
 pub(crate) fn map_thread_snapshot(snapshot: DurableThreadSnapshot) -> ThreadResumeResponse {
-    ThreadResumeResponse {
-        thread: sugarcode_app_server_protocol::Thread {
+    let (thread, turns) = map_snapshot_parts(snapshot);
+    ThreadResumeResponse { thread, turns }
+}
+
+pub(crate) fn map_fork_snapshot(snapshot: DurableThreadSnapshot) -> ThreadForkResponse {
+    let (thread, turns) = map_snapshot_parts(snapshot);
+    ThreadForkResponse { thread, turns }
+}
+
+fn map_snapshot_parts(
+    snapshot: DurableThreadSnapshot,
+) -> (sugarcode_app_server_protocol::Thread, Vec<TurnSnapshot>) {
+    (
+        sugarcode_app_server_protocol::Thread {
             id: snapshot.id.into_string(),
         },
-        turns: snapshot
+        snapshot
             .turns
             .into_iter()
             .map(|turn| TurnSnapshot {
@@ -215,7 +228,7 @@ pub(crate) fn map_thread_snapshot(snapshot: DurableThreadSnapshot) -> ThreadResu
                     .collect(),
             })
             .collect(),
-    }
+    )
 }
 
 fn notification(method: &str, params: serde_json::Value) -> JsonRpcMessage {

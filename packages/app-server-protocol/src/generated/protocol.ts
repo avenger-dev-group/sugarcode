@@ -56,6 +56,10 @@ export type ThreadDeleteParams = { threadId: string, };
 
 export type ThreadDeleteResponse = Record<string, never>;
 
+export type ThreadForkParams = { threadId: string, };
+
+export type ThreadForkResponse = { thread: Thread, turns: Array<TurnSnapshot>, };
+
 export type ThreadUnarchiveParams = { threadId: string, };
 
 export type ThreadUnarchiveResponse = Record<string, never>;

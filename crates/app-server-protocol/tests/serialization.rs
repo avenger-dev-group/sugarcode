@@ -14,6 +14,8 @@ use sugarcode_app_server_protocol::ThreadArchiveParams;
 use sugarcode_app_server_protocol::ThreadArchiveResponse;
 use sugarcode_app_server_protocol::ThreadDeleteParams;
 use sugarcode_app_server_protocol::ThreadDeleteResponse;
+use sugarcode_app_server_protocol::ThreadForkParams;
+use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadListParams;
 use sugarcode_app_server_protocol::ThreadListResponse;
 use sugarcode_app_server_protocol::ThreadResumeParams;
@@ -193,6 +195,58 @@ fn thread_delete_uses_its_own_canonical_params_and_empty_response() {
         json!({"threadId": "thr_0000000000000001", "purge": true}),
     ] {
         assert!(serde_json::from_value::<ThreadDeleteParams>(invalid).is_err());
+    }
+}
+
+#[test]
+fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
+    assert_eq!(
+        serde_json::from_value::<ThreadForkParams>(json!({
+            "threadId": "thr_0000000000000001"
+        }))
+        .expect("valid params"),
+        ThreadForkParams {
+            thread_id: "thr_0000000000000001".to_string()
+        }
+    );
+    let response = ThreadForkResponse {
+        thread: Thread {
+            id: "thr_0000000000000002".to_string(),
+        },
+        turns: vec![TurnSnapshot {
+            id: "turn_0000000000000002".to_string(),
+            status: TurnSnapshotStatus::Completed,
+            items: vec![Item::AgentMessage {
+                id: "item_0000000000000002".to_string(),
+                text: "SugarCode deterministic response.".to_string(),
+            }],
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("response serializes"),
+        json!({
+            "thread": {"id": "thr_0000000000000002"},
+            "turns": [{
+                "id": "turn_0000000000000002",
+                "status": "completed",
+                "items": [{
+                    "type": "agentMessage",
+                    "id": "item_0000000000000002",
+                    "text": "SugarCode deterministic response."
+                }]
+            }]
+        })
+    );
+    for invalid in [
+        json!({}),
+        json!({"threadId": ""}),
+        json!({"threadId": "thr_missing"}),
+        json!({"threadId": "../thr_0000000000000001"}),
+        json!({"threadId": "thr_00000000000000001"}),
+        json!({"threadId": "thr_0000000000000001", "turnId": "turn_1"}),
+        json!({"threadId": "thr_0000000000000001", "sourceThreadId": true}),
+    ] {
+        assert!(serde_json::from_value::<ThreadForkParams>(invalid).is_err());
     }
 }
 

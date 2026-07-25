@@ -118,6 +118,11 @@ impl RolloutRepository {
         Ok(self.root.join(format!("{}.jsonl", thread_id.as_str())))
     }
 
+    fn fork_temp_path(&self, thread_id: &ThreadId) -> Result<PathBuf, RolloutError> {
+        parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
+        Ok(self.root.join(format!(".{}.fork.tmp", thread_id.as_str())))
+    }
+
     fn append_record(
         &mut self,
         path: &Path,
@@ -214,6 +219,75 @@ impl RolloutRepository {
         }
         result
     }
+
+    fn create_snapshot_file(
+        &mut self,
+        path: &Path,
+        temp_path: &Path,
+        records: &[Vec<u8>],
+        added_bytes: u64,
+    ) -> Result<(), RolloutError> {
+        reject_symlink_if_present(path)?;
+        match fs::symlink_metadata(path) {
+            Ok(_) => return Err(RolloutError::Collision { kind: "thread" }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(unavailable(path, error)),
+        }
+        reject_symlink_if_present(temp_path)?;
+        match fs::symlink_metadata(temp_path) {
+            Ok(_) => {
+                self.poisoned = true;
+                return Err(RolloutError::Collision {
+                    kind: "forkCreateArtifact",
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(unavailable(temp_path, error)),
+        }
+
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options
+                .open(temp_path)
+                .map_err(|error| unavailable(temp_path, error))?;
+            for record in records {
+                file.write_all(record)
+                    .map_err(|error| unavailable(temp_path, error))?;
+                file.write_all(b"\n")
+                    .map_err(|error| unavailable(temp_path, error))?;
+            }
+            file.flush()
+                .map_err(|error| unavailable(temp_path, error))?;
+            file.sync_all()
+                .map_err(|error| unavailable(temp_path, error))?;
+            drop(file);
+
+            match fs::symlink_metadata(path) {
+                Ok(_) => {
+                    return Err(RolloutError::Collision { kind: "thread" });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(unavailable(path, error)),
+            }
+            fs::rename(temp_path, path).map_err(|error| unavailable(path, error))?;
+            sync_parent(path)?;
+            Ok(())
+        })();
+
+        if result.is_err() {
+            self.poisoned = true;
+            return result;
+        }
+        self.total_bytes += added_bytes;
+        self.total_records += records.len();
+        Ok(())
+    }
 }
 
 impl ThreadRepository for RolloutRepository {
@@ -251,6 +325,141 @@ impl ThreadRepository for RolloutRepository {
         self.sequences.thread = thread_sequence;
         let _ = self.projection.record_thread_created(thread_id);
         let _ = self.search_projection.record_thread_created(thread_id);
+        Ok(())
+    }
+
+    fn create_thread_snapshot(
+        &mut self,
+        snapshot: &DurableThreadSnapshot,
+    ) -> Result<(), RolloutError> {
+        self.ensure_available()?;
+        if snapshot.lifecycle != DurableThreadLifecycle::Active {
+            return Err(RolloutError::InvalidRecord {
+                kind: "materializedThreadNotActive",
+            });
+        }
+        let thread_sequence = parse_canonical_id(snapshot.id.as_str(), "thr_", "thread")?;
+        if self.threads.contains_key(&snapshot.id) || thread_sequence <= self.sequences.thread {
+            return Err(RolloutError::Collision { kind: "thread" });
+        }
+        if self.threads.len() >= MAX_ROLLOUT_FILES {
+            return Err(RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutFiles",
+            });
+        }
+
+        let record_count =
+            snapshot
+                .turns
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| RolloutError::LimitExceeded {
+                    path: self.root.clone(),
+                    kind: "rolloutRecords",
+                })?;
+        if record_count > MAX_ROLLOUT_RECORDS_PER_FILE {
+            return Err(RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutRecords",
+            });
+        }
+        if self
+            .total_records
+            .checked_add(record_count)
+            .is_none_or(|count| count > MAX_TOTAL_REPLAY_RECORDS)
+        {
+            return Err(RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "totalReplayRecords",
+            });
+        }
+
+        let mut records = Vec::with_capacity(record_count);
+        records.push(encode_thread_created(1, &snapshot.id)?);
+        let mut turn_sequence = self.sequences.turn;
+        let mut item_sequence = self.sequences.item;
+        for (index, turn) in snapshot.turns.iter().enumerate() {
+            if turn.items.is_empty() {
+                return Err(RolloutError::InvalidRecord {
+                    kind: "completedTurnWithoutItems",
+                });
+            }
+            let sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")?;
+            if sequence <= turn_sequence {
+                return Err(RolloutError::Collision { kind: "turn" });
+            }
+            turn_sequence = sequence;
+            for item in &turn.items {
+                let sequence = parse_canonical_id(item.id().as_str(), "item_", "item")?;
+                if sequence <= item_sequence {
+                    return Err(RolloutError::Collision { kind: "item" });
+                }
+                item_sequence = sequence;
+            }
+            let record_sequence =
+                u64::try_from(index + 2).map_err(|_| RolloutError::InvalidRecord {
+                    kind: "recordSequenceOverflow",
+                })?;
+            records.push(encode_turn_completed(record_sequence, &snapshot.id, turn)?);
+        }
+
+        let mut added_bytes = 0u64;
+        for record in &records {
+            if record.len() > MAX_ROLLOUT_RECORD_BYTES {
+                return Err(RolloutError::LimitExceeded {
+                    path: self.root.clone(),
+                    kind: "rolloutRecordBytes",
+                });
+            }
+            let record_bytes =
+                u64::try_from(record.len() + 1).map_err(|_| RolloutError::LimitExceeded {
+                    path: self.root.clone(),
+                    kind: "rolloutFileBytes",
+                })?;
+            added_bytes = added_bytes.checked_add(record_bytes).ok_or_else(|| {
+                RolloutError::LimitExceeded {
+                    path: self.root.clone(),
+                    kind: "rolloutFileBytes",
+                }
+            })?;
+        }
+        if added_bytes > MAX_ROLLOUT_FILE_BYTES {
+            return Err(RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutFileBytes",
+            });
+        }
+        if self
+            .total_bytes
+            .checked_add(added_bytes)
+            .is_none_or(|bytes| bytes > MAX_TOTAL_REPLAY_BYTES)
+        {
+            return Err(RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "totalReplayBytes",
+            });
+        }
+
+        let path = self.thread_path(&snapshot.id)?;
+        let temp_path = self.fork_temp_path(&snapshot.id)?;
+        self.create_snapshot_file(&path, &temp_path, &records, added_bytes)?;
+
+        let last_record_sequence =
+            u64::try_from(record_count).map_err(|_| RolloutError::InvalidRecord {
+                kind: "recordSequenceOverflow",
+            })?;
+        let state = RolloutThreadState {
+            snapshot: snapshot.clone(),
+            last_record_sequence,
+            turn_record_sequences: (2..=last_record_sequence).collect(),
+        };
+        self.threads.insert(snapshot.id.clone(), state.clone());
+        self.sequences.thread = thread_sequence;
+        self.sequences.turn = turn_sequence;
+        self.sequences.item = item_sequence;
+        let _ = self.projection.record_thread_snapshot(&state);
+        let _ = self.search_projection.record_thread_snapshot(&state);
         Ok(())
     }
 

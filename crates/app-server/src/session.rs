@@ -1,3 +1,4 @@
+use crate::event_mapping::map_fork_snapshot;
 use crate::event_mapping::map_thread_snapshot;
 use crate::event_mapping::map_turn_lifecycle;
 use serde_json::Value;
@@ -35,6 +36,7 @@ use sugarcode_app_server_protocol::ThreadArchiveParams;
 use sugarcode_app_server_protocol::ThreadArchiveResponse;
 use sugarcode_app_server_protocol::ThreadDeleteParams;
 use sugarcode_app_server_protocol::ThreadDeleteResponse;
+use sugarcode_app_server_protocol::ThreadForkParams;
 use sugarcode_app_server_protocol::ThreadListParams;
 use sugarcode_app_server_protocol::ThreadListResponse;
 use sugarcode_app_server_protocol::ThreadResumeParams;
@@ -223,6 +225,20 @@ where
                     )];
                 }
                 self.delete_thread(id, object.get("params").cloned())
+            }
+            "thread/fork" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.fork_thread(id, object.get("params").cloned())
             }
             "thread/search" => {
                 let Some(id) = request_id else {
@@ -645,6 +661,78 @@ where
         }
     }
 
+    fn fork_thread(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
+        let params = match params
+            .ok_or(())
+            .and_then(|value| serde_json::from_value::<ThreadForkParams>(value).map_err(|_| ()))
+        {
+            Ok(params) => params,
+            Err(()) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+
+        let source_thread_id = ThreadId::new(params.thread_id.clone());
+        let snapshot = match self.core.fork_thread(&source_thread_id) {
+            Ok(snapshot) => snapshot,
+            Err(CoreError::ThreadNotFound(_)) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_THREAD_NOT_FOUND,
+                    "Thread not found",
+                    Some(json!({ "threadId": params.thread_id })),
+                )];
+            }
+            Err(CoreError::StateUnavailable) => {
+                self.accepted_request_ids.insert(id.clone());
+                return vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )];
+            }
+            Err(_) => {
+                self.accepted_request_ids.insert(id.clone());
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
+        self.accepted_request_ids.insert(id.clone());
+        let response = map_fork_snapshot(snapshot);
+        let notification = ThreadStartedNotification {
+            thread: response.thread.clone(),
+        };
+        vec![
+            JsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: JsonRpcVersion::V2,
+                id,
+                result: serde_json::to_value(response)
+                    .expect("thread/fork response must serialize"),
+            }),
+            JsonRpcMessage::Notification(sugarcode_app_server_protocol::JsonRpcNotification {
+                jsonrpc: JsonRpcVersion::V2,
+                method: "thread/started".to_string(),
+                params: Some(
+                    serde_json::to_value(notification)
+                        .expect("thread/started notification must serialize"),
+                ),
+            }),
+        ]
+    }
+
     fn list_threads(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
         let params = match params {
             Some(value) => match serde_json::from_value::<ThreadListParams>(value) {
@@ -1007,6 +1095,124 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn thread_fork_returns_a_complete_remapped_snapshot_then_started_notification() {
+        let mut session = ready_session(Core::new());
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
+        );
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+
+        let messages = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"fork-1","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        assert_eq!(
+            messages
+                .into_iter()
+                .map(|message| serde_json::to_value(message).expect("message serializes"))
+                .collect::<Vec<_>>(),
+            vec![
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "fork-1",
+                    "result": {
+                        "thread": {"id": "thr_0000000000000002"},
+                        "turns": [
+                            {
+                                "id": "turn_0000000000000003",
+                                "status": "completed",
+                                "items": [{
+                                    "type": "agentMessage",
+                                    "id": "item_0000000000000003",
+                                    "text": "SugarCode deterministic response."
+                                }]
+                            },
+                            {
+                                "id": "turn_0000000000000004",
+                                "status": "completed",
+                                "items": [{
+                                    "type": "agentMessage",
+                                    "id": "item_0000000000000004",
+                                    "text": "SugarCode deterministic response."
+                                }]
+                            }
+                        ]
+                    }
+                }),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "thread/started",
+                    "params": {
+                        "thread": {"id": "thr_0000000000000002"}
+                    }
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn thread_fork_validates_and_requires_an_active_source_before_consuming_request_id() {
+        let mut session = ready_session(Core::new());
+
+        for params in [
+            json!({"threadId": "thr_missing"}),
+            json!({"sourceThreadId": "thr_0000000000000001"}),
+            json!({"threadId": "thr_0000000000000001", "turnId": "turn_0000000000000001"}),
+        ] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": "retry",
+                    "method": "thread/fork",
+                    "params": params
+                })
+                .to_string(),
+            );
+            let JsonRpcMessage::Error(error) = &messages[0] else {
+                panic!("expected fork error");
+            };
+            assert!(
+                error.error.code == ERROR_INVALID_PARAMS
+                    || error.error.code == ERROR_THREAD_NOT_FOUND
+            );
+        }
+
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
+        );
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        let archived = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        let JsonRpcMessage::Error(error) = &archived[0] else {
+            panic!("expected archived source error");
+        };
+        assert_eq!(error.error.code, ERROR_THREAD_NOT_FOUND);
+
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        let success = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        assert_eq!(response_thread_id(&success), "thr_0000000000000002");
+
+        let duplicate = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        let JsonRpcMessage::Error(error) = &duplicate[0] else {
+            panic!("expected duplicate error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
     }
 
     #[test]
@@ -1603,6 +1809,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"fork","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
         ] {
@@ -1640,6 +1847,24 @@ mod tests {
     fn an_uncertain_unarchive_attempt_consumes_its_request_id() {
         let mut session = ready_session(StateUnavailableCore);
         let request = r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#;
+
+        let first = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &first[0] else {
+            panic!("expected state error");
+        };
+        assert_eq!(error.error.code, ERROR_STATE_UNAVAILABLE);
+
+        let second = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &second[0] else {
+            panic!("expected duplicate error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
+    }
+
+    #[test]
+    fn an_uncertain_fork_attempt_consumes_its_request_id() {
+        let mut session = ready_session(StateUnavailableCore);
+        let request = r#"{"jsonrpc":"2.0","id":"fork","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#;
 
         let first = session.process_line(request);
         let JsonRpcMessage::Error(error) = &first[0] else {

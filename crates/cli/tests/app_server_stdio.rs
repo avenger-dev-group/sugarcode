@@ -91,6 +91,16 @@ fn thread_delete_failures_match_golden_trace() {
     assert_golden("thread-delete-errors");
 }
 
+#[test]
+fn thread_fork_happy_path_matches_golden_trace() {
+    assert_golden("thread-fork-happy");
+}
+
+#[test]
+fn thread_fork_failures_match_golden_trace() {
+    assert_golden("thread-fork-errors");
+}
+
 fn assert_golden(name: &str) {
     let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
     let fixture_root =

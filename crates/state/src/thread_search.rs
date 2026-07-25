@@ -234,6 +234,126 @@ impl ThreadSearchProjection {
         result
     }
 
+    pub(crate) fn record_thread_snapshot(
+        &mut self,
+        state: &RolloutThreadState,
+    ) -> Result<(), RolloutError> {
+        if self.dirty {
+            return Ok(());
+        }
+        let snapshot = &state.snapshot;
+        if snapshot.lifecycle != DurableThreadLifecycle::Active {
+            return Err(RolloutError::InvalidRecord {
+                kind: "materializedThreadNotActive",
+            });
+        }
+        if snapshot.turns.len() != state.turn_record_sequences.len() {
+            return Err(RolloutError::InvalidRecord {
+                kind: "turnRecordSequences",
+            });
+        }
+        let order_key = thread_order_key(&snapshot.id)?;
+        let last_sequence =
+            i64::try_from(state.last_record_sequence).map_err(|_| RolloutError::InvalidRecord {
+                kind: "projectionSequence",
+            })?;
+        let added_records = last_sequence;
+        let added_items = snapshot.turns.iter().try_fold(0usize, |count, turn| {
+            count
+                .checked_add(turn.items.len())
+                .ok_or(RolloutError::InvalidRecord {
+                    kind: "searchableItems",
+                })
+        })?;
+        let added_items_i64 = bounded_i64(added_items, &self.database_path, "searchableItems")?;
+        let database_path = self.database_path.clone();
+        let result = (|| {
+            let connection = self
+                .connection
+                .as_mut()
+                .ok_or_else(|| projection_error(&database_path, "update", "unavailable"))?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO thread_watermarks (
+                        thread_id, thread_order_key, last_rollout_sequence, lifecycle
+                     ) VALUES (?1, ?2, ?3, 'active')",
+                    params![snapshot.id.as_str(), order_key, last_sequence],
+                )
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            {
+                let mut document_statement = transaction
+                    .prepare(
+                        "INSERT INTO search_documents (
+                            document_id, thread_id, rollout_sequence, item_index,
+                            item_id, text_sha256
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )
+                    .map_err(|error| sqlite_error(&database_path, "update", error))?;
+                let mut fts_statement = transaction
+                    .prepare("INSERT INTO search_fts(rowid, text) VALUES (?1, ?2)")
+                    .map_err(|error| sqlite_error(&database_path, "update", error))?;
+                for (turn, record_sequence) in
+                    snapshot.turns.iter().zip(&state.turn_record_sequences)
+                {
+                    let record_sequence = i64::try_from(*record_sequence).map_err(|_| {
+                        RolloutError::InvalidRecord {
+                            kind: "projectionSequence",
+                        }
+                    })?;
+                    for (item_index, item) in turn.items.iter().enumerate() {
+                        let DurableItemSnapshot::AgentMessage { id, text } = item;
+                        let document_id = item_document_id(id.as_str())?;
+                        let digest = Sha256::digest(text.as_bytes());
+                        document_statement
+                            .execute(params![
+                                document_id,
+                                snapshot.id.as_str(),
+                                record_sequence,
+                                bounded_i64(item_index, &database_path, "searchableItems")?,
+                                id.as_str(),
+                                digest.as_slice(),
+                            ])
+                            .map_err(|error| sqlite_error(&database_path, "update", error))?;
+                        fts_statement
+                            .execute(params![document_id, text])
+                            .map_err(|error| sqlite_error(&database_path, "update", error))?;
+                    }
+                }
+            }
+            require_one(
+                transaction
+                    .execute(
+                        "UPDATE projection_metadata
+                         SET rollout_file_count = rollout_file_count + 1,
+                             rollout_record_count = rollout_record_count + ?1,
+                             searchable_item_count = searchable_item_count + ?2
+                         WHERE singleton = 1
+                           AND rollout_file_count < 10000
+                           AND rollout_record_count + ?1 <= 1000000
+                           AND searchable_item_count + ?2 <= 1000000",
+                        params![added_records, added_items_i64],
+                    )
+                    .map_err(|error| sqlite_error(&database_path, "update", error))?,
+                &database_path,
+                "update",
+            )?;
+            transaction
+                .commit()
+                .map_err(|error| sqlite_error(&database_path, "update", error))
+        })();
+        if let Err(error) = &result {
+            self.mark_dirty(
+                "update",
+                projection_error_kind(error),
+                is_rebuildable_projection_error(error),
+            );
+        }
+        result
+    }
+
     pub(crate) fn record_thread_archived(
         &mut self,
         thread_id: &ThreadId,

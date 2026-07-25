@@ -221,6 +221,9 @@ pub trait CoreApi {
     fn delete_thread(&mut self, _thread_id: &ThreadId) -> Result<(), CoreError> {
         Err(CoreError::StateUnavailable)
     }
+    fn fork_thread(&mut self, _thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
+        Err(CoreError::StateUnavailable)
+    }
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError>;
     fn start_turn(
         &mut self,
@@ -440,6 +443,65 @@ impl CoreApi for Core {
         Ok(())
     }
 
+    fn fork_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
+        let source = match self.threads.get(thread_id) {
+            Some(thread) => durable_thread_snapshot(thread),
+            None => self
+                .repository
+                .load_thread(thread_id)
+                .map_err(map_repository_error)?
+                .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?,
+        };
+        if source.lifecycle != DurableThreadLifecycle::Active {
+            return Err(CoreError::ThreadNotFound(thread_id.clone()));
+        }
+
+        let thread_sequence = self
+            .last_thread_sequence
+            .checked_add(1)
+            .ok_or(CoreError::ThreadIdExhausted)?;
+        let mut turn_sequence = self.last_turn_sequence;
+        let mut item_sequence = self.last_item_sequence;
+        let mut turns = Vec::with_capacity(source.turns.len());
+        for source_turn in &source.turns {
+            turn_sequence = turn_sequence
+                .checked_add(1)
+                .ok_or(CoreError::TurnIdExhausted)?;
+            let mut items = Vec::with_capacity(source_turn.items.len());
+            for source_item in &source_turn.items {
+                item_sequence = item_sequence
+                    .checked_add(1)
+                    .ok_or(CoreError::ItemIdExhausted)?;
+                let item = match source_item {
+                    DurableItemSnapshot::AgentMessage { text, .. } => {
+                        DurableItemSnapshot::AgentMessage {
+                            id: ItemId::new(format!("item_{item_sequence:016}")),
+                            text: text.clone(),
+                        }
+                    }
+                };
+                items.push(item);
+            }
+            turns.push(DurableTurnSnapshot {
+                id: TurnId::new(format!("turn_{turn_sequence:016}")),
+                items,
+            });
+        }
+        let snapshot = DurableThreadSnapshot {
+            id: ThreadId::new(format!("thr_{thread_sequence:016}")),
+            turns,
+            lifecycle: DurableThreadLifecycle::Active,
+        };
+        self.repository
+            .create_thread_snapshot(&snapshot)
+            .map_err(map_repository_error)?;
+        self.materialize_snapshot(&snapshot);
+        self.last_thread_sequence = thread_sequence;
+        self.last_turn_sequence = turn_sequence;
+        self.last_item_sequence = item_sequence;
+        Ok(snapshot)
+    }
+
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
         if let Some(thread) = self.threads.get(thread_id) {
             if thread.lifecycle != DurableThreadLifecycle::Active {
@@ -617,6 +679,43 @@ impl ThreadRepository for MemoryThreadRepository {
             },
         );
         self.sequences.thread = sequence;
+        Ok(())
+    }
+
+    fn create_thread_snapshot(
+        &mut self,
+        snapshot: &DurableThreadSnapshot,
+    ) -> Result<(), RolloutError> {
+        if snapshot.lifecycle != DurableThreadLifecycle::Active
+            || self.threads.contains_key(&snapshot.id)
+        {
+            return Err(RolloutError::Collision { kind: "thread" });
+        }
+        let thread_sequence = parse_thread_sequence(&snapshot.id)?;
+        let mut turn_sequence = self.sequences.turn;
+        let mut item_sequence = self.sequences.item;
+        for turn in &snapshot.turns {
+            turn_sequence = turn
+                .id
+                .as_str()
+                .strip_prefix("turn_")
+                .and_then(|digits| digits.parse().ok())
+                .ok_or(RolloutError::InvalidId { kind: "turn" })?;
+            for item in &turn.items {
+                item_sequence = item
+                    .id()
+                    .as_str()
+                    .strip_prefix("item_")
+                    .and_then(|digits| digits.parse().ok())
+                    .ok_or(RolloutError::InvalidId { kind: "item" })?;
+            }
+        }
+        self.threads.insert(snapshot.id.clone(), snapshot.clone());
+        self.sequences = IdSequences {
+            thread: thread_sequence,
+            turn: turn_sequence,
+            item: item_sequence,
+        };
         Ok(())
     }
 
@@ -989,6 +1088,120 @@ mod tests {
     }
 
     #[test]
+    fn fork_remaps_complete_history_and_keeps_threads_independent() {
+        let mut core = Core::new();
+        let source = start_thread(&mut core, 1);
+        core.start_turn(CoreRequestId::new(2), source.clone())
+            .expect("first source turn");
+        core.start_turn(CoreRequestId::new(3), source.clone())
+            .expect("second source turn");
+
+        let fork = core.fork_thread(&source).expect("fork");
+        assert_eq!(fork.id.as_str(), "thr_0000000000000002");
+        assert_eq!(fork.lifecycle, DurableThreadLifecycle::Active);
+        assert_eq!(fork.turns.len(), 2);
+        assert_eq!(fork.turns[0].id.as_str(), "turn_0000000000000003");
+        assert_eq!(fork.turns[1].id.as_str(), "turn_0000000000000004");
+        assert_eq!(
+            fork.turns[0].items[0].id().as_str(),
+            "item_0000000000000003"
+        );
+        assert_eq!(
+            fork.turns[1].items[0].id().as_str(),
+            "item_0000000000000004"
+        );
+        let source_snapshot = core.resume_thread(&source).expect("source snapshot");
+        let DurableItemSnapshot::AgentMessage {
+            text: source_text, ..
+        } = &source_snapshot.turns[0].items[0];
+        let DurableItemSnapshot::AgentMessage {
+            text: fork_text, ..
+        } = &fork.turns[0].items[0];
+        assert_eq!(source_text, fork_text);
+        assert_ne!(source_snapshot.turns[0].id, fork.turns[0].id);
+        assert_ne!(
+            source_snapshot.turns[0].items[0].id(),
+            fork.turns[0].items[0].id()
+        );
+
+        core.archive_thread(&source).expect("archive source");
+        assert!(core.resume_thread(&source).is_err());
+        assert_eq!(
+            core.resume_thread(&fork.id).expect("fork stays active"),
+            fork
+        );
+        let continued = core
+            .start_turn(CoreRequestId::new(4), fork.id.clone())
+            .expect("continue fork");
+        assert_eq!(turn_id(&continued).as_str(), "turn_0000000000000005");
+        let CoreEventKind::ItemStarted { item, .. } = &continued[1].kind else {
+            panic!("expected item started");
+        };
+        assert_eq!(item.id.as_str(), "item_0000000000000005");
+    }
+
+    #[test]
+    fn fork_rejects_inactive_or_missing_sources_without_allocating_ids() {
+        let mut core = Core::new();
+        let archived = start_thread(&mut core, 1);
+        core.archive_thread(&archived).expect("archive");
+        assert_eq!(
+            core.fork_thread(&archived),
+            Err(CoreError::ThreadNotFound(archived.clone()))
+        );
+        let deleted = start_thread(&mut core, 2);
+        core.delete_thread(&deleted).expect("delete");
+        assert_eq!(
+            core.fork_thread(&deleted),
+            Err(CoreError::ThreadNotFound(deleted.clone()))
+        );
+        let missing = ThreadId::new("thr_0000000000000099");
+        assert_eq!(
+            core.fork_thread(&missing),
+            Err(CoreError::ThreadNotFound(missing))
+        );
+
+        let next = start_thread(&mut core, 3);
+        assert_eq!(next.as_str(), "thr_0000000000000003");
+    }
+
+    #[test]
+    fn fork_id_exhaustion_never_materializes_a_partial_thread() {
+        let mut thread_exhausted = Core::new();
+        let source = start_thread(&mut thread_exhausted, 1);
+        thread_exhausted.last_thread_sequence = u64::MAX;
+        assert_eq!(
+            thread_exhausted.fork_thread(&source),
+            Err(CoreError::ThreadIdExhausted)
+        );
+        assert_eq!(thread_exhausted.thread_count(), 1);
+
+        let mut turn_exhausted = Core::new();
+        let source = start_thread(&mut turn_exhausted, 1);
+        turn_exhausted
+            .start_turn(CoreRequestId::new(2), source.clone())
+            .expect("source turn");
+        turn_exhausted.last_turn_sequence = u64::MAX;
+        assert_eq!(
+            turn_exhausted.fork_thread(&source),
+            Err(CoreError::TurnIdExhausted)
+        );
+        assert_eq!(turn_exhausted.thread_count(), 1);
+
+        let mut item_exhausted = Core::new();
+        let source = start_thread(&mut item_exhausted, 1);
+        item_exhausted
+            .start_turn(CoreRequestId::new(2), source.clone())
+            .expect("source turn");
+        item_exhausted.last_item_sequence = u64::MAX;
+        assert_eq!(
+            item_exhausted.fork_thread(&source),
+            Err(CoreError::ItemIdExhausted)
+        );
+        assert_eq!(item_exhausted.thread_count(), 1);
+    }
+
+    #[test]
     fn commits_a_complete_deterministic_agent_message_lifecycle() {
         let mut core = Core::new();
         let thread_id = start_thread(&mut core, 1);
@@ -1326,6 +1539,43 @@ mod tests {
             .expect("thread stays active");
     }
 
+    #[test]
+    fn failed_fork_write_does_not_materialize_or_advance_ids() {
+        let source_id = ThreadId::new("thr_0000000000000001");
+        let source = DurableThreadSnapshot {
+            id: source_id.clone(),
+            turns: vec![DurableTurnSnapshot {
+                id: TurnId::new("turn_0000000000000001"),
+                items: vec![DurableItemSnapshot::AgentMessage {
+                    id: ItemId::new("item_0000000000000001"),
+                    text: DETERMINISTIC_AGENT_MESSAGE.to_string(),
+                }],
+            }],
+            lifecycle: DurableThreadLifecycle::Active,
+        };
+        let mut threads = BTreeMap::new();
+        threads.insert(source_id.clone(), source);
+        let mut core = Core::with_repository(Box::new(FailingRepository {
+            fail_create: true,
+            threads,
+            sequences: IdSequences {
+                thread: 1,
+                turn: 1,
+                item: 1,
+            },
+            ..Default::default()
+        }));
+
+        assert_eq!(
+            core.fork_thread(&source_id),
+            Err(CoreError::StateUnavailable)
+        );
+        assert_eq!(core.thread_count(), 0);
+        assert_eq!(core.last_thread_sequence, 1);
+        assert_eq!(core.last_turn_sequence, 1);
+        assert_eq!(core.last_item_sequence, 1);
+    }
+
     #[derive(Debug, Default)]
     struct FailingRepository {
         fail_create: bool,
@@ -1351,6 +1601,17 @@ mod tests {
                     lifecycle: DurableThreadLifecycle::Active,
                 },
             );
+            Ok(())
+        }
+
+        fn create_thread_snapshot(
+            &mut self,
+            snapshot: &DurableThreadSnapshot,
+        ) -> Result<(), RolloutError> {
+            if self.fail_create {
+                return Err(RolloutError::Poisoned);
+            }
+            self.threads.insert(snapshot.id.clone(), snapshot.clone());
             Ok(())
         }
 

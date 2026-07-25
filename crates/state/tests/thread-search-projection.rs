@@ -4,6 +4,7 @@ use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
 use sugarcode_state::DurableItemSnapshot;
 use sugarcode_state::DurableThreadLifecycle;
+use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::HomeResolutionInputs;
 use sugarcode_state::RolloutError;
@@ -99,6 +100,111 @@ fn searches_completed_messages_with_unicode_terms_and_stable_id_paging() {
         .query_row("SELECT text FROM search_fts LIMIT 1", [], |row| row.get(0))
         .expect("contentless FTS row");
     assert_eq!(stored_text, None, "FTS must not expose a content column");
+}
+
+#[test]
+fn indexes_a_materialized_thread_snapshot_in_one_rebuildable_update() {
+    let directory = tempdir().expect("home");
+    let resolved_home = home(&directory);
+    let mut repository = RolloutRepository::open(&resolved_home).expect("repository");
+    repository.create_thread(&thread(1)).expect("source");
+    repository
+        .append_completed_turn(&thread(1), &turn(1, "source private history"))
+        .expect("source turn");
+    let fork = DurableThreadSnapshot {
+        id: thread(2),
+        turns: vec![
+            turn(2, "copied private history"),
+            turn(3, "second copied message"),
+        ],
+        lifecycle: DurableThreadLifecycle::Active,
+    };
+    repository
+        .create_thread_snapshot(&fork)
+        .expect("materialized fork");
+    assert_eq!(
+        repository
+            .search_threads("copied", None, 50)
+            .expect("search")
+            .data,
+        vec![sugarcode_state::DurableThreadSummary { id: thread(2) }]
+    );
+    drop(repository);
+
+    fs::remove_file(
+        directory
+            .path()
+            .join("projections/v1/thread-search.sqlite3"),
+    )
+    .expect("remove search projection");
+    let mut repository = RolloutRepository::open(&resolved_home).expect("rebuild");
+    assert_eq!(
+        repository
+            .search_threads("copied", None, 50)
+            .expect("rebuilt search")
+            .data[0]
+            .id,
+        thread(2)
+    );
+}
+
+#[test]
+fn fork_search_update_failure_never_rolls_back_the_durable_snapshot() {
+    let directory = tempdir().expect("home");
+    let resolved_home = home(&directory);
+    let mut repository = RolloutRepository::open(&resolved_home).expect("repository");
+    repository.create_thread(&thread(1)).expect("source");
+    repository
+        .append_completed_turn(&thread(1), &turn(1, "source private history"))
+        .expect("source turn");
+    let database = directory
+        .path()
+        .join("projections/v1/thread-search.sqlite3");
+    let blocker = rusqlite::Connection::open(&database).expect("projection");
+    blocker
+        .execute_batch("BEGIN EXCLUSIVE")
+        .expect("hold search lock");
+
+    repository
+        .create_thread_snapshot(&DurableThreadSnapshot {
+            id: thread(2),
+            turns: vec![turn(2, "copied private history")],
+            lifecycle: DurableThreadLifecycle::Active,
+        })
+        .expect("durable snapshot remains successful");
+    assert_eq!(
+        repository
+            .load_thread(&thread(2))
+            .expect("load")
+            .expect("fork")
+            .turns[0],
+        turn(2, "copied private history")
+    );
+    assert_eq!(
+        repository.list_threads(None, 50).expect("list").data[0].id,
+        thread(2)
+    );
+    let RolloutError::Projection(diagnostic) = repository
+        .search_threads("copied", None, 50)
+        .expect_err("dirty search is unavailable")
+    else {
+        panic!("expected projection error");
+    };
+    assert_eq!(diagnostic.kind, "busy");
+
+    blocker.execute_batch("ROLLBACK").expect("release lock");
+    drop(blocker);
+    drop(repository);
+    let mut repository =
+        RolloutRepository::open(&resolved_home).expect("rebuild from durable snapshot");
+    assert_eq!(
+        repository
+            .search_threads("copied", None, 50)
+            .expect("rebuilt search")
+            .data[0]
+            .id,
+        thread(2)
+    );
 }
 
 #[test]

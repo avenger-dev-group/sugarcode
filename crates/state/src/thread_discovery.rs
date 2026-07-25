@@ -200,6 +200,77 @@ impl ThreadDiscoveryProjection {
         result
     }
 
+    pub(crate) fn record_thread_snapshot(
+        &mut self,
+        state: &RolloutThreadState,
+    ) -> Result<(), RolloutError> {
+        if self.dirty {
+            return Ok(());
+        }
+        let snapshot = &state.snapshot;
+        if snapshot.lifecycle != DurableThreadLifecycle::Active {
+            return Err(RolloutError::InvalidRecord {
+                kind: "materializedThreadNotActive",
+            });
+        }
+        let order_key = thread_order_key(&snapshot.id)?;
+        let last_sequence =
+            i64::try_from(state.last_record_sequence).map_err(|_| RolloutError::InvalidRecord {
+                kind: "projectionSequence",
+            })?;
+        let added_records = last_sequence;
+        let database_path = self.database_path.clone();
+        let result = (|| {
+            let connection = self.connection.as_mut().ok_or_else(|| {
+                RolloutError::Projection(ProjectionDiagnostic {
+                    path: database_path.clone(),
+                    operation: "update",
+                    kind: "unavailable",
+                })
+            })?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            transaction
+                .execute(
+                    "INSERT INTO threads (
+                        thread_id, thread_order_key, last_rollout_sequence, lifecycle
+                    ) VALUES (?1, ?2, ?3, 'active')",
+                    params![snapshot.id.as_str(), order_key, last_sequence],
+                )
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            let changed = transaction
+                .execute(
+                    "UPDATE projection_metadata
+                     SET rollout_file_count = rollout_file_count + 1,
+                         rollout_record_count = rollout_record_count + ?1
+                     WHERE singleton = 1
+                       AND rollout_file_count < 10000
+                       AND rollout_record_count + ?1 <= 1000000",
+                    params![added_records],
+                )
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            if changed != 1 {
+                return Err(RolloutError::Projection(ProjectionDiagnostic {
+                    path: database_path.clone(),
+                    operation: "update",
+                    kind: "stale",
+                }));
+            }
+            transaction
+                .commit()
+                .map_err(|error| sqlite_error(&database_path, "update", error))
+        })();
+        if let Err(error) = &result {
+            self.mark_dirty(
+                "update",
+                projection_error_kind(error),
+                is_rebuildable_projection_error(error),
+            );
+        }
+        result
+    }
+
     pub(crate) fn record_turn_completed(
         &mut self,
         thread_id: &ThreadId,

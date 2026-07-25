@@ -37,6 +37,8 @@ pub use thread::ThreadArchiveParams;
 pub use thread::ThreadArchiveResponse;
 pub use thread::ThreadDeleteParams;
 pub use thread::ThreadDeleteResponse;
+pub use thread::ThreadForkParams;
+pub use thread::ThreadForkResponse;
 pub use thread::ThreadListParams;
 pub use thread::ThreadListResponse;
 pub use thread::ThreadResumeParams;

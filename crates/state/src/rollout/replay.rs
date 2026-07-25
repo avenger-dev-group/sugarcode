@@ -31,6 +31,7 @@ pub(super) struct ReplayResult {
 
 pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
     let mut paths = Vec::new();
+    let mut diagnostics = Vec::new();
     for entry in fs::read_dir(root).map_err(|error| unavailable(root, error))? {
         let entry = entry.map_err(|error| unavailable(root, error))?;
         let path = entry.path();
@@ -39,6 +40,19 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return Err(corrupt(&path, 0, "invalidStateEntry"));
             }
+            continue;
+        }
+        if is_fork_create_artifact(&path) {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(corrupt(&path, 0, "invalidStateEntry"));
+            }
+            fs::remove_file(&path).map_err(|error| unavailable(&path, error))?;
+            sync_parent(&path)?;
+            diagnostics.push(RolloutDiagnostic {
+                path,
+                offset: 0,
+                kind: "forkCreateArtifactRecovered",
+            });
             continue;
         }
         if metadata.file_type().is_symlink()
@@ -59,7 +73,6 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
 
     let mut threads = BTreeMap::new();
     let mut sequences = IdSequences::default();
-    let mut diagnostics = Vec::new();
     let mut total_bytes = 0u64;
     let mut retained_bytes = 0u64;
     let mut total_records = 0usize;
@@ -324,6 +337,19 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
         retained_bytes,
         record_count: total_records,
     })
+}
+
+fn is_fork_create_artifact(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(thread_id) = name
+        .strip_prefix('.')
+        .and_then(|name| name.strip_suffix(".fork.tmp"))
+    else {
+        return false;
+    };
+    parse_canonical_id(thread_id, "thr_", "thread").is_ok()
 }
 
 pub(crate) fn parse_canonical_id(

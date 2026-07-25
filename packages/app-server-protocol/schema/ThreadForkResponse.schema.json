@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ThreadForkResponse",
+  "type": "object",
+  "properties": {
+    "thread": {
+      "$ref": "#/$defs/Thread"
+    },
+    "turns": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TurnSnapshot"
+      }
+    }
+  },
+  "required": [
+    "thread",
+    "turns"
+  ],
+  "$defs": {
+    "Item": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "agentMessage"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "text"
+          ]
+        }
+      ]
+    },
+    "Thread": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "TurnSnapshot": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Item"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/TurnSnapshotStatus"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "items"
+      ]
+    },
+    "TurnSnapshotStatus": {
+      "type": "string",
+      "enum": [
+        "completed"
+      ]
+    }
+  }
+}

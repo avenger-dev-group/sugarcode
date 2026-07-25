@@ -81,6 +81,10 @@ impl DurableItemSnapshot {
 pub trait ThreadRepository: fmt::Debug + Send {
     fn id_sequences(&self) -> IdSequences;
     fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
+    fn create_thread_snapshot(
+        &mut self,
+        snapshot: &DurableThreadSnapshot,
+    ) -> Result<(), RolloutError>;
     fn append_completed_turn(
         &mut self,
         thread_id: &ThreadId,
