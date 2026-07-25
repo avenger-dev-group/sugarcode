@@ -16,6 +16,7 @@ use sugarcode_app_server_protocol::ERROR_NOT_INITIALIZED;
 use sugarcode_app_server_protocol::ERROR_PARSE;
 use sugarcode_app_server_protocol::ERROR_STATE_UNAVAILABLE;
 use sugarcode_app_server_protocol::ERROR_THREAD_NOT_FOUND;
+use sugarcode_app_server_protocol::ERROR_TURN_NOT_FOUND;
 use sugarcode_app_server_protocol::ERROR_UNSUPPORTED_PROTOCOL_VERSION;
 use sugarcode_app_server_protocol::InitializeParams;
 use sugarcode_app_server_protocol::InitializeResponse;
@@ -47,14 +48,19 @@ use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
 use sugarcode_app_server_protocol::ThreadUnarchiveParams;
 use sugarcode_app_server_protocol::ThreadUnarchiveResponse;
+use sugarcode_app_server_protocol::TurnInterruptParams;
+use sugarcode_app_server_protocol::TurnInterruptResponse;
 use sugarcode_app_server_protocol::TurnStartParams;
 use sugarcode_app_server_protocol::TurnStartResponse;
 use sugarcode_core::Core;
 use sugarcode_core::CoreApi;
 use sugarcode_core::CoreError;
+use sugarcode_core::TurnInterruptOutcome;
+use sugarcode_core::TurnStartOutcome;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::ThreadId;
+use sugarcode_protocol::TurnId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
@@ -281,6 +287,20 @@ where
                     )];
                 }
                 self.start_turn(id, object.get("params").cloned())
+            }
+            "turn/interrupt" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.interrupt_turn(id, object.get("params").cloned())
             }
             _ if request_id.is_none() => Vec::new(),
             _ if self.state != SessionState::Ready => vec![error(
@@ -892,41 +912,118 @@ where
         };
         let core_request_id = CoreRequestId::new(sequence);
         self.last_core_request_sequence = sequence;
+        let outcome =
+            match self
+                .core
+                .start_text_turn(core_request_id, thread_id.clone(), params.input)
+            {
+                Ok(outcome) => outcome,
+                Err(CoreError::StateUnavailable) => {
+                    return vec![error(
+                        Some(id),
+                        ERROR_STATE_UNAVAILABLE,
+                        "State unavailable",
+                        None,
+                    )];
+                }
+                Err(_) => {
+                    return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+                }
+            };
         self.accepted_request_ids.insert(id.clone());
 
-        let events = match self.core.start_turn(core_request_id, thread_id.clone()) {
-            Ok(events) => events,
-            Err(CoreError::StateUnavailable) => {
+        match outcome {
+            TurnStartOutcome::Immediate(events) => {
+                let mapped = match map_turn_lifecycle(events, core_request_id, &thread_id) {
+                    Ok(mapped) => mapped,
+                    Err(_) => {
+                        return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+                    }
+                };
+                let response = match serde_json::to_value(TurnStartResponse { turn: mapped.turn }) {
+                    Ok(response) => response,
+                    Err(_) => return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)],
+                };
+                let mut messages = Vec::with_capacity(1 + mapped.notifications.len());
+                messages.push(JsonRpcMessage::Response(JsonRpcResponse {
+                    jsonrpc: JsonRpcVersion::V2,
+                    id,
+                    result: response,
+                }));
+                messages.extend(mapped.notifications);
+                messages
+            }
+            TurnStartOutcome::Accepted { turn_id } => {
+                let response = TurnStartResponse {
+                    turn: sugarcode_app_server_protocol::Turn {
+                        id: turn_id.into_string(),
+                        status: sugarcode_app_server_protocol::TurnStatus::InProgress,
+                        error: None,
+                    },
+                };
+                vec![JsonRpcMessage::Response(JsonRpcResponse {
+                    jsonrpc: JsonRpcVersion::V2,
+                    id,
+                    result: serde_json::to_value(response)
+                        .expect("turn/start response must serialize"),
+                })]
+            }
+        }
+    }
+
+    fn interrupt_turn(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
+        let params = match params
+            .ok_or(())
+            .and_then(|value| serde_json::from_value::<TurnInterruptParams>(value).map_err(|_| ()))
+        {
+            Ok(params) => params,
+            Err(()) => {
                 return vec![error(
                     Some(id),
-                    ERROR_STATE_UNAVAILABLE,
-                    "State unavailable",
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
                     None,
                 )];
             }
-            Err(_) => {
-                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+        let thread_id = ThreadId::new(params.thread_id.clone());
+        let turn_id = TurnId::new(params.turn_id.clone());
+        let outcome = self.core.interrupt_turn(&thread_id, &turn_id);
+        match outcome {
+            Ok(TurnInterruptOutcome::Accepted | TurnInterruptOutcome::AlreadyTerminal) => {
+                self.accepted_request_ids.insert(id.clone());
+                vec![JsonRpcMessage::Response(JsonRpcResponse {
+                    jsonrpc: JsonRpcVersion::V2,
+                    id,
+                    result: serde_json::to_value(TurnInterruptResponse {})
+                        .expect("turn/interrupt response must serialize"),
+                })]
             }
-        };
-
-        let mapped = match map_turn_lifecycle(events, core_request_id, &thread_id) {
-            Ok(mapped) => mapped,
-            Err(_) => {
-                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
-            }
-        };
-        let response = match serde_json::to_value(TurnStartResponse { turn: mapped.turn }) {
-            Ok(response) => response,
-            Err(_) => return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)],
-        };
-        let mut messages = Vec::with_capacity(1 + mapped.notifications.len());
-        messages.push(JsonRpcMessage::Response(JsonRpcResponse {
-            jsonrpc: JsonRpcVersion::V2,
-            id,
-            result: response,
-        }));
-        messages.extend(mapped.notifications);
-        messages
+            Err(CoreError::StateUnavailable) => vec![error(
+                Some(id),
+                ERROR_STATE_UNAVAILABLE,
+                "State unavailable",
+                None,
+            )],
+            Err(CoreError::NoActiveTurn(_)) => vec![error(
+                Some(id),
+                ERROR_TURN_NOT_FOUND,
+                "Turn not found",
+                Some(json!({
+                    "threadId": params.thread_id,
+                    "turnId": params.turn_id,
+                })),
+            )],
+            Err(_) => vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)],
+        }
     }
 }
 
@@ -1069,7 +1166,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
         );
         session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
         );
 
         let messages = session.process_line(
@@ -1104,10 +1201,10 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
         );
         session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
         );
         session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
         );
 
         let messages = session.process_line(
@@ -1222,7 +1319,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
         );
         session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
         );
 
         for request_id in ["archive-1", "archive-2"] {
@@ -1257,12 +1354,17 @@ mod tests {
         assert_eq!(search.result, json!({"data": [], "nextCursor": null}));
 
         for method in ["thread/resume", "turn/start"] {
+            let params = if method == "turn/start" {
+                json!({"threadId": "thr_0000000000000001", "input": "Hello"})
+            } else {
+                json!({"threadId": "thr_0000000000000001"})
+            };
             let messages = session.process_line(
                 &json!({
                     "jsonrpc": "2.0",
                     "id": format!("{method}-after-archive"),
                     "method": method,
-                    "params": {"threadId": "thr_0000000000000001"}
+                    "params": params
                 })
                 .to_string(),
             );
@@ -1323,7 +1425,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
         );
         session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
         );
         session.process_line(
             r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
@@ -1348,7 +1450,7 @@ mod tests {
             (
                 "turn-2",
                 "turn/start",
-                json!({"threadId": "thr_0000000000000001"}),
+                json!({"threadId": "thr_0000000000000001", "input": "Hello"}),
             ),
         ] {
             let messages = session.process_line(
@@ -1420,7 +1522,10 @@ mod tests {
                     "jsonrpc": "2.0",
                     "id": turn_request,
                     "method": "turn/start",
-                    "params": {"threadId": format!("thr_000000000000000{}", &thread_request[7..])}
+                    "params": {
+                        "threadId": format!("thr_000000000000000{}", &thread_request[7..]),
+                        "input": "Hello"
+                    }
                 })
                 .to_string(),
             );
@@ -1455,12 +1560,17 @@ mod tests {
             ("unarchive-deleted", "thread/unarchive"),
             ("turn-deleted", "turn/start"),
         ] {
+            let params = if method == "turn/start" {
+                json!({"threadId": "thr_0000000000000001", "input": "Hello"})
+            } else {
+                json!({"threadId": "thr_0000000000000001"})
+            };
             let messages = session.process_line(
                 &json!({
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "method": method,
-                    "params": {"threadId": "thr_0000000000000001"}
+                    "params": params
                 })
                 .to_string(),
             );
@@ -1541,7 +1651,8 @@ mod tests {
                 "id": "turn-1",
                 "method": "turn/start",
                 "params": {
-                    "threadId": thread_id
+                    "threadId": thread_id,
+                    "input": "Hello"
                 }
             })
             .to_string(),
@@ -1633,7 +1744,7 @@ mod tests {
         let thread_id = response_thread_id(&thread_messages).to_string();
 
         let mut invalid = session.process_line(
-            r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":" "}}"#,
+            r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":" ","input":"Hello"}}"#,
         );
         let JsonRpcMessage::Error(error) = invalid.pop().expect("invalid params response") else {
             panic!("expected error");
@@ -1646,7 +1757,8 @@ mod tests {
                 "id": "retry",
                 "method": "turn/start",
                 "params": {
-                    "threadId": thread_id
+                    "threadId": thread_id,
+                    "input": "Hello"
                 }
             })
             .to_string(),
@@ -1659,7 +1771,7 @@ mod tests {
         let mut session = ready_session(Core::new());
 
         let mut missing = session.process_line(
-            r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_missing"}}"#,
+            r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_missing","input":"Hello"}}"#,
         );
         let JsonRpcMessage::Error(error) = missing.pop().expect("missing thread response") else {
             panic!("expected error");
@@ -1676,7 +1788,8 @@ mod tests {
                 "id": "retry",
                 "method": "turn/start",
                 "params": {
-                    "threadId": thread_id
+                    "threadId": thread_id,
+                    "input": "Hello"
                 }
             })
             .to_string(),
@@ -1705,7 +1818,8 @@ mod tests {
                     "id": id,
                     "method": "turn/start",
                     "params": {
-                        "threadId": thread_id
+                        "threadId": thread_id,
+                        "input": "Hello"
                     }
                 })
                 .to_string(),
@@ -1756,7 +1870,8 @@ mod tests {
                 "id": "shared",
                 "method": "turn/start",
                 "params": {
-                    "threadId": thread_id
+                    "threadId": thread_id,
+                    "input": "Hello"
                 }
             })
             .to_string(),
@@ -1767,11 +1882,11 @@ mod tests {
         assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
 
         let turn = session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
         );
         assert_eq!(response_turn_id(&turn), "turn_0000000000000001");
         let mut repeated = session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
         );
         let JsonRpcMessage::Error(error) = repeated.pop().expect("duplicate response") else {
             panic!("expected error");
@@ -1779,7 +1894,7 @@ mod tests {
         assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
 
         let second_turn = session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
         );
         assert_eq!(response_turn_id(&second_turn), "turn_0000000000000002");
     }
@@ -1811,7 +1926,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"fork","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}"#,
-            r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
         ] {
             let mut session = ready_session(StateUnavailableCore);
             let mut messages = session.process_line(request);
@@ -1918,7 +2033,7 @@ mod tests {
             let mut session = ready_session(TurnCore::new(behavior));
 
             let mut messages = session.process_line(
-                r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing"}}"#,
+                r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing","input":"Hello"}}"#,
             );
 
             assert_eq!(messages.len(), 1);
@@ -1942,7 +2057,7 @@ mod tests {
         ] {
             let mut session = ready_session(TurnCore::new(behavior));
             let mut messages = session.process_line(
-                r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing"}}"#,
+                r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing","input":"Hello"}}"#,
             );
 
             assert_eq!(messages.len(), 1);
@@ -2062,7 +2177,7 @@ mod tests {
             ));
             if sequence < 3 {
                 session.process_line(&format!(
-                    r#"{{"jsonrpc":"2.0","id":"turn-{sequence}","method":"turn/start","params":{{"threadId":"thr_{sequence:016}"}}}}"#
+                    r#"{{"jsonrpc":"2.0","id":"turn-{sequence}","method":"turn/start","params":{{"threadId":"thr_{sequence:016}","input":"Hello"}}}}"#
                 ));
             }
         }

@@ -19,6 +19,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use sugarcode_protocol::ThreadId;
+use sugarcode_protocol::TurnId;
 
 #[derive(Debug)]
 pub(super) struct ReplayResult {
@@ -143,6 +144,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
         let mut expected_sequence = 1u64;
         let mut offset = 0usize;
         let mut record_count = 0usize;
+        let mut pending_turn_id: Option<TurnId> = None;
 
         while offset < bytes.len() {
             let relative_end = bytes[offset..]
@@ -189,6 +191,33 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     }
                     snapshot = Some(empty_thread(thread_id));
                 }
+                DecodedRecord::TurnStarted {
+                    thread_id,
+                    mut turn,
+                    sequence,
+                } => {
+                    let thread = snapshot
+                        .as_mut()
+                        .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
+                    if thread_id != expected_thread_id {
+                        return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
+                    }
+                    if thread.lifecycle != DurableThreadLifecycle::Active {
+                        return Err(corrupt(&path, offset as u64, "turnStartedWhileInactive"));
+                    }
+                    validate_new_turn(
+                        &turn,
+                        &path,
+                        offset as u64,
+                        &mut turn_ids,
+                        &mut item_ids,
+                        &mut sequences,
+                    )?;
+                    turn.status = super::DurableTurnStatus::Interrupted;
+                    pending_turn_id = Some(turn.id.clone());
+                    thread.turns.push(turn);
+                    turn_record_sequences.push(sequence);
+                }
                 DecodedRecord::TurnCompleted {
                     thread_id,
                     turn,
@@ -208,30 +237,44 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                         };
                         return Err(corrupt(&path, offset as u64, kind));
                     }
-                    let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")
-                        .map_err(|_| corrupt(&path, offset as u64, "invalidTurnId"))?;
-                    if !turn_ids.insert(turn.id.clone()) {
-                        return Err(corrupt(&path, offset as u64, "duplicateTurnId"));
-                    }
-                    sequences.turn = sequences.turn.max(turn_sequence);
-                    if turn.items.is_empty() {
-                        return Err(corrupt(&path, offset as u64, "emptyCompletedTurn"));
-                    }
-                    for item in &turn.items {
-                        let item_sequence = parse_canonical_id(item.id().as_str(), "item_", "item")
-                            .map_err(|_| corrupt(&path, offset as u64, "invalidItemId"))?;
-                        if !item_ids.insert(item.id().clone()) {
-                            return Err(corrupt(&path, offset as u64, "duplicateItemId"));
+                    if pending_turn_id.as_ref() == Some(&turn.id) {
+                        let pending = thread
+                            .turns
+                            .last_mut()
+                            .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))?;
+                        if pending
+                            .items
+                            .iter()
+                            .map(|item| item.id())
+                            .ne(turn.items.iter().map(|item| item.id()))
+                        {
+                            return Err(corrupt(&path, offset as u64, "turnItemMismatch"));
                         }
-                        sequences.item = sequences.item.max(item_sequence);
+                        *pending = turn;
+                        *turn_record_sequences
+                            .last_mut()
+                            .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))? =
+                            sequence;
+                        pending_turn_id = None;
+                    } else {
+                        pending_turn_id = None;
+                        validate_new_turn(
+                            &turn,
+                            &path,
+                            offset as u64,
+                            &mut turn_ids,
+                            &mut item_ids,
+                            &mut sequences,
+                        )?;
+                        thread.turns.push(turn);
+                        turn_record_sequences.push(sequence);
                     }
-                    thread.turns.push(turn);
-                    turn_record_sequences.push(sequence);
                 }
                 DecodedRecord::ThreadArchived {
                     thread_id,
                     sequence: _,
                 } => {
+                    pending_turn_id = None;
                     let thread = snapshot
                         .as_mut()
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
@@ -254,6 +297,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     thread_id,
                     sequence: _,
                 } => {
+                    pending_turn_id = None;
                     let thread = snapshot
                         .as_mut()
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
@@ -280,6 +324,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     thread_id,
                     sequence: _,
                 } => {
+                    pending_turn_id = None;
                     let thread = snapshot
                         .as_mut()
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
@@ -337,6 +382,34 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
         retained_bytes,
         record_count: total_records,
     })
+}
+
+fn validate_new_turn(
+    turn: &super::DurableTurnSnapshot,
+    path: &Path,
+    offset: u64,
+    turn_ids: &mut BTreeSet<TurnId>,
+    item_ids: &mut BTreeSet<sugarcode_protocol::ItemId>,
+    sequences: &mut IdSequences,
+) -> Result<(), RolloutError> {
+    let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")
+        .map_err(|_| corrupt(path, offset, "invalidTurnId"))?;
+    if !turn_ids.insert(turn.id.clone()) {
+        return Err(corrupt(path, offset, "duplicateTurnId"));
+    }
+    sequences.turn = sequences.turn.max(turn_sequence);
+    if turn.items.is_empty() {
+        return Err(corrupt(path, offset, "emptyCompletedTurn"));
+    }
+    for item in &turn.items {
+        let item_sequence = parse_canonical_id(item.id().as_str(), "item_", "item")
+            .map_err(|_| corrupt(path, offset, "invalidItemId"))?;
+        if !item_ids.insert(item.id().clone()) {
+            return Err(corrupt(path, offset, "duplicateItemId"));
+        }
+        sequences.item = sequences.item.max(item_sequence);
+    }
+    Ok(())
 }
 
 fn is_fork_create_artifact(path: &Path) -> bool {

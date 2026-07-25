@@ -7,6 +7,7 @@ use sugarcode_state::DurableItemSnapshot;
 use sugarcode_state::DurableThreadLifecycle;
 use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableTurnSnapshot;
+use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::HomeResolutionInputs;
 use sugarcode_state::RolloutError;
 use sugarcode_state::RolloutRepository;
@@ -17,10 +18,32 @@ use tempfile::tempdir;
 fn completed_turn(sequence: u64) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
         id: TurnId::new(format!("turn_{sequence:016}")),
+        status: DurableTurnStatus::Completed,
         items: vec![DurableItemSnapshot::AgentMessage {
             id: ItemId::new(format!("item_{sequence:016}")),
             text: "SugarCode deterministic response.".to_string(),
         }],
+        error: None,
+        usage: None,
+    }
+}
+
+fn started_text_turn() -> DurableTurnSnapshot {
+    DurableTurnSnapshot {
+        id: TurnId::new("turn_0000000000000001"),
+        status: DurableTurnStatus::InProgress,
+        items: vec![
+            DurableItemSnapshot::UserMessage {
+                id: ItemId::new("item_0000000000000001"),
+                text: "Hello".to_string(),
+            },
+            DurableItemSnapshot::AgentMessage {
+                id: ItemId::new("item_0000000000000002"),
+                text: String::new(),
+            },
+        ],
+        error: None,
+        usage: None,
     }
 }
 
@@ -62,6 +85,60 @@ fn persists_and_replays_completed_thread_history() {
     assert_eq!(repository.id_sequences().thread, 1);
     assert_eq!(repository.id_sequences().turn, 1);
     assert_eq!(repository.id_sequences().item, 1);
+}
+
+#[test]
+fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(&thread_id, &started_text_turn())
+            .expect("durable turn start");
+    }
+
+    let repository = RolloutRepository::open(&home).expect("reopen");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.turns.len(), 1);
+    assert_eq!(snapshot.turns[0].status, DurableTurnStatus::Interrupted);
+    assert_eq!(snapshot.turns[0].items.len(), 2);
+    assert!(snapshot.turns[0].error.is_none());
+}
+
+#[test]
+fn a_started_turn_is_replaced_by_its_single_terminal_record() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    let started = started_text_turn();
+    repository
+        .begin_turn(&thread_id, &started)
+        .expect("durable turn start");
+    let mut completed = started;
+    completed.status = DurableTurnStatus::Completed;
+    let DurableItemSnapshot::AgentMessage { text, .. } = &mut completed.items[1] else {
+        panic!("agent item");
+    };
+    *text = "Hello from the model".to_string();
+    repository
+        .finish_turn(&thread_id, &completed)
+        .expect("durable terminal");
+    drop(repository);
+
+    let repository = RolloutRepository::open(&home).expect("reopen");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.turns, vec![completed]);
 }
 
 #[test]
@@ -1005,7 +1082,10 @@ fn rejects_an_empty_completed_turn_before_writing() {
             &thread_id,
             &DurableTurnSnapshot {
                 id: TurnId::new("turn_0000000000000001"),
+                status: DurableTurnStatus::Completed,
                 items: Vec::new(),
+                error: None,
+                usage: None,
             },
         )
         .expect_err("empty completed turn");

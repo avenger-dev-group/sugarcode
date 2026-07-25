@@ -13,6 +13,26 @@
         },
         "type": {
           "type": "string",
+          "const": "userMessage"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "text"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
           "const": "agentMessage"
         }
       },

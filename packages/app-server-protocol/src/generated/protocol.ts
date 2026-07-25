@@ -38,7 +38,7 @@ export type ServerCapabilities = Record<string, never>;
 
 export type InitializeResponse = { protocolVersion: number, serverInfo: ServerInfo, platform: PlatformInfo, capabilities: ServerCapabilities, };
 
-export type Item = { "type": "agentMessage", id: string, text: string, };
+export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, };
 
 export type ItemStartedNotification = { threadId: string, turnId: string, item: Item, };
 
@@ -80,21 +80,29 @@ export type ThreadStartedNotification = { thread: Thread, };
 
 export type ThreadResumeParams = { threadId: string, };
 
-export type TurnSnapshotStatus = "completed";
+export type TurnSnapshotStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
-export type TurnSnapshot = { id: string, status: TurnSnapshotStatus, items: Array<Item>, };
+export type TurnSnapshot = { id: string, status: TurnSnapshotStatus, items: Array<Item>, error?: TurnError, };
 
 export type ThreadResumeResponse = { thread: Thread, turns: Array<TurnSnapshot>, };
 
-export type Turn = { id: string, status: TurnStatus, };
+export type Turn = { id: string, status: TurnStatus, error?: TurnError, };
 
-export type TurnStatus = "inProgress" | "completed";
+export type TurnStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
-export type TurnStartParams = { threadId: string, };
+export type TurnErrorKind = "authentication" | "invalidRequest" | "rateLimited" | "timeout" | "transport" | "server" | "protocol" | "incomplete" | "filtered" | "unsupportedOutput" | "outputTooLarge" | "stateUnavailable";
+
+export type TurnError = { kind: TurnErrorKind, retryable: boolean, };
+
+export type TurnStartParams = { threadId: string, input: string, };
 
 export type TurnStartResponse = { turn: Turn, };
 
 export type TurnStartedNotification = { threadId: string, turn: Turn, };
 
 export type TurnCompletedNotification = { threadId: string, turn: Turn, };
+
+export type TurnInterruptParams = { threadId: string, turnId: string, };
+
+export type TurnInterruptResponse = Record<string, never>;
 

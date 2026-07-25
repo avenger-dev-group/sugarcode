@@ -1,0 +1,4 @@
+data: {"id":"fixture","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}
+
+: connection ends before a terminal event
+

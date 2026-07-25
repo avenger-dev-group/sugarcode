@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TurnInterruptParams",
+  "type": "object",
+  "properties": {
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "threadId",
+    "turnId"
+  ]
+}

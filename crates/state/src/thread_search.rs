@@ -260,7 +260,7 @@ impl ThreadSearchProjection {
         let added_records = last_sequence;
         let added_items = snapshot.turns.iter().try_fold(0usize, |count, turn| {
             count
-                .checked_add(turn.items.len())
+                .checked_add(searchable_turn_item_count(turn))
                 .ok_or(RolloutError::InvalidRecord {
                     kind: "searchableItems",
                 })
@@ -304,7 +304,9 @@ impl ThreadSearchProjection {
                         }
                     })?;
                     for (item_index, item) in turn.items.iter().enumerate() {
-                        let DurableItemSnapshot::AgentMessage { id, text } = item;
+                        let DurableItemSnapshot::AgentMessage { id, text } = item else {
+                            continue;
+                        };
                         let document_id = item_document_id(id.as_str())?;
                         let digest = Sha256::digest(text.as_bytes());
                         document_statement
@@ -554,7 +556,11 @@ impl ThreadSearchProjection {
                 kind: "projectionSequence",
             })?;
         let previous_sequence = current_sequence - 1;
-        let added_items = turn.items.len();
+        let added_items = turn
+            .items
+            .iter()
+            .filter(|item| matches!(item, DurableItemSnapshot::AgentMessage { .. }))
+            .count();
         let database_path = self.database_path.clone();
         let result = (|| {
             let connection = self
@@ -591,7 +597,9 @@ impl ThreadSearchProjection {
                     .prepare("INSERT INTO search_fts(rowid, text) VALUES (?1, ?2)")
                     .map_err(|error| sqlite_error(&database_path, "update", error))?;
                 for (item_index, item) in turn.items.iter().enumerate() {
-                    let DurableItemSnapshot::AgentMessage { id, text } = item;
+                    let DurableItemSnapshot::AgentMessage { id, text } = item else {
+                        continue;
+                    };
                     let document_id = item_document_id(id.as_str())?;
                     let digest = Sha256::digest(text.as_bytes());
                     document_statement
@@ -618,6 +626,68 @@ impl ThreadSearchProjection {
                          WHERE singleton = 1
                            AND searchable_item_count + ?1 <= 1000000",
                         params![bounded_i64(added_items, &database_path, "searchableItems")?],
+                    )
+                    .map_err(|error| sqlite_error(&database_path, "update", error))?,
+                &database_path,
+                "update",
+            )?;
+            transaction
+                .commit()
+                .map_err(|error| sqlite_error(&database_path, "update", error))
+        })();
+        if let Err(error) = &result {
+            self.mark_dirty(
+                "update",
+                projection_error_kind(error),
+                is_rebuildable_projection_error(error),
+            );
+        }
+        result
+    }
+
+    pub(crate) fn record_turn_started(
+        &mut self,
+        thread_id: &ThreadId,
+        record_sequence: u64,
+    ) -> Result<(), RolloutError> {
+        if self.dirty {
+            return Ok(());
+        }
+        let current_sequence =
+            i64::try_from(record_sequence).map_err(|_| RolloutError::InvalidRecord {
+                kind: "projectionSequence",
+            })?;
+        let previous_sequence = current_sequence - 1;
+        let database_path = self.database_path.clone();
+        let result = (|| {
+            let connection = self
+                .connection
+                .as_mut()
+                .ok_or_else(|| projection_error(&database_path, "update", "unavailable"))?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            require_one(
+                transaction
+                    .execute(
+                        "UPDATE thread_watermarks
+                         SET last_rollout_sequence = ?2
+                         WHERE thread_id = ?1
+                           AND last_rollout_sequence = ?3
+                           AND lifecycle = 'active'",
+                        params![thread_id.as_str(), current_sequence, previous_sequence],
+                    )
+                    .map_err(|error| sqlite_error(&database_path, "update", error))?,
+                &database_path,
+                "update",
+            )?;
+            require_one(
+                transaction
+                    .execute(
+                        "UPDATE projection_metadata
+                         SET rollout_record_count = rollout_record_count + 1
+                         WHERE singleton = 1",
+                        [],
                     )
                     .map_err(|error| sqlite_error(&database_path, "update", error))?,
                 &database_path,
@@ -931,7 +1001,9 @@ fn build_database(
             let rollout_sequence = i64::try_from(*record_sequence)
                 .map_err(|_| projection_error(path, "rebuild", "rolloutRecordLimit"))?;
             for (item_index, item) in turn.items.iter().enumerate() {
-                let DurableItemSnapshot::AgentMessage { id, text } = item;
+                let DurableItemSnapshot::AgentMessage { id, text } = item else {
+                    continue;
+                };
                 let document_id = item_document_id(id.as_str())?;
                 let digest = Sha256::digest(text.as_bytes());
                 transaction
@@ -1115,7 +1187,9 @@ fn expected_documents(
         let snapshot = &state.snapshot;
         for (turn, record_sequence) in snapshot.turns.iter().zip(&state.turn_record_sequences) {
             for (item_index, item) in turn.items.iter().enumerate() {
-                let DurableItemSnapshot::AgentMessage { id, text } = item;
+                let DurableItemSnapshot::AgentMessage { id, text } = item else {
+                    continue;
+                };
                 documents.push(ExpectedDocument {
                     document_id: item_document_id(id.as_str())
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -1140,7 +1214,9 @@ fn searchable_item_count(
     let count = threads
         .values()
         .flat_map(|thread| &thread.snapshot.turns)
-        .try_fold(0usize, |count, turn| count.checked_add(turn.items.len()))
+        .try_fold(0usize, |count, turn| {
+            count.checked_add(searchable_turn_item_count(turn))
+        })
         .ok_or_else(|| {
             projection_error(Path::new(DATABASE_FILE), "rebuild", "searchableItemLimit")
         })?;
@@ -1152,6 +1228,13 @@ fn searchable_item_count(
         ));
     }
     Ok(count)
+}
+
+fn searchable_turn_item_count(turn: &crate::DurableTurnSnapshot) -> usize {
+    turn.items
+        .iter()
+        .filter(|item| matches!(item, DurableItemSnapshot::AgentMessage { .. }))
+        .count()
 }
 
 fn compile_match_query(query: &str) -> Result<String, RolloutError> {

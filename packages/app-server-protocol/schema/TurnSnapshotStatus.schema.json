@@ -3,6 +3,9 @@
   "title": "TurnSnapshotStatus",
   "type": "string",
   "enum": [
-    "completed"
+    "inProgress",
+    "completed",
+    "failed",
+    "interrupted"
   ]
 }

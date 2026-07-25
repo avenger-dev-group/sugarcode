@@ -1,12 +1,12 @@
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"golden-client","version":"1.0.0"}}}
 {"jsonrpc":"2.0","method":"initialized"}
 {"jsonrpc":"2.0","id":"thread-1","method":"thread/start"}
-{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}
-{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}
+{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}
+{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}
 {"jsonrpc":"2.0","id":"fork","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}
 {"jsonrpc":"2.0","id":"list","method":"thread/list"}
 {"jsonrpc":"2.0","id":"search","method":"thread/search","params":{"query":"SugarCode"}}
 {"jsonrpc":"2.0","id":"resume-source","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}
 {"jsonrpc":"2.0","id":"resume-fork","method":"thread/resume","params":{"threadId":"thr_0000000000000002"}}
-{"jsonrpc":"2.0","id":"turn-source","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}
-{"jsonrpc":"2.0","id":"turn-fork","method":"turn/start","params":{"threadId":"thr_0000000000000002"}}
+{"jsonrpc":"2.0","id":"turn-source","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}
+{"jsonrpc":"2.0","id":"turn-fork","method":"turn/start","params":{"threadId":"thr_0000000000000002","input":"Hello"}}

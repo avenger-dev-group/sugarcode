@@ -1,33 +1,33 @@
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
-{"jsonrpc":"2.0","id":"thread-1","result":{"thread":{"id":"thr_0000000000000001"}}}
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":{},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
+{"id":"thread-1","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000001"}}}
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","id":"turn-1","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"id":"turn-1","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
-{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000001","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
-{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000001","threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000001","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000002","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000002","threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"completed"}}}
-{"jsonrpc":"2.0","id":"turn-2","result":{"turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
+{"id":"turn-2","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
-{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000002","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
-{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000002","threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000004","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000004","threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000004","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002","status":"completed"}}}
-{"jsonrpc":"2.0","id":"fork","result":{"thread":{"id":"thr_0000000000000002"},"turns":[{"id":"turn_0000000000000003","items":[{"id":"item_0000000000000003","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"},{"id":"turn_0000000000000004","items":[{"id":"item_0000000000000004","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"}]}}
+{"id":"fork","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000002"},"turns":[{"id":"turn_0000000000000003","items":[{"id":"item_0000000000000005","text":"Hello","type":"userMessage"},{"id":"item_0000000000000006","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"},{"id":"turn_0000000000000004","items":[{"id":"item_0000000000000007","text":"Hello","type":"userMessage"},{"id":"item_0000000000000008","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"}]}}
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000002"}}}
-{"jsonrpc":"2.0","id":"list","result":{"data":[{"id":"thr_0000000000000002"},{"id":"thr_0000000000000001"}],"nextCursor":null}}
-{"jsonrpc":"2.0","id":"search","result":{"data":[{"id":"thr_0000000000000002"},{"id":"thr_0000000000000001"}],"nextCursor":null}}
-{"jsonrpc":"2.0","id":"resume-source","result":{"thread":{"id":"thr_0000000000000001"},"turns":[{"id":"turn_0000000000000001","items":[{"id":"item_0000000000000001","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"},{"id":"turn_0000000000000002","items":[{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"}]}}
-{"jsonrpc":"2.0","id":"resume-fork","result":{"thread":{"id":"thr_0000000000000002"},"turns":[{"id":"turn_0000000000000003","items":[{"id":"item_0000000000000003","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"},{"id":"turn_0000000000000004","items":[{"id":"item_0000000000000004","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"}]}}
-{"jsonrpc":"2.0","id":"turn-source","result":{"turn":{"id":"turn_0000000000000005","status":"inProgress"}}}
+{"id":"list","jsonrpc":"2.0","result":{"data":[{"id":"thr_0000000000000002"},{"id":"thr_0000000000000001"}],"nextCursor":null}}
+{"id":"search","jsonrpc":"2.0","result":{"data":[{"id":"thr_0000000000000002"},{"id":"thr_0000000000000001"}],"nextCursor":null}}
+{"id":"resume-source","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000001"},"turns":[{"id":"turn_0000000000000001","items":[{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"},{"id":"turn_0000000000000002","items":[{"id":"item_0000000000000003","text":"Hello","type":"userMessage"},{"id":"item_0000000000000004","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"}]}}
+{"id":"resume-fork","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000002"},"turns":[{"id":"turn_0000000000000003","items":[{"id":"item_0000000000000005","text":"Hello","type":"userMessage"},{"id":"item_0000000000000006","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"},{"id":"turn_0000000000000004","items":[{"id":"item_0000000000000007","text":"Hello","type":"userMessage"},{"id":"item_0000000000000008","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"}]}}
+{"id":"turn-source","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000005","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000005","status":"inProgress"}}}
-{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000005","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000005"}}
-{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000005","threadId":"thr_0000000000000001","turnId":"turn_0000000000000005"}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000005","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000005"}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000010","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000005"}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000010","threadId":"thr_0000000000000001","turnId":"turn_0000000000000005"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000010","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000005"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000005","status":"completed"}}}
-{"jsonrpc":"2.0","id":"turn-fork","result":{"turn":{"id":"turn_0000000000000006","status":"inProgress"}}}
+{"id":"turn-fork","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000006","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000002","turn":{"id":"turn_0000000000000006","status":"inProgress"}}}
-{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000006","text":"","type":"agentMessage"},"threadId":"thr_0000000000000002","turnId":"turn_0000000000000006"}}
-{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000006","threadId":"thr_0000000000000002","turnId":"turn_0000000000000006"}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000006","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000002","turnId":"turn_0000000000000006"}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000012","text":"","type":"agentMessage"},"threadId":"thr_0000000000000002","turnId":"turn_0000000000000006"}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000012","threadId":"thr_0000000000000002","turnId":"turn_0000000000000006"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000012","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000002","turnId":"turn_0000000000000006"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000002","turn":{"id":"turn_0000000000000006","status":"completed"}}}

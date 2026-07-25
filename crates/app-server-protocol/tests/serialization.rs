@@ -29,6 +29,10 @@ use sugarcode_app_server_protocol::ThreadUnarchiveParams;
 use sugarcode_app_server_protocol::ThreadUnarchiveResponse;
 use sugarcode_app_server_protocol::Turn;
 use sugarcode_app_server_protocol::TurnCompletedNotification;
+use sugarcode_app_server_protocol::TurnError;
+use sugarcode_app_server_protocol::TurnErrorKind;
+use sugarcode_app_server_protocol::TurnInterruptParams;
+use sugarcode_app_server_protocol::TurnInterruptResponse;
 use sugarcode_app_server_protocol::TurnSnapshot;
 use sugarcode_app_server_protocol::TurnSnapshotStatus;
 use sugarcode_app_server_protocol::TurnStartParams;
@@ -220,6 +224,7 @@ fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
                 id: "item_0000000000000002".to_string(),
                 text: "SugarCode deterministic response.".to_string(),
             }],
+            error: None,
         }],
     };
     assert_eq!(
@@ -350,6 +355,7 @@ fn turn_start_types_use_the_public_turn_dto() {
     let turn = Turn {
         id: "turn_0000000000000001".to_string(),
         status: TurnStatus::InProgress,
+        error: None,
     };
 
     assert_eq!(
@@ -447,6 +453,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
             turn: Turn {
                 id: "turn_0000000000000001".to_string(),
                 status: TurnStatus::Completed,
+                error: None,
             },
         })
         .expect("turn/completed serializes"),
@@ -461,14 +468,16 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
 }
 
 #[test]
-fn turn_start_params_require_one_non_blank_thread_id() {
+fn turn_start_params_require_thread_id_and_text_input() {
     assert_eq!(
         serde_json::from_value::<TurnStartParams>(json!({
-            "threadId": "thr_0000000000000001"
+            "threadId": "thr_0000000000000001",
+            "input": "Hello"
         }))
         .expect("valid params"),
         TurnStartParams {
-            thread_id: "thr_0000000000000001".to_string()
+            thread_id: "thr_0000000000000001".to_string(),
+            input: "Hello".to_string(),
         }
     );
 
@@ -490,6 +499,48 @@ fn turn_start_params_require_one_non_blank_thread_id() {
 }
 
 #[test]
+fn turn_interrupt_is_strict_and_terminal_errors_are_provider_neutral() {
+    assert_eq!(
+        serde_json::from_value::<TurnInterruptParams>(json!({
+            "threadId": "thr_0000000000000001",
+            "turnId": "turn_0000000000000001"
+        }))
+        .expect("valid interrupt"),
+        TurnInterruptParams {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn_id: "turn_0000000000000001".to_string(),
+        }
+    );
+    assert!(
+        serde_json::from_value::<TurnInterruptParams>(json!({
+            "threadId": "thr_0000000000000001",
+            "turnId": " ",
+        }))
+        .is_err()
+    );
+    assert_eq!(
+        serde_json::to_value(TurnInterruptResponse {}).expect("empty response"),
+        json!({})
+    );
+    assert_eq!(
+        serde_json::to_value(Turn {
+            id: "turn_0000000000000001".to_string(),
+            status: TurnStatus::Failed,
+            error: Some(TurnError {
+                kind: TurnErrorKind::RateLimited,
+                retryable: true,
+            }),
+        })
+        .expect("failed turn"),
+        json!({
+            "id": "turn_0000000000000001",
+            "status": "failed",
+            "error": {"kind": "rateLimited", "retryable": true}
+        })
+    );
+}
+
+#[test]
 fn thread_resume_returns_a_complete_snapshot() {
     let response = ThreadResumeResponse {
         thread: Thread {
@@ -502,6 +553,7 @@ fn thread_resume_returns_a_complete_snapshot() {
                 id: "item_0000000000000001".to_string(),
                 text: "SugarCode deterministic response.".to_string(),
             }],
+            error: None,
         }],
     };
     assert_eq!(

@@ -10,6 +10,8 @@ use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
 use sugarcode_app_server_protocol::Turn as PublicTurn;
 use sugarcode_app_server_protocol::TurnCompletedNotification;
+use sugarcode_app_server_protocol::TurnError;
+use sugarcode_app_server_protocol::TurnErrorKind;
 use sugarcode_app_server_protocol::TurnSnapshot;
 use sugarcode_app_server_protocol::TurnSnapshotStatus;
 use sugarcode_app_server_protocol::TurnStartedNotification;
@@ -18,9 +20,14 @@ use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreItemKind;
 use sugarcode_protocol::CoreRequestId;
+use sugarcode_protocol::CoreTurnError;
+use sugarcode_protocol::CoreTurnErrorKind;
 use sugarcode_protocol::ThreadId;
 use sugarcode_state::DurableItemSnapshot;
 use sugarcode_state::DurableThreadSnapshot;
+use sugarcode_state::DurableTurnError;
+use sugarcode_state::DurableTurnErrorKind;
+use sugarcode_state::DurableTurnStatus;
 
 #[derive(Debug)]
 pub(crate) struct EventMappingError;
@@ -67,7 +74,9 @@ pub(crate) fn map_turn_lifecycle(
     else {
         return Err(EventMappingError);
     };
-    let CoreItemKind::AgentMessage { text: started_text } = &started_item.kind;
+    let CoreItemKind::AgentMessage { text: started_text } = &started_item.kind else {
+        return Err(EventMappingError);
+    };
     if started_thread_id != thread_id || started_turn_id != turn_id || !started_text.is_empty() {
         return Err(EventMappingError);
     }
@@ -99,7 +108,10 @@ pub(crate) fn map_turn_lifecycle(
     };
     let CoreItemKind::AgentMessage {
         text: completed_text,
-    } = &completed_item.kind;
+    } = &completed_item.kind
+    else {
+        return Err(EventMappingError);
+    };
     if completed_thread_id != thread_id
         || completed_turn_id != turn_id
         || completed_item.id != started_item.id
@@ -125,6 +137,7 @@ pub(crate) fn map_turn_lifecycle(
     let turn = PublicTurn {
         id: public_turn_id.clone(),
         status: TurnStatus::InProgress,
+        error: None,
     };
     let started_public_item = PublicItem::AgentMessage {
         id: public_item_id.clone(),
@@ -179,6 +192,7 @@ pub(crate) fn map_turn_lifecycle(
                 turn: PublicTurn {
                     id: public_turn_id,
                     status: TurnStatus::Completed,
+                    error: None,
                 },
             })
             .map_err(|_| EventMappingError)?,
@@ -213,11 +227,20 @@ fn map_snapshot_parts(
             .into_iter()
             .map(|turn| TurnSnapshot {
                 id: turn.id.into_string(),
-                status: TurnSnapshotStatus::Completed,
+                status: match turn.status {
+                    DurableTurnStatus::InProgress => TurnSnapshotStatus::InProgress,
+                    DurableTurnStatus::Completed => TurnSnapshotStatus::Completed,
+                    DurableTurnStatus::Failed => TurnSnapshotStatus::Failed,
+                    DurableTurnStatus::Interrupted => TurnSnapshotStatus::Interrupted,
+                },
                 items: turn
                     .items
                     .into_iter()
                     .map(|item| match item {
+                        DurableItemSnapshot::UserMessage { id, text } => PublicItem::UserMessage {
+                            id: id.into_string(),
+                            text,
+                        },
                         DurableItemSnapshot::AgentMessage { id, text } => {
                             PublicItem::AgentMessage {
                                 id: id.into_string(),
@@ -226,9 +249,159 @@ fn map_snapshot_parts(
                         }
                     })
                     .collect(),
+                error: turn.error.map(map_durable_error),
             })
             .collect(),
     )
+}
+
+pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMappingError> {
+    let notification = match event.kind {
+        CoreEventKind::TurnStarted { thread_id, turn_id } => notification(
+            "turn/started",
+            to_value(TurnStartedNotification {
+                thread_id: thread_id.into_string(),
+                turn: PublicTurn {
+                    id: turn_id.into_string(),
+                    status: TurnStatus::InProgress,
+                    error: None,
+                },
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
+        CoreEventKind::ItemStarted {
+            thread_id,
+            turn_id,
+            item,
+        } => notification(
+            "item/started",
+            to_value(ItemStartedNotification {
+                thread_id: thread_id.into_string(),
+                turn_id: turn_id.into_string(),
+                item: map_core_item(item),
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
+        CoreEventKind::AgentMessageDelta {
+            thread_id,
+            turn_id,
+            item_id,
+            delta,
+        } => notification(
+            "item/agentMessage/delta",
+            to_value(AgentMessageDeltaNotification {
+                thread_id: thread_id.into_string(),
+                turn_id: turn_id.into_string(),
+                item_id: item_id.into_string(),
+                delta,
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
+        CoreEventKind::ItemCompleted {
+            thread_id,
+            turn_id,
+            item,
+        } => notification(
+            "item/completed",
+            to_value(ItemCompletedNotification {
+                thread_id: thread_id.into_string(),
+                turn_id: turn_id.into_string(),
+                item: map_core_item(item),
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
+        CoreEventKind::TurnCompleted { thread_id, turn_id } => {
+            terminal_notification(thread_id, turn_id, TurnStatus::Completed, None)?
+        }
+        CoreEventKind::TurnFailed {
+            thread_id,
+            turn_id,
+            error,
+        } => terminal_notification(
+            thread_id,
+            turn_id,
+            TurnStatus::Failed,
+            Some(map_core_error(error)),
+        )?,
+        CoreEventKind::TurnInterrupted { thread_id, turn_id } => {
+            terminal_notification(thread_id, turn_id, TurnStatus::Interrupted, None)?
+        }
+        CoreEventKind::ThreadStarted { .. } => return Err(EventMappingError),
+    };
+    Ok(notification)
+}
+
+fn terminal_notification(
+    thread_id: ThreadId,
+    turn_id: sugarcode_protocol::TurnId,
+    status: TurnStatus,
+    error: Option<TurnError>,
+) -> Result<JsonRpcMessage, EventMappingError> {
+    Ok(notification(
+        "turn/completed",
+        to_value(TurnCompletedNotification {
+            thread_id: thread_id.into_string(),
+            turn: PublicTurn {
+                id: turn_id.into_string(),
+                status,
+                error,
+            },
+        })
+        .map_err(|_| EventMappingError)?,
+    ))
+}
+
+fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
+    match item.kind {
+        CoreItemKind::UserMessage { text } => PublicItem::UserMessage {
+            id: item.id.into_string(),
+            text,
+        },
+        CoreItemKind::AgentMessage { text } => PublicItem::AgentMessage {
+            id: item.id.into_string(),
+            text,
+        },
+    }
+}
+
+fn map_core_error(error: CoreTurnError) -> TurnError {
+    TurnError {
+        kind: match error.kind {
+            CoreTurnErrorKind::Authentication => TurnErrorKind::Authentication,
+            CoreTurnErrorKind::InvalidRequest => TurnErrorKind::InvalidRequest,
+            CoreTurnErrorKind::RateLimited => TurnErrorKind::RateLimited,
+            CoreTurnErrorKind::Timeout => TurnErrorKind::Timeout,
+            CoreTurnErrorKind::Transport => TurnErrorKind::Transport,
+            CoreTurnErrorKind::Server => TurnErrorKind::Server,
+            CoreTurnErrorKind::Protocol => TurnErrorKind::Protocol,
+            CoreTurnErrorKind::Incomplete => TurnErrorKind::Incomplete,
+            CoreTurnErrorKind::Filtered => TurnErrorKind::Filtered,
+            CoreTurnErrorKind::UnsupportedOutput => TurnErrorKind::UnsupportedOutput,
+            CoreTurnErrorKind::OutputTooLarge => TurnErrorKind::OutputTooLarge,
+            CoreTurnErrorKind::StateUnavailable => TurnErrorKind::StateUnavailable,
+        },
+        retryable: error.retryable,
+    }
+}
+
+fn map_durable_error(error: DurableTurnError) -> TurnError {
+    TurnError {
+        kind: match error.kind {
+            DurableTurnErrorKind::Authentication => TurnErrorKind::Authentication,
+            DurableTurnErrorKind::InvalidRequest => TurnErrorKind::InvalidRequest,
+            DurableTurnErrorKind::RateLimited => TurnErrorKind::RateLimited,
+            DurableTurnErrorKind::Timeout => TurnErrorKind::Timeout,
+            DurableTurnErrorKind::Transport => TurnErrorKind::Transport,
+            DurableTurnErrorKind::Server => TurnErrorKind::Server,
+            DurableTurnErrorKind::Protocol => TurnErrorKind::Protocol,
+            DurableTurnErrorKind::Incomplete => TurnErrorKind::Incomplete,
+            DurableTurnErrorKind::Filtered => TurnErrorKind::Filtered,
+            DurableTurnErrorKind::UnsupportedOutput => TurnErrorKind::UnsupportedOutput,
+            DurableTurnErrorKind::OutputTooLarge => TurnErrorKind::OutputTooLarge,
+            DurableTurnErrorKind::StateUnavailable => TurnErrorKind::StateUnavailable,
+        },
+        retryable: error.retryable,
+    }
 }
 
 fn notification(method: &str, params: serde_json::Value) -> JsonRpcMessage {

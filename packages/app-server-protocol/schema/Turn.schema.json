@@ -3,6 +3,16 @@
   "title": "Turn",
   "type": "object",
   "properties": {
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TurnError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "id": {
       "type": "string"
     },
@@ -15,11 +25,45 @@
     "status"
   ],
   "$defs": {
+    "TurnError": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/TurnErrorKind"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "retryable"
+      ]
+    },
+    "TurnErrorKind": {
+      "type": "string",
+      "enum": [
+        "authentication",
+        "invalidRequest",
+        "rateLimited",
+        "timeout",
+        "transport",
+        "server",
+        "protocol",
+        "incomplete",
+        "filtered",
+        "unsupportedOutput",
+        "outputTooLarge",
+        "stateUnavailable"
+      ]
+    },
     "TurnStatus": {
       "type": "string",
       "enum": [
         "inProgress",
-        "completed"
+        "completed",
+        "failed",
+        "interrupted"
       ]
     }
   }

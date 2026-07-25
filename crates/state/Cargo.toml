@@ -12,7 +12,9 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sugarcode-protocol = { path = "../protocol" }
+tempfile.workspace = true
 toml.workspace = true
+url.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true

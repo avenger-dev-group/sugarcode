@@ -1,17 +1,17 @@
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
-{"jsonrpc":"2.0","id":"thread-1","result":{"thread":{"id":"thr_0000000000000001"}}}
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":{},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
+{"id":"thread-1","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000001"}}}
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","id":"turn-1","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"id":"turn-1","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
-{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000001","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
-{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000001","threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000001","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000002","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"SugarCode deterministic response.","itemId":"item_0000000000000002","threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"completed"}}}
-{"jsonrpc":"2.0","id":"delete","result":{}}
-{"jsonrpc":"2.0","id":"delete-again","result":{}}
-{"jsonrpc":"2.0","id":"list","result":{"data":[],"nextCursor":null}}
-{"jsonrpc":"2.0","id":"search","result":{"data":[],"nextCursor":null}}
-{"jsonrpc":"2.0","id":"resume","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","id":"archive","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","id":"unarchive","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","id":"turn-2","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_0000000000000001"}}}
+{"id":"delete","jsonrpc":"2.0","result":{}}
+{"id":"delete-again","jsonrpc":"2.0","result":{}}
+{"id":"list","jsonrpc":"2.0","result":{"data":[],"nextCursor":null}}
+{"id":"search","jsonrpc":"2.0","result":{"data":[],"nextCursor":null}}
+{"error":{"code":-32004,"data":{"threadId":"thr_0000000000000001"},"message":"Thread not found"},"id":"resume","jsonrpc":"2.0"}
+{"error":{"code":-32004,"data":{"threadId":"thr_0000000000000001"},"message":"Thread not found"},"id":"archive","jsonrpc":"2.0"}
+{"error":{"code":-32004,"data":{"threadId":"thr_0000000000000001"},"message":"Thread not found"},"id":"unarchive","jsonrpc":"2.0"}
+{"error":{"code":-32004,"data":{"threadId":"thr_0000000000000001"},"message":"Thread not found"},"id":"turn-2","jsonrpc":"2.0"}

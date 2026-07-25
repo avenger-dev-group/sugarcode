@@ -51,4 +51,35 @@ pub enum CoreEventKind {
         thread_id: ThreadId,
         turn_id: TurnId,
     },
+    TurnFailed {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        error: CoreTurnError,
+    },
+    TurnInterrupted {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreTurnError {
+    pub kind: CoreTurnErrorKind,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreTurnErrorKind {
+    Authentication,
+    InvalidRequest,
+    RateLimited,
+    Timeout,
+    Transport,
+    Server,
+    Protocol,
+    Incomplete,
+    Filtered,
+    UnsupportedOutput,
+    OutputTooLarge,
+    StateUnavailable,
 }

@@ -6,5 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+futures-util.workspace = true
+sugarcode-model-provider = { path = "../model-provider" }
 sugarcode-protocol = { path = "../protocol" }
 sugarcode-state = { path = "../state" }
+tokio.workspace = true
+tokio-util.workspace = true

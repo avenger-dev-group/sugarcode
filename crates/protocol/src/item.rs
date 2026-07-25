@@ -31,5 +31,6 @@ pub struct CoreItemSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreItemKind {
+    UserMessage { text: String },
     AgentMessage { text: String },
 }

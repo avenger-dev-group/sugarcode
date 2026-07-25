@@ -1,10 +1,21 @@
 use serde_json::Value;
 use serde_json::json;
 use std::fs;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::Read;
 use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::thread;
+use std::thread::JoinHandle;
 
 #[test]
 fn initialization_happy_path_matches_golden_trace() {
@@ -34,6 +45,130 @@ fn turn_start_happy_path_matches_golden_trace() {
 #[test]
 fn turn_start_failures_match_golden_trace() {
     assert_golden("turn-start-errors");
+}
+
+#[test]
+fn provider_terminal_error_matches_golden_trace() {
+    assert_golden_with_body(
+        "turn-provider-error",
+        include_str!("../../model-provider/tests/fixtures/chat-completions-terminal-error.sse"),
+    );
+}
+
+#[test]
+fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let provider = BlockingMockProvider::start(home.path());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home.path())
+        .args(["app-server", "--stdio"])
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn app-server");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {"name": "interrupt-test", "version": "1.0.0"}
+            }
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "initialize");
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "initialized"}),
+    );
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": "thread", "method": "thread/start"}),
+    );
+    let thread_response = read_json(&mut stdout);
+    let thread_id = thread_response["result"]["thread"]["id"]
+        .as_str()
+        .expect("thread id")
+        .to_string();
+    assert_eq!(read_json(&mut stdout)["method"], "thread/started");
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn",
+            "method": "turn/start",
+            "params": {"threadId": thread_id, "input": "Hello"}
+        }),
+    );
+    let turn_response = read_json(&mut stdout);
+    let turn_id = turn_response["result"]["turn"]["id"]
+        .as_str()
+        .expect("turn id")
+        .to_string();
+    let before_interrupt = [
+        read_json(&mut stdout),
+        read_json(&mut stdout),
+        read_json(&mut stdout),
+    ];
+    assert_eq!(before_interrupt[0]["method"], "turn/started");
+    assert_eq!(before_interrupt[1]["method"], "item/started");
+    assert_eq!(before_interrupt[2]["method"], "item/agentMessage/delta");
+    provider.wait_until_delta_sent();
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "interrupt",
+            "method": "turn/interrupt",
+            "params": {"threadId": thread_id, "turnId": turn_id}
+        }),
+    );
+    let after_interrupt = [
+        read_json(&mut stdout),
+        read_json(&mut stdout),
+        read_json(&mut stdout),
+    ];
+    assert_eq!(
+        after_interrupt
+            .iter()
+            .filter(|message| message["id"] == "interrupt" && message["result"] == json!({}))
+            .count(),
+        1
+    );
+    assert_eq!(
+        after_interrupt
+            .iter()
+            .filter(|message| message["method"] == "item/completed")
+            .count(),
+        1
+    );
+    let terminal = after_interrupt
+        .iter()
+        .find(|message| message["method"] == "turn/completed")
+        .expect("turn terminal");
+    assert_eq!(terminal["params"]["turn"]["status"], "interrupted");
+    provider.wait_until_connection_closed();
+
+    drop(stdin);
+    let status = child.wait().expect("wait for app-server");
+    assert!(status.success(), "{status:?}");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stderr");
+    assert!(stderr.is_empty(), "unexpected diagnostics: {stderr}");
 }
 
 #[test]
@@ -102,11 +237,19 @@ fn thread_fork_failures_match_golden_trace() {
 }
 
 fn assert_golden(name: &str) {
+    assert_golden_with_body(
+        name,
+        include_str!("../../model-provider/tests/fixtures/chat-completions-success.sse"),
+    );
+}
+
+fn assert_golden_with_body(name: &str, provider_body: &'static str) {
     let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let _provider = MockProvider::start_with_body(sugarcode_home.path(), provider_body);
     let fixture_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-fixtures/app-server/v1");
-    let input =
-        fs::read(fixture_root.join(format!("{name}.stdin.jsonl"))).expect("read golden stdin");
+    let input = fs::read_to_string(fixture_root.join(format!("{name}.stdin.jsonl")))
+        .expect("read golden stdin");
     let expected = fs::read_to_string(fixture_root.join(format!("{name}.stdout.jsonl")))
         .expect("read golden stdout");
 
@@ -118,12 +261,46 @@ fn assert_golden(name: &str) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn sugarcode app-server");
-    child
-        .stdin
-        .take()
-        .expect("child stdin")
-        .write_all(&input)
-        .expect("write fixture input");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+    let expected_values = expected
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("golden output JSON"))
+        .collect::<Vec<_>>();
+    let mut expected_index = 0usize;
+    let mut actual = String::new();
+    for input_line in input.lines() {
+        writeln!(stdin, "{input_line}").expect("write fixture input");
+        stdin.flush().expect("flush fixture input");
+        let expects_response = match serde_json::from_str::<Value>(input_line) {
+            Err(_) => true,
+            Ok(Value::Object(object)) => object.contains_key("id"),
+            Ok(_) => true,
+        };
+        if !expects_response {
+            continue;
+        }
+        loop {
+            let mut line = String::new();
+            assert!(
+                stdout.read_line(&mut line).expect("read protocol output") > 0,
+                "app-server closed before the golden response"
+            );
+            actual.push_str(&line);
+            expected_index += 1;
+            if expected_index >= expected_values.len()
+                || expected_values[expected_index].get("id").is_some()
+            {
+                break;
+            }
+        }
+    }
+    drop(stdin);
+    let mut trailing = String::new();
+    stdout
+        .read_to_string(&mut trailing)
+        .expect("drain protocol output");
+    actual.push_str(&trailing);
     let output = child.wait_with_output().expect("wait for app-server");
 
     assert!(output.status.success(), "app-server failed: {output:?}");
@@ -132,9 +309,220 @@ fn assert_golden(name: &str) {
         "protocol run wrote diagnostics to stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let actual = normalize_trace(&String::from_utf8(output.stdout).expect("UTF-8 stdout"));
+    assert!(output.stdout.is_empty(), "stdout was already captured");
+    let actual = normalize_trace(&actual);
     let expected = normalize_trace(&expected);
     assert_eq!(actual, expected);
+}
+
+struct MockProvider {
+    address: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl MockProvider {
+    fn start_with_body(home: &std::path::Path, body: &'static str) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock provider");
+        let address = listener.local_addr().expect("mock provider address");
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "schema_version = 1\n\n[model]\napi_format = \"openai-chat-completions\"\nendpoint = \"http://{address}/v1/chat/completions\"\nmodel = \"fixture-model\"\ntoken = \"fixture-token\"\n"
+            ),
+        )
+        .expect("write model configuration");
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread = thread::spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                let (mut stream, _) = listener.accept().expect("accept provider request");
+                if thread_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                serve_recorded_response(&mut stream, body);
+            }
+        });
+        Self {
+            address,
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for MockProvider {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("join mock provider");
+        }
+    }
+}
+
+fn serve_recorded_response(stream: &mut TcpStream, body: &str) {
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 4096];
+    loop {
+        let read = stream.read(&mut buffer).expect("read provider request");
+        assert!(read > 0, "provider request ended before headers");
+        request.extend_from_slice(&buffer[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        assert!(
+            request.len() <= 64 * 1024,
+            "provider request headers too large"
+        );
+    }
+    let headers = String::from_utf8_lossy(&request);
+    assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer fixture-token\r\n")
+    );
+    let header_end = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("complete provider headers")
+        + 4;
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length: ")
+                .and_then(|value| value.parse::<usize>().ok())
+        })
+        .expect("provider content length");
+    assert!(
+        content_length <= 1024 * 1024,
+        "provider request body too large"
+    );
+    while request.len() - header_end < content_length {
+        let read = stream
+            .read(&mut buffer)
+            .expect("read provider request body");
+        assert!(read > 0, "provider request body ended early");
+        request.extend_from_slice(&buffer[..read]);
+    }
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .expect("write provider response");
+    stream.flush().expect("flush provider response");
+}
+
+struct BlockingMockProvider {
+    delta_sent: mpsc::Receiver<()>,
+    connection_closed: mpsc::Receiver<()>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl BlockingMockProvider {
+    fn start(home: &std::path::Path) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind blocking provider");
+        let address = listener.local_addr().expect("blocking provider address");
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "schema_version = 1\n\n[model]\napi_format = \"openai-chat-completions\"\nendpoint = \"http://{address}/v1/chat/completions\"\nmodel = \"fixture-model\"\ntoken = \"fixture-token\"\n"
+            ),
+        )
+        .expect("write model configuration");
+        let (delta_tx, delta_sent) = mpsc::channel();
+        let (closed_tx, connection_closed) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept provider request");
+            read_provider_request(&mut stream);
+            let event = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n",
+                event.len(),
+                event
+            )
+            .expect("write partial response");
+            stream.flush().expect("flush partial response");
+            delta_tx.send(()).expect("signal delta");
+            let mut byte = [0u8; 1];
+            let closed = matches!(stream.read(&mut byte), Ok(0) | Err(_));
+            assert!(closed, "upstream connection remained open");
+            closed_tx.send(()).expect("signal close");
+        });
+        Self {
+            delta_sent,
+            connection_closed,
+            thread: Some(thread),
+        }
+    }
+
+    fn wait_until_delta_sent(&self) {
+        self.delta_sent
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("provider delta deadline");
+    }
+
+    fn wait_until_connection_closed(&self) {
+        self.connection_closed
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("provider close deadline");
+    }
+}
+
+impl Drop for BlockingMockProvider {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("join blocking provider");
+        }
+    }
+}
+
+fn read_provider_request(stream: &mut TcpStream) {
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 4096];
+    let header_end = loop {
+        let read = stream.read(&mut buffer).expect("read provider request");
+        assert!(read > 0, "provider request ended before headers");
+        request.extend_from_slice(&buffer[..read]);
+        if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length: ")
+                .and_then(|value| value.parse::<usize>().ok())
+        })
+        .expect("content length");
+    while request.len() - header_end < content_length {
+        let read = stream
+            .read(&mut buffer)
+            .expect("read provider request body");
+        assert!(read > 0, "provider request body ended early");
+        request.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn send_json(stdin: &mut impl Write, value: Value) {
+    writeln!(stdin, "{value}").expect("write JSON-RPC request");
+    stdin.flush().expect("flush JSON-RPC request");
+}
+
+fn read_json(stdout: &mut impl BufRead) -> Value {
+    let mut line = String::new();
+    assert!(
+        stdout.read_line(&mut line).expect("read JSON-RPC output") > 0,
+        "app-server closed before response"
+    );
+    serde_json::from_str(&line).expect("JSON-RPC output")
 }
 
 fn normalize_trace(output: &str) -> String {

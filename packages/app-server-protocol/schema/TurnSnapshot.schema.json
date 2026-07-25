@@ -3,6 +3,16 @@
   "title": "TurnSnapshot",
   "type": "object",
   "properties": {
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TurnError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "id": {
       "type": "string"
     },
@@ -35,6 +45,26 @@
             },
             "type": {
               "type": "string",
+              "const": "userMessage"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
               "const": "agentMessage"
             }
           },
@@ -46,10 +76,45 @@
         }
       ]
     },
+    "TurnError": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/TurnErrorKind"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "retryable"
+      ]
+    },
+    "TurnErrorKind": {
+      "type": "string",
+      "enum": [
+        "authentication",
+        "invalidRequest",
+        "rateLimited",
+        "timeout",
+        "transport",
+        "server",
+        "protocol",
+        "incomplete",
+        "filtered",
+        "unsupportedOutput",
+        "outputTooLarge",
+        "stateUnavailable"
+      ]
+    },
     "TurnSnapshotStatus": {
       "type": "string",
       "enum": [
-        "completed"
+        "inProgress",
+        "completed",
+        "failed",
+        "interrupted"
       ]
     }
   }

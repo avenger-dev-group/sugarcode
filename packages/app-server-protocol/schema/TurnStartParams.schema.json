@@ -3,12 +3,16 @@
   "title": "TurnStartParams",
   "type": "object",
   "properties": {
+    "input": {
+      "type": "string"
+    },
     "threadId": {
       "type": "string"
     }
   },
   "additionalProperties": false,
   "required": [
-    "threadId"
+    "threadId",
+    "input"
   ]
 }

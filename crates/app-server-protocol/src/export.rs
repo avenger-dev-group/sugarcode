@@ -37,6 +37,10 @@ use crate::ThreadUnarchiveParams;
 use crate::ThreadUnarchiveResponse;
 use crate::Turn;
 use crate::TurnCompletedNotification;
+use crate::TurnError;
+use crate::TurnErrorKind;
+use crate::TurnInterruptParams;
+use crate::TurnInterruptResponse;
 use crate::TurnSnapshot;
 use crate::TurnSnapshotStatus;
 use crate::TurnStartParams;
@@ -96,10 +100,14 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         ThreadResumeResponse::decl(),
         Turn::decl(),
         TurnStatus::decl(),
+        TurnErrorKind::decl(),
+        TurnError::decl(),
         TurnStartParams::decl(),
         TurnStartResponse::decl(),
         TurnStartedNotification::decl(),
         TurnCompletedNotification::decl(),
+        TurnInterruptParams::decl(),
+        TurnInterruptResponse::decl(),
     ];
 
     let mut protocol = String::from(GENERATED_HEADER);
@@ -251,6 +259,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("TurnCompletedNotification.schema.json"),
         &schema_for!(TurnCompletedNotification),
+    )?;
+    write_schema(
+        out_dir.join("TurnInterruptParams.schema.json"),
+        &schema_for!(TurnInterruptParams),
+    )?;
+    write_schema(
+        out_dir.join("TurnInterruptResponse.schema.json"),
+        &schema_for!(TurnInterruptResponse),
     )
 }
 

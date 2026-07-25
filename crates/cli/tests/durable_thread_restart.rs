@@ -5,21 +5,30 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
 use std::path::Path;
 use std::process::Child;
 use std::process::ChildStdin;
 use std::process::ChildStdout;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::thread;
+use std::thread::JoinHandle;
 
 struct RunningServer {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    _provider: MockProvider,
 }
 
 impl RunningServer {
     fn spawn(home: &Path) -> Self {
+        let provider = MockProvider::start(home);
         let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
             .arg("--home")
             .arg(home)
@@ -36,6 +45,7 @@ impl RunningServer {
             child,
             stdin,
             stdout,
+            _provider: provider,
         }
     }
 
@@ -97,6 +107,101 @@ impl RunningServer {
     }
 }
 
+struct MockProvider {
+    address: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl MockProvider {
+    fn start(home: &Path) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock provider");
+        let address = listener.local_addr().expect("mock provider address");
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "schema_version = 1\n\n[model]\napi_format = \"openai-chat-completions\"\nendpoint = \"http://{address}/v1/chat/completions\"\nmodel = \"fixture-model\"\ntoken = \"fixture-token\"\n"
+            ),
+        )
+        .expect("write model configuration");
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread = thread::spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                let (mut stream, _) = listener.accept().expect("accept provider request");
+                if thread_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                serve_recorded_response(&mut stream);
+            }
+        });
+        Self {
+            address,
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for MockProvider {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("join mock provider");
+        }
+    }
+}
+
+fn serve_recorded_response(stream: &mut TcpStream) {
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 4096];
+    let header_end = loop {
+        let read = stream.read(&mut buffer).expect("read provider request");
+        assert!(read > 0, "provider request ended before headers");
+        request.extend_from_slice(&buffer[..read]);
+        if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+        assert!(
+            request.len() <= 64 * 1024,
+            "provider request headers too large"
+        );
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer fixture-token\r\n")
+    );
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length: ")
+                .and_then(|value| value.parse::<usize>().ok())
+        })
+        .expect("provider content length");
+    assert!(content_length <= 1024 * 1024);
+    while request.len() - header_end < content_length {
+        let read = stream
+            .read(&mut buffer)
+            .expect("read provider request body");
+        assert!(read > 0, "provider request body ended early");
+        request.extend_from_slice(&buffer[..read]);
+    }
+    let body = include_str!("../../model-provider/tests/fixtures/chat-completions-success.sse");
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .expect("write provider response");
+    stream.flush().expect("flush provider response");
+}
+
 #[test]
 fn resumes_completed_history_across_two_cli_processes() {
     let home = tempfile::tempdir().expect("isolated SugarCode home");
@@ -121,7 +226,7 @@ fn resumes_completed_history_across_two_cli_processes() {
             "jsonrpc": "2.0",
             "id": "turn-1",
             "method": "turn/start",
-            "params": {"threadId": thread_id}
+            "params": {"threadId": thread_id, "input": "Hello"}
         }),
         6,
     );
@@ -159,14 +264,14 @@ fn resumes_completed_history_across_two_cli_processes() {
         resumed[0]["result"]["turns"][0]["status"],
         completed_turn["status"]
     );
-    assert_eq!(resumed[0]["result"]["turns"][0]["items"][0], completed_item);
+    assert_eq!(resumed[0]["result"]["turns"][0]["items"][1], completed_item);
 
     let next_turn = second.send(
         json!({
             "jsonrpc": "2.0",
             "id": "turn-2",
             "method": "turn/start",
-            "params": {"threadId": thread_id}
+            "params": {"threadId": thread_id, "input": "Hello"}
         }),
         6,
     );
@@ -176,7 +281,7 @@ fn resumes_completed_history_across_two_cli_processes() {
     );
     assert_eq!(
         next_turn[2]["params"]["item"]["id"],
-        "item_0000000000000002"
+        "item_0000000000000004"
     );
     second.finish();
 }
@@ -201,7 +306,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": format!("source-turn-{sequence}"),
                 "method": "turn/start",
-                "params": {"threadId": "thr_0000000000000001"}
+                "params": {"threadId": "thr_0000000000000001", "input": "Hello"}
             }),
             6,
         );
@@ -225,7 +330,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         forked[0]["result"]["turns"][0]["items"][0]["id"],
-        "item_0000000000000003"
+        "item_0000000000000005"
     );
     assert_eq!(
         forked[0]["result"]["turns"][1]["id"],
@@ -233,7 +338,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         forked[0]["result"]["turns"][1]["items"][0]["id"],
-        "item_0000000000000004"
+        "item_0000000000000007"
     );
     assert_eq!(forked[1]["method"], "thread/started");
     assert_eq!(
@@ -310,7 +415,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "jsonrpc": "2.0",
             "id": "continue-fork",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002"}
+            "params": {"threadId": "thr_0000000000000002", "input": "Hello"}
         }),
         6,
     );
@@ -320,7 +425,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         continued[2]["params"]["item"]["id"],
-        "item_0000000000000005"
+        "item_0000000000000010"
     );
     first.finish();
 
@@ -381,7 +486,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
         );
         assert_eq!(
             resumed[0]["result"]["turns"][index]["items"][0]["id"],
-            format!("item_{sequence:016}")
+            format!("item_{:016}", sequence * 2 - 1)
         );
     }
     assert_eq!(
@@ -401,7 +506,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "jsonrpc": "2.0",
             "id": "fork-turn-after-restart",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002"}
+            "params": {"threadId": "thr_0000000000000002", "input": "Hello"}
         }),
         6,
     );
@@ -411,7 +516,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         next_turn[2]["params"]["item"]["id"],
-        "item_0000000000000006"
+        "item_0000000000000012"
     );
     let next_thread = second.send(
         json!({
@@ -430,7 +535,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "jsonrpc": "2.0",
             "id": "other-turn",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000003"}
+            "params": {"threadId": "thr_0000000000000003", "input": "Hello"}
         }),
         6,
     );
@@ -440,7 +545,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         other_turn[2]["params"]["item"]["id"],
-        "item_0000000000000007"
+        "item_0000000000000014"
     );
 
     let stderr = second.finish_with_diagnostics();
@@ -473,7 +578,7 @@ fn rebuilds_an_invalid_projection_then_lists_and_resumes_without_leaking_content
             "jsonrpc": "2.0",
             "id": "turn-1",
             "method": "turn/start",
-            "params": {"threadId": thread_id}
+            "params": {"threadId": thread_id, "input": "Hello"}
         }),
         6,
     );
@@ -504,7 +609,7 @@ fn rebuilds_an_invalid_projection_then_lists_and_resumes_without_leaking_content
         }),
         1,
     );
-    assert_eq!(resumed[0]["result"]["turns"][0]["items"][0], expected_item);
+    assert_eq!(resumed[0]["result"]["turns"][0]["items"][1], expected_item);
     let stderr = second.finish_with_diagnostics();
     assert!(stderr.contains("thread-discovery.sqlite3"));
     assert!(stderr.contains("thread discovery rebuild"));
@@ -535,7 +640,8 @@ fn rebuilds_search_across_processes_without_affecting_list_or_resume() {
                     "id": format!("turn-{sequence}"),
                     "method": "turn/start",
                     "params": {
-                        "threadId": format!("thr_{sequence:016}")
+                        "threadId": format!("thr_{sequence:016}"),
+                        "input": "Hello"
                     }
                 }),
                 6,
@@ -604,7 +710,7 @@ fn rebuilds_search_across_processes_without_affecting_list_or_resume() {
         1,
     );
     assert_eq!(
-        resumed[0]["result"]["turns"][0]["items"][0]["text"],
+        resumed[0]["result"]["turns"][0]["items"][1]["text"],
         "SugarCode deterministic response."
     );
 
@@ -643,7 +749,7 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                     "jsonrpc": "2.0",
                     "id": format!("turn-{sequence}"),
                     "method": "turn/start",
-                    "params": {"threadId": format!("thr_{sequence:016}")}
+                    "params": {"threadId": format!("thr_{sequence:016}"), "input": "Hello"}
                 }),
                 6,
             );
@@ -694,7 +800,7 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
         1,
     );
     assert_eq!(
-        resumed[0]["result"]["turns"][0]["items"][0]["text"],
+        resumed[0]["result"]["turns"][0]["items"][1]["text"],
         "SugarCode deterministic response."
     );
     let next = second.send(
@@ -712,7 +818,7 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
             "jsonrpc": "2.0",
             "id": "turn-3",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000004"}
+            "params": {"threadId": "thr_0000000000000004", "input": "Hello"}
         }),
         6,
     );
@@ -722,7 +828,7 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
     );
     assert_eq!(
         next_turn[2]["params"]["item"]["id"],
-        "item_0000000000000003"
+        "item_0000000000000006"
     );
 
     let stderr = second.finish_with_diagnostics();
@@ -753,7 +859,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
                 "jsonrpc": "2.0",
                 "id": format!("turn-{sequence}"),
                 "method": "turn/start",
-                "params": {"threadId": format!("thr_{sequence:016}")}
+                "params": {"threadId": format!("thr_{sequence:016}"), "input": "Hello"}
             }),
             6,
         );
@@ -816,7 +922,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
             "jsonrpc": "2.0",
             "id": "turn-after-restore",
             "method": "turn/start",
-            "params": {"threadId": restored}
+            "params": {"threadId": restored, "input": "Hello"}
         }),
         6,
     );
@@ -895,7 +1001,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
             "jsonrpc": "2.0",
             "id": "turn-after-restart",
             "method": "turn/start",
-            "params": {"threadId": restored}
+            "params": {"threadId": restored, "input": "Hello"}
         }),
         6,
     );
@@ -905,7 +1011,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     );
     assert_eq!(
         next_turn[2]["params"]["item"]["id"],
-        "item_0000000000000004"
+        "item_0000000000000008"
     );
 
     let stderr = second.finish_with_diagnostics();
@@ -936,7 +1042,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": format!("turn-{sequence}"),
                 "method": "turn/start",
-                "params": {"threadId": format!("thr_{sequence:016}")}
+                "params": {"threadId": format!("thr_{sequence:016}"), "input": "Hello"}
             }),
             6,
         );
@@ -1009,12 +1115,17 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
         ("unarchive-deleted", "thread/unarchive"),
         ("turn-deleted", "turn/start"),
     ] {
+        let params = if method == "turn/start" {
+            json!({"threadId": "thr_0000000000000001", "input": "Hello"})
+        } else {
+            json!({"threadId": "thr_0000000000000001"})
+        };
         let response = second.send(
             json!({
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": method,
-                "params": {"threadId": "thr_0000000000000001"}
+                "params": params
             }),
             1,
         );
@@ -1040,7 +1151,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
             "jsonrpc": "2.0",
             "id": "turn-4",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000004"}
+            "params": {"threadId": "thr_0000000000000004", "input": "Hello"}
         }),
         6,
     );
@@ -1050,7 +1161,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
     );
     assert_eq!(
         next_turn[2]["params"]["item"]["id"],
-        "item_0000000000000004"
+        "item_0000000000000008"
     );
 
     let stderr = second.finish_with_diagnostics();

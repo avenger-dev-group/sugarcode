@@ -1,5 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::process::Command;
+use std::process::Stdio;
 use tempfile::tempdir;
 
 #[test]
@@ -69,4 +71,74 @@ fn invalid_configuration_has_no_stdout_and_redacts_values() {
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
     assert!(stderr.contains("unknown configuration field `api_key`"));
     assert!(!stderr.contains(sentinel));
+}
+
+#[test]
+fn model_configuration_accepts_http_and_show_never_echoes_the_saved_token() {
+    let home = tempdir().expect("SugarCode home");
+    let token = "fixture-secret-token";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home.path())
+        .args(["config", "model", "set", "--stdin"])
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run model config set");
+    write!(
+        child.stdin.take().expect("stdin"),
+        "{}",
+        serde_json::json!({
+            "apiFormat": "openai-chat-completions",
+            "endpoint": "http://127.0.0.1:18080/custom/v1/chat/completions",
+            "model": "custom-model",
+            "token": token
+        })
+    )
+    .expect("write model config");
+    let set = child.wait_with_output().expect("wait for config set");
+    assert!(set.status.success(), "{set:?}");
+    assert_eq!(
+        String::from_utf8(set.stdout).expect("UTF-8 stdout"),
+        "Model configuration saved.\n"
+    );
+    assert!(!String::from_utf8_lossy(&set.stderr).contains(token));
+
+    let stored = fs::read_to_string(home.path().join("config.toml")).expect("stored config");
+    assert!(stored.contains("endpoint = \"http://127.0.0.1:18080/"));
+    assert!(stored.contains(token));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(home.path().join("config.toml"))
+                .expect("config metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    let show = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home.path())
+        .args(["config", "model", "show", "--json"])
+        .env_remove("SUGARCODE_HOME")
+        .output()
+        .expect("run model config show");
+    assert!(show.status.success(), "{show:?}");
+    let stdout = String::from_utf8(show.stdout).expect("UTF-8 stdout");
+    assert!(!stdout.contains(token));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout).expect("show JSON"),
+        serde_json::json!({
+            "apiFormat": "openai-chat-completions",
+            "endpoint": "http://127.0.0.1:18080/custom/v1/chat/completions",
+            "model": "custom-model",
+            "hasToken": true
+        })
+    );
 }

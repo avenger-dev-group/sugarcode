@@ -372,7 +372,10 @@ fn is_valid_search_query(value: &str) -> bool {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub enum TurnSnapshotStatus {
+    InProgress,
     Completed,
+    Failed,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
@@ -382,6 +385,9 @@ pub struct TurnSnapshot {
     pub id: String,
     pub status: TurnSnapshotStatus,
     pub items: Vec<Item>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<crate::TurnError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

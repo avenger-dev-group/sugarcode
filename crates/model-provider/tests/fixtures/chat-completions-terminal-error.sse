@@ -1,0 +1,3 @@
+data: {"error":{"type":"server_error","message":"fixture payload must stay redacted"}}
+
+: fixture terminator

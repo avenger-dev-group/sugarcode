@@ -6,6 +6,8 @@ mod turn;
 pub use event::CoreEvent;
 pub use event::CoreEventKind;
 pub use event::CoreRequestId;
+pub use event::CoreTurnError;
+pub use event::CoreTurnErrorKind;
 pub use item::CoreItemKind;
 pub use item::CoreItemSnapshot;
 pub use item::ItemId;

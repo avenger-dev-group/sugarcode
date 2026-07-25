@@ -6,6 +6,7 @@ use sugarcode_state::DurableItemSnapshot;
 use sugarcode_state::DurableThreadLifecycle;
 use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableTurnSnapshot;
+use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::HomeResolutionInputs;
 use sugarcode_state::RolloutError;
 use sugarcode_state::RolloutRepository;
@@ -28,10 +29,13 @@ fn thread(sequence: u64) -> ThreadId {
 fn turn(sequence: u64, text: &str) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
         id: TurnId::new(format!("turn_{sequence:016}")),
+        status: DurableTurnStatus::Completed,
         items: vec![DurableItemSnapshot::AgentMessage {
             id: ItemId::new(format!("item_{sequence:016}")),
             text: text.to_string(),
         }],
+        error: None,
+        usage: None,
     }
 }
 

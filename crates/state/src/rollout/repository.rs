@@ -1,7 +1,9 @@
+use super::DurableItemSnapshot;
 use super::DurableThreadLifecycle;
 use super::DurableThreadPage;
 use super::DurableThreadSnapshot;
 use super::DurableTurnSnapshot;
+use super::DurableTurnStatus;
 use super::IdSequences;
 use super::MAX_ROLLOUT_FILE_BYTES;
 use super::MAX_ROLLOUT_FILES;
@@ -18,6 +20,7 @@ use super::format::encode_thread_created;
 use super::format::encode_thread_deleted;
 use super::format::encode_thread_unarchived;
 use super::format::encode_turn_completed;
+use super::format::encode_turn_started;
 use super::replay::parse_canonical_id;
 use super::replay::replay_all;
 use super::replay::sync_parent;
@@ -45,6 +48,7 @@ pub struct RolloutRepository {
     root: PathBuf,
     _writer_lock: File,
     threads: BTreeMap<ThreadId, RolloutThreadState>,
+    pending_turns: BTreeMap<ThreadId, DurableTurnSnapshot>,
     sequences: IdSequences,
     diagnostics: Vec<RolloutDiagnostic>,
     total_bytes: u64,
@@ -80,6 +84,7 @@ impl RolloutRepository {
             root,
             _writer_lock: writer_lock,
             threads: replay.threads,
+            pending_turns: BTreeMap::new(),
             sequences: replay.sequences,
             diagnostics: replay.diagnostics,
             total_bytes: replay.retained_bytes,
@@ -468,6 +473,11 @@ impl ThreadRepository for RolloutRepository {
         thread_id: &ThreadId,
         turn: &DurableTurnSnapshot,
     ) -> Result<(), RolloutError> {
+        if turn.status != DurableTurnStatus::Completed {
+            return Err(RolloutError::InvalidRecord {
+                kind: "legacyTurnMustBeCompleted",
+            });
+        }
         self.ensure_available()?;
         if turn.items.is_empty() {
             return Err(RolloutError::InvalidRecord {
@@ -523,6 +533,145 @@ impl ThreadRepository for RolloutRepository {
         thread.last_record_sequence = record_sequence;
         self.sequences.turn = turn_sequence;
         self.sequences.item = item_sequence;
+        let _ = self
+            .projection
+            .record_turn_completed(thread_id, record_sequence);
+        let _ = self
+            .search_projection
+            .record_turn_completed(thread_id, record_sequence, turn);
+        Ok(())
+    }
+
+    fn begin_turn(
+        &mut self,
+        thread_id: &ThreadId,
+        turn: &DurableTurnSnapshot,
+    ) -> Result<(), RolloutError> {
+        self.ensure_available()?;
+        if turn.status != DurableTurnStatus::InProgress
+            || turn.items.is_empty()
+            || turn.error.is_some()
+            || turn.usage.is_some()
+        {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidStartedTurn",
+            });
+        }
+        if self.pending_turns.contains_key(thread_id) {
+            return Err(RolloutError::Collision { kind: "activeTurn" });
+        }
+        let thread = self
+            .threads
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread.snapshot.lifecycle != DurableThreadLifecycle::Active {
+            return Err(RolloutError::InvalidRecord {
+                kind: "turnStartedWhileInactive",
+            });
+        }
+        let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")?;
+        if turn_sequence <= self.sequences.turn {
+            return Err(RolloutError::Collision { kind: "turn" });
+        }
+        let mut item_sequence = self.sequences.item;
+        for item in &turn.items {
+            let sequence = parse_canonical_id(item.id().as_str(), "item_", "item")?;
+            if sequence <= item_sequence {
+                return Err(RolloutError::Collision { kind: "item" });
+            }
+            item_sequence = sequence;
+        }
+        let record_sequence =
+            thread
+                .last_record_sequence
+                .checked_add(1)
+                .ok_or(RolloutError::InvalidRecord {
+                    kind: "recordSequenceOverflow",
+                })?;
+        let next_file_record_count =
+            usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutRecords",
+            })?;
+        let path = self.thread_path(thread_id)?;
+        let bytes = encode_turn_started(record_sequence, thread_id, turn)?;
+        self.append_record(&path, &bytes, false, next_file_record_count)?;
+        self.threads
+            .get_mut(thread_id)
+            .expect("validated thread exists")
+            .last_record_sequence = record_sequence;
+        self.pending_turns.insert(thread_id.clone(), turn.clone());
+        self.sequences.turn = turn_sequence;
+        self.sequences.item = item_sequence;
+        let _ = self
+            .projection
+            .record_turn_completed(thread_id, record_sequence);
+        let _ = self
+            .search_projection
+            .record_turn_started(thread_id, record_sequence);
+        Ok(())
+    }
+
+    fn finish_turn(
+        &mut self,
+        thread_id: &ThreadId,
+        turn: &DurableTurnSnapshot,
+    ) -> Result<(), RolloutError> {
+        self.ensure_available()?;
+        let valid_terminal = match turn.status {
+            DurableTurnStatus::InProgress => false,
+            DurableTurnStatus::Completed => turn.error.is_none(),
+            DurableTurnStatus::Failed => turn.error.is_some() && turn.usage.is_none(),
+            DurableTurnStatus::Interrupted => turn.error.is_none() && turn.usage.is_none(),
+        };
+        if turn.items.is_empty() || !valid_terminal {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidTerminalTurn",
+            });
+        }
+        let Some(pending) = self.pending_turns.get(thread_id) else {
+            return Err(RolloutError::InvalidRecord {
+                kind: "turnNotActive",
+            });
+        };
+        if pending.id != turn.id
+            || pending
+                .items
+                .iter()
+                .map(DurableItemSnapshot::id)
+                .ne(turn.items.iter().map(DurableItemSnapshot::id))
+        {
+            return Err(RolloutError::InvalidRecord {
+                kind: "turnItemMismatch",
+            });
+        }
+        let thread = self
+            .threads
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        let record_sequence =
+            thread
+                .last_record_sequence
+                .checked_add(1)
+                .ok_or(RolloutError::InvalidRecord {
+                    kind: "recordSequenceOverflow",
+                })?;
+        let next_file_record_count =
+            usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutRecords",
+            })?;
+        let path = self.thread_path(thread_id)?;
+        let bytes = encode_turn_completed(record_sequence, thread_id, turn)?;
+        self.append_record(&path, &bytes, false, next_file_record_count)?;
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .expect("validated thread exists");
+        thread.snapshot.turns.push(turn.clone());
+        thread.turn_record_sequences.push(record_sequence);
+        thread.last_record_sequence = record_sequence;
+        self.pending_turns.remove(thread_id);
         let _ = self
             .projection
             .record_turn_completed(thread_id, record_sequence);

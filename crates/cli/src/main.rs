@@ -1,3 +1,4 @@
+mod config;
 mod credential;
 
 use clap::Args;
@@ -39,6 +40,30 @@ struct ConfigArgs {
 enum ConfigCommand {
     /// Validate the effective non-secret configuration.
     Validate,
+    /// Manage the active text-model configuration.
+    Model(ModelConfigArgs),
+}
+
+#[derive(Debug, Args)]
+struct ModelConfigArgs {
+    #[command(subcommand)]
+    command: ModelConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ModelConfigCommand {
+    /// Read a complete model configuration from standard input and save it.
+    Set {
+        /// Require JSON configuration input on standard input.
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Print the active model configuration without its token.
+    Show {
+        /// Emit one JSON object.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -121,6 +146,34 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 "SugarCode configuration is valid (schema version {}).",
                 config.schema_version()
             );
+        }
+        Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Model(ModelConfigArgs {
+                    command: ModelConfigCommand::Set { stdin },
+                }),
+        }) => {
+            if !stdin || std::io::stdin().is_terminal() {
+                return Err(Box::new(config::ModelConfigCommandError::StdinRequired));
+            }
+            let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
+            config::set_model_config(
+                &resolved_home,
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout().lock(),
+            )?;
+        }
+        Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Model(ModelConfigArgs {
+                    command: ModelConfigCommand::Show { json },
+                }),
+        }) => {
+            if !json {
+                return Err("config model show requires --json".into());
+            }
+            let effective_config = sugarcode_state::load_effective_config(home)?;
+            config::show_model_config(&effective_config, &mut std::io::stdout().lock())?;
         }
         Command::Credential(args) => {
             let config = sugarcode_state::load_effective_config(home)?;

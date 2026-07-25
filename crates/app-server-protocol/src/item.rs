@@ -7,6 +7,7 @@ use ts_rs::TS;
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type", rename_all = "camelCase")]
 pub enum Item {
+    UserMessage { id: String, text: String },
     AgentMessage { id: String, text: String },
 }
 

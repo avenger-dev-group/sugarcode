@@ -62,18 +62,61 @@ pub struct DurableThreadPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableTurnSnapshot {
     pub id: TurnId,
+    pub status: DurableTurnStatus,
     pub items: Vec<DurableItemSnapshot>,
+    pub error: Option<DurableTurnError>,
+    pub usage: Option<DurableUsage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableTurnStatus {
+    InProgress,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableTurnErrorKind {
+    Authentication,
+    InvalidRequest,
+    RateLimited,
+    Timeout,
+    Transport,
+    Server,
+    Protocol,
+    Incomplete,
+    Filtered,
+    UnsupportedOutput,
+    OutputTooLarge,
+    StateUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableTurnError {
+    pub kind: DurableTurnErrorKind,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DurableUsage {
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DurableItemSnapshot {
+    UserMessage { id: ItemId, text: String },
     AgentMessage { id: ItemId, text: String },
 }
 
 impl DurableItemSnapshot {
     pub fn id(&self) -> &ItemId {
         match self {
-            Self::AgentMessage { id, .. } => id,
+            Self::UserMessage { id, .. } | Self::AgentMessage { id, .. } => id,
         }
     }
 }
@@ -90,6 +133,22 @@ pub trait ThreadRepository: fmt::Debug + Send {
         thread_id: &ThreadId,
         turn: &DurableTurnSnapshot,
     ) -> Result<(), RolloutError>;
+    fn begin_turn(
+        &mut self,
+        _thread_id: &ThreadId,
+        _turn: &DurableTurnSnapshot,
+    ) -> Result<(), RolloutError> {
+        Err(RolloutError::InvalidRecord {
+            kind: "asynchronousTurnsUnsupported",
+        })
+    }
+    fn finish_turn(
+        &mut self,
+        thread_id: &ThreadId,
+        turn: &DurableTurnSnapshot,
+    ) -> Result<(), RolloutError> {
+        self.append_completed_turn(thread_id, turn)
+    }
     fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
     fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
     fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
