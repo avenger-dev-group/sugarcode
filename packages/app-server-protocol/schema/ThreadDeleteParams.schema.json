@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ThreadDeleteParams",
+  "type": "object",
+  "properties": {
+    "threadId": {
+      "type": "string",
+      "pattern": "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "threadId"
+  ]
+}

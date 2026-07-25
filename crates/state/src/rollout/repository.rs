@@ -15,6 +15,7 @@ use super::RolloutThreadState;
 use super::ThreadRepository;
 use super::format::encode_thread_archived;
 use super::format::encode_thread_created;
+use super::format::encode_thread_deleted;
 use super::format::encode_thread_unarchived;
 use super::format::encode_turn_completed;
 use super::replay::parse_canonical_id;
@@ -264,13 +265,15 @@ impl ThreadRepository for RolloutRepository {
                 kind: "completedTurnWithoutItems",
             });
         }
-        if self
-            .threads
-            .get(thread_id)
-            .is_some_and(|thread| thread.snapshot.lifecycle == DurableThreadLifecycle::Archived)
+        if let Some(thread) = self.threads.get(thread_id)
+            && thread.snapshot.lifecycle != DurableThreadLifecycle::Active
         {
             return Err(RolloutError::InvalidRecord {
-                kind: "recordAfterThreadArchive",
+                kind: if thread.snapshot.lifecycle == DurableThreadLifecycle::Deleted {
+                    "recordAfterThreadDelete"
+                } else {
+                    "recordAfterThreadArchive"
+                },
             });
         }
         let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")?;
@@ -329,6 +332,11 @@ impl ThreadRepository for RolloutRepository {
         if thread.snapshot.lifecycle == DurableThreadLifecycle::Archived {
             return Ok(());
         }
+        if thread.snapshot.lifecycle == DurableThreadLifecycle::Deleted {
+            return Err(RolloutError::InvalidRecord {
+                kind: "recordAfterThreadDelete",
+            });
+        }
         let record_sequence =
             thread
                 .last_record_sequence
@@ -368,6 +376,11 @@ impl ThreadRepository for RolloutRepository {
         if thread.snapshot.lifecycle == DurableThreadLifecycle::Active {
             return Ok(());
         }
+        if thread.snapshot.lifecycle == DurableThreadLifecycle::Deleted {
+            return Err(RolloutError::InvalidRecord {
+                kind: "recordAfterThreadDelete",
+            });
+        }
         let record_sequence =
             thread
                 .last_record_sequence
@@ -395,6 +408,45 @@ impl ThreadRepository for RolloutRepository {
         let _ = self
             .search_projection
             .record_thread_unarchived(thread_id, record_sequence);
+        Ok(())
+    }
+
+    fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+        self.ensure_available()?;
+        let thread = self
+            .threads
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread.snapshot.lifecycle == DurableThreadLifecycle::Deleted {
+            return Ok(());
+        }
+        let record_sequence =
+            thread
+                .last_record_sequence
+                .checked_add(1)
+                .ok_or(RolloutError::InvalidRecord {
+                    kind: "recordSequenceOverflow",
+                })?;
+        let next_file_record_count =
+            usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutRecords",
+            })?;
+        let path = self.thread_path(thread_id)?;
+        let bytes = encode_thread_deleted(record_sequence, thread_id)?;
+        self.append_record(&path, &bytes, false, next_file_record_count)?;
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .expect("validated thread exists");
+        thread.snapshot.lifecycle = DurableThreadLifecycle::Deleted;
+        thread.last_record_sequence = record_sequence;
+        let _ = self
+            .projection
+            .record_thread_deleted(thread_id, record_sequence);
+        let _ = self
+            .search_projection
+            .record_thread_deleted(thread_id, record_sequence);
         Ok(())
     }
 

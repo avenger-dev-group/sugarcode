@@ -53,6 +53,16 @@ pub(super) struct ThreadUnarchivedRecord<'a> {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct ThreadDeletedRecord<'a> {
+    pub schema_version: u32,
+    pub sequence: u64,
+    #[serde(rename = "type")]
+    pub record_type: &'static str,
+    pub thread_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct StoredTurnRef<'a> {
     pub id: &'a str,
     pub status: &'static str,
@@ -132,6 +142,16 @@ struct StoredThreadUnarchived {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredThreadDeleted {
+    schema_version: u32,
+    sequence: u64,
+    #[serde(rename = "type")]
+    record_type: ThreadDeletedType,
+    thread_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 enum TurnCompletedType {
     #[serde(rename = "turnCompleted")]
     TurnCompleted,
@@ -147,6 +167,12 @@ enum ThreadArchivedType {
 enum ThreadUnarchivedType {
     #[serde(rename = "threadUnarchived")]
     ThreadUnarchived,
+}
+
+#[derive(Debug, Deserialize)]
+enum ThreadDeletedType {
+    #[serde(rename = "threadDeleted")]
+    ThreadDeleted,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +222,10 @@ pub(super) enum DecodedRecord {
         sequence: u64,
         thread_id: ThreadId,
     },
+    ThreadDeleted {
+        sequence: u64,
+        thread_id: ThreadId,
+    },
 }
 
 impl DecodedRecord {
@@ -204,7 +234,8 @@ impl DecodedRecord {
             Self::ThreadCreated { sequence, .. }
             | Self::TurnCompleted { sequence, .. }
             | Self::ThreadArchived { sequence, .. }
-            | Self::ThreadUnarchived { sequence, .. } => *sequence,
+            | Self::ThreadUnarchived { sequence, .. }
+            | Self::ThreadDeleted { sequence, .. } => *sequence,
         }
     }
 }
@@ -252,7 +283,7 @@ pub(super) fn decode_record(
     };
     if !matches!(
         record_type,
-        "threadCreated" | "turnCompleted" | "threadArchived" | "threadUnarchived"
+        "threadCreated" | "turnCompleted" | "threadArchived" | "threadUnarchived" | "threadDeleted"
     ) {
         return Err(RolloutError::Corrupt(RolloutDiagnostic {
             path: path.to_path_buf(),
@@ -365,6 +396,26 @@ pub(super) fn decode_record(
                 thread_id: ThreadId::new(thread_id),
             })
         }
+        "threadDeleted" => {
+            let record = serde_json::from_value::<StoredThreadDeleted>(value).map_err(|_| {
+                RolloutError::Corrupt(RolloutDiagnostic {
+                    path: path.to_path_buf(),
+                    offset,
+                    kind: "invalidRecordShape",
+                })
+            })?;
+            let StoredThreadDeleted {
+                schema_version,
+                sequence,
+                thread_id,
+                record_type: ThreadDeletedType::ThreadDeleted,
+            } = record;
+            debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
+            Ok(DecodedRecord::ThreadDeleted {
+                sequence,
+                thread_id: ThreadId::new(thread_id),
+            })
+        }
         _ => unreachable!("record type checked above"),
     }
 }
@@ -418,6 +469,19 @@ pub(super) fn encode_thread_unarchived(
         schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
         sequence,
         record_type: "threadUnarchived",
+        thread_id: thread_id.as_str(),
+    })
+    .map_err(|_| RolloutError::Poisoned)
+}
+
+pub(super) fn encode_thread_deleted(
+    sequence: u64,
+    thread_id: &ThreadId,
+) -> Result<Vec<u8>, RolloutError> {
+    serde_json::to_vec(&ThreadDeletedRecord {
+        schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
+        sequence,
+        record_type: "threadDeleted",
         thread_id: thread_id.as_str(),
     })
     .map_err(|_| RolloutError::Poisoned)

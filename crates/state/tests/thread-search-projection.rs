@@ -211,6 +211,51 @@ fn unarchived_threads_restore_search_with_exact_turn_record_sequences() {
 }
 
 #[test]
+fn deleted_threads_are_excluded_before_and_after_search_rebuild() {
+    let directory = tempdir().expect("home");
+    let resolved_home = home(&directory);
+    {
+        let mut repository = RolloutRepository::open(&resolved_home).expect("repository");
+        seed(&mut repository);
+        repository.delete_thread(&thread(2)).expect("delete");
+        assert_eq!(
+            repository
+                .search_threads("release", None, 50)
+                .expect("search")
+                .data
+                .iter()
+                .map(|summary| summary.id.clone())
+                .collect::<Vec<_>>(),
+            [thread(1)]
+        );
+        assert_eq!(
+            repository
+                .load_thread(&thread(2))
+                .expect("load")
+                .expect("thread")
+                .lifecycle,
+            DurableThreadLifecycle::Deleted
+        );
+    }
+
+    let database = directory
+        .path()
+        .join("projections/v1/thread-search.sqlite3");
+    fs::remove_file(&database).expect("remove search projection");
+    let mut repository = RolloutRepository::open(&resolved_home).expect("rebuild");
+    assert_eq!(
+        repository
+            .search_threads("release", None, 50)
+            .expect("rebuilt search")
+            .data
+            .iter()
+            .map(|summary| summary.id.clone())
+            .collect::<Vec<_>>(),
+        [thread(1)]
+    );
+}
+
+#[test]
 fn rejects_unbounded_or_control_character_queries_without_writing_them() {
     let directory = tempdir().expect("home");
     let mut repository = RolloutRepository::open(&home(&directory)).expect("repository");
@@ -496,6 +541,59 @@ fn an_unarchive_search_update_failure_never_rolls_back_the_durable_commit() {
             .data[0]
             .id,
         thread(1)
+    );
+}
+
+#[test]
+fn a_delete_search_update_failure_never_rolls_back_the_durable_commit() {
+    let directory = tempdir().expect("home");
+    let resolved_home = home(&directory);
+    let mut repository = RolloutRepository::open(&resolved_home).expect("repository");
+    repository.create_thread(&thread(1)).expect("thread");
+    repository
+        .append_completed_turn(&thread(1), &turn(1, "SugarCode delete proof"))
+        .expect("turn");
+    let database = directory
+        .path()
+        .join("projections/v1/thread-search.sqlite3");
+    let blocker = rusqlite::Connection::open(&database).expect("projection");
+    blocker
+        .execute_batch("BEGIN EXCLUSIVE")
+        .expect("hold search lock");
+
+    repository
+        .delete_thread(&thread(1))
+        .expect("durable delete remains successful");
+    assert_eq!(
+        repository
+            .load_thread(&thread(1))
+            .expect("load")
+            .expect("thread")
+            .lifecycle,
+        DurableThreadLifecycle::Deleted
+    );
+    assert!(
+        repository
+            .list_threads(None, 50)
+            .expect("discovery remains available")
+            .data
+            .is_empty()
+    );
+    assert!(matches!(
+        repository.search_threads("delete", None, 50),
+        Err(RolloutError::Projection(_))
+    ));
+
+    blocker.execute_batch("ROLLBACK").expect("release lock");
+    drop(blocker);
+    drop(repository);
+    let mut repository = RolloutRepository::open(&resolved_home).expect("stale search rebuilds");
+    assert!(
+        repository
+            .search_threads("delete", None, 50)
+            .expect("rebuilt search")
+            .data
+            .is_empty()
     );
 }
 

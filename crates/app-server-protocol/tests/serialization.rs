@@ -12,6 +12,8 @@ use sugarcode_app_server_protocol::RequestId;
 use sugarcode_app_server_protocol::Thread;
 use sugarcode_app_server_protocol::ThreadArchiveParams;
 use sugarcode_app_server_protocol::ThreadArchiveResponse;
+use sugarcode_app_server_protocol::ThreadDeleteParams;
+use sugarcode_app_server_protocol::ThreadDeleteResponse;
 use sugarcode_app_server_protocol::ThreadListParams;
 use sugarcode_app_server_protocol::ThreadListResponse;
 use sugarcode_app_server_protocol::ThreadResumeParams;
@@ -164,6 +166,33 @@ fn thread_unarchive_uses_its_own_canonical_params_and_empty_response() {
         json!({"threadId": "thr_0000000000000001", "resume": true}),
     ] {
         assert!(serde_json::from_value::<ThreadUnarchiveParams>(invalid).is_err());
+    }
+}
+
+#[test]
+fn thread_delete_uses_its_own_canonical_params_and_empty_response() {
+    assert_eq!(
+        serde_json::from_value::<ThreadDeleteParams>(json!({
+            "threadId": "thr_0000000000000001"
+        }))
+        .expect("valid params"),
+        ThreadDeleteParams {
+            thread_id: "thr_0000000000000001".to_string()
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(ThreadDeleteResponse {}).expect("response serializes"),
+        json!({})
+    );
+    for invalid in [
+        json!({}),
+        json!({"threadId": ""}),
+        json!({"threadId": "thr_missing"}),
+        json!({"threadId": "../thr_0000000000000001"}),
+        json!({"threadId": "thr_00000000000000001"}),
+        json!({"threadId": "thr_0000000000000001", "purge": true}),
+    ] {
+        assert!(serde_json::from_value::<ThreadDeleteParams>(invalid).is_err());
     }
 }
 

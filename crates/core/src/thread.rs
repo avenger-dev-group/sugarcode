@@ -218,6 +218,9 @@ pub trait CoreApi {
     fn unarchive_thread(&mut self, _thread_id: &ThreadId) -> Result<(), CoreError> {
         Err(CoreError::StateUnavailable)
     }
+    fn delete_thread(&mut self, _thread_id: &ThreadId) -> Result<(), CoreError> {
+        Err(CoreError::StateUnavailable)
+    }
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError>;
     fn start_turn(
         &mut self,
@@ -380,6 +383,9 @@ impl CoreApi for Core {
         if lifecycle == DurableThreadLifecycle::Archived {
             return Ok(());
         }
+        if lifecycle == DurableThreadLifecycle::Deleted {
+            return Err(CoreError::ThreadNotFound(thread_id.clone()));
+        }
         self.repository
             .archive_thread(thread_id)
             .map_err(map_repository_error)?;
@@ -398,6 +404,9 @@ impl CoreApi for Core {
                 .map_err(map_repository_error)?
                 .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?,
         };
+        if snapshot.lifecycle == DurableThreadLifecycle::Deleted {
+            return Err(CoreError::ThreadNotFound(thread_id.clone()));
+        }
         if snapshot.lifecycle == DurableThreadLifecycle::Archived {
             self.repository
                 .unarchive_thread(thread_id)
@@ -408,9 +417,32 @@ impl CoreApi for Core {
         Ok(())
     }
 
+    fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        let lifecycle = match self.threads.get(thread_id) {
+            Some(thread) => thread.lifecycle,
+            None => {
+                self.repository
+                    .load_thread(thread_id)
+                    .map_err(map_repository_error)?
+                    .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?
+                    .lifecycle
+            }
+        };
+        if lifecycle == DurableThreadLifecycle::Deleted {
+            return Ok(());
+        }
+        self.repository
+            .delete_thread(thread_id)
+            .map_err(map_repository_error)?;
+        if let Some(thread) = self.threads.get_mut(thread_id) {
+            thread.lifecycle = DurableThreadLifecycle::Deleted;
+        }
+        Ok(())
+    }
+
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
         if let Some(thread) = self.threads.get(thread_id) {
-            if thread.lifecycle == DurableThreadLifecycle::Archived {
+            if thread.lifecycle != DurableThreadLifecycle::Active {
                 return Err(CoreError::ThreadNotFound(thread_id.clone()));
             }
             return Ok(durable_thread_snapshot(thread));
@@ -420,7 +452,7 @@ impl CoreApi for Core {
             .load_thread(thread_id)
             .map_err(map_repository_error)?
             .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
-        if snapshot.lifecycle == DurableThreadLifecycle::Archived {
+        if snapshot.lifecycle != DurableThreadLifecycle::Active {
             return Err(CoreError::ThreadNotFound(thread_id.clone()));
         }
         self.materialize_snapshot(&snapshot);
@@ -436,7 +468,7 @@ impl CoreApi for Core {
             .threads
             .get(&thread_id)
             .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
-        if thread.lifecycle == DurableThreadLifecycle::Archived {
+        if thread.lifecycle != DurableThreadLifecycle::Active {
             return Err(CoreError::ThreadNotFound(thread_id));
         }
         if let Some(turn_id) = &thread.active_turn_id {
@@ -597,9 +629,13 @@ impl ThreadRepository for MemoryThreadRepository {
             .threads
             .get_mut(thread_id)
             .ok_or(RolloutError::InvalidId { kind: "thread" })?;
-        if thread.lifecycle == DurableThreadLifecycle::Archived {
+        if thread.lifecycle != DurableThreadLifecycle::Active {
             return Err(RolloutError::InvalidRecord {
-                kind: "recordAfterThreadArchive",
+                kind: if thread.lifecycle == DurableThreadLifecycle::Deleted {
+                    "recordAfterThreadDelete"
+                } else {
+                    "recordAfterThreadArchive"
+                },
             });
         }
         thread.turns.push(turn.clone());
@@ -640,6 +676,15 @@ impl ThreadRepository for MemoryThreadRepository {
             .get_mut(thread_id)
             .ok_or(RolloutError::InvalidId { kind: "thread" })?;
         thread.lifecycle = DurableThreadLifecycle::Active;
+        Ok(())
+    }
+
+    fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        thread.lifecycle = DurableThreadLifecycle::Deleted;
         Ok(())
     }
 
@@ -887,6 +932,60 @@ mod tests {
             core.unarchive_thread(&missing),
             Err(CoreError::ThreadNotFound(missing))
         );
+    }
+
+    #[test]
+    fn delete_is_terminal_idempotent_and_preserves_id_sequences() {
+        let mut core = Core::new();
+        let active = start_thread(&mut core, 1);
+        core.start_turn(CoreRequestId::new(2), active.clone())
+            .expect("active turn");
+        let archived = start_thread(&mut core, 3);
+        core.start_turn(CoreRequestId::new(4), archived.clone())
+            .expect("archived turn");
+        core.archive_thread(&archived).expect("archive");
+
+        core.delete_thread(&active).expect("delete active");
+        core.delete_thread(&active).expect("idempotent delete");
+        core.delete_thread(&archived).expect("delete archived");
+        assert!(!core.contains_thread(&active));
+        assert!(!core.contains_thread(&archived));
+        for thread_id in [&active, &archived] {
+            assert_eq!(
+                core.resume_thread(thread_id),
+                Err(CoreError::ThreadNotFound(thread_id.clone()))
+            );
+            assert_eq!(
+                core.archive_thread(thread_id),
+                Err(CoreError::ThreadNotFound(thread_id.clone()))
+            );
+            assert_eq!(
+                core.unarchive_thread(thread_id),
+                Err(CoreError::ThreadNotFound(thread_id.clone()))
+            );
+            assert_eq!(
+                core.start_turn(CoreRequestId::new(5), thread_id.clone()),
+                Err(CoreError::ThreadNotFound(thread_id.clone()))
+            );
+        }
+        assert!(core.list_threads(None, 50).expect("list").data.is_empty());
+        assert!(
+            core.search_threads("SugarCode", None, 50)
+                .expect("search")
+                .data
+                .is_empty()
+        );
+
+        let next = start_thread(&mut core, 6);
+        assert_eq!(next.as_str(), "thr_0000000000000003");
+        let events = core
+            .start_turn(CoreRequestId::new(7), next)
+            .expect("next turn");
+        assert_eq!(turn_id(&events).as_str(), "turn_0000000000000003");
+        let CoreEventKind::ItemStarted { item, .. } = &events[1].kind else {
+            panic!("expected item started");
+        };
+        assert_eq!(item.id.as_str(), "item_0000000000000003");
     }
 
     #[test]
@@ -1209,6 +1308,24 @@ mod tests {
         assert!(!core.contains_thread(&thread_id));
     }
 
+    #[test]
+    fn failed_delete_write_does_not_hide_the_in_memory_thread() {
+        let mut core = Core::with_repository(Box::new(FailingRepository {
+            fail_create: false,
+            fail_append: false,
+            ..Default::default()
+        }));
+        let thread_id = start_thread(&mut core, 1);
+
+        assert_eq!(
+            core.delete_thread(&thread_id),
+            Err(CoreError::StateUnavailable)
+        );
+        assert!(core.contains_thread(&thread_id));
+        core.start_turn(CoreRequestId::new(2), thread_id)
+            .expect("thread stays active");
+    }
+
     #[derive(Debug, Default)]
     struct FailingRepository {
         fail_create: bool,
@@ -1254,6 +1371,10 @@ mod tests {
         }
 
         fn unarchive_thread(&mut self, _thread_id: &ThreadId) -> Result<(), RolloutError> {
+            Err(RolloutError::Poisoned)
+        }
+
+        fn delete_thread(&mut self, _thread_id: &ThreadId) -> Result<(), RolloutError> {
             Err(RolloutError::Poisoned)
         }
 

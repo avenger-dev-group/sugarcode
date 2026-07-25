@@ -33,6 +33,8 @@ use sugarcode_app_server_protocol::ServerInfo;
 use sugarcode_app_server_protocol::Thread as PublicThread;
 use sugarcode_app_server_protocol::ThreadArchiveParams;
 use sugarcode_app_server_protocol::ThreadArchiveResponse;
+use sugarcode_app_server_protocol::ThreadDeleteParams;
+use sugarcode_app_server_protocol::ThreadDeleteResponse;
 use sugarcode_app_server_protocol::ThreadListParams;
 use sugarcode_app_server_protocol::ThreadListResponse;
 use sugarcode_app_server_protocol::ThreadResumeParams;
@@ -207,6 +209,20 @@ where
                     )];
                 }
                 self.unarchive_thread(id, object.get("params").cloned())
+            }
+            "thread/delete" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.delete_thread(id, object.get("params").cloned())
             }
             "thread/search" => {
                 let Some(id) = request_id else {
@@ -547,6 +563,64 @@ where
                     id,
                     result: serde_json::to_value(response)
                         .expect("thread/unarchive response must serialize"),
+                })]
+            }
+            Err(CoreError::ThreadNotFound(_)) => vec![error(
+                Some(id),
+                ERROR_THREAD_NOT_FOUND,
+                "Thread not found",
+                Some(json!({ "threadId": params.thread_id })),
+            )],
+            Err(CoreError::StateUnavailable) => {
+                self.accepted_request_ids.insert(id.clone());
+                vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )]
+            }
+            Err(_) => {
+                self.accepted_request_ids.insert(id.clone());
+                vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)]
+            }
+        }
+    }
+
+    fn delete_thread(&mut self, id: RequestId, params: Option<Value>) -> Vec<JsonRpcMessage> {
+        let params = match params
+            .ok_or(())
+            .and_then(|value| serde_json::from_value::<ThreadDeleteParams>(value).map_err(|_| ()))
+        {
+            Ok(params) => params,
+            Err(()) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+
+        let thread_id = ThreadId::new(params.thread_id.clone());
+        match self.core.delete_thread(&thread_id) {
+            Ok(()) => {
+                self.accepted_request_ids.insert(id.clone());
+                let response = ThreadDeleteResponse {};
+                vec![JsonRpcMessage::Response(JsonRpcResponse {
+                    jsonrpc: JsonRpcVersion::V2,
+                    id,
+                    result: serde_json::to_value(response)
+                        .expect("thread/delete response must serialize"),
                 })]
             }
             Err(CoreError::ThreadNotFound(_)) => vec![error(
@@ -1128,6 +1202,110 @@ mod tests {
     }
 
     #[test]
+    fn thread_delete_is_terminal_for_active_and_archived_threads() {
+        let mut session = ready_session(Core::new());
+        for (thread_request, turn_request) in [("thread-1", "turn-1"), ("thread-2", "turn-2")] {
+            session.process_line(
+                &json!({"jsonrpc": "2.0", "id": thread_request, "method": "thread/start"})
+                    .to_string(),
+            );
+            session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": turn_request,
+                    "method": "turn/start",
+                    "params": {"threadId": format!("thr_000000000000000{}", &thread_request[7..])}
+                })
+                .to_string(),
+            );
+        }
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000002"}}"#,
+        );
+
+        for (request_id, thread_id) in [
+            ("delete-active", "thr_0000000000000001"),
+            ("delete-archived", "thr_0000000000000002"),
+            ("delete-again", "thr_0000000000000001"),
+        ] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "thread/delete",
+                    "params": {"threadId": thread_id}
+                })
+                .to_string(),
+            );
+            assert_eq!(
+                serde_json::to_value(&messages[0]).expect("message serializes"),
+                json!({"jsonrpc": "2.0", "id": request_id, "result": {}})
+            );
+        }
+
+        for (request_id, method) in [
+            ("resume-deleted", "thread/resume"),
+            ("archive-deleted", "thread/archive"),
+            ("unarchive-deleted", "thread/unarchive"),
+            ("turn-deleted", "turn/start"),
+        ] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": method,
+                    "params": {"threadId": "thr_0000000000000001"}
+                })
+                .to_string(),
+            );
+            let JsonRpcMessage::Error(error) = &messages[0] else {
+                panic!("{method} must reject a deleted thread");
+            };
+            assert_eq!(error.error.code, ERROR_THREAD_NOT_FOUND);
+        }
+    }
+
+    #[test]
+    fn thread_delete_validates_before_consuming_its_request_id() {
+        let mut session = ready_session(Core::new());
+        for params in [
+            json!({"threadId": "thr_missing"}),
+            json!({"threadId": "thr_0000000000000001", "force": true}),
+        ] {
+            let messages = session.process_line(
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": "retry",
+                    "method": "thread/delete",
+                    "params": params
+                })
+                .to_string(),
+            );
+            let JsonRpcMessage::Error(error) = &messages[0] else {
+                panic!("expected delete error");
+            };
+            assert!(
+                error.error.code == ERROR_INVALID_PARAMS
+                    || error.error.code == ERROR_THREAD_NOT_FOUND
+            );
+        }
+        session.process_line(
+            r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#,
+        );
+        let success = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        assert!(matches!(success[0], JsonRpcMessage::Response(_)));
+        let duplicate = session.process_line(
+            r#"{"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"threadId":"thr_0000000000000001"}}"#,
+        );
+        let JsonRpcMessage::Error(error) = &duplicate[0] else {
+            panic!("expected duplicate error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
+    }
+
+    #[test]
     fn invalid_params_do_not_reach_core() {
         let mut session = ready_session(Core::new());
 
@@ -1424,6 +1602,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":"start","method":"thread/start","params":{}}"#,
             r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
+            r#"{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}"#,
             r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001"}}"#,
         ] {
@@ -1461,6 +1640,24 @@ mod tests {
     fn an_uncertain_unarchive_attempt_consumes_its_request_id() {
         let mut session = ready_session(StateUnavailableCore);
         let request = r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#;
+
+        let first = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &first[0] else {
+            panic!("expected state error");
+        };
+        assert_eq!(error.error.code, ERROR_STATE_UNAVAILABLE);
+
+        let second = session.process_line(request);
+        let JsonRpcMessage::Error(error) = &second[0] else {
+            panic!("expected duplicate error");
+        };
+        assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
+    }
+
+    #[test]
+    fn an_uncertain_delete_attempt_consumes_its_request_id() {
+        let mut session = ready_session(StateUnavailableCore);
+        let request = r#"{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"threadId":"thr_0000000000000001"}}"#;
 
         let first = session.process_line(request);
         let JsonRpcMessage::Error(error) = &first[0] else {

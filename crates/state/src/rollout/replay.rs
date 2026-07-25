@@ -187,8 +187,13 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     if thread_id != expected_thread_id {
                         return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
                     }
-                    if thread.lifecycle == DurableThreadLifecycle::Archived {
-                        return Err(corrupt(&path, offset as u64, "recordAfterThreadArchive"));
+                    if thread.lifecycle != DurableThreadLifecycle::Active {
+                        let kind = if thread.lifecycle == DurableThreadLifecycle::Deleted {
+                            "recordAfterThreadDelete"
+                        } else {
+                            "recordAfterThreadArchive"
+                        };
+                        return Err(corrupt(&path, offset as u64, kind));
                     }
                     let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")
                         .map_err(|_| corrupt(&path, offset as u64, "invalidTurnId"))?;
@@ -220,10 +225,17 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     if thread_id != expected_thread_id {
                         return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
                     }
-                    if thread.lifecycle == DurableThreadLifecycle::Archived {
-                        return Err(corrupt(&path, offset as u64, "duplicateThreadArchive"));
+                    match thread.lifecycle {
+                        DurableThreadLifecycle::Active => {
+                            thread.lifecycle = DurableThreadLifecycle::Archived;
+                        }
+                        DurableThreadLifecycle::Archived => {
+                            return Err(corrupt(&path, offset as u64, "duplicateThreadArchive"));
+                        }
+                        DurableThreadLifecycle::Deleted => {
+                            return Err(corrupt(&path, offset as u64, "recordAfterThreadDelete"));
+                        }
                     }
-                    thread.lifecycle = DurableThreadLifecycle::Archived;
                 }
                 DecodedRecord::ThreadUnarchived {
                     thread_id,
@@ -235,10 +247,36 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     if thread_id != expected_thread_id {
                         return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
                     }
-                    if thread.lifecycle == DurableThreadLifecycle::Active {
-                        return Err(corrupt(&path, offset as u64, "threadUnarchiveWhileActive"));
+                    match thread.lifecycle {
+                        DurableThreadLifecycle::Active => {
+                            return Err(corrupt(
+                                &path,
+                                offset as u64,
+                                "threadUnarchiveWhileActive",
+                            ));
+                        }
+                        DurableThreadLifecycle::Archived => {
+                            thread.lifecycle = DurableThreadLifecycle::Active;
+                        }
+                        DurableThreadLifecycle::Deleted => {
+                            return Err(corrupt(&path, offset as u64, "recordAfterThreadDelete"));
+                        }
                     }
-                    thread.lifecycle = DurableThreadLifecycle::Active;
+                }
+                DecodedRecord::ThreadDeleted {
+                    thread_id,
+                    sequence: _,
+                } => {
+                    let thread = snapshot
+                        .as_mut()
+                        .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
+                    if thread_id != expected_thread_id {
+                        return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
+                    }
+                    if thread.lifecycle == DurableThreadLifecycle::Deleted {
+                        return Err(corrupt(&path, offset as u64, "duplicateThreadDelete"));
+                    }
+                    thread.lifecycle = DurableThreadLifecycle::Deleted;
                 }
             }
             expected_sequence = expected_sequence

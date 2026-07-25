@@ -35,6 +35,8 @@ pub use thread::MAX_THREAD_SEARCH_QUERY_TERMS;
 pub use thread::Thread;
 pub use thread::ThreadArchiveParams;
 pub use thread::ThreadArchiveResponse;
+pub use thread::ThreadDeleteParams;
+pub use thread::ThreadDeleteResponse;
 pub use thread::ThreadListParams;
 pub use thread::ThreadListResponse;
 pub use thread::ThreadResumeParams;

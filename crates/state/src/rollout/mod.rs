@@ -45,6 +45,7 @@ pub(crate) struct RolloutThreadState {
 pub enum DurableThreadLifecycle {
     Active,
     Archived,
+    Deleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +88,7 @@ pub trait ThreadRepository: fmt::Debug + Send {
     ) -> Result<(), RolloutError>;
     fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
     fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
+    fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
     fn load_thread(
         &self,
         thread_id: &ThreadId,

@@ -48,7 +48,7 @@ CREATE TABLE threads (
     thread_id TEXT PRIMARY KEY NOT NULL,
     thread_order_key TEXT NOT NULL,
     last_rollout_sequence INTEGER NOT NULL CHECK (last_rollout_sequence >= 1),
-    archived INTEGER NOT NULL CHECK (archived IN (0, 1)),
+    lifecycle TEXT NOT NULL CHECK (lifecycle IN ('active', 'archived', 'deleted')),
     CHECK (
         length(thread_id) BETWEEN 20 AND 24
         AND substr(thread_id, 1, 4) = 'thr_'
@@ -165,8 +165,8 @@ impl ThreadDiscoveryProjection {
             transaction
                 .execute(
                     "INSERT INTO threads (
-                        thread_id, thread_order_key, last_rollout_sequence, archived
-                    ) VALUES (?1, ?2, 1, 0)",
+                        thread_id, thread_order_key, last_rollout_sequence, lifecycle
+                    ) VALUES (?1, ?2, 1, 'active')",
                     params![thread_id.as_str(), order_key],
                 )
                 .map_err(|error| sqlite_error(&database_path, "update", error))?;
@@ -229,7 +229,9 @@ impl ThreadDiscoveryProjection {
                 .execute(
                     "UPDATE threads
                      SET last_rollout_sequence = ?2
-                     WHERE thread_id = ?1 AND last_rollout_sequence = ?3",
+                     WHERE thread_id = ?1
+                       AND last_rollout_sequence = ?3
+                       AND lifecycle = 'active'",
                     params![thread_id.as_str(), current_sequence, previous_sequence],
                 )
                 .map_err(|error| sqlite_error(&database_path, "update", error))?;
@@ -297,10 +299,10 @@ impl ThreadDiscoveryProjection {
             let changed = transaction
                 .execute(
                     "UPDATE threads
-                     SET last_rollout_sequence = ?2, archived = 1
+                     SET last_rollout_sequence = ?2, lifecycle = 'archived'
                      WHERE thread_id = ?1
                        AND last_rollout_sequence = ?3
-                       AND archived = 0",
+                       AND lifecycle = 'active'",
                     params![thread_id.as_str(), current_sequence, previous_sequence],
                 )
                 .map_err(|error| sqlite_error(&database_path, "update", error))?;
@@ -368,10 +370,81 @@ impl ThreadDiscoveryProjection {
             let changed = transaction
                 .execute(
                     "UPDATE threads
-                     SET last_rollout_sequence = ?2, archived = 0
+                     SET last_rollout_sequence = ?2, lifecycle = 'active'
                      WHERE thread_id = ?1
                        AND last_rollout_sequence = ?3
-                       AND archived = 1",
+                       AND lifecycle = 'archived'",
+                    params![thread_id.as_str(), current_sequence, previous_sequence],
+                )
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            if changed != 1 {
+                return Err(RolloutError::Projection(ProjectionDiagnostic {
+                    path: database_path.clone(),
+                    operation: "update",
+                    kind: "stale",
+                }));
+            }
+            let changed = transaction
+                .execute(
+                    "UPDATE projection_metadata
+                     SET rollout_record_count = rollout_record_count + 1
+                     WHERE singleton = 1",
+                    [],
+                )
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            if changed != 1 {
+                return Err(RolloutError::Projection(ProjectionDiagnostic {
+                    path: database_path.clone(),
+                    operation: "update",
+                    kind: "stale",
+                }));
+            }
+            transaction
+                .commit()
+                .map_err(|error| sqlite_error(&database_path, "update", error))
+        })();
+        if let Err(error) = &result {
+            self.mark_dirty(
+                "update",
+                projection_error_kind(error),
+                is_rebuildable_projection_error(error),
+            );
+        }
+        result
+    }
+
+    pub(crate) fn record_thread_deleted(
+        &mut self,
+        thread_id: &ThreadId,
+        record_sequence: u64,
+    ) -> Result<(), RolloutError> {
+        if self.dirty {
+            return Ok(());
+        }
+        let current_sequence =
+            i64::try_from(record_sequence).map_err(|_| RolloutError::InvalidRecord {
+                kind: "projectionSequence",
+            })?;
+        let previous_sequence = current_sequence - 1;
+        let database_path = self.database_path.clone();
+        let result = (|| {
+            let connection = self.connection.as_mut().ok_or_else(|| {
+                RolloutError::Projection(ProjectionDiagnostic {
+                    path: database_path.clone(),
+                    operation: "update",
+                    kind: "unavailable",
+                })
+            })?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| sqlite_error(&database_path, "update", error))?;
+            let changed = transaction
+                .execute(
+                    "UPDATE threads
+                     SET last_rollout_sequence = ?2, lifecycle = 'deleted'
+                     WHERE thread_id = ?1
+                       AND last_rollout_sequence = ?3
+                       AND lifecycle IN ('active', 'archived')",
                     params![thread_id.as_str(), current_sequence, previous_sequence],
                 )
                 .map_err(|error| sqlite_error(&database_path, "update", error))?;
@@ -454,12 +527,12 @@ impl ThreadDiscoveryProjection {
             .ok_or_else(|| RolloutError::Projection(self.diagnostic("query", "unavailable")))?;
         let sql = if cursor_key.is_some() {
             "SELECT thread_id FROM threads
-             WHERE archived = 0 AND thread_order_key < ?1
+             WHERE lifecycle = 'active' AND thread_order_key < ?1
              ORDER BY thread_order_key DESC
              LIMIT ?2"
         } else {
             "SELECT thread_id FROM threads
-             WHERE archived = 0
+             WHERE lifecycle = 'active'
              ORDER BY thread_order_key DESC
              LIMIT ?1"
         };
@@ -680,13 +753,12 @@ fn build_database(
         let mut statement = transaction
             .prepare(
                 "INSERT INTO threads (
-                    thread_id, thread_order_key, last_rollout_sequence, archived
+                    thread_id, thread_order_key, last_rollout_sequence, lifecycle
                  ) VALUES (?1, ?2, ?3, ?4)",
             )
             .map_err(|error| sqlite_error(path, "rebuild", error))?;
         for state in threads.values() {
             let snapshot = &state.snapshot;
-            let archived = snapshot.lifecycle == DurableThreadLifecycle::Archived;
             statement
                 .execute(params![
                     snapshot.id.as_str(),
@@ -698,7 +770,7 @@ fn build_database(
                             kind: "limitExceeded",
                         })
                     })?,
-                    i64::from(archived),
+                    lifecycle_name(snapshot.lifecycle),
                 ])
                 .map_err(|error| sqlite_error(path, "rebuild", error))?;
         }
@@ -772,7 +844,7 @@ fn validate_projection(
     }
 
     let mut statement = connection.prepare(
-        "SELECT thread_id, thread_order_key, last_rollout_sequence, archived
+        "SELECT thread_id, thread_order_key, last_rollout_sequence, lifecycle
          FROM threads ORDER BY thread_order_key ASC",
     )?;
     let mut rows = statement.query([])?;
@@ -784,7 +856,7 @@ fn validate_projection(
         let thread_id: String = row.get(0)?;
         let order_key: String = row.get(1)?;
         let record_sequence: i64 = row.get(2)?;
-        let archived: i64 = row.get(3)?;
+        let lifecycle: String = row.get(3)?;
         let Some(state) = threads.get(&ThreadId::new(thread_id.clone())) else {
             return Err(rusqlite::Error::InvalidQuery);
         };
@@ -793,7 +865,7 @@ fn validate_projection(
             || record_sequence
                 != i64::try_from(state.last_record_sequence)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?
-            || archived != i64::from(snapshot.lifecycle == DurableThreadLifecycle::Archived)
+            || lifecycle != lifecycle_name(snapshot.lifecycle)
         {
             return Err(rusqlite::Error::InvalidQuery);
         }
@@ -942,6 +1014,14 @@ fn sync_parent(path: &Path) -> Result<(), RolloutError> {
 fn thread_order_key(thread_id: &ThreadId) -> Result<String, RolloutError> {
     let sequence = parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
     Ok(format!("{sequence:020}"))
+}
+
+fn lifecycle_name(lifecycle: DurableThreadLifecycle) -> &'static str {
+    match lifecycle {
+        DurableThreadLifecycle::Active => "active",
+        DurableThreadLifecycle::Archived => "archived",
+        DurableThreadLifecycle::Deleted => "deleted",
+    }
 }
 
 fn sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {

@@ -52,6 +52,10 @@ export type ThreadArchiveParams = { threadId: string, };
 
 export type ThreadArchiveResponse = Record<string, never>;
 
+export type ThreadDeleteParams = { threadId: string, };
+
+export type ThreadDeleteResponse = Record<string, never>;
+
 export type ThreadUnarchiveParams = { threadId: string, };
 
 export type ThreadUnarchiveResponse = Record<string, never>;

@@ -253,6 +253,138 @@ fn unarchives_in_rollout_v1_with_monotonic_sequences_and_rebuildable_views() {
 }
 
 #[test]
+fn deletes_active_or_archived_threads_with_terminal_v1_tombstones() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let active_id = ThreadId::new("thr_0000000000000001");
+    let archived_id = ThreadId::new("thr_0000000000000002");
+
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        for (thread_id, turn) in [(&active_id, 1), (&archived_id, 2)] {
+            repository.create_thread(thread_id).expect("thread");
+            repository
+                .append_completed_turn(thread_id, &completed_turn(turn))
+                .expect("turn");
+        }
+        repository
+            .archive_thread(&archived_id)
+            .expect("archive second thread");
+        repository.delete_thread(&active_id).expect("delete active");
+        repository
+            .delete_thread(&archived_id)
+            .expect("delete archived");
+
+        let active_bytes = fs::read(
+            directory
+                .path()
+                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+        )
+        .expect("read active rollout");
+        repository
+            .delete_thread(&active_id)
+            .expect("delete is idempotent");
+        assert_eq!(
+            fs::read(
+                directory
+                    .path()
+                    .join("rollouts/v1/thr_0000000000000001.jsonl")
+            )
+            .expect("read idempotent rollout"),
+            active_bytes
+        );
+        assert!(
+            repository
+                .list_threads(None, 50)
+                .expect("list")
+                .data
+                .is_empty()
+        );
+        assert!(
+            repository
+                .search_threads("SugarCode", None, 50)
+                .expect("search")
+                .data
+                .is_empty()
+        );
+        for thread_id in [&active_id, &archived_id] {
+            assert_eq!(
+                repository
+                    .load_thread(thread_id)
+                    .expect("load")
+                    .expect("thread")
+                    .lifecycle,
+                DurableThreadLifecycle::Deleted
+            );
+            assert!(matches!(
+                repository.archive_thread(thread_id),
+                Err(RolloutError::InvalidRecord {
+                    kind: "recordAfterThreadDelete"
+                })
+            ));
+            assert!(matches!(
+                repository.unarchive_thread(thread_id),
+                Err(RolloutError::InvalidRecord {
+                    kind: "recordAfterThreadDelete"
+                })
+            ));
+            assert!(matches!(
+                repository.append_completed_turn(thread_id, &completed_turn(3)),
+                Err(RolloutError::InvalidRecord {
+                    kind: "recordAfterThreadDelete"
+                })
+            ));
+        }
+    }
+
+    assert!(
+        fs::read_to_string(
+            directory
+                .path()
+                .join("rollouts/v1/thr_0000000000000001.jsonl")
+        )
+        .expect("read rollout")
+        .ends_with(
+            "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n"
+        )
+    );
+    assert!(
+        fs::read_to_string(
+            directory
+                .path()
+                .join("rollouts/v1/thr_0000000000000002.jsonl")
+        )
+        .expect("read rollout")
+        .ends_with(
+            "{\"schemaVersion\":1,\"sequence\":4,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000002\"}\n"
+        )
+    );
+
+    for database in ["thread-discovery.sqlite3", "thread-search.sqlite3"] {
+        fs::remove_file(directory.path().join("projections/v1").join(database))
+            .expect("remove projection");
+    }
+    let mut repository = RolloutRepository::open(&home).expect("rebuild deleted views");
+    assert!(
+        repository
+            .list_threads(None, 50)
+            .expect("list")
+            .data
+            .is_empty()
+    );
+    assert!(
+        repository
+            .search_threads("SugarCode", None, 50)
+            .expect("search")
+            .data
+            .is_empty()
+    );
+    assert_eq!(repository.id_sequences().thread, 2);
+    assert_eq!(repository.id_sequences().turn, 2);
+    assert_eq!(repository.id_sequences().item, 2);
+}
+
+#[test]
 fn lists_threads_in_descending_numeric_order_with_stable_cursor_paging() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
@@ -539,6 +671,60 @@ fn unarchive_projection_failure_does_not_erase_the_durable_commit() {
     );
 }
 
+#[test]
+fn delete_projection_failure_does_not_erase_the_durable_commit() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    let database = directory
+        .path()
+        .join("projections/v1/thread-discovery.sqlite3");
+    let blocker = rusqlite::Connection::open(&database).expect("open projection");
+    blocker
+        .execute_batch("BEGIN EXCLUSIVE")
+        .expect("hold exclusive database lock");
+
+    repository
+        .delete_thread(&thread_id)
+        .expect("durable delete remains successful");
+    assert_eq!(
+        repository
+            .load_thread(&thread_id)
+            .expect("load")
+            .expect("thread")
+            .lifecycle,
+        DurableThreadLifecycle::Deleted
+    );
+    assert!(matches!(
+        repository.list_threads(None, 50),
+        Err(RolloutError::Projection(_))
+    ));
+
+    blocker
+        .execute_batch("ROLLBACK")
+        .expect("release database lock");
+    drop(blocker);
+    drop(repository);
+    let mut repository = RolloutRepository::open(&home).expect("rebuild stale projection");
+    assert!(
+        repository
+            .list_threads(None, 50)
+            .expect("list")
+            .data
+            .is_empty()
+    );
+    assert_eq!(
+        repository
+            .load_thread(&thread_id)
+            .expect("load")
+            .expect("thread")
+            .lifecycle,
+        DurableThreadLifecycle::Deleted
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn rejects_a_projection_database_symlink_without_following_it() {
@@ -808,6 +994,68 @@ fn rejects_duplicate_archive_and_records_after_archive_without_echoing_content()
         };
         assert_eq!(diagnostic.kind, expected_kind, "{name}");
         assert!(!diagnostic.to_string().contains("private-archive-sentinel"));
+    }
+}
+
+#[test]
+fn rejects_duplicate_delete_and_records_after_delete_without_echoing_content() {
+    for (name, records, expected_kind) in [
+        (
+            "duplicate delete",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n"
+            ),
+            "duplicateThreadDelete",
+        ),
+        (
+            "turn after delete",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"turnCompleted\",\"threadId\":\"thr_0000000000000001\",\"turn\":{\"id\":\"turn_0000000000000001\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"item_0000000000000001\",\"text\":\"private-delete-sentinel\"}]}}\n"
+            ),
+            "recordAfterThreadDelete",
+        ),
+        (
+            "archive after delete",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+            ),
+            "recordAfterThreadDelete",
+        ),
+        (
+            "unarchive after delete",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadUnarchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+            ),
+            "recordAfterThreadDelete",
+        ),
+    ] {
+        let directory = tempdir().expect("home");
+        let home = resolved_temp_home(&directory);
+        {
+            let _repository = RolloutRepository::open(&home).expect("create layout");
+        }
+        fs::write(
+            directory
+                .path()
+                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            records,
+        )
+        .expect("write invalid rollout");
+
+        let error = RolloutRepository::open(&home).expect_err(name);
+        let RolloutError::Corrupt(diagnostic) = error else {
+            panic!("{name}: expected corruption");
+        };
+        assert_eq!(diagnostic.kind, expected_kind, "{name}");
+        assert!(!diagnostic.to_string().contains("private-delete-sentinel"));
     }
 }
 

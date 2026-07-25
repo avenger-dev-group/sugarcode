@@ -133,6 +133,40 @@ struct ThreadUnarchiveParamsWire {
 #[ts(rename_all = "camelCase")]
 pub struct ThreadUnarchiveResponse {}
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadDeleteParams {
+    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    pub thread_id: String,
+}
+
+impl<'de> Deserialize<'de> for ThreadDeleteParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let params = ThreadDeleteParamsWire::deserialize(deserializer)?;
+        if !is_canonical_thread_id(&params.thread_id) {
+            return Err(de::Error::custom("threadId must be a canonical Thread ID"));
+        }
+        Ok(Self {
+            thread_id: params.thread_id,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ThreadDeleteParamsWire {
+    thread_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadDeleteResponse {}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
