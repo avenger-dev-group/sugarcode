@@ -1,0 +1,376 @@
+use super::*;
+
+impl CoreApi for Core {
+    fn start_thread(&mut self, request_id: CoreRequestId) -> Result<CoreEvent, CoreError> {
+        let sequence = self
+            .last_thread_sequence
+            .checked_add(1)
+            .ok_or(CoreError::ThreadIdExhausted)?;
+        let thread_id = ThreadId::new(format!("thr_{sequence:016}"));
+        let thread = Thread {
+            id: thread_id.clone(),
+            turns: BTreeMap::new(),
+            active_turn_id: None,
+            lifecycle: DurableThreadLifecycle::Active,
+        };
+
+        self.repository
+            .create_thread(&thread_id)
+            .map_err(map_repository_error)?;
+        self.threads.insert(thread_id.clone(), thread);
+        self.last_thread_sequence = sequence;
+
+        Ok(CoreEvent {
+            request_id,
+            kind: CoreEventKind::ThreadStarted { thread_id },
+        })
+    }
+
+    fn contains_thread(&self, thread_id: &ThreadId) -> bool {
+        Self::contains_thread(self, thread_id)
+    }
+
+    fn list_threads(
+        &mut self,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, CoreError> {
+        self.repository
+            .list_threads(cursor, limit)
+            .map_err(map_repository_error)
+    }
+
+    fn search_threads(
+        &mut self,
+        query: &str,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<DurableThreadPage, CoreError> {
+        self.repository
+            .search_threads(query, cursor, limit)
+            .map_err(map_repository_error)
+    }
+
+    fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        if let Some(turn_id) = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.active_turn_id.clone())
+        {
+            return Err(CoreError::TurnAlreadyActive {
+                thread_id: thread_id.clone(),
+                turn_id,
+            });
+        }
+        let lifecycle = match self.threads.get(thread_id) {
+            Some(thread) => thread.lifecycle,
+            None => {
+                self.repository
+                    .load_thread(thread_id)
+                    .map_err(map_repository_error)?
+                    .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?
+                    .lifecycle
+            }
+        };
+        if lifecycle == DurableThreadLifecycle::Archived {
+            return Ok(());
+        }
+        if lifecycle == DurableThreadLifecycle::Deleted {
+            return Err(CoreError::ThreadNotFound(thread_id.clone()));
+        }
+        self.repository
+            .archive_thread(thread_id)
+            .map_err(map_repository_error)?;
+        if let Some(thread) = self.threads.get_mut(thread_id) {
+            thread.lifecycle = DurableThreadLifecycle::Archived;
+        }
+        Ok(())
+    }
+
+    fn unarchive_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        if let Some(turn_id) = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.active_turn_id.clone())
+        {
+            return Err(CoreError::TurnAlreadyActive {
+                thread_id: thread_id.clone(),
+                turn_id,
+            });
+        }
+        let mut snapshot = match self.threads.get(thread_id) {
+            Some(thread) => durable_thread_snapshot(thread),
+            None => self
+                .repository
+                .load_thread(thread_id)
+                .map_err(map_repository_error)?
+                .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?,
+        };
+        if snapshot.lifecycle == DurableThreadLifecycle::Deleted {
+            return Err(CoreError::ThreadNotFound(thread_id.clone()));
+        }
+        if snapshot.lifecycle == DurableThreadLifecycle::Archived {
+            self.repository
+                .unarchive_thread(thread_id)
+                .map_err(map_repository_error)?;
+            snapshot.lifecycle = DurableThreadLifecycle::Active;
+        }
+        self.materialize_snapshot(&snapshot);
+        Ok(())
+    }
+
+    fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
+        if let Some(turn_id) = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.active_turn_id.clone())
+        {
+            return Err(CoreError::TurnAlreadyActive {
+                thread_id: thread_id.clone(),
+                turn_id,
+            });
+        }
+        let lifecycle = match self.threads.get(thread_id) {
+            Some(thread) => thread.lifecycle,
+            None => {
+                self.repository
+                    .load_thread(thread_id)
+                    .map_err(map_repository_error)?
+                    .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?
+                    .lifecycle
+            }
+        };
+        if lifecycle == DurableThreadLifecycle::Deleted {
+            return Ok(());
+        }
+        self.repository
+            .delete_thread(thread_id)
+            .map_err(map_repository_error)?;
+        if let Some(thread) = self.threads.get_mut(thread_id) {
+            thread.lifecycle = DurableThreadLifecycle::Deleted;
+        }
+        Ok(())
+    }
+
+    fn fork_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
+        if let Some(turn_id) = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.active_turn_id.clone())
+        {
+            return Err(CoreError::TurnAlreadyActive {
+                thread_id: thread_id.clone(),
+                turn_id,
+            });
+        }
+        let source = match self.threads.get(thread_id) {
+            Some(thread) => durable_thread_snapshot(thread),
+            None => self
+                .repository
+                .load_thread(thread_id)
+                .map_err(map_repository_error)?
+                .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?,
+        };
+        if source.lifecycle != DurableThreadLifecycle::Active {
+            return Err(CoreError::ThreadNotFound(thread_id.clone()));
+        }
+
+        let thread_sequence = self
+            .last_thread_sequence
+            .checked_add(1)
+            .ok_or(CoreError::ThreadIdExhausted)?;
+        let mut turn_sequence = self.last_turn_sequence;
+        let mut item_sequence = self.last_item_sequence;
+        let completed_turns = source
+            .turns
+            .iter()
+            .filter(|turn| turn.status == DurableTurnStatus::Completed);
+        let mut turns = Vec::new();
+        for source_turn in completed_turns {
+            turn_sequence = turn_sequence
+                .checked_add(1)
+                .ok_or(CoreError::TurnIdExhausted)?;
+            let mut items = Vec::with_capacity(source_turn.items.len());
+            for source_item in &source_turn.items {
+                item_sequence = item_sequence
+                    .checked_add(1)
+                    .ok_or(CoreError::ItemIdExhausted)?;
+                let item = match source_item {
+                    DurableItemSnapshot::UserMessage { text, .. } => {
+                        DurableItemSnapshot::UserMessage {
+                            id: ItemId::new(format!("item_{item_sequence:016}")),
+                            text: text.clone(),
+                        }
+                    }
+                    DurableItemSnapshot::AgentMessage { text, .. } => {
+                        DurableItemSnapshot::AgentMessage {
+                            id: ItemId::new(format!("item_{item_sequence:016}")),
+                            text: text.clone(),
+                        }
+                    }
+                    DurableItemSnapshot::ToolCall {
+                        call_id,
+                        name,
+                        path,
+                        ..
+                    } => DurableItemSnapshot::ToolCall {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        path: path.clone(),
+                    },
+                    DurableItemSnapshot::ToolResult {
+                        call_id,
+                        name,
+                        result,
+                        ..
+                    } => DurableItemSnapshot::ToolResult {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        result: result.clone(),
+                    },
+                };
+                items.push(item);
+            }
+            turns.push(DurableTurnSnapshot {
+                id: TurnId::new(format!("turn_{turn_sequence:016}")),
+                status: source_turn.status,
+                items,
+                error: source_turn.error.clone(),
+                usage: source_turn.usage.clone(),
+            });
+        }
+        let snapshot = DurableThreadSnapshot {
+            id: ThreadId::new(format!("thr_{thread_sequence:016}")),
+            turns,
+            lifecycle: DurableThreadLifecycle::Active,
+        };
+        self.repository
+            .create_thread_snapshot(&snapshot)
+            .map_err(map_repository_error)?;
+        self.materialize_snapshot(&snapshot);
+        self.last_thread_sequence = thread_sequence;
+        self.last_turn_sequence = turn_sequence;
+        self.last_item_sequence = item_sequence;
+        Ok(snapshot)
+    }
+
+    fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
+        if let Some(thread) = self.threads.get(thread_id) {
+            if thread.lifecycle != DurableThreadLifecycle::Active {
+                return Err(CoreError::ThreadNotFound(thread_id.clone()));
+            }
+            return Ok(durable_thread_snapshot(thread));
+        }
+        let snapshot = self
+            .repository
+            .load_thread(thread_id)
+            .map_err(map_repository_error)?
+            .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
+        if snapshot.lifecycle != DurableThreadLifecycle::Active {
+            return Err(CoreError::ThreadNotFound(thread_id.clone()));
+        }
+        self.materialize_snapshot(&snapshot);
+        Ok(snapshot)
+    }
+
+    fn start_turn(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+    ) -> Result<Vec<CoreEvent>, CoreError> {
+        let thread = self
+            .threads
+            .get(&thread_id)
+            .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
+        if thread.lifecycle != DurableThreadLifecycle::Active {
+            return Err(CoreError::ThreadNotFound(thread_id));
+        }
+        if let Some(turn_id) = &thread.active_turn_id {
+            return Err(CoreError::TurnAlreadyActive {
+                thread_id,
+                turn_id: turn_id.clone(),
+            });
+        }
+
+        let turn_sequence = self
+            .last_turn_sequence
+            .checked_add(1)
+            .ok_or(CoreError::TurnIdExhausted)?;
+        let item_sequence = self
+            .last_item_sequence
+            .checked_add(1)
+            .ok_or(CoreError::ItemIdExhausted)?;
+        let turn_id = TurnId::new(format!("turn_{turn_sequence:016}"));
+        let item_id = ItemId::new(format!("item_{item_sequence:016}"));
+
+        let mut turn = Turn::new(turn_id.clone(), request_id);
+        let mut item = Item::new_agent_message(item_id.clone());
+        let item_started = item.snapshot();
+        item.append_agent_message_delta(DETERMINISTIC_AGENT_MESSAGE)?;
+        let delta = DETERMINISTIC_AGENT_MESSAGE.to_string();
+        turn.add_item(item)?;
+        let item_completed = turn.complete_active_item_and_turn()?;
+        let durable_turn = DurableTurnSnapshot {
+            id: turn_id.clone(),
+            status: DurableTurnStatus::Completed,
+            items: vec![durable_item_snapshot(&item_completed)],
+            error: None,
+            usage: None,
+        };
+        self.repository
+            .append_completed_turn(&thread_id, &durable_turn)
+            .map_err(map_repository_error)?;
+
+        self.threads
+            .get_mut(&thread_id)
+            .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?
+            .turns
+            .insert(turn_id.clone(), turn);
+        self.last_turn_sequence = turn_sequence;
+        self.last_item_sequence = item_sequence;
+
+        Ok(vec![
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::TurnStarted {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                },
+            },
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::ItemStarted {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item: item_started,
+                },
+            },
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::AgentMessageDelta {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item_id,
+                    delta,
+                },
+            },
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::ItemCompleted {
+                    thread_id: thread_id.clone(),
+                    turn_id: turn_id.clone(),
+                    item: item_completed,
+                },
+            },
+            CoreEvent {
+                request_id,
+                kind: CoreEventKind::TurnCompleted {
+                    thread_id: thread_id.clone(),
+                    turn_id,
+                },
+            },
+        ])
+    }
+}
