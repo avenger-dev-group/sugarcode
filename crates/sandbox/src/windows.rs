@@ -67,8 +67,7 @@ use crate::SupervisedChild;
 #[path = "tests/windows.rs"]
 mod tests;
 
-const PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON: u64 =
-    0x0000_0001_0000_0000;
+const PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON: u64 = 1_u64 << 28;
 const INFINITE: u32 = u32::MAX;
 
 pub(crate) fn probe(policy: SandboxPolicy) -> Result<(), SandboxError> {

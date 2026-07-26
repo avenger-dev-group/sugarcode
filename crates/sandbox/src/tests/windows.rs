@@ -1,7 +1,16 @@
 use std::ffi::OsString;
 
+use super::PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON;
 use super::environment_block;
 use super::quote_windows_argument;
+
+#[test]
+fn uses_the_documented_win32k_system_call_disable_bit() {
+    assert_eq!(
+        PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON,
+        0x1000_0000
+    );
+}
 
 #[test]
 fn quotes_spaces_quotes_and_trailing_backslashes_for_create_process() {
