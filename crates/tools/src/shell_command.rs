@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde::Serialize;
+use std::ffi::OsString;
 use std::fmt;
 use std::future::Future;
 use std::io::Read;
@@ -7,7 +8,6 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
@@ -24,8 +24,6 @@ pub const MAX_SHELL_TOTAL_ARGUMENT_BYTES: usize = 32 * 1_024;
 pub const MAX_SHELL_OUTPUT_BYTES: usize = 24 * 1_024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPERVISOR_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(35);
-#[cfg(unix)]
-const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 const SUPERVISOR_RESULT_BYTES: usize = 2 * MAX_SHELL_OUTPUT_BYTES + 16 * 1_024;
 
 pub type ShellCommandFuture = Pin<Box<dyn Future<Output = ShellCommandExecution> + Send + 'static>>;
@@ -302,25 +300,20 @@ fn execute_supervised(
     request: SupervisorRequest,
     cancel_rx: std_mpsc::Receiver<()>,
 ) -> Result<ShellCommandOutput, ShellCommandErrorKind> {
-    let mut command = std::process::Command::new(&request.command);
-    command
-        .args(&request.arguments)
-        .current_dir(&request.cwd)
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    configure_minimal_environment_std(&mut command);
-    configure_process_group(&mut command);
+    let environment = minimal_environment();
     let started = Instant::now();
-    let mut child = command.spawn().map_err(|error| map_spawn_error(&error))?;
+    let mut child = sugarcode_sandbox::spawn_supervised(sugarcode_sandbox::CommandSpec {
+        command: request.command,
+        arguments: request.arguments,
+        cwd: request.cwd,
+        environment,
+    })
+    .map_err(|error| map_spawn_error(&error))?;
     let stdout = child
-        .stdout
-        .take()
+        .take_stdout()
         .ok_or(ShellCommandErrorKind::Unavailable)?;
     let stderr = child
-        .stderr
-        .take()
+        .take_stderr()
         .ok_or(ShellCommandErrorKind::Unavailable)?;
     let stdout_reader = std::thread::spawn(move || read_bounded(stdout));
     let stderr_reader = std::thread::spawn(move || read_bounded(stderr));
@@ -328,13 +321,13 @@ fn execute_supervised(
     let mut timed_out = false;
     let status = loop {
         if cancel_rx.try_recv().is_ok() {
-            terminate_process_tree(&mut child);
+            child.terminate_tree();
             let _ = child.wait();
             return Err(ShellCommandErrorKind::Unavailable);
         }
         if started.elapsed() >= COMMAND_TIMEOUT {
             timed_out = true;
-            terminate_process_tree(&mut child);
+            child.terminate_tree();
             break child
                 .wait()
                 .map_err(|_| ShellCommandErrorKind::Unavailable)?;
@@ -450,7 +443,7 @@ fn map_spawn_error(error: &std::io::Error) -> ShellCommandErrorKind {
     }
 }
 
-fn exit_outcome(status: ExitStatus) -> ShellCommandOutcome {
+fn exit_outcome(status: std::process::ExitStatus) -> ShellCommandOutcome {
     if let Some(code) = status.code() {
         return ShellCommandOutcome::ExitCode {
             code: i64::from(code),
@@ -469,18 +462,20 @@ fn exit_outcome(status: ExitStatus) -> ShellCommandOutcome {
     }
 }
 
-fn configure_minimal_environment_std(command: &mut std::process::Command) {
+fn minimal_environment() -> Vec<(OsString, OsString)> {
     #[cfg(unix)]
     {
-        command.env("LANG", "C").env("LC_ALL", "C");
+        vec![
+            (OsString::from("LANG"), OsString::from("C")),
+            (OsString::from("LC_ALL"), OsString::from("C")),
+        ]
     }
     #[cfg(windows)]
     {
-        for name in ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
+        ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"]
+            .into_iter()
+            .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)))
+            .collect()
     }
 }
 
@@ -497,61 +492,6 @@ fn configure_minimal_environment_tokio(command: &mut Command) {
             }
         }
     }
-}
-
-#[cfg(unix)]
-fn configure_process_group(command: &mut std::process::Command) {
-    use std::os::unix::process::CommandExt;
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            #[cfg(target_os = "linux")]
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-}
-
-#[cfg(not(unix))]
-fn configure_process_group(_command: &mut std::process::Command) {}
-
-#[cfg(unix)]
-fn terminate_process_tree(child: &mut std::process::Child) {
-    let process_group = match i32::try_from(child.id()) {
-        Ok(process_group) => process_group,
-        Err(_) => {
-            let _ = child.kill();
-            return;
-        }
-    };
-    unsafe {
-        libc::killpg(process_group, libc::SIGTERM);
-    }
-    let deadline = Instant::now() + TERMINATE_GRACE;
-    while Instant::now() < deadline {
-        let group_exists = unsafe { libc::killpg(process_group, 0) == 0 };
-        if !group_exists && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    unsafe {
-        libc::killpg(process_group, libc::SIGKILL);
-    }
-}
-
-#[cfg(windows)]
-fn terminate_process_tree(child: &mut std::process::Child) {
-    let _ = child.kill();
-}
-
-#[cfg(not(any(unix, windows)))]
-fn terminate_process_tree(child: &mut std::process::Child) {
-    let _ = child.kill();
 }
 
 #[cfg(windows)]

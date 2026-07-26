@@ -2042,6 +2042,13 @@ name = "sugarcode-protocol"
 version = "1.0.0"
 
 [[package]]
+name = "sugarcode-sandbox"
+version = "1.0.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "sugarcode-state"
 version = "1.0.0"
 dependencies = [
@@ -2068,6 +2075,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sugarcode-sandbox",
  "tempfile",
  "tokio",
  "tokio-util",
