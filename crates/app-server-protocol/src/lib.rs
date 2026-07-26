@@ -91,4 +91,5 @@ pub const ERROR_TURN_ACTIVE: i32 = -32009;
 pub use approval::CommandApprovalParams;
 pub use approval::CommandApprovalResponse;
 pub use approval::CommandApprovalResponseDecision;
+pub use approval::CommandNetworkPolicy;
 pub use approval::CommandSandboxPolicy;

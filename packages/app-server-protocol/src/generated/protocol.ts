@@ -40,9 +40,11 @@ export type InitializeResponse = { protocolVersion: number, serverInfo: ServerIn
 
 export type CommandApprovalResponseDecision = "approved" | "denied";
 
+export type CommandNetworkPolicy = "networkDeniedV1";
+
 export type CommandSandboxPolicy = "filesystemReadOnlyV1";
 
-export type CommandApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy: CommandSandboxPolicy, };
+export type CommandApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy: CommandSandboxPolicy, networkPolicy: CommandNetworkPolicy, };
 
 export type CommandApprovalResponse = { decision: CommandApprovalResponseDecision, };
 
@@ -52,9 +54,9 @@ export type FileChangeNewlineStyle = "lf" | "crLf";
 
 export type ProcessOutcome = { "type": "exitCode", code: bigint, } | { "type": "signal", signal: number, } | { "type": "timedOut" };
 
-export type ToolResult = { "type": "success", content: string, bytes: bigint, } | { "type": "error", kind: string, } | { "type": "process", stdout: string, stderr: string, stdoutBytes: bigint, stderrBytes: bigint, stdoutTruncated: boolean, stderrTruncated: boolean, encoding: string, durationMs: bigint, outcome: ProcessOutcome, };
+export type ToolResult = { "type": "success", content: string, bytes: bigint, } | { "type": "error", kind: string, } | { "type": "process", stdout: string, stderr: string, stdoutBytes: bigint, stderrBytes: bigint, stdoutTruncated: boolean, stderrTruncated: boolean, encoding: string, durationMs: bigint, outcome: ProcessOutcome, sandboxPolicy?: CommandSandboxPolicy, networkPolicy?: CommandNetworkPolicy, };
 
-export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, command?: string, arguments?: Array<string>, } | { "type": "fileChange", id: string, callId: string, path: string, kind: FileChangeKind, diff: string, beforeSha256: string, afterSha256: string, beforeBytes: bigint, afterBytes: bigint, newlineStyle: FileChangeNewlineStyle, finalNewline: boolean, } | { "type": "commandApprovalRequest", id: string, approvalId: string, callId: string, command: string, arguments: Array<string>, cwd: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy?: CommandSandboxPolicy, } | { "type": "commandApprovalDecision", id: string, approvalId: string, decision: string, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
+export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, command?: string, arguments?: Array<string>, } | { "type": "fileChange", id: string, callId: string, path: string, kind: FileChangeKind, diff: string, beforeSha256: string, afterSha256: string, beforeBytes: bigint, afterBytes: bigint, newlineStyle: FileChangeNewlineStyle, finalNewline: boolean, } | { "type": "commandApprovalRequest", id: string, approvalId: string, callId: string, command: string, arguments: Array<string>, cwd: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy?: CommandSandboxPolicy, networkPolicy?: CommandNetworkPolicy, } | { "type": "commandApprovalDecision", id: string, approvalId: string, decision: string, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
 
 export type ItemStartedNotification = { threadId: string, turnId: string, item: Item, };
 

@@ -53,7 +53,7 @@ impl SandboxError {
         self.kind
     }
 
-    fn unavailable(message: impl Into<String>) -> Self {
+    pub fn unavailable(message: impl Into<String>) -> Self {
         Self {
             kind: SandboxErrorKind::Unavailable,
             message: message.into(),

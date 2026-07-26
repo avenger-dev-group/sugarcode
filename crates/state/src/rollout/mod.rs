@@ -151,6 +151,7 @@ pub enum DurableItemSnapshot {
         environment_policy: String,
         sandboxed: bool,
         sandbox_policy: Option<String>,
+        network_policy: Option<String>,
     },
     CommandApprovalDecision {
         id: ItemId,
@@ -183,6 +184,8 @@ pub struct DurableProcessResult {
     pub encoding: String,
     pub duration_ms: u64,
     pub outcome: DurableProcessOutcome,
+    pub sandbox_policy: Option<String>,
+    pub network_policy: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

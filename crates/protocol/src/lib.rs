@@ -9,6 +9,7 @@ pub use event::CoreRequestId;
 pub use event::CoreTurnError;
 pub use event::CoreTurnErrorKind;
 pub use item::CoreCommandApprovalDecision;
+pub use item::CoreCommandNetworkPolicy;
 pub use item::CoreCommandSandboxPolicy;
 pub use item::CoreFileChangeKind;
 pub use item::CoreFileChangeNewlineStyle;

@@ -71,16 +71,20 @@ fn spawn_with_profile(
         cwd: spec.cwd,
         environment: spec.environment,
     };
-    let spawned = if sanitize_descriptors {
-        crate::process::spawn_supervised_sanitized(spec)
+    if sanitize_descriptors {
+        crate::process::spawn_supervised_sanitized(spec).map_err(|error| match error {
+            SandboxSpawnError::Sandbox(error) => SandboxSpawnError::Sandbox(error),
+            SandboxSpawnError::Process(error) => SandboxSpawnError::Sandbox(
+                SandboxError::unavailable(format!("failed to launch {SANDBOX_EXEC}: {error}")),
+            ),
+        })
     } else {
-        crate::spawn_supervised(spec)
-    };
-    spawned.map_err(|error| {
-        SandboxSpawnError::Sandbox(SandboxError::unavailable(format!(
-            "failed to launch {SANDBOX_EXEC}: {error}"
-        )))
-    })
+        crate::spawn_supervised(spec).map_err(|error| {
+            SandboxSpawnError::Sandbox(SandboxError::unavailable(format!(
+                "failed to launch {SANDBOX_EXEC}: {error}"
+            )))
+        })
+    }
 }
 
 fn probe_sandbox_exec() -> Result<(), SandboxError> {

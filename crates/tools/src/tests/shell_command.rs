@@ -51,3 +51,16 @@ fn sandbox_unavailable_is_a_stable_supervisor_error() {
         "sandboxUnavailable"
     );
 }
+
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn startup_probe_fails_closed_when_the_supervisor_cannot_spawn() {
+    let error = NativeShellCommandExecutor::new(PathBuf::from(
+        "/sugarcode-test/nonexistent-command-supervisor",
+    ))
+    .expect_err("missing supervisor must fail the command sandbox probe");
+    assert_eq!(
+        error.kind(),
+        sugarcode_sandbox::SandboxErrorKind::Unavailable
+    );
+}

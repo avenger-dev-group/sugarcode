@@ -1,13 +1,20 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 use std::path::PathBuf;
 use sugarcode_tools::NativeShellCommandExecutor;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use sugarcode_tools::ShellCommandArguments;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use sugarcode_tools::ShellCommandExecution;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use sugarcode_tools::ShellCommandExecutor;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use sugarcode_tools::ShellCommandOutcome;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn hidden_supervisor_executes_one_absolute_argv_command() {
     let executor = NativeShellCommandExecutor::new(PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")))
         .expect("native read-only sandbox");
@@ -24,9 +31,14 @@ async fn hidden_supervisor_executes_one_absolute_argv_command() {
         output.outcome,
         ShellCommandOutcome::ExitCode { code: 0 }
     ));
+    assert_eq!(
+        output.sandbox_policy,
+        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1
+    );
 }
 
 #[tokio::test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn cancellation_terminates_a_descendant_that_holds_output_pipes() {
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_sugarcode"));
     let executor =
@@ -45,6 +57,7 @@ async fn cancellation_terminates_a_descendant_that_holds_output_pipes() {
 }
 
 #[tokio::test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn approved_command_cannot_write_workspace_files() {
     let workspace = tempfile::tempdir().expect("workspace");
     let target = workspace.path().join("target.txt");
@@ -70,7 +83,15 @@ async fn approved_command_cannot_write_workspace_files() {
     );
 }
 
-#[cfg(unix)]
+#[test]
+#[cfg(windows)]
+fn native_shell_fails_closed_when_network_policy_is_unavailable() {
+    let error = NativeShellCommandExecutor::new(PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")))
+        .expect_err("networkDeniedV1 must fail closed on Windows");
+    assert_eq!(error.kind(), sugarcode_tools::SandboxErrorKind::Unavailable);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn write_command(cwd: &Path, target: &Path) -> ShellCommandArguments {
     ShellCommandArguments {
         command: "/bin/sh".to_string(),
@@ -84,27 +105,7 @@ fn write_command(cwd: &Path, target: &Path) -> ShellCommandArguments {
     }
 }
 
-#[cfg(windows)]
-fn write_command(cwd: &Path, target: &Path) -> ShellCommandArguments {
-    let system_root = std::env::var_os("SYSTEMROOT")
-        .map(PathBuf::from)
-        .expect("SYSTEMROOT is available");
-    ShellCommandArguments {
-        command: system_root
-            .join("System32")
-            .join("cmd.exe")
-            .to_string_lossy()
-            .into_owned(),
-        arguments: vec![
-            "/D".to_string(),
-            "/C".to_string(),
-            format!("echo changed>\"{}\"", target.display()),
-        ],
-        cwd: cwd.to_path_buf(),
-    }
-}
-
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn cancellation_tree_command(_executable: &Path) -> ShellCommandArguments {
     ShellCommandArguments {
         command: "/bin/sh".to_string(),
@@ -116,40 +117,11 @@ fn cancellation_tree_command(_executable: &Path) -> ShellCommandArguments {
     }
 }
 
-#[cfg(windows)]
-fn cancellation_tree_command(executable: &Path) -> ShellCommandArguments {
-    ShellCommandArguments {
-        command: executable.to_string_lossy().into_owned(),
-        arguments: vec!["__command-test-tree".to_string()],
-        cwd: std::env::current_dir().expect("current directory"),
-    }
-}
-
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn test_command() -> ShellCommandArguments {
     ShellCommandArguments {
         command: "/bin/echo".to_string(),
         arguments: vec!["supervisor-ok".to_string()],
-        cwd: std::env::current_dir().expect("current directory"),
-    }
-}
-
-#[cfg(windows)]
-fn test_command() -> ShellCommandArguments {
-    let system_root = std::env::var_os("SYSTEMROOT")
-        .map(PathBuf::from)
-        .expect("SYSTEMROOT is available");
-    ShellCommandArguments {
-        command: system_root
-            .join("System32")
-            .join("cmd.exe")
-            .to_string_lossy()
-            .into_owned(),
-        arguments: vec![
-            "/D".to_string(),
-            "/C".to_string(),
-            "echo supervisor-ok".to_string(),
-        ],
         cwd: std::env::current_dir().expect("current directory"),
     }
 }

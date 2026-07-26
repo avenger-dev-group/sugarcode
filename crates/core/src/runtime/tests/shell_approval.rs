@@ -29,6 +29,10 @@ impl CommandApprovalRequester for PendingApproval {
 struct RecordedShell;
 
 impl ShellCommandExecutor for RecordedShell {
+    fn sandbox_policy(&self) -> sugarcode_tools::CommandSandboxPolicy {
+        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1
+    }
+
     fn execute(
         &self,
         _arguments: ShellCommandArguments,
@@ -44,6 +48,8 @@ impl ShellCommandExecutor for RecordedShell {
                 stderr_truncated: false,
                 duration_ms: 7,
                 outcome: ShellCommandOutcome::ExitCode { code: 0 },
+                sandbox_policy:
+                    sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
             })
         })
     }
@@ -127,6 +133,7 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             sugarcode_state::DurableItemSnapshot::CommandApprovalRequest {
                 sandboxed: true,
                 sandbox_policy: Some(sandbox_policy),
+                network_policy: Some(network_policy),
                 ..
             },
             sugarcode_state::DurableItemSnapshot::CommandApprovalDecision {
@@ -134,13 +141,16 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                 ..
             },
             sugarcode_state::DurableItemSnapshot::ToolResult {
-                result: sugarcode_state::DurableToolResult::Process(_),
+                result: sugarcode_state::DurableToolResult::Process(process),
                 ..
             },
             sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
         ] if command == &test_absolute_command()
             && arguments == &["approved output".to_string()]
             && sandbox_policy == "filesystemReadOnlyV1"
+            && network_policy == "networkDeniedV1"
+            && process.sandbox_policy.as_deref() == Some("filesystemReadOnlyV1")
+            && process.network_policy.as_deref() == Some("networkDeniedV1")
             && decision == "approved"
     ));
     let fork = runtime
@@ -231,6 +241,7 @@ async fn denied_shell_command_persists_decision_without_running_process() {
         CoreEventKind::TurnCompleted { .. }
     ) {}
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    assert!(has_requested_command_policy(&snapshot.turns[0].items));
     assert!(snapshot.turns[0].items.iter().any(|item| matches!(
         item,
         sugarcode_state::DurableItemSnapshot::ToolResult {
@@ -313,6 +324,7 @@ async fn interrupt_while_awaiting_approval_persists_cancelled_without_tool_resul
     ) {}
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
     let items = &snapshot.turns[0].items;
+    assert!(has_requested_command_policy(items));
     assert!(items.iter().any(|item| matches!(
         item,
         sugarcode_state::DurableItemSnapshot::CommandApprovalDecision {
@@ -324,6 +336,48 @@ async fn interrupt_while_awaiting_approval_persists_cancelled_without_tool_resul
         item,
         sugarcode_state::DurableItemSnapshot::ToolResult { .. }
     )));
+}
+
+#[test]
+fn timed_out_process_result_retains_the_applied_command_policy() {
+    let execution = ShellCommandExecution::Completed(sugarcode_tools::ShellCommandOutput {
+        stdout: String::new(),
+        stderr: String::new(),
+        stdout_bytes: 0,
+        stderr_bytes: 0,
+        stdout_truncated: false,
+        stderr_truncated: false,
+        duration_ms: 30_000,
+        outcome: ShellCommandOutcome::TimedOut,
+        sandbox_policy:
+            sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
+    });
+    let (result, _) = shell_execution_result(execution).expect("timed-out process result");
+    assert!(matches!(
+        result,
+        CoreToolResult::Process(sugarcode_protocol::CoreProcessResult {
+            outcome: sugarcode_protocol::CoreProcessOutcome::TimedOut,
+            sandbox_policy: Some(
+                sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1
+            ),
+            network_policy: Some(sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1),
+            ..
+        })
+    ));
+}
+
+fn has_requested_command_policy(items: &[sugarcode_state::DurableItemSnapshot]) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item,
+            sugarcode_state::DurableItemSnapshot::CommandApprovalRequest {
+                sandbox_policy: Some(sandbox_policy),
+                network_policy: Some(network_policy),
+                ..
+            } if sandbox_policy == "filesystemReadOnlyV1"
+                && network_policy == "networkDeniedV1"
+        )
+    })
 }
 
 #[cfg(unix)]

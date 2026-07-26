@@ -5,6 +5,7 @@ pub(super) struct RunningServer {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     provider: MockProvider,
+    expects_sandbox_unavailable: bool,
 }
 
 impl RunningServer {
@@ -27,6 +28,7 @@ impl RunningServer {
             stdin,
             stdout,
             provider,
+            expects_sandbox_unavailable: false,
         }
     }
 
@@ -54,6 +56,7 @@ impl RunningServer {
             stdin,
             stdout,
             provider,
+            expects_sandbox_unavailable: cfg!(windows),
         }
     }
 
@@ -86,6 +89,7 @@ impl RunningServer {
             stdin,
             stdout,
             provider,
+            expects_sandbox_unavailable: cfg!(windows),
         }
     }
 
@@ -108,6 +112,7 @@ impl RunningServer {
             stdin,
             stdout,
             provider,
+            expects_sandbox_unavailable: false,
         }
     }
 
@@ -149,8 +154,14 @@ impl RunningServer {
     }
 
     pub(super) fn finish(self) {
+        let expects_sandbox_unavailable = self.expects_sandbox_unavailable;
         let stderr = self.finish_with_diagnostics();
-        assert!(stderr.is_empty(), "unexpected diagnostics: {stderr}");
+        let expected = if expects_sandbox_unavailable {
+            "sugarcode: shell/exec unavailable: sandboxUnavailable\n"
+        } else {
+            ""
+        };
+        assert_eq!(stderr, expected, "unexpected diagnostics");
     }
 
     pub(super) fn finish_with_diagnostics(mut self) -> String {

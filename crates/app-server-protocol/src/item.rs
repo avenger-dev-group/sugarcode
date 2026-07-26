@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::CommandNetworkPolicy;
 use crate::CommandSandboxPolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
@@ -81,6 +82,11 @@ pub enum Item {
         #[ts(rename = "sandboxPolicy")]
         #[ts(optional)]
         sandbox_policy: Option<CommandSandboxPolicy>,
+        #[serde(rename = "networkPolicy")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "networkPolicy")]
+        #[ts(optional)]
+        network_policy: Option<CommandNetworkPolicy>,
     },
     CommandApprovalDecision {
         id: String,
@@ -145,6 +151,16 @@ pub enum ToolResult {
         #[ts(rename = "durationMs")]
         duration_ms: u64,
         outcome: ProcessOutcome,
+        #[serde(rename = "sandboxPolicy")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "sandboxPolicy")]
+        #[ts(optional)]
+        sandbox_policy: Option<CommandSandboxPolicy>,
+        #[serde(rename = "networkPolicy")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "networkPolicy")]
+        #[ts(optional)]
+        network_policy: Option<CommandNetworkPolicy>,
     },
 }
 

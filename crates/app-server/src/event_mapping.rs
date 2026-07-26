@@ -305,6 +305,7 @@ fn map_snapshot_parts(
                             environment_policy,
                             sandboxed,
                             sandbox_policy,
+                            network_policy,
                         } => PublicItem::CommandApprovalRequest {
                             id: id.into_string(),
                             approval_id,
@@ -315,6 +316,7 @@ fn map_snapshot_parts(
                             environment_policy,
                             sandboxed,
                             sandbox_policy: public_sandbox_policy(sandbox_policy.as_deref()),
+                            network_policy: public_network_policy(network_policy.as_deref()),
                         },
                         DurableItemSnapshot::CommandApprovalDecision {
                             id,
@@ -509,6 +511,7 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             environment_policy,
             sandboxed,
             sandbox_policy,
+            network_policy,
         } => PublicItem::CommandApprovalRequest {
             id: item.id.into_string(),
             approval_id,
@@ -521,6 +524,11 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             sandbox_policy: sandbox_policy.map(|policy| match policy {
                 sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1 => {
                     sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
+                }
+            }),
+            network_policy: network_policy.map(|policy| match policy {
+                sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1 => {
+                    sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1
                 }
             }),
         },
@@ -567,6 +575,16 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
                             sugarcode_app_server_protocol::ProcessOutcome::TimedOut
                         }
                     },
+                    sandbox_policy: process.sandbox_policy.map(|policy| match policy {
+                        sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1 => {
+                            sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
+                        }
+                    }),
+                    network_policy: process.network_policy.map(|policy| match policy {
+                        sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1 => {
+                            sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1
+                        }
+                    }),
                 },
             },
         },
@@ -599,7 +617,20 @@ fn map_durable_tool_result(result: sugarcode_state::DurableToolResult) -> Public
                     sugarcode_app_server_protocol::ProcessOutcome::TimedOut
                 }
             },
+            sandbox_policy: public_sandbox_policy(process.sandbox_policy.as_deref()),
+            network_policy: public_network_policy(process.network_policy.as_deref()),
         },
+    }
+}
+
+fn public_network_policy(
+    policy: Option<&str>,
+) -> Option<sugarcode_app_server_protocol::CommandNetworkPolicy> {
+    match policy {
+        Some("networkDeniedV1") => {
+            Some(sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1)
+        }
+        Some(_) | None => None,
     }
 }
 

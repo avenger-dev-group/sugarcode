@@ -202,6 +202,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             environment_policy: "minimalV1".to_string(),
             sandboxed: true,
             sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
+            network_policy: Some("networkDeniedV1".to_string()),
         },
         DurableItemSnapshot::CommandApprovalDecision {
             id: ItemId::new("item_0000000000000004"),
@@ -222,6 +223,8 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
                 encoding: "utf8Lossy".to_string(),
                 duration_ms: 2,
                 outcome: DurableProcessOutcome::ExitCode { code: 0 },
+                sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
+                network_policy: Some("networkDeniedV1".to_string()),
             }),
         },
     ];
@@ -267,6 +270,73 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
         .expect("load")
         .expect("thread");
     assert_eq!(snapshot.turns[0].items[1..], incremental);
+    drop(repository);
+
+    let rollout = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    let legacy = fs::read_to_string(&rollout)
+        .expect("read rollout")
+        .lines()
+        .map(|line| {
+            let mut record =
+                serde_json::from_str::<serde_json::Value>(line).expect("parse rollout record");
+            remove_command_policy_fields(&mut record);
+            serde_json::to_string(&record).expect("serialize legacy rollout record")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    assert!(!legacy.contains("networkDeniedV1"), "{legacy}");
+    fs::write(&rollout, legacy).expect("rewrite legacy rollout fixture");
+    let repository = RolloutRepository::open(&home).expect("reopen legacy rollout");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load legacy rollout")
+        .expect("legacy thread");
+    assert!(
+        matches!(
+            &snapshot.turns[0].items[2],
+            DurableItemSnapshot::CommandApprovalRequest {
+                sandbox_policy: None,
+                network_policy: None,
+                ..
+            }
+        ),
+        "{:?}",
+        snapshot.turns[0].items[2]
+    );
+    assert!(matches!(
+        &snapshot.turns[0].items[4],
+        DurableItemSnapshot::ToolResult {
+            result: DurableToolResult::Process(DurableProcessResult {
+                sandbox_policy: None,
+                network_policy: None,
+                ..
+            }),
+            ..
+        }
+    ));
+}
+
+fn remove_command_policy_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            object.remove("sandboxPolicy");
+            object.remove("networkPolicy");
+            object.remove("sandbox_policy");
+            object.remove("network_policy");
+            for value in object.values_mut() {
+                remove_command_policy_fields(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                remove_command_policy_fields(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[test]

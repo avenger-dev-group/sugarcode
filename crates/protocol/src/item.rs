@@ -67,6 +67,7 @@ pub enum CoreItemKind {
         environment_policy: String,
         sandboxed: bool,
         sandbox_policy: Option<CoreCommandSandboxPolicy>,
+        network_policy: Option<CoreCommandNetworkPolicy>,
     },
     CommandApprovalDecision {
         approval_id: String,
@@ -108,6 +109,8 @@ pub struct CoreProcessResult {
     pub encoding: String,
     pub duration_ms: u64,
     pub outcome: CoreProcessOutcome,
+    pub sandbox_policy: Option<CoreCommandSandboxPolicy>,
+    pub network_policy: Option<CoreCommandNetworkPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,10 +135,23 @@ pub enum CoreCommandSandboxPolicy {
     FilesystemReadOnlyV1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreCommandNetworkPolicy {
+    NetworkDeniedV1,
+}
+
 impl fmt::Display for CoreCommandSandboxPolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::FilesystemReadOnlyV1 => "filesystemReadOnlyV1",
+        })
+    }
+}
+
+impl fmt::Display for CoreCommandNetworkPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NetworkDeniedV1 => "networkDeniedV1",
         })
     }
 }

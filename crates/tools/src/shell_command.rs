@@ -24,7 +24,9 @@ pub const MAX_SHELL_TOTAL_ARGUMENT_BYTES: usize = 32 * 1_024;
 pub const MAX_SHELL_OUTPUT_BYTES: usize = 24 * 1_024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPERVISOR_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(35);
+const SUPERVISOR_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const SUPERVISOR_RESULT_BYTES: usize = 2 * MAX_SHELL_OUTPUT_BYTES + 16 * 1_024;
+const SANDBOX_PROBE_SENTINEL: &str = "sugarcode-command-sandbox-probe-ok";
 
 pub type ShellCommandFuture = Pin<Box<dyn Future<Output = ShellCommandExecution> + Send + 'static>>;
 
@@ -53,6 +55,7 @@ pub struct ShellCommandOutput {
     pub stderr_truncated: bool,
     pub duration_ms: u64,
     pub outcome: ShellCommandOutcome,
+    pub sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +93,8 @@ impl fmt::Display for ShellCommandErrorKind {
 }
 
 pub trait ShellCommandExecutor: fmt::Debug + Send + Sync {
+    fn sandbox_policy(&self) -> sugarcode_sandbox::CommandSandboxPolicy;
+
     fn execute(
         &self,
         arguments: ShellCommandArguments,
@@ -100,14 +105,19 @@ pub trait ShellCommandExecutor: fmt::Debug + Send + Sync {
 #[derive(Debug, Clone)]
 pub struct NativeShellCommandExecutor {
     supervisor_executable: PathBuf,
-    sandbox_policy: sugarcode_sandbox::SandboxPolicy,
+    sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
 }
 
 impl NativeShellCommandExecutor {
     pub fn new(supervisor_executable: PathBuf) -> Result<Self, sugarcode_sandbox::SandboxError> {
-        let adapter = sugarcode_sandbox::SandboxAdapter::probe(
-            sugarcode_sandbox::SandboxPolicy::FilesystemReadOnlyV1,
+        let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(
+            sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
         )?;
+        probe_native_supervisor(&supervisor_executable, adapter.policy()).map_err(|error| {
+            sugarcode_sandbox::SandboxError::unavailable(format!(
+                "command sandbox supervisor probe failed: {error}"
+            ))
+        })?;
         Ok(Self {
             supervisor_executable,
             sandbox_policy: adapter.policy(),
@@ -115,7 +125,89 @@ impl NativeShellCommandExecutor {
     }
 }
 
+fn probe_native_supervisor(
+    executable: &Path,
+    sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+) -> Result<(), ShellCommandErrorKind> {
+    let current_directory =
+        std::env::current_dir().map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
+    let request = SupervisorRequest {
+        command: executable.to_string_lossy().into_owned(),
+        arguments: vec!["__command-sandbox-probe".to_owned()],
+        cwd: current_directory,
+        sandbox_policy,
+    };
+    let mut command = std::process::Command::new(executable);
+    command
+        .arg("__command-supervisor")
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    configure_minimal_environment_std(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or(ShellCommandErrorKind::SandboxUnavailable)?;
+    let mut encoded =
+        serde_json::to_vec(&request).map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
+    encoded.push(b'\n');
+    stdin
+        .write_all(&encoded)
+        .and_then(|()| stdin.flush())
+        .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
+
+    let deadline = Instant::now() + SUPERVISOR_PROBE_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = stdin.write_all(b"{\"type\":\"cancel\"}\n");
+            let _ = stdin.flush();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ShellCommandErrorKind::SandboxUnavailable);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    drop(stdin);
+    let mut response = Vec::new();
+    child
+        .stdout
+        .take()
+        .ok_or(ShellCommandErrorKind::SandboxUnavailable)?
+        .take(u64::try_from(SUPERVISOR_RESULT_BYTES).unwrap_or(u64::MAX))
+        .read_to_end(&mut response)
+        .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
+    if !status.success() {
+        return Err(ShellCommandErrorKind::SandboxUnavailable);
+    }
+    match serde_json::from_slice::<SupervisorResponse>(&response) {
+        Ok(SupervisorResponse::Completed(output))
+            if output.sandbox_policy == sandbox_policy
+                && matches!(output.outcome, ShellCommandOutcome::ExitCode { code: 0 })
+                && output.stdout.contains(SANDBOX_PROBE_SENTINEL) =>
+        {
+            Ok(())
+        }
+        Ok(SupervisorResponse::Completed(_)) | Ok(SupervisorResponse::Error(_)) | Err(_) => {
+            Err(ShellCommandErrorKind::SandboxUnavailable)
+        }
+    }
+}
+
 impl ShellCommandExecutor for NativeShellCommandExecutor {
+    fn sandbox_policy(&self) -> sugarcode_sandbox::CommandSandboxPolicy {
+        self.sandbox_policy
+    }
+
     fn execute(
         &self,
         arguments: ShellCommandArguments,
@@ -144,7 +236,7 @@ struct SupervisorRequest {
     command: String,
     arguments: Vec<String>,
     cwd: PathBuf,
-    sandbox_policy: sugarcode_sandbox::SandboxPolicy,
+    sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -159,6 +251,7 @@ async fn run_native(
     request: SupervisorRequest,
     cancellation: CancellationToken,
 ) -> ShellCommandExecution {
+    let requested_policy = request.sandbox_policy;
     let mut command = Command::new(executable);
     command
         .arg("__command-supervisor")
@@ -241,17 +334,7 @@ async fn run_native(
                 let _ = child.wait().await;
             }
             read_response.abort();
-            return ShellCommandExecution::Completed(ShellCommandOutput {
-                stdout: String::new(),
-                stderr: String::new(),
-                stdout_bytes: 0,
-                stderr_bytes: 0,
-                stdout_truncated: false,
-                stderr_truncated: false,
-                duration_ms: u64::try_from(SUPERVISOR_WATCHDOG_TIMEOUT.as_millis())
-                    .unwrap_or(u64::MAX),
-                outcome: ShellCommandOutcome::TimedOut,
-            });
+            return ShellCommandExecution::Error(ShellCommandErrorKind::SandboxUnavailable);
         }
         result = &mut read_response => match result {
             Ok(result) => result,
@@ -273,7 +356,12 @@ async fn run_native(
         return ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable);
     }
     match serde_json::from_slice::<SupervisorResponse>(&response) {
-        Ok(SupervisorResponse::Completed(output)) => ShellCommandExecution::Completed(output),
+        Ok(SupervisorResponse::Completed(output)) if output.sandbox_policy == requested_policy => {
+            ShellCommandExecution::Completed(output)
+        }
+        Ok(SupervisorResponse::Completed(_)) => {
+            ShellCommandExecution::Error(ShellCommandErrorKind::SandboxUnavailable)
+        }
         Ok(SupervisorResponse::Error(kind)) => ShellCommandExecution::Error(kind),
         Err(_) => ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable),
     }
@@ -306,13 +394,63 @@ pub fn run_shell_command_supervisor() -> Result<(), ShellCommandErrorKind> {
         .map_err(|_| ShellCommandErrorKind::Unavailable)
 }
 
+pub fn run_shell_command_sandbox_probe() -> Result<(), ShellCommandErrorKind> {
+    if network_bind_is_denied()? && unix_socketpair_is_allowed()? {
+        println!("{SANDBOX_PROBE_SENTINEL}");
+        return Ok(());
+    }
+    Err(ShellCommandErrorKind::SandboxUnavailable)
+}
+
+#[cfg(unix)]
+fn network_bind_is_denied() -> Result<bool, ShellCommandErrorKind> {
+    match std::net::TcpListener::bind(("127.0.0.1", 0)) {
+        Ok(_) => Ok(false),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EPERM) | Some(libc::EACCES)) => {
+            Ok(true)
+        }
+        Err(_) => Err(ShellCommandErrorKind::SandboxUnavailable),
+    }
+}
+
+#[cfg(windows)]
+fn network_bind_is_denied() -> Result<bool, ShellCommandErrorKind> {
+    Err(ShellCommandErrorKind::SandboxUnavailable)
+}
+
+#[cfg(unix)]
+fn unix_socketpair_is_allowed() -> Result<bool, ShellCommandErrorKind> {
+    let mut descriptors = [-1; 2];
+    let result = unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM,
+            0,
+            descriptors.as_mut_ptr(),
+        )
+    };
+    if result == -1 {
+        return Err(ShellCommandErrorKind::SandboxUnavailable);
+    }
+    unsafe {
+        libc::close(descriptors[0]);
+        libc::close(descriptors[1]);
+    }
+    Ok(true)
+}
+
+#[cfg(windows)]
+fn unix_socketpair_is_allowed() -> Result<bool, ShellCommandErrorKind> {
+    Err(ShellCommandErrorKind::SandboxUnavailable)
+}
+
 fn execute_supervised(
     request: SupervisorRequest,
     cancel_rx: std_mpsc::Receiver<()>,
 ) -> Result<ShellCommandOutput, ShellCommandErrorKind> {
     let environment = minimal_environment();
     let started = Instant::now();
-    let adapter = sugarcode_sandbox::SandboxAdapter::probe(request.sandbox_policy)
+    let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(request.sandbox_policy)
         .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
     let mut child = adapter
         .spawn(sugarcode_sandbox::CommandSpec {
@@ -373,6 +511,7 @@ fn execute_supervised(
         stderr_truncated: stderr.truncated,
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         outcome,
+        sandbox_policy: adapter.policy(),
     })
 }
 
@@ -407,7 +546,8 @@ fn validate_arguments(arguments: &ShellCommandArguments) -> Result<(), ShellComm
         command: arguments.command.clone(),
         arguments: arguments.arguments.clone(),
         cwd: arguments.cwd.clone(),
-        sandbox_policy: sugarcode_sandbox::SandboxPolicy::FilesystemReadOnlyV1,
+        sandbox_policy:
+            sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
     };
     validate_request(&request)
 }
@@ -503,6 +643,21 @@ fn minimal_environment() -> Vec<(OsString, OsString)> {
 }
 
 fn configure_minimal_environment_tokio(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        command.env("LANG", "C").env("LC_ALL", "C");
+    }
+    #[cfg(windows)]
+    {
+        for name in ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
+}
+
+fn configure_minimal_environment_std(command: &mut std::process::Command) {
     #[cfg(unix)]
     {
         command.env("LANG", "C").env("LC_ALL", "C");

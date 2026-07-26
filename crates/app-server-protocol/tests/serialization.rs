@@ -1,5 +1,6 @@
 use serde_json::json;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
+use sugarcode_app_server_protocol::CommandNetworkPolicy;
 use sugarcode_app_server_protocol::CommandSandboxPolicy;
 use sugarcode_app_server_protocol::ERROR_PARSE;
 use sugarcode_app_server_protocol::FileChangeKind;
@@ -586,6 +587,7 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             environment_policy: "minimalV1".to_string(),
             sandboxed: true,
             sandbox_policy: Some(CommandSandboxPolicy::FilesystemReadOnlyV1),
+            network_policy: Some(CommandNetworkPolicy::NetworkDeniedV1),
         })
         .expect("approval request serializes"),
         json!({
@@ -598,7 +600,8 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             "cwd": ".",
             "environmentPolicy": "minimalV1",
             "sandboxed": true,
-            "sandboxPolicy": "filesystemReadOnlyV1"
+            "sandboxPolicy": "filesystemReadOnlyV1",
+            "networkPolicy": "networkDeniedV1"
         })
     );
     assert_eq!(
@@ -612,6 +615,8 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             encoding: "utf8Lossy".to_string(),
             duration_ms: 2,
             outcome: sugarcode_app_server_protocol::ProcessOutcome::ExitCode { code: 0 },
+            sandbox_policy: Some(CommandSandboxPolicy::FilesystemReadOnlyV1),
+            network_policy: Some(CommandNetworkPolicy::NetworkDeniedV1),
         })
         .expect("process result serializes"),
         json!({
@@ -624,7 +629,9 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             "stderrTruncated": false,
             "encoding": "utf8Lossy",
             "durationMs": 2,
-            "outcome": {"type": "exitCode", "code": 0}
+            "outcome": {"type": "exitCode", "code": 0},
+            "sandboxPolicy": "filesystemReadOnlyV1",
+            "networkPolicy": "networkDeniedV1"
         })
     );
 }

@@ -62,7 +62,7 @@ pub(crate) fn spawn_command(
             install_network_denied_filter()?;
         }
     }
-    crate::process::spawn_supervised_sanitized(spec).map_err(SandboxSpawnError::Process)
+    crate::process::spawn_supervised_sanitized(spec)
 }
 
 fn build_ruleset() -> Result<landlock::RulesetCreated, SandboxError> {

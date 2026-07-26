@@ -193,6 +193,11 @@ where
                     sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
                 }
             },
+            network_policy: match pending.request.network_policy {
+                sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1 => {
+                    sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1
+                }
+            },
         };
         self.pending_approvals.insert(id.clone(), pending.response);
         Some(JsonRpcMessage::Request(JsonRpcRequest {

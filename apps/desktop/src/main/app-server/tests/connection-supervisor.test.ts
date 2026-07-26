@@ -175,7 +175,9 @@ describe('ConnectionSupervisor', () => {
           cwd: '.',
           approvalScope: 'command',
           environmentPolicy: 'minimalV1',
-          sandboxed: false,
+          sandboxed: true,
+          sandboxPolicy: 'filesystemReadOnlyV1',
+          networkPolicy: 'networkDeniedV1',
         },
       })}\n`,
     );

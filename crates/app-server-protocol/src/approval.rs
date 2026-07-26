@@ -10,6 +10,13 @@ pub enum CommandSandboxPolicy {
     FilesystemReadOnlyV1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum CommandNetworkPolicy {
+    NetworkDeniedV1,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(rename_all = "camelCase")]
@@ -25,6 +32,7 @@ pub struct CommandApprovalParams {
     pub environment_policy: String,
     pub sandboxed: bool,
     pub sandbox_policy: CommandSandboxPolicy,
+    pub network_policy: CommandNetworkPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

@@ -221,6 +221,7 @@ enum ItemKind {
         environment_policy: String,
         sandboxed: bool,
         sandbox_policy: Option<sugarcode_protocol::CoreCommandSandboxPolicy>,
+        network_policy: Option<sugarcode_protocol::CoreCommandNetworkPolicy>,
     },
     CommandApprovalDecision {
         approval_id: String,
@@ -327,6 +328,7 @@ impl Item {
                 environment_policy,
                 sandboxed,
                 sandbox_policy,
+                network_policy,
             } => CoreItemKind::CommandApprovalRequest {
                 approval_id: approval_id.clone(),
                 call_id: call_id.clone(),
@@ -336,6 +338,7 @@ impl Item {
                 environment_policy: environment_policy.clone(),
                 sandboxed: *sandboxed,
                 sandbox_policy: *sandbox_policy,
+                network_policy: *network_policy,
             },
             ItemKind::CommandApprovalDecision {
                 approval_id,
@@ -599,6 +602,7 @@ impl Core {
                         environment_policy,
                         sandboxed,
                         sandbox_policy,
+                        network_policy,
                     } => Item {
                         id: id.clone(),
                         state: ItemState::Completed,
@@ -611,6 +615,7 @@ impl Core {
                             environment_policy: environment_policy.clone(),
                             sandboxed: *sandboxed,
                             sandbox_policy: command_sandbox_policy(sandbox_policy.as_deref()),
+                            network_policy: command_network_policy(network_policy.as_deref()),
                         },
                     },
                     DurableItemSnapshot::CommandApprovalDecision {
@@ -1145,6 +1150,17 @@ fn command_sandbox_policy(
     match value {
         Some("filesystemReadOnlyV1") => {
             Some(sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1)
+        }
+        Some(_) | None => None,
+    }
+}
+
+fn command_network_policy(
+    value: Option<&str>,
+) -> Option<sugarcode_protocol::CoreCommandNetworkPolicy> {
+    match value {
+        Some("networkDeniedV1") => {
+            Some(sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1)
         }
         Some(_) | None => None,
     }

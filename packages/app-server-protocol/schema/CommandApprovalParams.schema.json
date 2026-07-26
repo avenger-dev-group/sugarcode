@@ -27,6 +27,9 @@
     "environmentPolicy": {
       "type": "string"
     },
+    "networkPolicy": {
+      "$ref": "#/$defs/CommandNetworkPolicy"
+    },
     "sandboxPolicy": {
       "$ref": "#/$defs/CommandSandboxPolicy"
     },
@@ -52,9 +55,16 @@
     "approvalScope",
     "environmentPolicy",
     "sandboxed",
-    "sandboxPolicy"
+    "sandboxPolicy",
+    "networkPolicy"
   ],
   "$defs": {
+    "CommandNetworkPolicy": {
+      "type": "string",
+      "enum": [
+        "networkDeniedV1"
+      ]
+    },
     "CommandSandboxPolicy": {
       "type": "string",
       "enum": [

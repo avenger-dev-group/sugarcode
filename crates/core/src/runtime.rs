@@ -728,6 +728,13 @@ async fn run_turn(
                             break 'rounds Terminal::StateUnavailable;
                         }
                         pending_tool_call = true;
+                        let command_policy = runtime
+                            .shell_executor
+                            .as_ref()
+                            .expect("validated shell executor")
+                            .sandbox_policy();
+                        let filesystem_policy = core_filesystem_policy(command_policy.filesystem);
+                        let network_policy = core_network_policy(command_policy.network);
                         let approval_id = format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
                         if append_completed_tool_item(
                             &runtime,
@@ -740,9 +747,8 @@ async fn run_turn(
                                 cwd: arguments.cwd.clone(),
                                 environment_policy: "minimalV1".to_string(),
                                 sandboxed: true,
-                                sandbox_policy: Some(
-                                    sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1,
-                                ),
+                                sandbox_policy: Some(filesystem_policy),
+                                network_policy: Some(network_policy),
                             },
                         )
                         .await
@@ -764,8 +770,8 @@ async fn run_turn(
                                 cwd: arguments.cwd.clone(),
                                 environment_policy: "minimalV1".to_string(),
                                 sandboxed: true,
-                                sandbox_policy:
-                                    sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1,
+                                sandbox_policy: filesystem_policy,
+                                network_policy,
                             });
                         let approval = tokio::select! {
                             biased;
@@ -1288,6 +1294,8 @@ fn shell_execution_result(execution: ShellCommandExecution) -> Option<(CoreToolR
                         sugarcode_protocol::CoreProcessOutcome::TimedOut
                     }
                 },
+                sandbox_policy: Some(core_filesystem_policy(output.sandbox_policy.filesystem)),
+                network_policy: Some(core_network_policy(output.sandbox_policy.network)),
             })
         }
     };
@@ -1315,6 +1323,26 @@ fn shell_execution_result(execution: ShellCommandExecution) -> Option<(CoreToolR
         CoreToolResult::Success { .. } => unreachable!("shell execution is process or error"),
     };
     Some((result, content))
+}
+
+fn core_filesystem_policy(
+    policy: sugarcode_tools::SandboxPolicy,
+) -> sugarcode_protocol::CoreCommandSandboxPolicy {
+    match policy {
+        sugarcode_tools::SandboxPolicy::FilesystemReadOnlyV1 => {
+            sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1
+        }
+    }
+}
+
+fn core_network_policy(
+    policy: sugarcode_tools::NetworkPolicy,
+) -> sugarcode_protocol::CoreCommandNetworkPolicy {
+    match policy {
+        sugarcode_tools::NetworkPolicy::NetworkDeniedV1 => {
+            sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1
+        }
+    }
 }
 
 fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {

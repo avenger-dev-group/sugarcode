@@ -19,6 +19,12 @@
     "item"
   ],
   "$defs": {
+    "CommandNetworkPolicy": {
+      "type": "string",
+      "enum": [
+        "networkDeniedV1"
+      ]
+    },
     "CommandSandboxPolicy": {
       "type": "string",
       "enum": [
@@ -216,6 +222,16 @@
             "id": {
               "type": "string"
             },
+            "networkPolicy": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CommandNetworkPolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "sandboxPolicy": {
               "anyOf": [
                 {
@@ -401,8 +417,28 @@
             "encoding": {
               "type": "string"
             },
+            "networkPolicy": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CommandNetworkPolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "outcome": {
               "$ref": "#/$defs/ProcessOutcome"
+            },
+            "sandboxPolicy": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CommandSandboxPolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "stderr": {
               "type": "string"

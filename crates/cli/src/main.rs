@@ -22,6 +22,8 @@ struct Cli {
 enum Command {
     #[command(hide = true, name = "__command-supervisor")]
     InternalSupervisor,
+    #[command(hide = true, name = "__command-sandbox-probe")]
+    InternalSandboxProbe,
     #[cfg(debug_assertions)]
     #[command(hide = true, name = "__command-test-tree")]
     InternalTestTree,
@@ -145,6 +147,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::InternalSupervisor => {
             sugarcode_tools::run_shell_command_supervisor()
                 .map_err(|error| format!("command supervisor failed: {error}"))?;
+        }
+        Command::InternalSandboxProbe => {
+            sugarcode_tools::run_shell_command_sandbox_probe()
+                .map_err(|error| format!("command sandbox probe failed: {error}"))?;
         }
         #[cfg(debug_assertions)]
         Command::InternalTestTree => {

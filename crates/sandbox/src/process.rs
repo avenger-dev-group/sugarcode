@@ -128,8 +128,19 @@ pub fn spawn_supervised(spec: CommandSpec) -> io::Result<SupervisedChild> {
 }
 
 #[cfg(unix)]
-pub(crate) fn spawn_supervised_sanitized(spec: CommandSpec) -> io::Result<SupervisedChild> {
-    spawn_supervised_inner(spec, true)
+pub(crate) fn spawn_supervised_sanitized(
+    spec: CommandSpec,
+) -> Result<SupervisedChild, crate::SandboxSpawnError> {
+    const DESCRIPTOR_POLICY_ERROR: i32 = 0x5A67;
+    match spawn_supervised_inner(spec, true) {
+        Ok(child) => Ok(child),
+        Err(error) if error.raw_os_error() == Some(DESCRIPTOR_POLICY_ERROR) => Err(
+            crate::SandboxSpawnError::Sandbox(crate::SandboxError::unavailable(
+                "failed to enforce the inherited descriptor policy",
+            )),
+        ),
+        Err(error) => Err(crate::SandboxSpawnError::Process(error)),
+    }
 }
 
 fn spawn_supervised_inner(
@@ -183,7 +194,8 @@ fn configure_process_group(
                 sanitize_inherited_descriptors(
                     #[cfg(target_os = "macos")]
                     max_descriptor,
-                )?;
+                )
+                .map_err(|_| io::Error::from_raw_os_error(0x5A67))?;
             }
             Ok(())
         });

@@ -164,6 +164,7 @@ fn workspace_apply_patch_lifecycle_matches_golden_trace() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn denied_shell_approval_matches_bidirectional_golden_trace() {
     let command = env!("CARGO_BIN_EXE_sugarcode");
     let arguments = serde_json::to_string(&json!({
@@ -210,6 +211,7 @@ fn denied_shell_approval_matches_bidirectional_golden_trace() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn real_cli_approval_executes_the_exact_bundled_argv() {
     let command = env!("CARGO_BIN_EXE_sugarcode");
     let arguments = serde_json::to_string(&json!({
@@ -304,6 +306,7 @@ fn real_cli_approval_executes_the_exact_bundled_argv() {
         if message["method"] == "item/commandExecution/requestApproval" {
             assert_eq!(message["params"]["sandboxed"], true);
             assert_eq!(message["params"]["sandboxPolicy"], "filesystemReadOnlyV1");
+            assert_eq!(message["params"]["networkPolicy"], "networkDeniedV1");
             send_json(
                 &mut stdin,
                 json!({
@@ -327,6 +330,8 @@ fn real_cli_approval_executes_the_exact_bundled_argv() {
     assert_eq!(process_result["type"], "process");
     assert_eq!(process_result["outcome"]["type"], "exitCode");
     assert_eq!(process_result["outcome"]["code"], 0);
+    assert_eq!(process_result["sandboxPolicy"], "filesystemReadOnlyV1");
+    assert_eq!(process_result["networkPolicy"], "networkDeniedV1");
     assert!(
         process_result["stdout"]
             .as_str()
@@ -850,10 +855,15 @@ fn run_golden_with_options(
     let output = child.wait_with_output().expect("wait for app-server");
 
     assert!(output.status.success(), "app-server failed: {output:?}");
-    assert!(
-        output.stderr.is_empty(),
-        "protocol run wrote diagnostics to stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let expected_stderr = if cfg!(windows) && workspace.is_some() {
+        "sugarcode: shell/exec unavailable: sandboxUnavailable\n"
+    } else {
+        ""
+    };
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        expected_stderr,
+        "unexpected protocol diagnostics"
     );
     assert!(output.stdout.is_empty(), "stdout was already captured");
     let actual = normalize_trace(&actual);
