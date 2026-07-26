@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::ffi::c_void;
 use std::fs::File;
 use std::io;
 use std::io::Read;
@@ -13,24 +14,38 @@ use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
-use windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED;
 use windows_sys::Win32::Foundation::ERROR_PATH_NOT_FOUND;
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
+use windows_sys::Win32::Foundation::HLOCAL;
+use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Foundation::SetHandleInformation;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+use windows_sys::Win32::Security::ACL;
+use windows_sys::Win32::Security::Authorization::EXPLICIT_ACCESS_W;
+use windows_sys::Win32::Security::Authorization::GRANT_ACCESS;
+use windows_sys::Win32::Security::Authorization::SetEntriesInAclW;
+use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_SID;
+use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_UNKNOWN;
+use windows_sys::Win32::Security::Authorization::TRUSTEE_W;
 use windows_sys::Win32::Security::CreateRestrictedToken;
 use windows_sys::Win32::Security::CreateWellKnownSid;
 use windows_sys::Win32::Security::DISABLE_MAX_PRIVILEGE;
 use windows_sys::Win32::Security::LUA_TOKEN;
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
+use windows_sys::Win32::Security::SetTokenInformation;
+use windows_sys::Win32::Security::TOKEN_ADJUST_DEFAULT;
 use windows_sys::Win32::Security::TOKEN_ASSIGN_PRIMARY;
 use windows_sys::Win32::Security::TOKEN_DUPLICATE;
 use windows_sys::Win32::Security::TOKEN_QUERY;
+use windows_sys::Win32::Security::TokenDefaultDacl;
+use windows_sys::Win32::Security::WELL_KNOWN_SID_TYPE;
 use windows_sys::Win32::Security::WRITE_RESTRICTED;
 use windows_sys::Win32::Security::WinNullSid;
+use windows_sys::Win32::Security::WinWorldSid;
 use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
 use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -50,7 +65,6 @@ use windows_sys::Win32::System::Threading::GetExitCodeProcess;
 use windows_sys::Win32::System::Threading::InitializeProcThreadAttributeList;
 use windows_sys::Win32::System::Threading::OpenProcessToken;
 use windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_HANDLE_LIST;
-use windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::ResumeThread;
 use windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
@@ -69,9 +83,9 @@ use crate::SupervisedChild;
 #[path = "tests/windows.rs"]
 mod tests;
 
-const PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON: u64 = 1_u64 << 28;
 const FILESYSTEM_READ_ONLY_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
 const FILESYSTEM_READ_ONLY_COMPAT_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED;
+const GENERIC_ALL: u32 = 0x1000_0000;
 const INFINITE: u32 = u32::MAX;
 
 pub(crate) fn probe(policy: SandboxPolicy) -> Result<(), SandboxError> {
@@ -156,56 +170,43 @@ fn spawn_filesystem_read_only(spec: CommandSpec) -> Result<SupervisedChild, Sand
     let application = wide_nul(OsStr::new(&command));
     let current_directory = wide_nul(cwd.as_os_str());
     let environment = environment_block(environment);
-    let launch = |attributes: &mut ProcThreadAttributes| {
-        let mut startup = STARTUPINFOEXW::default();
-        startup.StartupInfo.cb = u32::try_from(size_of::<STARTUPINFOEXW>()).unwrap_or(u32::MAX);
-        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        startup.StartupInfo.hStdInput = stdin.child.raw();
-        startup.StartupInfo.hStdOutput = stdout.child.raw();
-        startup.StartupInfo.hStdError = stderr.child.raw();
-        startup.lpAttributeList = attributes.as_mut_ptr();
-
-        let mut command_line = command_line(&command, &arguments);
-        let mut process = PROCESS_INFORMATION::default();
-        let created = unsafe {
-            CreateProcessAsUserW(
-                token.raw(),
-                application.as_ptr(),
-                command_line.as_mut_ptr(),
-                null(),
-                null(),
-                1,
-                EXTENDED_STARTUPINFO_PRESENT
-                    | CREATE_UNICODE_ENVIRONMENT
-                    | CREATE_NO_WINDOW
-                    | CREATE_SUSPENDED,
-                environment.as_ptr().cast(),
-                current_directory.as_ptr(),
-                &startup.StartupInfo,
-                &mut process,
-            )
-        };
-        if created == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(process)
-        }
-    };
-
+    let mut desktop = wide_nul(OsStr::new("Winsta0\\Default"));
     let mut attributes =
-        ProcThreadAttributes::new(&inherited_handles, true).map_err(sandbox_setup_error)?;
-    let process = match launch(&mut attributes) {
-        Ok(process) => process,
-        Err(initial_error) if should_retry_without_mitigation(&initial_error) => {
-            drop(attributes);
-            let mut compatibility_attributes = ProcThreadAttributes::new(&inherited_handles, false)
-                .map_err(sandbox_setup_error)?;
-            launch(&mut compatibility_attributes).map_err(|compatibility_error| {
-                map_compatibility_create_process_error(initial_error, compatibility_error)
-            })?
-        }
-        Err(error) => return Err(map_create_process_error(error)),
+        ProcThreadAttributes::new(&inherited_handles).map_err(sandbox_setup_error)?;
+    let mut startup = STARTUPINFOEXW::default();
+    startup.StartupInfo.cb = u32::try_from(size_of::<STARTUPINFOEXW>()).unwrap_or(u32::MAX);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = stdin.child.raw();
+    startup.StartupInfo.hStdOutput = stdout.child.raw();
+    startup.StartupInfo.hStdError = stderr.child.raw();
+    // Restricted-token processes such as cmd.exe and PowerShell can terminate
+    // during DLL initialization when the desktop is left implicit.
+    startup.StartupInfo.lpDesktop = desktop.as_mut_ptr();
+    startup.lpAttributeList = attributes.as_mut_ptr();
+
+    let mut command_line = command_line(&command, &arguments);
+    let mut process = PROCESS_INFORMATION::default();
+    let created = unsafe {
+        CreateProcessAsUserW(
+            token.raw(),
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            null(),
+            null(),
+            1,
+            EXTENDED_STARTUPINFO_PRESENT
+                | CREATE_UNICODE_ENVIRONMENT
+                | CREATE_NO_WINDOW
+                | CREATE_SUSPENDED,
+            environment.as_ptr().cast(),
+            current_directory.as_ptr(),
+            &startup.StartupInfo,
+            &mut process,
+        )
     };
+    if created == 0 {
+        return Err(map_create_process_error(io::Error::last_os_error()));
+    }
     let process_handle = OwnedHandle::new(process.hProcess);
     let thread_handle = OwnedHandle::new(process.hThread);
     let job = match kill_on_close_job(&process_handle) {
@@ -264,9 +265,9 @@ fn probe_filesystem_read_only() -> Result<(), SandboxError> {
         SandboxError::unavailable(format!("Windows sandbox probe failed: {error}"))
     })?;
     if !status.success() {
-        return Err(SandboxError::unavailable(
-            "Windows sandbox probe process failed",
-        ));
+        return Err(SandboxError::unavailable(format!(
+            "Windows sandbox probe process failed with {status}"
+        )));
     }
     Ok(())
 }
@@ -289,7 +290,7 @@ impl RestrictedToken {
         if unsafe {
             OpenProcessToken(
                 GetCurrentProcess(),
-                TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY,
+                TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY,
                 &mut source,
             )
         } == 0
@@ -300,31 +301,8 @@ impl RestrictedToken {
             ));
         }
         let source = OwnedHandle::new(source);
-        let mut sid_size = 0;
-        unsafe {
-            CreateWellKnownSid(WinNullSid, null_mut(), null_mut(), &mut sid_size);
-        }
-        if sid_size == 0 {
-            return Err(setup_operation_error(
-                "CreateWellKnownSid size query",
-                io::Error::last_os_error(),
-            ));
-        }
-        let mut sid = vec![0u8; usize::try_from(sid_size).unwrap_or(0)];
-        if unsafe {
-            CreateWellKnownSid(
-                WinNullSid,
-                null_mut(),
-                sid.as_mut_ptr().cast(),
-                &mut sid_size,
-            )
-        } == 0
-        {
-            return Err(setup_operation_error(
-                "CreateWellKnownSid",
-                io::Error::last_os_error(),
-            ));
-        }
+        let mut sid = well_known_sid(WinNullSid)?;
+        let mut world_sid = well_known_sid(WinWorldSid)?;
         let restricting_sid = SID_AND_ATTRIBUTES {
             Sid: sid.as_mut_ptr().cast(),
             Attributes: 0,
@@ -357,6 +335,10 @@ impl RestrictedToken {
             }
             Err(error) => return Err(setup_operation_error("CreateRestrictedToken", error)),
         };
+        set_default_dacl(
+            restricted.raw(),
+            &[world_sid.as_mut_ptr().cast(), sid.as_mut_ptr().cast()],
+        )?;
         Ok(Self(restricted))
     }
 
@@ -369,37 +351,103 @@ fn should_retry_without_lua(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32)
 }
 
-fn should_retry_without_mitigation(error: &io::Error) -> bool {
-    matches!(
-        error.raw_os_error().map(|code| code as u32),
-        Some(ERROR_INVALID_PARAMETER) | Some(ERROR_NOT_SUPPORTED)
-    )
-}
-
-fn map_compatibility_create_process_error(
-    initial_error: io::Error,
-    compatibility_error: io::Error,
-) -> SandboxSpawnError {
-    match compatibility_error.raw_os_error().map(|code| code as u32) {
-        Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => {
-            SandboxSpawnError::Process(compatibility_error)
-        }
-        _ => sandbox_setup_error(io::Error::new(
-            compatibility_error.kind(),
-            format!(
-                "CreateProcessAsUserW compatibility retry without Win32k mitigation failed: \
-                 initial error: {initial_error}; compatibility error: {compatibility_error}"
-            ),
-        )),
-    }
-}
-
 fn map_create_process_error(error: io::Error) -> SandboxSpawnError {
     match error.raw_os_error().map(|code| code as u32) {
         Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => {
             SandboxSpawnError::Process(error)
         }
         _ => sandbox_setup_error(setup_operation_error("CreateProcessAsUserW", error)),
+    }
+}
+
+fn well_known_sid(kind: WELL_KNOWN_SID_TYPE) -> io::Result<Vec<u8>> {
+    let mut sid_size = 0;
+    unsafe {
+        CreateWellKnownSid(kind, null_mut(), null_mut(), &mut sid_size);
+    }
+    if sid_size == 0 {
+        return Err(setup_operation_error(
+            "CreateWellKnownSid size query",
+            io::Error::last_os_error(),
+        ));
+    }
+    let mut sid = vec![0u8; usize::try_from(sid_size).unwrap_or(0)];
+    if unsafe { CreateWellKnownSid(kind, null_mut(), sid.as_mut_ptr().cast(), &mut sid_size) } == 0
+    {
+        return Err(setup_operation_error(
+            "CreateWellKnownSid",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(sid)
+}
+
+#[repr(C)]
+struct TokenDefaultDaclInfo {
+    default_dacl: *mut ACL,
+}
+
+fn set_default_dacl(token: HANDLE, sids: &[*mut c_void]) -> io::Result<()> {
+    let entries = sids
+        .iter()
+        .map(|sid| EXPLICIT_ACCESS_W {
+            grfAccessPermissions: GENERIC_ALL,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: 0,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: null_mut(),
+                MultipleTrusteeOperation: 0,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_UNKNOWN,
+                ptstrName: (*sid).cast(),
+            },
+        })
+        .collect::<Vec<_>>();
+    let mut dacl = null_mut();
+    let status = unsafe {
+        SetEntriesInAclW(
+            u32::try_from(entries.len()).unwrap_or(u32::MAX),
+            entries.as_ptr(),
+            null(),
+            &mut dacl,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(setup_operation_error(
+            "SetEntriesInAclW",
+            io::Error::from_raw_os_error(status as i32),
+        ));
+    }
+    let dacl = LocalAcl(dacl);
+    let info = TokenDefaultDaclInfo {
+        default_dacl: dacl.0,
+    };
+    if unsafe {
+        SetTokenInformation(
+            token,
+            TokenDefaultDacl,
+            (&info as *const TokenDefaultDaclInfo).cast(),
+            u32::try_from(size_of::<TokenDefaultDaclInfo>()).unwrap_or(u32::MAX),
+        )
+    } == 0
+    {
+        return Err(setup_operation_error(
+            "SetTokenInformation(TokenDefaultDacl)",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
+struct LocalAcl(*mut ACL);
+
+impl Drop for LocalAcl {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                LocalFree(self.0 as HLOCAL);
+            }
+        }
     }
 }
 
@@ -488,8 +536,8 @@ struct ProcThreadAttributes {
 }
 
 impl ProcThreadAttributes {
-    fn new(handles: &[HANDLE], include_mitigation: bool) -> io::Result<Self> {
-        let attribute_count = if include_mitigation { 2 } else { 1 };
+    fn new(handles: &[HANDLE]) -> io::Result<Self> {
+        let attribute_count = 1;
         let mut byte_size = 0;
         unsafe {
             InitializeProcThreadAttributeList(null_mut(), attribute_count, 0, &mut byte_size);
@@ -536,27 +584,6 @@ impl ProcThreadAttributes {
                 "UpdateProcThreadAttribute handle list",
                 io::Error::last_os_error(),
             ));
-        }
-        if include_mitigation {
-            let mitigation =
-                PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON;
-            if unsafe {
-                UpdateProcThreadAttribute(
-                    attributes.as_mut_ptr(),
-                    0,
-                    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY as usize,
-                    (&mitigation as *const u64).cast(),
-                    size_of::<u64>(),
-                    null_mut(),
-                    null(),
-                )
-            } == 0
-            {
-                return Err(setup_operation_error(
-                    "UpdateProcThreadAttribute mitigation policy",
-                    io::Error::last_os_error(),
-                ));
-            }
         }
         Ok(attributes)
     }

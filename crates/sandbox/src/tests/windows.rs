@@ -3,12 +3,10 @@ use std::io;
 
 use super::FILESYSTEM_READ_ONLY_COMPAT_TOKEN_FLAGS;
 use super::FILESYSTEM_READ_ONLY_TOKEN_FLAGS;
-use super::PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON;
 use super::environment_block;
 use super::quote_windows_argument;
 use super::setup_operation_error;
 use super::should_retry_without_lua;
-use super::should_retry_without_mitigation;
 use windows_sys::Win32::Security::DISABLE_MAX_PRIVILEGE;
 use windows_sys::Win32::Security::LUA_TOKEN;
 use windows_sys::Win32::Security::WRITE_RESTRICTED;
@@ -36,33 +34,12 @@ fn compatibility_token_retry_is_limited_to_invalid_parameter() {
 }
 
 #[test]
-fn compatibility_mitigation_retry_is_limited_to_optional_attribute_errors() {
-    assert!(should_retry_without_mitigation(
-        &io::Error::from_raw_os_error(87)
-    ));
-    assert!(should_retry_without_mitigation(
-        &io::Error::from_raw_os_error(50)
-    ));
-    assert!(!should_retry_without_mitigation(
-        &io::Error::from_raw_os_error(5)
-    ));
-}
-
-#[test]
 fn windows_setup_errors_identify_the_failed_operation() {
     let error = setup_operation_error("CreateRestrictedToken", io::Error::from_raw_os_error(87));
     assert!(
         error
             .to_string()
             .starts_with("CreateRestrictedToken failed:")
-    );
-}
-
-#[test]
-fn uses_the_documented_win32k_system_call_disable_bit() {
-    assert_eq!(
-        PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON,
-        0x1000_0000
     );
 }
 
