@@ -539,10 +539,12 @@ impl Core {
                         path: path.clone(),
                     }),
                     ItemKind::ToolResult {
-                        call_id, result, ..
+                        call_id,
+                        name,
+                        result,
                     } => Some(PreparedMessage::ToolResult {
                         call_id: call_id.clone(),
-                        content: tool_result_content(result),
+                        content: tool_result_content(name, result),
                     }),
                 })
             })
@@ -1376,18 +1378,23 @@ fn core_tool_error_kind(kind: &str) -> sugarcode_protocol::CoreToolErrorKind {
         "accessDenied" => CoreToolErrorKind::AccessDenied,
         "pathNotAllowed" => CoreToolErrorKind::PathNotAllowed,
         "notRegularFile" => CoreToolErrorKind::NotRegularFile,
+        "notDirectory" => CoreToolErrorKind::NotDirectory,
         "fileTooLarge" => CoreToolErrorKind::FileTooLarge,
         "binaryFile" => CoreToolErrorKind::BinaryFile,
+        "invalidEncoding" => CoreToolErrorKind::InvalidEncoding,
+        "invalidName" => CoreToolErrorKind::InvalidName,
+        "tooManyEntries" => CoreToolErrorKind::TooManyEntries,
         "changedDuringRead" => CoreToolErrorKind::ChangedDuringRead,
+        "changedDuringList" => CoreToolErrorKind::ChangedDuringList,
         "resultTooLarge" => CoreToolErrorKind::ResultTooLarge,
         _ => CoreToolErrorKind::Unavailable,
     }
 }
 
-fn tool_result_content(result: &CoreToolResult) -> String {
+fn tool_result_content(name: &str, result: &CoreToolResult) -> String {
     match result {
         CoreToolResult::Success { content, .. } => content.clone(),
-        CoreToolResult::Error { kind } => format!("workspace/read error: {kind}"),
+        CoreToolResult::Error { kind } => format!("{name} error: {kind}"),
     }
 }
 

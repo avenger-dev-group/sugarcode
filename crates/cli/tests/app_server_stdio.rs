@@ -81,6 +81,33 @@ fn workspace_read_tool_lifecycle_matches_golden_trace() {
 }
 
 #[test]
+fn workspace_list_tool_lifecycle_matches_golden_trace() {
+    const TOOL_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_list_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/list\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const FINAL_ANSWER: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"List succeeded.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("create isolated workspace");
+    fs::write(workspace.path().join("zeta.txt"), "zeta").expect("write zeta fixture");
+    fs::write(workspace.path().join("Alpha.txt"), "alpha").expect("write alpha fixture");
+    fs::create_dir(workspace.path().join("src")).expect("write directory fixture");
+    fs::write(workspace.path().join("src/nested.txt"), "nested").expect("write nested fixture");
+    let _provider =
+        MockProvider::start_with_bodies(sugarcode_home.path(), vec![TOOL_CALL, FINAL_ANSWER]);
+    run_golden(
+        "turn-workspace-list",
+        &sugarcode_home,
+        Some(workspace.path()),
+    );
+}
+
+#[test]
 fn missing_model_still_serves_threads_and_returns_stable_turn_error() {
     let home = tempfile::tempdir().expect("isolated SugarCode home");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))

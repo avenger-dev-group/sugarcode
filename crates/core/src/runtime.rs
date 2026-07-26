@@ -40,6 +40,10 @@ use sugarcode_state::DurableTurnError;
 use sugarcode_state::DurableTurnErrorKind;
 use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableUsage;
+use sugarcode_tools::WorkspaceListArguments;
+use sugarcode_tools::WorkspaceListErrorKind;
+use sugarcode_tools::WorkspaceListExecutor;
+use sugarcode_tools::WorkspaceListOutcome;
 use sugarcode_tools::WorkspaceReadArguments;
 use sugarcode_tools::WorkspaceReadErrorKind;
 use sugarcode_tools::WorkspaceReadExecutor;
@@ -60,6 +64,7 @@ pub struct CoreRuntime {
     core: Arc<Mutex<Core>>,
     model_gateway: Option<ModelGateway>,
     workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
+    workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
     event_tx: mpsc::Sender<CoreEvent>,
     active: Arc<Mutex<BTreeMap<ThreadId, ActiveTurn>>>,
 }
@@ -125,7 +130,7 @@ impl CoreRuntime {
         provider: Arc<dyn ModelProvider>,
         model: String,
     ) -> (Self, mpsc::Receiver<CoreEvent>) {
-        Self::new_with_workspace(core, provider, model, None)
+        Self::new_with_workspace(core, provider, model, None, None)
     }
 
     pub fn new_with_workspace(
@@ -133,6 +138,7 @@ impl CoreRuntime {
         provider: Arc<dyn ModelProvider>,
         model: String,
         workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
+        workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
     ) -> (Self, mpsc::Receiver<CoreEvent>) {
         let (event_tx, event_rx) = mpsc::channel(CORE_EVENT_CAPACITY);
         (
@@ -143,6 +149,7 @@ impl CoreRuntime {
                     model: Arc::from(model),
                 }),
                 workspace_read,
+                workspace_list,
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -157,6 +164,7 @@ impl CoreRuntime {
                 core: Arc::new(Mutex::new(core)),
                 model_gateway: None,
                 workspace_read: None,
+                workspace_list: None,
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -413,8 +421,8 @@ async fn run_turn(
         let request = ModelRequest {
             model: model_gateway.model.to_string(),
             messages: messages.clone(),
-            tools: if round == 0 && runtime.workspace_read.is_some() {
-                vec![workspace_read_definition()]
+            tools: if round == 0 {
+                workspace_tool_definitions(&runtime)
             } else {
                 Vec::new()
             },
@@ -526,13 +534,18 @@ async fn run_turn(
                         }
                         break 'rounds Terminal::Completed;
                     };
-                    let Some(workspace_read) = runtime.workspace_read.as_ref() else {
+                    let tool_available = match call.name.as_str() {
+                        "workspace/read" => runtime.workspace_read.is_some(),
+                        "workspace/list" => runtime.workspace_list.is_some(),
+                        _ => false,
+                    };
+                    if !tool_available {
                         break 'rounds Terminal::Failed(ModelError::new(
                             ModelErrorKind::UnsupportedOutput,
                             false,
                         ));
-                    };
-                    let path = match workspace_read_path(&call) {
+                    }
+                    let path = match workspace_tool_path(&call) {
                         Ok(path) => path,
                         Err(error) => break 'rounds Terminal::Failed(error),
                     };
@@ -547,7 +560,7 @@ async fn run_turn(
                         ));
                     }
                     turn_tool_bytes += call_bytes;
-                    let call_item = match append_completed_tool_item(
+                    if append_completed_tool_item(
                         &runtime,
                         &prepared,
                         CoreItemKind::ToolCall {
@@ -557,27 +570,54 @@ async fn run_turn(
                         },
                     )
                     .await
+                    .is_none()
                     {
-                        Some(item) => item,
-                        None => break 'rounds Terminal::StateUnavailable,
-                    };
-                    pending_tool_call = true;
-                    let outcome = workspace_read
-                        .read(
-                            &WorkspaceReadArguments { path: path.clone() },
-                            &cancellation,
-                        )
-                        .await;
-                    if matches!(
-                        outcome,
-                        WorkspaceReadOutcome::Error {
-                            kind: WorkspaceReadErrorKind::Cancelled
-                        }
-                    ) {
-                        let _ = call_item;
-                        break 'rounds Terminal::Interrupted;
+                        break 'rounds Terminal::StateUnavailable;
                     }
-                    let (mut result, mut content) = map_workspace_read_outcome(outcome);
+                    pending_tool_call = true;
+                    let (mut result, mut content) = match call.name.as_str() {
+                        "workspace/read" => {
+                            let outcome = runtime
+                                .workspace_read
+                                .as_ref()
+                                .expect("validated workspace/read executor")
+                                .read(
+                                    &WorkspaceReadArguments { path: path.clone() },
+                                    &cancellation,
+                                )
+                                .await;
+                            if matches!(
+                                outcome,
+                                WorkspaceReadOutcome::Error {
+                                    kind: WorkspaceReadErrorKind::Cancelled
+                                }
+                            ) {
+                                break 'rounds Terminal::Interrupted;
+                            }
+                            map_workspace_read_outcome(outcome)
+                        }
+                        "workspace/list" => {
+                            let outcome = runtime
+                                .workspace_list
+                                .as_ref()
+                                .expect("validated workspace/list executor")
+                                .list(
+                                    &WorkspaceListArguments { path: path.clone() },
+                                    &cancellation,
+                                )
+                                .await;
+                            if matches!(
+                                outcome,
+                                WorkspaceListOutcome::Error {
+                                    kind: WorkspaceListErrorKind::Cancelled
+                                }
+                            ) {
+                                break 'rounds Terminal::Interrupted;
+                            }
+                            map_workspace_list_outcome(outcome)
+                        }
+                        _ => unreachable!("tool availability was validated"),
+                    };
                     let mut result_bytes = serialized_tool_result_bytes(&result);
                     if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES
                         || turn_tool_bytes
@@ -587,7 +627,7 @@ async fn run_turn(
                         result = CoreToolResult::Error {
                             kind: CoreToolErrorKind::ResultTooLarge,
                         };
-                        content = "workspace/read error: resultTooLarge".to_string();
+                        content = format!("{} error: resultTooLarge", call.name);
                         result_bytes = serialized_tool_result_bytes(&result);
                     }
                     turn_tool_bytes += result_bytes;
@@ -688,23 +728,40 @@ fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {
     }
 }
 
-fn workspace_read_definition() -> ModelToolDefinition {
-    ModelToolDefinition {
-        name: "workspace/read".to_string(),
-        description: "Read one UTF-8 text file inside the configured workspace.".to_string(),
-        parameters: serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "path": { "type": "string" }
-            },
-            "required": ["path"]
-        }),
+fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelToolDefinition> {
+    let mut definitions = Vec::with_capacity(2);
+    if runtime.workspace_read.is_some() {
+        definitions.push(ModelToolDefinition {
+            name: "workspace/read".to_string(),
+            description: "Read one UTF-8 text file inside the configured workspace.".to_string(),
+            parameters: workspace_path_parameters(),
+        });
     }
+    if runtime.workspace_list.is_some() {
+        definitions.push(ModelToolDefinition {
+            name: "workspace/list".to_string(),
+            description:
+                "List one directory non-recursively inside the configured workspace. Use '.' for the workspace root."
+                    .to_string(),
+            parameters: workspace_path_parameters(),
+        });
+    }
+    definitions
 }
 
-fn workspace_read_path(call: &ModelToolCall) -> Result<String, ModelError> {
-    if call.name != "workspace/read" {
+fn workspace_path_parameters() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string" }
+        },
+        "required": ["path"]
+    })
+}
+
+fn workspace_tool_path(call: &ModelToolCall) -> Result<String, ModelError> {
+    if !matches!(call.name.as_str(), "workspace/read" | "workspace/list") {
         return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
     }
     let Some(arguments) = call.arguments.as_object() else {
@@ -745,6 +802,54 @@ fn map_workspace_read_outcome(outcome: WorkspaceReadOutcome) -> (CoreToolResult,
             (
                 CoreToolResult::Error { kind },
                 format!("workspace/read error: {kind}"),
+            )
+        }
+    }
+}
+
+fn map_workspace_list_outcome(outcome: WorkspaceListOutcome) -> (CoreToolResult, String) {
+    match outcome {
+        WorkspaceListOutcome::Entries {
+            entries,
+            name_bytes: _,
+        } => {
+            let entries = entries
+                .into_iter()
+                .map(|entry| {
+                    serde_json::json!({
+                        "name": entry.name,
+                        "kind": entry.kind.as_str(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            let content = serde_json::to_string(&serde_json::json!({ "entries": entries }))
+                .expect("workspace/list result must serialize");
+            (
+                CoreToolResult::Success {
+                    bytes: u64::try_from(content.len()).unwrap_or(u64::MAX),
+                    content: content.clone(),
+                },
+                content,
+            )
+        }
+        WorkspaceListOutcome::Error { kind } => {
+            let kind = match kind {
+                WorkspaceListErrorKind::InvalidPath => CoreToolErrorKind::InvalidPath,
+                WorkspaceListErrorKind::NotFound => CoreToolErrorKind::NotFound,
+                WorkspaceListErrorKind::AccessDenied => CoreToolErrorKind::AccessDenied,
+                WorkspaceListErrorKind::PathNotAllowed => CoreToolErrorKind::PathNotAllowed,
+                WorkspaceListErrorKind::NotDirectory => CoreToolErrorKind::NotDirectory,
+                WorkspaceListErrorKind::InvalidEncoding => CoreToolErrorKind::InvalidEncoding,
+                WorkspaceListErrorKind::InvalidName => CoreToolErrorKind::InvalidName,
+                WorkspaceListErrorKind::TooManyEntries => CoreToolErrorKind::TooManyEntries,
+                WorkspaceListErrorKind::ChangedDuringList => CoreToolErrorKind::ChangedDuringList,
+                WorkspaceListErrorKind::ResultTooLarge => CoreToolErrorKind::ResultTooLarge,
+                WorkspaceListErrorKind::Cancelled => CoreToolErrorKind::Unavailable,
+                WorkspaceListErrorKind::Unavailable => CoreToolErrorKind::Unavailable,
+            };
+            (
+                CoreToolResult::Error { kind },
+                format!("workspace/list error: {kind}"),
             )
         }
     }
@@ -1145,7 +1250,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicUsize;
     use sugarcode_model_provider::BoxModelFuture;
-    use sugarcode_tools::WorkspaceReadTool;
+    use sugarcode_tools::WorkspaceTool;
     use tokio::sync::oneshot;
 
     #[derive(Debug)]
@@ -1416,12 +1521,13 @@ mod tests {
         let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
             panic!("thread event");
         };
-        let tool = Arc::new(WorkspaceReadTool::open(directory.path()).expect("workspace tool"));
+        let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
         let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
             core,
             Arc::new(provider),
             "fixture-model".to_string(),
             Some(tool),
+            None,
         );
         let TurnStartOutcome::Accepted { turn_id } = runtime
             .start_text_turn(
@@ -1514,6 +1620,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_list_uses_the_shared_authority_and_one_durable_tool_round() {
+        let directory = tempfile::tempdir().expect("workspace");
+        std::fs::write(directory.path().join("zeta.txt"), "z").expect("zeta fixture");
+        std::fs::write(directory.path().join("Alpha.txt"), "a").expect("alpha fixture");
+        std::fs::create_dir(directory.path().join("src")).expect("directory fixture");
+        std::fs::write(directory.path().join("src/nested.txt"), "nested").expect("nested fixture");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider = SequencedProvider {
+            rounds: Mutex::new(VecDeque::from([
+                vec![
+                    Ok(ModelEvent::ToolCall(ModelToolCall {
+                        id: "call_list".to_string(),
+                        name: "workspace/list".to_string(),
+                        arguments: serde_json::json!({ "path": "." }),
+                    })),
+                    Ok(ModelEvent::Completed),
+                ],
+                vec![
+                    Ok(ModelEvent::TextDelta("I listed it.".to_string())),
+                    Ok(ModelEvent::Completed),
+                ],
+            ])),
+            requests: requests.clone(),
+        };
+        let mut core = Core::new();
+        let started = core
+            .start_thread(CoreRequestId::new(1))
+            .expect("start thread");
+        let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+            panic!("thread event");
+        };
+        let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+        let workspace_read: Arc<dyn WorkspaceReadExecutor> = tool.clone();
+        let workspace_list: Arc<dyn WorkspaceListExecutor> = tool;
+        let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+            core,
+            Arc::new(provider),
+            "fixture-model".to_string(),
+            Some(workspace_read),
+            Some(workspace_list),
+        );
+        let TurnStartOutcome::Accepted { turn_id } = runtime
+            .start_text_turn(
+                CoreRequestId::new(2),
+                thread_id.clone(),
+                Some("List the workspace".to_string()),
+            )
+            .expect("start tool turn")
+        else {
+            panic!("asynchronous turn");
+        };
+
+        while !matches!(
+            events.recv().await.expect("terminal event").kind,
+            CoreEventKind::TurnCompleted { .. }
+        ) {}
+
+        let expected = serde_json::json!({
+            "entries": [
+                { "name": "Alpha.txt", "kind": "file" },
+                { "name": "src", "kind": "directory" },
+                { "name": "zeta.txt", "kind": "file" }
+            ]
+        });
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0]
+                .tools
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["workspace/read", "workspace/list"]
+        );
+        assert!(requests[1].tools.is_empty());
+        assert!(matches!(
+            requests[1].messages.last(),
+            Some(ModelMessage::ToolResult { content, .. })
+                if serde_json::from_str::<serde_json::Value>(content).expect("list JSON") == expected
+        ));
+        drop(requests);
+
+        let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+        let turn = snapshot
+            .turns
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .expect("persisted tool turn");
+        assert_eq!(turn.status, DurableTurnStatus::Completed);
+        assert!(matches!(
+            turn.items.as_slice(),
+            [
+                sugarcode_state::DurableItemSnapshot::UserMessage { .. },
+                sugarcode_state::DurableItemSnapshot::ToolCall { name, path, .. },
+                sugarcode_state::DurableItemSnapshot::ToolResult {
+                    result: sugarcode_state::DurableToolResult::Success { content, .. },
+                    ..
+                },
+                sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
+            ] if name == "workspace/list"
+                && path == "."
+                && serde_json::from_str::<serde_json::Value>(content).expect("durable list JSON") == expected
+                && text == "I listed it."
+        ));
+    }
+
+    #[tokio::test]
     async fn serialized_tool_result_limit_becomes_one_durable_error_result() {
         let directory = tempfile::tempdir().expect("workspace");
         std::fs::write(
@@ -1546,12 +1759,13 @@ mod tests {
         let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
             panic!("thread event");
         };
-        let tool = Arc::new(WorkspaceReadTool::open(directory.path()).expect("workspace tool"));
+        let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
         let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
             core,
             Arc::new(provider),
             "fixture-model".to_string(),
             Some(tool),
+            None,
         );
         let TurnStartOutcome::Accepted { turn_id } = runtime
             .start_text_turn(
@@ -1643,12 +1857,13 @@ mod tests {
             let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
                 panic!("thread event");
             };
-            let tool = Arc::new(WorkspaceReadTool::open(directory.path()).expect("workspace tool"));
+            let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
             let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
                 core,
                 Arc::new(provider),
                 "fixture-model".to_string(),
                 Some(tool),
+                None,
             );
             let TurnStartOutcome::Accepted { turn_id } = runtime
                 .start_text_turn(
@@ -1711,6 +1926,7 @@ mod tests {
             Arc::new(provider),
             "fixture-model".to_string(),
             Some(tool),
+            None,
         );
         let TurnStartOutcome::Accepted { turn_id } = runtime
             .start_text_turn(
@@ -1784,12 +2000,13 @@ mod tests {
         let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
             panic!("thread event");
         };
-        let tool = Arc::new(WorkspaceReadTool::open(directory.path()).expect("workspace tool"));
+        let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
         let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
             core,
             Arc::new(provider),
             "fixture-model".to_string(),
             Some(tool),
+            None,
         );
         let TurnStartOutcome::Accepted { turn_id } = runtime
             .start_text_turn(

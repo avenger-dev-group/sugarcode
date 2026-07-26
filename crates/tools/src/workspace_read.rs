@@ -63,21 +63,21 @@ impl fmt::Debug for WorkspaceReadOutcome {
     }
 }
 
-pub struct WorkspaceReadTool {
-    root_path: PathBuf,
-    root: Dir,
+pub struct WorkspaceTool {
+    pub(crate) root_path: PathBuf,
+    pub(crate) root: Dir,
 }
 
-impl fmt::Debug for WorkspaceReadTool {
+impl fmt::Debug for WorkspaceTool {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("WorkspaceReadTool")
+            .debug_struct("WorkspaceTool")
             .field("root", &"<redacted>")
             .finish()
     }
 }
 
-impl WorkspaceReadTool {
+impl WorkspaceTool {
     pub fn open(root: &Path) -> Result<Self, WorkspaceReadErrorKind> {
         if !root.is_absolute() {
             return Err(WorkspaceReadErrorKind::InvalidPath);
@@ -203,13 +203,13 @@ impl WorkspaceReadTool {
     }
 }
 
-impl WorkspaceReadExecutor for WorkspaceReadTool {
+impl WorkspaceReadExecutor for WorkspaceTool {
     fn read<'a>(
         &'a self,
         arguments: &'a WorkspaceReadArguments,
         cancellation: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = WorkspaceReadOutcome> + Send + 'a>> {
-        Box::pin(WorkspaceReadTool::read(self, arguments, cancellation))
+        Box::pin(WorkspaceTool::read(self, arguments, cancellation))
     }
 }
 
@@ -248,7 +248,7 @@ fn open_regular_file_nofollow(
     Ok((file, snapshot))
 }
 
-fn classify_component_open_error(
+pub(crate) fn classify_component_open_error(
     directory: &Dir,
     path: &Path,
     error_value: &std::io::Error,
@@ -263,7 +263,7 @@ fn classify_component_open_error(
     }
 }
 
-fn validate_directory_handle(directory: &Dir) -> Result<(), WorkspaceReadErrorKind> {
+pub(crate) fn validate_directory_handle(directory: &Dir) -> Result<(), WorkspaceReadErrorKind> {
     let file = directory
         .try_clone()
         .map_err(|error| map_io_error(&error))?
@@ -279,7 +279,7 @@ fn validate_directory_handle(directory: &Dir) -> Result<(), WorkspaceReadErrorKi
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileSnapshot {
+pub(crate) struct FileSnapshot {
     identity: FileIdentity,
     len: u64,
     modified: u128,
@@ -297,6 +297,21 @@ impl FileSnapshot {
             modified: modified_marker(metadata),
             changed: changed_marker(file, metadata)?,
         })
+    }
+
+    pub(crate) fn from_directory(directory: &Dir) -> Result<Self, WorkspaceReadErrorKind> {
+        let file = directory
+            .try_clone()
+            .map_err(|error| map_io_error(&error))?
+            .into_std_file();
+        let metadata = file.metadata().map_err(|error| map_io_error(&error))?;
+        if is_reparse_point(&metadata) {
+            return Err(WorkspaceReadErrorKind::PathNotAllowed);
+        }
+        if !metadata.is_dir() {
+            return Err(WorkspaceReadErrorKind::NotRegularFile);
+        }
+        Self::from_file(&file, &metadata)
     }
 }
 
@@ -437,19 +452,19 @@ fn modified_marker(metadata: &std::fs::Metadata) -> u128 {
 }
 
 #[cfg(windows)]
-fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
     metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 #[cfg(not(windows))]
-fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
     false
 }
 
 #[cfg(unix)]
-fn open_root_nofollow(root: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
+pub(crate) fn open_root_nofollow(root: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -464,7 +479,7 @@ fn open_root_nofollow(root: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
 }
 
 #[cfg(windows)]
-fn open_root_nofollow(root: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
+pub(crate) fn open_root_nofollow(root: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
     use std::os::windows::fs::MetadataExt;
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
@@ -489,7 +504,7 @@ fn open_root_nofollow(root: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn open_root_nofollow(root: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
+pub(crate) fn open_root_nofollow(root: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
     let metadata = std::fs::symlink_metadata(root).map_err(|error| map_io_error(&error))?;
     if metadata.file_type().is_symlink() {
         return Err(WorkspaceReadErrorKind::PathNotAllowed);
@@ -501,12 +516,12 @@ fn open_root_nofollow(root: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
 }
 
 #[cfg(unix)]
-fn is_nofollow_error(error_value: &std::io::Error) -> bool {
+pub(crate) fn is_nofollow_error(error_value: &std::io::Error) -> bool {
     error_value.raw_os_error() == Some(libc::ELOOP)
 }
 
 #[cfg(windows)]
-fn is_nofollow_error(error_value: &std::io::Error) -> bool {
+pub(crate) fn is_nofollow_error(error_value: &std::io::Error) -> bool {
     matches!(
         error_value.raw_os_error(),
         Some(681 | 1920 | 1921 | 4392 | 4393 | 4394)
@@ -514,13 +529,14 @@ fn is_nofollow_error(error_value: &std::io::Error) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn is_nofollow_error(_error_value: &std::io::Error) -> bool {
+pub(crate) fn is_nofollow_error(_error_value: &std::io::Error) -> bool {
     false
 }
 
-fn validate_relative_path(path: &str) -> Result<Vec<PathBuf>, WorkspaceReadErrorKind> {
+pub(crate) fn validate_relative_path(path: &str) -> Result<Vec<PathBuf>, WorkspaceReadErrorKind> {
     if path.is_empty()
         || path.len() > MAX_WORKSPACE_RELATIVE_PATH_BYTES
+        || has_current_or_parent_component(path)
         || path
             .chars()
             .any(|character| character == '\0' || character.is_control())
@@ -548,7 +564,19 @@ fn validate_relative_path(path: &str) -> Result<Vec<PathBuf>, WorkspaceReadError
     }
 }
 
-fn map_io_error(error_value: &std::io::Error) -> WorkspaceReadErrorKind {
+#[cfg(windows)]
+fn has_current_or_parent_component(path: &str) -> bool {
+    path.split(['/', '\\'])
+        .any(|component| matches!(component, "." | ".."))
+}
+
+#[cfg(not(windows))]
+fn has_current_or_parent_component(path: &str) -> bool {
+    path.split('/')
+        .any(|component| matches!(component, "." | ".."))
+}
+
+pub(crate) fn map_io_error(error_value: &std::io::Error) -> WorkspaceReadErrorKind {
     match error_value.kind() {
         std::io::ErrorKind::NotFound => WorkspaceReadErrorKind::NotFound,
         std::io::ErrorKind::PermissionDenied => WorkspaceReadErrorKind::AccessDenied,
@@ -582,7 +610,7 @@ mod tests {
         let workspace = tempfile::tempdir().expect("workspace");
         let path = workspace.path().join("file");
         fs::write(&path, "original").expect("original");
-        let tool = WorkspaceReadTool::open(workspace.path()).expect("tool");
+        let tool = WorkspaceTool::open(workspace.path()).expect("tool");
         let outcome = tool
             .read_with_before_identity_check(
                 &WorkspaceReadArguments {
@@ -614,7 +642,7 @@ mod tests {
             .expect("original metadata")
             .modified()
             .expect("original modified");
-        let tool = WorkspaceReadTool::open(workspace.path()).expect("tool");
+        let tool = WorkspaceTool::open(workspace.path()).expect("tool");
         let outcome = tool
             .read_with_before_identity_check(
                 &WorkspaceReadArguments {

@@ -1,9 +1,20 @@
+mod workspace_list;
 mod workspace_read;
 
+pub use workspace_list::MAX_WORKSPACE_LIST_COMPONENTS;
+pub use workspace_list::MAX_WORKSPACE_LIST_ENTRIES;
+pub use workspace_list::MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES;
+pub use workspace_list::MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES;
+pub use workspace_list::WorkspaceListArguments;
+pub use workspace_list::WorkspaceListEntry;
+pub use workspace_list::WorkspaceListEntryKind;
+pub use workspace_list::WorkspaceListErrorKind;
+pub use workspace_list::WorkspaceListExecutor;
+pub use workspace_list::WorkspaceListOutcome;
 pub use workspace_read::MAX_WORKSPACE_READ_BYTES;
 pub use workspace_read::MAX_WORKSPACE_RELATIVE_PATH_BYTES;
 pub use workspace_read::WorkspaceReadArguments;
 pub use workspace_read::WorkspaceReadErrorKind;
 pub use workspace_read::WorkspaceReadExecutor;
 pub use workspace_read::WorkspaceReadOutcome;
-pub use workspace_read::WorkspaceReadTool;
+pub use workspace_read::WorkspaceTool;

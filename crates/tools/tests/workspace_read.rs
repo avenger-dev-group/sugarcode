@@ -3,7 +3,7 @@ use sugarcode_tools::MAX_WORKSPACE_READ_BYTES;
 use sugarcode_tools::WorkspaceReadArguments;
 use sugarcode_tools::WorkspaceReadErrorKind;
 use sugarcode_tools::WorkspaceReadOutcome;
-use sugarcode_tools::WorkspaceReadTool;
+use sugarcode_tools::WorkspaceTool;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -11,7 +11,7 @@ async fn reads_one_bounded_utf8_regular_file() {
     let workspace = tempfile::tempdir().expect("workspace");
     fs::create_dir(workspace.path().join("src")).expect("src");
     fs::write(workspace.path().join("src/lib.rs"), "pub fn sugar() {}\n").expect("file");
-    let tool = WorkspaceReadTool::open(workspace.path()).expect("tool");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
     let outcome = tool
         .read(
             &WorkspaceReadArguments {
@@ -38,10 +38,11 @@ async fn rejects_escape_binary_directory_oversize_and_cancelled_reads() {
         vec![b'x'; MAX_WORKSPACE_READ_BYTES + 1],
     )
     .expect("large");
-    let tool = WorkspaceReadTool::open(workspace.path()).expect("tool");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
     for (path, expected) in [
         ("../secret", WorkspaceReadErrorKind::InvalidPath),
         ("/etc/passwd", WorkspaceReadErrorKind::InvalidPath),
+        ("src/./lib.rs", WorkspaceReadErrorKind::InvalidPath),
         ("binary", WorkspaceReadErrorKind::BinaryFile),
         (".", WorkspaceReadErrorKind::InvalidPath),
         ("large", WorkspaceReadErrorKind::FileTooLarge),
@@ -88,7 +89,7 @@ async fn rejects_symlink_components_without_following_them() {
     )
     .expect("file symlink");
     symlink("loop", workspace.path().join("loop")).expect("loop");
-    let tool = WorkspaceReadTool::open(workspace.path()).expect("tool");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
     for path in ["linked/secret", "linked-file", "loop"] {
         assert_eq!(
             tool.read(
@@ -107,7 +108,7 @@ async fn rejects_symlink_components_without_following_them() {
     let linked_root = linked_roots.path().join("linked-root");
     symlink(workspace.path(), &linked_root).expect("root symlink");
     assert_eq!(
-        WorkspaceReadTool::open(&linked_root).expect_err("reject root symlink"),
+        WorkspaceTool::open(&linked_root).expect_err("reject root symlink"),
         WorkspaceReadErrorKind::PathNotAllowed
     );
 }
@@ -131,7 +132,7 @@ async fn rejects_fifo_socket_and_permission_denied_without_blocking() {
     let denied = workspace.path().join("denied");
     fs::write(&denied, "secret").expect("denied file");
     fs::set_permissions(&denied, fs::Permissions::from_mode(0o000)).expect("permissions");
-    let tool = WorkspaceReadTool::open(workspace.path()).expect("tool");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
     for path in ["fifo", "socket"] {
         assert_eq!(
             tool.read(
@@ -205,10 +206,10 @@ async fn rejects_windows_prefixes_and_reparse_points() {
         String::from_utf8_lossy(&root_junction_output.stderr)
     );
     assert_eq!(
-        WorkspaceReadTool::open(&root_junction).expect_err("reject root junction"),
+        WorkspaceTool::open(&root_junction).expect_err("reject root junction"),
         WorkspaceReadErrorKind::PathNotAllowed
     );
-    let tool = WorkspaceReadTool::open(workspace.path()).expect("tool");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
     for path in [
         r"C:\Windows\System32\drivers\etc\hosts",
         r"\\server\share\secret",

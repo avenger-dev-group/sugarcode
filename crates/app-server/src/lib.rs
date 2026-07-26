@@ -25,12 +25,17 @@ pub async fn run_stdio(
     config: EffectiveConfig,
     workspace: Option<std::path::PathBuf>,
 ) -> io::Result<()> {
-    let workspace_read: Option<Arc<dyn sugarcode_tools::WorkspaceReadExecutor>> = workspace
+    let workspace = workspace
         .as_deref()
-        .map(sugarcode_tools::WorkspaceReadTool::open)
+        .map(sugarcode_tools::WorkspaceTool::open)
         .transpose()
         .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
-        .map(|tool| Arc::new(tool) as Arc<dyn sugarcode_tools::WorkspaceReadExecutor>);
+        .map(Arc::new);
+    let workspace_read: Option<Arc<dyn sugarcode_tools::WorkspaceReadExecutor>> = workspace
+        .as_ref()
+        .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceReadExecutor>);
+    let workspace_list: Option<Arc<dyn sugarcode_tools::WorkspaceListExecutor>> =
+        workspace.map(|tool| tool as Arc<dyn sugarcode_tools::WorkspaceListExecutor>);
     let model = config.model().cloned();
     let model_token = model
         .as_ref()
@@ -66,6 +71,7 @@ pub async fn run_stdio(
                 provider,
                 model.model().to_string(),
                 workspace_read,
+                workspace_list,
             )
         }
         (None, Ok(None)) => CoreRuntime::without_model(core),
