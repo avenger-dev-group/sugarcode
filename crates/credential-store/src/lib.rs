@@ -82,4 +82,5 @@ impl fmt::Display for CredentialStoreError {
 impl Error for CredentialStoreError {}
 
 #[cfg(test)]
+#[path = "tests/mod.rs"]
 mod tests;
