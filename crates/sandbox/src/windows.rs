@@ -648,6 +648,14 @@ fn command_line(command: &str, arguments: &[String]) -> Vec<u16> {
 }
 
 fn quote_windows_argument(value: &str) -> String {
+    let needs_quotes = value.is_empty()
+        || value
+            .chars()
+            .any(|character| matches!(character, ' ' | '\t' | '\n' | '\r' | '"'));
+    if !needs_quotes {
+        return value.to_owned();
+    }
+
     let mut quoted = String::from("\"");
     let mut backslashes = 0;
     for character in value.chars() {
