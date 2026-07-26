@@ -1,7 +1,21 @@
+mod shell_command;
 mod workspace_list;
 mod workspace_read;
 mod workspace_search;
 
+pub use shell_command::MAX_SHELL_ARGUMENT_BYTES;
+pub use shell_command::MAX_SHELL_ARGUMENT_COUNT;
+pub use shell_command::MAX_SHELL_COMMAND_BYTES;
+pub use shell_command::MAX_SHELL_OUTPUT_BYTES;
+pub use shell_command::MAX_SHELL_TOTAL_ARGUMENT_BYTES;
+pub use shell_command::NativeShellCommandExecutor;
+pub use shell_command::ShellCommandArguments;
+pub use shell_command::ShellCommandErrorKind;
+pub use shell_command::ShellCommandExecution;
+pub use shell_command::ShellCommandExecutor;
+pub use shell_command::ShellCommandOutcome;
+pub use shell_command::ShellCommandOutput;
+pub use shell_command::run_shell_command_supervisor;
 pub use workspace_list::MAX_WORKSPACE_LIST_COMPONENTS;
 pub use workspace_list::MAX_WORKSPACE_LIST_ENTRIES;
 pub use workspace_list::MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES;

@@ -20,6 +20,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    #[command(hide = true, name = "__command-supervisor")]
+    InternalSupervisor,
     /// Print product and app-server protocol versions.
     Version,
     /// Validate SugarCode's non-secret configuration.
@@ -131,6 +133,10 @@ async fn main() {
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let Cli { home, command } = cli;
     match command {
+        Command::InternalSupervisor => {
+            sugarcode_tools::run_shell_command_supervisor()
+                .map_err(|error| format!("command supervisor failed: {error}"))?;
+        }
         Command::Version => {
             println!(
                 "sugarcode {}",
