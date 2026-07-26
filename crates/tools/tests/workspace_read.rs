@@ -180,13 +180,10 @@ async fn rejects_windows_prefixes_and_reparse_points() {
     )
     .expect("file reparse");
     let junction = workspace.path().join("junction");
-    let junction_command = format!(
-        "mklink /J \"{}\" \"{}\"",
-        junction.display(),
-        outside.path().display()
-    );
     let junction_output = Command::new("cmd")
-        .args(["/D", "/C", &junction_command])
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(outside.path())
         .output()
         .expect("create junction");
     assert!(
@@ -196,13 +193,10 @@ async fn rejects_windows_prefixes_and_reparse_points() {
     );
     let root_junctions = tempfile::tempdir().expect("root junctions");
     let root_junction = root_junctions.path().join("workspace-root");
-    let root_junction_command = format!(
-        "mklink /J \"{}\" \"{}\"",
-        root_junction.display(),
-        workspace.path().display()
-    );
     let root_junction_output = Command::new("cmd")
-        .args(["/D", "/C", &root_junction_command])
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(&root_junction)
+        .arg(workspace.path())
         .output()
         .expect("create root junction");
     assert!(
