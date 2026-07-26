@@ -8,6 +8,7 @@ use super::environment_block;
 use super::quote_windows_argument;
 use super::setup_operation_error;
 use super::should_retry_without_lua;
+use super::should_retry_without_mitigation;
 use windows_sys::Win32::Security::DISABLE_MAX_PRIVILEGE;
 use windows_sys::Win32::Security::LUA_TOKEN;
 use windows_sys::Win32::Security::WRITE_RESTRICTED;
@@ -32,6 +33,19 @@ fn compatibility_token_flags_only_omit_lua_token() {
 fn compatibility_token_retry_is_limited_to_invalid_parameter() {
     assert!(should_retry_without_lua(&io::Error::from_raw_os_error(87)));
     assert!(!should_retry_without_lua(&io::Error::from_raw_os_error(5)));
+}
+
+#[test]
+fn compatibility_mitigation_retry_is_limited_to_optional_attribute_errors() {
+    assert!(should_retry_without_mitigation(
+        &io::Error::from_raw_os_error(87)
+    ));
+    assert!(should_retry_without_mitigation(
+        &io::Error::from_raw_os_error(50)
+    ));
+    assert!(!should_retry_without_mitigation(
+        &io::Error::from_raw_os_error(5)
+    ));
 }
 
 #[test]

@@ -13,6 +13,7 @@ use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+use windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED;
 use windows_sys::Win32::Foundation::ERROR_PATH_NOT_FOUND;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
@@ -146,48 +147,65 @@ fn spawn_filesystem_read_only(spec: CommandSpec) -> Result<SupervisedChild, Sand
     let stdout = ChildPipe::output().map_err(sandbox_setup_error)?;
     let stderr = ChildPipe::output().map_err(sandbox_setup_error)?;
     let inherited_handles = [stdin.child.raw(), stdout.child.raw(), stderr.child.raw()];
-    let mut attributes =
-        ProcThreadAttributes::new(&inherited_handles).map_err(sandbox_setup_error)?;
-    let mut startup = STARTUPINFOEXW::default();
-    startup.StartupInfo.cb = u32::try_from(size_of::<STARTUPINFOEXW>()).unwrap_or(u32::MAX);
-    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = stdin.child.raw();
-    startup.StartupInfo.hStdOutput = stdout.child.raw();
-    startup.StartupInfo.hStdError = stderr.child.raw();
-    startup.lpAttributeList = attributes.as_mut_ptr();
+    let CommandSpec {
+        command,
+        arguments,
+        cwd,
+        environment,
+    } = spec;
+    let application = wide_nul(OsStr::new(&command));
+    let current_directory = wide_nul(cwd.as_os_str());
+    let environment = environment_block(environment);
+    let launch = |attributes: &mut ProcThreadAttributes| {
+        let mut startup = STARTUPINFOEXW::default();
+        startup.StartupInfo.cb = u32::try_from(size_of::<STARTUPINFOEXW>()).unwrap_or(u32::MAX);
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = stdin.child.raw();
+        startup.StartupInfo.hStdOutput = stdout.child.raw();
+        startup.StartupInfo.hStdError = stderr.child.raw();
+        startup.lpAttributeList = attributes.as_mut_ptr();
 
-    let application = wide_nul(OsStr::new(&spec.command));
-    let mut command_line = command_line(&spec.command, &spec.arguments);
-    let current_directory = wide_nul(spec.cwd.as_os_str());
-    let environment = environment_block(spec.environment);
-    let mut process = PROCESS_INFORMATION::default();
-    let created = unsafe {
-        CreateProcessAsUserW(
-            token.raw(),
-            application.as_ptr(),
-            command_line.as_mut_ptr(),
-            null(),
-            null(),
-            1,
-            EXTENDED_STARTUPINFO_PRESENT
-                | CREATE_UNICODE_ENVIRONMENT
-                | CREATE_NO_WINDOW
-                | CREATE_SUSPENDED,
-            environment.as_ptr().cast(),
-            current_directory.as_ptr(),
-            &startup.StartupInfo,
-            &mut process,
-        )
+        let mut command_line = command_line(&command, &arguments);
+        let mut process = PROCESS_INFORMATION::default();
+        let created = unsafe {
+            CreateProcessAsUserW(
+                token.raw(),
+                application.as_ptr(),
+                command_line.as_mut_ptr(),
+                null(),
+                null(),
+                1,
+                EXTENDED_STARTUPINFO_PRESENT
+                    | CREATE_UNICODE_ENVIRONMENT
+                    | CREATE_NO_WINDOW
+                    | CREATE_SUSPENDED,
+                environment.as_ptr().cast(),
+                current_directory.as_ptr(),
+                &startup.StartupInfo,
+                &mut process,
+            )
+        };
+        if created == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(process)
+        }
     };
-    if created == 0 {
-        let error = io::Error::last_os_error();
-        return Err(match error.raw_os_error().map(|code| code as u32) {
-            Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => {
-                SandboxSpawnError::Process(error)
-            }
-            _ => sandbox_setup_error(setup_operation_error("CreateProcessAsUserW", error)),
-        });
-    }
+
+    let mut attributes =
+        ProcThreadAttributes::new(&inherited_handles, true).map_err(sandbox_setup_error)?;
+    let process = match launch(&mut attributes) {
+        Ok(process) => process,
+        Err(initial_error) if should_retry_without_mitigation(&initial_error) => {
+            drop(attributes);
+            let mut compatibility_attributes = ProcThreadAttributes::new(&inherited_handles, false)
+                .map_err(sandbox_setup_error)?;
+            launch(&mut compatibility_attributes).map_err(|compatibility_error| {
+                map_compatibility_create_process_error(initial_error, compatibility_error)
+            })?
+        }
+        Err(error) => return Err(map_create_process_error(error)),
+    };
     let process_handle = OwnedHandle::new(process.hProcess);
     let thread_handle = OwnedHandle::new(process.hThread);
     let job = match kill_on_close_job(&process_handle) {
@@ -351,6 +369,40 @@ fn should_retry_without_lua(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32)
 }
 
+fn should_retry_without_mitigation(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error().map(|code| code as u32),
+        Some(ERROR_INVALID_PARAMETER) | Some(ERROR_NOT_SUPPORTED)
+    )
+}
+
+fn map_compatibility_create_process_error(
+    initial_error: io::Error,
+    compatibility_error: io::Error,
+) -> SandboxSpawnError {
+    match compatibility_error.raw_os_error().map(|code| code as u32) {
+        Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => {
+            SandboxSpawnError::Process(compatibility_error)
+        }
+        _ => sandbox_setup_error(io::Error::new(
+            compatibility_error.kind(),
+            format!(
+                "CreateProcessAsUserW compatibility retry without Win32k mitigation failed: \
+                 initial error: {initial_error}; compatibility error: {compatibility_error}"
+            ),
+        )),
+    }
+}
+
+fn map_create_process_error(error: io::Error) -> SandboxSpawnError {
+    match error.raw_os_error().map(|code| code as u32) {
+        Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => {
+            SandboxSpawnError::Process(error)
+        }
+        _ => sandbox_setup_error(setup_operation_error("CreateProcessAsUserW", error)),
+    }
+}
+
 fn create_restricted_token(
     source: HANDLE,
     restricting_sid: &SID_AND_ATTRIBUTES,
@@ -436,10 +488,11 @@ struct ProcThreadAttributes {
 }
 
 impl ProcThreadAttributes {
-    fn new(handles: &[HANDLE]) -> io::Result<Self> {
+    fn new(handles: &[HANDLE], include_mitigation: bool) -> io::Result<Self> {
+        let attribute_count = if include_mitigation { 2 } else { 1 };
         let mut byte_size = 0;
         unsafe {
-            InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut byte_size);
+            InitializeProcThreadAttributeList(null_mut(), attribute_count, 0, &mut byte_size);
         }
         if byte_size == 0 {
             return Err(setup_operation_error(
@@ -453,7 +506,12 @@ impl ProcThreadAttributes {
             initialized: false,
         };
         if unsafe {
-            InitializeProcThreadAttributeList(attributes.as_mut_ptr(), 2, 0, &mut byte_size)
+            InitializeProcThreadAttributeList(
+                attributes.as_mut_ptr(),
+                attribute_count,
+                0,
+                &mut byte_size,
+            )
         } == 0
         {
             return Err(setup_operation_error(
@@ -479,23 +537,26 @@ impl ProcThreadAttributes {
                 io::Error::last_os_error(),
             ));
         }
-        let mitigation = PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON;
-        if unsafe {
-            UpdateProcThreadAttribute(
-                attributes.as_mut_ptr(),
-                0,
-                PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY as usize,
-                (&mitigation as *const u64).cast(),
-                size_of::<u64>(),
-                null_mut(),
-                null(),
-            )
-        } == 0
-        {
-            return Err(setup_operation_error(
-                "UpdateProcThreadAttribute mitigation policy",
-                io::Error::last_os_error(),
-            ));
+        if include_mitigation {
+            let mitigation =
+                PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON;
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    attributes.as_mut_ptr(),
+                    0,
+                    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY as usize,
+                    (&mitigation as *const u64).cast(),
+                    size_of::<u64>(),
+                    null_mut(),
+                    null(),
+                )
+            } == 0
+            {
+                return Err(setup_operation_error(
+                    "UpdateProcThreadAttribute mitigation policy",
+                    io::Error::last_os_error(),
+                ));
+            }
         }
         Ok(attributes)
     }
