@@ -1,0 +1,407 @@
+use super::*;
+
+#[test]
+fn rejects_an_empty_completed_turn_before_writing() {
+    let directory = tempdir().expect("home");
+    let home = resolve_sugarcode_home(HomeResolutionInputs {
+        cli_override: Some(directory.path().to_path_buf()),
+        ..Default::default()
+    })
+    .expect("resolve home");
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    let path = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    let before = fs::read(&path).expect("read before");
+
+    let error = repository
+        .append_completed_turn(
+            &thread_id,
+            &DurableTurnSnapshot {
+                id: TurnId::new("turn_0000000000000001"),
+                status: DurableTurnStatus::Completed,
+                items: Vec::new(),
+                error: None,
+                usage: None,
+            },
+        )
+        .expect_err("empty completed turn");
+
+    assert!(matches!(error, RolloutError::InvalidRecord { .. }));
+    assert_eq!(fs::read(path).expect("read after"), before);
+}
+
+#[test]
+fn rejects_a_second_writer_for_the_same_home() {
+    let directory = tempdir().expect("home");
+    let home = resolve_sugarcode_home(HomeResolutionInputs {
+        cli_override: Some(directory.path().to_path_buf()),
+        ..Default::default()
+    })
+    .expect("resolve home");
+    let _first = RolloutRepository::open(&home).expect("first writer");
+    assert!(matches!(
+        RolloutRepository::open(&home),
+        Err(RolloutError::Busy { .. })
+    ));
+}
+
+#[test]
+fn recovers_only_an_unterminated_final_record() {
+    let directory = tempdir().expect("home");
+    let home = resolve_sugarcode_home(HomeResolutionInputs {
+        cli_override: Some(directory.path().to_path_buf()),
+        ..Default::default()
+    })
+    .expect("resolve home");
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+    }
+    let path = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open rollout");
+    file.write_all(br#"{"schemaVersion":1,"sequence":2"#)
+        .expect("write partial tail");
+    file.flush().expect("flush tail");
+
+    let repository = RolloutRepository::open(&home).expect("tail recovers");
+    assert_eq!(repository.diagnostics().len(), 1);
+    assert_eq!(repository.diagnostics()[0].kind, "truncatedTailRecovered");
+    assert!(
+        repository
+            .load_thread(&thread_id)
+            .expect("load")
+            .expect("thread")
+            .turns
+            .is_empty()
+    );
+    assert_eq!(
+        fs::read_to_string(path).expect("read repaired"),
+        "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n"
+    );
+}
+
+#[test]
+fn terminated_corruption_is_fatal_and_does_not_echo_record_contents() {
+    let directory = tempdir().expect("home");
+    let home = resolve_sugarcode_home(HomeResolutionInputs {
+        cli_override: Some(directory.path().to_path_buf()),
+        ..Default::default()
+    })
+    .expect("resolve home");
+    {
+        let _repository = RolloutRepository::open(&home).expect("create layout");
+    }
+    let sentinel = "do-not-leak-this-message";
+    fs::write(
+        directory
+            .path()
+            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+        format!("{{broken:{sentinel}}}\n"),
+    )
+    .expect("write corrupt rollout");
+
+    let error = RolloutRepository::open(&home).expect_err("corruption fails");
+    assert!(matches!(error, RolloutError::Corrupt(_)));
+    assert!(!error.to_string().contains(sentinel));
+}
+
+#[test]
+fn corrupt_complete_prefix_is_not_mutated_when_an_unterminated_tail_exists() {
+    let directory = tempdir().expect("home");
+    let home = resolve_sugarcode_home(HomeResolutionInputs {
+        cli_override: Some(directory.path().to_path_buf()),
+        ..Default::default()
+    })
+    .expect("resolve home");
+    {
+        let _repository = RolloutRepository::open(&home).expect("create layout");
+    }
+    let path = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    let contents = b"{\"schemaVersion\":1,\"sequence\":99,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\nunfinished";
+    fs::write(&path, contents).expect("write corrupt rollout");
+
+    let error = RolloutRepository::open(&home).expect_err("corrupt prefix must fail");
+
+    assert!(matches!(error, RolloutError::Corrupt(_)));
+    assert_eq!(fs::read(path).expect("read rollout"), contents);
+}
+
+#[test]
+fn rejects_unknown_versions_types_sequences_and_non_utf8_records() {
+    for (name, bytes, expected_kind) in [
+        (
+            "unsupported version",
+            br#"{"schemaVersion":2,"sequence":1,"type":"threadCreated","threadId":"thr_0000000000000001"}
+"#
+            .as_slice(),
+            "unsupportedSchemaVersion",
+        ),
+        (
+            "unknown type",
+            br#"{"schemaVersion":1,"sequence":1,"type":"futureRecord","threadId":"thr_0000000000000001"}
+"#
+            .as_slice(),
+            "unknownRecordType",
+        ),
+        (
+            "invalid sequence",
+            br#"{"schemaVersion":1,"sequence":2,"type":"threadCreated","threadId":"thr_0000000000000001"}
+"#
+            .as_slice(),
+            "invalidSequence",
+        ),
+        ("non UTF-8", &[0xff, b'\n'], "invalidUtf8"),
+    ] {
+        let directory = tempdir().expect("home");
+        let home = resolve_sugarcode_home(HomeResolutionInputs {
+            cli_override: Some(directory.path().to_path_buf()),
+            ..Default::default()
+        })
+        .expect("resolve home");
+        {
+            let _repository = RolloutRepository::open(&home).expect("create layout");
+        }
+        fs::write(
+            directory
+                .path()
+                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            bytes,
+        )
+        .expect("write corrupt record");
+
+        let error = RolloutRepository::open(&home).expect_err(name);
+        let RolloutError::Corrupt(diagnostic) = error else {
+            panic!("{name}: expected corruption");
+        };
+        assert_eq!(diagnostic.kind, expected_kind, "{name}");
+    }
+}
+
+#[test]
+fn rejects_duplicate_archive_and_records_after_archive_without_echoing_content() {
+    for (name, records, expected_kind) in [
+        (
+            "duplicate archive",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+            ),
+            "duplicateThreadArchive",
+        ),
+        (
+            "turn after archive",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"turnCompleted\",\"threadId\":\"thr_0000000000000001\",\"turn\":{\"id\":\"turn_0000000000000001\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"item_0000000000000001\",\"text\":\"private-archive-sentinel\"}]}}\n"
+            ),
+            "recordAfterThreadArchive",
+        ),
+        (
+            "unarchive while active",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadUnarchived\",\"threadId\":\"thr_0000000000000001\",\"private\":\"private-archive-sentinel\"}\n"
+            ),
+            "invalidRecordShape",
+        ),
+        (
+            "valid-shaped unarchive while active",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadUnarchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+            ),
+            "threadUnarchiveWhileActive",
+        ),
+    ] {
+        let directory = tempdir().expect("home");
+        let home = resolved_temp_home(&directory);
+        {
+            let _repository = RolloutRepository::open(&home).expect("create layout");
+        }
+        fs::write(
+            directory
+                .path()
+                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            records,
+        )
+        .expect("write invalid rollout");
+
+        let error = RolloutRepository::open(&home).expect_err(name);
+        let RolloutError::Corrupt(diagnostic) = error else {
+            panic!("{name}: expected corruption");
+        };
+        assert_eq!(diagnostic.kind, expected_kind, "{name}");
+        assert!(!diagnostic.to_string().contains("private-archive-sentinel"));
+    }
+}
+
+#[test]
+fn rejects_duplicate_delete_and_records_after_delete_without_echoing_content() {
+    for (name, records, expected_kind) in [
+        (
+            "duplicate delete",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n"
+            ),
+            "duplicateThreadDelete",
+        ),
+        (
+            "turn after delete",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"turnCompleted\",\"threadId\":\"thr_0000000000000001\",\"turn\":{\"id\":\"turn_0000000000000001\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"item_0000000000000001\",\"text\":\"private-delete-sentinel\"}]}}\n"
+            ),
+            "recordAfterThreadDelete",
+        ),
+        (
+            "archive after delete",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+            ),
+            "recordAfterThreadDelete",
+        ),
+        (
+            "unarchive after delete",
+            concat!(
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadUnarchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+            ),
+            "recordAfterThreadDelete",
+        ),
+    ] {
+        let directory = tempdir().expect("home");
+        let home = resolved_temp_home(&directory);
+        {
+            let _repository = RolloutRepository::open(&home).expect("create layout");
+        }
+        fs::write(
+            directory
+                .path()
+                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            records,
+        )
+        .expect("write invalid rollout");
+
+        let error = RolloutRepository::open(&home).expect_err(name);
+        let RolloutError::Corrupt(diagnostic) = error else {
+            panic!("{name}: expected corruption");
+        };
+        assert_eq!(diagnostic.kind, expected_kind, "{name}");
+        assert!(!diagnostic.to_string().contains("private-delete-sentinel"));
+    }
+}
+
+#[test]
+fn removes_an_empty_unacknowledged_create_artifact() {
+    let directory = tempdir().expect("home");
+    let home = resolve_sugarcode_home(HomeResolutionInputs {
+        cli_override: Some(directory.path().to_path_buf()),
+        ..Default::default()
+    })
+    .expect("resolve home");
+    {
+        let _repository = RolloutRepository::open(&home).expect("create layout");
+    }
+    let path = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    fs::write(&path, []).expect("empty create artifact");
+
+    let repository = RolloutRepository::open(&home).expect("empty artifact recovers");
+    assert!(!path.exists());
+    assert_eq!(
+        repository.diagnostics()[0].kind,
+        "emptyCreateArtifactRecovered"
+    );
+}
+
+#[test]
+fn removes_an_unacknowledged_fork_create_artifact() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    {
+        let _repository = RolloutRepository::open(&home).expect("create layout");
+    }
+    let path = directory
+        .path()
+        .join("rollouts/v1/.thr_0000000000000001.fork.tmp");
+    fs::write(&path, b"private-fork-create-sentinel").expect("fork artifact");
+
+    let repository = RolloutRepository::open(&home).expect("artifact recovers");
+    assert!(!path.exists());
+    assert_eq!(
+        repository.diagnostics()[0].kind,
+        "forkCreateArtifactRecovered"
+    );
+    assert!(
+        !repository.diagnostics()[0]
+            .to_string()
+            .contains("private-fork-create-sentinel")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_symlinks_inside_the_rollout_tree() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempdir().expect("home");
+    let home = resolve_sugarcode_home(HomeResolutionInputs {
+        cli_override: Some(directory.path().to_path_buf()),
+        ..Default::default()
+    })
+    .expect("resolve home");
+    let target = directory.path().join("target");
+    fs::create_dir(&target).expect("target");
+    symlink(&target, directory.path().join("rollouts")).expect("rollouts symlink");
+
+    assert!(RolloutRepository::open(&home).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn refuses_to_follow_a_rollout_replaced_by_a_symlink_before_append() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempdir().expect("home");
+    let home = resolve_sugarcode_home(HomeResolutionInputs {
+        cli_override: Some(directory.path().to_path_buf()),
+        ..Default::default()
+    })
+    .expect("resolve home");
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    let rollout = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    let target = directory.path().join("outside.jsonl");
+    fs::write(&target, b"outside").expect("outside target");
+    fs::remove_file(&rollout).expect("replace rollout");
+    symlink(&target, &rollout).expect("rollout symlink");
+
+    assert!(matches!(
+        repository.append_completed_turn(&thread_id, &completed_turn(1)),
+        Err(RolloutError::Unavailable { .. })
+    ));
+    assert_eq!(fs::read(target).expect("outside target"), b"outside");
+}
