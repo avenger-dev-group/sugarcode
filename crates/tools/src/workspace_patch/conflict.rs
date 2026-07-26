@@ -1,10 +1,10 @@
 use super::WorkspacePatchErrorKind;
 use super::map_read_error;
-use crate::workspace_read::FileSnapshot;
-use crate::workspace_read::classify_component_open_error;
-use crate::workspace_read::map_io_error;
-use crate::workspace_read::open_regular_file_nofollow;
-use crate::workspace_read::validate_directory_handle;
+use crate::workspace_capability::FileSnapshot;
+use crate::workspace_capability::classify_component_open_error;
+use crate::workspace_capability::map_io_error;
+use crate::workspace_capability::open_regular_file_nofollow;
+use crate::workspace_capability::validate_directory_handle;
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 use cap_std::fs::OpenOptions;

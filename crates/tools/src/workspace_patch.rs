@@ -1,8 +1,8 @@
-use crate::workspace_read::FileSnapshot;
-use crate::workspace_read::WorkspaceReadErrorKind;
-use crate::workspace_read::WorkspaceTool;
-use crate::workspace_read::open_regular_file_nofollow;
-use crate::workspace_read::validate_relative_path;
+use crate::workspace_capability::FileSnapshot;
+use crate::workspace_capability::WorkspaceReadErrorKind;
+use crate::workspace_capability::WorkspaceTool;
+use crate::workspace_capability::open_regular_file_nofollow;
+use crate::workspace_capability::validate_relative_path;
 use cap_std::fs::Dir;
 use std::fmt;
 use std::fs::File;
