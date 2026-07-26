@@ -57,6 +57,9 @@ jobs:
       - name: Test native filesystem read-only sandbox
         run: cargo test -p sugarcode-sandbox --test filesystem_read_only --locked -- --nocapture
 
+      - name: Test native command network-denied sandbox
+        run: cargo test -p sugarcode-sandbox --test network_denied --locked -- --nocapture
+
       - name: Test Rust workspace
         run: cargo test --workspace --locked
 

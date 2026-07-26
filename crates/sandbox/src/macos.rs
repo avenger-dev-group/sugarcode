@@ -1,6 +1,8 @@
 use std::path::Path;
 
+use crate::CommandSandboxPolicy;
 use crate::CommandSpec;
+use crate::NetworkPolicy;
 use crate::SandboxError;
 use crate::SandboxPolicy;
 use crate::SandboxSpawnError;
@@ -8,6 +10,13 @@ use crate::SupervisedChild;
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 const FILESYSTEM_READ_ONLY_V1_PROFILE: &str = "(version 1)\n(allow default)\n(deny file-write*)";
+const FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1_PROFILE: &str = concat!(
+    "(version 1)\n",
+    "(allow default)\n",
+    "(deny file-write*)\n",
+    "(deny network*)\n",
+    "(allow system-socket (socket-domain AF_UNIX))",
+);
 
 pub(crate) fn probe(policy: SandboxPolicy) -> Result<(), SandboxError> {
     match policy {
@@ -22,19 +31,52 @@ pub(crate) fn spawn(
     let profile = match policy {
         SandboxPolicy::FilesystemReadOnlyV1 => FILESYSTEM_READ_ONLY_V1_PROFILE,
     };
+    spawn_with_profile(profile, spec, false)
+}
+
+pub(crate) fn probe_command(policy: CommandSandboxPolicy) -> Result<(), SandboxError> {
+    match (policy.filesystem, policy.network) {
+        (SandboxPolicy::FilesystemReadOnlyV1, NetworkPolicy::NetworkDeniedV1) => {
+            probe_profile(FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1_PROFILE)
+        }
+    }
+}
+
+pub(crate) fn spawn_command(
+    policy: CommandSandboxPolicy,
+    spec: CommandSpec,
+) -> Result<SupervisedChild, SandboxSpawnError> {
+    let profile = match (policy.filesystem, policy.network) {
+        (SandboxPolicy::FilesystemReadOnlyV1, NetworkPolicy::NetworkDeniedV1) => {
+            FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1_PROFILE
+        }
+    };
+    spawn_with_profile(profile, spec, true)
+}
+
+fn spawn_with_profile(
+    profile: &'static str,
+    spec: CommandSpec,
+    sanitize_descriptors: bool,
+) -> Result<SupervisedChild, SandboxSpawnError> {
     let mut arguments = Vec::with_capacity(spec.arguments.len() + 4);
     arguments.push("-p".to_owned());
     arguments.push(profile.to_owned());
     arguments.push("--".to_owned());
     arguments.push(spec.command);
     arguments.extend(spec.arguments);
-    crate::spawn_supervised(CommandSpec {
+    let spec = CommandSpec {
         command: SANDBOX_EXEC.to_owned(),
         arguments,
         cwd: spec.cwd,
         environment: spec.environment,
-    })
-    .map_err(|error| {
+    };
+    let spawned = if sanitize_descriptors {
+        crate::process::spawn_supervised_sanitized(spec)
+    } else {
+        crate::spawn_supervised(spec)
+    };
+    spawned.map_err(|error| {
         SandboxSpawnError::Sandbox(SandboxError::unavailable(format!(
             "failed to launch {SANDBOX_EXEC}: {error}"
         )))
@@ -42,6 +84,10 @@ pub(crate) fn spawn(
 }
 
 fn probe_sandbox_exec() -> Result<(), SandboxError> {
+    probe_profile(FILESYSTEM_READ_ONLY_V1_PROFILE)
+}
+
+fn probe_profile(profile: &'static str) -> Result<(), SandboxError> {
     let metadata = std::fs::metadata(SANDBOX_EXEC).map_err(|error| {
         SandboxError::unavailable(format!("required {SANDBOX_EXEC} is unavailable: {error}"))
     })?;
@@ -51,7 +97,7 @@ fn probe_sandbox_exec() -> Result<(), SandboxError> {
         )));
     }
     let status = std::process::Command::new(SANDBOX_EXEC)
-        .args(["-p", FILESYSTEM_READ_ONLY_V1_PROFILE, "--", "/usr/bin/true"])
+        .args(["-p", profile, "--", "/usr/bin/true"])
         .env_clear()
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -62,7 +108,7 @@ fn probe_sandbox_exec() -> Result<(), SandboxError> {
         })?;
     if !status.success() {
         return Err(SandboxError::unavailable(format!(
-            "{SANDBOX_EXEC} rejected filesystemReadOnlyV1"
+            "{SANDBOX_EXEC} rejected the requested sandbox profile"
         )));
     }
     Ok(())

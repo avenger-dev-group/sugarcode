@@ -16,6 +16,26 @@ pub enum SandboxPolicy {
     FilesystemReadOnlyV1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NetworkPolicy {
+    NetworkDeniedV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandSandboxPolicy {
+    pub filesystem: SandboxPolicy,
+    pub network: NetworkPolicy,
+}
+
+impl CommandSandboxPolicy {
+    pub const FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1: Self = Self {
+        filesystem: SandboxPolicy::FilesystemReadOnlyV1,
+        network: NetworkPolicy::NetworkDeniedV1,
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxErrorKind {
     UnsupportedPlatform,
@@ -101,6 +121,26 @@ impl SandboxAdapter {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CommandSandboxAdapter {
+    policy: CommandSandboxPolicy,
+}
+
+impl CommandSandboxAdapter {
+    pub fn probe(policy: CommandSandboxPolicy) -> Result<Self, SandboxError> {
+        platform_probe_command(policy)?;
+        Ok(Self { policy })
+    }
+
+    pub fn policy(&self) -> CommandSandboxPolicy {
+        self.policy
+    }
+
+    pub fn spawn(&self, spec: CommandSpec) -> Result<SupervisedChild, SandboxSpawnError> {
+        platform_spawn_command(self.policy, spec)
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn platform_probe(policy: SandboxPolicy) -> Result<(), SandboxError> {
     linux::probe(policy)
@@ -112,6 +152,19 @@ fn platform_spawn(
     spec: CommandSpec,
 ) -> Result<SupervisedChild, SandboxSpawnError> {
     linux::spawn(policy, spec)
+}
+
+#[cfg(target_os = "linux")]
+fn platform_probe_command(policy: CommandSandboxPolicy) -> Result<(), SandboxError> {
+    linux::probe_command(policy)
+}
+
+#[cfg(target_os = "linux")]
+fn platform_spawn_command(
+    policy: CommandSandboxPolicy,
+    spec: CommandSpec,
+) -> Result<SupervisedChild, SandboxSpawnError> {
+    linux::spawn_command(policy, spec)
 }
 
 #[cfg(target_os = "macos")]
@@ -127,6 +180,19 @@ fn platform_spawn(
     macos::spawn(policy, spec)
 }
 
+#[cfg(target_os = "macos")]
+fn platform_probe_command(policy: CommandSandboxPolicy) -> Result<(), SandboxError> {
+    macos::probe_command(policy)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_spawn_command(
+    policy: CommandSandboxPolicy,
+    spec: CommandSpec,
+) -> Result<SupervisedChild, SandboxSpawnError> {
+    macos::spawn_command(policy, spec)
+}
+
 #[cfg(windows)]
 fn platform_probe(policy: SandboxPolicy) -> Result<(), SandboxError> {
     windows::probe(policy)
@@ -140,6 +206,19 @@ fn platform_spawn(
     windows::spawn(policy, spec)
 }
 
+#[cfg(windows)]
+fn platform_probe_command(policy: CommandSandboxPolicy) -> Result<(), SandboxError> {
+    windows::probe_command(policy)
+}
+
+#[cfg(windows)]
+fn platform_spawn_command(
+    policy: CommandSandboxPolicy,
+    spec: CommandSpec,
+) -> Result<SupervisedChild, SandboxSpawnError> {
+    windows::spawn_command(policy, spec)
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn platform_probe(_policy: SandboxPolicy) -> Result<(), SandboxError> {
     Err(SandboxError::unsupported())
@@ -148,6 +227,19 @@ fn platform_probe(_policy: SandboxPolicy) -> Result<(), SandboxError> {
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn platform_spawn(
     _policy: SandboxPolicy,
+    _spec: CommandSpec,
+) -> Result<SupervisedChild, SandboxSpawnError> {
+    Err(SandboxSpawnError::Sandbox(SandboxError::unsupported()))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn platform_probe_command(_policy: CommandSandboxPolicy) -> Result<(), SandboxError> {
+    Err(SandboxError::unsupported())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn platform_spawn_command(
+    _policy: CommandSandboxPolicy,
     _spec: CommandSpec,
 ) -> Result<SupervisedChild, SandboxSpawnError> {
     Err(SandboxSpawnError::Sandbox(SandboxError::unsupported()))

@@ -124,6 +124,18 @@ impl SupervisedChild {
 }
 
 pub fn spawn_supervised(spec: CommandSpec) -> io::Result<SupervisedChild> {
+    spawn_supervised_inner(spec, false)
+}
+
+#[cfg(unix)]
+pub(crate) fn spawn_supervised_sanitized(spec: CommandSpec) -> io::Result<SupervisedChild> {
+    spawn_supervised_inner(spec, true)
+}
+
+fn spawn_supervised_inner(
+    spec: CommandSpec,
+    #[cfg_attr(not(unix), allow(unused_variables))] sanitize_descriptors: bool,
+) -> io::Result<SupervisedChild> {
     let mut command = std::process::Command::new(spec.command);
     command
         .args(spec.arguments)
@@ -133,7 +145,7 @@ pub fn spawn_supervised(spec: CommandSpec) -> io::Result<SupervisedChild> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    configure_process_group(&mut command);
+    configure_process_group(&mut command, sanitize_descriptors)?;
     command.spawn().map(|child| SupervisedChild {
         #[cfg(not(windows))]
         child,
@@ -143,10 +155,23 @@ pub fn spawn_supervised(spec: CommandSpec) -> io::Result<SupervisedChild> {
 }
 
 #[cfg(unix)]
-fn configure_process_group(command: &mut std::process::Command) {
+fn configure_process_group(
+    command: &mut std::process::Command,
+    sanitize_descriptors: bool,
+) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
+    #[cfg(target_os = "macos")]
+    let max_descriptor = if sanitize_descriptors {
+        let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+        if limit < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        i32::try_from(limit).unwrap_or(i32::MAX)
+    } else {
+        0
+    };
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
@@ -154,13 +179,55 @@ fn configure_process_group(command: &mut std::process::Command) {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
                 return Err(io::Error::last_os_error());
             }
+            if sanitize_descriptors {
+                sanitize_inherited_descriptors(
+                    #[cfg(target_os = "macos")]
+                    max_descriptor,
+                )?;
+            }
             Ok(())
         });
     }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn configure_process_group(_command: &mut std::process::Command) {}
+fn configure_process_group(
+    _command: &mut std::process::Command,
+    _sanitize_descriptors: bool,
+) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn sanitize_inherited_descriptors() -> io::Result<()> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            3u32,
+            u32::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        )
+    };
+    if result == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn sanitize_inherited_descriptors(max_descriptor: i32) -> io::Result<()> {
+    for descriptor in 3..max_descriptor {
+        let result = unsafe { libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC) };
+        if result == -1 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EBADF) {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
 
 #[cfg(unix)]
 fn terminate_process_tree(child: &mut std::process::Child) {

@@ -84,6 +84,7 @@ use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::UpdateProcThreadAttribute;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
+use crate::CommandSandboxPolicy;
 use crate::CommandSpec;
 use crate::SandboxError;
 use crate::SandboxPolicy;
@@ -118,6 +119,21 @@ pub(crate) fn spawn(
     match policy {
         SandboxPolicy::FilesystemReadOnlyV1 => spawn_filesystem_read_only(spec),
     }
+}
+
+pub(crate) fn probe_command(_policy: CommandSandboxPolicy) -> Result<(), SandboxError> {
+    Err(SandboxError::unavailable(
+        "networkDeniedV1 is unavailable on Windows",
+    ))
+}
+
+pub(crate) fn spawn_command(
+    _policy: CommandSandboxPolicy,
+    _spec: CommandSpec,
+) -> Result<SupervisedChild, SandboxSpawnError> {
+    Err(SandboxSpawnError::Sandbox(SandboxError::unavailable(
+        "networkDeniedV1 is unavailable on Windows",
+    )))
 }
 
 pub(crate) struct WindowsChild {
