@@ -65,6 +65,7 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             cwd,
             environment_policy,
             sandboxed,
+            sandbox_policy,
         } => DurableItemSnapshot::CommandApprovalRequest {
             id: item.id.clone(),
             approval_id: approval_id.clone(),
@@ -74,6 +75,7 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             cwd: cwd.clone(),
             environment_policy: environment_policy.clone(),
             sandboxed: *sandboxed,
+            sandbox_policy: sandbox_policy.map(|policy| policy.to_string()),
         },
         CoreItemKind::CommandApprovalDecision {
             approval_id,
@@ -148,6 +150,7 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
             cwd,
             environment_policy,
             sandboxed,
+            sandbox_policy,
         } => ItemKind::CommandApprovalRequest {
             approval_id: approval_id.clone(),
             call_id: call_id.clone(),
@@ -156,6 +159,7 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
             cwd: cwd.clone(),
             environment_policy: environment_policy.clone(),
             sandboxed: *sandboxed,
+            sandbox_policy: *sandbox_policy,
         },
         CoreItemKind::CommandApprovalDecision {
             approval_id,
@@ -288,6 +292,7 @@ pub(super) fn core_tool_error_kind(kind: &str) -> sugarcode_protocol::CoreToolEr
         "commandNotFound" => CoreToolErrorKind::CommandNotFound,
         "spawnFailed" => CoreToolErrorKind::SpawnFailed,
         "processControlUnavailable" => CoreToolErrorKind::ProcessControlUnavailable,
+        "sandboxUnavailable" => CoreToolErrorKind::SandboxUnavailable,
         _ => CoreToolErrorKind::Unavailable,
     }
 }

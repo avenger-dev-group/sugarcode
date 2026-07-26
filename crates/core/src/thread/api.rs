@@ -260,6 +260,7 @@ impl CoreApi for Core {
                         cwd,
                         environment_policy,
                         sandboxed,
+                        sandbox_policy,
                         ..
                     } => DurableItemSnapshot::CommandApprovalRequest {
                         id: ItemId::new(format!("item_{item_sequence:016}")),
@@ -270,6 +271,7 @@ impl CoreApi for Core {
                         cwd: cwd.clone(),
                         environment_policy: environment_policy.clone(),
                         sandboxed: *sandboxed,
+                        sandbox_policy: sandbox_policy.clone(),
                     },
                     DurableItemSnapshot::CommandApprovalDecision {
                         approval_id,

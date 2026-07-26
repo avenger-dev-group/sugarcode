@@ -54,6 +54,9 @@ jobs:
       - name: Check TypeScript workspace
         run: pnpm check
 
+      - name: Test native filesystem read-only sandbox
+        run: cargo test -p sugarcode-sandbox --test filesystem_read_only --locked -- --nocapture
+
       - name: Test Rust workspace
         run: cargo test --workspace --locked
 

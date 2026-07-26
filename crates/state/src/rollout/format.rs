@@ -148,6 +148,8 @@ pub(super) enum StoredItemRef<'a> {
         cwd: &'a str,
         environment_policy: &'a str,
         sandboxed: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sandbox_policy: Option<&'a str>,
     },
     CommandApprovalDecision {
         id: &'a str,
@@ -257,6 +259,7 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 cwd,
                 environment_policy,
                 sandboxed,
+                sandbox_policy,
             } => Self::CommandApprovalRequest {
                 id: id.as_str(),
                 approval_id,
@@ -266,6 +269,7 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 cwd,
                 environment_policy,
                 sandboxed: *sandboxed,
+                sandbox_policy: sandbox_policy.as_deref(),
             },
             DurableItemSnapshot::CommandApprovalDecision {
                 id,
@@ -568,6 +572,8 @@ enum StoredItem {
         cwd: String,
         environment_policy: String,
         sandboxed: bool,
+        #[serde(default)]
+        sandbox_policy: Option<String>,
     },
     CommandApprovalDecision {
         id: String,
@@ -1025,6 +1031,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             cwd,
             environment_policy,
             sandboxed,
+            sandbox_policy,
         } => DurableItemSnapshot::CommandApprovalRequest {
             id: ItemId::new(id),
             approval_id,
@@ -1034,6 +1041,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             cwd,
             environment_policy,
             sandboxed,
+            sandbox_policy,
         },
         StoredItem::CommandApprovalDecision {
             id,

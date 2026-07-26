@@ -2058,6 +2058,7 @@ version = "1.0.0"
 dependencies = [
  "landlock",
  "libc",
+ "serde",
  "tempfile",
  "windows-sys 0.61.2",
 ]

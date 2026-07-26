@@ -48,7 +48,7 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
         definitions.push(ModelToolDefinition {
             name: "shell/exec".to_string(),
             description:
-                "Execute one exact absolute program and argv in the workspace root after per-command approval. This is not a shell and is not sandboxed."
+                "Execute one exact absolute program and argv in the workspace root after per-command approval. This is not a shell. Filesystem reads are allowed, filesystem writes are denied, and network access is unchanged."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",

@@ -150,6 +150,7 @@ pub enum DurableItemSnapshot {
         cwd: String,
         environment_policy: String,
         sandboxed: bool,
+        sandbox_policy: Option<String>,
     },
     CommandApprovalDecision {
         id: ItemId,

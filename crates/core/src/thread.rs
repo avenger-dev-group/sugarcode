@@ -220,6 +220,7 @@ enum ItemKind {
         cwd: String,
         environment_policy: String,
         sandboxed: bool,
+        sandbox_policy: Option<sugarcode_protocol::CoreCommandSandboxPolicy>,
     },
     CommandApprovalDecision {
         approval_id: String,
@@ -325,6 +326,7 @@ impl Item {
                 cwd,
                 environment_policy,
                 sandboxed,
+                sandbox_policy,
             } => CoreItemKind::CommandApprovalRequest {
                 approval_id: approval_id.clone(),
                 call_id: call_id.clone(),
@@ -333,6 +335,7 @@ impl Item {
                 cwd: cwd.clone(),
                 environment_policy: environment_policy.clone(),
                 sandboxed: *sandboxed,
+                sandbox_policy: *sandbox_policy,
             },
             ItemKind::CommandApprovalDecision {
                 approval_id,
@@ -595,6 +598,7 @@ impl Core {
                         cwd,
                         environment_policy,
                         sandboxed,
+                        sandbox_policy,
                     } => Item {
                         id: id.clone(),
                         state: ItemState::Completed,
@@ -606,6 +610,7 @@ impl Core {
                             cwd: cwd.clone(),
                             environment_policy: environment_policy.clone(),
                             sandboxed: *sandboxed,
+                            sandbox_policy: command_sandbox_policy(sandbox_policy.as_deref()),
                         },
                     },
                     DurableItemSnapshot::CommandApprovalDecision {
@@ -1131,6 +1136,17 @@ impl Core {
 impl Default for Core {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn command_sandbox_policy(
+    value: Option<&str>,
+) -> Option<sugarcode_protocol::CoreCommandSandboxPolicy> {
+    match value {
+        Some("filesystemReadOnlyV1") => {
+            Some(sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1)
+        }
+        Some(_) | None => None,
     }
 }
 

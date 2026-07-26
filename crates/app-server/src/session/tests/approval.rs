@@ -25,7 +25,15 @@ async fn command_approval_request_correlates_one_client_response() {
             .as_ref()
             .and_then(|params| params.get("sandboxed"))
             .and_then(Value::as_bool),
-        Some(false)
+        Some(true)
+    );
+    assert_eq!(
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("sandboxPolicy"))
+            .and_then(Value::as_str),
+        Some("filesystemReadOnlyV1")
     );
 
     assert!(
@@ -98,6 +106,7 @@ fn request(approval_id: &str) -> CommandApprovalRequest {
         arguments: vec!["hello".to_string()],
         cwd: ".".to_string(),
         environment_policy: "minimalV1".to_string(),
-        sandboxed: false,
+        sandboxed: true,
+        sandbox_policy: sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1,
     }
 }

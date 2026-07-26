@@ -200,7 +200,8 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             arguments: vec!["ok".to_string()],
             cwd: ".".to_string(),
             environment_policy: "minimalV1".to_string(),
-            sandboxed: false,
+            sandboxed: true,
+            sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
         },
         DurableItemSnapshot::CommandApprovalDecision {
             id: ItemId::new("item_0000000000000004"),

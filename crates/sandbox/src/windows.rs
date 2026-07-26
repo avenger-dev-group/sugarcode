@@ -11,6 +11,8 @@ use std::ptr::null;
 use std::ptr::null_mut;
 
 use windows_sys::Win32::Foundation::CloseHandle;
+use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+use windows_sys::Win32::Foundation::ERROR_PATH_NOT_FOUND;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
 use windows_sys::Win32::Foundation::SetHandleInformation;
@@ -71,11 +73,7 @@ const INFINITE: u32 = u32::MAX;
 
 pub(crate) fn probe(policy: SandboxPolicy) -> Result<(), SandboxError> {
     match policy {
-        SandboxPolicy::FilesystemReadOnlyV1 => {
-            RestrictedToken::new().map(|_| ()).map_err(|error| {
-                SandboxError::unavailable(format!("Windows restricted token unavailable: {error}"))
-            })
-        }
+        SandboxPolicy::FilesystemReadOnlyV1 => probe_filesystem_read_only(),
     }
 }
 
@@ -180,7 +178,13 @@ fn spawn_filesystem_read_only(spec: CommandSpec) -> Result<SupervisedChild, Sand
         )
     };
     if created == 0 {
-        return Err(SandboxSpawnError::Process(io::Error::last_os_error()));
+        let error = io::Error::last_os_error();
+        return Err(match error.raw_os_error().map(|code| code as u32) {
+            Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => {
+                SandboxSpawnError::Process(error)
+            }
+            _ => sandbox_setup_error(error),
+        });
     }
     let process_handle = OwnedHandle::new(process.hProcess);
     let thread_handle = OwnedHandle::new(process.hThread);
@@ -207,6 +211,41 @@ fn spawn_filesystem_read_only(spec: CommandSpec) -> Result<SupervisedChild, Sand
         stdout: stdout.into_parent_file(),
         stderr: stderr.into_parent_file(),
     }))
+}
+
+fn probe_filesystem_read_only() -> Result<(), SandboxError> {
+    let system_root = std::env::var_os("SYSTEMROOT")
+        .ok_or_else(|| SandboxError::unavailable("Windows SYSTEMROOT is unavailable"))?;
+    let command = std::path::PathBuf::from(&system_root)
+        .join("System32")
+        .join("cmd.exe")
+        .to_string_lossy()
+        .into_owned();
+    let cwd = std::env::current_dir().map_err(|error| {
+        SandboxError::unavailable(format!("Windows sandbox probe cwd unavailable: {error}"))
+    })?;
+    let environment = ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"]
+        .into_iter()
+        .filter_map(|name| {
+            std::env::var_os(name).map(|value| (std::ffi::OsString::from(name), value))
+        })
+        .collect();
+    let mut child = spawn_filesystem_read_only(CommandSpec {
+        command,
+        arguments: vec!["/D".to_owned(), "/C".to_owned(), "exit 0".to_owned()],
+        cwd,
+        environment,
+    })
+    .map_err(|error| SandboxError::unavailable(format!("Windows sandbox unavailable: {error}")))?;
+    let status = child.wait().map_err(|error| {
+        SandboxError::unavailable(format!("Windows sandbox probe failed: {error}"))
+    })?;
+    if !status.success() {
+        return Err(SandboxError::unavailable(
+            "Windows sandbox probe process failed",
+        ));
+    }
+    Ok(())
 }
 
 fn sandbox_setup_error(error: io::Error) -> SandboxSpawnError {

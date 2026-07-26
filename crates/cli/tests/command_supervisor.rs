@@ -9,7 +9,8 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn hidden_supervisor_executes_one_absolute_argv_command() {
-    let executor = NativeShellCommandExecutor::new(PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")));
+    let executor = NativeShellCommandExecutor::new(PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")))
+        .expect("native read-only sandbox");
     let execution = executor
         .execute(test_command(), CancellationToken::new())
         .await;
@@ -28,7 +29,8 @@ async fn hidden_supervisor_executes_one_absolute_argv_command() {
 #[tokio::test]
 async fn cancellation_terminates_a_descendant_that_holds_output_pipes() {
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_sugarcode"));
-    let executor = NativeShellCommandExecutor::new(executable.clone());
+    let executor =
+        NativeShellCommandExecutor::new(executable.clone()).expect("native read-only sandbox");
     let cancellation = CancellationToken::new();
     let command = cancellation_tree_command(&executable);
     let execution = executor.execute(command, cancellation.clone());
@@ -40,6 +42,66 @@ async fn cancellation_terminates_a_descendant_that_holds_output_pipes() {
         .expect("complete process-tree cancellation")
         .expect("executor task");
     assert_eq!(execution, ShellCommandExecution::Cancelled);
+}
+
+#[tokio::test]
+async fn approved_command_cannot_write_workspace_files() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let target = workspace.path().join("target.txt");
+    std::fs::write(&target, "original").expect("write fixture");
+    let executor = NativeShellCommandExecutor::new(PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")))
+        .expect("native read-only sandbox");
+    let execution = executor
+        .execute(
+            write_command(workspace.path(), &target),
+            CancellationToken::new(),
+        )
+        .await;
+    let ShellCommandExecution::Completed(output) = execution else {
+        panic!("expected completed denied write, got {execution:?}");
+    };
+    assert!(matches!(
+        output.outcome,
+        ShellCommandOutcome::ExitCode { code } if code != 0
+    ));
+    assert_eq!(
+        std::fs::read_to_string(target).expect("read unchanged fixture"),
+        "original"
+    );
+}
+
+#[cfg(unix)]
+fn write_command(cwd: &Path, target: &Path) -> ShellCommandArguments {
+    ShellCommandArguments {
+        command: "/bin/sh".to_string(),
+        arguments: vec![
+            "-c".to_string(),
+            "printf changed > \"$1\"".to_string(),
+            "sugarcode-test".to_string(),
+            target.to_string_lossy().into_owned(),
+        ],
+        cwd: cwd.to_path_buf(),
+    }
+}
+
+#[cfg(windows)]
+fn write_command(cwd: &Path, target: &Path) -> ShellCommandArguments {
+    let system_root = std::env::var_os("SYSTEMROOT")
+        .map(PathBuf::from)
+        .expect("SYSTEMROOT is available");
+    ShellCommandArguments {
+        command: system_root
+            .join("System32")
+            .join("cmd.exe")
+            .to_string_lossy()
+            .into_owned(),
+        arguments: vec![
+            "/D".to_string(),
+            "/C".to_string(),
+            format!("echo changed>\"{}\"", target.display()),
+        ],
+        cwd: cwd.to_path_buf(),
+    }
 }
 
 #[cfg(unix)]

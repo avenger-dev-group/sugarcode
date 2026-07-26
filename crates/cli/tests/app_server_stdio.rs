@@ -302,6 +302,8 @@ fn real_cli_approval_executes_the_exact_bundled_argv() {
     loop {
         let message = read_json(&mut stdout);
         if message["method"] == "item/commandExecution/requestApproval" {
+            assert_eq!(message["params"]["sandboxed"], true);
+            assert_eq!(message["params"]["sandboxPolicy"], "filesystemReadOnlyV1");
             send_json(
                 &mut stdin,
                 json!({

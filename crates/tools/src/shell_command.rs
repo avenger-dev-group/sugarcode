@@ -71,6 +71,7 @@ pub enum ShellCommandErrorKind {
     AccessDenied,
     SpawnFailed,
     ProcessControlUnavailable,
+    SandboxUnavailable,
     Unavailable,
 }
 
@@ -82,6 +83,7 @@ impl fmt::Display for ShellCommandErrorKind {
             Self::AccessDenied => "accessDenied",
             Self::SpawnFailed => "spawnFailed",
             Self::ProcessControlUnavailable => "processControlUnavailable",
+            Self::SandboxUnavailable => "sandboxUnavailable",
             Self::Unavailable => "unavailable",
         })
     }
@@ -98,13 +100,18 @@ pub trait ShellCommandExecutor: fmt::Debug + Send + Sync {
 #[derive(Debug, Clone)]
 pub struct NativeShellCommandExecutor {
     supervisor_executable: PathBuf,
+    sandbox_policy: sugarcode_sandbox::SandboxPolicy,
 }
 
 impl NativeShellCommandExecutor {
-    pub fn new(supervisor_executable: PathBuf) -> Self {
-        Self {
+    pub fn new(supervisor_executable: PathBuf) -> Result<Self, sugarcode_sandbox::SandboxError> {
+        let adapter = sugarcode_sandbox::SandboxAdapter::probe(
+            sugarcode_sandbox::SandboxPolicy::FilesystemReadOnlyV1,
+        )?;
+        Ok(Self {
             supervisor_executable,
-        }
+            sandbox_policy: adapter.policy(),
+        })
     }
 }
 
@@ -115,6 +122,7 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
         cancellation: CancellationToken,
     ) -> ShellCommandFuture {
         let executable = self.supervisor_executable.clone();
+        let sandbox_policy = self.sandbox_policy;
         Box::pin(async move {
             if validate_arguments(&arguments).is_err() {
                 return ShellCommandExecution::Error(ShellCommandErrorKind::InvalidArguments);
@@ -123,6 +131,7 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
                 command: arguments.command,
                 arguments: arguments.arguments,
                 cwd: arguments.cwd,
+                sandbox_policy,
             };
             run_native(executable, request, cancellation).await
         })
@@ -135,6 +144,7 @@ struct SupervisorRequest {
     command: String,
     arguments: Vec<String>,
     cwd: PathBuf,
+    sandbox_policy: sugarcode_sandbox::SandboxPolicy,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -302,13 +312,16 @@ fn execute_supervised(
 ) -> Result<ShellCommandOutput, ShellCommandErrorKind> {
     let environment = minimal_environment();
     let started = Instant::now();
-    let mut child = sugarcode_sandbox::spawn_supervised(sugarcode_sandbox::CommandSpec {
-        command: request.command,
-        arguments: request.arguments,
-        cwd: request.cwd,
-        environment,
-    })
-    .map_err(|error| map_spawn_error(&error))?;
+    let adapter = sugarcode_sandbox::SandboxAdapter::probe(request.sandbox_policy)
+        .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
+    let mut child = adapter
+        .spawn(sugarcode_sandbox::CommandSpec {
+            command: request.command,
+            arguments: request.arguments,
+            cwd: request.cwd,
+            environment,
+        })
+        .map_err(map_sandbox_spawn_error)?;
     let stdout = child
         .take_stdout()
         .ok_or(ShellCommandErrorKind::Unavailable)?;
@@ -394,6 +407,7 @@ fn validate_arguments(arguments: &ShellCommandArguments) -> Result<(), ShellComm
         command: arguments.command.clone(),
         arguments: arguments.arguments.clone(),
         cwd: arguments.cwd.clone(),
+        sandbox_policy: sugarcode_sandbox::SandboxPolicy::FilesystemReadOnlyV1,
     };
     validate_request(&request)
 }
@@ -440,6 +454,15 @@ fn map_spawn_error(error: &std::io::Error) -> ShellCommandErrorKind {
         std::io::ErrorKind::NotFound => ShellCommandErrorKind::CommandNotFound,
         std::io::ErrorKind::PermissionDenied => ShellCommandErrorKind::AccessDenied,
         _ => ShellCommandErrorKind::SpawnFailed,
+    }
+}
+
+fn map_sandbox_spawn_error(error: sugarcode_sandbox::SandboxSpawnError) -> ShellCommandErrorKind {
+    match error {
+        sugarcode_sandbox::SandboxSpawnError::Sandbox(_) => {
+            ShellCommandErrorKind::SandboxUnavailable
+        }
+        sugarcode_sandbox::SandboxSpawnError::Process(error) => map_spawn_error(&error),
     }
 }
 

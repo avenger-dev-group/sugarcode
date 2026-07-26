@@ -85,17 +85,30 @@ pub async fn run_stdio(
                 };
             if let Some(shell_cwd) = shell_cwd {
                 let executable = std::env::current_exe()?;
-                CoreRuntime::new_with_shell(
-                    core,
-                    provider,
-                    model.model().to_string(),
-                    workspace_read,
-                    workspace_list,
-                    workspace_search,
-                    Arc::new(sugarcode_tools::NativeShellCommandExecutor::new(executable)),
-                    Arc::new(approval_requester),
-                    shell_cwd,
-                )
+                match sugarcode_tools::NativeShellCommandExecutor::new(executable) {
+                    Ok(shell_executor) => CoreRuntime::new_with_shell(
+                        core,
+                        provider,
+                        model.model().to_string(),
+                        workspace_read,
+                        workspace_list,
+                        workspace_search,
+                        Arc::new(shell_executor),
+                        Arc::new(approval_requester),
+                        shell_cwd,
+                    ),
+                    Err(_) => {
+                        eprintln!("sugarcode: shell/exec unavailable: sandboxUnavailable");
+                        CoreRuntime::new_with_workspace_search(
+                            core,
+                            provider,
+                            model.model().to_string(),
+                            workspace_read,
+                            workspace_list,
+                            workspace_search,
+                        )
+                    }
+                }
             } else {
                 CoreRuntime::new_with_workspace_search(
                     core,

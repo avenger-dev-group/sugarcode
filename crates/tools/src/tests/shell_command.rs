@@ -38,3 +38,16 @@ fn bounded_reader_keeps_prefix_and_observed_byte_count() {
     );
     assert!(output.truncated);
 }
+
+#[test]
+fn sandbox_unavailable_is_a_stable_supervisor_error() {
+    assert_eq!(
+        serde_json::to_string(&ShellCommandErrorKind::SandboxUnavailable)
+            .expect("serialize sandbox error"),
+        r#""sandboxUnavailable""#
+    );
+    assert_eq!(
+        ShellCommandErrorKind::SandboxUnavailable.to_string(),
+        "sandboxUnavailable"
+    );
+}

@@ -1,5 +1,6 @@
 use serde_json::json;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
+use sugarcode_app_server_protocol::CommandSandboxPolicy;
 use sugarcode_app_server_protocol::ERROR_PARSE;
 use sugarcode_app_server_protocol::FileChangeKind;
 use sugarcode_app_server_protocol::FileChangeNewlineStyle;
@@ -583,7 +584,8 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             arguments: vec!["ok".to_string()],
             cwd: ".".to_string(),
             environment_policy: "minimalV1".to_string(),
-            sandboxed: false,
+            sandboxed: true,
+            sandbox_policy: Some(CommandSandboxPolicy::FilesystemReadOnlyV1),
         })
         .expect("approval request serializes"),
         json!({
@@ -595,7 +597,8 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             "arguments": ["ok"],
             "cwd": ".",
             "environmentPolicy": "minimalV1",
-            "sandboxed": false
+            "sandboxed": true,
+            "sandboxPolicy": "filesystemReadOnlyV1"
         })
     );
     assert_eq!(

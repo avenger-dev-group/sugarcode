@@ -739,7 +739,10 @@ async fn run_turn(
                                 arguments: arguments.arguments.clone(),
                                 cwd: arguments.cwd.clone(),
                                 environment_policy: "minimalV1".to_string(),
-                                sandboxed: false,
+                                sandboxed: true,
+                                sandbox_policy: Some(
+                                    sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1,
+                                ),
                             },
                         )
                         .await
@@ -760,7 +763,9 @@ async fn run_turn(
                                 arguments: arguments.arguments.clone(),
                                 cwd: arguments.cwd.clone(),
                                 environment_policy: "minimalV1".to_string(),
-                                sandboxed: false,
+                                sandboxed: true,
+                                sandbox_policy:
+                                    sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1,
                             });
                         let approval = tokio::select! {
                             biased;
@@ -1258,6 +1263,7 @@ fn shell_execution_result(execution: ShellCommandExecution) -> Option<(CoreToolR
                 ShellCommandErrorKind::ProcessControlUnavailable => {
                     CoreToolErrorKind::ProcessControlUnavailable
                 }
+                ShellCommandErrorKind::SandboxUnavailable => CoreToolErrorKind::SandboxUnavailable,
                 ShellCommandErrorKind::Unavailable => CoreToolErrorKind::Unavailable,
             },
         },

@@ -178,6 +178,16 @@
         "id": {
           "type": "string"
         },
+        "sandboxPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandSandboxPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "sandboxed": {
           "type": "boolean"
         },
@@ -252,6 +262,12 @@
     }
   ],
   "$defs": {
+    "CommandSandboxPolicy": {
+      "type": "string",
+      "enum": [
+        "filesystemReadOnlyV1"
+      ]
+    },
     "FileChangeKind": {
       "type": "string",
       "enum": [

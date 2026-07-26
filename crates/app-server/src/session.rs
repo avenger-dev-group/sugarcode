@@ -188,6 +188,11 @@ where
             approval_scope: "command".to_string(),
             environment_policy: pending.request.environment_policy,
             sandboxed: pending.request.sandboxed,
+            sandbox_policy: match pending.request.sandbox_policy {
+                sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1 => {
+                    sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
+                }
+            },
         };
         self.pending_approvals.insert(id.clone(), pending.response);
         Some(JsonRpcMessage::Request(JsonRpcRequest {

@@ -3,6 +3,7 @@ use crate::ClientInfo;
 use crate::CommandApprovalParams;
 use crate::CommandApprovalResponse;
 use crate::CommandApprovalResponseDecision;
+use crate::CommandSandboxPolicy;
 use crate::FileChangeKind;
 use crate::FileChangeNewlineStyle;
 use crate::InitializeCapabilities;
@@ -82,6 +83,7 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         ServerCapabilities::decl(),
         InitializeResponse::decl(),
         CommandApprovalResponseDecision::decl(),
+        CommandSandboxPolicy::decl(),
         CommandApprovalParams::decl(),
         CommandApprovalResponse::decl(),
         FileChangeKind::decl(),

@@ -304,6 +304,7 @@ fn map_snapshot_parts(
                             cwd,
                             environment_policy,
                             sandboxed,
+                            sandbox_policy,
                         } => PublicItem::CommandApprovalRequest {
                             id: id.into_string(),
                             approval_id,
@@ -313,6 +314,7 @@ fn map_snapshot_parts(
                             cwd,
                             environment_policy,
                             sandboxed,
+                            sandbox_policy: public_sandbox_policy(sandbox_policy.as_deref()),
                         },
                         DurableItemSnapshot::CommandApprovalDecision {
                             id,
@@ -506,6 +508,7 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             cwd,
             environment_policy,
             sandboxed,
+            sandbox_policy,
         } => PublicItem::CommandApprovalRequest {
             id: item.id.into_string(),
             approval_id,
@@ -515,6 +518,11 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             cwd,
             environment_policy,
             sandboxed,
+            sandbox_policy: sandbox_policy.map(|policy| match policy {
+                sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1 => {
+                    sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
+                }
+            }),
         },
         CoreItemKind::CommandApprovalDecision {
             approval_id,
@@ -592,6 +600,17 @@ fn map_durable_tool_result(result: sugarcode_state::DurableToolResult) -> Public
                 }
             },
         },
+    }
+}
+
+fn public_sandbox_policy(
+    policy: Option<&str>,
+) -> Option<sugarcode_app_server_protocol::CommandSandboxPolicy> {
+    match policy {
+        Some("filesystemReadOnlyV1") => {
+            Some(sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1)
+        }
+        Some(_) | None => None,
     }
 }
 

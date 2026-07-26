@@ -66,6 +66,7 @@ pub enum CoreItemKind {
         cwd: String,
         environment_policy: String,
         sandboxed: bool,
+        sandbox_policy: Option<CoreCommandSandboxPolicy>,
     },
     CommandApprovalDecision {
         approval_id: String,
@@ -126,6 +127,19 @@ pub enum CoreCommandApprovalDecision {
     ClientDisconnected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreCommandSandboxPolicy {
+    FilesystemReadOnlyV1,
+}
+
+impl fmt::Display for CoreCommandSandboxPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::FilesystemReadOnlyV1 => "filesystemReadOnlyV1",
+        })
+    }
+}
+
 impl fmt::Display for CoreCommandApprovalDecision {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -174,6 +188,7 @@ pub enum CoreToolErrorKind {
     CommandNotFound,
     SpawnFailed,
     ProcessControlUnavailable,
+    SandboxUnavailable,
     Unavailable,
 }
 
@@ -213,6 +228,7 @@ impl fmt::Display for CoreToolErrorKind {
             Self::CommandNotFound => "commandNotFound",
             Self::SpawnFailed => "spawnFailed",
             Self::ProcessControlUnavailable => "processControlUnavailable",
+            Self::SandboxUnavailable => "sandboxUnavailable",
             Self::Unavailable => "unavailable",
         })
     }

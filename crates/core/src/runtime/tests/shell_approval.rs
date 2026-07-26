@@ -124,7 +124,11 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                 arguments: Some(arguments),
                 ..
             },
-            sugarcode_state::DurableItemSnapshot::CommandApprovalRequest { .. },
+            sugarcode_state::DurableItemSnapshot::CommandApprovalRequest {
+                sandboxed: true,
+                sandbox_policy: Some(sandbox_policy),
+                ..
+            },
             sugarcode_state::DurableItemSnapshot::CommandApprovalDecision {
                 decision,
                 ..
@@ -136,6 +140,7 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
         ] if command == &test_absolute_command()
             && arguments == &["approved output".to_string()]
+            && sandbox_policy == "filesystemReadOnlyV1"
             && decision == "approved"
     ));
     let fork = runtime

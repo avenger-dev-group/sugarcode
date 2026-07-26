@@ -3,6 +3,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::CommandSandboxPolicy;
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type", rename_all = "camelCase")]
@@ -74,6 +76,11 @@ pub enum Item {
         #[ts(rename = "environmentPolicy")]
         environment_policy: String,
         sandboxed: bool,
+        #[serde(rename = "sandboxPolicy")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "sandboxPolicy")]
+        #[ts(optional)]
+        sandbox_policy: Option<CommandSandboxPolicy>,
     },
     CommandApprovalDecision {
         id: String,

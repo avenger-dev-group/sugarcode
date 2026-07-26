@@ -14,6 +14,7 @@ pub struct CommandApprovalRequest {
     pub cwd: String,
     pub environment_policy: String,
     pub sandboxed: bool,
+    pub sandbox_policy: sugarcode_protocol::CoreCommandSandboxPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
