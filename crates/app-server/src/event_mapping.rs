@@ -254,12 +254,44 @@ fn map_snapshot_parts(
                             name,
                             path,
                             query,
+                            command,
+                            arguments,
                         } => PublicItem::ToolCall {
                             id: id.into_string(),
                             call_id,
                             name,
                             path,
                             query,
+                            command,
+                            arguments,
+                        },
+                        DurableItemSnapshot::CommandApprovalRequest {
+                            id,
+                            approval_id,
+                            call_id,
+                            command,
+                            arguments,
+                            cwd,
+                            environment_policy,
+                            sandboxed,
+                        } => PublicItem::CommandApprovalRequest {
+                            id: id.into_string(),
+                            approval_id,
+                            call_id,
+                            command,
+                            arguments,
+                            cwd,
+                            environment_policy,
+                            sandboxed,
+                        },
+                        DurableItemSnapshot::CommandApprovalDecision {
+                            id,
+                            approval_id,
+                            decision,
+                        } => PublicItem::CommandApprovalDecision {
+                            id: id.into_string(),
+                            approval_id,
+                            decision,
                         },
                         DurableItemSnapshot::ToolResult {
                             id,
@@ -393,12 +425,42 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             name,
             path,
             query,
+            command,
+            arguments,
         } => PublicItem::ToolCall {
             id: item.id.into_string(),
             call_id,
             name,
             path,
             query,
+            command,
+            arguments,
+        },
+        CoreItemKind::CommandApprovalRequest {
+            approval_id,
+            call_id,
+            command,
+            arguments,
+            cwd,
+            environment_policy,
+            sandboxed,
+        } => PublicItem::CommandApprovalRequest {
+            id: item.id.into_string(),
+            approval_id,
+            call_id,
+            command,
+            arguments,
+            cwd,
+            environment_policy,
+            sandboxed,
+        },
+        CoreItemKind::CommandApprovalDecision {
+            approval_id,
+            decision,
+        } => PublicItem::CommandApprovalDecision {
+            id: item.id.into_string(),
+            approval_id,
+            decision: decision.to_string(),
         },
         CoreItemKind::ToolResult {
             call_id,
@@ -415,6 +477,27 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
                 sugarcode_protocol::CoreToolResult::Error { kind } => PublicToolResult::Error {
                     kind: kind.to_string(),
                 },
+                sugarcode_protocol::CoreToolResult::Process(process) => PublicToolResult::Process {
+                    stdout: process.stdout,
+                    stderr: process.stderr,
+                    stdout_bytes: process.stdout_bytes,
+                    stderr_bytes: process.stderr_bytes,
+                    stdout_truncated: process.stdout_truncated,
+                    stderr_truncated: process.stderr_truncated,
+                    encoding: process.encoding,
+                    duration_ms: process.duration_ms,
+                    outcome: match process.outcome {
+                        sugarcode_protocol::CoreProcessOutcome::ExitCode { code } => {
+                            sugarcode_app_server_protocol::ProcessOutcome::ExitCode { code }
+                        }
+                        sugarcode_protocol::CoreProcessOutcome::Signal { signal } => {
+                            sugarcode_app_server_protocol::ProcessOutcome::Signal { signal }
+                        }
+                        sugarcode_protocol::CoreProcessOutcome::TimedOut => {
+                            sugarcode_app_server_protocol::ProcessOutcome::TimedOut
+                        }
+                    },
+                },
             },
         },
     }
@@ -426,6 +509,27 @@ fn map_durable_tool_result(result: sugarcode_state::DurableToolResult) -> Public
             PublicToolResult::Success { content, bytes }
         }
         sugarcode_state::DurableToolResult::Error { kind } => PublicToolResult::Error { kind },
+        sugarcode_state::DurableToolResult::Process(process) => PublicToolResult::Process {
+            stdout: process.stdout,
+            stderr: process.stderr,
+            stdout_bytes: process.stdout_bytes,
+            stderr_bytes: process.stderr_bytes,
+            stdout_truncated: process.stdout_truncated,
+            stderr_truncated: process.stderr_truncated,
+            encoding: process.encoding,
+            duration_ms: process.duration_ms,
+            outcome: match process.outcome {
+                sugarcode_state::DurableProcessOutcome::ExitCode { code } => {
+                    sugarcode_app_server_protocol::ProcessOutcome::ExitCode { code }
+                }
+                sugarcode_state::DurableProcessOutcome::Signal { signal } => {
+                    sugarcode_app_server_protocol::ProcessOutcome::Signal { signal }
+                }
+                sugarcode_state::DurableProcessOutcome::TimedOut => {
+                    sugarcode_app_server_protocol::ProcessOutcome::TimedOut
+                }
+            },
+        },
     }
 }
 

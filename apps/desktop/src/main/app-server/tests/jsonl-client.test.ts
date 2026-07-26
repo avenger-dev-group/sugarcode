@@ -14,7 +14,7 @@ const initializeParams = {
 };
 
 const initializeResult = {
-  capabilities: {},
+  capabilities: { commandApprovals: true },
   platform: {
     family: 'unix',
     os: 'macos',
@@ -58,6 +58,33 @@ class ManualBackpressureWriter extends Writable {
 }
 
 describe('JsonlClient', () => {
+  it('writes a correlated response to one server request', async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const client = new JsonlClient({
+      stdin,
+      stdout,
+      onServerRequest: (request) => {
+        void client.respond(request.id, { decision: 'denied' });
+      },
+    });
+
+    const responseLine = readLine(stdin);
+    stdout.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'approval/one',
+        method: 'item/commandExecution/requestApproval',
+        params: {},
+      })}\n`,
+    );
+
+    await expect(responseLine).resolves.toContain(
+      '"id":"approval/one","result":{"decision":"denied"}',
+    );
+    client.close();
+  });
+
   it('frames partial and multi-line chunks and preserves initialize order', async () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();

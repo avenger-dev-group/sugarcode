@@ -219,6 +219,30 @@ async fn run_native(
             read_response.abort();
             return ShellCommandExecution::Cancelled;
         }
+        _ = tokio::time::sleep(COMMAND_TIMEOUT) => {
+            let _ = stdin.write_all(b"{\"type\":\"cancel\"}\n").await;
+            let _ = stdin.flush().await;
+            drop(stdin);
+            #[cfg(windows)]
+            if let Some(job) = &job {
+                job.terminate();
+            }
+            if tokio::time::timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+            read_response.abort();
+            return ShellCommandExecution::Completed(ShellCommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                stdout_bytes: 0,
+                stderr_bytes: 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                duration_ms: u64::try_from(COMMAND_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+                outcome: ShellCommandOutcome::TimedOut,
+            });
+        }
         result = &mut read_response => match result {
             Ok(result) => result,
             Err(_) => {

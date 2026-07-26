@@ -42,6 +42,21 @@ pub enum CoreItemKind {
         name: String,
         path: String,
         query: Option<String>,
+        command: Option<String>,
+        arguments: Option<Vec<String>>,
+    },
+    CommandApprovalRequest {
+        approval_id: String,
+        call_id: String,
+        command: String,
+        arguments: Vec<String>,
+        cwd: String,
+        environment_policy: String,
+        sandboxed: bool,
+    },
+    CommandApprovalDecision {
+        approval_id: String,
+        decision: CoreCommandApprovalDecision,
     },
     ToolResult {
         call_id: String,
@@ -54,6 +69,50 @@ pub enum CoreItemKind {
 pub enum CoreToolResult {
     Success { content: String, bytes: u64 },
     Error { kind: CoreToolErrorKind },
+    Process(CoreProcessResult),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreProcessResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub encoding: String,
+    pub duration_ms: u64,
+    pub outcome: CoreProcessOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreProcessOutcome {
+    ExitCode { code: i64 },
+    Signal { signal: i32 },
+    TimedOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreCommandApprovalDecision {
+    Approved,
+    Denied,
+    TimedOut,
+    Unsupported,
+    Cancelled,
+    ClientDisconnected,
+}
+
+impl fmt::Display for CoreCommandApprovalDecision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::TimedOut => "timedOut",
+            Self::Unsupported => "unsupported",
+            Self::Cancelled => "cancelled",
+            Self::ClientDisconnected => "clientDisconnected",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +135,12 @@ pub enum CoreToolErrorKind {
     SearchTimedOut,
     ChangedDuringSearch,
     ResultTooLarge,
+    ApprovalUnsupported,
+    ApprovalDenied,
+    ApprovalTimedOut,
+    CommandNotFound,
+    SpawnFailed,
+    ProcessControlUnavailable,
     Unavailable,
 }
 
@@ -100,6 +165,12 @@ impl fmt::Display for CoreToolErrorKind {
             Self::SearchTimedOut => "searchTimedOut",
             Self::ChangedDuringSearch => "changedDuringSearch",
             Self::ResultTooLarge => "resultTooLarge",
+            Self::ApprovalUnsupported => "approvalUnsupported",
+            Self::ApprovalDenied => "approvalDenied",
+            Self::ApprovalTimedOut => "approvalTimedOut",
+            Self::CommandNotFound => "commandNotFound",
+            Self::SpawnFailed => "spawnFailed",
+            Self::ProcessControlUnavailable => "processControlUnavailable",
             Self::Unavailable => "unavailable",
         })
     }

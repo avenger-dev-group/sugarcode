@@ -134,6 +134,180 @@ fn workspace_search_tool_lifecycle_matches_golden_trace() {
 }
 
 #[test]
+fn denied_shell_approval_matches_bidirectional_golden_trace() {
+    let command = env!("CARGO_BIN_EXE_sugarcode");
+    let arguments = serde_json::to_string(&json!({
+        "command": command,
+        "arguments": [],
+        "cwd": "."
+    }))
+    .expect("shell arguments");
+    let tool_call = format!(
+        "data: {}\n\ndata: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n",
+        json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_shell_fixture",
+                        "type": "function",
+                        "function": {
+                            "name": "shell/exec",
+                            "arguments": arguments
+                        }
+                    }]
+                },
+                "finish_reason": Value::Null
+            }]
+        })
+    );
+    let final_answer = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Command denied.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    )
+    .to_string();
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("create isolated workspace");
+    let _provider =
+        MockProvider::start_with_owned_bodies(sugarcode_home.path(), vec![tool_call, final_answer]);
+    run_golden(
+        "turn-shell-approval-denied",
+        &sugarcode_home,
+        Some(workspace.path()),
+    );
+}
+
+#[test]
+fn real_cli_approval_executes_the_exact_bundled_argv() {
+    let command = env!("CARGO_BIN_EXE_sugarcode");
+    let arguments = serde_json::to_string(&json!({
+        "command": command,
+        "arguments": ["version"],
+        "cwd": "."
+    }))
+    .expect("shell arguments");
+    let tool_call = format!(
+        "data: {}\n\ndata: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n",
+        json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_shell_real",
+                        "type": "function",
+                        "function": {
+                            "name": "shell/exec",
+                            "arguments": arguments
+                        }
+                    }]
+                },
+                "finish_reason": Value::Null
+            }]
+        })
+    );
+    let final_answer = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Version checked.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    )
+    .to_string();
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("isolated workspace");
+    let _provider =
+        MockProvider::start_with_owned_bodies(home.path(), vec![tool_call, final_answer]);
+    let mut child = Command::new(command)
+        .args(["app-server", "--stdio", "--workspace"])
+        .arg(workspace.path())
+        .env("SUGARCODE_HOME", home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn app-server");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {"name": "shell-real-test", "version": "1.0.0"},
+                "capabilities": {"commandApprovals": true}
+            }
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "initialize");
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "initialized"}),
+    );
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": "thread", "method": "thread/start"}),
+    );
+    let thread = read_json(&mut stdout);
+    let thread_id = thread["result"]["thread"]["id"]
+        .as_str()
+        .expect("thread id")
+        .to_string();
+    assert_eq!(read_json(&mut stdout)["method"], "thread/started");
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn",
+            "method": "turn/start",
+            "params": {"threadId": thread_id, "input": "Check version"}
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "turn");
+
+    let mut process_result = None;
+    loop {
+        let message = read_json(&mut stdout);
+        if message["method"] == "item/commandExecution/requestApproval" {
+            send_json(
+                &mut stdin,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": message["id"].clone(),
+                    "result": {"decision": "approved"}
+                }),
+            );
+        }
+        if message["method"] == "item/completed"
+            && message["params"]["item"]["type"] == "toolResult"
+        {
+            process_result = Some(message["params"]["item"]["result"].clone());
+        }
+        if message["method"] == "turn/completed" {
+            assert_eq!(message["params"]["turn"]["status"], "completed");
+            break;
+        }
+    }
+    let process_result = process_result.expect("process result");
+    assert_eq!(process_result["type"], "process");
+    assert_eq!(process_result["outcome"]["type"], "exitCode");
+    assert_eq!(process_result["outcome"]["code"], 0);
+    assert!(
+        process_result["stdout"]
+            .as_str()
+            .expect("stdout")
+            .contains("sugarcode 1.0.0")
+    );
+    drop(stdin);
+    let output = child.wait_with_output().expect("wait app-server");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
 fn missing_model_still_serves_threads_and_returns_stable_turn_error() {
     let home = tempfile::tempdir().expect("isolated SugarCode home");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
@@ -585,15 +759,27 @@ fn run_golden(name: &str, sugarcode_home: &tempfile::TempDir, workspace: Option<
         .collect::<Vec<_>>();
     let mut expected_index = 0usize;
     let mut actual = String::new();
-    for input_line in input.lines() {
+    let input_lines = input.lines().collect::<Vec<_>>();
+    for (input_index, input_line) in input_lines.iter().enumerate() {
         writeln!(stdin, "{input_line}").expect("write fixture input");
         stdin.flush().expect("flush fixture input");
         let expects_response = match serde_json::from_str::<Value>(input_line) {
             Err(_) => true,
-            Ok(Value::Object(object)) => object.contains_key("id"),
+            Ok(Value::Object(object)) => object.contains_key("method") && object.contains_key("id"),
             Ok(_) => true,
         };
         if !expects_response {
+            if input_index + 1 == input_lines.len() {
+                while expected_index < expected_values.len() {
+                    let mut line = String::new();
+                    assert!(
+                        stdout.read_line(&mut line).expect("read terminal output") > 0,
+                        "app-server closed before the golden terminal"
+                    );
+                    actual.push_str(&line);
+                    expected_index += 1;
+                }
+            }
             continue;
         }
         loop {
@@ -675,6 +861,30 @@ impl MockProvider {
                 }
                 let body = bodies.next().expect("recorded provider response");
                 serve_recorded_response(&mut stream, body);
+            }
+        });
+        Self {
+            address,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn start_with_owned_bodies(home: &std::path::Path, bodies: Vec<String>) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock provider");
+        let address = listener.local_addr().expect("mock provider address");
+        configure_model(home, address);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread = thread::spawn(move || {
+            let mut bodies = bodies.into_iter();
+            while !thread_stop.load(Ordering::Acquire) {
+                let (mut stream, _) = listener.accept().expect("accept provider request");
+                if thread_stop.load(Ordering::Acquire) {
+                    break;
+                }
+                let body = bodies.next().expect("recorded provider response");
+                serve_recorded_response(&mut stream, &body);
             }
         });
         Self {
@@ -892,8 +1102,31 @@ fn normalize_trace(output: &str) -> String {
                 "os": "<os>"
             });
         }
+        scrub_command_paths(&mut value);
         normalized.push_str(&serde_json::to_string(&value).expect("normalized JSON serializes"));
         normalized.push('\n');
     }
     normalized
+}
+
+fn scrub_command_paths(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                scrub_command_paths(value);
+            }
+        }
+        Value::Object(object) => {
+            if object.contains_key("command") {
+                object.insert(
+                    "command".to_string(),
+                    Value::String("<command>".to_string()),
+                );
+            }
+            for value in object.values_mut() {
+                scrub_command_paths(value);
+            }
+        }
+        _ => {}
+    }
 }

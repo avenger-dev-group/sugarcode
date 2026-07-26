@@ -22,6 +22,12 @@ struct Cli {
 enum Command {
     #[command(hide = true, name = "__command-supervisor")]
     InternalSupervisor,
+    #[cfg(debug_assertions)]
+    #[command(hide = true, name = "__command-test-tree")]
+    InternalTestTree,
+    #[cfg(debug_assertions)]
+    #[command(hide = true, name = "__command-test-leaf")]
+    InternalTestLeaf,
     /// Print product and app-server protocol versions.
     Version,
     /// Validate SugarCode's non-secret configuration.
@@ -136,6 +142,20 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::InternalSupervisor => {
             sugarcode_tools::run_shell_command_supervisor()
                 .map_err(|error| format!("command supervisor failed: {error}"))?;
+        }
+        #[cfg(debug_assertions)]
+        Command::InternalTestTree => {
+            let mut child = std::process::Command::new(std::env::current_exe()?)
+                .arg("__command-test-leaf")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()?;
+            child.wait()?;
+        }
+        #[cfg(debug_assertions)]
+        Command::InternalTestLeaf => {
+            std::thread::sleep(std::time::Duration::from_secs(60));
         }
         Command::Version => {
             println!(

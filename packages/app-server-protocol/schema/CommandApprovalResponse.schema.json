@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CommandApprovalResponse",
+  "type": "object",
+  "properties": {
+    "decision": {
+      "$ref": "#/$defs/CommandApprovalResponseDecision"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "decision"
+  ],
+  "$defs": {
+    "CommandApprovalResponseDecision": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "denied"
+      ]
+    }
+  }
+}

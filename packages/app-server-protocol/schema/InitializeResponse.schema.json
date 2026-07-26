@@ -45,7 +45,15 @@
       ]
     },
     "ServerCapabilities": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "commandApprovals": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "commandApprovals"
+      ]
     },
     "ServerInfo": {
       "type": "object",

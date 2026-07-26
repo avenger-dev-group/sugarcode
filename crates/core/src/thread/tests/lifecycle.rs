@@ -247,6 +247,8 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
             name: "workspace/search".to_string(),
             path: "src".to_string(),
             query: Some("needle".to_string()),
+            command: None,
+            arguments: None,
         },
     )
     .expect("tool call");
@@ -289,6 +291,8 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
             name: "workspace/read".to_string(),
             path: "missing.txt".to_string(),
             query: None,
+            command: None,
+            arguments: None,
         },
     )
     .expect("failed call");
@@ -319,6 +323,8 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
             name: "workspace/read".to_string(),
             path: "blocked.txt".to_string(),
             query: None,
+            command: None,
+            arguments: None,
         },
     )
     .expect("interrupted call");

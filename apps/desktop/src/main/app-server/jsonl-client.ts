@@ -118,6 +118,13 @@ export class JsonlClient {
     this.initializationState = 'ready';
   };
 
+  respond = (id: RequestId, result: JsonValue): Promise<void> =>
+    this.enqueueMessage({
+      jsonrpc: JSON_RPC_VERSION,
+      id,
+      result,
+    });
+
   close = (error: Error = new ConnectionClosedError()): void => {
     if (this.closed) {
       return;

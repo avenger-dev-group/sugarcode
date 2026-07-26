@@ -1,3 +1,6 @@
+use crate::CommandApprovalOutcome;
+use crate::CommandApprovalRequest;
+use crate::CommandApprovalRequester;
 use crate::Core;
 use crate::CoreApi;
 use crate::CoreError;
@@ -40,6 +43,11 @@ use sugarcode_state::DurableTurnError;
 use sugarcode_state::DurableTurnErrorKind;
 use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableUsage;
+use sugarcode_tools::ShellCommandArguments;
+use sugarcode_tools::ShellCommandErrorKind;
+use sugarcode_tools::ShellCommandExecution;
+use sugarcode_tools::ShellCommandExecutor;
+use sugarcode_tools::ShellCommandOutcome;
 use sugarcode_tools::WorkspaceListArguments;
 use sugarcode_tools::WorkspaceListErrorKind;
 use sugarcode_tools::WorkspaceListExecutor;
@@ -72,13 +80,16 @@ use tool_dispatch::append_completed_tool_item;
 use tool_dispatch::map_workspace_list_outcome;
 use tool_dispatch::map_workspace_read_outcome;
 use tool_dispatch::map_workspace_search_outcome;
+use tool_dispatch::serialized_shell_tool_call_bytes;
 use tool_dispatch::serialized_tool_call_bytes;
 use tool_dispatch::serialized_tool_result_bytes;
+use tool_dispatch::shell_tool_arguments;
 use tool_dispatch::workspace_tool_arguments;
 use tool_dispatch::workspace_tool_definitions;
 
 const MAX_PROVIDER_ROUNDS: u8 = 2;
 const MAX_TOOL_CALLS_PER_TURN: usize = 1;
+const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
 pub const MAX_TURN_TOOL_BYTES: usize = 400 * 1024;
 
@@ -91,6 +102,9 @@ pub struct CoreRuntime {
     workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
     workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
     workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
+    shell_executor: Option<Arc<dyn ShellCommandExecutor>>,
+    approval_requester: Option<Arc<dyn CommandApprovalRequester>>,
+    shell_cwd: Option<Arc<std::path::PathBuf>>,
     event_tx: mpsc::Sender<CoreEvent>,
     active: Arc<Mutex<BTreeMap<ThreadId, ActiveTurn>>>,
 }
@@ -188,11 +202,40 @@ impl CoreRuntime {
                 workspace_read,
                 workspace_list,
                 workspace_search,
+                shell_executor: None,
+                approval_requester: None,
+                shell_cwd: None,
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
             event_rx,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_shell(
+        core: Core,
+        provider: Arc<dyn ModelProvider>,
+        model: String,
+        workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
+        workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
+        workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
+        shell_executor: Arc<dyn ShellCommandExecutor>,
+        approval_requester: Arc<dyn CommandApprovalRequester>,
+        shell_cwd: std::path::PathBuf,
+    ) -> (Self, mpsc::Receiver<CoreEvent>) {
+        let (mut runtime, events) = Self::new_with_workspace_search(
+            core,
+            provider,
+            model,
+            workspace_read,
+            workspace_list,
+            workspace_search,
+        );
+        runtime.shell_executor = Some(shell_executor);
+        runtime.approval_requester = Some(approval_requester);
+        runtime.shell_cwd = Some(Arc::new(shell_cwd));
+        (runtime, events)
     }
 
     pub fn without_model(core: Core) -> (Self, mpsc::Receiver<CoreEvent>) {
@@ -204,6 +247,9 @@ impl CoreRuntime {
                 workspace_read: None,
                 workspace_list: None,
                 workspace_search: None,
+                shell_executor: None,
+                approval_requester: None,
+                shell_cwd: None,
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -309,7 +355,42 @@ impl CoreApi for CoreRuntime {
         let runtime = self.clone();
         let turn_id = prepared.turn_id.clone();
         tokio::spawn(async move {
-            run_turn(runtime, prepared, cancellation, terminal_state).await;
+            let timeout_runtime = runtime.clone();
+            let timeout_prepared = prepared.clone();
+            let timeout_cancellation = cancellation.clone();
+            let timeout_terminal_state = terminal_state.clone();
+            if tokio::time::timeout(
+                TURN_TIMEOUT,
+                run_turn(runtime, prepared, cancellation, terminal_state),
+            )
+            .await
+            .is_err()
+            {
+                timeout_cancellation.cancel();
+                let terminal = claim_terminal(
+                    &timeout_terminal_state,
+                    Terminal::Failed(ModelError::new(ModelErrorKind::Timeout, false)),
+                );
+                match terminal {
+                    Terminal::Interrupted => {
+                        finish_interrupted_and_emit(&timeout_runtime, &timeout_prepared, None)
+                            .await;
+                    }
+                    Terminal::Failed(error) => {
+                        finish_failed_and_emit(&timeout_runtime, &timeout_prepared, error, None)
+                            .await;
+                    }
+                    Terminal::Completed | Terminal::StateUnavailable => {
+                        finish_state_unavailable_and_emit(&timeout_runtime, &timeout_prepared)
+                            .await;
+                    }
+                }
+                clear_active(
+                    &timeout_runtime,
+                    &timeout_prepared.thread_id,
+                    &timeout_prepared.turn_id,
+                );
+            }
         });
         Ok(TurnStartOutcome::Accepted { turn_id })
     }
@@ -577,6 +658,11 @@ async fn run_turn(
                         "workspace/read" => runtime.workspace_read.is_some(),
                         "workspace/list" => runtime.workspace_list.is_some(),
                         "workspace/search" => runtime.workspace_search.is_some(),
+                        "shell/exec" => {
+                            runtime.shell_executor.is_some()
+                                && runtime.approval_requester.is_some()
+                                && runtime.shell_cwd.is_some()
+                        }
                         _ => false,
                     };
                     if !tool_available {
@@ -584,6 +670,199 @@ async fn run_turn(
                             ModelErrorKind::UnsupportedOutput,
                             false,
                         ));
+                    }
+                    if call.name == "shell/exec" {
+                        let arguments = match shell_tool_arguments(&call) {
+                            Ok(arguments) => arguments,
+                            Err(error) => break 'rounds Terminal::Failed(error),
+                        };
+                        let call_bytes = serialized_shell_tool_call_bytes(&call, &arguments);
+                        if turn_tool_bytes
+                            .checked_add(call_bytes)
+                            .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
+                        {
+                            break 'rounds Terminal::Failed(ModelError::new(
+                                ModelErrorKind::OutputTooLarge,
+                                false,
+                            ));
+                        }
+                        turn_tool_bytes += call_bytes;
+                        if append_completed_tool_item(
+                            &runtime,
+                            &prepared,
+                            CoreItemKind::ToolCall {
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                path: arguments.cwd.clone(),
+                                query: None,
+                                command: Some(arguments.command.clone()),
+                                arguments: Some(arguments.arguments.clone()),
+                            },
+                        )
+                        .await
+                        .is_none()
+                        {
+                            break 'rounds Terminal::StateUnavailable;
+                        }
+                        pending_tool_call = true;
+                        let approval_id = format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
+                        if append_completed_tool_item(
+                            &runtime,
+                            &prepared,
+                            CoreItemKind::CommandApprovalRequest {
+                                approval_id: approval_id.clone(),
+                                call_id: call.id.clone(),
+                                command: arguments.command.clone(),
+                                arguments: arguments.arguments.clone(),
+                                cwd: arguments.cwd.clone(),
+                                environment_policy: "minimalV1".to_string(),
+                                sandboxed: false,
+                            },
+                        )
+                        .await
+                        .is_none()
+                        {
+                            break 'rounds Terminal::StateUnavailable;
+                        }
+                        let approval = runtime
+                            .approval_requester
+                            .as_ref()
+                            .expect("validated approval requester")
+                            .request(CommandApprovalRequest {
+                                approval_id: approval_id.clone(),
+                                thread_id: thread_id.clone(),
+                                turn_id: turn_id.clone(),
+                                call_id: call.id.clone(),
+                                command: arguments.command.clone(),
+                                arguments: arguments.arguments.clone(),
+                                cwd: arguments.cwd.clone(),
+                                environment_policy: "minimalV1".to_string(),
+                                sandboxed: false,
+                            });
+                        let approval = tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => None,
+                            result = tokio::time::timeout(
+                                std::time::Duration::from_secs(120),
+                                approval,
+                            ) => Some(result.unwrap_or(CommandApprovalOutcome::TimedOut)),
+                        };
+                        let decision = match approval {
+                            Some(CommandApprovalOutcome::Approved) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::Approved
+                            }
+                            Some(CommandApprovalOutcome::Denied) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::Denied
+                            }
+                            Some(CommandApprovalOutcome::TimedOut) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::TimedOut
+                            }
+                            Some(CommandApprovalOutcome::Unsupported) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::Unsupported
+                            }
+                            Some(CommandApprovalOutcome::ClientDisconnected) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::ClientDisconnected
+                            }
+                            None => sugarcode_protocol::CoreCommandApprovalDecision::Cancelled,
+                        };
+                        if append_completed_tool_item(
+                            &runtime,
+                            &prepared,
+                            CoreItemKind::CommandApprovalDecision {
+                                approval_id: approval_id.clone(),
+                                decision,
+                            },
+                        )
+                        .await
+                        .is_none()
+                        {
+                            break 'rounds Terminal::StateUnavailable;
+                        }
+                        let (mut result, mut content) = match approval {
+                            None | Some(CommandApprovalOutcome::ClientDisconnected) => {
+                                break 'rounds Terminal::Interrupted;
+                            }
+                            Some(CommandApprovalOutcome::Denied) => {
+                                let result = CoreToolResult::Error {
+                                    kind: CoreToolErrorKind::ApprovalDenied,
+                                };
+                                let content = "shell/exec error: approvalDenied".to_string();
+                                (result, content)
+                            }
+                            Some(CommandApprovalOutcome::TimedOut) => {
+                                let result = CoreToolResult::Error {
+                                    kind: CoreToolErrorKind::ApprovalTimedOut,
+                                };
+                                let content = "shell/exec error: approvalTimedOut".to_string();
+                                (result, content)
+                            }
+                            Some(CommandApprovalOutcome::Unsupported) => {
+                                let result = CoreToolResult::Error {
+                                    kind: CoreToolErrorKind::ApprovalUnsupported,
+                                };
+                                let content = "shell/exec error: approvalUnsupported".to_string();
+                                (result, content)
+                            }
+                            Some(CommandApprovalOutcome::Approved) => {
+                                let execution = runtime
+                                    .shell_executor
+                                    .as_ref()
+                                    .expect("validated shell executor")
+                                    .execute(
+                                        ShellCommandArguments {
+                                            command: arguments.command.clone(),
+                                            arguments: arguments.arguments.clone(),
+                                            cwd: runtime
+                                                .shell_cwd
+                                                .as_ref()
+                                                .expect("validated shell cwd")
+                                                .as_ref()
+                                                .clone(),
+                                        },
+                                        cancellation.clone(),
+                                    )
+                                    .await;
+                                match shell_execution_result(execution) {
+                                    Some(result) => result,
+                                    None => break 'rounds Terminal::Interrupted,
+                                }
+                            }
+                        };
+                        let mut result_bytes = serialized_tool_result_bytes(&result);
+                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES
+                            || turn_tool_bytes
+                                .checked_add(result_bytes)
+                                .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
+                        {
+                            result = CoreToolResult::Error {
+                                kind: CoreToolErrorKind::ResultTooLarge,
+                            };
+                            content = "shell/exec error: resultTooLarge".to_string();
+                            result_bytes = serialized_tool_result_bytes(&result);
+                        }
+                        turn_tool_bytes += result_bytes;
+                        if append_completed_tool_item(
+                            &runtime,
+                            &prepared,
+                            CoreItemKind::ToolResult {
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                result,
+                            },
+                        )
+                        .await
+                        .is_none()
+                        {
+                            break 'rounds Terminal::StateUnavailable;
+                        }
+                        pending_tool_call = false;
+                        messages.push(ModelMessage::ToolCall(call.clone()));
+                        messages.push(ModelMessage::ToolResult {
+                            call_id: call.id,
+                            content,
+                        });
+                        round = 1;
+                        continue 'rounds;
                     }
                     let arguments = match workspace_tool_arguments(&call) {
                         Ok(arguments) => arguments,
@@ -608,6 +887,8 @@ async fn run_turn(
                             name: call.name.clone(),
                             path: arguments.path.clone(),
                             query: arguments.query.clone(),
+                            command: None,
+                            arguments: None,
                         },
                     )
                     .await
@@ -774,6 +1055,71 @@ async fn run_turn(
     clear_active(&runtime, &thread_id, &turn_id);
 }
 
+fn shell_execution_result(execution: ShellCommandExecution) -> Option<(CoreToolResult, String)> {
+    let result = match execution {
+        ShellCommandExecution::Cancelled => return None,
+        ShellCommandExecution::Error(kind) => CoreToolResult::Error {
+            kind: match kind {
+                ShellCommandErrorKind::InvalidArguments => CoreToolErrorKind::Unavailable,
+                ShellCommandErrorKind::CommandNotFound => CoreToolErrorKind::CommandNotFound,
+                ShellCommandErrorKind::AccessDenied => CoreToolErrorKind::AccessDenied,
+                ShellCommandErrorKind::SpawnFailed => CoreToolErrorKind::SpawnFailed,
+                ShellCommandErrorKind::ProcessControlUnavailable => {
+                    CoreToolErrorKind::ProcessControlUnavailable
+                }
+                ShellCommandErrorKind::Unavailable => CoreToolErrorKind::Unavailable,
+            },
+        },
+        ShellCommandExecution::Completed(output) => {
+            CoreToolResult::Process(sugarcode_protocol::CoreProcessResult {
+                stdout: output.stdout,
+                stderr: output.stderr,
+                stdout_bytes: output.stdout_bytes,
+                stderr_bytes: output.stderr_bytes,
+                stdout_truncated: output.stdout_truncated,
+                stderr_truncated: output.stderr_truncated,
+                encoding: "utf8Lossy".to_string(),
+                duration_ms: output.duration_ms,
+                outcome: match output.outcome {
+                    ShellCommandOutcome::ExitCode { code } => {
+                        sugarcode_protocol::CoreProcessOutcome::ExitCode { code }
+                    }
+                    ShellCommandOutcome::Signal { signal } => {
+                        sugarcode_protocol::CoreProcessOutcome::Signal { signal }
+                    }
+                    ShellCommandOutcome::TimedOut => {
+                        sugarcode_protocol::CoreProcessOutcome::TimedOut
+                    }
+                },
+            })
+        }
+    };
+    let content = match &result {
+        CoreToolResult::Error { kind } => format!("shell/exec error: {kind}"),
+        CoreToolResult::Process(process) => serde_json::to_string(&serde_json::json!({
+            "stdout": process.stdout,
+            "stderr": process.stderr,
+            "stdoutBytes": process.stdout_bytes,
+            "stderrBytes": process.stderr_bytes,
+            "stdoutTruncated": process.stdout_truncated,
+            "stderrTruncated": process.stderr_truncated,
+            "encoding": process.encoding,
+            "durationMs": process.duration_ms,
+            "outcome": match process.outcome {
+                sugarcode_protocol::CoreProcessOutcome::ExitCode { code } =>
+                    serde_json::json!({"type": "exitCode", "code": code}),
+                sugarcode_protocol::CoreProcessOutcome::Signal { signal } =>
+                    serde_json::json!({"type": "signal", "signal": signal}),
+                sugarcode_protocol::CoreProcessOutcome::TimedOut =>
+                    serde_json::json!({"type": "timedOut"}),
+            },
+        }))
+        .expect("shell result must serialize"),
+        CoreToolResult::Success { .. } => unreachable!("shell execution is process or error"),
+    };
+    Some((result, content))
+}
+
 fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {
     match message {
         PreparedMessage::Text { role, text } => ModelMessage::Text {
@@ -788,12 +1134,19 @@ fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {
             name,
             path,
             query,
+            command,
+            arguments,
         } => ModelMessage::ToolCall(ModelToolCall {
             id: call_id.clone(),
             name: name.clone(),
-            arguments: match query {
-                Some(query) => serde_json::json!({ "path": path, "query": query }),
-                None => serde_json::json!({ "path": path }),
+            arguments: match (command, arguments, query) {
+                (Some(command), Some(arguments), _) => serde_json::json!({
+                    "command": command,
+                    "arguments": arguments,
+                    "cwd": path,
+                }),
+                (_, _, Some(query)) => serde_json::json!({ "path": path, "query": query }),
+                _ => serde_json::json!({ "path": path }),
             },
         }),
         PreparedMessage::ToolResult { call_id, content } => ModelMessage::ToolResult {

@@ -324,6 +324,14 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                 | (
                     DurableItemSnapshot::ToolResult { .. },
                     DurableItemSnapshot::ToolResult { .. },
+                )
+                | (
+                    DurableItemSnapshot::CommandApprovalRequest { .. },
+                    DurableItemSnapshot::CommandApprovalRequest { .. },
+                )
+                | (
+                    DurableItemSnapshot::CommandApprovalDecision { .. },
+                    DurableItemSnapshot::CommandApprovalDecision { .. },
                 ) => started == terminal,
                 _ => false,
             })

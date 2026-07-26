@@ -127,6 +127,8 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
         name: "workspace/search".to_string(),
         path: "src".to_string(),
         query: Some("needle".to_string()),
+        command: None,
+        arguments: None,
     };
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
@@ -166,6 +168,102 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
             .any(|item| matches!(item, DurableItemSnapshot::ToolResult { .. }))
     );
     assert_eq!(repository.id_sequences().item, 2);
+}
+
+#[test]
+fn shell_approval_audit_and_process_result_survive_recovery() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let user = DurableItemSnapshot::UserMessage {
+        id: ItemId::new("item_0000000000000001"),
+        text: "Run it".to_string(),
+    };
+    let incremental = vec![
+        DurableItemSnapshot::ToolCall {
+            id: ItemId::new("item_0000000000000002"),
+            call_id: "call_shell".to_string(),
+            name: "shell/exec".to_string(),
+            path: ".".to_string(),
+            query: None,
+            command: Some("/bin/echo".to_string()),
+            arguments: Some(vec!["ok".to_string()]),
+        },
+        DurableItemSnapshot::CommandApprovalRequest {
+            id: ItemId::new("item_0000000000000003"),
+            approval_id: "approval/one".to_string(),
+            call_id: "call_shell".to_string(),
+            command: "/bin/echo".to_string(),
+            arguments: vec!["ok".to_string()],
+            cwd: ".".to_string(),
+            environment_policy: "minimalV1".to_string(),
+            sandboxed: false,
+        },
+        DurableItemSnapshot::CommandApprovalDecision {
+            id: ItemId::new("item_0000000000000004"),
+            approval_id: "approval/one".to_string(),
+            decision: "approved".to_string(),
+        },
+        DurableItemSnapshot::ToolResult {
+            id: ItemId::new("item_0000000000000005"),
+            call_id: "call_shell".to_string(),
+            name: "shell/exec".to_string(),
+            result: DurableToolResult::Process(DurableProcessResult {
+                stdout: "ok\n".to_string(),
+                stderr: String::new(),
+                stdout_bytes: 3,
+                stderr_bytes: 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                encoding: "utf8Lossy".to_string(),
+                duration_ms: 2,
+                outcome: DurableProcessOutcome::ExitCode { code: 0 },
+            }),
+        },
+    ];
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(
+                &thread_id,
+                &DurableTurnSnapshot {
+                    id: turn_id.clone(),
+                    status: DurableTurnStatus::InProgress,
+                    items: vec![user.clone()],
+                    error: None,
+                    usage: None,
+                },
+            )
+            .expect("turn start");
+        for item in &incremental {
+            repository
+                .append_turn_item(&thread_id, &turn_id, item)
+                .expect("append shell item");
+        }
+        let mut items = vec![user.clone()];
+        items.extend(incremental.clone());
+        repository
+            .finish_turn(
+                &thread_id,
+                &DurableTurnSnapshot {
+                    id: turn_id.clone(),
+                    status: DurableTurnStatus::Completed,
+                    items,
+                    error: None,
+                    usage: None,
+                },
+            )
+            .expect("finish shell turn");
+    }
+
+    let repository = RolloutRepository::open(&home).expect("reopen");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.turns[0].items[1..], incremental);
 }
 
 #[test]

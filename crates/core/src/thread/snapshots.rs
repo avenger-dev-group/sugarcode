@@ -15,12 +15,42 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             name,
             path,
             query,
+            command,
+            arguments,
         } => DurableItemSnapshot::ToolCall {
             id: item.id.clone(),
             call_id: call_id.clone(),
             name: name.clone(),
             path: path.clone(),
             query: query.clone(),
+            command: command.clone(),
+            arguments: arguments.clone(),
+        },
+        CoreItemKind::CommandApprovalRequest {
+            approval_id,
+            call_id,
+            command,
+            arguments,
+            cwd,
+            environment_policy,
+            sandboxed,
+        } => DurableItemSnapshot::CommandApprovalRequest {
+            id: item.id.clone(),
+            approval_id: approval_id.clone(),
+            call_id: call_id.clone(),
+            command: command.clone(),
+            arguments: arguments.clone(),
+            cwd: cwd.clone(),
+            environment_policy: environment_policy.clone(),
+            sandboxed: *sandboxed,
+        },
+        CoreItemKind::CommandApprovalDecision {
+            approval_id,
+            decision,
+        } => DurableItemSnapshot::CommandApprovalDecision {
+            id: item.id.clone(),
+            approval_id: approval_id.clone(),
+            decision: decision.to_string(),
         },
         CoreItemKind::ToolResult {
             call_id,
@@ -44,11 +74,39 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
             name,
             path,
             query,
+            command,
+            arguments,
         } => ItemKind::ToolCall {
             call_id: call_id.clone(),
             name: name.clone(),
             path: path.clone(),
             query: query.clone(),
+            command: command.clone(),
+            arguments: arguments.clone(),
+        },
+        CoreItemKind::CommandApprovalRequest {
+            approval_id,
+            call_id,
+            command,
+            arguments,
+            cwd,
+            environment_policy,
+            sandboxed,
+        } => ItemKind::CommandApprovalRequest {
+            approval_id: approval_id.clone(),
+            call_id: call_id.clone(),
+            command: command.clone(),
+            arguments: arguments.clone(),
+            cwd: cwd.clone(),
+            environment_policy: environment_policy.clone(),
+            sandboxed: *sandboxed,
+        },
+        CoreItemKind::CommandApprovalDecision {
+            approval_id,
+            decision,
+        } => ItemKind::CommandApprovalDecision {
+            approval_id: approval_id.clone(),
+            decision: *decision,
         },
         CoreItemKind::ToolResult {
             call_id,
@@ -76,6 +134,29 @@ pub(super) fn durable_tool_result(result: &CoreToolResult) -> DurableToolResult 
         CoreToolResult::Error { kind } => DurableToolResult::Error {
             kind: kind.to_string(),
         },
+        CoreToolResult::Process(process) => {
+            DurableToolResult::Process(sugarcode_state::DurableProcessResult {
+                stdout: process.stdout.clone(),
+                stderr: process.stderr.clone(),
+                stdout_bytes: process.stdout_bytes,
+                stderr_bytes: process.stderr_bytes,
+                stdout_truncated: process.stdout_truncated,
+                stderr_truncated: process.stderr_truncated,
+                encoding: process.encoding.clone(),
+                duration_ms: process.duration_ms,
+                outcome: match process.outcome {
+                    sugarcode_protocol::CoreProcessOutcome::ExitCode { code } => {
+                        sugarcode_state::DurableProcessOutcome::ExitCode { code }
+                    }
+                    sugarcode_protocol::CoreProcessOutcome::Signal { signal } => {
+                        sugarcode_state::DurableProcessOutcome::Signal { signal }
+                    }
+                    sugarcode_protocol::CoreProcessOutcome::TimedOut => {
+                        sugarcode_state::DurableProcessOutcome::TimedOut
+                    }
+                },
+            })
+        }
     }
 }
 
@@ -88,6 +169,29 @@ pub(super) fn core_tool_result(result: &DurableToolResult) -> CoreToolResult {
         DurableToolResult::Error { kind } => CoreToolResult::Error {
             kind: core_tool_error_kind(kind),
         },
+        DurableToolResult::Process(process) => {
+            CoreToolResult::Process(sugarcode_protocol::CoreProcessResult {
+                stdout: process.stdout.clone(),
+                stderr: process.stderr.clone(),
+                stdout_bytes: process.stdout_bytes,
+                stderr_bytes: process.stderr_bytes,
+                stdout_truncated: process.stdout_truncated,
+                stderr_truncated: process.stderr_truncated,
+                encoding: process.encoding.clone(),
+                duration_ms: process.duration_ms,
+                outcome: match process.outcome {
+                    sugarcode_state::DurableProcessOutcome::ExitCode { code } => {
+                        sugarcode_protocol::CoreProcessOutcome::ExitCode { code }
+                    }
+                    sugarcode_state::DurableProcessOutcome::Signal { signal } => {
+                        sugarcode_protocol::CoreProcessOutcome::Signal { signal }
+                    }
+                    sugarcode_state::DurableProcessOutcome::TimedOut => {
+                        sugarcode_protocol::CoreProcessOutcome::TimedOut
+                    }
+                },
+            })
+        }
     }
 }
 
@@ -113,6 +217,12 @@ pub(super) fn core_tool_error_kind(kind: &str) -> sugarcode_protocol::CoreToolEr
         "searchTimedOut" => CoreToolErrorKind::SearchTimedOut,
         "changedDuringSearch" => CoreToolErrorKind::ChangedDuringSearch,
         "resultTooLarge" => CoreToolErrorKind::ResultTooLarge,
+        "approvalUnsupported" => CoreToolErrorKind::ApprovalUnsupported,
+        "approvalDenied" => CoreToolErrorKind::ApprovalDenied,
+        "approvalTimedOut" => CoreToolErrorKind::ApprovalTimedOut,
+        "commandNotFound" => CoreToolErrorKind::CommandNotFound,
+        "spawnFailed" => CoreToolErrorKind::SpawnFailed,
+        "processControlUnavailable" => CoreToolErrorKind::ProcessControlUnavailable,
         _ => CoreToolErrorKind::Unavailable,
     }
 }
@@ -121,6 +231,25 @@ pub(super) fn tool_result_content(name: &str, result: &CoreToolResult) -> String
     match result {
         CoreToolResult::Success { content, .. } => content.clone(),
         CoreToolResult::Error { kind } => format!("{name} error: {kind}"),
+        CoreToolResult::Process(process) => serde_json::to_string(&serde_json::json!({
+            "stdout": process.stdout,
+            "stderr": process.stderr,
+            "stdoutBytes": process.stdout_bytes,
+            "stderrBytes": process.stderr_bytes,
+            "stdoutTruncated": process.stdout_truncated,
+            "stderrTruncated": process.stderr_truncated,
+            "encoding": process.encoding,
+            "durationMs": process.duration_ms,
+            "outcome": match process.outcome {
+                sugarcode_protocol::CoreProcessOutcome::ExitCode { code } =>
+                    serde_json::json!({"type": "exitCode", "code": code}),
+                sugarcode_protocol::CoreProcessOutcome::Signal { signal } =>
+                    serde_json::json!({"type": "signal", "signal": signal}),
+                sugarcode_protocol::CoreProcessOutcome::TimedOut =>
+                    serde_json::json!({"type": "timedOut"}),
+            },
+        }))
+        .expect("process result must serialize"),
     }
 }
 

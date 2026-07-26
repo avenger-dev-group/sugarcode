@@ -13,6 +13,7 @@ pub use shell_command::ShellCommandArguments;
 pub use shell_command::ShellCommandErrorKind;
 pub use shell_command::ShellCommandExecution;
 pub use shell_command::ShellCommandExecutor;
+pub use shell_command::ShellCommandFuture;
 pub use shell_command::ShellCommandOutcome;
 pub use shell_command::ShellCommandOutput;
 pub use shell_command::run_shell_command_supervisor;

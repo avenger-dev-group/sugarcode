@@ -17,7 +17,10 @@ pub struct ClientInfo {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
-pub struct InitializeCapabilities {}
+pub struct InitializeCapabilities {
+    #[serde(default)]
+    pub command_approvals: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +53,9 @@ pub struct PlatformInfo {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
-pub struct ServerCapabilities {}
+pub struct ServerCapabilities {
+    pub command_approvals: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

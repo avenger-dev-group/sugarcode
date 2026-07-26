@@ -24,6 +24,8 @@ pub use home::SugarCodeHome;
 pub use home::resolve_sugarcode_home;
 pub use home::resolve_sugarcode_home_from_process;
 pub use rollout::DurableItemSnapshot;
+pub use rollout::DurableProcessOutcome;
+pub use rollout::DurableProcessResult;
 pub use rollout::DurableThreadLifecycle;
 pub use rollout::DurableThreadPage;
 pub use rollout::DurableThreadSnapshot;

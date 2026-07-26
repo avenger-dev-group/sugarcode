@@ -39,6 +39,112 @@
         "type",
         "kind"
       ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "durationMs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "encoding": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/ProcessOutcome"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "stderrBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stderrTruncated": {
+          "type": "boolean"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stdoutBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stdoutTruncated": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string",
+          "const": "process"
+        }
+      },
+      "required": [
+        "type",
+        "stdout",
+        "stderr",
+        "stdoutBytes",
+        "stderrBytes",
+        "stdoutTruncated",
+        "stderrTruncated",
+        "encoding",
+        "durationMs",
+        "outcome"
+      ]
     }
-  ]
+  ],
+  "$defs": {
+    "ProcessOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "type": {
+              "type": "string",
+              "const": "exitCode"
+            }
+          },
+          "required": [
+            "type",
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "signal": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "type": {
+              "type": "string",
+              "const": "signal"
+            }
+          },
+          "required": [
+            "type",
+            "signal"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "timedOut"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    }
+  }
 }

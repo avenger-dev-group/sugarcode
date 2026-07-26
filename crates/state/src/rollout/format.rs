@@ -119,6 +119,25 @@ pub(super) enum StoredItemRef<'a> {
         path: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         query: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        command: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        arguments: Option<&'a [String]>,
+    },
+    CommandApprovalRequest {
+        id: &'a str,
+        approval_id: &'a str,
+        call_id: &'a str,
+        command: &'a str,
+        arguments: &'a [String],
+        cwd: &'a str,
+        environment_policy: &'a str,
+        sandboxed: bool,
+    },
+    CommandApprovalDecision {
+        id: &'a str,
+        approval_id: &'a str,
+        decision: &'a str,
     },
     ToolResult {
         id: &'a str,
@@ -131,8 +150,32 @@ pub(super) enum StoredItemRef<'a> {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(super) enum StoredToolResultRef<'a> {
-    Success { content: &'a str, bytes: u64 },
-    Error { kind: &'a str },
+    Success {
+        content: &'a str,
+        bytes: u64,
+    },
+    Error {
+        kind: &'a str,
+    },
+    Process {
+        stdout: &'a str,
+        stderr: &'a str,
+        stdout_bytes: u64,
+        stderr_bytes: u64,
+        stdout_truncated: bool,
+        stderr_truncated: bool,
+        encoding: &'a str,
+        duration_ms: u64,
+        outcome: StoredProcessOutcomeRef,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(super) enum StoredProcessOutcomeRef {
+    ExitCode { code: i64 },
+    Signal { signal: i32 },
+    TimedOut,
 }
 
 impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
@@ -152,12 +195,44 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 name,
                 path,
                 query,
+                command,
+                arguments,
             } => Self::ToolCall {
                 id: id.as_str(),
                 call_id,
                 name,
                 path,
                 query: query.as_deref(),
+                command: command.as_deref(),
+                arguments: arguments.as_deref(),
+            },
+            DurableItemSnapshot::CommandApprovalRequest {
+                id,
+                approval_id,
+                call_id,
+                command,
+                arguments,
+                cwd,
+                environment_policy,
+                sandboxed,
+            } => Self::CommandApprovalRequest {
+                id: id.as_str(),
+                approval_id,
+                call_id,
+                command,
+                arguments,
+                cwd,
+                environment_policy,
+                sandboxed: *sandboxed,
+            },
+            DurableItemSnapshot::CommandApprovalDecision {
+                id,
+                approval_id,
+                decision,
+            } => Self::CommandApprovalDecision {
+                id: id.as_str(),
+                approval_id,
+                decision,
             },
             DurableItemSnapshot::ToolResult {
                 id,
@@ -174,6 +249,27 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                         bytes: *bytes,
                     },
                     DurableToolResult::Error { kind } => StoredToolResultRef::Error { kind },
+                    DurableToolResult::Process(process) => StoredToolResultRef::Process {
+                        stdout: &process.stdout,
+                        stderr: &process.stderr,
+                        stdout_bytes: process.stdout_bytes,
+                        stderr_bytes: process.stderr_bytes,
+                        stdout_truncated: process.stdout_truncated,
+                        stderr_truncated: process.stderr_truncated,
+                        encoding: &process.encoding,
+                        duration_ms: process.duration_ms,
+                        outcome: match process.outcome {
+                            super::DurableProcessOutcome::ExitCode { code } => {
+                                StoredProcessOutcomeRef::ExitCode { code }
+                            }
+                            super::DurableProcessOutcome::Signal { signal } => {
+                                StoredProcessOutcomeRef::Signal { signal }
+                            }
+                            super::DurableProcessOutcome::TimedOut => {
+                                StoredProcessOutcomeRef::TimedOut
+                            }
+                        },
+                    },
                 },
             },
         }
@@ -401,6 +497,25 @@ enum StoredItem {
         path: String,
         #[serde(default)]
         query: Option<String>,
+        #[serde(default)]
+        command: Option<String>,
+        #[serde(default)]
+        arguments: Option<Vec<String>>,
+    },
+    CommandApprovalRequest {
+        id: String,
+        approval_id: String,
+        call_id: String,
+        command: String,
+        arguments: Vec<String>,
+        cwd: String,
+        environment_policy: String,
+        sandboxed: bool,
+    },
+    CommandApprovalDecision {
+        id: String,
+        approval_id: String,
+        decision: String,
     },
     ToolResult {
         id: String,
@@ -413,8 +528,32 @@ enum StoredItem {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum StoredToolResult {
-    Success { content: String, bytes: u64 },
-    Error { kind: String },
+    Success {
+        content: String,
+        bytes: u64,
+    },
+    Error {
+        kind: String,
+    },
+    Process {
+        stdout: String,
+        stderr: String,
+        stdout_bytes: u64,
+        stderr_bytes: u64,
+        stdout_truncated: bool,
+        stderr_truncated: bool,
+        encoding: String,
+        duration_ms: u64,
+        outcome: StoredProcessOutcome,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+enum StoredProcessOutcome {
+    ExitCode { code: i64 },
+    Signal { signal: i32 },
+    TimedOut,
 }
 
 #[derive(Debug, Deserialize)]
@@ -782,12 +921,44 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             name,
             path,
             query,
+            command,
+            arguments,
         } => DurableItemSnapshot::ToolCall {
             id: ItemId::new(id),
             call_id,
             name,
             path,
             query,
+            command,
+            arguments,
+        },
+        StoredItem::CommandApprovalRequest {
+            id,
+            approval_id,
+            call_id,
+            command,
+            arguments,
+            cwd,
+            environment_policy,
+            sandboxed,
+        } => DurableItemSnapshot::CommandApprovalRequest {
+            id: ItemId::new(id),
+            approval_id,
+            call_id,
+            command,
+            arguments,
+            cwd,
+            environment_policy,
+            sandboxed,
+        },
+        StoredItem::CommandApprovalDecision {
+            id,
+            approval_id,
+            decision,
+        } => DurableItemSnapshot::CommandApprovalDecision {
+            id: ItemId::new(id),
+            approval_id,
+            decision,
         },
         StoredItem::ToolResult {
             id,
@@ -803,6 +974,35 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
                     DurableToolResult::Success { content, bytes }
                 }
                 StoredToolResult::Error { kind } => DurableToolResult::Error { kind },
+                StoredToolResult::Process {
+                    stdout,
+                    stderr,
+                    stdout_bytes,
+                    stderr_bytes,
+                    stdout_truncated,
+                    stderr_truncated,
+                    encoding,
+                    duration_ms,
+                    outcome,
+                } => DurableToolResult::Process(super::DurableProcessResult {
+                    stdout,
+                    stderr,
+                    stdout_bytes,
+                    stderr_bytes,
+                    stdout_truncated,
+                    stderr_truncated,
+                    encoding,
+                    duration_ms,
+                    outcome: match outcome {
+                        StoredProcessOutcome::ExitCode { code } => {
+                            super::DurableProcessOutcome::ExitCode { code }
+                        }
+                        StoredProcessOutcome::Signal { signal } => {
+                            super::DurableProcessOutcome::Signal { signal }
+                        }
+                        StoredProcessOutcome::TimedOut => super::DurableProcessOutcome::TimedOut,
+                    },
+                }),
             },
         },
     }

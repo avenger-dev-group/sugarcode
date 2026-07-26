@@ -1,5 +1,5 @@
 {"error":{"code":-32001,"message":"Not initialized"},"id":"pre-init","jsonrpc":"2.0"}
-{"id":1,"jsonrpc":"2.0","result":{"capabilities":{},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
+{"id":1,"jsonrpc":"2.0","result":{"capabilities":{"commandApprovals":true},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
 {"error":{"code":-32602,"message":"Invalid params"},"id":"bad-missing","jsonrpc":"2.0"}
 {"error":{"code":-32602,"message":"Invalid params"},"id":"bad-null","jsonrpc":"2.0"}
 {"error":{"code":-32602,"message":"Invalid params"},"id":"bad-array","jsonrpc":"2.0"}

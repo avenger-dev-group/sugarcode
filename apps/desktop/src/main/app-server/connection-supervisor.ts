@@ -221,8 +221,17 @@ export class ConnectionSupervisor {
     this.client = new JsonlClient({
       stdin: this.child.stdin,
       stdout: this.child.stdout,
-      onServerRequest: () => {
-        this.failAndTerminate('protocol-invalid');
+      onServerRequest: (request) => {
+        if (
+          request.method !== 'item/commandExecution/requestApproval' ||
+          !this.client
+        ) {
+          this.failAndTerminate('protocol-invalid');
+          return;
+        }
+        void this.client
+          .respond(request.id, { decision: 'denied' })
+          .catch(() => this.failAndTerminate('write-failed'));
       },
       onFatalError: () => {
         this.failAndTerminate('protocol-invalid');
@@ -245,7 +254,9 @@ export class ConnectionSupervisor {
         title: 'SugarCode Desktop',
         version: this.options.clientVersion,
       },
-      capabilities: {},
+      capabilities: {
+        commandApprovals: true,
+      },
     };
 
     try {

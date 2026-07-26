@@ -1,5 +1,8 @@
 use crate::AgentMessageDeltaNotification;
 use crate::ClientInfo;
+use crate::CommandApprovalParams;
+use crate::CommandApprovalResponse;
+use crate::CommandApprovalResponseDecision;
 use crate::InitializeCapabilities;
 use crate::InitializeParams;
 use crate::InitializeResponse;
@@ -14,6 +17,7 @@ use crate::JsonRpcRequest;
 use crate::JsonRpcResponse;
 use crate::JsonRpcVersion;
 use crate::PlatformInfo;
+use crate::ProcessOutcome;
 use crate::RequestId;
 use crate::ServerCapabilities;
 use crate::ServerInfo;
@@ -75,6 +79,10 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         PlatformInfo::decl(),
         ServerCapabilities::decl(),
         InitializeResponse::decl(),
+        CommandApprovalResponseDecision::decl(),
+        CommandApprovalParams::decl(),
+        CommandApprovalResponse::decl(),
+        ProcessOutcome::decl(),
         ToolResult::decl(),
         Item::decl(),
         ItemStartedNotification::decl(),
@@ -154,6 +162,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("InitializeResponse.schema.json"),
         &schema_for!(InitializeResponse),
+    )?;
+    write_schema(
+        out_dir.join("CommandApprovalParams.schema.json"),
+        &schema_for!(CommandApprovalParams),
+    )?;
+    write_schema(
+        out_dir.join("CommandApprovalResponse.schema.json"),
+        &schema_for!(CommandApprovalResponse),
     )?;
     write_schema(
         out_dir.join("ToolResult.schema.json"),

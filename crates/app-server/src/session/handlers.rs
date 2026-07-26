@@ -40,6 +40,10 @@ where
         {
             return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None);
         }
+        self.command_approvals = params
+            .capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.command_approvals);
 
         let response = InitializeResponse {
             protocol_version: PROTOCOL_VERSION,
@@ -52,7 +56,9 @@ where
                 os: std::env::consts::OS.to_string(),
                 arch: std::env::consts::ARCH.to_string(),
             },
-            capabilities: ServerCapabilities::default(),
+            capabilities: ServerCapabilities {
+                command_approvals: true,
+            },
         };
         let result = serde_json::to_value(response).expect("initialize response must serialize");
         self.state = SessionState::AwaitingInitialized;

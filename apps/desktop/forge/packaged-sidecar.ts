@@ -271,7 +271,7 @@ const verifyHandshake = async (
           title: 'SugarCode Desktop Package',
           version: SUGARCODE_PRODUCT_VERSION,
         },
-        capabilities: {},
+        capabilities: { commandApprovals: true },
       },
       AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
     );

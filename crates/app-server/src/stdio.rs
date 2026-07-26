@@ -1,4 +1,5 @@
 use crate::Session;
+use crate::approval::PendingCommandApproval;
 use std::io;
 use tokio::io::AsyncBufRead;
 use tokio::io::AsyncBufReadExt;
@@ -20,8 +21,38 @@ where
 pub async fn serve_with_events<R, W, C>(
     reader: R,
     writer: W,
+    session: Session<C>,
+    events: mpsc::Receiver<sugarcode_protocol::CoreEvent>,
+) -> io::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
+    C: sugarcode_core::CoreApi,
+{
+    serve_with_optional_approvals(reader, writer, session, events, None).await
+}
+
+pub(crate) async fn serve_with_events_and_approvals<R, W, C>(
+    reader: R,
+    writer: W,
+    session: Session<C>,
+    events: mpsc::Receiver<sugarcode_protocol::CoreEvent>,
+    approvals: mpsc::Receiver<PendingCommandApproval>,
+) -> io::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
+    C: sugarcode_core::CoreApi,
+{
+    serve_with_optional_approvals(reader, writer, session, events, Some(approvals)).await
+}
+
+async fn serve_with_optional_approvals<R, W, C>(
+    reader: R,
+    writer: W,
     mut session: Session<C>,
     mut events: mpsc::Receiver<sugarcode_protocol::CoreEvent>,
+    mut approvals: Option<mpsc::Receiver<PendingCommandApproval>>,
 ) -> io::Result<()>
 where
     R: AsyncBufRead + Unpin,
@@ -39,6 +70,7 @@ where
     let mut lines = reader.lines();
     let shutdown = loop {
         tokio::select! {
+            biased;
             line = lines.next_line() => {
                 let line = match line {
                     Ok(line) => line,
@@ -69,6 +101,20 @@ where
                         let _ = shutdown_discard_events(&mut session, &mut events).await;
                         return Err(error);
                     }
+                }
+            }
+            approval = receive_approval(&mut approvals) => {
+                match approval {
+                    Some(approval) => {
+                        if let Some(message) = session.process_approval_request(approval)
+                            && let Err(error) = queue_message(&output_tx, message).await
+                        {
+                            writer_task.abort();
+                            let _ = shutdown_discard_events(&mut session, &mut events).await;
+                            return Err(error);
+                        }
+                    }
+                    None => approvals = None,
                 }
             }
         }
@@ -120,6 +166,15 @@ where
                 "stdout writer stalled",
             ))
         }
+    }
+}
+
+async fn receive_approval(
+    approvals: &mut Option<mpsc::Receiver<PendingCommandApproval>>,
+) -> Option<PendingCommandApproval> {
+    match approvals {
+        Some(approvals) => approvals.recv().await,
+        None => futures_util::future::pending().await,
     }
 }
 

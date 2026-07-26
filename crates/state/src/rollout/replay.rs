@@ -544,6 +544,14 @@ fn terminal_items_match(
                 | (
                     super::DurableItemSnapshot::ToolResult { .. },
                     super::DurableItemSnapshot::ToolResult { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::CommandApprovalRequest { .. },
+                    super::DurableItemSnapshot::CommandApprovalRequest { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::CommandApprovalDecision { .. },
+                    super::DurableItemSnapshot::CommandApprovalDecision { .. },
                 ) => started == terminal,
                 _ => false,
             })

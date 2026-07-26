@@ -45,8 +45,23 @@
     {
       "type": "object",
       "properties": {
+        "arguments": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "callId": {
           "type": "string"
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "id": {
           "type": "string"
@@ -79,6 +94,77 @@
     {
       "type": "object",
       "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "callId": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "environmentPolicy": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "sandboxed": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string",
+          "const": "commandApprovalRequest"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "approvalId",
+        "callId",
+        "command",
+        "arguments",
+        "cwd",
+        "environmentPolicy",
+        "sandboxed"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "commandApprovalDecision"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "approvalId",
+        "decision"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
         "callId": {
           "type": "string"
         },
@@ -106,6 +192,56 @@
     }
   ],
   "$defs": {
+    "ProcessOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "type": {
+              "type": "string",
+              "const": "exitCode"
+            }
+          },
+          "required": [
+            "type",
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "signal": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "type": {
+              "type": "string",
+              "const": "signal"
+            }
+          },
+          "required": [
+            "type",
+            "signal"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "timedOut"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
     "ToolResult": {
       "oneOf": [
         {
@@ -144,6 +280,60 @@
           "required": [
             "type",
             "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "durationMs": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "encoding": {
+              "type": "string"
+            },
+            "outcome": {
+              "$ref": "#/$defs/ProcessOutcome"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "stderrBytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "stderrTruncated": {
+              "type": "boolean"
+            },
+            "stdout": {
+              "type": "string"
+            },
+            "stdoutBytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "stdoutTruncated": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "process"
+            }
+          },
+          "required": [
+            "type",
+            "stdout",
+            "stderr",
+            "stdoutBytes",
+            "stderrBytes",
+            "stdoutTruncated",
+            "stderrTruncated",
+            "encoding",
+            "durationMs",
+            "outcome"
           ]
         }
       ]

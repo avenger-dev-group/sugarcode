@@ -64,6 +64,8 @@ pub enum PreparedMessage {
         name: String,
         path: String,
         query: Option<String>,
+        command: Option<String>,
+        arguments: Option<Vec<String>>,
     },
     ToolResult {
         call_id: String,
@@ -193,6 +195,21 @@ enum ItemKind {
         name: String,
         path: String,
         query: Option<String>,
+        command: Option<String>,
+        arguments: Option<Vec<String>>,
+    },
+    CommandApprovalRequest {
+        approval_id: String,
+        call_id: String,
+        command: String,
+        arguments: Vec<String>,
+        cwd: String,
+        environment_policy: String,
+        sandboxed: bool,
+    },
+    CommandApprovalDecision {
+        approval_id: String,
+        decision: sugarcode_protocol::CoreCommandApprovalDecision,
     },
     ToolResult {
         call_id: String,
@@ -224,7 +241,10 @@ impl Item {
             ItemKind::UserMessage { .. } => Err(CoreError::Internal(
                 "cannot append an agent delta to a user message".to_string(),
             )),
-            ItemKind::ToolCall { .. } | ItemKind::ToolResult { .. } => Err(CoreError::Internal(
+            ItemKind::ToolCall { .. }
+            | ItemKind::CommandApprovalRequest { .. }
+            | ItemKind::CommandApprovalDecision { .. }
+            | ItemKind::ToolResult { .. } => Err(CoreError::Internal(
                 "cannot append an agent delta to a tool item".to_string(),
             )),
         }
@@ -247,11 +267,39 @@ impl Item {
                 name,
                 path,
                 query,
+                command,
+                arguments,
             } => CoreItemKind::ToolCall {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 path: path.clone(),
                 query: query.clone(),
+                command: command.clone(),
+                arguments: arguments.clone(),
+            },
+            ItemKind::CommandApprovalRequest {
+                approval_id,
+                call_id,
+                command,
+                arguments,
+                cwd,
+                environment_policy,
+                sandboxed,
+            } => CoreItemKind::CommandApprovalRequest {
+                approval_id: approval_id.clone(),
+                call_id: call_id.clone(),
+                command: command.clone(),
+                arguments: arguments.clone(),
+                cwd: cwd.clone(),
+                environment_policy: environment_policy.clone(),
+                sandboxed: *sandboxed,
+            },
+            ItemKind::CommandApprovalDecision {
+                approval_id,
+                decision,
+            } => CoreItemKind::CommandApprovalDecision {
+                approval_id: approval_id.clone(),
+                decision: *decision,
             },
             ItemKind::ToolResult {
                 call_id,
@@ -448,6 +496,8 @@ impl Core {
                         name,
                         path,
                         query,
+                        command,
+                        arguments,
                     } => Item {
                         id: id.clone(),
                         state: ItemState::Completed,
@@ -456,6 +506,59 @@ impl Core {
                             name: name.clone(),
                             path: path.clone(),
                             query: query.clone(),
+                            command: command.clone(),
+                            arguments: arguments.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::CommandApprovalRequest {
+                        id,
+                        approval_id,
+                        call_id,
+                        command,
+                        arguments,
+                        cwd,
+                        environment_policy,
+                        sandboxed,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::CommandApprovalRequest {
+                            approval_id: approval_id.clone(),
+                            call_id: call_id.clone(),
+                            command: command.clone(),
+                            arguments: arguments.clone(),
+                            cwd: cwd.clone(),
+                            environment_policy: environment_policy.clone(),
+                            sandboxed: *sandboxed,
+                        },
+                    },
+                    DurableItemSnapshot::CommandApprovalDecision {
+                        id,
+                        approval_id,
+                        decision,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::CommandApprovalDecision {
+                            approval_id: approval_id.clone(),
+                            decision: match decision.as_str() {
+                                "approved" => {
+                                    sugarcode_protocol::CoreCommandApprovalDecision::Approved
+                                }
+                                "denied" => {
+                                    sugarcode_protocol::CoreCommandApprovalDecision::Denied
+                                }
+                                "timedOut" => {
+                                    sugarcode_protocol::CoreCommandApprovalDecision::TimedOut
+                                }
+                                "unsupported" => {
+                                    sugarcode_protocol::CoreCommandApprovalDecision::Unsupported
+                                }
+                                "cancelled" => {
+                                    sugarcode_protocol::CoreCommandApprovalDecision::Cancelled
+                                }
+                                _ => sugarcode_protocol::CoreCommandApprovalDecision::ClientDisconnected,
+                            },
                         },
                     },
                     DurableItemSnapshot::ToolResult {
@@ -550,12 +653,18 @@ impl Core {
                         name,
                         path,
                         query,
+                        command,
+                        arguments,
                     } => Some(PreparedMessage::ToolCall {
                         call_id: call_id.clone(),
                         name: name.clone(),
                         path: path.clone(),
                         query: query.clone(),
+                        command: command.clone(),
+                        arguments: arguments.clone(),
                     }),
+                    ItemKind::CommandApprovalRequest { .. }
+                    | ItemKind::CommandApprovalDecision { .. } => None,
                     ItemKind::ToolResult {
                         call_id,
                         name,
@@ -583,8 +692,17 @@ impl Core {
                     name,
                     path,
                     query,
+                    command,
+                    arguments,
                 } => {
-                    call_id.len() + name.len() + path.len() + query.as_ref().map_or(0, String::len)
+                    call_id.len()
+                        + name.len()
+                        + path.len()
+                        + query.as_ref().map_or(0, String::len)
+                        + command.as_ref().map_or(0, String::len)
+                        + arguments
+                            .as_ref()
+                            .map_or(0, |values| values.iter().map(String::len).sum())
                 }
                 PreparedMessage::ToolResult { call_id, content } => call_id.len() + content.len(),
             })
@@ -723,7 +841,10 @@ impl Core {
     ) -> Result<CoreItemSnapshot, CoreError> {
         if !matches!(
             kind,
-            CoreItemKind::ToolCall { .. } | CoreItemKind::ToolResult { .. }
+            CoreItemKind::ToolCall { .. }
+                | CoreItemKind::CommandApprovalRequest { .. }
+                | CoreItemKind::CommandApprovalDecision { .. }
+                | CoreItemKind::ToolResult { .. }
         ) {
             return Err(CoreError::Internal(
                 "only completed tool items may be appended".to_string(),
@@ -790,6 +911,8 @@ impl Core {
             ItemKind::AgentMessage { text } => text.len(),
             ItemKind::UserMessage { .. }
             | ItemKind::ToolCall { .. }
+            | ItemKind::CommandApprovalRequest { .. }
+            | ItemKind::CommandApprovalDecision { .. }
             | ItemKind::ToolResult { .. } => {
                 return Err(CoreError::Internal(
                     "active item is not an agent message".to_string(),

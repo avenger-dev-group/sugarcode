@@ -1,3 +1,4 @@
+use crate::approval::PendingCommandApproval;
 use crate::event_mapping::EventMappingError;
 use crate::event_mapping::map_core_event;
 use crate::event_mapping::map_fork_snapshot;
@@ -7,6 +8,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use sugarcode_app_server_protocol::CommandApprovalParams;
+use sugarcode_app_server_protocol::CommandApprovalResponse;
+use sugarcode_app_server_protocol::CommandApprovalResponseDecision;
 use sugarcode_app_server_protocol::DEFAULT_THREAD_LIST_LIMIT;
 use sugarcode_app_server_protocol::DEFAULT_THREAD_SEARCH_LIMIT;
 use sugarcode_app_server_protocol::ERROR_ALREADY_INITIALIZED;
@@ -29,6 +33,7 @@ use sugarcode_app_server_protocol::JSON_RPC_VERSION;
 use sugarcode_app_server_protocol::JsonRpcError;
 use sugarcode_app_server_protocol::JsonRpcErrorObject;
 use sugarcode_app_server_protocol::JsonRpcMessage;
+use sugarcode_app_server_protocol::JsonRpcRequest;
 use sugarcode_app_server_protocol::JsonRpcResponse;
 use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::PROTOCOL_VERSION;
@@ -57,6 +62,7 @@ use sugarcode_app_server_protocol::TurnInterruptParams;
 use sugarcode_app_server_protocol::TurnInterruptResponse;
 use sugarcode_app_server_protocol::TurnStartParams;
 use sugarcode_app_server_protocol::TurnStartResponse;
+use sugarcode_core::CommandApprovalOutcome;
 use sugarcode_core::Core;
 use sugarcode_core::CoreApi;
 use sugarcode_core::CoreError;
@@ -66,6 +72,7 @@ use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
+use tokio::sync::oneshot;
 
 mod handlers;
 
@@ -82,6 +89,8 @@ pub struct Session<C = Core> {
     core: C,
     accepted_request_ids: HashSet<RequestId>,
     pending_interrupts: HashMap<(String, String), RequestId>,
+    pending_approvals: HashMap<RequestId, oneshot::Sender<CommandApprovalOutcome>>,
+    command_approvals: bool,
     last_core_request_sequence: u64,
 }
 
@@ -107,6 +116,8 @@ where
             core,
             accepted_request_ids: HashSet::new(),
             pending_interrupts: HashMap::new(),
+            pending_approvals: HashMap::new(),
+            command_approvals: false,
             last_core_request_sequence: 0,
         }
     }
@@ -149,7 +160,42 @@ where
     }
 
     pub fn shutdown(&mut self) -> futures_util::future::BoxFuture<'static, Result<(), CoreError>> {
+        self.pending_approvals.clear();
         self.core.shutdown()
+    }
+
+    pub(crate) fn process_approval_request(
+        &mut self,
+        pending: PendingCommandApproval,
+    ) -> Option<JsonRpcMessage> {
+        if self.state != SessionState::Ready || !self.command_approvals {
+            let _ = pending.response.send(CommandApprovalOutcome::Unsupported);
+            return None;
+        }
+        let id = RequestId::String(pending.request.approval_id.clone());
+        if self.pending_approvals.contains_key(&id) {
+            let _ = pending.response.send(CommandApprovalOutcome::Unsupported);
+            return None;
+        }
+        let params = CommandApprovalParams {
+            approval_id: pending.request.approval_id,
+            thread_id: pending.request.thread_id.into_string(),
+            turn_id: pending.request.turn_id.into_string(),
+            call_id: pending.request.call_id,
+            command: pending.request.command,
+            arguments: pending.request.arguments,
+            cwd: pending.request.cwd,
+            approval_scope: "command".to_string(),
+            environment_policy: pending.request.environment_policy,
+            sandboxed: pending.request.sandboxed,
+        };
+        self.pending_approvals.insert(id.clone(), pending.response);
+        Some(JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: JsonRpcVersion::V2,
+            id,
+            method: "item/commandExecution/requestApproval".to_string(),
+            params: Some(serde_json::to_value(params).expect("approval params must serialize")),
+        }))
     }
 
     fn process_value(&mut self, value: Value) -> Vec<JsonRpcMessage> {
@@ -159,6 +205,11 @@ where
 
         if object.get("jsonrpc").and_then(Value::as_str) != Some(JSON_RPC_VERSION) {
             return vec![error(None, ERROR_INVALID_REQUEST, "Invalid Request", None)];
+        }
+
+        if !object.contains_key("method") {
+            self.process_response(object);
+            return Vec::new();
         }
 
         let Some(method) = object.get("method").and_then(Value::as_str) else {
@@ -354,6 +405,26 @@ where
                 None,
             )],
         }
+    }
+
+    fn process_response(&mut self, object: &serde_json::Map<String, Value>) {
+        let Some(id) = parse_request_id(object.get("id")) else {
+            return;
+        };
+        let Some(sender) = self.pending_approvals.remove(&id) else {
+            return;
+        };
+        let outcome = if let Some(result) = object.get("result") {
+            serde_json::from_value::<CommandApprovalResponse>(result.clone())
+                .map(|response| match response.decision {
+                    CommandApprovalResponseDecision::Approved => CommandApprovalOutcome::Approved,
+                    CommandApprovalResponseDecision::Denied => CommandApprovalOutcome::Denied,
+                })
+                .unwrap_or(CommandApprovalOutcome::Denied)
+        } else {
+            CommandApprovalOutcome::Denied
+        };
+        let _ = sender.send(outcome);
     }
 }
 

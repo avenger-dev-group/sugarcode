@@ -63,7 +63,12 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
             .iter()
             .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>(),
-        vec!["workspace/read", "workspace/list", "workspace/search"]
+        vec![
+            "workspace/read",
+            "workspace/list",
+            "workspace/search",
+            "shell/exec"
+        ]
     );
     assert!(first_requests[1].get("tools").is_none());
     let original_result = first_requests[1]["messages"][2]["content"]
@@ -165,7 +170,12 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
             .iter()
             .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>(),
-        vec!["workspace/read", "workspace/list", "workspace/search"]
+        vec![
+            "workspace/read",
+            "workspace/list",
+            "workspace/search",
+            "shell/exec"
+        ]
     );
     assert_eq!(
         continued_request["messages"][1]["tool_calls"][0]["function"]["name"],

@@ -477,6 +477,8 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
             name: "workspace/read".to_string(),
             path: "README.txt".to_string(),
             query: None,
+            command: None,
+            arguments: None,
         })
         .expect("tool call serializes"),
         json!({
@@ -494,6 +496,8 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
             name: "workspace/search".to_string(),
             path: "src".to_string(),
             query: Some("needle".to_string()),
+            command: None,
+            arguments: None,
         })
         .expect("search tool call serializes"),
         json!({
@@ -536,6 +540,60 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
         json!({
             "type": "error",
             "kind": "resultTooLarge"
+        })
+    );
+}
+
+#[test]
+fn shell_approval_and_process_results_are_provider_neutral() {
+    assert_eq!(
+        serde_json::to_value(Item::CommandApprovalRequest {
+            id: "item_0000000000000003".to_string(),
+            approval_id: "approval/one".to_string(),
+            call_id: "call_shell".to_string(),
+            command: "/bin/echo".to_string(),
+            arguments: vec!["ok".to_string()],
+            cwd: ".".to_string(),
+            environment_policy: "minimalV1".to_string(),
+            sandboxed: false,
+        })
+        .expect("approval request serializes"),
+        json!({
+            "type": "commandApprovalRequest",
+            "id": "item_0000000000000003",
+            "approvalId": "approval/one",
+            "callId": "call_shell",
+            "command": "/bin/echo",
+            "arguments": ["ok"],
+            "cwd": ".",
+            "environmentPolicy": "minimalV1",
+            "sandboxed": false
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ToolResult::Process {
+            stdout: "ok\n".to_string(),
+            stderr: String::new(),
+            stdout_bytes: 3,
+            stderr_bytes: 0,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            encoding: "utf8Lossy".to_string(),
+            duration_ms: 2,
+            outcome: sugarcode_app_server_protocol::ProcessOutcome::ExitCode { code: 0 },
+        })
+        .expect("process result serializes"),
+        json!({
+            "type": "process",
+            "stdout": "ok\n",
+            "stderr": "",
+            "stdoutBytes": 3,
+            "stderrBytes": 0,
+            "stdoutTruncated": false,
+            "stderrTruncated": false,
+            "encoding": "utf8Lossy",
+            "durationMs": 2,
+            "outcome": {"type": "exitCode", "code": 0}
         })
     );
 }

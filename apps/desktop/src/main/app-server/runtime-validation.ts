@@ -191,7 +191,8 @@ export const parseInitializeResponse = (
     !isNonEmptyString(value.platform.family) ||
     !isNonEmptyString(value.platform.os) ||
     !isNonEmptyString(value.platform.arch) ||
-    !isRecord(value.capabilities)
+    !isRecord(value.capabilities) ||
+    typeof value.capabilities.commandApprovals !== 'boolean'
   ) {
     throw new Error('Invalid initialize response.');
   }
@@ -207,6 +208,8 @@ export const parseInitializeResponse = (
       os: value.platform.os,
       arch: value.platform.arch,
     },
-    capabilities: {},
+    capabilities: {
+      commandApprovals: value.capabilities.commandApprovals,
+    },
   };
 };

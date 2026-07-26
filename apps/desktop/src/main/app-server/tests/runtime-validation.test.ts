@@ -79,14 +79,17 @@ describe('parseInitializeResponse', () => {
           os: 'macos',
           arch: 'aarch64',
         },
-        capabilities: { futureCapability: true },
+        capabilities: {
+          commandApprovals: true,
+          futureCapability: true,
+        },
         futureTopLevel: true,
       }),
     ).toEqual({
       protocolVersion: 1,
       serverInfo: { name: 'sugarcode', version: '1.0.0' },
       platform: { family: 'unix', os: 'macos', arch: 'aarch64' },
-      capabilities: {},
+      capabilities: { commandApprovals: true },
     });
   });
 

@@ -213,6 +213,8 @@ impl CoreApi for Core {
                         name,
                         path,
                         query,
+                        command,
+                        arguments,
                         ..
                     } => DurableItemSnapshot::ToolCall {
                         id: ItemId::new(format!("item_{item_sequence:016}")),
@@ -220,6 +222,36 @@ impl CoreApi for Core {
                         name: name.clone(),
                         path: path.clone(),
                         query: query.clone(),
+                        command: command.clone(),
+                        arguments: arguments.clone(),
+                    },
+                    DurableItemSnapshot::CommandApprovalRequest {
+                        approval_id,
+                        call_id,
+                        command,
+                        arguments,
+                        cwd,
+                        environment_policy,
+                        sandboxed,
+                        ..
+                    } => DurableItemSnapshot::CommandApprovalRequest {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        approval_id: approval_id.clone(),
+                        call_id: call_id.clone(),
+                        command: command.clone(),
+                        arguments: arguments.clone(),
+                        cwd: cwd.clone(),
+                        environment_policy: environment_policy.clone(),
+                        sandboxed: *sandboxed,
+                    },
+                    DurableItemSnapshot::CommandApprovalDecision {
+                        approval_id,
+                        decision,
+                        ..
+                    } => DurableItemSnapshot::CommandApprovalDecision {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        approval_id: approval_id.clone(),
+                        decision: decision.clone(),
                     },
                     DurableItemSnapshot::ToolResult {
                         call_id,

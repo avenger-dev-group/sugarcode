@@ -1,3 +1,4 @@
+mod approval;
 mod event_mapping;
 mod session;
 mod stdio;
@@ -8,6 +9,7 @@ pub use stdio::serve;
 pub use stdio::serve_with_events;
 pub use stdio::serve_with_session;
 
+use approval::ChannelCommandApprovalRequester;
 use std::io;
 use std::sync::Arc;
 use sugarcode_core::Core;
@@ -25,6 +27,7 @@ pub async fn run_stdio(
     config: EffectiveConfig,
     workspace: Option<std::path::PathBuf>,
 ) -> io::Result<()> {
+    let shell_cwd = workspace.clone();
     let workspace = workspace
         .as_deref()
         .map(sugarcode_tools::WorkspaceTool::open)
@@ -37,8 +40,9 @@ pub async fn run_stdio(
     let workspace_list: Option<Arc<dyn sugarcode_tools::WorkspaceListExecutor>> = workspace
         .as_ref()
         .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceListExecutor>);
-    let workspace_search: Option<Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>> =
-        workspace.map(|tool| tool as Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>);
+    let workspace_search: Option<Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>> = workspace
+        .as_ref()
+        .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>);
     let model = config.model().cloned();
     let model_token = model
         .as_ref()
@@ -56,6 +60,7 @@ pub async fn run_stdio(
         eprintln!("sugarcode: {diagnostic}");
     }
     let core = Core::with_repository(Box::new(repository));
+    let (approval_requester, approvals) = ChannelCommandApprovalRequester::channel(4);
     let (runtime, events) = match (model, model_token) {
         (Some(_), Err(_)) => {
             eprintln!("sugarcode: configured model credential is unavailable");
@@ -69,14 +74,29 @@ pub async fn run_stdio(
                             .map_err(io::Error::other)?,
                     ),
                 };
-            CoreRuntime::new_with_workspace_search(
-                core,
-                provider,
-                model.model().to_string(),
-                workspace_read,
-                workspace_list,
-                workspace_search,
-            )
+            if let Some(shell_cwd) = shell_cwd {
+                let executable = std::env::current_exe()?;
+                CoreRuntime::new_with_shell(
+                    core,
+                    provider,
+                    model.model().to_string(),
+                    workspace_read,
+                    workspace_list,
+                    workspace_search,
+                    Arc::new(sugarcode_tools::NativeShellCommandExecutor::new(executable)),
+                    Arc::new(approval_requester),
+                    shell_cwd,
+                )
+            } else {
+                CoreRuntime::new_with_workspace_search(
+                    core,
+                    provider,
+                    model.model().to_string(),
+                    workspace_read,
+                    workspace_list,
+                    workspace_search,
+                )
+            }
         }
         (None, Ok(None)) => CoreRuntime::without_model(core),
         (None, Ok(Some(_))) | (None, Err(_)) => unreachable!("token lookup requires a model"),
@@ -84,7 +104,7 @@ pub async fn run_stdio(
     let session = Session::with_core(runtime);
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());
-    serve_with_events(input, output, session, events).await
+    stdio::serve_with_events_and_approvals(input, output, session, events, approvals).await
 }
 
 fn load_model_token(home: &std::path::Path, reference: &str) -> io::Result<Zeroizing<String>> {

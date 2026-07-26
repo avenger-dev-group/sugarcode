@@ -124,6 +124,23 @@ pub enum DurableItemSnapshot {
         name: String,
         path: String,
         query: Option<String>,
+        command: Option<String>,
+        arguments: Option<Vec<String>>,
+    },
+    CommandApprovalRequest {
+        id: ItemId,
+        approval_id: String,
+        call_id: String,
+        command: String,
+        arguments: Vec<String>,
+        cwd: String,
+        environment_policy: String,
+        sandboxed: bool,
+    },
+    CommandApprovalDecision {
+        id: ItemId,
+        approval_id: String,
+        decision: String,
     },
     ToolResult {
         id: ItemId,
@@ -137,6 +154,27 @@ pub enum DurableItemSnapshot {
 pub enum DurableToolResult {
     Success { content: String, bytes: u64 },
     Error { kind: String },
+    Process(DurableProcessResult),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableProcessResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub encoding: String,
+    pub duration_ms: u64,
+    pub outcome: DurableProcessOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableProcessOutcome {
+    ExitCode { code: i64 },
+    Signal { signal: i32 },
+    TimedOut,
 }
 
 pub fn terminal_turn_record_fits(thread_id: &ThreadId, turn: &DurableTurnSnapshot) -> bool {
@@ -150,6 +188,8 @@ impl DurableItemSnapshot {
             Self::UserMessage { id, .. }
             | Self::AgentMessage { id, .. }
             | Self::ToolCall { id, .. }
+            | Self::CommandApprovalRequest { id, .. }
+            | Self::CommandApprovalDecision { id, .. }
             | Self::ToolResult { id, .. } => id,
         }
     }

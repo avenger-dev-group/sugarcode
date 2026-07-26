@@ -75,7 +75,7 @@ const attachInitializeServer = (
             jsonrpc: '2.0',
             id: message.id,
             result: {
-              capabilities: {},
+              capabilities: { commandApprovals: true },
               platform: {
                 family: overrides.family ?? 'unix',
                 os: overrides.os ?? 'macos',
@@ -144,6 +144,49 @@ describe('ConnectionSupervisor', () => {
     supervisor.shutdown();
     expect(child.kill).toHaveBeenCalledOnce();
     expect(supervisor.getSnapshot().status).toBe('closed');
+  });
+
+  it('denies the known command approval request without exposing Renderer UI', async () => {
+    const child = new FakeChild();
+    const { supervisor } = createSupervisor(child);
+    await supervisor.start();
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      child.stdin.on('data', (chunk: Buffer) => {
+        for (const line of chunk.toString('utf8').trim().split('\n')) {
+          const message = JSON.parse(line) as Record<string, unknown>;
+          if (message.id === 'approval/desktop') {
+            resolve(message);
+          }
+        }
+      });
+    });
+    child.stdout.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'approval/desktop',
+        method: 'item/commandExecution/requestApproval',
+        params: {
+          approvalId: 'approval/desktop',
+          threadId: 'thr_0000000000000001',
+          turnId: 'turn_0000000000000001',
+          callId: 'call_1',
+          command: '/bin/echo',
+          arguments: [],
+          cwd: '.',
+          approvalScope: 'command',
+          environmentPolicy: 'minimalV1',
+          sandboxed: false,
+        },
+      })}\n`,
+    );
+
+    await expect(response).resolves.toMatchObject({
+      jsonrpc: '2.0',
+      id: 'approval/desktop',
+      result: { decision: 'denied' },
+    });
+    expect(supervisor.getSnapshot().status).toBe('ready');
+    supervisor.shutdown();
   });
 
   it.each([

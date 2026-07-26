@@ -23,6 +23,7 @@ fn initialize_line(version: u32) -> String {
     .to_string()
 }
 
+mod approval;
 mod discovery;
 mod initialization;
 mod thread_lifecycle;

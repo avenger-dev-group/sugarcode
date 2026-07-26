@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CommandApprovalParams",
+  "type": "object",
+  "properties": {
+    "approvalId": {
+      "type": "string"
+    },
+    "approvalScope": {
+      "type": "string"
+    },
+    "arguments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "callId": {
+      "type": "string"
+    },
+    "command": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "environmentPolicy": {
+      "type": "string"
+    },
+    "sandboxed": {
+      "type": "boolean"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "approvalId",
+    "threadId",
+    "turnId",
+    "callId",
+    "command",
+    "arguments",
+    "cwd",
+    "approvalScope",
+    "environmentPolicy",
+    "sandboxed"
+  ]
+}

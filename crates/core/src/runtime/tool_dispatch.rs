@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelToolDefinition> {
-    let mut definitions = Vec::with_capacity(3);
+    let mut definitions = Vec::with_capacity(4);
     if runtime.workspace_read.is_some() {
         definitions.push(ModelToolDefinition {
             name: "workspace/read".to_string(),
@@ -25,6 +25,27 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
                 "Search UTF-8 text file contents recursively inside one workspace directory. Returns workspace-relative paths and 1-based line numbers."
                     .to_string(),
             parameters: workspace_search_parameters(),
+        });
+    }
+    if runtime.shell_executor.is_some() && runtime.approval_requester.is_some() {
+        definitions.push(ModelToolDefinition {
+            name: "shell/exec".to_string(),
+            description:
+                "Execute one exact absolute program and argv in the workspace root after per-command approval. This is not a shell and is not sandboxed."
+                    .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "command": { "type": "string" },
+                    "arguments": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "cwd": { "type": "string", "enum": ["."] }
+                },
+                "required": ["command", "arguments", "cwd"]
+            }),
         });
     }
     definitions
@@ -56,6 +77,84 @@ fn workspace_search_parameters() -> serde_json::Value {
 pub(super) struct WorkspaceToolArguments {
     pub path: String,
     pub query: Option<String>,
+}
+
+pub(super) struct ShellToolArguments {
+    pub command: String,
+    pub arguments: Vec<String>,
+    pub cwd: String,
+}
+
+pub(super) fn shell_tool_arguments(call: &ModelToolCall) -> Result<ShellToolArguments, ModelError> {
+    if call.name != "shell/exec" {
+        return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
+    }
+    let Some(arguments) = call.arguments.as_object() else {
+        return Err(ModelError::new(ModelErrorKind::Protocol, false));
+    };
+    if arguments.len() != 3 {
+        return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+    }
+    let command = arguments
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+    let values = arguments
+        .get("arguments")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+    let cwd = arguments
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+    if cwd != "."
+        || command.is_empty()
+        || command.len() > sugarcode_tools::MAX_SHELL_COMMAND_BYTES
+        || !std::path::Path::new(command).is_absolute()
+        || invalid_command_path(command)
+        || invalid_command_text(command)
+        || values.len() > sugarcode_tools::MAX_SHELL_ARGUMENT_COUNT
+    {
+        return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+    }
+    let mut parsed = Vec::with_capacity(values.len());
+    let mut total = command.len();
+    for value in values {
+        let value = value
+            .as_str()
+            .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        total = total
+            .checked_add(value.len())
+            .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        if value.len() > sugarcode_tools::MAX_SHELL_ARGUMENT_BYTES
+            || invalid_command_text(value)
+            || total > sugarcode_tools::MAX_SHELL_TOTAL_ARGUMENT_BYTES
+        {
+            return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+        }
+        parsed.push(value.to_string());
+    }
+    Ok(ShellToolArguments {
+        command: command.to_string(),
+        arguments: parsed,
+        cwd: cwd.to_string(),
+    })
+}
+
+fn invalid_command_text(value: &str) -> bool {
+    value
+        .chars()
+        .any(|character| character == '\0' || character.is_control())
+}
+
+#[cfg(windows)]
+fn invalid_command_path(value: &str) -> bool {
+    value.starts_with(r"\\") || value.starts_with(r"\\?\") || value.starts_with(r"\\.\")
+}
+
+#[cfg(not(windows))]
+fn invalid_command_path(_value: &str) -> bool {
+    false
 }
 
 pub(super) fn workspace_tool_arguments(
@@ -258,6 +357,21 @@ pub(super) fn serialized_tool_call_bytes(
     serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len())
 }
 
+pub(super) fn serialized_shell_tool_call_bytes(
+    call: &ModelToolCall,
+    arguments: &ShellToolArguments,
+) -> usize {
+    serde_json::to_vec(&serde_json::json!({
+        "type": "toolCall",
+        "callId": call.id,
+        "name": call.name,
+        "path": arguments.cwd,
+        "command": arguments.command,
+        "arguments": arguments.arguments,
+    }))
+    .map_or(usize::MAX, |bytes| bytes.len())
+}
+
 pub(super) fn serialized_tool_result_bytes(result: &CoreToolResult) -> usize {
     let value = match result {
         CoreToolResult::Success { content, bytes } => serde_json::json!({
@@ -268,6 +382,25 @@ pub(super) fn serialized_tool_result_bytes(result: &CoreToolResult) -> usize {
         CoreToolResult::Error { kind } => serde_json::json!({
             "type": "error",
             "kind": kind.to_string(),
+        }),
+        CoreToolResult::Process(process) => serde_json::json!({
+            "type": "process",
+            "stdout": process.stdout,
+            "stderr": process.stderr,
+            "stdoutBytes": process.stdout_bytes,
+            "stderrBytes": process.stderr_bytes,
+            "stdoutTruncated": process.stdout_truncated,
+            "stderrTruncated": process.stderr_truncated,
+            "encoding": process.encoding,
+            "durationMs": process.duration_ms,
+            "outcome": match process.outcome {
+                sugarcode_protocol::CoreProcessOutcome::ExitCode { code } =>
+                    serde_json::json!({"type": "exitCode", "code": code}),
+                sugarcode_protocol::CoreProcessOutcome::Signal { signal } =>
+                    serde_json::json!({"type": "signal", "signal": signal}),
+                sugarcode_protocol::CoreProcessOutcome::TimedOut =>
+                    serde_json::json!({"type": "timedOut"}),
+            },
         }),
     };
     serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len())

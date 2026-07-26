@@ -26,7 +26,7 @@ export type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcRespo
 
 export type ClientInfo = { name: string, title?: string, version: string, };
 
-export type InitializeCapabilities = Record<string, never>;
+export type InitializeCapabilities = { commandApprovals: boolean, };
 
 export type InitializeParams = { protocolVersion: number, clientInfo: ClientInfo, capabilities?: InitializeCapabilities, };
 
@@ -34,13 +34,21 @@ export type ServerInfo = { name: string, version: string, };
 
 export type PlatformInfo = { family: string, os: string, arch: string, };
 
-export type ServerCapabilities = Record<string, never>;
+export type ServerCapabilities = { commandApprovals: boolean, };
 
 export type InitializeResponse = { protocolVersion: number, serverInfo: ServerInfo, platform: PlatformInfo, capabilities: ServerCapabilities, };
 
-export type ToolResult = { "type": "success", content: string, bytes: bigint, } | { "type": "error", kind: string, };
+export type CommandApprovalResponseDecision = "approved" | "denied";
 
-export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
+export type CommandApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, };
+
+export type CommandApprovalResponse = { decision: CommandApprovalResponseDecision, };
+
+export type ProcessOutcome = { "type": "exitCode", code: bigint, } | { "type": "signal", signal: number, } | { "type": "timedOut" };
+
+export type ToolResult = { "type": "success", content: string, bytes: bigint, } | { "type": "error", kind: string, } | { "type": "process", stdout: string, stderr: string, stdoutBytes: bigint, stderrBytes: bigint, stdoutTruncated: boolean, stderrTruncated: boolean, encoding: string, durationMs: bigint, outcome: ProcessOutcome, };
+
+export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, command?: string, arguments?: Array<string>, } | { "type": "commandApprovalRequest", id: string, approvalId: string, callId: string, command: string, arguments: Array<string>, cwd: string, environmentPolicy: string, sandboxed: boolean, } | { "type": "commandApprovalDecision", id: string, approvalId: string, decision: string, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
 
 export type ItemStartedNotification = { threadId: string, turnId: string, item: Item, };
 
