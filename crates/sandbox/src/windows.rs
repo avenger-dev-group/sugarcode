@@ -31,10 +31,12 @@ use windows_sys::Win32::Security::Authorization::SetEntriesInAclW;
 use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_SID;
 use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_UNKNOWN;
 use windows_sys::Win32::Security::Authorization::TRUSTEE_W;
+use windows_sys::Win32::Security::CopySid;
 use windows_sys::Win32::Security::CreateRestrictedToken;
 use windows_sys::Win32::Security::CreateWellKnownSid;
 use windows_sys::Win32::Security::DISABLE_MAX_PRIVILEGE;
 use windows_sys::Win32::Security::EqualSid;
+use windows_sys::Win32::Security::GetLengthSid;
 use windows_sys::Win32::Security::GetTokenInformation;
 use windows_sys::Win32::Security::LUA_TOKEN;
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
@@ -47,6 +49,7 @@ use windows_sys::Win32::Security::TOKEN_INFORMATION_CLASS;
 use windows_sys::Win32::Security::TOKEN_MANDATORY_LABEL;
 use windows_sys::Win32::Security::TOKEN_QUERY;
 use windows_sys::Win32::Security::TokenDefaultDacl;
+use windows_sys::Win32::Security::TokenGroups;
 use windows_sys::Win32::Security::TokenIntegrityLevel;
 use windows_sys::Win32::Security::TokenRestrictedSids;
 use windows_sys::Win32::Security::WELL_KNOWN_SID_TYPE;
@@ -100,6 +103,7 @@ const FILESYSTEM_READ_ONLY_INTEGRITY_SID: WELL_KNOWN_SID_TYPE = WinLowLabelSid;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const INFINITE: u32 = u32::MAX;
 const SE_GROUP_INTEGRITY: u32 = 0x0000_0020;
+const SE_GROUP_LOGON_ID: u32 = 0xC000_0000;
 
 pub(crate) fn probe(policy: SandboxPolicy) -> Result<(), SandboxError> {
     match policy {
@@ -314,15 +318,26 @@ impl RestrictedToken {
             ));
         }
         let source = OwnedHandle::new(source);
-        let mut sid = well_known_sid(FILESYSTEM_READ_ONLY_RESTRICTING_SID)?;
+        let mut write_restricted_sid = well_known_sid(FILESYSTEM_READ_ONLY_RESTRICTING_SID)?;
         let mut world_sid = well_known_sid(WinWorldSid)?;
-        let restricting_sid = SID_AND_ATTRIBUTES {
-            Sid: sid.as_mut_ptr().cast(),
-            Attributes: 0,
-        };
+        let mut logon_sid = token_logon_sid(source.raw())?;
+        let restricting_sids = [
+            SID_AND_ATTRIBUTES {
+                Sid: write_restricted_sid.as_mut_ptr().cast(),
+                Attributes: 0,
+            },
+            SID_AND_ATTRIBUTES {
+                Sid: logon_sid.as_mut_ptr().cast(),
+                Attributes: 0,
+            },
+            SID_AND_ATTRIBUTES {
+                Sid: world_sid.as_mut_ptr().cast(),
+                Attributes: 0,
+            },
+        ];
         let restricted = match create_restricted_token(
             source.raw(),
-            &restricting_sid,
+            &restricting_sids,
             FILESYSTEM_READ_ONLY_TOKEN_FLAGS,
         ) {
             Ok(restricted) => restricted,
@@ -333,7 +348,7 @@ impl RestrictedToken {
                 // filesystemReadOnlyV1; it is not an unsandboxed retry.
                 create_restricted_token(
                     source.raw(),
-                    &restricting_sid,
+                    &restricting_sids,
                     FILESYSTEM_READ_ONLY_COMPAT_TOKEN_FLAGS,
                 )
                 .map_err(|compat_error| {
@@ -348,16 +363,22 @@ impl RestrictedToken {
             }
             Err(error) => return Err(setup_operation_error("CreateRestrictedToken", error)),
         };
-        if !token_has_restricting_sid(restricted.raw(), restricting_sid.Sid)? {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "CreateRestrictedToken did not retain the filesystem write restricting SID",
-            ));
+        for expected_sid in &restricting_sids {
+            if !token_has_restricting_sid(restricted.raw(), expected_sid.Sid)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "CreateRestrictedToken did not retain a required restricting SID",
+                ));
+            }
         }
         set_low_integrity(restricted.raw())?;
         set_default_dacl(
             restricted.raw(),
-            &[world_sid.as_mut_ptr().cast(), sid.as_mut_ptr().cast()],
+            &[
+                world_sid.as_mut_ptr().cast(),
+                logon_sid.as_mut_ptr().cast(),
+                write_restricted_sid.as_mut_ptr().cast(),
+            ],
         )?;
         Ok(Self(restricted))
     }
@@ -411,6 +432,67 @@ fn token_has_restricting_sid(token: HANDLE, expected_sid: *mut c_void) -> io::Re
         }
     }
     Ok(false)
+}
+
+fn token_logon_sid(token: HANDLE) -> io::Result<Vec<u8>> {
+    let (storage, returned_size) =
+        token_information(token, TokenGroups, "GetTokenInformation(TokenGroups)")?;
+    let groups_offset =
+        size_of::<windows_sys::Win32::Security::TOKEN_GROUPS>() - size_of::<SID_AND_ATTRIBUTES>();
+    if returned_size < groups_offset {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TokenGroups buffer is smaller than its header",
+        ));
+    }
+    let group_count = unsafe { std::ptr::read_unaligned(storage.as_ptr().cast::<u32>()) } as usize;
+    let groups_size = group_count
+        .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
+        .and_then(|size| groups_offset.checked_add(size))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "TokenGroups group count overflows its buffer size",
+            )
+        })?;
+    if groups_size > returned_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TokenGroups group count exceeds its buffer size",
+        ));
+    }
+    let groups = unsafe {
+        storage
+            .as_ptr()
+            .cast::<u8>()
+            .add(groups_offset)
+            .cast::<SID_AND_ATTRIBUTES>()
+    };
+    for index in 0..group_count {
+        let group = unsafe { std::ptr::read_unaligned(groups.add(index)) };
+        if group.Attributes & SE_GROUP_LOGON_ID != SE_GROUP_LOGON_ID {
+            continue;
+        }
+        let sid_size = unsafe { GetLengthSid(group.Sid) };
+        if sid_size == 0 {
+            return Err(setup_operation_error(
+                "GetLengthSid(TokenGroups logon SID)",
+                io::Error::last_os_error(),
+            ));
+        }
+        let mut sid = vec![0u8; usize::try_from(sid_size).unwrap_or(0)];
+        if unsafe { CopySid(sid_size, sid.as_mut_ptr().cast(), group.Sid) } == 0 {
+            return Err(setup_operation_error(
+                "CopySid(TokenGroups logon SID)",
+                io::Error::last_os_error(),
+            ));
+        }
+        return Ok(sid);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "TokenGroups does not contain a logon SID",
+    ))
 }
 
 fn set_low_integrity(token: HANDLE) -> io::Result<()> {
@@ -641,7 +723,7 @@ impl Drop for LocalAcl {
 
 fn create_restricted_token(
     source: HANDLE,
-    restricting_sid: &SID_AND_ATTRIBUTES,
+    restricting_sids: &[SID_AND_ATTRIBUTES],
     flags: u32,
 ) -> io::Result<OwnedHandle> {
     let mut restricted = null_mut();
@@ -653,8 +735,8 @@ fn create_restricted_token(
             null(),
             0,
             null(),
-            1,
-            restricting_sid,
+            u32::try_from(restricting_sids.len()).unwrap_or(u32::MAX),
+            restricting_sids.as_ptr(),
             &mut restricted,
         )
     } == 0
