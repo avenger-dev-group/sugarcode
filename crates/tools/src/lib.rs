@@ -1,5 +1,6 @@
 mod workspace_list;
 mod workspace_read;
+mod workspace_search;
 
 pub use workspace_list::MAX_WORKSPACE_LIST_COMPONENTS;
 pub use workspace_list::MAX_WORKSPACE_LIST_ENTRIES;
@@ -18,3 +19,15 @@ pub use workspace_read::WorkspaceReadErrorKind;
 pub use workspace_read::WorkspaceReadExecutor;
 pub use workspace_read::WorkspaceReadOutcome;
 pub use workspace_read::WorkspaceTool;
+pub use workspace_search::MAX_WORKSPACE_SEARCH_CANDIDATE_FILES;
+pub use workspace_search::MAX_WORKSPACE_SEARCH_DEPTH;
+pub use workspace_search::MAX_WORKSPACE_SEARCH_DIRECTORIES;
+pub use workspace_search::MAX_WORKSPACE_SEARCH_MATCHES;
+pub use workspace_search::MAX_WORKSPACE_SEARCH_OBSERVED_ENTRIES;
+pub use workspace_search::MAX_WORKSPACE_SEARCH_QUERY_BYTES;
+pub use workspace_search::MAX_WORKSPACE_SEARCH_TOTAL_READ_BYTES;
+pub use workspace_search::WorkspaceSearchArguments;
+pub use workspace_search::WorkspaceSearchErrorKind;
+pub use workspace_search::WorkspaceSearchExecutor;
+pub use workspace_search::WorkspaceSearchMatch;
+pub use workspace_search::WorkspaceSearchOutcome;

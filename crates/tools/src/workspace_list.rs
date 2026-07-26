@@ -256,7 +256,7 @@ impl WorkspaceListExecutor for WorkspaceTool {
     }
 }
 
-fn validate_list_path(path: &str) -> Result<Vec<PathBuf>, WorkspaceListErrorKind> {
+pub(crate) fn validate_list_path(path: &str) -> Result<Vec<PathBuf>, WorkspaceListErrorKind> {
     let components = if path == "." {
         Vec::new()
     } else {
@@ -269,7 +269,7 @@ fn validate_list_path(path: &str) -> Result<Vec<PathBuf>, WorkspaceListErrorKind
     }
 }
 
-fn classify_directory_open_error(
+pub(crate) fn classify_directory_open_error(
     directory: &Dir,
     path: &Path,
     error_value: &std::io::Error,
@@ -305,7 +305,7 @@ fn map_list_io_error(error_value: &std::io::Error) -> WorkspaceListErrorKind {
     map_read_error(map_io_error(error_value))
 }
 
-fn map_iteration_error(error_value: &std::io::Error) -> WorkspaceListErrorKind {
+pub(crate) fn map_iteration_error(error_value: &std::io::Error) -> WorkspaceListErrorKind {
     match error_value.kind() {
         std::io::ErrorKind::NotFound => WorkspaceListErrorKind::ChangedDuringList,
         _ => map_list_io_error(error_value),
@@ -313,14 +313,14 @@ fn map_iteration_error(error_value: &std::io::Error) -> WorkspaceListErrorKind {
 }
 
 #[cfg(windows)]
-fn cap_metadata_is_reparse_point(metadata: &cap_std::fs::Metadata) -> bool {
+pub(crate) fn cap_metadata_is_reparse_point(metadata: &cap_std::fs::Metadata) -> bool {
     use cap_std::fs::MetadataExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
     metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 #[cfg(not(windows))]
-fn cap_metadata_is_reparse_point(_metadata: &cap_std::fs::Metadata) -> bool {
+pub(crate) fn cap_metadata_is_reparse_point(_metadata: &cap_std::fs::Metadata) -> bool {
     false
 }
 

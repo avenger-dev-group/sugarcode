@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 pub const MAX_WORKSPACE_RELATIVE_PATH_BYTES: usize = 1024;
 pub const MAX_WORKSPACE_READ_BYTES: usize = 256 * 1024;
-const READ_CHUNK_BYTES: usize = 16 * 1024;
+pub(crate) const READ_CHUNK_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceReadArguments {
@@ -213,7 +213,7 @@ impl WorkspaceReadExecutor for WorkspaceTool {
     }
 }
 
-fn open_regular_file_nofollow(
+pub(crate) fn open_regular_file_nofollow(
     directory: &Dir,
     file_name: &Path,
 ) -> Result<(File, FileSnapshot), WorkspaceReadErrorKind> {
@@ -287,7 +287,7 @@ pub(crate) struct FileSnapshot {
 }
 
 impl FileSnapshot {
-    fn from_file(
+    pub(crate) fn from_file(
         file: &File,
         metadata: &std::fs::Metadata,
     ) -> Result<Self, WorkspaceReadErrorKind> {
@@ -312,6 +312,10 @@ impl FileSnapshot {
             return Err(WorkspaceReadErrorKind::NotRegularFile);
         }
         Self::from_file(&file, &metadata)
+    }
+
+    pub(crate) fn len(self) -> u64 {
+        self.len
     }
 }
 
