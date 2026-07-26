@@ -1133,6 +1133,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "landlock"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "635839550ae8b90d9fd2571460a6645dc0aec070225956ca7a2831ed31d2795d"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2045,7 +2056,10 @@ version = "1.0.0"
 name = "sugarcode-sandbox"
 version = "1.0.0"
 dependencies = [
+ "landlock",
  "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
