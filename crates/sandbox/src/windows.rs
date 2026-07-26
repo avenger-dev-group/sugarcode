@@ -13,6 +13,7 @@ use std::ptr::null_mut;
 
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 use windows_sys::Win32::Foundation::ERROR_PATH_NOT_FOUND;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
@@ -33,6 +34,8 @@ use windows_sys::Win32::Security::Authorization::TRUSTEE_W;
 use windows_sys::Win32::Security::CreateRestrictedToken;
 use windows_sys::Win32::Security::CreateWellKnownSid;
 use windows_sys::Win32::Security::DISABLE_MAX_PRIVILEGE;
+use windows_sys::Win32::Security::EqualSid;
+use windows_sys::Win32::Security::GetTokenInformation;
 use windows_sys::Win32::Security::LUA_TOKEN;
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
@@ -42,10 +45,11 @@ use windows_sys::Win32::Security::TOKEN_ASSIGN_PRIMARY;
 use windows_sys::Win32::Security::TOKEN_DUPLICATE;
 use windows_sys::Win32::Security::TOKEN_QUERY;
 use windows_sys::Win32::Security::TokenDefaultDacl;
+use windows_sys::Win32::Security::TokenRestrictedSids;
 use windows_sys::Win32::Security::WELL_KNOWN_SID_TYPE;
 use windows_sys::Win32::Security::WRITE_RESTRICTED;
-use windows_sys::Win32::Security::WinNullSid;
 use windows_sys::Win32::Security::WinWorldSid;
+use windows_sys::Win32::Security::WinWriteRestrictedCodeSid;
 use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
 use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -85,6 +89,7 @@ mod tests;
 
 const FILESYSTEM_READ_ONLY_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
 const FILESYSTEM_READ_ONLY_COMPAT_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED;
+const FILESYSTEM_READ_ONLY_RESTRICTING_SID: WELL_KNOWN_SID_TYPE = WinWriteRestrictedCodeSid;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const INFINITE: u32 = u32::MAX;
 
@@ -301,7 +306,7 @@ impl RestrictedToken {
             ));
         }
         let source = OwnedHandle::new(source);
-        let mut sid = well_known_sid(WinNullSid)?;
+        let mut sid = well_known_sid(FILESYSTEM_READ_ONLY_RESTRICTING_SID)?;
         let mut world_sid = well_known_sid(WinWorldSid)?;
         let restricting_sid = SID_AND_ATTRIBUTES {
             Sid: sid.as_mut_ptr().cast(),
@@ -316,7 +321,7 @@ impl RestrictedToken {
             Err(initial_error) if should_retry_without_lua(&initial_error) => {
                 // Some filtered or policy-constrained hosts reject LUA_TOKEN with
                 // ERROR_INVALID_PARAMETER. The compatibility attempt retains the
-                // privilege removal and Null-SID write restriction that enforce
+                // privilege removal and Write Restricted Code SID that enforce
                 // filesystemReadOnlyV1; it is not an unsandboxed retry.
                 create_restricted_token(
                     source.raw(),
@@ -335,6 +340,12 @@ impl RestrictedToken {
             }
             Err(error) => return Err(setup_operation_error("CreateRestrictedToken", error)),
         };
+        if !token_has_restricting_sid(restricted.raw(), restricting_sid.Sid)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "CreateRestrictedToken did not retain the filesystem write restricting SID",
+            ));
+        }
         set_default_dacl(
             restricted.raw(),
             &[world_sid.as_mut_ptr().cast(), sid.as_mut_ptr().cast()],
@@ -345,6 +356,103 @@ impl RestrictedToken {
     fn raw(&self) -> HANDLE {
         self.0.raw()
     }
+}
+
+fn token_has_restricting_sid(token: HANDLE, expected_sid: *mut c_void) -> io::Result<bool> {
+    let mut byte_size = 0;
+    if unsafe { GetTokenInformation(token, TokenRestrictedSids, null_mut(), 0, &mut byte_size) }
+        == 0
+    {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+            return Err(setup_operation_error(
+                "GetTokenInformation(TokenRestrictedSids) size query",
+                error,
+            ));
+        }
+    }
+    if byte_size == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "GetTokenInformation(TokenRestrictedSids) returned an empty buffer size",
+        ));
+    }
+
+    let byte_size = usize::try_from(byte_size).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TokenRestrictedSids buffer size does not fit usize",
+        )
+    })?;
+    let word_count = byte_size.div_ceil(size_of::<usize>());
+    let mut storage = vec![0usize; word_count];
+    let mut returned_size = u32::try_from(byte_size).unwrap_or(u32::MAX);
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenRestrictedSids,
+            storage.as_mut_ptr().cast(),
+            returned_size,
+            &mut returned_size,
+        )
+    } == 0
+    {
+        return Err(setup_operation_error(
+            "GetTokenInformation(TokenRestrictedSids)",
+            io::Error::last_os_error(),
+        ));
+    }
+    let returned_size = usize::try_from(returned_size).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TokenRestrictedSids returned size does not fit usize",
+        )
+    })?;
+    if returned_size > byte_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TokenRestrictedSids returned size exceeds its allocated buffer",
+        ));
+    }
+
+    let groups_offset =
+        size_of::<windows_sys::Win32::Security::TOKEN_GROUPS>() - size_of::<SID_AND_ATTRIBUTES>();
+    if returned_size < groups_offset {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TokenRestrictedSids buffer is smaller than its header",
+        ));
+    }
+    let group_count = unsafe { std::ptr::read_unaligned(storage.as_ptr().cast::<u32>()) } as usize;
+    let groups_size = group_count
+        .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
+        .and_then(|size| groups_offset.checked_add(size))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "TokenRestrictedSids group count overflows its buffer size",
+            )
+        })?;
+    if groups_size > returned_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TokenRestrictedSids group count exceeds its buffer size",
+        ));
+    }
+    let groups = unsafe {
+        storage
+            .as_ptr()
+            .cast::<u8>()
+            .add(groups_offset)
+            .cast::<SID_AND_ATTRIBUTES>()
+    };
+    for index in 0..group_count {
+        let group = unsafe { std::ptr::read_unaligned(groups.add(index)) };
+        if unsafe { EqualSid(group.Sid, expected_sid) } != 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn should_retry_without_lua(error: &io::Error) -> bool {

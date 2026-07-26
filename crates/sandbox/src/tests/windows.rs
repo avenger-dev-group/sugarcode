@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::io;
 
 use super::FILESYSTEM_READ_ONLY_COMPAT_TOKEN_FLAGS;
+use super::FILESYSTEM_READ_ONLY_RESTRICTING_SID;
 use super::FILESYSTEM_READ_ONLY_TOKEN_FLAGS;
 use super::command_line;
 use super::environment_block;
@@ -11,6 +12,15 @@ use super::should_retry_without_lua;
 use windows_sys::Win32::Security::DISABLE_MAX_PRIVILEGE;
 use windows_sys::Win32::Security::LUA_TOKEN;
 use windows_sys::Win32::Security::WRITE_RESTRICTED;
+use windows_sys::Win32::Security::WinWriteRestrictedCodeSid;
+
+#[test]
+fn filesystem_write_restriction_uses_the_windows_write_restricted_code_sid() {
+    assert_eq!(
+        FILESYSTEM_READ_ONLY_RESTRICTING_SID,
+        WinWriteRestrictedCodeSid
+    );
+}
 
 #[test]
 fn compatibility_token_flags_only_omit_lua_token() {

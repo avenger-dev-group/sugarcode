@@ -103,18 +103,30 @@ fn sandbox_payload_child() {
     );
     println!("sandbox read allowed");
 
-    assert_denied(std::fs::write(root.join("target.txt"), "changed"));
-    assert_denied(std::fs::write(root.join("created.txt"), "created"));
-    assert_denied(std::fs::remove_file(root.join("delete-me.txt")));
-    assert_denied(std::fs::create_dir(root.join("created-dir")));
-    assert_denied(std::fs::rename(
-        root.join("rename-me.txt"),
-        root.join("renamed.txt"),
-    ));
-    assert_denied(std::fs::hard_link(
-        root.join("target.txt"),
-        root.join("hard-link.txt"),
-    ));
+    assert_denied(
+        "overwrite existing file",
+        std::fs::write(root.join("target.txt"), "changed"),
+    );
+    assert_denied(
+        "create file",
+        std::fs::write(root.join("created.txt"), "created"),
+    );
+    assert_denied(
+        "delete file",
+        std::fs::remove_file(root.join("delete-me.txt")),
+    );
+    assert_denied(
+        "create directory",
+        std::fs::create_dir(root.join("created-dir")),
+    );
+    assert_denied(
+        "rename file",
+        std::fs::rename(root.join("rename-me.txt"), root.join("renamed.txt")),
+    );
+    assert_denied(
+        "create hard link",
+        std::fs::hard_link(root.join("target.txt"), root.join("hard-link.txt")),
+    );
 
     let status = Command::new(std::env::current_exe().expect("resolve nested executable"))
         .args(["--exact", "sandbox_nested_child", "--nocapture"])
@@ -133,7 +145,10 @@ fn sandbox_nested_child() {
     if std::env::var_os(NESTED_CHILD).is_none() {
         return;
     }
-    assert_denied(std::fs::write(required_root().join("nested.txt"), "nested"));
+    assert_denied(
+        "nested child create file",
+        std::fs::write(required_root().join("nested.txt"), "nested"),
+    );
 }
 
 fn prepare_fixtures(root: &Path) {
@@ -153,12 +168,16 @@ fn required_root() -> PathBuf {
         .expect("sandbox test root")
 }
 
-fn assert_denied(result: std::io::Result<impl Sized>) {
+fn assert_denied(operation: &str, result: std::io::Result<impl Sized>) {
     let error = match result {
-        Ok(_) => panic!("filesystem write must be denied"),
+        Ok(_) => panic!("{operation} must be denied"),
         Err(error) => error,
     };
-    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{operation} must fail with PermissionDenied"
+    );
 }
 
 fn sandbox_environment(root: &Path, marker: &str) -> Vec<(OsString, OsString)> {
