@@ -29,14 +29,8 @@ async fn cancellation_terminates_a_descendant_that_holds_output_pipes() {
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_sugarcode"));
     let executor = NativeShellCommandExecutor::new(executable.clone());
     let cancellation = CancellationToken::new();
-    let execution = executor.execute(
-        ShellCommandArguments {
-            command: executable.to_string_lossy().into_owned(),
-            arguments: vec!["__command-test-tree".to_string()],
-            cwd: std::env::current_dir().expect("current directory"),
-        },
-        cancellation.clone(),
-    );
+    let command = cancellation_tree_command(&executable);
+    let execution = executor.execute(command, cancellation.clone());
     let task = tokio::spawn(execution);
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     cancellation.cancel();
@@ -45,6 +39,27 @@ async fn cancellation_terminates_a_descendant_that_holds_output_pipes() {
         .expect("complete process-tree cancellation")
         .expect("executor task");
     assert_eq!(execution, ShellCommandExecution::Cancelled);
+}
+
+#[cfg(unix)]
+fn cancellation_tree_command(_executable: &PathBuf) -> ShellCommandArguments {
+    ShellCommandArguments {
+        command: "/bin/sh".to_string(),
+        arguments: vec![
+            "-c".to_string(),
+            "trap '' TERM; while :; do sleep 60; done".to_string(),
+        ],
+        cwd: std::env::current_dir().expect("current directory"),
+    }
+}
+
+#[cfg(windows)]
+fn cancellation_tree_command(executable: &PathBuf) -> ShellCommandArguments {
+    ShellCommandArguments {
+        command: executable.to_string_lossy().into_owned(),
+        arguments: vec!["__command-test-tree".to_string()],
+        cwd: std::env::current_dir().expect("current directory"),
+    }
 }
 
 #[cfg(unix)]

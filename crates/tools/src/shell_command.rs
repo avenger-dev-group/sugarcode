@@ -23,6 +23,7 @@ pub const MAX_SHELL_ARGUMENT_BYTES: usize = 8 * 1_024;
 pub const MAX_SHELL_TOTAL_ARGUMENT_BYTES: usize = 32 * 1_024;
 pub const MAX_SHELL_OUTPUT_BYTES: usize = 24 * 1_024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const SUPERVISOR_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(35);
 #[cfg(unix)]
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 const SUPERVISOR_RESULT_BYTES: usize = 2 * MAX_SHELL_OUTPUT_BYTES + 16 * 1_024;
@@ -219,7 +220,7 @@ async fn run_native(
             read_response.abort();
             return ShellCommandExecution::Cancelled;
         }
-        _ = tokio::time::sleep(COMMAND_TIMEOUT) => {
+        _ = tokio::time::sleep(SUPERVISOR_WATCHDOG_TIMEOUT) => {
             let _ = stdin.write_all(b"{\"type\":\"cancel\"}\n").await;
             let _ = stdin.flush().await;
             drop(stdin);
@@ -239,7 +240,8 @@ async fn run_native(
                 stderr_bytes: 0,
                 stdout_truncated: false,
                 stderr_truncated: false,
-                duration_ms: u64::try_from(COMMAND_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+                duration_ms: u64::try_from(SUPERVISOR_WATCHDOG_TIMEOUT.as_millis())
+                    .unwrap_or(u64::MAX),
                 outcome: ShellCommandOutcome::TimedOut,
             });
         }
@@ -531,7 +533,8 @@ fn terminate_process_tree(child: &mut std::process::Child) {
     }
     let deadline = Instant::now() + TERMINATE_GRACE;
     while Instant::now() < deadline {
-        if child.try_wait().ok().flatten().is_some() {
+        let group_exists = unsafe { libc::killpg(process_group, 0) == 0 };
+        if !group_exists && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
             return;
         }
         std::thread::sleep(Duration::from_millis(10));
