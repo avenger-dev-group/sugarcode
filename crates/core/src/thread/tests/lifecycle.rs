@@ -244,8 +244,9 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
         &completed.turn_id,
         CoreItemKind::ToolCall {
             call_id: "call_1".to_string(),
-            name: "workspace/read".to_string(),
-            path: "README.txt".to_string(),
+            name: "workspace/search".to_string(),
+            path: "src".to_string(),
+            query: Some("needle".to_string()),
         },
     )
     .expect("tool call");
@@ -287,6 +288,7 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
             call_id: "call_2".to_string(),
             name: "workspace/read".to_string(),
             path: "missing.txt".to_string(),
+            query: None,
         },
     )
     .expect("failed call");
@@ -316,6 +318,7 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
             call_id: "call_3".to_string(),
             name: "workspace/read".to_string(),
             path: "blocked.txt".to_string(),
+            query: None,
         },
     )
     .expect("interrupted call");
@@ -337,10 +340,20 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
         fork.turns[0].items.as_slice(),
         [
             DurableItemSnapshot::UserMessage { .. },
-            DurableItemSnapshot::ToolCall { call_id, .. },
+            DurableItemSnapshot::ToolCall {
+                call_id,
+                name,
+                path,
+                query,
+                ..
+            },
             DurableItemSnapshot::ToolResult { .. },
             DurableItemSnapshot::AgentMessage { text, .. }
-        ] if call_id == "call_1" && text == "answer"
+        ] if call_id == "call_1"
+            && name == "workspace/search"
+            && path == "src"
+            && query.as_deref() == Some("needle")
+            && text == "answer"
     ));
     assert!(
         source_snapshot.turns[0]

@@ -108,6 +108,32 @@ fn workspace_list_tool_lifecycle_matches_golden_trace() {
 }
 
 #[test]
+fn workspace_search_tool_lifecycle_matches_golden_trace() {
+    const TOOL_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_search_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/search\",\"arguments\":\"{\\\"path\\\":\\\"src\\\",\\\"query\\\":\\\"needle\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const FINAL_ANSWER: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Search succeeded.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("create isolated workspace");
+    fs::create_dir(workspace.path().join("src")).expect("create src");
+    fs::write(workspace.path().join("src/lib.rs"), "first\nneedle here\n")
+        .expect("write search fixture");
+    let _provider =
+        MockProvider::start_with_bodies(sugarcode_home.path(), vec![TOOL_CALL, FINAL_ANSWER]);
+    run_golden(
+        "turn-workspace-search",
+        &sugarcode_home,
+        Some(workspace.path()),
+    );
+}
+
+#[test]
 fn missing_model_still_serves_threads_and_returns_stable_turn_error() {
     let home = tempfile::tempdir().expect("isolated SugarCode home");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))

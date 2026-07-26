@@ -123,6 +123,7 @@ pub enum DurableItemSnapshot {
         call_id: String,
         name: String,
         path: String,
+        query: Option<String>,
     },
     ToolResult {
         id: ItemId,

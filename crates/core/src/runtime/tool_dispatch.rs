@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelToolDefinition> {
-    let mut definitions = Vec::with_capacity(2);
+    let mut definitions = Vec::with_capacity(3);
     if runtime.workspace_read.is_some() {
         definitions.push(ModelToolDefinition {
             name: "workspace/read".to_string(),
@@ -18,6 +18,15 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
             parameters: workspace_path_parameters(),
         });
     }
+    if runtime.workspace_search.is_some() {
+        definitions.push(ModelToolDefinition {
+            name: "workspace/search".to_string(),
+            description:
+                "Search UTF-8 text file contents recursively inside one workspace directory. Returns workspace-relative paths and 1-based line numbers."
+                    .to_string(),
+            parameters: workspace_search_parameters(),
+        });
+    }
     definitions
 }
 
@@ -32,21 +41,60 @@ fn workspace_path_parameters() -> serde_json::Value {
     })
 }
 
-pub(super) fn workspace_tool_path(call: &ModelToolCall) -> Result<String, ModelError> {
-    if !matches!(call.name.as_str(), "workspace/read" | "workspace/list") {
+fn workspace_search_parameters() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "path": { "type": "string" },
+            "query": { "type": "string" }
+        },
+        "required": ["path", "query"]
+    })
+}
+
+pub(super) struct WorkspaceToolArguments {
+    pub path: String,
+    pub query: Option<String>,
+}
+
+pub(super) fn workspace_tool_arguments(
+    call: &ModelToolCall,
+) -> Result<WorkspaceToolArguments, ModelError> {
+    if !matches!(
+        call.name.as_str(),
+        "workspace/read" | "workspace/list" | "workspace/search"
+    ) {
         return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
     }
     let Some(arguments) = call.arguments.as_object() else {
         return Err(ModelError::new(ModelErrorKind::Protocol, false));
     };
-    if arguments.len() != 1 {
+    let expected_len = if call.name == "workspace/search" {
+        2
+    } else {
+        1
+    };
+    if arguments.len() != expected_len {
         return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
     }
-    arguments
+    let path = arguments
         .get("path")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))
+        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+    let query = if call.name == "workspace/search" {
+        Some(
+            arguments
+                .get("query")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?,
+        )
+    } else {
+        None
+    };
+    Ok(WorkspaceToolArguments { path, query })
 }
 
 pub(super) fn map_workspace_read_outcome(
@@ -131,14 +179,83 @@ pub(super) fn map_workspace_list_outcome(
     }
 }
 
-pub(super) fn serialized_tool_call_bytes(call: &ModelToolCall, path: &str) -> usize {
-    serde_json::to_vec(&serde_json::json!({
+pub(super) fn map_workspace_search_outcome(
+    outcome: WorkspaceSearchOutcome,
+) -> (CoreToolResult, String) {
+    match outcome {
+        WorkspaceSearchOutcome::Matches { matches, truncated } => {
+            let matches = matches
+                .into_iter()
+                .map(|matched| {
+                    serde_json::json!({
+                        "path": matched.path,
+                        "line": matched.line,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let content = serde_json::to_string(&serde_json::json!({
+                "matches": matches,
+                "truncated": truncated,
+            }))
+            .expect("workspace/search result must serialize");
+            (
+                CoreToolResult::Success {
+                    bytes: u64::try_from(content.len()).unwrap_or(u64::MAX),
+                    content: content.clone(),
+                },
+                content,
+            )
+        }
+        WorkspaceSearchOutcome::Error { kind } => {
+            let kind = match kind {
+                WorkspaceSearchErrorKind::InvalidPath => CoreToolErrorKind::InvalidPath,
+                WorkspaceSearchErrorKind::InvalidQuery => CoreToolErrorKind::InvalidQuery,
+                WorkspaceSearchErrorKind::NotFound => CoreToolErrorKind::NotFound,
+                WorkspaceSearchErrorKind::AccessDenied => CoreToolErrorKind::AccessDenied,
+                WorkspaceSearchErrorKind::PathNotAllowed => CoreToolErrorKind::PathNotAllowed,
+                WorkspaceSearchErrorKind::NotDirectory => CoreToolErrorKind::NotDirectory,
+                WorkspaceSearchErrorKind::InvalidEncoding => CoreToolErrorKind::InvalidEncoding,
+                WorkspaceSearchErrorKind::InvalidName => CoreToolErrorKind::InvalidName,
+                WorkspaceSearchErrorKind::TooManyEntries => CoreToolErrorKind::TooManyEntries,
+                WorkspaceSearchErrorKind::SearchLimitExceeded => {
+                    CoreToolErrorKind::SearchLimitExceeded
+                }
+                WorkspaceSearchErrorKind::SearchTimedOut => CoreToolErrorKind::SearchTimedOut,
+                WorkspaceSearchErrorKind::ChangedDuringSearch => {
+                    CoreToolErrorKind::ChangedDuringSearch
+                }
+                WorkspaceSearchErrorKind::ResultTooLarge => CoreToolErrorKind::ResultTooLarge,
+                WorkspaceSearchErrorKind::Cancelled => CoreToolErrorKind::Unavailable,
+                WorkspaceSearchErrorKind::Unavailable => CoreToolErrorKind::Unavailable,
+            };
+            (
+                CoreToolResult::Error { kind },
+                format!("workspace/search error: {kind}"),
+            )
+        }
+    }
+}
+
+pub(super) fn serialized_tool_call_bytes(
+    call: &ModelToolCall,
+    arguments: &WorkspaceToolArguments,
+) -> usize {
+    let mut value = serde_json::json!({
         "type": "toolCall",
         "callId": call.id,
         "name": call.name,
-        "path": path,
-    }))
-    .map_or(usize::MAX, |bytes| bytes.len())
+        "path": arguments.path,
+    });
+    if let Some(query) = &arguments.query {
+        value
+            .as_object_mut()
+            .expect("tool call serialization value is an object")
+            .insert(
+                "query".to_string(),
+                serde_json::Value::String(query.clone()),
+            );
+    }
+    serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len())
 }
 
 pub(super) fn serialized_tool_result_bytes(result: &CoreToolResult) -> usize {

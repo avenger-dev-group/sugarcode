@@ -40,7 +40,7 @@ export type InitializeResponse = { protocolVersion: number, serverInfo: ServerIn
 
 export type ToolResult = { "type": "success", content: string, bytes: bigint, } | { "type": "error", kind: string, };
 
-export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
+export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
 
 export type ItemStartedNotification = { threadId: string, turnId: string, item: Item, };
 

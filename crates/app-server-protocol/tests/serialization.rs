@@ -476,6 +476,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
             call_id: "call_1".to_string(),
             name: "workspace/read".to_string(),
             path: "README.txt".to_string(),
+            query: None,
         })
         .expect("tool call serializes"),
         json!({
@@ -484,6 +485,24 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
             "callId": "call_1",
             "name": "workspace/read",
             "path": "README.txt"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(Item::ToolCall {
+            id: "item_0000000000000004".to_string(),
+            call_id: "call_2".to_string(),
+            name: "workspace/search".to_string(),
+            path: "src".to_string(),
+            query: Some("needle".to_string()),
+        })
+        .expect("search tool call serializes"),
+        json!({
+            "type": "toolCall",
+            "id": "item_0000000000000004",
+            "callId": "call_2",
+            "name": "workspace/search",
+            "path": "src",
+            "query": "needle"
         })
     );
     assert_eq!(

@@ -22,6 +22,9 @@ pub enum Item {
         call_id: String,
         name: String,
         path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        query: Option<String>,
     },
     ToolResult {
         id: String,

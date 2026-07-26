@@ -117,6 +117,8 @@ pub(super) enum StoredItemRef<'a> {
         call_id: &'a str,
         name: &'a str,
         path: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        query: Option<&'a str>,
     },
     ToolResult {
         id: &'a str,
@@ -149,11 +151,13 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 call_id,
                 name,
                 path,
+                query,
             } => Self::ToolCall {
                 id: id.as_str(),
                 call_id,
                 name,
                 path,
+                query: query.as_deref(),
             },
             DurableItemSnapshot::ToolResult {
                 id,
@@ -395,6 +399,8 @@ enum StoredItem {
         call_id: String,
         name: String,
         path: String,
+        #[serde(default)]
+        query: Option<String>,
     },
     ToolResult {
         id: String,
@@ -775,11 +781,13 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             call_id,
             name,
             path,
+            query,
         } => DurableItemSnapshot::ToolCall {
             id: ItemId::new(id),
             call_id,
             name,
             path,
+            query,
         },
         StoredItem::ToolResult {
             id,

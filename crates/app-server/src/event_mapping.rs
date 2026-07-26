@@ -253,11 +253,13 @@ fn map_snapshot_parts(
                             call_id,
                             name,
                             path,
+                            query,
                         } => PublicItem::ToolCall {
                             id: id.into_string(),
                             call_id,
                             name,
                             path,
+                            query,
                         },
                         DurableItemSnapshot::ToolResult {
                             id,
@@ -390,11 +392,13 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             call_id,
             name,
             path,
+            query,
         } => PublicItem::ToolCall {
             id: item.id.into_string(),
             call_id,
             name,
             path,
+            query,
         },
         CoreItemKind::ToolResult {
             call_id,

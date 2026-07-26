@@ -89,6 +89,12 @@
             "path": {
               "type": "string"
             },
+            "query": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "toolCall"

@@ -14,11 +14,13 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             call_id,
             name,
             path,
+            query,
         } => DurableItemSnapshot::ToolCall {
             id: item.id.clone(),
             call_id: call_id.clone(),
             name: name.clone(),
             path: path.clone(),
+            query: query.clone(),
         },
         CoreItemKind::ToolResult {
             call_id,
@@ -41,10 +43,12 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
             call_id,
             name,
             path,
+            query,
         } => ItemKind::ToolCall {
             call_id: call_id.clone(),
             name: name.clone(),
             path: path.clone(),
+            query: query.clone(),
         },
         CoreItemKind::ToolResult {
             call_id,
@@ -92,6 +96,7 @@ pub(super) fn core_tool_error_kind(kind: &str) -> sugarcode_protocol::CoreToolEr
 
     match kind {
         "invalidPath" => CoreToolErrorKind::InvalidPath,
+        "invalidQuery" => CoreToolErrorKind::InvalidQuery,
         "notFound" => CoreToolErrorKind::NotFound,
         "accessDenied" => CoreToolErrorKind::AccessDenied,
         "pathNotAllowed" => CoreToolErrorKind::PathNotAllowed,
@@ -104,6 +109,9 @@ pub(super) fn core_tool_error_kind(kind: &str) -> sugarcode_protocol::CoreToolEr
         "tooManyEntries" => CoreToolErrorKind::TooManyEntries,
         "changedDuringRead" => CoreToolErrorKind::ChangedDuringRead,
         "changedDuringList" => CoreToolErrorKind::ChangedDuringList,
+        "searchLimitExceeded" => CoreToolErrorKind::SearchLimitExceeded,
+        "searchTimedOut" => CoreToolErrorKind::SearchTimedOut,
+        "changedDuringSearch" => CoreToolErrorKind::ChangedDuringSearch,
         "resultTooLarge" => CoreToolErrorKind::ResultTooLarge,
         _ => CoreToolErrorKind::Unavailable,
     }

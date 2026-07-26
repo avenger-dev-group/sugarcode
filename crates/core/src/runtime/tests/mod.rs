@@ -134,4 +134,5 @@ fn runtime(provider: RecordedProvider) -> (CoreRuntime, mpsc::Receiver<CoreEvent
 
 mod interruption;
 mod lifecycle;
+mod workspace_search;
 mod workspace_tools;

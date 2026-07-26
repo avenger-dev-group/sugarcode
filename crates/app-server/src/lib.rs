@@ -34,8 +34,11 @@ pub async fn run_stdio(
     let workspace_read: Option<Arc<dyn sugarcode_tools::WorkspaceReadExecutor>> = workspace
         .as_ref()
         .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceReadExecutor>);
-    let workspace_list: Option<Arc<dyn sugarcode_tools::WorkspaceListExecutor>> =
-        workspace.map(|tool| tool as Arc<dyn sugarcode_tools::WorkspaceListExecutor>);
+    let workspace_list: Option<Arc<dyn sugarcode_tools::WorkspaceListExecutor>> = workspace
+        .as_ref()
+        .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceListExecutor>);
+    let workspace_search: Option<Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>> =
+        workspace.map(|tool| tool as Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>);
     let model = config.model().cloned();
     let model_token = model
         .as_ref()
@@ -66,12 +69,13 @@ pub async fn run_stdio(
                             .map_err(io::Error::other)?,
                     ),
                 };
-            CoreRuntime::new_with_workspace(
+            CoreRuntime::new_with_workspace_search(
                 core,
                 provider,
                 model.model().to_string(),
                 workspace_read,
                 workspace_list,
+                workspace_search,
             )
         }
         (None, Ok(None)) => CoreRuntime::without_model(core),

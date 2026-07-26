@@ -116,7 +116,7 @@ fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
 }
 
 #[test]
-fn a_durable_tool_call_survives_recovery_without_an_unwritten_result() {
+fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
     let thread_id = ThreadId::new("thr_0000000000000001");
@@ -124,8 +124,9 @@ fn a_durable_tool_call_survives_recovery_without_an_unwritten_result() {
     let tool_call = DurableItemSnapshot::ToolCall {
         id: ItemId::new("item_0000000000000002"),
         call_id: "call_1".to_string(),
-        name: "workspace/read".to_string(),
-        path: "README.txt".to_string(),
+        name: "workspace/search".to_string(),
+        path: "src".to_string(),
+        query: Some("needle".to_string()),
     };
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");

@@ -41,6 +41,7 @@ pub enum CoreItemKind {
         call_id: String,
         name: String,
         path: String,
+        query: Option<String>,
     },
     ToolResult {
         call_id: String,
@@ -58,6 +59,7 @@ pub enum CoreToolResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreToolErrorKind {
     InvalidPath,
+    InvalidQuery,
     NotFound,
     AccessDenied,
     PathNotAllowed,
@@ -70,6 +72,9 @@ pub enum CoreToolErrorKind {
     TooManyEntries,
     ChangedDuringRead,
     ChangedDuringList,
+    SearchLimitExceeded,
+    SearchTimedOut,
+    ChangedDuringSearch,
     ResultTooLarge,
     Unavailable,
 }
@@ -78,6 +83,7 @@ impl fmt::Display for CoreToolErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InvalidPath => "invalidPath",
+            Self::InvalidQuery => "invalidQuery",
             Self::NotFound => "notFound",
             Self::AccessDenied => "accessDenied",
             Self::PathNotAllowed => "pathNotAllowed",
@@ -90,6 +96,9 @@ impl fmt::Display for CoreToolErrorKind {
             Self::TooManyEntries => "tooManyEntries",
             Self::ChangedDuringRead => "changedDuringRead",
             Self::ChangedDuringList => "changedDuringList",
+            Self::SearchLimitExceeded => "searchLimitExceeded",
+            Self::SearchTimedOut => "searchTimedOut",
+            Self::ChangedDuringSearch => "changedDuringSearch",
             Self::ResultTooLarge => "resultTooLarge",
             Self::Unavailable => "unavailable",
         })

@@ -63,6 +63,7 @@ pub enum PreparedMessage {
         call_id: String,
         name: String,
         path: String,
+        query: Option<String>,
     },
     ToolResult {
         call_id: String,
@@ -191,6 +192,7 @@ enum ItemKind {
         call_id: String,
         name: String,
         path: String,
+        query: Option<String>,
     },
     ToolResult {
         call_id: String,
@@ -244,10 +246,12 @@ impl Item {
                 call_id,
                 name,
                 path,
+                query,
             } => CoreItemKind::ToolCall {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 path: path.clone(),
+                query: query.clone(),
             },
             ItemKind::ToolResult {
                 call_id,
@@ -443,6 +447,7 @@ impl Core {
                         call_id,
                         name,
                         path,
+                        query,
                     } => Item {
                         id: id.clone(),
                         state: ItemState::Completed,
@@ -450,6 +455,7 @@ impl Core {
                             call_id: call_id.clone(),
                             name: name.clone(),
                             path: path.clone(),
+                            query: query.clone(),
                         },
                     },
                     DurableItemSnapshot::ToolResult {
@@ -543,10 +549,12 @@ impl Core {
                         call_id,
                         name,
                         path,
+                        query,
                     } => Some(PreparedMessage::ToolCall {
                         call_id: call_id.clone(),
                         name: name.clone(),
                         path: path.clone(),
+                        query: query.clone(),
                     }),
                     ItemKind::ToolResult {
                         call_id,
@@ -574,7 +582,10 @@ impl Core {
                     call_id,
                     name,
                     path,
-                } => call_id.len() + name.len() + path.len(),
+                    query,
+                } => {
+                    call_id.len() + name.len() + path.len() + query.as_ref().map_or(0, String::len)
+                }
                 PreparedMessage::ToolResult { call_id, content } => call_id.len() + content.len(),
             })
         });

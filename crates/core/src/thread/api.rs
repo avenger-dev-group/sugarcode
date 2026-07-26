@@ -212,12 +212,14 @@ impl CoreApi for Core {
                         call_id,
                         name,
                         path,
+                        query,
                         ..
                     } => DurableItemSnapshot::ToolCall {
                         id: ItemId::new(format!("item_{item_sequence:016}")),
                         call_id: call_id.clone(),
                         name: name.clone(),
                         path: path.clone(),
+                        query: query.clone(),
                     },
                     DurableItemSnapshot::ToolResult {
                         call_id,

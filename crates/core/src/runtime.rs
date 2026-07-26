@@ -48,6 +48,10 @@ use sugarcode_tools::WorkspaceReadArguments;
 use sugarcode_tools::WorkspaceReadErrorKind;
 use sugarcode_tools::WorkspaceReadExecutor;
 use sugarcode_tools::WorkspaceReadOutcome;
+use sugarcode_tools::WorkspaceSearchArguments;
+use sugarcode_tools::WorkspaceSearchErrorKind;
+use sugarcode_tools::WorkspaceSearchExecutor;
+use sugarcode_tools::WorkspaceSearchOutcome;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -67,10 +71,11 @@ use terminal::send_event;
 use tool_dispatch::append_completed_tool_item;
 use tool_dispatch::map_workspace_list_outcome;
 use tool_dispatch::map_workspace_read_outcome;
+use tool_dispatch::map_workspace_search_outcome;
 use tool_dispatch::serialized_tool_call_bytes;
 use tool_dispatch::serialized_tool_result_bytes;
+use tool_dispatch::workspace_tool_arguments;
 use tool_dispatch::workspace_tool_definitions;
-use tool_dispatch::workspace_tool_path;
 
 const MAX_PROVIDER_ROUNDS: u8 = 2;
 const MAX_TOOL_CALLS_PER_TURN: usize = 1;
@@ -85,6 +90,7 @@ pub struct CoreRuntime {
     model_gateway: Option<ModelGateway>,
     workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
     workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
+    workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
     event_tx: mpsc::Sender<CoreEvent>,
     active: Arc<Mutex<BTreeMap<ThreadId, ActiveTurn>>>,
 }
@@ -160,6 +166,17 @@ impl CoreRuntime {
         workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
         workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
     ) -> (Self, mpsc::Receiver<CoreEvent>) {
+        Self::new_with_workspace_search(core, provider, model, workspace_read, workspace_list, None)
+    }
+
+    pub fn new_with_workspace_search(
+        core: Core,
+        provider: Arc<dyn ModelProvider>,
+        model: String,
+        workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
+        workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
+        workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
+    ) -> (Self, mpsc::Receiver<CoreEvent>) {
         let (event_tx, event_rx) = mpsc::channel(CORE_EVENT_CAPACITY);
         (
             Self {
@@ -170,6 +187,7 @@ impl CoreRuntime {
                 }),
                 workspace_read,
                 workspace_list,
+                workspace_search,
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -185,6 +203,7 @@ impl CoreRuntime {
                 model_gateway: None,
                 workspace_read: None,
                 workspace_list: None,
+                workspace_search: None,
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -557,6 +576,7 @@ async fn run_turn(
                     let tool_available = match call.name.as_str() {
                         "workspace/read" => runtime.workspace_read.is_some(),
                         "workspace/list" => runtime.workspace_list.is_some(),
+                        "workspace/search" => runtime.workspace_search.is_some(),
                         _ => false,
                     };
                     if !tool_available {
@@ -565,11 +585,11 @@ async fn run_turn(
                             false,
                         ));
                     }
-                    let path = match workspace_tool_path(&call) {
-                        Ok(path) => path,
+                    let arguments = match workspace_tool_arguments(&call) {
+                        Ok(arguments) => arguments,
                         Err(error) => break 'rounds Terminal::Failed(error),
                     };
-                    let call_bytes = serialized_tool_call_bytes(&call, &path);
+                    let call_bytes = serialized_tool_call_bytes(&call, &arguments);
                     if turn_tool_bytes
                         .checked_add(call_bytes)
                         .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
@@ -586,7 +606,8 @@ async fn run_turn(
                         CoreItemKind::ToolCall {
                             call_id: call.id.clone(),
                             name: call.name.clone(),
-                            path: path.clone(),
+                            path: arguments.path.clone(),
+                            query: arguments.query.clone(),
                         },
                     )
                     .await
@@ -602,7 +623,9 @@ async fn run_turn(
                                 .as_ref()
                                 .expect("validated workspace/read executor")
                                 .read(
-                                    &WorkspaceReadArguments { path: path.clone() },
+                                    &WorkspaceReadArguments {
+                                        path: arguments.path.clone(),
+                                    },
                                     &cancellation,
                                 )
                                 .await;
@@ -622,7 +645,9 @@ async fn run_turn(
                                 .as_ref()
                                 .expect("validated workspace/list executor")
                                 .list(
-                                    &WorkspaceListArguments { path: path.clone() },
+                                    &WorkspaceListArguments {
+                                        path: arguments.path.clone(),
+                                    },
                                     &cancellation,
                                 )
                                 .await;
@@ -635,6 +660,32 @@ async fn run_turn(
                                 break 'rounds Terminal::Interrupted;
                             }
                             map_workspace_list_outcome(outcome)
+                        }
+                        "workspace/search" => {
+                            let outcome = runtime
+                                .workspace_search
+                                .as_ref()
+                                .expect("validated workspace/search executor")
+                                .search(
+                                    &WorkspaceSearchArguments {
+                                        path: arguments.path.clone(),
+                                        query: arguments
+                                            .query
+                                            .clone()
+                                            .expect("validated workspace/search query"),
+                                    },
+                                    &cancellation,
+                                )
+                                .await;
+                            if matches!(
+                                outcome,
+                                WorkspaceSearchOutcome::Error {
+                                    kind: WorkspaceSearchErrorKind::Cancelled
+                                }
+                            ) {
+                                break 'rounds Terminal::Interrupted;
+                            }
+                            map_workspace_search_outcome(outcome)
                         }
                         _ => unreachable!("tool availability was validated"),
                     };
@@ -736,10 +787,14 @@ fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {
             call_id,
             name,
             path,
+            query,
         } => ModelMessage::ToolCall(ModelToolCall {
             id: call_id.clone(),
             name: name.clone(),
-            arguments: serde_json::json!({ "path": path }),
+            arguments: match query {
+                Some(query) => serde_json::json!({ "path": path, "query": query }),
+                None => serde_json::json!({ "path": path }),
+            },
         }),
         PreparedMessage::ToolResult { call_id, content } => ModelMessage::ToolResult {
             call_id: call_id.clone(),
