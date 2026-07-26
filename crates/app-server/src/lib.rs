@@ -25,12 +25,12 @@ pub async fn run_stdio(
     config: EffectiveConfig,
     workspace: Option<std::path::PathBuf>,
 ) -> io::Result<()> {
-    let workspace_read = workspace
+    let workspace_read: Option<Arc<dyn sugarcode_tools::WorkspaceReadExecutor>> = workspace
         .as_deref()
         .map(sugarcode_tools::WorkspaceReadTool::open)
         .transpose()
         .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
-        .map(Arc::new);
+        .map(|tool| Arc::new(tool) as Arc<dyn sugarcode_tools::WorkspaceReadExecutor>);
     let model = config.model().cloned();
     let model_token = model
         .as_ref()

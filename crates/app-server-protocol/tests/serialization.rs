@@ -509,6 +509,16 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
             }
         })
     );
+    assert_eq!(
+        serde_json::to_value(ToolResult::Error {
+            kind: "resultTooLarge".to_string(),
+        })
+        .expect("tool error serializes"),
+        json!({
+            "type": "error",
+            "kind": "resultTooLarge"
+        })
+    );
 }
 
 #[test]

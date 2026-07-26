@@ -84,6 +84,116 @@ async fn fragmented_single_tool_call_is_assembled_into_one_typed_event() {
 }
 
 #[tokio::test]
+async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
+    let cases = [
+        (
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"function_call\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}},\"finish_reason\":\"function_call\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            ModelErrorKind::UnsupportedOutput,
+        ),
+        (
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            ModelErrorKind::Protocol,
+        ),
+        (
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_2\"}]},\"finish_reason\":null}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            ModelErrorKind::Protocol,
+        ),
+        (
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            ModelErrorKind::UnsupportedOutput,
+        ),
+        (
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0},{\"index\":1}]},\"finish_reason\":null}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            ModelErrorKind::UnsupportedOutput,
+        ),
+        (
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            ModelErrorKind::Protocol,
+        ),
+        (
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"bad id\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            ModelErrorKind::Protocol,
+        ),
+    ];
+    for (body, expected) in cases {
+        let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+        let events = provider(endpoint)
+            .stream(tool_request())
+            .await
+            .expect("stream starts")
+            .collect::<Vec<_>>()
+            .await;
+        let error = events
+            .last()
+            .expect("terminal event")
+            .as_ref()
+            .expect_err("invalid tool output");
+        server.await.expect("mock server");
+        assert_eq!(error.kind(), expected);
+        assert!(!error.retryable());
+    }
+}
+
+#[tokio::test]
+async fn oversized_tool_arguments_are_a_non_retryable_output_limit() {
+    let arguments = "x".repeat(32 * 1024 + 1);
+    let chunk = serde_json::json!({
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "workspace/read",
+                        "arguments": arguments,
+                    }
+                }]
+            },
+            "finish_reason": null
+        }]
+    });
+    let body = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+    let (endpoint, server) = response_server(body.into_bytes(), Vec::new()).await;
+    let error = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .next()
+        .await
+        .expect("terminal event")
+        .expect_err("oversized arguments");
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::OutputTooLarge);
+    assert!(!error.retryable());
+}
+
+#[tokio::test]
 async fn utf8_survives_arbitrary_network_chunk_boundaries() {
     let bytes = UTF8.as_bytes().to_vec();
     let first_utf8 = bytes
@@ -223,6 +333,7 @@ async fn data_after_finish_reason_is_a_protocol_error() {
 #[tokio::test]
 async fn usage_only_chunk_after_finish_reason_is_accepted_once() {
     let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
         "data: [DONE]\n\n"
@@ -238,6 +349,7 @@ async fn usage_only_chunk_after_finish_reason_is_accepted_once() {
     assert_eq!(
         events,
         vec![
+            Ok(ModelEvent::TextDelta("done".to_string())),
             Ok(ModelEvent::Usage(sugarcode_model_provider::ModelUsage {
                 input_tokens: Some(2),
                 output_tokens: Some(3),
@@ -247,6 +359,26 @@ async fn usage_only_chunk_after_finish_reason_is_accepted_once() {
             Ok(ModelEvent::Completed),
         ]
     );
+}
+
+#[tokio::test]
+async fn empty_completed_response_is_non_retryable_incomplete() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let error = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .next()
+        .await
+        .expect("terminal event")
+        .expect_err("empty response must fail");
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::Incomplete);
+    assert!(!error.retryable());
 }
 
 #[tokio::test]
@@ -546,6 +678,58 @@ async fn dropping_the_stream_closes_the_upstream_response_without_sleep() {
     );
     drop(stream);
 
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), closed_rx)
+            .await
+            .expect("upstream close deadline")
+            .expect("close signal")
+    );
+    server.await.expect("mock server");
+}
+
+#[tokio::test]
+async fn dropping_during_tool_argument_assembly_closes_upstream_without_an_event() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind mock server");
+    let address = listener.local_addr().expect("mock address");
+    let (fragment_tx, fragment_rx) = oneshot::channel();
+    let (closed_tx, closed_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept request");
+        read_request(&mut socket, true).await;
+        let event = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[",
+            "{\"index\":0,\"id\":\"call_partial\",\"type\":\"function\",\"function\":",
+            "{\"name\":\"workspace/\",\"arguments\":\"{\\\"path\\\":\\\"partial\"}}",
+            "]},\"finish_reason\":null}]}\n\n"
+        );
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n",
+                    event.len(),
+                    event
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write partial tool stream");
+        socket.flush().await.expect("flush partial tool stream");
+        let _ = fragment_tx.send(());
+        let mut byte = [0u8; 1];
+        let result = socket.read(&mut byte).await;
+        let _ = closed_tx.send(matches!(result, Ok(0) | Err(_)));
+    });
+    let endpoint =
+        Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint");
+    let stream = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts");
+    fragment_rx.await.expect("fragment sent");
+    tokio::task::yield_now().await;
+    drop(stream);
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(2), closed_rx)
             .await

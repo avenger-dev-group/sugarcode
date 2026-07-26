@@ -721,7 +721,9 @@ impl ThreadRepository for RolloutRepository {
             DurableTurnStatus::Failed => turn.error.is_some(),
             DurableTurnStatus::Interrupted => turn.error.is_none(),
         };
-        if turn.items.is_empty() || !valid_terminal {
+        if (turn.items.is_empty() && turn.status != DurableTurnStatus::Interrupted)
+            || !valid_terminal
+        {
             return Err(RolloutError::InvalidRecord {
                 kind: "invalidTerminalTurn",
             });

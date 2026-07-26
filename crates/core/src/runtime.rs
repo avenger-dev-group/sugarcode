@@ -28,6 +28,7 @@ use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreItemKind;
 use sugarcode_protocol::CoreItemSnapshot;
 use sugarcode_protocol::CoreRequestId;
+use sugarcode_protocol::CoreToolErrorKind;
 use sugarcode_protocol::CoreToolResult;
 use sugarcode_protocol::CoreTurnError;
 use sugarcode_protocol::CoreTurnErrorKind;
@@ -41,11 +42,16 @@ use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableUsage;
 use sugarcode_tools::WorkspaceReadArguments;
 use sugarcode_tools::WorkspaceReadErrorKind;
+use sugarcode_tools::WorkspaceReadExecutor;
 use sugarcode_tools::WorkspaceReadOutcome;
-use sugarcode_tools::WorkspaceReadTool;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+const MAX_PROVIDER_ROUNDS: u8 = 2;
+const MAX_TOOL_CALLS_PER_TURN: usize = 1;
+pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
+pub const MAX_TURN_TOOL_BYTES: usize = 400 * 1024;
 
 const CORE_EVENT_CAPACITY: usize = 64;
 
@@ -53,7 +59,7 @@ const CORE_EVENT_CAPACITY: usize = 64;
 pub struct CoreRuntime {
     core: Arc<Mutex<Core>>,
     model_gateway: Option<ModelGateway>,
-    workspace_read: Option<Arc<WorkspaceReadTool>>,
+    workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
     event_tx: mpsc::Sender<CoreEvent>,
     active: Arc<Mutex<BTreeMap<ThreadId, ActiveTurn>>>,
 }
@@ -126,7 +132,7 @@ impl CoreRuntime {
         core: Core,
         provider: Arc<dyn ModelProvider>,
         model: String,
-        workspace_read: Option<Arc<WorkspaceReadTool>>,
+        workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
     ) -> (Self, mpsc::Receiver<CoreEvent>) {
         let (event_tx, event_rx) = mpsc::channel(CORE_EVENT_CAPACITY);
         (
@@ -397,7 +403,13 @@ async fn run_turn(
     let mut round = 0u8;
     let mut agent_item: Option<CoreItemSnapshot> = None;
     let mut pending_tool_call = false;
+    let mut non_whitespace_text_seen = false;
+    let mut tool_call_count = 0usize;
+    let mut turn_tool_bytes = 0usize;
     let mut terminal = 'rounds: loop {
+        if round >= MAX_PROVIDER_ROUNDS {
+            break Terminal::Failed(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
+        }
         let request = ModelRequest {
             model: model_gateway.model.to_string(),
             messages: messages.clone(),
@@ -425,6 +437,8 @@ async fn run_turn(
             };
             match next {
                 Some(Ok(ModelEvent::TextDelta(delta))) if !delta.is_empty() => {
+                    non_whitespace_text_seen |=
+                        delta.chars().any(|character| !character.is_whitespace());
                     if agent_item.is_none() {
                         let item = match runtime
                             .lock_core()
@@ -433,9 +447,11 @@ async fn run_turn(
                             Ok(item) => item,
                             Err(_) => break 'rounds Terminal::StateUnavailable,
                         };
+                        agent_item = Some(item.clone());
+                        let durable_event = CancellationToken::new();
                         if !send_event(
                             &runtime,
-                            &cancellation,
+                            &durable_event,
                             request_id,
                             CoreEventKind::ItemStarted {
                                 thread_id: thread_id.clone(),
@@ -445,9 +461,8 @@ async fn run_turn(
                         )
                         .await
                         {
-                            break 'rounds Terminal::Interrupted;
+                            break 'rounds Terminal::StateUnavailable;
                         }
-                        agent_item = Some(item);
                     }
                     let item_id = agent_item.as_ref().expect("agent item started").id.clone();
                     match runtime
@@ -481,16 +496,34 @@ async fn run_turn(
                 }
                 Some(Ok(ModelEvent::TextDelta(_))) => {}
                 Some(Ok(ModelEvent::ToolCall(call))) => {
-                    if round != 0 || agent_item.is_some() || tool_call.replace(call).is_some() {
+                    if round != 0
+                        || agent_item.is_some()
+                        || tool_call_count >= MAX_TOOL_CALLS_PER_TURN
+                        || tool_call.replace(call).is_some()
+                    {
                         break 'rounds Terminal::Failed(ModelError::new(
                             ModelErrorKind::UnsupportedOutput,
                             false,
                         ));
                     }
+                    tool_call_count += 1;
                 }
-                Some(Ok(ModelEvent::Usage(value))) => usage = Some(value),
+                Some(Ok(ModelEvent::Usage(value))) => {
+                    if !accumulate_usage(&mut usage, value) {
+                        break 'rounds Terminal::Failed(ModelError::new(
+                            ModelErrorKind::OutputTooLarge,
+                            false,
+                        ));
+                    }
+                }
                 Some(Ok(ModelEvent::Completed)) => {
                     let Some(call) = tool_call else {
+                        if !non_whitespace_text_seen {
+                            break 'rounds Terminal::Failed(ModelError::new(
+                                ModelErrorKind::Incomplete,
+                                false,
+                            ));
+                        }
                         break 'rounds Terminal::Completed;
                     };
                     let Some(workspace_read) = runtime.workspace_read.as_ref() else {
@@ -503,10 +536,20 @@ async fn run_turn(
                         Ok(path) => path,
                         Err(error) => break 'rounds Terminal::Failed(error),
                     };
+                    let call_bytes = serialized_tool_call_bytes(&call, &path);
+                    if turn_tool_bytes
+                        .checked_add(call_bytes)
+                        .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
+                    {
+                        break 'rounds Terminal::Failed(ModelError::new(
+                            ModelErrorKind::OutputTooLarge,
+                            false,
+                        ));
+                    }
+                    turn_tool_bytes += call_bytes;
                     let call_item = match append_completed_tool_item(
                         &runtime,
                         &prepared,
-                        &cancellation,
                         CoreItemKind::ToolCall {
                             call_id: call.id.clone(),
                             name: call.name.clone(),
@@ -534,11 +577,23 @@ async fn run_turn(
                         let _ = call_item;
                         break 'rounds Terminal::Interrupted;
                     }
-                    let (result, content) = map_workspace_read_outcome(outcome);
+                    let (mut result, mut content) = map_workspace_read_outcome(outcome);
+                    let mut result_bytes = serialized_tool_result_bytes(&result);
+                    if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES
+                        || turn_tool_bytes
+                            .checked_add(result_bytes)
+                            .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
+                    {
+                        result = CoreToolResult::Error {
+                            kind: CoreToolErrorKind::ResultTooLarge,
+                        };
+                        content = "workspace/read error: resultTooLarge".to_string();
+                        result_bytes = serialized_tool_result_bytes(&result);
+                    }
+                    turn_tool_bytes += result_bytes;
                     if append_completed_tool_item(
                         &runtime,
                         &prepared,
-                        &cancellation,
                         CoreItemKind::ToolResult {
                             call_id: call.id.clone(),
                             name: call.name.clone(),
@@ -676,30 +731,53 @@ fn map_workspace_read_outcome(outcome: WorkspaceReadOutcome) -> (CoreToolResult,
         ),
         WorkspaceReadOutcome::Error { kind } => {
             let kind = match kind {
-                WorkspaceReadErrorKind::InvalidPath => "invalidPath",
-                WorkspaceReadErrorKind::NotFound => "notFound",
-                WorkspaceReadErrorKind::AccessDenied => "accessDenied",
-                WorkspaceReadErrorKind::PathNotAllowed => "pathNotAllowed",
-                WorkspaceReadErrorKind::NotRegularFile => "notRegularFile",
-                WorkspaceReadErrorKind::FileTooLarge => "fileTooLarge",
-                WorkspaceReadErrorKind::BinaryFile => "binaryFile",
-                WorkspaceReadErrorKind::ChangedDuringRead => "changedDuringRead",
-                WorkspaceReadErrorKind::Cancelled => "cancelled",
-                WorkspaceReadErrorKind::Unavailable => "unavailable",
-            }
-            .to_string();
+                WorkspaceReadErrorKind::InvalidPath => CoreToolErrorKind::InvalidPath,
+                WorkspaceReadErrorKind::NotFound => CoreToolErrorKind::NotFound,
+                WorkspaceReadErrorKind::AccessDenied => CoreToolErrorKind::AccessDenied,
+                WorkspaceReadErrorKind::PathNotAllowed => CoreToolErrorKind::PathNotAllowed,
+                WorkspaceReadErrorKind::NotRegularFile => CoreToolErrorKind::NotRegularFile,
+                WorkspaceReadErrorKind::FileTooLarge => CoreToolErrorKind::FileTooLarge,
+                WorkspaceReadErrorKind::BinaryFile => CoreToolErrorKind::BinaryFile,
+                WorkspaceReadErrorKind::ChangedDuringRead => CoreToolErrorKind::ChangedDuringRead,
+                WorkspaceReadErrorKind::Cancelled => CoreToolErrorKind::Unavailable,
+                WorkspaceReadErrorKind::Unavailable => CoreToolErrorKind::Unavailable,
+            };
             (
-                CoreToolResult::Error { kind: kind.clone() },
+                CoreToolResult::Error { kind },
                 format!("workspace/read error: {kind}"),
             )
         }
     }
 }
 
+fn serialized_tool_call_bytes(call: &ModelToolCall, path: &str) -> usize {
+    serde_json::to_vec(&serde_json::json!({
+        "type": "toolCall",
+        "callId": call.id,
+        "name": call.name,
+        "path": path,
+    }))
+    .map_or(usize::MAX, |bytes| bytes.len())
+}
+
+fn serialized_tool_result_bytes(result: &CoreToolResult) -> usize {
+    let value = match result {
+        CoreToolResult::Success { content, bytes } => serde_json::json!({
+            "type": "success",
+            "content": content,
+            "bytes": bytes,
+        }),
+        CoreToolResult::Error { kind } => serde_json::json!({
+            "type": "error",
+            "kind": kind.to_string(),
+        }),
+    };
+    serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len())
+}
+
 async fn append_completed_tool_item(
     runtime: &CoreRuntime,
     prepared: &crate::PreparedTextTurn,
-    cancellation: &CancellationToken,
     kind: CoreItemKind,
 ) -> Option<CoreItemSnapshot> {
     let item = runtime
@@ -708,9 +786,10 @@ async fn append_completed_tool_item(
             core.append_completed_item(&prepared.thread_id, &prepared.turn_id, kind)
         })
         .ok()?;
+    let durable_event = CancellationToken::new();
     if !send_event(
         runtime,
-        cancellation,
+        &durable_event,
         prepared.request_id,
         CoreEventKind::ItemStarted {
             thread_id: prepared.thread_id.clone(),
@@ -724,7 +803,7 @@ async fn append_completed_tool_item(
     }
     if !send_event(
         runtime,
-        cancellation,
+        &durable_event,
         prepared.request_id,
         CoreEventKind::ItemCompleted {
             thread_id: prepared.thread_id.clone(),
@@ -737,6 +816,50 @@ async fn append_completed_tool_item(
         return None;
     }
     Some(item)
+}
+
+fn accumulate_usage(total: &mut Option<ModelUsage>, next: ModelUsage) -> bool {
+    let Some(current) = total.as_mut() else {
+        *total = Some(next);
+        return true;
+    };
+
+    let Some(input_tokens) = add_optional_usage(current.input_tokens, next.input_tokens) else {
+        return false;
+    };
+    let Some(cached_input_tokens) =
+        add_optional_usage(current.cached_input_tokens, next.cached_input_tokens)
+    else {
+        return false;
+    };
+    let Some(output_tokens) = add_optional_usage(current.output_tokens, next.output_tokens) else {
+        return false;
+    };
+    let Some(reasoning_output_tokens) = add_optional_usage(
+        current.reasoning_output_tokens,
+        next.reasoning_output_tokens,
+    ) else {
+        return false;
+    };
+    let Some(total_tokens) = add_optional_usage(current.total_tokens, next.total_tokens) else {
+        return false;
+    };
+    *current = ModelUsage {
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        reasoning_output_tokens,
+        total_tokens,
+    };
+    true
+}
+
+fn add_optional_usage(left: Option<u64>, right: Option<u64>) -> Option<Option<u64>> {
+    match (left, right) {
+        (Some(left), Some(right)) => left.checked_add(right).map(Some),
+        (Some(value), None) | (None, Some(value)) => Some(Some(value)),
+        (None, None) => Some(None),
+    }
 }
 
 fn claim_terminal(terminal_state: &Mutex<TurnPhase>, terminal: Terminal) -> Terminal {
@@ -1020,7 +1143,10 @@ mod tests {
     use futures_util::StreamExt;
     use futures_util::stream;
     use std::collections::VecDeque;
+    use std::sync::atomic::AtomicUsize;
     use sugarcode_model_provider::BoxModelFuture;
+    use sugarcode_tools::WorkspaceReadTool;
+    use tokio::sync::oneshot;
 
     #[derive(Debug)]
     struct RecordedProvider {
@@ -1060,6 +1186,77 @@ mod tests {
                 .pop_front()
                 .expect("recorded round");
             async move { Ok(stream::iter(events).boxed()) }.boxed()
+        }
+    }
+
+    struct BlockingWorkspaceRead {
+        entered: Mutex<Option<oneshot::Sender<()>>>,
+    }
+
+    impl fmt::Debug for BlockingWorkspaceRead {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("BlockingWorkspaceRead")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl WorkspaceReadExecutor for BlockingWorkspaceRead {
+        fn read<'a>(
+            &'a self,
+            _arguments: &'a WorkspaceReadArguments,
+            cancellation: &'a CancellationToken,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = WorkspaceReadOutcome> + Send + 'a>>
+        {
+            Box::pin(async move {
+                if let Some(entered) = self.entered.lock().expect("entered").take() {
+                    let _ = entered.send(());
+                }
+                cancellation.cancelled().await;
+                WorkspaceReadOutcome::Error {
+                    kind: WorkspaceReadErrorKind::Cancelled,
+                }
+            })
+        }
+    }
+
+    struct BlockingSecondRoundProvider {
+        calls: AtomicUsize,
+        second_entered: Mutex<Option<oneshot::Sender<()>>>,
+    }
+
+    impl fmt::Debug for BlockingSecondRoundProvider {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("BlockingSecondRoundProvider")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl ModelProvider for BlockingSecondRoundProvider {
+        fn stream(&self, _request: ModelRequest) -> BoxModelFuture<'_> {
+            if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                return async move {
+                    Ok(stream::iter(vec![
+                        Ok(ModelEvent::ToolCall(ModelToolCall {
+                            id: "call_second_round".to_string(),
+                            name: "workspace/read".to_string(),
+                            arguments: serde_json::json!({ "path": "README.txt" }),
+                        })),
+                        Ok(ModelEvent::Completed),
+                    ])
+                    .boxed())
+                }
+                .boxed();
+            }
+            if let Some(entered) = self.second_entered.lock().expect("second entered").take() {
+                let _ = entered.send(());
+            }
+            async move {
+                std::future::pending::<Result<sugarcode_model_provider::ModelStream, ModelError>>()
+                    .await
+            }
+            .boxed()
         }
     }
 
@@ -1138,6 +1335,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn whitespace_only_final_response_fails_without_a_completed_empty_message() {
+        let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
+            events: vec![
+                Ok(ModelEvent::TextDelta(" \n\t".to_string())),
+                Ok(ModelEvent::Completed),
+            ],
+            stay_open: false,
+        });
+        let TurnStartOutcome::Accepted { turn_id } = runtime
+            .start_text_turn(
+                CoreRequestId::new(2),
+                thread_id.clone(),
+                Some("Hello".to_string()),
+            )
+            .expect("start text turn")
+        else {
+            panic!("asynchronous turn");
+        };
+        while !matches!(
+            events.recv().await.expect("terminal event").kind,
+            CoreEventKind::TurnCompleted { .. }
+                | CoreEventKind::TurnFailed { .. }
+                | CoreEventKind::TurnInterrupted { .. }
+        ) {}
+        let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+        let turn = snapshot
+            .turns
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .expect("persisted turn");
+        assert_eq!(turn.status, DurableTurnStatus::Failed);
+        assert_eq!(
+            turn.error.as_ref().map(|error| error.kind),
+            Some(DurableTurnErrorKind::Incomplete)
+        );
+    }
+
+    #[tokio::test]
     async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
         let directory = tempfile::tempdir().expect("workspace");
         std::fs::write(directory.path().join("README.txt"), "bounded context")
@@ -1151,10 +1386,24 @@ mod tests {
                         name: "workspace/read".to_string(),
                         arguments: serde_json::json!({ "path": "README.txt" }),
                     })),
+                    Ok(ModelEvent::Usage(ModelUsage {
+                        input_tokens: Some(3),
+                        cached_input_tokens: Some(1),
+                        output_tokens: Some(2),
+                        reasoning_output_tokens: Some(1),
+                        total_tokens: Some(5),
+                    })),
                     Ok(ModelEvent::Completed),
                 ],
                 vec![
                     Ok(ModelEvent::TextDelta("I read it.".to_string())),
+                    Ok(ModelEvent::Usage(ModelUsage {
+                        input_tokens: Some(7),
+                        cached_input_tokens: Some(2),
+                        output_tokens: Some(4),
+                        reasoning_output_tokens: Some(2),
+                        total_tokens: Some(11),
+                    })),
                     Ok(ModelEvent::Completed),
                 ],
             ])),
@@ -1240,6 +1489,16 @@ mod tests {
             .find(|turn| turn.id == turn_id)
             .expect("persisted tool turn");
         assert_eq!(turn.status, DurableTurnStatus::Completed);
+        assert_eq!(
+            turn.usage,
+            Some(DurableUsage {
+                input_tokens: Some(10),
+                cached_input_tokens: Some(3),
+                output_tokens: Some(6),
+                reasoning_tokens: Some(3),
+                total_tokens: Some(16),
+            })
+        );
         assert!(matches!(
             turn.items.as_slice(),
             [
@@ -1255,20 +1514,181 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interrupt_after_tool_call_persists_no_tool_result() {
+    async fn serialized_tool_result_limit_becomes_one_durable_error_result() {
         let directory = tempfile::tempdir().expect("workspace");
         std::fs::write(
-            directory.path().join("large.txt"),
-            "x".repeat(sugarcode_tools::MAX_WORKSPACE_READ_BYTES),
+            directory.path().join("escaped.txt"),
+            vec![1u8; sugarcode_tools::MAX_WORKSPACE_READ_BYTES],
         )
         .expect("workspace fixture");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider = SequencedProvider {
+            rounds: Mutex::new(VecDeque::from([
+                vec![
+                    Ok(ModelEvent::ToolCall(ModelToolCall {
+                        id: "call_escaped".to_string(),
+                        name: "workspace/read".to_string(),
+                        arguments: serde_json::json!({ "path": "escaped.txt" }),
+                    })),
+                    Ok(ModelEvent::Completed),
+                ],
+                vec![
+                    Ok(ModelEvent::TextDelta("The result was bounded.".to_string())),
+                    Ok(ModelEvent::Completed),
+                ],
+            ])),
+            requests: requests.clone(),
+        };
+        let mut core = Core::new();
+        let started = core
+            .start_thread(CoreRequestId::new(1))
+            .expect("start thread");
+        let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+            panic!("thread event");
+        };
+        let tool = Arc::new(WorkspaceReadTool::open(directory.path()).expect("workspace tool"));
+        let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+            core,
+            Arc::new(provider),
+            "fixture-model".to_string(),
+            Some(tool),
+        );
+        let TurnStartOutcome::Accepted { turn_id } = runtime
+            .start_text_turn(
+                CoreRequestId::new(2),
+                thread_id.clone(),
+                Some("Read the file".to_string()),
+            )
+            .expect("start tool turn")
+        else {
+            panic!("asynchronous turn");
+        };
+        while !matches!(
+            events.recv().await.expect("terminal event").kind,
+            CoreEventKind::TurnCompleted { .. }
+        ) {}
+
+        let requests = requests.lock().expect("requests");
+        assert!(matches!(
+            requests[1].messages.last(),
+            Some(ModelMessage::ToolResult { content, .. })
+                if content == "workspace/read error: resultTooLarge"
+        ));
+        drop(requests);
+        let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+        let turn = snapshot
+            .turns
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .expect("persisted turn");
+        assert!(turn.items.iter().any(|item| matches!(
+            item,
+            sugarcode_state::DurableItemSnapshot::ToolResult {
+                result: sugarcode_state::DurableToolResult::Error {
+                    kind,
+                },
+                ..
+            } if kind == "resultTooLarge"
+        )));
+    }
+
+    #[tokio::test]
+    async fn unknown_and_second_round_tool_calls_fail_without_extra_execution() {
+        for (rounds, expected_requests) in [
+            (
+                VecDeque::from([vec![
+                    Ok(ModelEvent::ToolCall(ModelToolCall {
+                        id: "call_unknown".to_string(),
+                        name: "workspace/unknown".to_string(),
+                        arguments: serde_json::json!({ "path": "README.txt" }),
+                    })),
+                    Ok(ModelEvent::Completed),
+                ]]),
+                1,
+            ),
+            (
+                VecDeque::from([
+                    vec![
+                        Ok(ModelEvent::ToolCall(ModelToolCall {
+                            id: "call_1".to_string(),
+                            name: "workspace/read".to_string(),
+                            arguments: serde_json::json!({ "path": "README.txt" }),
+                        })),
+                        Ok(ModelEvent::Completed),
+                    ],
+                    vec![
+                        Ok(ModelEvent::ToolCall(ModelToolCall {
+                            id: "call_2".to_string(),
+                            name: "workspace/read".to_string(),
+                            arguments: serde_json::json!({ "path": "README.txt" }),
+                        })),
+                        Ok(ModelEvent::Completed),
+                    ],
+                ]),
+                2,
+            ),
+        ] {
+            let directory = tempfile::tempdir().expect("workspace");
+            std::fs::write(directory.path().join("README.txt"), "bounded context")
+                .expect("workspace fixture");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let provider = SequencedProvider {
+                rounds: Mutex::new(rounds),
+                requests: requests.clone(),
+            };
+            let mut core = Core::new();
+            let started = core
+                .start_thread(CoreRequestId::new(1))
+                .expect("start thread");
+            let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+                panic!("thread event");
+            };
+            let tool = Arc::new(WorkspaceReadTool::open(directory.path()).expect("workspace tool"));
+            let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+                core,
+                Arc::new(provider),
+                "fixture-model".to_string(),
+                Some(tool),
+            );
+            let TurnStartOutcome::Accepted { turn_id } = runtime
+                .start_text_turn(
+                    CoreRequestId::new(2),
+                    thread_id.clone(),
+                    Some("Read it".to_string()),
+                )
+                .expect("start tool turn")
+            else {
+                panic!("asynchronous turn");
+            };
+            while !matches!(
+                events.recv().await.expect("terminal event").kind,
+                CoreEventKind::TurnFailed { .. }
+            ) {}
+            assert_eq!(requests.lock().expect("requests").len(), expected_requests);
+            let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+            let turn = snapshot
+                .turns
+                .iter()
+                .find(|turn| turn.id == turn_id)
+                .expect("persisted turn");
+            assert_eq!(turn.status, DurableTurnStatus::Failed);
+            assert_eq!(
+                turn.error.as_ref().map(|error| error.kind),
+                Some(DurableTurnErrorKind::UnsupportedOutput)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupt_after_tool_call_persists_no_tool_result() {
+        let (entered_tx, entered_rx) = oneshot::channel();
         let provider = SequencedProvider {
             rounds: Mutex::new(VecDeque::from([
                 vec![
                     Ok(ModelEvent::ToolCall(ModelToolCall {
                         id: "call_cancel".to_string(),
                         name: "workspace/read".to_string(),
-                        arguments: serde_json::json!({ "path": "large.txt" }),
+                        arguments: serde_json::json!({ "path": "blocked.txt" }),
                     })),
                     Ok(ModelEvent::Completed),
                 ],
@@ -1283,7 +1703,9 @@ mod tests {
         let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
             panic!("thread event");
         };
-        let tool = Arc::new(WorkspaceReadTool::open(directory.path()).expect("workspace tool"));
+        let tool: Arc<dyn WorkspaceReadExecutor> = Arc::new(BlockingWorkspaceRead {
+            entered: Mutex::new(Some(entered_tx)),
+        });
         let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
             core,
             Arc::new(provider),
@@ -1315,6 +1737,7 @@ mod tests {
                 break;
             }
         }
+        entered_rx.await.expect("tool execution entered");
         assert_eq!(
             runtime
                 .interrupt_turn(&thread_id, &turn_id)
@@ -1339,6 +1762,64 @@ mod tests {
             Some(sugarcode_state::DurableItemSnapshot::ToolCall { .. })
         ));
         assert!(!turn.items.iter().any(|item| matches!(
+            item,
+            sugarcode_state::DurableItemSnapshot::ToolResult { .. }
+        )));
+    }
+
+    #[tokio::test]
+    async fn interrupt_during_second_round_keeps_durable_tool_result_for_audit_only() {
+        let directory = tempfile::tempdir().expect("workspace");
+        std::fs::write(directory.path().join("README.txt"), "bounded context")
+            .expect("workspace fixture");
+        let (second_entered_tx, second_entered_rx) = oneshot::channel();
+        let provider = BlockingSecondRoundProvider {
+            calls: AtomicUsize::new(0),
+            second_entered: Mutex::new(Some(second_entered_tx)),
+        };
+        let mut core = Core::new();
+        let started = core
+            .start_thread(CoreRequestId::new(1))
+            .expect("start thread");
+        let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+            panic!("thread event");
+        };
+        let tool = Arc::new(WorkspaceReadTool::open(directory.path()).expect("workspace tool"));
+        let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+            core,
+            Arc::new(provider),
+            "fixture-model".to_string(),
+            Some(tool),
+        );
+        let TurnStartOutcome::Accepted { turn_id } = runtime
+            .start_text_turn(
+                CoreRequestId::new(2),
+                thread_id.clone(),
+                Some("Read it".to_string()),
+            )
+            .expect("start tool turn")
+        else {
+            panic!("asynchronous turn");
+        };
+        second_entered_rx.await.expect("second round entered");
+        assert_eq!(
+            runtime
+                .interrupt_turn(&thread_id, &turn_id)
+                .expect("interrupt"),
+            TurnInterruptOutcome::Accepted
+        );
+        while !matches!(
+            events.recv().await.expect("terminal event").kind,
+            CoreEventKind::TurnInterrupted { .. }
+        ) {}
+        let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+        let turn = snapshot
+            .turns
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .expect("persisted turn");
+        assert_eq!(turn.status, DurableTurnStatus::Interrupted);
+        assert!(turn.items.iter().any(|item| matches!(
             item,
             sugarcode_state::DurableItemSnapshot::ToolResult { .. }
         )));
@@ -1467,6 +1948,134 @@ mod tests {
                 .expect("persisted turn")
                 .status,
             DurableTurnStatus::Interrupted
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupt_after_durable_agent_start_preserves_one_item_lifecycle_and_terminal() {
+        let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
+            events: vec![Ok(ModelEvent::TextDelta("partial".to_string()))],
+            stay_open: true,
+        });
+        for _ in 0..CORE_EVENT_CAPACITY - 3 {
+            runtime
+                .event_tx
+                .send(CoreEvent {
+                    request_id: CoreRequestId::new(999),
+                    kind: CoreEventKind::RuntimeFailed,
+                })
+                .await
+                .expect("seed event queue");
+        }
+        let TurnStartOutcome::Accepted { turn_id } = runtime
+            .start_text_turn(
+                CoreRequestId::new(2),
+                thread_id.clone(),
+                Some("Hello".to_string()),
+            )
+            .expect("start text turn")
+        else {
+            panic!("asynchronous turn");
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+                let turn = snapshot
+                    .turns
+                    .iter()
+                    .find(|turn| turn.id == turn_id)
+                    .expect("persisted turn");
+                if turn.items.iter().any(|item| {
+                    matches!(
+                        item,
+                        sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
+                    )
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("durable agent item");
+        assert_eq!(
+            runtime
+                .interrupt_turn(&thread_id, &turn_id)
+                .expect("interrupt"),
+            TurnInterruptOutcome::Accepted
+        );
+
+        let mut lifecycle = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.expect("terminal event");
+                if event.request_id == CoreRequestId::new(2) {
+                    let interrupted = matches!(event.kind, CoreEventKind::TurnInterrupted { .. });
+                    lifecycle.push(event);
+                    if interrupted {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("interrupted lifecycle");
+        assert_eq!(
+            lifecycle
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    CoreEventKind::ItemStarted {
+                        item: CoreItemSnapshot {
+                            kind: CoreItemKind::AgentMessage { .. },
+                            ..
+                        },
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            lifecycle
+                .iter()
+                .filter(|event| matches!(
+                    event.kind,
+                    CoreEventKind::ItemCompleted {
+                        item: CoreItemSnapshot {
+                            kind: CoreItemKind::AgentMessage { .. },
+                            ..
+                        },
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            lifecycle
+                .iter()
+                .filter(|event| matches!(event.kind, CoreEventKind::TurnInterrupted { .. }))
+                .count(),
+            1
+        );
+        let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+        let turn = snapshot
+            .turns
+            .iter()
+            .find(|turn| turn.id == turn_id)
+            .expect("persisted turn");
+        assert_eq!(turn.status, DurableTurnStatus::Interrupted);
+        assert_eq!(
+            turn.items
+                .iter()
+                .filter(|item| matches!(
+                    item,
+                    sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
+                ))
+                .count(),
+            1
         );
     }
 

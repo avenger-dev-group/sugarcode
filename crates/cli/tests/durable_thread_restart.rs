@@ -1,5 +1,6 @@
 use serde_json::Value;
 use serde_json::json;
+use std::collections::VecDeque;
 use std::fs;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -40,6 +41,55 @@ impl RunningServer {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn app-server");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        Self {
+            child,
+            stdin,
+            stdout,
+            provider,
+        }
+    }
+
+    fn spawn_with_workspace(
+        home: &Path,
+        workspace: &Path,
+        provider_bodies: Vec<&'static str>,
+    ) -> Self {
+        let provider = MockProvider::start_with_bodies(home, provider_bodies);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+            .arg("--home")
+            .arg(home)
+            .args(["app-server", "--stdio", "--workspace"])
+            .arg(workspace)
+            .env_remove("SUGARCODE_HOME")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn app-server with workspace");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        Self {
+            child,
+            stdin,
+            stdout,
+            provider,
+        }
+    }
+
+    fn spawn_with_responses(home: &Path, provider_responses: Vec<MockResponse>) -> Self {
+        let provider = MockProvider::start_with_responses(home, provider_responses);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+            .arg("--home")
+            .arg(home)
+            .args(["app-server", "--stdio"])
+            .env_remove("SUGARCODE_HOME")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn app-server with provider responses");
         let stdin = child.stdin.take().expect("child stdin");
         let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
         Self {
@@ -94,6 +144,7 @@ impl RunningServer {
 
     fn finish_with_diagnostics(mut self) -> String {
         drop(self.stdin);
+        self.provider.stop();
         let mut remaining_stdout = String::new();
         self.stdout
             .read_to_string(&mut remaining_stdout)
@@ -119,8 +170,29 @@ struct MockProvider {
     thread: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone, Copy)]
+enum MockResponse {
+    Complete(&'static str),
+    HoldOpen(&'static str),
+}
+
 impl MockProvider {
     fn start(home: &Path) -> Self {
+        Self::start_inner(home, None)
+    }
+
+    fn start_with_bodies(home: &Path, bodies: Vec<&'static str>) -> Self {
+        Self::start_with_responses(
+            home,
+            bodies.into_iter().map(MockResponse::Complete).collect(),
+        )
+    }
+
+    fn start_with_responses(home: &Path, responses: Vec<MockResponse>) -> Self {
+        Self::start_inner(home, Some(VecDeque::from(responses)))
+    }
+
+    fn start_inner(home: &Path, responses: Option<VecDeque<MockResponse>>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock provider");
         let address = listener.local_addr().expect("mock provider address");
         configure_model(home, address);
@@ -128,14 +200,39 @@ impl MockProvider {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = stop.clone();
         let thread_requests = requests.clone();
+        let mut responses = responses;
         let thread = thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 let (mut stream, _) = listener.accept().expect("accept provider request");
                 if thread_stop.load(Ordering::Acquire) {
                     break;
                 }
-                let request = serve_recorded_response(&mut stream);
+                let response = responses.as_mut().map_or_else(
+                    || {
+                        MockResponse::Complete(include_str!(
+                            "../../model-provider/tests/fixtures/completed.sse"
+                        ))
+                    },
+                    |responses| responses.pop_front().expect("recorded provider response"),
+                );
+                let request = read_recorded_request(&mut stream);
                 thread_requests.lock().expect("request lock").push(request);
+                match response {
+                    MockResponse::Complete(body) => {
+                        write_recorded_response(&mut stream, body);
+                    }
+                    MockResponse::HoldOpen(body) => {
+                        write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: keep-alive\r\n\r\n{body}"
+                        )
+                        .expect("write held provider response");
+                        stream.flush().expect("flush held provider response");
+                        while !thread_stop.load(Ordering::Acquire) {
+                            thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                }
             }
         });
         Self {
@@ -148,6 +245,11 @@ impl MockProvider {
 
     fn requests(&self) -> Vec<Value> {
         self.requests.lock().expect("request lock").clone()
+    }
+
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
     }
 }
 
@@ -182,15 +284,14 @@ fn configure_model(home: &Path, address: std::net::SocketAddr) {
 
 impl Drop for MockProvider {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        let _ = TcpStream::connect(self.address);
+        self.stop();
         if let Some(thread) = self.thread.take() {
             thread.join().expect("join mock provider");
         }
     }
 }
 
-fn serve_recorded_response(stream: &mut TcpStream) -> Value {
+fn read_recorded_request(stream: &mut TcpStream) -> Value {
     let mut request = Vec::new();
     let mut buffer = [0u8; 4096];
     let header_end = loop {
@@ -229,16 +330,13 @@ fn serve_recorded_response(stream: &mut TcpStream) -> Value {
             .expect("provider request JSON");
     assert_eq!(request_body["stream"], true);
     assert_eq!(request_body["stream_options"]["include_usage"], true);
-    for forbidden in [
-        "tools",
-        "tool_choice",
-        "response_format",
-        "modalities",
-        "audio",
-    ] {
+    for forbidden in ["response_format", "modalities", "audio"] {
         assert!(request_body.get(forbidden).is_none(), "{forbidden}");
     }
-    let body = include_str!("../../model-provider/tests/fixtures/completed.sse");
+    request_body
+}
+
+fn write_recorded_response(stream: &mut TcpStream, body: &str) {
     write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -247,7 +345,6 @@ fn serve_recorded_response(stream: &mut TcpStream) -> Value {
     )
     .expect("write provider response");
     stream.flush().expect("flush provider response");
-    request_body
 }
 
 #[test]
@@ -331,8 +428,10 @@ fn resumes_completed_history_across_two_cli_processes() {
         next_turn[4]["params"]["item"]["id"],
         "item_0000000000000004"
     );
+    let second_requests = second.provider_requests();
+    assert!(second_requests[0].get("tools").is_none());
     assert_eq!(
-        second.provider_requests()[0]["messages"],
+        second_requests[0]["messages"],
         json!([
             {"role": "user", "content": "Hello"},
             {
@@ -342,6 +441,295 @@ fn resumes_completed_history_across_two_cli_processes() {
             {"role": "user", "content": "Hello"}
         ])
     );
+    second.finish();
+}
+
+#[test]
+fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() {
+    const TOOL_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_restart\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\\\"path\\\":\\\"context.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const FIRST_FINAL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"First final.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const CONTINUED_FINAL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Continued final.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("isolated workspace");
+    fs::write(workspace.path().join("context.txt"), "persisted context")
+        .expect("workspace fixture");
+    let mut first = RunningServer::spawn_with_workspace(
+        home.path(),
+        workspace.path(),
+        vec![TOOL_CALL, FIRST_FINAL],
+    );
+    first.initialize();
+    first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "thread",
+            "method": "thread/start",
+            "params": {}
+        }),
+        2,
+    );
+    let completed = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "tool-turn",
+            "method": "turn/start",
+            "params": {
+                "threadId": "thr_0000000000000001",
+                "input": "Read context"
+            }
+        }),
+        12,
+    );
+    assert_eq!(completed[11]["params"]["turn"]["status"], "completed");
+    let first_requests = first.provider_requests();
+    assert_eq!(first_requests.len(), 2);
+    assert_eq!(
+        first_requests[0]["tools"][0]["function"]["name"],
+        "workspace/read"
+    );
+    assert!(first_requests[1].get("tools").is_none());
+    first.finish();
+
+    let mut second =
+        RunningServer::spawn_with_workspace(home.path(), workspace.path(), vec![CONTINUED_FINAL]);
+    second.initialize();
+    let resumed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "resume",
+            "method": "thread/resume",
+            "params": {"threadId": "thr_0000000000000001"}
+        }),
+        1,
+    );
+    let original_items = resumed[0]["result"]["turns"][0]["items"]
+        .as_array()
+        .expect("resumed items");
+    assert_eq!(original_items.len(), 4);
+    assert_eq!(original_items[1]["type"], "toolCall");
+    assert_eq!(original_items[2]["type"], "toolResult");
+
+    let forked = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "fork",
+            "method": "thread/fork",
+            "params": {"threadId": "thr_0000000000000001"}
+        }),
+        2,
+    );
+    let fork_items = forked[0]["result"]["turns"][0]["items"]
+        .as_array()
+        .expect("fork items");
+    assert_eq!(fork_items.len(), 4);
+    for (source, forked) in original_items.iter().zip(fork_items) {
+        assert_ne!(source["id"], forked["id"]);
+        assert_eq!(source["type"], forked["type"]);
+    }
+
+    let continued = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "continue",
+            "method": "turn/start",
+            "params": {"threadId": "thr_0000000000000002"}
+        }),
+        6,
+    );
+    assert_eq!(continued[5]["params"]["turn"]["status"], "completed");
+    let continued_request = &second.provider_requests()[0];
+    assert_eq!(continued_request["messages"][0]["role"], "user");
+    assert_eq!(
+        continued_request["messages"][1]["tool_calls"][0]["id"],
+        "call_restart"
+    );
+    assert_eq!(continued_request["messages"][2]["role"], "tool");
+    assert_eq!(
+        continued_request["messages"][2]["content"],
+        "persisted context"
+    );
+    assert_eq!(continued_request["messages"][3]["content"], "First final.");
+    second.finish();
+}
+
+#[test]
+fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history() {
+    const FAILED_PARTIAL: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"failed private marker\"},\"finish_reason\":null}]}\n\n";
+    const INTERRUPTED_PARTIAL: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"interrupted private marker\"},\"finish_reason\":null}]}\n\n";
+
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let mut first = RunningServer::spawn_with_responses(
+        home.path(),
+        vec![
+            MockResponse::Complete(include_str!(
+                "../../model-provider/tests/fixtures/completed.sse"
+            )),
+            MockResponse::Complete(FAILED_PARTIAL),
+            MockResponse::HoldOpen(INTERRUPTED_PARTIAL),
+        ],
+    );
+    first.initialize();
+    first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "thread",
+            "method": "thread/start",
+            "params": {}
+        }),
+        2,
+    );
+    let completed = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "completed",
+            "method": "turn/start",
+            "params": {
+                "threadId": "thr_0000000000000001",
+                "input": "completed searchable marker"
+            }
+        }),
+        8,
+    );
+    assert_eq!(completed[7]["params"]["turn"]["status"], "completed");
+    let failed = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "failed",
+            "method": "turn/start",
+            "params": {
+                "threadId": "thr_0000000000000001",
+                "input": "failed private marker"
+            }
+        }),
+        8,
+    );
+    assert_eq!(failed[7]["params"]["turn"]["status"], "failed");
+    assert_eq!(failed[7]["params"]["turn"]["error"]["kind"], "disconnected");
+    let interrupted_opening = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "interrupted",
+            "method": "turn/start",
+            "params": {
+                "threadId": "thr_0000000000000001",
+                "input": "interrupted private marker"
+            }
+        }),
+        6,
+    );
+    assert_eq!(
+        interrupted_opening[0]["result"]["turn"]["status"],
+        "inProgress"
+    );
+    let interrupted = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "interrupt",
+            "method": "turn/interrupt",
+            "params": {
+                "threadId": "thr_0000000000000001",
+                "turnId": "turn_0000000000000003"
+            }
+        }),
+        3,
+    );
+    assert_eq!(
+        interrupted
+            .iter()
+            .filter(|message| message["id"] == "interrupt" && message["result"] == json!({}))
+            .count(),
+        1
+    );
+    assert_eq!(
+        interrupted
+            .iter()
+            .filter(|message| message["params"]["turn"]["status"] == "interrupted")
+            .count(),
+        1
+    );
+    first.finish();
+
+    let mut second = RunningServer::spawn(home.path());
+    second.initialize();
+    let resumed = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "resume",
+            "method": "thread/resume",
+            "params": {"threadId": "thr_0000000000000001"}
+        }),
+        1,
+    );
+    assert_eq!(
+        resumed[0]["result"]["turns"]
+            .as_array()
+            .expect("resumed turns")
+            .iter()
+            .map(|turn| turn["status"].as_str().expect("turn status"))
+            .collect::<Vec<_>>(),
+        vec!["completed", "failed", "interrupted"]
+    );
+    for (query, expected) in [
+        (
+            "SugarCode deterministic",
+            json!([{"id": "thr_0000000000000001"}]),
+        ),
+        ("failed private marker", json!([])),
+        ("interrupted private marker", json!([])),
+    ] {
+        let searched = second.send(
+            json!({
+                "jsonrpc": "2.0",
+                "id": format!("search-{query}"),
+                "method": "thread/search",
+                "params": {"query": query}
+            }),
+            1,
+        );
+        assert_eq!(searched[0]["result"]["data"], expected);
+    }
+
+    let forked = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "fork",
+            "method": "thread/fork",
+            "params": {"threadId": "thr_0000000000000001"}
+        }),
+        2,
+    );
+    let fork_turns = forked[0]["result"]["turns"].as_array().expect("fork turns");
+    assert_eq!(fork_turns.len(), 1);
+    assert_eq!(fork_turns[0]["status"], "completed");
+    second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "continue",
+            "method": "turn/start",
+            "params": {"threadId": "thr_0000000000000002"}
+        }),
+        6,
+    );
+    let requests = second.provider_requests();
+    assert_eq!(requests.len(), 1);
+    let continued_messages = &requests[0]["messages"];
+    assert_eq!(continued_messages.as_array().expect("messages").len(), 2);
+    let serialized_messages = continued_messages.to_string();
+    assert!(!serialized_messages.contains("failed private marker"));
+    assert!(!serialized_messages.contains("interrupted private marker"));
     second.finish();
 }
 

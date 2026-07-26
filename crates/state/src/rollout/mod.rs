@@ -138,6 +138,11 @@ pub enum DurableToolResult {
     Error { kind: String },
 }
 
+pub fn terminal_turn_record_fits(thread_id: &ThreadId, turn: &DurableTurnSnapshot) -> bool {
+    format::encode_turn_completed(u64::MAX, thread_id, turn)
+        .is_ok_and(|bytes| bytes.len() <= MAX_ROLLOUT_RECORD_BYTES)
+}
+
 impl DurableItemSnapshot {
     pub fn id(&self) -> &ItemId {
         match self {

@@ -20,12 +20,14 @@ use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableThreadSummary;
 use sugarcode_state::DurableToolResult;
 use sugarcode_state::DurableTurnError;
+use sugarcode_state::DurableTurnErrorKind;
 use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableUsage;
 use sugarcode_state::IdSequences;
 use sugarcode_state::RolloutError;
 use sugarcode_state::ThreadRepository;
+use sugarcode_state::terminal_turn_record_fits;
 
 const DETERMINISTIC_AGENT_MESSAGE: &str = "SugarCode deterministic response.";
 pub const MAX_AGENT_MESSAGE_BYTES: usize = 512 * 1024;
@@ -658,6 +660,14 @@ impl Core {
         thread_id: &ThreadId,
         turn_id: &TurnId,
     ) -> Result<CoreItemSnapshot, CoreError> {
+        let turn = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.turns.get(turn_id))
+            .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
+        if turn.state != TurnState::InProgress || turn.active_item_id.is_some() {
+            return Err(CoreError::TurnNotInProgress(turn_id.clone()));
+        }
         let sequence = self
             .last_item_sequence
             .checked_add(1)
@@ -696,6 +706,14 @@ impl Core {
                 "only completed tool items may be appended".to_string(),
             ));
         }
+        let turn = self
+            .threads
+            .get(thread_id)
+            .and_then(|thread| thread.turns.get(turn_id))
+            .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
+        if turn.state != TurnState::InProgress || turn.active_item_id.is_some() {
+            return Err(CoreError::TurnNotInProgress(turn_id.clone()));
+        }
         let sequence = self
             .last_item_sequence
             .checked_add(1)
@@ -713,9 +731,6 @@ impl Core {
             .get_mut(thread_id)
             .and_then(|thread| thread.turns.get_mut(turn_id))
             .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
-        if turn.state != TurnState::InProgress || turn.active_item_id.is_some() {
-            return Err(CoreError::TurnNotInProgress(turn_id.clone()));
-        }
         turn.items.insert(item.id.clone(), item);
         self.last_item_sequence = sequence;
         Ok(snapshot)
@@ -765,7 +780,39 @@ impl Core {
             return Err(CoreError::OutputTooLarge);
         }
         item.append_agent_message_delta(delta)?;
-        Ok(item.snapshot())
+        let snapshot = item.snapshot();
+        let terminal_budget = DurableTurnSnapshot {
+            id: turn_id.clone(),
+            status: DurableTurnStatus::Failed,
+            items: turn
+                .items
+                .values()
+                .map(|item| durable_item_snapshot(&item.snapshot()))
+                .collect(),
+            error: Some(DurableTurnError {
+                kind: DurableTurnErrorKind::OutputTooLarge,
+                retryable: false,
+            }),
+            usage: Some(DurableUsage {
+                input_tokens: Some(u64::MAX),
+                cached_input_tokens: Some(u64::MAX),
+                output_tokens: Some(u64::MAX),
+                reasoning_tokens: Some(u64::MAX),
+                total_tokens: Some(u64::MAX),
+            }),
+        };
+        if !terminal_turn_record_fits(thread_id, &terminal_budget) {
+            let item = turn
+                .items
+                .get_mut(&item_id)
+                .expect("validated active item exists");
+            let ItemKind::AgentMessage { text } = &mut item.kind else {
+                unreachable!("validated active item is an agent message");
+            };
+            text.truncate(current_len);
+            return Err(CoreError::OutputTooLarge);
+        }
+        Ok(snapshot)
     }
 
     pub fn finish_text_turn(
@@ -1302,7 +1349,9 @@ fn durable_tool_result(result: &CoreToolResult) -> DurableToolResult {
             content: content.clone(),
             bytes: *bytes,
         },
-        CoreToolResult::Error { kind } => DurableToolResult::Error { kind: kind.clone() },
+        CoreToolResult::Error { kind } => DurableToolResult::Error {
+            kind: kind.to_string(),
+        },
     }
 }
 
@@ -1312,7 +1361,26 @@ fn core_tool_result(result: &DurableToolResult) -> CoreToolResult {
             content: content.clone(),
             bytes: *bytes,
         },
-        DurableToolResult::Error { kind } => CoreToolResult::Error { kind: kind.clone() },
+        DurableToolResult::Error { kind } => CoreToolResult::Error {
+            kind: core_tool_error_kind(kind),
+        },
+    }
+}
+
+fn core_tool_error_kind(kind: &str) -> sugarcode_protocol::CoreToolErrorKind {
+    use sugarcode_protocol::CoreToolErrorKind;
+
+    match kind {
+        "invalidPath" => CoreToolErrorKind::InvalidPath,
+        "notFound" => CoreToolErrorKind::NotFound,
+        "accessDenied" => CoreToolErrorKind::AccessDenied,
+        "pathNotAllowed" => CoreToolErrorKind::PathNotAllowed,
+        "notRegularFile" => CoreToolErrorKind::NotRegularFile,
+        "fileTooLarge" => CoreToolErrorKind::FileTooLarge,
+        "binaryFile" => CoreToolErrorKind::BinaryFile,
+        "changedDuringRead" => CoreToolErrorKind::ChangedDuringRead,
+        "resultTooLarge" => CoreToolErrorKind::ResultTooLarge,
+        _ => CoreToolErrorKind::Unavailable,
     }
 }
 
@@ -1944,7 +2012,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_copies_completed_tool_history_and_excludes_failed_tool_turns() {
+    fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_turns() {
         let mut core = Core::new();
         let source = start_thread(&mut core, 1);
         let completed = core
@@ -2017,9 +2085,35 @@ mod tests {
         )
         .expect("fail turn");
 
+        let interrupted = core
+            .prepare_text_turn(
+                CoreRequestId::new(4),
+                source.clone(),
+                Some("interrupted".to_string()),
+            )
+            .expect("interrupted tool turn");
+        core.append_completed_item(
+            &source,
+            &interrupted.turn_id,
+            CoreItemKind::ToolCall {
+                call_id: "call_3".to_string(),
+                name: "workspace/read".to_string(),
+                path: "blocked.txt".to_string(),
+            },
+        )
+        .expect("interrupted call");
+        core.finish_turn(
+            &source,
+            &interrupted.turn_id,
+            DurableTurnStatus::Interrupted,
+            None,
+            None,
+        )
+        .expect("interrupt turn");
+
         let source_snapshot = core.resume_thread(&source).expect("source");
         let fork = core.fork_thread(&source).expect("fork");
-        assert_eq!(source_snapshot.turns.len(), 2);
+        assert_eq!(source_snapshot.turns.len(), 3);
         assert_eq!(fork.turns.len(), 1);
         assert_eq!(fork.turns[0].status, DurableTurnStatus::Completed);
         assert!(matches!(

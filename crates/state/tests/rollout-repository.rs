@@ -137,6 +137,40 @@ fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
 }
 
 #[test]
+fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(
+                &thread_id,
+                &DurableTurnSnapshot {
+                    id: TurnId::new("turn_0000000000000001"),
+                    status: DurableTurnStatus::InProgress,
+                    items: Vec::new(),
+                    error: None,
+                    usage: None,
+                },
+            )
+            .expect("empty continue start");
+    }
+
+    let repository = RolloutRepository::open(&home).expect("recover");
+    let turn = &repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread")
+        .turns[0];
+    assert_eq!(turn.status, DurableTurnStatus::Interrupted);
+    assert!(turn.items.is_empty());
+    drop(repository);
+    RolloutRepository::open(&home).expect("reopen recovered terminal");
+}
+
+#[test]
 fn a_durable_tool_call_survives_recovery_without_an_unwritten_result() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);

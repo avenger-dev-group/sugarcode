@@ -198,6 +198,10 @@ async fn process_stream(
         };
         if event.data == "[DONE]" {
             if clean_finish {
+                if completed_tool_call.is_none() && !text_seen {
+                    send_error(&sender, ModelError::new(ModelErrorKind::Incomplete, false)).await;
+                    return;
+                }
                 if let Some(call) = completed_tool_call
                     && sender.send(Ok(ModelEvent::ToolCall(call))).await.is_err()
                 {

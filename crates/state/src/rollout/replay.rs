@@ -566,13 +566,12 @@ fn validate_terminal_turn(
     path: &Path,
     offset: u64,
 ) -> Result<(), RolloutError> {
-    let valid = !turn.items.is_empty()
-        && match turn.status {
-            super::DurableTurnStatus::InProgress => false,
-            super::DurableTurnStatus::Completed => turn.error.is_none(),
-            super::DurableTurnStatus::Failed => turn.error.is_some(),
-            super::DurableTurnStatus::Interrupted => turn.error.is_none(),
-        };
+    let valid = match turn.status {
+        super::DurableTurnStatus::InProgress => false,
+        super::DurableTurnStatus::Completed => !turn.items.is_empty() && turn.error.is_none(),
+        super::DurableTurnStatus::Failed => !turn.items.is_empty() && turn.error.is_some(),
+        super::DurableTurnStatus::Interrupted => turn.error.is_none(),
+    };
     if valid {
         Ok(())
     } else {
@@ -594,7 +593,7 @@ fn validate_new_turn(
         return Err(corrupt(path, offset, "duplicateTurnId"));
     }
     sequences.turn = sequences.turn.max(turn_sequence);
-    if turn.items.is_empty() {
+    if turn.items.is_empty() && turn.status != super::DurableTurnStatus::InProgress {
         return Err(corrupt(path, offset, "emptyCompletedTurn"));
     }
     for item in &turn.items {

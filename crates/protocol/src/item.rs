@@ -52,5 +52,36 @@ pub enum CoreItemKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreToolResult {
     Success { content: String, bytes: u64 },
-    Error { kind: String },
+    Error { kind: CoreToolErrorKind },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreToolErrorKind {
+    InvalidPath,
+    NotFound,
+    AccessDenied,
+    PathNotAllowed,
+    NotRegularFile,
+    FileTooLarge,
+    BinaryFile,
+    ChangedDuringRead,
+    ResultTooLarge,
+    Unavailable,
+}
+
+impl fmt::Display for CoreToolErrorKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidPath => "invalidPath",
+            Self::NotFound => "notFound",
+            Self::AccessDenied => "accessDenied",
+            Self::PathNotAllowed => "pathNotAllowed",
+            Self::NotRegularFile => "notRegularFile",
+            Self::FileTooLarge => "fileTooLarge",
+            Self::BinaryFile => "binaryFile",
+            Self::ChangedDuringRead => "changedDuringRead",
+            Self::ResultTooLarge => "resultTooLarge",
+            Self::Unavailable => "unavailable",
+        })
+    }
 }

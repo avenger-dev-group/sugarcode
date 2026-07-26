@@ -408,9 +408,9 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
                 sugarcode_protocol::CoreToolResult::Success { content, bytes } => {
                     PublicToolResult::Success { content, bytes }
                 }
-                sugarcode_protocol::CoreToolResult::Error { kind } => {
-                    PublicToolResult::Error { kind }
-                }
+                sugarcode_protocol::CoreToolResult::Error { kind } => PublicToolResult::Error {
+                    kind: kind.to_string(),
+                },
             },
         },
     }
