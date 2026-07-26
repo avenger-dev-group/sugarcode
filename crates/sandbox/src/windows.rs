@@ -51,7 +51,7 @@ use windows_sys::Win32::Security::TokenIntegrityLevel;
 use windows_sys::Win32::Security::TokenRestrictedSids;
 use windows_sys::Win32::Security::WELL_KNOWN_SID_TYPE;
 use windows_sys::Win32::Security::WRITE_RESTRICTED;
-use windows_sys::Win32::Security::WinUntrustedLabelSid;
+use windows_sys::Win32::Security::WinLowLabelSid;
 use windows_sys::Win32::Security::WinWorldSid;
 use windows_sys::Win32::Security::WinWriteRestrictedCodeSid;
 use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
@@ -94,7 +94,9 @@ mod tests;
 const FILESYSTEM_READ_ONLY_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
 const FILESYSTEM_READ_ONLY_COMPAT_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED;
 const FILESYSTEM_READ_ONLY_RESTRICTING_SID: WELL_KNOWN_SID_TYPE = WinWriteRestrictedCodeSid;
-const FILESYSTEM_READ_ONLY_INTEGRITY_SID: WELL_KNOWN_SID_TYPE = WinUntrustedLabelSid;
+// Low remains below ordinary Medium filesystem objects. Untrusted prevents the
+// bundled CLI runtime from completing DLL initialization on supported Windows.
+const FILESYSTEM_READ_ONLY_INTEGRITY_SID: WELL_KNOWN_SID_TYPE = WinLowLabelSid;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const INFINITE: u32 = u32::MAX;
 const SE_GROUP_INTEGRITY: u32 = 0x0000_0020;
@@ -352,7 +354,7 @@ impl RestrictedToken {
                 "CreateRestrictedToken did not retain the filesystem write restricting SID",
             ));
         }
-        set_untrusted_integrity(restricted.raw())?;
+        set_low_integrity(restricted.raw())?;
         set_default_dacl(
             restricted.raw(),
             &[world_sid.as_mut_ptr().cast(), sid.as_mut_ptr().cast()],
@@ -411,7 +413,7 @@ fn token_has_restricting_sid(token: HANDLE, expected_sid: *mut c_void) -> io::Re
     Ok(false)
 }
 
-fn set_untrusted_integrity(token: HANDLE) -> io::Result<()> {
+fn set_low_integrity(token: HANDLE) -> io::Result<()> {
     let mut sid = well_known_sid(FILESYSTEM_READ_ONLY_INTEGRITY_SID)?;
     let label = TOKEN_MANDATORY_LABEL {
         Label: SID_AND_ATTRIBUTES {
@@ -445,7 +447,7 @@ fn set_untrusted_integrity(token: HANDLE) -> io::Result<()> {
     if !token_has_integrity_sid(token, label.Label.Sid)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "SetTokenInformation did not retain the untrusted integrity SID",
+            "SetTokenInformation did not retain the low integrity SID",
         ));
     }
     Ok(())

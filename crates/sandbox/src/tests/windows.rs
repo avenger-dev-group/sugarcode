@@ -13,12 +13,12 @@ use super::should_retry_without_lua;
 use windows_sys::Win32::Security::DISABLE_MAX_PRIVILEGE;
 use windows_sys::Win32::Security::LUA_TOKEN;
 use windows_sys::Win32::Security::WRITE_RESTRICTED;
-use windows_sys::Win32::Security::WinUntrustedLabelSid;
+use windows_sys::Win32::Security::WinLowLabelSid;
 use windows_sys::Win32::Security::WinWriteRestrictedCodeSid;
 
 #[test]
-fn filesystem_delete_restriction_uses_the_windows_untrusted_integrity_sid() {
-    assert_eq!(FILESYSTEM_READ_ONLY_INTEGRITY_SID, WinUntrustedLabelSid);
+fn filesystem_delete_restriction_uses_the_windows_low_integrity_sid() {
+    assert_eq!(FILESYSTEM_READ_ONLY_INTEGRITY_SID, WinLowLabelSid);
 }
 
 #[test]
