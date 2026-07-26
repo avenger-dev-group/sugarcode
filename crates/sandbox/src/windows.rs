@@ -12,6 +12,7 @@ use std::ptr::null_mut;
 
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 use windows_sys::Win32::Foundation::ERROR_PATH_NOT_FOUND;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
@@ -68,6 +69,8 @@ use crate::SupervisedChild;
 mod tests;
 
 const PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON: u64 = 1_u64 << 28;
+const FILESYSTEM_READ_ONLY_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
+const FILESYSTEM_READ_ONLY_COMPAT_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED;
 const INFINITE: u32 = u32::MAX;
 
 pub(crate) fn probe(policy: SandboxPolicy) -> Result<(), SandboxError> {
@@ -182,7 +185,7 @@ fn spawn_filesystem_read_only(spec: CommandSpec) -> Result<SupervisedChild, Sand
             Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => {
                 SandboxSpawnError::Process(error)
             }
-            _ => sandbox_setup_error(error),
+            _ => sandbox_setup_error(setup_operation_error("CreateProcessAsUserW", error)),
         });
     }
     let process_handle = OwnedHandle::new(process.hProcess);
@@ -200,7 +203,10 @@ fn spawn_filesystem_read_only(spec: CommandSpec) -> Result<SupervisedChild, Sand
         unsafe {
             TerminateJobObject(job.raw(), 1);
         }
-        return Err(sandbox_setup_error(io::Error::last_os_error()));
+        return Err(sandbox_setup_error(setup_operation_error(
+            "ResumeThread",
+            io::Error::last_os_error(),
+        )));
     }
     drop(thread_handle);
     drop(stdin);
@@ -253,6 +259,10 @@ fn sandbox_setup_error(error: io::Error) -> SandboxSpawnError {
     )))
 }
 
+fn setup_operation_error(operation: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{operation} failed: {error}"))
+}
+
 struct RestrictedToken(OwnedHandle);
 
 impl RestrictedToken {
@@ -266,7 +276,10 @@ impl RestrictedToken {
             )
         } == 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(setup_operation_error(
+                "OpenProcessToken",
+                io::Error::last_os_error(),
+            ));
         }
         let source = OwnedHandle::new(source);
         let mut sid_size = 0;
@@ -274,7 +287,10 @@ impl RestrictedToken {
             CreateWellKnownSid(WinNullSid, null_mut(), null_mut(), &mut sid_size);
         }
         if sid_size == 0 {
-            return Err(io::Error::last_os_error());
+            return Err(setup_operation_error(
+                "CreateWellKnownSid size query",
+                io::Error::last_os_error(),
+            ));
         }
         let mut sid = vec![0u8; usize::try_from(sid_size).unwrap_or(0)];
         if unsafe {
@@ -286,35 +302,78 @@ impl RestrictedToken {
             )
         } == 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(setup_operation_error(
+                "CreateWellKnownSid",
+                io::Error::last_os_error(),
+            ));
         }
         let restricting_sid = SID_AND_ATTRIBUTES {
             Sid: sid.as_mut_ptr().cast(),
             Attributes: 0,
         };
-        let mut restricted = null_mut();
-        if unsafe {
-            CreateRestrictedToken(
-                source.raw(),
-                DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED,
-                0,
-                null(),
-                0,
-                null(),
-                1,
-                &restricting_sid,
-                &mut restricted,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Self(OwnedHandle::new(restricted)))
+        let restricted = match create_restricted_token(
+            source.raw(),
+            &restricting_sid,
+            FILESYSTEM_READ_ONLY_TOKEN_FLAGS,
+        ) {
+            Ok(restricted) => restricted,
+            Err(initial_error) if should_retry_without_lua(&initial_error) => {
+                // Some filtered or policy-constrained hosts reject LUA_TOKEN with
+                // ERROR_INVALID_PARAMETER. The compatibility attempt retains the
+                // privilege removal and Null-SID write restriction that enforce
+                // filesystemReadOnlyV1; it is not an unsandboxed retry.
+                create_restricted_token(
+                    source.raw(),
+                    &restricting_sid,
+                    FILESYSTEM_READ_ONLY_COMPAT_TOKEN_FLAGS,
+                )
+                .map_err(|compat_error| {
+                    io::Error::new(
+                        compat_error.kind(),
+                        format!(
+                            "CreateRestrictedToken compatibility retry without LUA_TOKEN failed: \
+                             initial error: {initial_error}; compatibility error: {compat_error}"
+                        ),
+                    )
+                })?
+            }
+            Err(error) => return Err(setup_operation_error("CreateRestrictedToken", error)),
+        };
+        Ok(Self(restricted))
     }
 
     fn raw(&self) -> HANDLE {
         self.0.raw()
     }
+}
+
+fn should_retry_without_lua(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32)
+}
+
+fn create_restricted_token(
+    source: HANDLE,
+    restricting_sid: &SID_AND_ATTRIBUTES,
+    flags: u32,
+) -> io::Result<OwnedHandle> {
+    let mut restricted = null_mut();
+    if unsafe {
+        CreateRestrictedToken(
+            source,
+            flags,
+            0,
+            null(),
+            0,
+            null(),
+            1,
+            restricting_sid,
+            &mut restricted,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(OwnedHandle::new(restricted))
 }
 
 struct ChildPipe {
@@ -335,7 +394,10 @@ impl ChildPipe {
     fn output() -> io::Result<Self> {
         let (read, write) = create_inheritable_pipe()?;
         if unsafe { SetHandleInformation(read.raw(), HANDLE_FLAG_INHERIT, 0) } == 0 {
-            return Err(io::Error::last_os_error());
+            return Err(setup_operation_error(
+                "SetHandleInformation",
+                io::Error::last_os_error(),
+            ));
         }
         Ok(Self {
             child: write,
@@ -360,7 +422,10 @@ fn create_inheritable_pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     let mut read = null_mut();
     let mut write = null_mut();
     if unsafe { CreatePipe(&mut read, &mut write, &attributes, 0) } == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(setup_operation_error(
+            "CreatePipe",
+            io::Error::last_os_error(),
+        ));
     }
     Ok((OwnedHandle::new(read), OwnedHandle::new(write)))
 }
@@ -377,7 +442,10 @@ impl ProcThreadAttributes {
             InitializeProcThreadAttributeList(null_mut(), 2, 0, &mut byte_size);
         }
         if byte_size == 0 {
-            return Err(io::Error::last_os_error());
+            return Err(setup_operation_error(
+                "InitializeProcThreadAttributeList size query",
+                io::Error::last_os_error(),
+            ));
         }
         let words = byte_size.div_ceil(size_of::<usize>());
         let mut attributes = Self {
@@ -388,7 +456,10 @@ impl ProcThreadAttributes {
             InitializeProcThreadAttributeList(attributes.as_mut_ptr(), 2, 0, &mut byte_size)
         } == 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(setup_operation_error(
+                "InitializeProcThreadAttributeList",
+                io::Error::last_os_error(),
+            ));
         }
         attributes.initialized = true;
         if unsafe {
@@ -403,7 +474,10 @@ impl ProcThreadAttributes {
             )
         } == 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(setup_operation_error(
+                "UpdateProcThreadAttribute handle list",
+                io::Error::last_os_error(),
+            ));
         }
         let mitigation = PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON;
         if unsafe {
@@ -418,7 +492,10 @@ impl ProcThreadAttributes {
             )
         } == 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(setup_operation_error(
+                "UpdateProcThreadAttribute mitigation policy",
+                io::Error::last_os_error(),
+            ));
         }
         Ok(attributes)
     }
@@ -443,7 +520,10 @@ impl Drop for ProcThreadAttributes {
 fn kill_on_close_job(process: &OwnedHandle) -> io::Result<OwnedHandle> {
     let job = OwnedHandle::new(unsafe { CreateJobObjectW(null(), null()) });
     if job.raw().is_null() {
-        return Err(io::Error::last_os_error());
+        return Err(setup_operation_error(
+            "CreateJobObjectW",
+            io::Error::last_os_error(),
+        ));
     }
     let mut information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
     information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -456,10 +536,16 @@ fn kill_on_close_job(process: &OwnedHandle) -> io::Result<OwnedHandle> {
         )
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        return Err(setup_operation_error(
+            "SetInformationJobObject",
+            io::Error::last_os_error(),
+        ));
     }
     if unsafe { AssignProcessToJobObject(job.raw(), process.raw()) } == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(setup_operation_error(
+            "AssignProcessToJobObject",
+            io::Error::last_os_error(),
+        ));
     }
     Ok(job)
 }
