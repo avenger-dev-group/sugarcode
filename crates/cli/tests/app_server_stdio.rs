@@ -134,6 +134,36 @@ fn workspace_search_tool_lifecycle_matches_golden_trace() {
 }
 
 #[test]
+fn workspace_apply_patch_lifecycle_matches_golden_trace() {
+    const TOOL_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_patch_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-patch\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"patch\\\":\\\"@@ -1,3 +1,3 @@\\\\n one\\\\n-two\\\\n+second\\\\n three\\\\n\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const FINAL_ANSWER: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Patch succeeded.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("create isolated workspace");
+    let target = workspace.path().join("notes.txt");
+    fs::write(&target, "one\ntwo\nthree\n").expect("write patch fixture");
+    let _provider =
+        MockProvider::start_with_bodies(sugarcode_home.path(), vec![TOOL_CALL, FINAL_ANSWER]);
+    run_golden_with_options(
+        "turn-workspace-apply-patch",
+        &sugarcode_home,
+        Some(workspace.path()),
+        true,
+    );
+    assert_eq!(
+        fs::read_to_string(target).expect("read patched fixture"),
+        "one\nsecond\nthree\n"
+    );
+}
+
+#[test]
 fn denied_shell_approval_matches_bidirectional_golden_trace() {
     let command = env!("CARGO_BIN_EXE_sugarcode");
     let arguments = serde_json::to_string(&json!({
@@ -732,6 +762,15 @@ fn assert_golden_with_body(name: &str, provider_body: &'static str) {
 }
 
 fn run_golden(name: &str, sugarcode_home: &tempfile::TempDir, workspace: Option<&std::path::Path>) {
+    run_golden_with_options(name, sugarcode_home, workspace, false);
+}
+
+fn run_golden_with_options(
+    name: &str,
+    sugarcode_home: &tempfile::TempDir,
+    workspace: Option<&std::path::Path>,
+    allow_workspace_write: bool,
+) {
     let fixture_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-fixtures/app-server/v1");
     let input = fs::read_to_string(fixture_root.join(format!("{name}.stdin.jsonl")))
@@ -743,6 +782,9 @@ fn run_golden(name: &str, sugarcode_home: &tempfile::TempDir, workspace: Option<
     command.args(["app-server", "--stdio"]);
     if let Some(workspace) = workspace {
         command.arg("--workspace").arg(workspace);
+    }
+    if allow_workspace_write {
+        command.arg("--allow-workspace-write");
     }
     let mut child = command
         .env("SUGARCODE_HOME", sugarcode_home.path())

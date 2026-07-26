@@ -26,6 +26,7 @@ use zeroize::Zeroizing;
 pub async fn run_stdio(
     config: EffectiveConfig,
     workspace: Option<std::path::PathBuf>,
+    allow_workspace_write: bool,
 ) -> io::Result<()> {
     let shell_cwd = workspace.clone();
     let workspace = workspace
@@ -43,6 +44,14 @@ pub async fn run_stdio(
     let workspace_search: Option<Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>> = workspace
         .as_ref()
         .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>);
+    let workspace_patch: Option<Arc<dyn sugarcode_tools::WorkspacePatchExecutor>> =
+        allow_workspace_write
+            .then(|| {
+                workspace.as_ref().map(|tool| {
+                    Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspacePatchExecutor>
+                })
+            })
+            .flatten();
     let model = config.model().cloned();
     let model_token = model
         .as_ref()
@@ -101,7 +110,7 @@ pub async fn run_stdio(
         (None, Ok(None)) => CoreRuntime::without_model(core),
         (None, Ok(Some(_))) | (None, Err(_)) => unreachable!("token lookup requires a model"),
     };
-    let session = Session::with_core(runtime);
+    let session = Session::with_core(runtime.with_workspace_patch(workspace_patch));
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());
     stdio::serve_with_events_and_approvals(input, output, session, events, approvals).await

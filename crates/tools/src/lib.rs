@@ -1,5 +1,6 @@
 mod shell_command;
 mod workspace_list;
+mod workspace_patch;
 mod workspace_read;
 mod workspace_search;
 
@@ -27,6 +28,21 @@ pub use workspace_list::WorkspaceListEntryKind;
 pub use workspace_list::WorkspaceListErrorKind;
 pub use workspace_list::WorkspaceListExecutor;
 pub use workspace_list::WorkspaceListOutcome;
+pub use workspace_patch::MAX_WORKSPACE_DIFF_BYTES;
+pub use workspace_patch::MAX_WORKSPACE_DIFF_LINES;
+pub use workspace_patch::MAX_WORKSPACE_FILE_LINES;
+pub use workspace_patch::MAX_WORKSPACE_LINE_BYTES;
+pub use workspace_patch::MAX_WORKSPACE_PATCH_BYTES;
+pub use workspace_patch::MAX_WORKSPACE_PATCH_HUNKS;
+pub use workspace_patch::MAX_WORKSPACE_PATCH_LINES;
+pub use workspace_patch::WorkspaceNewlineStyle;
+pub use workspace_patch::WorkspacePatchArguments;
+pub use workspace_patch::WorkspacePatchCommitOutcome;
+pub use workspace_patch::WorkspacePatchErrorKind;
+pub use workspace_patch::WorkspacePatchExecutor;
+pub use workspace_patch::WorkspacePatchPrepareOutcome;
+pub use workspace_patch::WorkspacePatchPrepared;
+pub use workspace_read::MAX_WORKSPACE_PATH_COMPONENTS;
 pub use workspace_read::MAX_WORKSPACE_READ_BYTES;
 pub use workspace_read::MAX_WORKSPACE_RELATIVE_PATH_BYTES;
 pub use workspace_read::WorkspaceReadArguments;

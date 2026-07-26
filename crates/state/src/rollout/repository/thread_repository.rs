@@ -343,6 +343,11 @@ impl ThreadRepository for RolloutRepository {
         item: &DurableItemSnapshot,
     ) -> Result<(), RolloutError> {
         self.ensure_available()?;
+        if !super::super::valid_file_change_item(item) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidFileChangeItem",
+            });
+        }
         let pending = self
             .pending_turns
             .get(thread_id)

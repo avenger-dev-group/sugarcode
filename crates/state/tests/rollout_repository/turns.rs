@@ -127,6 +127,7 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
         name: "workspace/search".to_string(),
         path: "src".to_string(),
         query: Some("needle".to_string()),
+        patch: None,
         command: None,
         arguments: None,
     };
@@ -187,6 +188,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             name: "shell/exec".to_string(),
             path: ".".to_string(),
             query: None,
+            patch: None,
             command: Some("/bin/echo".to_string()),
             arguments: Some(vec!["ok".to_string()]),
         },
@@ -264,6 +266,78 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
         .expect("load")
         .expect("thread");
     assert_eq!(snapshot.turns[0].items[1..], incremental);
+}
+
+#[test]
+fn file_change_proposal_survives_recovery_without_replaying_the_write() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let proposal = DurableItemSnapshot::FileChange {
+        id: ItemId::new("item_0000000000000003"),
+        call_id: "call_patch".to_string(),
+        path: "notes.txt".to_string(),
+        kind: "update".to_string(),
+        diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n".to_string(),
+        before_sha256: "a".repeat(64),
+        after_sha256: "b".repeat(64),
+        before_bytes: 4,
+        after_bytes: 4,
+        newline_style: "lf".to_string(),
+        final_newline: true,
+    };
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(
+                &thread_id,
+                &DurableTurnSnapshot {
+                    id: turn_id.clone(),
+                    status: DurableTurnStatus::InProgress,
+                    items: vec![DurableItemSnapshot::UserMessage {
+                        id: ItemId::new("item_0000000000000001"),
+                        text: "Update it".to_string(),
+                    }],
+                    error: None,
+                    usage: None,
+                },
+            )
+            .expect("turn start");
+        repository
+            .append_turn_item(
+                &thread_id,
+                &turn_id,
+                &DurableItemSnapshot::ToolCall {
+                    id: ItemId::new("item_0000000000000002"),
+                    call_id: "call_patch".to_string(),
+                    name: "workspace/apply-patch".to_string(),
+                    path: "notes.txt".to_string(),
+                    query: None,
+                    patch: Some("@@ -1,1 +1,1 @@\n-old\n+new\n".to_string()),
+                    command: None,
+                    arguments: None,
+                },
+            )
+            .expect("tool call");
+        repository
+            .append_turn_item(&thread_id, &turn_id, &proposal)
+            .expect("file change proposal");
+    }
+    let repository = RolloutRepository::open(&home).expect("recover");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.turns[0].status, DurableTurnStatus::Interrupted);
+    assert_eq!(snapshot.turns[0].items.last(), Some(&proposal));
+    assert!(
+        !snapshot.turns[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, DurableItemSnapshot::ToolResult { .. }))
+    );
 }
 
 #[test]

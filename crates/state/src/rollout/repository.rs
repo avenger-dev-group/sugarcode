@@ -332,6 +332,10 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                 | (
                     DurableItemSnapshot::CommandApprovalDecision { .. },
                     DurableItemSnapshot::CommandApprovalDecision { .. },
+                )
+                | (
+                    DurableItemSnapshot::FileChange { .. },
+                    DurableItemSnapshot::FileChange { .. },
                 ) => started == terminal,
                 _ => false,
             })
@@ -339,6 +343,7 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
 
 fn valid_terminal_turn(turn: &DurableTurnSnapshot) -> bool {
     !turn.items.is_empty()
+        && turn.items.iter().all(super::valid_file_change_item)
         && match turn.status {
             DurableTurnStatus::InProgress => false,
             DurableTurnStatus::Completed => turn.error.is_none(),

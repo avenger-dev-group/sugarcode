@@ -57,6 +57,38 @@ impl RunningServer {
         }
     }
 
+    pub(super) fn spawn_with_workspace_write(
+        home: &Path,
+        workspace: &Path,
+        provider_bodies: Vec<&'static str>,
+    ) -> Self {
+        let provider = MockProvider::start_with_bodies(home, provider_bodies);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+            .arg("--home")
+            .arg(home)
+            .args([
+                "app-server",
+                "--stdio",
+                "--workspace",
+                workspace.to_str().expect("UTF-8 workspace path"),
+                "--allow-workspace-write",
+            ])
+            .env_remove("SUGARCODE_HOME")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn app-server with workspace writes");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        Self {
+            child,
+            stdin,
+            stdout,
+            provider,
+        }
+    }
+
     pub(super) fn spawn_with_responses(home: &Path, provider_responses: Vec<MockResponse>) -> Self {
         let provider = MockProvider::start_with_responses(home, provider_responses);
         let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))

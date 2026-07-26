@@ -3,6 +3,8 @@ use crate::ClientInfo;
 use crate::CommandApprovalParams;
 use crate::CommandApprovalResponse;
 use crate::CommandApprovalResponseDecision;
+use crate::FileChangeKind;
+use crate::FileChangeNewlineStyle;
 use crate::InitializeCapabilities;
 use crate::InitializeParams;
 use crate::InitializeResponse;
@@ -82,6 +84,8 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         CommandApprovalResponseDecision::decl(),
         CommandApprovalParams::decl(),
         CommandApprovalResponse::decl(),
+        FileChangeKind::decl(),
+        FileChangeNewlineStyle::decl(),
         ProcessOutcome::decl(),
         ToolResult::decl(),
         Item::decl(),
@@ -170,6 +174,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("CommandApprovalResponse.schema.json"),
         &schema_for!(CommandApprovalResponse),
+    )?;
+    write_schema(
+        out_dir.join("FileChangeKind.schema.json"),
+        &schema_for!(FileChangeKind),
+    )?;
+    write_schema(
+        out_dir.join("FileChangeNewlineStyle.schema.json"),
+        &schema_for!(FileChangeNewlineStyle),
     )?;
     write_schema(
         out_dir.join("ToolResult.schema.json"),

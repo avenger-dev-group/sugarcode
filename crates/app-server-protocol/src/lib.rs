@@ -16,6 +16,8 @@ pub use initialize::PlatformInfo;
 pub use initialize::ServerCapabilities;
 pub use initialize::ServerInfo;
 pub use item::AgentMessageDeltaNotification;
+pub use item::FileChangeKind;
+pub use item::FileChangeNewlineStyle;
 pub use item::Item;
 pub use item::ItemCompletedNotification;
 pub use item::ItemStartedNotification;

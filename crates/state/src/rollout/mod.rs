@@ -124,8 +124,22 @@ pub enum DurableItemSnapshot {
         name: String,
         path: String,
         query: Option<String>,
+        patch: Option<String>,
         command: Option<String>,
         arguments: Option<Vec<String>>,
+    },
+    FileChange {
+        id: ItemId,
+        call_id: String,
+        path: String,
+        kind: String,
+        diff: String,
+        before_sha256: String,
+        after_sha256: String,
+        before_bytes: u64,
+        after_bytes: u64,
+        newline_style: String,
+        final_newline: bool,
     },
     CommandApprovalRequest {
         id: ItemId,
@@ -188,11 +202,70 @@ impl DurableItemSnapshot {
             Self::UserMessage { id, .. }
             | Self::AgentMessage { id, .. }
             | Self::ToolCall { id, .. }
+            | Self::FileChange { id, .. }
             | Self::CommandApprovalRequest { id, .. }
             | Self::CommandApprovalDecision { id, .. }
             | Self::ToolResult { id, .. } => id,
         }
     }
+}
+
+pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {
+    match item {
+        DurableItemSnapshot::ToolCall {
+            name, path, patch, ..
+        } => match patch {
+            Some(patch) => {
+                name == "workspace/apply-patch"
+                    && valid_patch_path(path)
+                    && !patch.is_empty()
+                    && patch.len() <= 96 * 1024
+            }
+            None => name != "workspace/apply-patch",
+        },
+        DurableItemSnapshot::FileChange {
+            path,
+            kind,
+            diff,
+            before_sha256,
+            after_sha256,
+            before_bytes,
+            after_bytes,
+            newline_style,
+            ..
+        } => {
+            kind == "update"
+                && matches!(newline_style.as_str(), "lf" | "crLf")
+                && valid_patch_path(path)
+                && valid_sha256(before_sha256)
+                && valid_sha256(after_sha256)
+                && *before_bytes <= 256 * 1024
+                && *after_bytes <= 256 * 1024
+                && !diff.is_empty()
+                && diff.len() <= 192 * 1024
+                && diff.lines().count() <= 5_000
+                && diff.starts_with(&format!("--- a/{path}\n+++ b/{path}\n"))
+        }
+        _ => true,
+    }
+}
+
+fn valid_patch_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 1_024
+        && !path.starts_with('/')
+        && !path.starts_with('\\')
+        && !path.chars().any(char::is_control)
+        && !path
+            .split(['/', '\\'])
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 pub trait ThreadRepository: fmt::Debug + Send {

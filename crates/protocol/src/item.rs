@@ -42,8 +42,21 @@ pub enum CoreItemKind {
         name: String,
         path: String,
         query: Option<String>,
+        patch: Option<String>,
         command: Option<String>,
         arguments: Option<Vec<String>>,
+    },
+    FileChange {
+        call_id: String,
+        path: String,
+        kind: CoreFileChangeKind,
+        diff: String,
+        before_sha256: String,
+        after_sha256: String,
+        before_bytes: u64,
+        after_bytes: u64,
+        newline_style: CoreFileChangeNewlineStyle,
+        final_newline: bool,
     },
     CommandApprovalRequest {
         approval_id: String,
@@ -63,6 +76,17 @@ pub enum CoreItemKind {
         name: String,
         result: CoreToolResult,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreFileChangeKind {
+    Update,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreFileChangeNewlineStyle {
+    Lf,
+    CrLf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +151,7 @@ pub enum CoreToolErrorKind {
     FileTooLarge,
     BinaryFile,
     InvalidEncoding,
+    InvalidNewline,
     InvalidName,
     TooManyEntries,
     ChangedDuringRead,
@@ -135,6 +160,14 @@ pub enum CoreToolErrorKind {
     SearchTimedOut,
     ChangedDuringSearch,
     ResultTooLarge,
+    InvalidPatch,
+    PatchDoesNotApply,
+    TooManyLines,
+    LineTooLong,
+    HardLinkNotAllowed,
+    CrossDeviceNotAllowed,
+    Conflict,
+    AtomicReplaceUnavailable,
     ApprovalUnsupported,
     ApprovalDenied,
     ApprovalTimedOut,
@@ -157,6 +190,7 @@ impl fmt::Display for CoreToolErrorKind {
             Self::FileTooLarge => "fileTooLarge",
             Self::BinaryFile => "binaryFile",
             Self::InvalidEncoding => "invalidEncoding",
+            Self::InvalidNewline => "invalidNewline",
             Self::InvalidName => "invalidName",
             Self::TooManyEntries => "tooManyEntries",
             Self::ChangedDuringRead => "changedDuringRead",
@@ -165,6 +199,14 @@ impl fmt::Display for CoreToolErrorKind {
             Self::SearchTimedOut => "searchTimedOut",
             Self::ChangedDuringSearch => "changedDuringSearch",
             Self::ResultTooLarge => "resultTooLarge",
+            Self::InvalidPatch => "invalidPatch",
+            Self::PatchDoesNotApply => "patchDoesNotApply",
+            Self::TooManyLines => "tooManyLines",
+            Self::LineTooLong => "lineTooLong",
+            Self::HardLinkNotAllowed => "hardLinkNotAllowed",
+            Self::CrossDeviceNotAllowed => "crossDeviceNotAllowed",
+            Self::Conflict => "conflict",
+            Self::AtomicReplaceUnavailable => "atomicReplaceUnavailable",
             Self::ApprovalUnsupported => "approvalUnsupported",
             Self::ApprovalDenied => "approvalDenied",
             Self::ApprovalTimedOut => "approvalTimedOut",

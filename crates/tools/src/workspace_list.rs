@@ -329,5 +329,5 @@ fn error(kind: WorkspaceListErrorKind) -> WorkspaceListOutcome {
 }
 
 #[cfg(test)]
-#[path = "workspace_list/tests/mod.rs"]
+#[path = "tests/workspace_list.rs"]
 mod tests;

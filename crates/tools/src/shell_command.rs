@@ -618,5 +618,5 @@ mod windows_job {
 }
 
 #[cfg(test)]
-#[path = "shell_command/tests/mod.rs"]
+#[path = "tests/shell_command.rs"]
 mod tests;

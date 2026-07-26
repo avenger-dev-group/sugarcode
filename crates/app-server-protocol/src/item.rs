@@ -32,6 +32,33 @@ pub enum Item {
         #[ts(optional)]
         arguments: Option<Vec<String>>,
     },
+    FileChange {
+        id: String,
+        #[serde(rename = "callId")]
+        #[ts(rename = "callId")]
+        call_id: String,
+        path: String,
+        kind: FileChangeKind,
+        diff: String,
+        #[serde(rename = "beforeSha256")]
+        #[ts(rename = "beforeSha256")]
+        before_sha256: String,
+        #[serde(rename = "afterSha256")]
+        #[ts(rename = "afterSha256")]
+        after_sha256: String,
+        #[serde(rename = "beforeBytes")]
+        #[ts(rename = "beforeBytes")]
+        before_bytes: u64,
+        #[serde(rename = "afterBytes")]
+        #[ts(rename = "afterBytes")]
+        after_bytes: u64,
+        #[serde(rename = "newlineStyle")]
+        #[ts(rename = "newlineStyle")]
+        newline_style: FileChangeNewlineStyle,
+        #[serde(rename = "finalNewline")]
+        #[ts(rename = "finalNewline")]
+        final_newline: bool,
+    },
     CommandApprovalRequest {
         id: String,
         #[serde(rename = "approvalId")]
@@ -63,6 +90,21 @@ pub enum Item {
         name: String,
         result: ToolResult,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum FileChangeKind {
+    Update,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum FileChangeNewlineStyle {
+    Lf,
+    CrLf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

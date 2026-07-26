@@ -64,6 +64,7 @@ pub enum PreparedMessage {
         name: String,
         path: String,
         query: Option<String>,
+        patch: Option<String>,
         command: Option<String>,
         arguments: Option<Vec<String>>,
     },
@@ -195,8 +196,21 @@ enum ItemKind {
         name: String,
         path: String,
         query: Option<String>,
+        patch: Option<String>,
         command: Option<String>,
         arguments: Option<Vec<String>>,
+    },
+    FileChange {
+        call_id: String,
+        path: String,
+        kind: sugarcode_protocol::CoreFileChangeKind,
+        diff: String,
+        before_sha256: String,
+        after_sha256: String,
+        before_bytes: u64,
+        after_bytes: u64,
+        newline_style: sugarcode_protocol::CoreFileChangeNewlineStyle,
+        final_newline: bool,
     },
     CommandApprovalRequest {
         approval_id: String,
@@ -242,6 +256,7 @@ impl Item {
                 "cannot append an agent delta to a user message".to_string(),
             )),
             ItemKind::ToolCall { .. }
+            | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
             | ItemKind::ToolResult { .. } => Err(CoreError::Internal(
@@ -267,6 +282,7 @@ impl Item {
                 name,
                 path,
                 query,
+                patch,
                 command,
                 arguments,
             } => CoreItemKind::ToolCall {
@@ -274,8 +290,32 @@ impl Item {
                 name: name.clone(),
                 path: path.clone(),
                 query: query.clone(),
+                patch: patch.clone(),
                 command: command.clone(),
                 arguments: arguments.clone(),
+            },
+            ItemKind::FileChange {
+                call_id,
+                path,
+                kind,
+                diff,
+                before_sha256,
+                after_sha256,
+                before_bytes,
+                after_bytes,
+                newline_style,
+                final_newline,
+            } => CoreItemKind::FileChange {
+                call_id: call_id.clone(),
+                path: path.clone(),
+                kind: *kind,
+                diff: diff.clone(),
+                before_sha256: before_sha256.clone(),
+                after_sha256: after_sha256.clone(),
+                before_bytes: *before_bytes,
+                after_bytes: *after_bytes,
+                newline_style: *newline_style,
+                final_newline: *final_newline,
             },
             ItemKind::CommandApprovalRequest {
                 approval_id,
@@ -496,6 +536,7 @@ impl Core {
                         name,
                         path,
                         query,
+                        patch,
                         command,
                         arguments,
                     } => Item {
@@ -506,8 +547,43 @@ impl Core {
                             name: name.clone(),
                             path: path.clone(),
                             query: query.clone(),
+                            patch: patch.clone(),
                             command: command.clone(),
                             arguments: arguments.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::FileChange {
+                        id,
+                        call_id,
+                        path,
+                        kind,
+                        diff,
+                        before_sha256,
+                        after_sha256,
+                        before_bytes,
+                        after_bytes,
+                        newline_style,
+                        final_newline,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::FileChange {
+                            call_id: call_id.clone(),
+                            path: path.clone(),
+                            kind: match kind.as_str() {
+                                "update" => sugarcode_protocol::CoreFileChangeKind::Update,
+                                _ => sugarcode_protocol::CoreFileChangeKind::Update,
+                            },
+                            diff: diff.clone(),
+                            before_sha256: before_sha256.clone(),
+                            after_sha256: after_sha256.clone(),
+                            before_bytes: *before_bytes,
+                            after_bytes: *after_bytes,
+                            newline_style: match newline_style.as_str() {
+                                "crLf" => sugarcode_protocol::CoreFileChangeNewlineStyle::CrLf,
+                                _ => sugarcode_protocol::CoreFileChangeNewlineStyle::Lf,
+                            },
+                            final_newline: *final_newline,
                         },
                     },
                     DurableItemSnapshot::CommandApprovalRequest {
@@ -653,6 +729,7 @@ impl Core {
                         name,
                         path,
                         query,
+                        patch,
                         command,
                         arguments,
                     } => Some(PreparedMessage::ToolCall {
@@ -660,11 +737,13 @@ impl Core {
                         name: name.clone(),
                         path: path.clone(),
                         query: query.clone(),
+                        patch: patch.clone(),
                         command: command.clone(),
                         arguments: arguments.clone(),
                     }),
                     ItemKind::CommandApprovalRequest { .. }
-                    | ItemKind::CommandApprovalDecision { .. } => None,
+                    | ItemKind::CommandApprovalDecision { .. }
+                    | ItemKind::FileChange { .. } => None,
                     ItemKind::ToolResult {
                         call_id,
                         name,
@@ -692,6 +771,7 @@ impl Core {
                     name,
                     path,
                     query,
+                    patch,
                     command,
                     arguments,
                 } => {
@@ -699,6 +779,7 @@ impl Core {
                         + name.len()
                         + path.len()
                         + query.as_ref().map_or(0, String::len)
+                        + patch.as_ref().map_or(0, String::len)
                         + command.as_ref().map_or(0, String::len)
                         + arguments
                             .as_ref()
@@ -842,6 +923,7 @@ impl Core {
         if !matches!(
             kind,
             CoreItemKind::ToolCall { .. }
+                | CoreItemKind::FileChange { .. }
                 | CoreItemKind::CommandApprovalRequest { .. }
                 | CoreItemKind::CommandApprovalDecision { .. }
                 | CoreItemKind::ToolResult { .. }
@@ -911,6 +993,7 @@ impl Core {
             ItemKind::AgentMessage { text } => text.len(),
             ItemKind::UserMessage { .. }
             | ItemKind::ToolCall { .. }
+            | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
             | ItemKind::ToolResult { .. } => {

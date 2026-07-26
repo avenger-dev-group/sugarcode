@@ -232,6 +232,9 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     item,
                     sequence: _,
                 } => {
+                    if !super::valid_file_change_item(&item) {
+                        return Err(corrupt(&path, offset as u64, "invalidFileChangeItem"));
+                    }
                     let thread = snapshot
                         .as_mut()
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
@@ -552,6 +555,10 @@ fn terminal_items_match(
                 | (
                     super::DurableItemSnapshot::CommandApprovalDecision { .. },
                     super::DurableItemSnapshot::CommandApprovalDecision { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::FileChange { .. },
+                    super::DurableItemSnapshot::FileChange { .. },
                 ) => started == terminal,
                 _ => false,
             })
@@ -574,12 +581,13 @@ fn validate_terminal_turn(
     path: &Path,
     offset: u64,
 ) -> Result<(), RolloutError> {
-    let valid = match turn.status {
-        super::DurableTurnStatus::InProgress => false,
-        super::DurableTurnStatus::Completed => !turn.items.is_empty() && turn.error.is_none(),
-        super::DurableTurnStatus::Failed => !turn.items.is_empty() && turn.error.is_some(),
-        super::DurableTurnStatus::Interrupted => turn.error.is_none(),
-    };
+    let valid = turn.items.iter().all(super::valid_file_change_item)
+        && match turn.status {
+            super::DurableTurnStatus::InProgress => false,
+            super::DurableTurnStatus::Completed => !turn.items.is_empty() && turn.error.is_none(),
+            super::DurableTurnStatus::Failed => !turn.items.is_empty() && turn.error.is_some(),
+            super::DurableTurnStatus::Interrupted => turn.error.is_none(),
+        };
     if valid {
         Ok(())
     } else {

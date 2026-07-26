@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelToolDefinition> {
-    let mut definitions = Vec::with_capacity(4);
+    let mut definitions = Vec::with_capacity(5);
     if runtime.workspace_read.is_some() {
         definitions.push(ModelToolDefinition {
             name: "workspace/read".to_string(),
@@ -25,6 +25,23 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
                 "Search UTF-8 text file contents recursively inside one workspace directory. Returns workspace-relative paths and 1-based line numbers."
                     .to_string(),
             parameters: workspace_search_parameters(),
+        });
+    }
+    if runtime.workspace_patch.is_some() {
+        definitions.push(ModelToolDefinition {
+            name: "workspace/apply-patch".to_string(),
+            description:
+                "Apply strict unified hunks to one existing UTF-8 regular file. The write capability is explicit, bounded, conflict-checked, and not a sandbox or persistent permission."
+                    .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "path": { "type": "string" },
+                    "patch": { "type": "string" }
+                },
+                "required": ["path", "patch"]
+            }),
         });
     }
     if runtime.shell_executor.is_some() && runtime.approval_requester.is_some() {
@@ -77,6 +94,7 @@ fn workspace_search_parameters() -> serde_json::Value {
 pub(super) struct WorkspaceToolArguments {
     pub path: String,
     pub query: Option<String>,
+    pub patch: Option<String>,
 }
 
 pub(super) struct ShellToolArguments {
@@ -162,18 +180,17 @@ pub(super) fn workspace_tool_arguments(
 ) -> Result<WorkspaceToolArguments, ModelError> {
     if !matches!(
         call.name.as_str(),
-        "workspace/read" | "workspace/list" | "workspace/search"
+        "workspace/read" | "workspace/list" | "workspace/search" | "workspace/apply-patch"
     ) {
         return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
     }
     let Some(arguments) = call.arguments.as_object() else {
         return Err(ModelError::new(ModelErrorKind::Protocol, false));
     };
-    let expected_len = if call.name == "workspace/search" {
-        2
-    } else {
-        1
-    };
+    let expected_len = usize::from(matches!(
+        call.name.as_str(),
+        "workspace/search" | "workspace/apply-patch"
+    )) + 1;
     if arguments.len() != expected_len {
         return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
     }
@@ -193,7 +210,18 @@ pub(super) fn workspace_tool_arguments(
     } else {
         None
     };
-    Ok(WorkspaceToolArguments { path, query })
+    let patch = if call.name == "workspace/apply-patch" {
+        Some(
+            arguments
+                .get("patch")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?,
+        )
+    } else {
+        None
+    };
+    Ok(WorkspaceToolArguments { path, query, patch })
 }
 
 pub(super) fn map_workspace_read_outcome(
@@ -335,6 +363,69 @@ pub(super) fn map_workspace_search_outcome(
     }
 }
 
+pub(super) fn map_workspace_patch_error(kind: WorkspacePatchErrorKind) -> CoreToolErrorKind {
+    match kind {
+        WorkspacePatchErrorKind::InvalidPath => CoreToolErrorKind::InvalidPath,
+        WorkspacePatchErrorKind::NotFound => CoreToolErrorKind::NotFound,
+        WorkspacePatchErrorKind::AccessDenied => CoreToolErrorKind::AccessDenied,
+        WorkspacePatchErrorKind::PathNotAllowed => CoreToolErrorKind::PathNotAllowed,
+        WorkspacePatchErrorKind::NotRegularFile => CoreToolErrorKind::NotRegularFile,
+        WorkspacePatchErrorKind::FileTooLarge => CoreToolErrorKind::FileTooLarge,
+        WorkspacePatchErrorKind::BinaryFile => CoreToolErrorKind::BinaryFile,
+        WorkspacePatchErrorKind::InvalidEncoding => CoreToolErrorKind::InvalidEncoding,
+        WorkspacePatchErrorKind::InvalidNewline => CoreToolErrorKind::InvalidNewline,
+        WorkspacePatchErrorKind::InvalidPatch => CoreToolErrorKind::InvalidPatch,
+        WorkspacePatchErrorKind::PatchDoesNotApply => CoreToolErrorKind::PatchDoesNotApply,
+        WorkspacePatchErrorKind::TooManyLines => CoreToolErrorKind::TooManyLines,
+        WorkspacePatchErrorKind::LineTooLong => CoreToolErrorKind::LineTooLong,
+        WorkspacePatchErrorKind::ResultTooLarge => CoreToolErrorKind::ResultTooLarge,
+        WorkspacePatchErrorKind::HardLinkNotAllowed => CoreToolErrorKind::HardLinkNotAllowed,
+        WorkspacePatchErrorKind::CrossDeviceNotAllowed => CoreToolErrorKind::CrossDeviceNotAllowed,
+        WorkspacePatchErrorKind::Conflict => CoreToolErrorKind::Conflict,
+        WorkspacePatchErrorKind::AtomicReplaceUnavailable => {
+            CoreToolErrorKind::AtomicReplaceUnavailable
+        }
+        WorkspacePatchErrorKind::Cancelled | WorkspacePatchErrorKind::Unavailable => {
+            CoreToolErrorKind::Unavailable
+        }
+    }
+}
+
+pub(super) fn serialized_file_change_bytes(kind: &CoreItemKind) -> usize {
+    let CoreItemKind::FileChange {
+        call_id,
+        path,
+        diff,
+        before_sha256,
+        after_sha256,
+        before_bytes,
+        after_bytes,
+        newline_style,
+        final_newline,
+        ..
+    } = kind
+    else {
+        return usize::MAX;
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "type": "fileChange",
+        "callId": call_id,
+        "path": path,
+        "kind": "update",
+        "diff": diff,
+        "beforeSha256": before_sha256,
+        "afterSha256": after_sha256,
+        "beforeBytes": before_bytes,
+        "afterBytes": after_bytes,
+        "newlineStyle": match newline_style {
+            sugarcode_protocol::CoreFileChangeNewlineStyle::Lf => "lf",
+            sugarcode_protocol::CoreFileChangeNewlineStyle::CrLf => "crLf",
+        },
+        "finalNewline": final_newline,
+    }))
+    .map_or(usize::MAX, |bytes| bytes.len())
+}
+
 pub(super) fn serialized_tool_call_bytes(
     call: &ModelToolCall,
     arguments: &WorkspaceToolArguments,
@@ -352,6 +443,15 @@ pub(super) fn serialized_tool_call_bytes(
             .insert(
                 "query".to_string(),
                 serde_json::Value::String(query.clone()),
+            );
+    }
+    if let Some(patch) = &arguments.patch {
+        value
+            .as_object_mut()
+            .expect("tool call serialization value is an object")
+            .insert(
+                "patch".to_string(),
+                serde_json::Value::String(patch.clone()),
             );
     }
     serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len())

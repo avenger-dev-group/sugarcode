@@ -648,5 +648,5 @@ fn error(kind: WorkspaceSearchErrorKind) -> WorkspaceSearchOutcome {
 }
 
 #[cfg(test)]
-#[path = "workspace_search/tests/mod.rs"]
+#[path = "tests/workspace_search.rs"]
 mod tests;

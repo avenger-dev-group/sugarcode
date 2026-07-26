@@ -14,6 +14,7 @@ use std::pin::Pin;
 use tokio_util::sync::CancellationToken;
 
 pub const MAX_WORKSPACE_RELATIVE_PATH_BYTES: usize = 1024;
+pub const MAX_WORKSPACE_PATH_COMPONENTS: usize = 64;
 pub const MAX_WORKSPACE_READ_BYTES: usize = 256 * 1024;
 pub(crate) const READ_CHUNK_BYTES: usize = 16 * 1024;
 
@@ -224,6 +225,14 @@ pub(crate) fn open_regular_file_nofollow(
         use cap_fs_ext::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
+    #[cfg(windows)]
+    {
+        use cap_fs_ext::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+    }
     let file = match directory.open_with(file_name, &options) {
         Ok(file) => file.into_std(),
         Err(error_value) => {
@@ -284,6 +293,7 @@ pub(crate) struct FileSnapshot {
     len: u64,
     modified: u128,
     changed: u128,
+    links: u64,
 }
 
 impl FileSnapshot {
@@ -296,6 +306,7 @@ impl FileSnapshot {
             len: metadata.len(),
             modified: modified_marker(metadata),
             changed: changed_marker(file, metadata)?,
+            links: link_count(file, metadata)?,
         })
     }
 
@@ -316,6 +327,10 @@ impl FileSnapshot {
 
     pub(crate) fn len(self) -> u64 {
         self.len
+    }
+
+    pub(crate) fn links(self) -> u64 {
+        self.links
     }
 }
 
@@ -394,6 +409,31 @@ impl FileIdentity {
 fn modified_marker(metadata: &std::fs::Metadata) -> u128 {
     use std::os::unix::fs::MetadataExt;
     ((metadata.mtime() as u128) << 64) | metadata.mtime_nsec() as u128
+}
+
+#[cfg(unix)]
+fn link_count(_file: &File, metadata: &std::fs::Metadata) -> Result<u64, WorkspaceReadErrorKind> {
+    use std::os::unix::fs::MetadataExt;
+    Ok(metadata.nlink())
+}
+
+#[cfg(windows)]
+fn link_count(file: &File, _metadata: &std::fs::Metadata) -> Result<u64, WorkspaceReadErrorKind> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
+    let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    // SAFETY: the handle belongs to `file` and the output buffer is valid.
+    let result = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) };
+    if result == 0 {
+        return Err(map_io_error(&std::io::Error::last_os_error()));
+    }
+    Ok(u64::from(information.nNumberOfLinks))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn link_count(_file: &File, _metadata: &std::fs::Metadata) -> Result<u64, WorkspaceReadErrorKind> {
+    Ok(1)
 }
 
 #[cfg(unix)]
@@ -561,7 +601,7 @@ pub(crate) fn validate_relative_path(path: &str) -> Result<Vec<PathBuf>, Workspa
             | Component::ParentDir => return Err(WorkspaceReadErrorKind::InvalidPath),
         }
     }
-    if components.is_empty() {
+    if components.is_empty() || components.len() > MAX_WORKSPACE_PATH_COMPONENTS {
         Err(WorkspaceReadErrorKind::InvalidPath)
     } else {
         Ok(components)
@@ -605,5 +645,5 @@ fn error(kind: WorkspaceReadErrorKind) -> WorkspaceReadOutcome {
 }
 
 #[cfg(test)]
-#[path = "workspace_read/tests/mod.rs"]
+#[path = "tests/workspace_read.rs"]
 mod tests;

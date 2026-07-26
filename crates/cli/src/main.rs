@@ -107,9 +107,12 @@ struct AppServerArgs {
     /// Serve newline-delimited JSON-RPC over stdin/stdout.
     #[arg(long)]
     stdio: bool,
-    /// Explicit workspace root available to bounded read-only model tools.
+    /// Explicit workspace root available to bounded model tools.
     #[arg(long, value_name = "DIR")]
     workspace: Option<PathBuf>,
+    /// Enable bounded workspace/apply-patch writes for this process only.
+    #[arg(long, requires = "workspace")]
+    allow_workspace_write: bool,
     #[command(subcommand)]
     command: Option<AppServerCommand>,
 }
@@ -230,15 +233,21 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &mut std::io::stdout().lock(),
             )?;
         }
-        Command::AppServer(args) => match (args.stdio, args.command, args.workspace) {
-            (true, None, workspace) => {
+        Command::AppServer(args) => match (
+            args.stdio,
+            args.command,
+            args.workspace,
+            args.allow_workspace_write,
+        ) {
+            (true, None, workspace, allow_workspace_write) => {
                 let effective_config = sugarcode_state::load_effective_config(home)?;
-                sugarcode_app_server::run_stdio(effective_config, workspace).await?;
+                sugarcode_app_server::run_stdio(effective_config, workspace, allow_workspace_write)
+                    .await?;
             }
-            (false, Some(AppServerCommand::GenerateTs(args)), None) => {
+            (false, Some(AppServerCommand::GenerateTs(args)), None, false) => {
                 sugarcode_app_server::generate_typescript(&args.out)?;
             }
-            (false, Some(AppServerCommand::GenerateJsonSchema(args)), None) => {
+            (false, Some(AppServerCommand::GenerateJsonSchema(args)), None, false) => {
                 sugarcode_app_server::generate_json_schema(&args.out)?;
             }
             _ => {

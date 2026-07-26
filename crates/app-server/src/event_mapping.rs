@@ -254,6 +254,7 @@ fn map_snapshot_parts(
                             name,
                             path,
                             query,
+                            patch: _,
                             command,
                             arguments,
                         } => PublicItem::ToolCall {
@@ -264,6 +265,35 @@ fn map_snapshot_parts(
                             query,
                             command,
                             arguments,
+                        },
+                        DurableItemSnapshot::FileChange {
+                            id,
+                            call_id,
+                            path,
+                            kind: _,
+                            diff,
+                            before_sha256,
+                            after_sha256,
+                            before_bytes,
+                            after_bytes,
+                            newline_style,
+                            final_newline,
+                        } => PublicItem::FileChange {
+                            id: id.into_string(),
+                            call_id,
+                            path,
+                            kind: sugarcode_app_server_protocol::FileChangeKind::Update,
+                            diff,
+                            before_sha256,
+                            after_sha256,
+                            before_bytes,
+                            after_bytes,
+                            newline_style: if newline_style == "crLf" {
+                                sugarcode_app_server_protocol::FileChangeNewlineStyle::CrLf
+                            } else {
+                                sugarcode_app_server_protocol::FileChangeNewlineStyle::Lf
+                            },
+                            final_newline,
                         },
                         DurableItemSnapshot::CommandApprovalRequest {
                             id,
@@ -425,6 +455,7 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             name,
             path,
             query,
+            patch: _,
             command,
             arguments,
         } => PublicItem::ToolCall {
@@ -435,6 +466,37 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             query,
             command,
             arguments,
+        },
+        CoreItemKind::FileChange {
+            call_id,
+            path,
+            kind: _,
+            diff,
+            before_sha256,
+            after_sha256,
+            before_bytes,
+            after_bytes,
+            newline_style,
+            final_newline,
+        } => PublicItem::FileChange {
+            id: item.id.into_string(),
+            call_id,
+            path,
+            kind: sugarcode_app_server_protocol::FileChangeKind::Update,
+            diff,
+            before_sha256,
+            after_sha256,
+            before_bytes,
+            after_bytes,
+            newline_style: match newline_style {
+                sugarcode_protocol::CoreFileChangeNewlineStyle::Lf => {
+                    sugarcode_app_server_protocol::FileChangeNewlineStyle::Lf
+                }
+                sugarcode_protocol::CoreFileChangeNewlineStyle::CrLf => {
+                    sugarcode_app_server_protocol::FileChangeNewlineStyle::CrLf
+                }
+            },
+            final_newline,
         },
         CoreItemKind::CommandApprovalRequest {
             approval_id,

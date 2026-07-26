@@ -28,6 +28,8 @@ use sugarcode_model_provider::ModelToolDefinition;
 use sugarcode_model_provider::ModelUsage;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
+use sugarcode_protocol::CoreFileChangeKind;
+use sugarcode_protocol::CoreFileChangeNewlineStyle;
 use sugarcode_protocol::CoreItemKind;
 use sugarcode_protocol::CoreItemSnapshot;
 use sugarcode_protocol::CoreRequestId;
@@ -52,6 +54,11 @@ use sugarcode_tools::WorkspaceListArguments;
 use sugarcode_tools::WorkspaceListErrorKind;
 use sugarcode_tools::WorkspaceListExecutor;
 use sugarcode_tools::WorkspaceListOutcome;
+use sugarcode_tools::WorkspacePatchArguments;
+use sugarcode_tools::WorkspacePatchCommitOutcome;
+use sugarcode_tools::WorkspacePatchErrorKind;
+use sugarcode_tools::WorkspacePatchExecutor;
+use sugarcode_tools::WorkspacePatchPrepareOutcome;
 use sugarcode_tools::WorkspaceReadArguments;
 use sugarcode_tools::WorkspaceReadErrorKind;
 use sugarcode_tools::WorkspaceReadExecutor;
@@ -78,8 +85,10 @@ use terminal::finish_state_unavailable_and_emit;
 use terminal::send_event;
 use tool_dispatch::append_completed_tool_item;
 use tool_dispatch::map_workspace_list_outcome;
+use tool_dispatch::map_workspace_patch_error;
 use tool_dispatch::map_workspace_read_outcome;
 use tool_dispatch::map_workspace_search_outcome;
+use tool_dispatch::serialized_file_change_bytes;
 use tool_dispatch::serialized_shell_tool_call_bytes;
 use tool_dispatch::serialized_tool_call_bytes;
 use tool_dispatch::serialized_tool_result_bytes;
@@ -102,6 +111,7 @@ pub struct CoreRuntime {
     workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
     workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
     workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
+    workspace_patch: Option<Arc<dyn WorkspacePatchExecutor>>,
     shell_executor: Option<Arc<dyn ShellCommandExecutor>>,
     approval_requester: Option<Arc<dyn CommandApprovalRequester>>,
     shell_cwd: Option<Arc<std::path::PathBuf>>,
@@ -202,6 +212,7 @@ impl CoreRuntime {
                 workspace_read,
                 workspace_list,
                 workspace_search,
+                workspace_patch: None,
                 shell_executor: None,
                 approval_requester: None,
                 shell_cwd: None,
@@ -238,6 +249,14 @@ impl CoreRuntime {
         (runtime, events)
     }
 
+    pub fn with_workspace_patch(
+        mut self,
+        workspace_patch: Option<Arc<dyn WorkspacePatchExecutor>>,
+    ) -> Self {
+        self.workspace_patch = workspace_patch;
+        self
+    }
+
     pub fn without_model(core: Core) -> (Self, mpsc::Receiver<CoreEvent>) {
         let (event_tx, event_rx) = mpsc::channel(CORE_EVENT_CAPACITY);
         (
@@ -247,6 +266,7 @@ impl CoreRuntime {
                 workspace_read: None,
                 workspace_list: None,
                 workspace_search: None,
+                workspace_patch: None,
                 shell_executor: None,
                 approval_requester: None,
                 shell_cwd: None,
@@ -531,6 +551,7 @@ async fn run_turn(
     let mut round = 0u8;
     let mut agent_item: Option<CoreItemSnapshot> = None;
     let mut pending_tool_call = false;
+    let mut patch_commit_interrupted = false;
     let mut non_whitespace_text_seen = false;
     let mut tool_call_count = 0usize;
     let mut turn_tool_bytes = 0usize;
@@ -658,6 +679,7 @@ async fn run_turn(
                         "workspace/read" => runtime.workspace_read.is_some(),
                         "workspace/list" => runtime.workspace_list.is_some(),
                         "workspace/search" => runtime.workspace_search.is_some(),
+                        "workspace/apply-patch" => runtime.workspace_patch.is_some(),
                         "shell/exec" => {
                             runtime.shell_executor.is_some()
                                 && runtime.approval_requester.is_some()
@@ -695,6 +717,7 @@ async fn run_turn(
                                 name: call.name.clone(),
                                 path: arguments.cwd.clone(),
                                 query: None,
+                                patch: None,
                                 command: Some(arguments.command.clone()),
                                 arguments: Some(arguments.arguments.clone()),
                             },
@@ -887,6 +910,7 @@ async fn run_turn(
                             name: call.name.clone(),
                             path: arguments.path.clone(),
                             query: arguments.query.clone(),
+                            patch: arguments.patch.clone(),
                             command: None,
                             arguments: None,
                         },
@@ -897,6 +921,173 @@ async fn run_turn(
                         break 'rounds Terminal::StateUnavailable;
                     }
                     pending_tool_call = true;
+                    if call.name == "workspace/apply-patch" {
+                        let prepare_outcome = runtime
+                            .workspace_patch
+                            .as_ref()
+                            .expect("validated workspace/apply-patch executor")
+                            .prepare(
+                                &WorkspacePatchArguments {
+                                    path: arguments.path.clone(),
+                                    patch: arguments
+                                        .patch
+                                        .clone()
+                                        .expect("validated workspace/apply-patch input"),
+                                },
+                                &cancellation,
+                            )
+                            .await;
+                        let (mut result, mut content, interrupted_after_commit) =
+                            match prepare_outcome {
+                                WorkspacePatchPrepareOutcome::Error {
+                                    kind: WorkspacePatchErrorKind::Cancelled,
+                                } => break 'rounds Terminal::Interrupted,
+                                WorkspacePatchPrepareOutcome::Error { kind } => {
+                                    let kind = map_workspace_patch_error(kind);
+                                    (
+                                        CoreToolResult::Error { kind },
+                                        format!("workspace/apply-patch error: {kind}"),
+                                        false,
+                                    )
+                                }
+                                WorkspacePatchPrepareOutcome::Prepared(proposal) => {
+                                    let file_change = CoreItemKind::FileChange {
+                                        call_id: call.id.clone(),
+                                        path: proposal.path().to_string(),
+                                        kind: CoreFileChangeKind::Update,
+                                        diff: proposal.diff().to_string(),
+                                        before_sha256: proposal.before_sha256().to_string(),
+                                        after_sha256: proposal.after_sha256().to_string(),
+                                        before_bytes: proposal.before_bytes(),
+                                        after_bytes: proposal.after_bytes(),
+                                        newline_style: match proposal.newline() {
+                                            sugarcode_tools::WorkspaceNewlineStyle::Lf => {
+                                                CoreFileChangeNewlineStyle::Lf
+                                            }
+                                            sugarcode_tools::WorkspaceNewlineStyle::CrLf => {
+                                                CoreFileChangeNewlineStyle::CrLf
+                                            }
+                                        },
+                                        final_newline: proposal.final_newline(),
+                                    };
+                                    let change_bytes = serialized_file_change_bytes(&file_change);
+                                    if turn_tool_bytes
+                                        .checked_add(change_bytes)
+                                        .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
+                                    {
+                                        (
+                                            CoreToolResult::Error {
+                                                kind: CoreToolErrorKind::ResultTooLarge,
+                                            },
+                                            "workspace/apply-patch error: resultTooLarge"
+                                                .to_string(),
+                                            false,
+                                        )
+                                    } else {
+                                        turn_tool_bytes += change_bytes;
+                                        if append_completed_tool_item(
+                                            &runtime,
+                                            &prepared,
+                                            file_change,
+                                        )
+                                        .await
+                                        .is_none()
+                                        {
+                                            break 'rounds Terminal::StateUnavailable;
+                                        }
+                                        if cancellation.is_cancelled() {
+                                            break 'rounds Terminal::Interrupted;
+                                        }
+                                        // Crossing this barrier means cancellation may no longer abandon
+                                        // the filesystem commit. The durable result is recorded first.
+                                        let outcome = runtime
+                                            .workspace_patch
+                                            .as_ref()
+                                            .expect("validated workspace/apply-patch executor")
+                                            .commit(*proposal, &CancellationToken::new())
+                                            .await;
+                                        let interrupted = cancellation.is_cancelled();
+                                        match outcome {
+                                            WorkspacePatchCommitOutcome::Applied {
+                                                path,
+                                                before_sha256,
+                                                after_sha256,
+                                                before_bytes,
+                                                after_bytes,
+                                            } => {
+                                                let content =
+                                                    serde_json::to_string(&serde_json::json!({
+                                                        "path": path,
+                                                        "kind": "update",
+                                                        "beforeSha256": before_sha256,
+                                                        "afterSha256": after_sha256,
+                                                        "beforeBytes": before_bytes,
+                                                        "afterBytes": after_bytes,
+                                                    }))
+                                                    .expect(
+                                                        "workspace/apply-patch result serializes",
+                                                    );
+                                                (
+                                                    CoreToolResult::Success {
+                                                        bytes: content.len() as u64,
+                                                        content: content.clone(),
+                                                    },
+                                                    content,
+                                                    interrupted,
+                                                )
+                                            }
+                                            WorkspacePatchCommitOutcome::Error { kind } => {
+                                                let kind = map_workspace_patch_error(kind);
+                                                (
+                                                    CoreToolResult::Error { kind },
+                                                    format!("workspace/apply-patch error: {kind}"),
+                                                    interrupted,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            };
+                        let mut result_bytes = serialized_tool_result_bytes(&result);
+                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES
+                            || turn_tool_bytes
+                                .checked_add(result_bytes)
+                                .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
+                        {
+                            result = CoreToolResult::Error {
+                                kind: CoreToolErrorKind::ResultTooLarge,
+                            };
+                            content = "workspace/apply-patch error: resultTooLarge".to_string();
+                            result_bytes = serialized_tool_result_bytes(&result);
+                        }
+                        turn_tool_bytes += result_bytes;
+                        if append_completed_tool_item(
+                            &runtime,
+                            &prepared,
+                            CoreItemKind::ToolResult {
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                result,
+                            },
+                        )
+                        .await
+                        .is_none()
+                        {
+                            break 'rounds Terminal::StateUnavailable;
+                        }
+                        pending_tool_call = false;
+                        if interrupted_after_commit {
+                            patch_commit_interrupted = true;
+                            break 'rounds Terminal::Interrupted;
+                        }
+                        messages.push(ModelMessage::ToolCall(call.clone()));
+                        messages.push(ModelMessage::ToolResult {
+                            call_id: call.id,
+                            content,
+                        });
+                        round = 1;
+                        continue 'rounds;
+                    }
                     let (mut result, mut content) = match call.name.as_str() {
                         "workspace/read" => {
                             let outcome = runtime
@@ -1016,7 +1207,7 @@ async fn run_turn(
             }
         }
     };
-    if agent_item.is_none() && !pending_tool_call {
+    if agent_item.is_none() && !pending_tool_call && !patch_commit_interrupted {
         match runtime
             .lock_core()
             .and_then(|mut core| core.start_agent_message(&thread_id, &turn_id))
@@ -1134,18 +1325,20 @@ fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {
             name,
             path,
             query,
+            patch,
             command,
             arguments,
         } => ModelMessage::ToolCall(ModelToolCall {
             id: call_id.clone(),
             name: name.clone(),
-            arguments: match (command, arguments, query) {
-                (Some(command), Some(arguments), _) => serde_json::json!({
+            arguments: match (command, arguments, query, patch) {
+                (Some(command), Some(arguments), _, _) => serde_json::json!({
                     "command": command,
                     "arguments": arguments,
                     "cwd": path,
                 }),
-                (_, _, Some(query)) => serde_json::json!({ "path": path, "query": query }),
+                (_, _, Some(query), _) => serde_json::json!({ "path": path, "query": query }),
+                (_, _, _, Some(patch)) => serde_json::json!({ "path": path, "patch": patch }),
                 _ => serde_json::json!({ "path": path }),
             },
         }),

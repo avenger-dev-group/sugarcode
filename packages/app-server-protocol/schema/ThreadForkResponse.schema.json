@@ -18,6 +18,19 @@
     "turns"
   ],
   "$defs": {
+    "FileChangeKind": {
+      "type": "string",
+      "enum": [
+        "update"
+      ]
+    },
+    "FileChangeNewlineStyle": {
+      "type": "string",
+      "enum": [
+        "lf",
+        "crLf"
+      ]
+    },
     "Item": {
       "oneOf": [
         {
@@ -107,6 +120,66 @@
             "callId",
             "name",
             "path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "afterBytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "afterSha256": {
+              "type": "string"
+            },
+            "beforeBytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "beforeSha256": {
+              "type": "string"
+            },
+            "callId": {
+              "type": "string"
+            },
+            "diff": {
+              "type": "string"
+            },
+            "finalNewline": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/FileChangeKind"
+            },
+            "newlineStyle": {
+              "$ref": "#/$defs/FileChangeNewlineStyle"
+            },
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "fileChange"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "callId",
+            "path",
+            "kind",
+            "diff",
+            "beforeSha256",
+            "afterSha256",
+            "beforeBytes",
+            "afterBytes",
+            "newlineStyle",
+            "finalNewline"
           ]
         },
         {

@@ -1,6 +1,8 @@
 use serde_json::json;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
 use sugarcode_app_server_protocol::ERROR_PARSE;
+use sugarcode_app_server_protocol::FileChangeKind;
+use sugarcode_app_server_protocol::FileChangeNewlineStyle;
 use sugarcode_app_server_protocol::Item;
 use sugarcode_app_server_protocol::ItemCompletedNotification;
 use sugarcode_app_server_protocol::ItemStartedNotification;
@@ -76,6 +78,32 @@ fn request_ids_support_strings_and_integers() {
         let decoded = serde_json::from_str::<RequestId>(&encoded).expect("id deserializes");
         assert_eq!(decoded, id);
     }
+}
+
+#[test]
+fn file_change_item_serializes_a_bounded_update_review() {
+    let item = Item::FileChange {
+        id: "item_0000000000000003".to_string(),
+        call_id: "call_patch".to_string(),
+        path: "src/lib.rs".to_string(),
+        kind: FileChangeKind::Update,
+        diff: "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,1 @@\n-old\n+new\n".to_string(),
+        before_sha256: "a".repeat(64),
+        after_sha256: "b".repeat(64),
+        before_bytes: 4,
+        after_bytes: 4,
+        newline_style: FileChangeNewlineStyle::Lf,
+        final_newline: true,
+    };
+    let value = serde_json::to_value(&item).expect("file change serializes");
+    assert_eq!(value["type"], "fileChange");
+    assert_eq!(value["kind"], "update");
+    assert_eq!(value["newlineStyle"], "lf");
+    assert_eq!(value["callId"], "call_patch");
+    assert_eq!(
+        serde_json::from_value::<Item>(value).expect("round trip"),
+        item
+    );
 }
 
 #[test]

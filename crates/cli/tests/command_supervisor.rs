@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::path::PathBuf;
 use sugarcode_tools::NativeShellCommandExecutor;
 use sugarcode_tools::ShellCommandArguments;
@@ -42,7 +43,7 @@ async fn cancellation_terminates_a_descendant_that_holds_output_pipes() {
 }
 
 #[cfg(unix)]
-fn cancellation_tree_command(_executable: &PathBuf) -> ShellCommandArguments {
+fn cancellation_tree_command(_executable: &Path) -> ShellCommandArguments {
     ShellCommandArguments {
         command: "/bin/sh".to_string(),
         arguments: vec![
@@ -54,7 +55,7 @@ fn cancellation_tree_command(_executable: &PathBuf) -> ShellCommandArguments {
 }
 
 #[cfg(windows)]
-fn cancellation_tree_command(executable: &PathBuf) -> ShellCommandArguments {
+fn cancellation_tree_command(executable: &Path) -> ShellCommandArguments {
     ShellCommandArguments {
         command: executable.to_string_lossy().into_owned(),
         arguments: vec!["__command-test-tree".to_string()],
