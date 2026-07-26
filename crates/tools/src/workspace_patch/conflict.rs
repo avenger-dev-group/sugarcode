@@ -4,6 +4,8 @@ use crate::workspace_capability::FileSnapshot;
 use crate::workspace_capability::classify_component_open_error;
 use crate::workspace_capability::map_io_error;
 use crate::workspace_capability::open_regular_file_nofollow;
+#[cfg(windows)]
+use crate::workspace_capability::open_regular_file_nofollow_for_flush;
 use crate::workspace_capability::validate_directory_handle;
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
@@ -119,18 +121,67 @@ pub(super) fn create_temp(
     Err(WorkspacePatchErrorKind::Unavailable)
 }
 
-pub(super) fn target_matches(parent: &Dir, file_name: &Path, hash: &str, len: u64) -> bool {
-    let Ok((mut file, snapshot)) = open_regular_file_nofollow(parent, file_name) else {
-        return false;
-    };
-    if snapshot.len() != len || snapshot.links() != 1 {
-        return false;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TargetState {
+    Before,
+    After,
+    Other,
+}
+
+pub(super) fn target_state(
+    parent: &Dir,
+    file_name: &Path,
+    before_hash: &str,
+    before_len: u64,
+    after_hash: &str,
+    after_len: u64,
+) -> Result<TargetState, ()> {
+    let (mut file, snapshot) = open_regular_file_nofollow(parent, file_name).map_err(|_| ())?;
+    if snapshot.links() != 1 {
+        return Ok(TargetState::Other);
     }
-    let mut bytes = Vec::with_capacity(len as usize);
-    file.read_to_end(&mut bytes).is_ok()
-        && bytes.len() as u64 == len
-        && sha256(&bytes) == hash
-        && file.sync_all().is_ok()
+    let mut bytes = Vec::with_capacity(snapshot.len() as usize);
+    file.read_to_end(&mut bytes).map_err(|_| ())?;
+    let metadata = file.metadata().map_err(|_| ())?;
+    let final_snapshot = FileSnapshot::from_file(&file, &metadata).map_err(|_| ())?;
+    let (_, reopened) = open_regular_file_nofollow(parent, file_name).map_err(|_| ())?;
+    if final_snapshot != snapshot || reopened != snapshot || bytes.len() as u64 != snapshot.len() {
+        return Err(());
+    }
+    let hash = sha256(&bytes);
+    if snapshot.len() == after_len && hash == after_hash {
+        flush_replaced_target(parent, file_name, snapshot)?;
+        Ok(TargetState::After)
+    } else if snapshot.len() == before_len && hash == before_hash {
+        Ok(TargetState::Before)
+    } else {
+        Ok(TargetState::Other)
+    }
+}
+
+#[cfg(windows)]
+fn flush_replaced_target(parent: &Dir, file_name: &Path, expected: FileSnapshot) -> Result<(), ()> {
+    let (file, snapshot) =
+        open_regular_file_nofollow_for_flush(parent, file_name).map_err(|_| ())?;
+    if snapshot != expected || snapshot.links() != 1 {
+        return Err(());
+    }
+    file.sync_all().map_err(|_| ())?;
+    let metadata = file.metadata().map_err(|_| ())?;
+    let flushed = FileSnapshot::from_file(&file, &metadata).map_err(|_| ())?;
+    let (_, reopened) = open_regular_file_nofollow(parent, file_name).map_err(|_| ())?;
+    (flushed == expected && reopened == expected)
+        .then_some(())
+        .ok_or(())
+}
+
+#[cfg(not(windows))]
+fn flush_replaced_target(
+    _parent: &Dir,
+    _file_name: &Path,
+    _expected: FileSnapshot,
+) -> Result<(), ()> {
+    Ok(())
 }
 
 pub(super) fn sha256(bytes: &[u8]) -> String {

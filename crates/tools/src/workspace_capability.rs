@@ -59,8 +59,24 @@ pub(crate) fn open_regular_file_nofollow(
     directory: &Dir,
     file_name: &Path,
 ) -> Result<(File, FileSnapshot), WorkspaceReadErrorKind> {
+    open_regular_file_nofollow_with_access(directory, file_name, false)
+}
+
+#[cfg(windows)]
+pub(crate) fn open_regular_file_nofollow_for_flush(
+    directory: &Dir,
+    file_name: &Path,
+) -> Result<(File, FileSnapshot), WorkspaceReadErrorKind> {
+    open_regular_file_nofollow_with_access(directory, file_name, true)
+}
+
+fn open_regular_file_nofollow_with_access(
+    directory: &Dir,
+    file_name: &Path,
+    write: bool,
+) -> Result<(File, FileSnapshot), WorkspaceReadErrorKind> {
     let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
+    options.read(true).write(write).follow(FollowSymlinks::No);
     #[cfg(unix)]
     {
         use cap_fs_ext::OpenOptionsExt;

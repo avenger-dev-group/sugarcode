@@ -1,5 +1,6 @@
 use super::*;
 use std::fs;
+use std::path::Path;
 use tempfile::tempdir;
 
 fn cancellation() -> CancellationToken {
@@ -125,6 +126,100 @@ async fn workspace_patch_detects_conflict_between_proposal_and_commit() {
         fs::read_to_string(target).expect("target"),
         "one\nexternal\n"
     );
+}
+
+#[test]
+fn workspace_patch_reconciliation_distinguishes_before_after_and_other_content() {
+    let workspace = tempdir().expect("workspace");
+    let target = workspace.path().join("notes.txt");
+    let root = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let parent = root.root.try_clone().expect("clone root");
+    let before = b"before\n";
+    let after = b"after\n";
+
+    fs::write(&target, before).expect("write before");
+    assert_eq!(
+        target_state(
+            &parent,
+            Path::new("notes.txt"),
+            &sha256(before),
+            before.len() as u64,
+            &sha256(after),
+            after.len() as u64,
+        ),
+        Ok(TargetState::Before)
+    );
+
+    fs::write(&target, after).expect("write after");
+    assert_eq!(
+        target_state(
+            &parent,
+            Path::new("notes.txt"),
+            &sha256(before),
+            before.len() as u64,
+            &sha256(after),
+            after.len() as u64,
+        ),
+        Ok(TargetState::After)
+    );
+
+    fs::write(&target, b"other\n").expect("write other");
+    assert_eq!(
+        target_state(
+            &parent,
+            Path::new("notes.txt"),
+            &sha256(before),
+            before.len() as u64,
+            &sha256(after),
+            after.len() as u64,
+        ),
+        Ok(TargetState::Other)
+    );
+}
+
+#[tokio::test]
+async fn workspace_patch_rejects_oversized_patch_and_original_before_writing() {
+    let workspace = tempdir().expect("workspace");
+    let target = workspace.path().join("notes.txt");
+    fs::write(&target, "one\n").expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let oversized_patch = tool
+        .prepare_patch(
+            &WorkspacePatchArguments {
+                path: "notes.txt".to_string(),
+                patch: "x".repeat(MAX_WORKSPACE_PATCH_BYTES + 1),
+            },
+            &cancellation(),
+        )
+        .await;
+    assert!(matches!(
+        oversized_patch,
+        WorkspacePatchPrepareOutcome::Error {
+            kind: WorkspacePatchErrorKind::InvalidPatch
+        }
+    ));
+    assert_eq!(
+        fs::read_to_string(&target).expect("unchanged file"),
+        "one\n"
+    );
+
+    fs::write(&target, vec![b'x'; crate::MAX_WORKSPACE_READ_BYTES + 1])
+        .expect("oversized original");
+    let oversized_original = tool
+        .prepare_patch(
+            &WorkspacePatchArguments {
+                path: "notes.txt".to_string(),
+                patch: "@@ -1,1 +1,1 @@\n-old\n+new\n".to_string(),
+            },
+            &cancellation(),
+        )
+        .await;
+    assert!(matches!(
+        oversized_original,
+        WorkspacePatchPrepareOutcome::Error {
+            kind: WorkspacePatchErrorKind::FileTooLarge
+        }
+    ));
 }
 
 #[tokio::test]

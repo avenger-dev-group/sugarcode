@@ -20,10 +20,12 @@ mod text;
 
 use atomic::atomic_replace;
 use atomic::same_device;
+use atomic::same_device_file;
+use conflict::TargetState;
 use conflict::create_temp;
 use conflict::resolve_parent;
 use conflict::sha256;
-use conflict::target_matches;
+use conflict::target_state;
 use conflict::verify_original;
 use diff::apply_hunks;
 use diff::render_diff;
@@ -259,7 +261,7 @@ impl WorkspaceTool {
         if snapshot.links() != 1 {
             return prepare_error(WorkspacePatchErrorKind::HardLinkNotAllowed);
         }
-        if !same_device(&self.root, &parent) {
+        if !same_device(&self.root, &parent) || !same_device_file(&self.root, &original) {
             return prepare_error(WorkspacePatchErrorKind::CrossDeviceNotAllowed);
         }
         let mut before = Vec::with_capacity(snapshot.len() as usize);
@@ -373,21 +375,26 @@ impl WorkspaceTool {
             Err(kind) => return commit_error(kind),
         };
         let replaced = atomic_replace(&self.root, &temp_name, &parent, &file_name);
-        if let Err(kind) = replaced {
+        if replaced.is_err() {
             let _ = self.root.remove_file(&temp_name);
-            if target_matches(&parent, &file_name, &after_sha256, after_bytes) {
-                return WorkspacePatchCommitOutcome::Applied {
-                    path,
-                    before_sha256,
-                    after_sha256,
-                    before_bytes,
-                    after_bytes,
-                };
-            }
-            return commit_error(kind);
         }
-        if !target_matches(&parent, &file_name, &after_sha256, after_bytes) {
-            return commit_error(WorkspacePatchErrorKind::AtomicReplaceUnavailable);
+        let state = target_state(
+            &parent,
+            &file_name,
+            &before_sha256,
+            before_bytes,
+            &after_sha256,
+            after_bytes,
+        );
+        match (replaced, state) {
+            (_, Ok(TargetState::After)) => {}
+            (Err(kind), Ok(TargetState::Before) | Err(())) => return commit_error(kind),
+            (Ok(()), Ok(TargetState::Before) | Err(())) => {
+                return commit_error(WorkspacePatchErrorKind::AtomicReplaceUnavailable);
+            }
+            (_, Ok(TargetState::Other)) => {
+                return commit_error(WorkspacePatchErrorKind::Conflict);
+            }
         }
         WorkspacePatchCommitOutcome::Applied {
             path,
@@ -423,5 +430,5 @@ fn commit_error(kind: WorkspacePatchErrorKind) -> WorkspacePatchCommitOutcome {
 }
 
 #[cfg(test)]
-#[path = "tests/workspace_patch.rs"]
+#[path = "workspace_patch/tests/mod.rs"]
 mod tests;

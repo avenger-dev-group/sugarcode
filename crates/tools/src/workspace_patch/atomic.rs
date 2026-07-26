@@ -18,13 +18,42 @@ pub(super) fn same_device(root: &Dir, parent: &Dir) -> bool {
     )
 }
 
+#[cfg(unix)]
+pub(super) fn same_device_file(root: &Dir, target: &std::fs::File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let root = root
+        .try_clone()
+        .ok()
+        .map(Dir::into_std_file)
+        .and_then(|file| file.metadata().ok())
+        .map(|metadata| metadata.dev());
+    let target = target.metadata().ok().map(|metadata| metadata.dev());
+    matches!((root, target), (Some(root), Some(target)) if root == target)
+}
+
 #[cfg(windows)]
 pub(super) fn same_device(root: &Dir, parent: &Dir) -> bool {
-    volume_serial(root) == volume_serial(parent)
+    matches!(
+        (volume_serial(root), volume_serial(parent)),
+        (Some(root), Some(parent)) if root == parent
+    )
+}
+
+#[cfg(windows)]
+pub(super) fn same_device_file(root: &Dir, target: &std::fs::File) -> bool {
+    matches!(
+        (volume_serial(root), file_volume_serial(target)),
+        (Some(root), Some(target)) if root == target
+    )
 }
 
 #[cfg(not(any(unix, windows)))]
 pub(super) fn same_device(_root: &Dir, _parent: &Dir) -> bool {
+    true
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn same_device_file(_root: &Dir, _target: &std::fs::File) -> bool {
     true
 }
 
@@ -98,10 +127,15 @@ pub(super) fn atomic_replace(
 
 #[cfg(windows)]
 fn volume_serial(directory: &Dir) -> Option<u32> {
+    let file = directory.try_clone().ok()?.into_std_file();
+    file_volume_serial(&file)
+}
+
+#[cfg(windows)]
+fn file_volume_serial(file: &std::fs::File) -> Option<u32> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
     use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandle;
-    let file = directory.try_clone().ok()?.into_std_file();
     let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
     // SAFETY: the handle and output buffer are valid.
     let result = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) };
