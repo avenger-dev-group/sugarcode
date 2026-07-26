@@ -257,5 +257,5 @@ where
 }
 
 #[cfg(test)]
-#[path = "stdio/tests/mod.rs"]
+#[path = "tests/stdio.rs"]
 mod tests;

@@ -109,5 +109,5 @@ fn write_safe_line(output: &mut dyn Write, message: &str) -> Result<(), Credenti
 }
 
 #[cfg(test)]
-#[path = "credential/tests/mod.rs"]
+#[path = "tests/credential.rs"]
 mod tests;

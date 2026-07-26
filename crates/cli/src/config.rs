@@ -146,5 +146,5 @@ struct ModelConfigView<'a> {
 }
 
 #[cfg(test)]
-#[path = "config/tests/mod.rs"]
+#[path = "tests/config.rs"]
 mod tests;
