@@ -159,59 +159,26 @@ impl WorkspaceTool {
             Ok(snapshot) => snapshot,
             Err(kind) => return error(map_read_error(kind)),
         };
-        let mut read_dir = match directory.entries() {
-            Ok(read_dir) => read_dir,
-            Err(error_value) => return error(map_list_io_error(&error_value)),
-        };
-        let mut entries = Vec::new();
-        let mut name_bytes = 0usize;
-        for entry in &mut read_dir {
-            if cancellation.is_cancelled() {
-                return error(WorkspaceListErrorKind::Cancelled);
-            }
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error_value) => return error(map_iteration_error(&error_value)),
+        let (mut entries, name_bytes) =
+            match collect_directory_entries(&directory, cancellation).await {
+                Ok(result) => result,
+                Err(kind) => return error(kind),
             };
-            if entries.len() >= MAX_WORKSPACE_LIST_ENTRIES {
-                return error(WorkspaceListErrorKind::TooManyEntries);
-            }
-            let name = match entry.file_name().into_string() {
-                Ok(name) => name,
-                Err(_) => return error(WorkspaceListErrorKind::InvalidEncoding),
-            };
-            if name.is_empty()
-                || name.len() > MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES
-                || name.chars().any(char::is_control)
-            {
-                return error(WorkspaceListErrorKind::InvalidName);
-            }
-            name_bytes = match name_bytes.checked_add(name.len()) {
-                Some(bytes) if bytes <= MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES => bytes,
-                _ => return error(WorkspaceListErrorKind::ResultTooLarge),
-            };
-            let metadata = match directory.symlink_metadata(&name) {
-                Ok(metadata) => metadata,
-                Err(error_value) => return error(map_iteration_error(&error_value)),
-            };
-            let file_type = metadata.file_type();
-            let kind = if file_type.is_symlink() || cap_metadata_is_reparse_point(&metadata) {
-                WorkspaceListEntryKind::Link
-            } else if file_type.is_file() {
-                WorkspaceListEntryKind::File
-            } else if file_type.is_dir() {
-                WorkspaceListEntryKind::Directory
-            } else {
-                WorkspaceListEntryKind::Other
-            };
-            entries.push(WorkspaceListEntry { name, kind });
-            tokio::task::yield_now().await;
-        }
-
-        if cancellation.is_cancelled() {
-            return error(WorkspaceListErrorKind::Cancelled);
-        }
         before_identity_check();
+        let (mut verified_entries, verified_name_bytes) =
+            match collect_directory_entries(&directory, cancellation).await {
+                Ok(result) => result,
+                Err(WorkspaceListErrorKind::Cancelled) => {
+                    return error(WorkspaceListErrorKind::Cancelled);
+                }
+                Err(_) => return error(WorkspaceListErrorKind::ChangedDuringList),
+            };
+        entries.sort_unstable_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+        verified_entries
+            .sort_unstable_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+        if entries != verified_entries || name_bytes != verified_name_bytes {
+            return error(WorkspaceListErrorKind::ChangedDuringList);
+        }
         let final_snapshot = match FileSnapshot::from_directory(&directory) {
             Ok(snapshot) => snapshot,
             Err(_) => return error(WorkspaceListErrorKind::ChangedDuringList),
@@ -235,7 +202,6 @@ impl WorkspaceTool {
             return error(WorkspaceListErrorKind::ChangedDuringList);
         }
 
-        entries.sort_unstable_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
         if cancellation.is_cancelled() {
             return error(WorkspaceListErrorKind::Cancelled);
         }
@@ -244,6 +210,59 @@ impl WorkspaceTool {
             name_bytes,
         }
     }
+}
+
+async fn collect_directory_entries(
+    directory: &Dir,
+    cancellation: &CancellationToken,
+) -> Result<(Vec<WorkspaceListEntry>, usize), WorkspaceListErrorKind> {
+    if cancellation.is_cancelled() {
+        return Err(WorkspaceListErrorKind::Cancelled);
+    }
+    let mut read_dir = directory
+        .entries()
+        .map_err(|error_value| map_list_io_error(&error_value))?;
+    let mut entries = Vec::new();
+    let mut name_bytes = 0usize;
+    for entry in &mut read_dir {
+        if cancellation.is_cancelled() {
+            return Err(WorkspaceListErrorKind::Cancelled);
+        }
+        let entry = entry.map_err(|error_value| map_iteration_error(&error_value))?;
+        if entries.len() >= MAX_WORKSPACE_LIST_ENTRIES {
+            return Err(WorkspaceListErrorKind::TooManyEntries);
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| WorkspaceListErrorKind::InvalidEncoding)?;
+        if name.is_empty()
+            || name.len() > MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            return Err(WorkspaceListErrorKind::InvalidName);
+        }
+        name_bytes = match name_bytes.checked_add(name.len()) {
+            Some(bytes) if bytes <= MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES => bytes,
+            _ => return Err(WorkspaceListErrorKind::ResultTooLarge),
+        };
+        let metadata = directory
+            .symlink_metadata(&name)
+            .map_err(|error_value| map_iteration_error(&error_value))?;
+        let file_type = metadata.file_type();
+        let kind = if file_type.is_symlink() || cap_metadata_is_reparse_point(&metadata) {
+            WorkspaceListEntryKind::Link
+        } else if file_type.is_file() {
+            WorkspaceListEntryKind::File
+        } else if file_type.is_dir() {
+            WorkspaceListEntryKind::Directory
+        } else {
+            WorkspaceListEntryKind::Other
+        };
+        entries.push(WorkspaceListEntry { name, kind });
+        tokio::task::yield_now().await;
+    }
+    Ok((entries, name_bytes))
 }
 
 impl WorkspaceListExecutor for WorkspaceTool {
