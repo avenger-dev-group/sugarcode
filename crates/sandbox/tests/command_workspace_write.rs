@@ -49,6 +49,10 @@ fn run_linux_matrix() {
     prepare_workspace(&configured_workspace);
     prepare_workspace(&replacement);
     prepare_outside(outside.path());
+    let same_filesystem_probe = configured_workspace.join("same-filesystem-hard-link");
+    std::fs::hard_link(outside.path().join("outside.txt"), &same_filesystem_probe)
+        .expect("prove cross-boundary fixtures share one filesystem");
+    std::fs::remove_file(same_filesystem_probe).expect("remove same-filesystem probe");
     std::os::unix::fs::symlink(
         outside.path().join("outside.txt"),
         configured_workspace.join("outside-link"),
@@ -277,11 +281,11 @@ fn run_linux_target() {
         "mkdir outside",
         std::fs::create_dir(outside.join("outside-created-dir")),
     );
-    assert_denied(
+    assert_refer_denied(
         "hard-link across boundary",
         std::fs::hard_link(outside.join("outside.txt"), "outside-hard-link.txt"),
     );
-    assert_denied(
+    assert_refer_denied(
         "rename across boundary",
         std::fs::rename(outside.join("outside-rename.txt"), "outside-renamed.txt"),
     );
@@ -312,6 +316,21 @@ fn assert_denied(operation: &str, result: std::io::Result<impl Sized>) {
     assert_eq!(
         error.kind(),
         std::io::ErrorKind::PermissionDenied,
+        "{operation}: {error}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn assert_refer_denied(operation: &str, result: std::io::Result<impl Sized>) {
+    let error = match result {
+        Ok(_) => panic!("{operation} must be denied"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::CrossesDevices
+        ),
         "{operation}: {error}"
     );
 }
