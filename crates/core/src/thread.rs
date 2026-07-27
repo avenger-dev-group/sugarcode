@@ -222,11 +222,14 @@ enum ItemKind {
         sandboxed: bool,
         sandbox_policy: Option<sugarcode_protocol::CoreCommandSandboxPolicy>,
         workspace_write_policy: Option<sugarcode_protocol::CoreCommandWorkspaceWritePolicy>,
+        workspace_write_risk: Option<sugarcode_protocol::CoreCommandWorkspaceWriteRisk>,
         network_policy: Option<sugarcode_protocol::CoreCommandNetworkPolicy>,
     },
     CommandApprovalDecision {
         approval_id: String,
         decision: sugarcode_protocol::CoreCommandApprovalDecision,
+        workspace_write_risk_acknowledgement:
+            Option<sugarcode_protocol::CoreCommandWorkspaceWriteRisk>,
     },
     CommandExecutionAttempt {
         approval_id: String,
@@ -335,6 +338,7 @@ impl Item {
                 sandboxed,
                 sandbox_policy,
                 workspace_write_policy,
+                workspace_write_risk,
                 network_policy,
             } => CoreItemKind::CommandApprovalRequest {
                 approval_id: approval_id.clone(),
@@ -346,14 +350,17 @@ impl Item {
                 sandboxed: *sandboxed,
                 sandbox_policy: *sandbox_policy,
                 workspace_write_policy: *workspace_write_policy,
+                workspace_write_risk: *workspace_write_risk,
                 network_policy: *network_policy,
             },
             ItemKind::CommandApprovalDecision {
                 approval_id,
                 decision,
+                workspace_write_risk_acknowledgement,
             } => CoreItemKind::CommandApprovalDecision {
                 approval_id: approval_id.clone(),
                 decision: *decision,
+                workspace_write_risk_acknowledgement: *workspace_write_risk_acknowledgement,
             },
             ItemKind::CommandExecutionAttempt {
                 approval_id,
@@ -618,6 +625,7 @@ impl Core {
                         sandboxed,
                         sandbox_policy,
                         workspace_write_policy,
+                        workspace_write_risk,
                         network_policy,
                     } => Item {
                         id: id.clone(),
@@ -634,6 +642,9 @@ impl Core {
                             workspace_write_policy: command_workspace_write_policy(
                                 workspace_write_policy.as_deref(),
                             ),
+                            workspace_write_risk: command_workspace_write_risk(
+                                workspace_write_risk.as_deref(),
+                            ),
                             network_policy: command_network_policy(network_policy.as_deref()),
                         },
                     },
@@ -641,6 +652,7 @@ impl Core {
                         id,
                         approval_id,
                         decision,
+                        workspace_write_risk_acknowledgement,
                     } => Item {
                         id: id.clone(),
                         state: ItemState::Completed,
@@ -664,6 +676,10 @@ impl Core {
                                 }
                                 _ => sugarcode_protocol::CoreCommandApprovalDecision::ClientDisconnected,
                             },
+                            workspace_write_risk_acknowledgement:
+                                command_workspace_write_risk(
+                                    workspace_write_risk_acknowledgement.as_deref(),
+                                ),
                         },
                     },
                     DurableItemSnapshot::CommandExecutionAttempt {
@@ -1206,6 +1222,17 @@ fn command_workspace_write_policy(
     match value {
         Some("commandWorkspaceWriteV1") => {
             Some(sugarcode_protocol::CoreCommandWorkspaceWritePolicy::CommandWorkspaceWriteV1)
+        }
+        Some(_) | None => None,
+    }
+}
+
+fn command_workspace_write_risk(
+    value: Option<&str>,
+) -> Option<sugarcode_protocol::CoreCommandWorkspaceWriteRisk> {
+    match value {
+        Some("nonTransactionalWorkspaceTreeV1") => {
+            Some(sugarcode_protocol::CoreCommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1)
         }
         Some(_) | None => None,
     }

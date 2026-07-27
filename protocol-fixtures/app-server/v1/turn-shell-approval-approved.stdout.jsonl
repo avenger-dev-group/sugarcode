@@ -1,4 +1,4 @@
-{"jsonrpc":"2.0","id":"init","result":{"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"},"platform":{"family":"<family>","os":"<os>","arch":"<arch>"},"capabilities":{"commandApprovals":true}}}
+{"jsonrpc":"2.0","id":"init","result":{"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"},"platform":{"family":"<family>","os":"<os>","arch":"<arch>"},"capabilities":{"commandApprovals":true,"commandWorkspaceWriteApprovals":true}}}
 {"jsonrpc":"2.0","id":"thread","result":{"thread":{"id":"thr_0000000000000001"}}}
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
 {"jsonrpc":"2.0","id":"turn","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}

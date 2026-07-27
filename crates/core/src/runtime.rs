@@ -730,6 +730,9 @@ async fn run_turn(
                         let workspace_write_policy = command_policy
                             .workspace_write
                             .map(core_workspace_write_policy);
+                        let workspace_write_risk = workspace_write_policy.map(|_| {
+                            sugarcode_protocol::CoreCommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1
+                        });
                         let network_policy = core_network_policy(command_policy.network);
                         let approval_id = format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
                         if append_completed_tool_item(
@@ -745,6 +748,7 @@ async fn run_turn(
                                 sandboxed: true,
                                 sandbox_policy: Some(filesystem_policy),
                                 workspace_write_policy,
+                                workspace_write_risk,
                                 network_policy: Some(network_policy),
                             },
                         )
@@ -769,6 +773,7 @@ async fn run_turn(
                                 sandboxed: true,
                                 sandbox_policy: filesystem_policy,
                                 workspace_write_policy,
+                                workspace_write_risk,
                                 network_policy,
                             });
                         let approval = tokio::select! {
@@ -803,6 +808,12 @@ async fn run_turn(
                             CoreItemKind::CommandApprovalDecision {
                                 approval_id: approval_id.clone(),
                                 decision,
+                                workspace_write_risk_acknowledgement: matches!(
+                                    decision,
+                                    sugarcode_protocol::CoreCommandApprovalDecision::Approved
+                                )
+                                .then_some(workspace_write_risk)
+                                .flatten(),
                             },
                         )
                         .await

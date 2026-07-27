@@ -81,6 +81,7 @@ describe('parseInitializeResponse', () => {
         },
         capabilities: {
           commandApprovals: true,
+          commandWorkspaceWriteApprovals: true,
           futureCapability: true,
         },
         futureTopLevel: true,
@@ -89,7 +90,10 @@ describe('parseInitializeResponse', () => {
       protocolVersion: 1,
       serverInfo: { name: 'sugarcode', version: '1.0.0' },
       platform: { family: 'unix', os: 'macos', arch: 'aarch64' },
-      capabilities: { commandApprovals: true },
+      capabilities: {
+        commandApprovals: true,
+        commandWorkspaceWriteApprovals: true,
+      },
     });
   });
 

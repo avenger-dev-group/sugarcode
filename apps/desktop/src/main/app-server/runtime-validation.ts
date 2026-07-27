@@ -192,7 +192,9 @@ export const parseInitializeResponse = (
     !isNonEmptyString(value.platform.os) ||
     !isNonEmptyString(value.platform.arch) ||
     !isRecord(value.capabilities) ||
-    typeof value.capabilities.commandApprovals !== 'boolean'
+    typeof value.capabilities.commandApprovals !== 'boolean' ||
+    typeof value.capabilities.commandWorkspaceWriteApprovals !==
+      'boolean'
   ) {
     throw new Error('Invalid initialize response.');
   }
@@ -210,6 +212,8 @@ export const parseInitializeResponse = (
     },
     capabilities: {
       commandApprovals: value.capabilities.commandApprovals,
+      commandWorkspaceWriteApprovals:
+        value.capabilities.commandWorkspaceWriteApprovals,
     },
   };
 };

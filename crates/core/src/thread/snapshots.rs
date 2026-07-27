@@ -67,6 +67,7 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             sandboxed,
             sandbox_policy,
             workspace_write_policy,
+            workspace_write_risk,
             network_policy,
         } => DurableItemSnapshot::CommandApprovalRequest {
             id: item.id.clone(),
@@ -79,15 +80,19 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             sandboxed: *sandboxed,
             sandbox_policy: sandbox_policy.map(|policy| policy.to_string()),
             workspace_write_policy: workspace_write_policy.map(|policy| policy.to_string()),
+            workspace_write_risk: workspace_write_risk.map(|risk| risk.to_string()),
             network_policy: network_policy.map(|policy| policy.to_string()),
         },
         CoreItemKind::CommandApprovalDecision {
             approval_id,
             decision,
+            workspace_write_risk_acknowledgement,
         } => DurableItemSnapshot::CommandApprovalDecision {
             id: item.id.clone(),
             approval_id: approval_id.clone(),
             decision: decision.to_string(),
+            workspace_write_risk_acknowledgement: workspace_write_risk_acknowledgement
+                .map(|risk| risk.to_string()),
         },
         CoreItemKind::CommandExecutionAttempt {
             approval_id,
@@ -164,6 +169,7 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
             sandboxed,
             sandbox_policy,
             workspace_write_policy,
+            workspace_write_risk,
             network_policy,
         } => ItemKind::CommandApprovalRequest {
             approval_id: approval_id.clone(),
@@ -175,14 +181,17 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
             sandboxed: *sandboxed,
             sandbox_policy: *sandbox_policy,
             workspace_write_policy: *workspace_write_policy,
+            workspace_write_risk: *workspace_write_risk,
             network_policy: *network_policy,
         },
         CoreItemKind::CommandApprovalDecision {
             approval_id,
             decision,
+            workspace_write_risk_acknowledgement,
         } => ItemKind::CommandApprovalDecision {
             approval_id: approval_id.clone(),
             decision: *decision,
+            workspace_write_risk_acknowledgement: *workspace_write_risk_acknowledgement,
         },
         CoreItemKind::CommandExecutionAttempt {
             approval_id,

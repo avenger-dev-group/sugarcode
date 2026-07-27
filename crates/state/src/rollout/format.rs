@@ -153,12 +153,16 @@ pub(super) enum StoredItemRef<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         workspace_write_policy: Option<&'a str>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        workspace_write_risk: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         network_policy: Option<&'a str>,
     },
     CommandApprovalDecision {
         id: &'a str,
         approval_id: &'a str,
         decision: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace_write_risk_acknowledgement: Option<&'a str>,
     },
     CommandExecutionAttempt {
         id: &'a str,
@@ -276,6 +280,7 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 sandboxed,
                 sandbox_policy,
                 workspace_write_policy,
+                workspace_write_risk,
                 network_policy,
             } => Self::CommandApprovalRequest {
                 id: id.as_str(),
@@ -288,16 +293,20 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 sandboxed: *sandboxed,
                 sandbox_policy: sandbox_policy.as_deref(),
                 workspace_write_policy: workspace_write_policy.as_deref(),
+                workspace_write_risk: workspace_write_risk.as_deref(),
                 network_policy: network_policy.as_deref(),
             },
             DurableItemSnapshot::CommandApprovalDecision {
                 id,
                 approval_id,
                 decision,
+                workspace_write_risk_acknowledgement,
             } => Self::CommandApprovalDecision {
                 id: id.as_str(),
                 approval_id,
                 decision,
+                workspace_write_risk_acknowledgement: workspace_write_risk_acknowledgement
+                    .as_deref(),
             },
             DurableItemSnapshot::CommandExecutionAttempt {
                 id,
@@ -608,12 +617,16 @@ enum StoredItem {
         #[serde(default)]
         workspace_write_policy: Option<String>,
         #[serde(default)]
+        workspace_write_risk: Option<String>,
+        #[serde(default)]
         network_policy: Option<String>,
     },
     CommandApprovalDecision {
         id: String,
         approval_id: String,
         decision: String,
+        #[serde(default)]
+        workspace_write_risk_acknowledgement: Option<String>,
     },
     CommandExecutionAttempt {
         id: String,
@@ -1079,6 +1092,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             sandboxed,
             sandbox_policy,
             workspace_write_policy,
+            workspace_write_risk,
             network_policy,
         } => DurableItemSnapshot::CommandApprovalRequest {
             id: ItemId::new(id),
@@ -1091,16 +1105,19 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             sandboxed,
             sandbox_policy,
             workspace_write_policy,
+            workspace_write_risk,
             network_policy,
         },
         StoredItem::CommandApprovalDecision {
             id,
             approval_id,
             decision,
+            workspace_write_risk_acknowledgement,
         } => DurableItemSnapshot::CommandApprovalDecision {
             id: ItemId::new(id),
             approval_id,
             decision,
+            workspace_write_risk_acknowledgement,
         },
         StoredItem::CommandExecutionAttempt {
             id,

@@ -50,6 +50,12 @@
         "commandWorkspaceWriteV1"
       ]
     },
+    "CommandWorkspaceWriteRisk": {
+      "type": "string",
+      "enum": [
+        "nonTransactionalWorkspaceTreeV1"
+      ]
+    },
     "FileChangeKind": {
       "type": "string",
       "enum": [
@@ -277,6 +283,16 @@
                   "type": "null"
                 }
               ]
+            },
+            "workspaceWriteRisk": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CommandWorkspaceWriteRisk"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -306,6 +322,16 @@
             "type": {
               "type": "string",
               "const": "commandApprovalDecision"
+            },
+            "workspaceWriteRiskAcknowledgement": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CommandWorkspaceWriteRisk"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [

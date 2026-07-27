@@ -152,12 +152,14 @@ pub enum DurableItemSnapshot {
         sandboxed: bool,
         sandbox_policy: Option<String>,
         workspace_write_policy: Option<String>,
+        workspace_write_risk: Option<String>,
         network_policy: Option<String>,
     },
     CommandApprovalDecision {
         id: ItemId,
         approval_id: String,
         decision: String,
+        workspace_write_risk_acknowledgement: Option<String>,
     },
     CommandExecutionAttempt {
         id: ItemId,
@@ -229,6 +231,63 @@ pub(crate) fn valid_incremental_item(
     if !valid_file_change_item(item) {
         return Err("invalidFileChangeItem");
     }
+    if let DurableItemSnapshot::CommandApprovalRequest {
+        workspace_write_policy,
+        workspace_write_risk,
+        ..
+    } = item
+    {
+        if !matches!(
+            workspace_write_policy.as_deref(),
+            None | Some("commandWorkspaceWriteV1")
+        ) || !matches!(
+            workspace_write_risk.as_deref(),
+            None | Some("nonTransactionalWorkspaceTreeV1")
+        ) || (workspace_write_policy.is_none() && workspace_write_risk.is_some())
+        {
+            return Err("invalidCommandApprovalRisk");
+        }
+        return Ok(());
+    }
+    if let DurableItemSnapshot::CommandApprovalDecision {
+        approval_id,
+        decision,
+        workspace_write_risk_acknowledgement,
+        ..
+    } = item
+    {
+        if !matches!(
+            workspace_write_risk_acknowledgement.as_deref(),
+            None | Some("nonTransactionalWorkspaceTreeV1")
+        ) {
+            return Err("invalidCommandApprovalRisk");
+        }
+        let mut matching_risk = None;
+        let mut found_request = false;
+        for existing_item in existing {
+            if let DurableItemSnapshot::CommandApprovalRequest {
+                approval_id: existing_approval_id,
+                workspace_write_risk,
+                ..
+            } = existing_item
+                && existing_approval_id == approval_id
+            {
+                if found_request {
+                    return Err("invalidCommandApprovalRisk");
+                }
+                found_request = true;
+                matching_risk = workspace_write_risk.as_deref();
+            }
+        }
+        if !found_request
+            || (decision == "approved"
+                && workspace_write_risk_acknowledgement.as_deref() != matching_risk)
+            || (decision != "approved" && workspace_write_risk_acknowledgement.is_some())
+        {
+            return Err("invalidCommandApprovalRisk");
+        }
+        return Ok(());
+    }
     let DurableItemSnapshot::CommandExecutionAttempt {
         approval_id,
         call_id,
@@ -265,6 +324,7 @@ pub(crate) fn valid_incremental_item(
                 sandboxed,
                 sandbox_policy,
                 workspace_write_policy,
+                workspace_write_risk,
                 network_policy,
                 ..
             } if existing_approval_id == approval_id && existing_call_id == call_id => {
@@ -279,18 +339,20 @@ pub(crate) fn valid_incremental_item(
                     sandboxed,
                     sandbox_policy,
                     workspace_write_policy,
+                    workspace_write_risk,
                     network_policy,
                 ));
             }
             DurableItemSnapshot::CommandApprovalDecision {
                 approval_id: existing_approval_id,
                 decision,
+                workspace_write_risk_acknowledgement,
                 ..
             } if existing_approval_id == approval_id => {
                 if matching_decision.is_some() {
                     return Err("invalidCommandExecutionAttempt");
                 }
-                matching_decision = Some(decision);
+                matching_decision = Some((decision, workspace_write_risk_acknowledgement));
             }
             DurableItemSnapshot::CommandExecutionAttempt {
                 approval_id: existing_approval_id,
@@ -319,6 +381,7 @@ pub(crate) fn valid_incremental_item(
         sandboxed,
         sandbox_policy,
         workspace_write_policy,
+        workspace_write_risk,
         network_policy,
     )) = matching_request
     else {
@@ -335,7 +398,9 @@ pub(crate) fn valid_incremental_item(
             None | Some("commandWorkspaceWriteV1")
         )
         || network_policy.as_deref() != Some("networkDeniedV1")
-        || matching_decision.is_none_or(|decision| decision != "approved")
+        || matching_decision.is_none_or(|(decision, acknowledgement)| {
+            decision != "approved" || acknowledgement != workspace_write_risk
+        })
     {
         return Err("invalidCommandExecutionAttempt");
     }

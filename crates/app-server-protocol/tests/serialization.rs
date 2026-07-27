@@ -3,6 +3,7 @@ use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
 use sugarcode_app_server_protocol::CommandNetworkPolicy;
 use sugarcode_app_server_protocol::CommandSandboxPolicy;
 use sugarcode_app_server_protocol::CommandWorkspaceWritePolicy;
+use sugarcode_app_server_protocol::CommandWorkspaceWriteRisk;
 use sugarcode_app_server_protocol::ERROR_PARSE;
 use sugarcode_app_server_protocol::FileChangeKind;
 use sugarcode_app_server_protocol::FileChangeNewlineStyle;
@@ -590,6 +591,7 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             sandbox_policy: Some(CommandSandboxPolicy::FilesystemReadOnlyV1),
             workspace_write_policy: Some(CommandWorkspaceWritePolicy::CommandWorkspaceWriteV1,),
             network_policy: Some(CommandNetworkPolicy::NetworkDeniedV1),
+            workspace_write_risk: Some(CommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1,),
         })
         .expect("approval request serializes"),
         json!({
@@ -604,7 +606,26 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             "sandboxed": true,
             "sandboxPolicy": "filesystemReadOnlyV1",
             "workspaceWritePolicy": "commandWorkspaceWriteV1",
-            "networkPolicy": "networkDeniedV1"
+            "networkPolicy": "networkDeniedV1",
+            "workspaceWriteRisk": "nonTransactionalWorkspaceTreeV1"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(Item::CommandApprovalDecision {
+            id: "item_0000000000000004".to_string(),
+            approval_id: "approval/one".to_string(),
+            decision: "approved".to_string(),
+            workspace_write_risk_acknowledgement: Some(
+                CommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1,
+            ),
+        })
+        .expect("approval decision serializes"),
+        json!({
+            "type": "commandApprovalDecision",
+            "id": "item_0000000000000004",
+            "approvalId": "approval/one",
+            "decision": "approved",
+            "workspaceWriteRiskAcknowledgement": "nonTransactionalWorkspaceTreeV1"
         })
     );
     assert_eq!(

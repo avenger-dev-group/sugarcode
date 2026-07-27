@@ -163,6 +163,13 @@ export class CommandApprovalController {
     ) {
       return;
     }
+    if (
+      completion.workspaceWriteRiskAcknowledgement !==
+      this.active.params.workspaceWriteRisk
+    ) {
+      this.options.onProtocolFailure();
+      return;
+    }
 
     const status = this.statusForDecision(completion.decision);
     if (!status) {

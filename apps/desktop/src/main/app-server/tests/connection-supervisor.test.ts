@@ -75,7 +75,10 @@ const attachInitializeServer = (
             jsonrpc: '2.0',
             id: message.id,
             result: {
-              capabilities: { commandApprovals: true },
+              capabilities: {
+                commandApprovals: true,
+                commandWorkspaceWriteApprovals: true,
+              },
               platform: {
                 family: overrides.family ?? 'unix',
                 os: overrides.os ?? 'macos',

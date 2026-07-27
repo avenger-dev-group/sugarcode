@@ -49,10 +49,14 @@
       "properties": {
         "commandApprovals": {
           "type": "boolean"
+        },
+        "commandWorkspaceWriteApprovals": {
+          "type": "boolean"
         }
       },
       "required": [
-        "commandApprovals"
+        "commandApprovals",
+        "commandWorkspaceWriteApprovals"
       ]
     },
     "ServerInfo": {

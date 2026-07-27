@@ -30,6 +30,9 @@ enum Command {
     #[cfg(debug_assertions)]
     #[command(hide = true, name = "__command-test-leaf")]
     InternalTestLeaf,
+    #[cfg(debug_assertions)]
+    #[command(hide = true, name = "__command-workspace-write-acceptance")]
+    InternalWorkspaceWriteAcceptance,
     /// Print product and app-server protocol versions.
     Version,
     /// Validate SugarCode's non-secret configuration.
@@ -168,6 +171,18 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(debug_assertions)]
         Command::InternalTestLeaf => {
             std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+        #[cfg(debug_assertions)]
+        Command::InternalWorkspaceWriteAcceptance => {
+            std::fs::write("updated.txt", "after\n")?;
+            std::fs::write("created.txt", "created\n")?;
+            std::fs::remove_file("deleted.txt")?;
+            std::fs::rename("rename-source.txt", "renamed.txt")?;
+            std::fs::hard_link("hardlink-source.txt", "hardlink-created.txt")?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("symlink-target.txt", "symlink-created.txt")?;
+            std::fs::write("binary.bin", [0_u8, 159, 146, 150, 255])?;
+            println!("workspace-write-acceptance:ok");
         }
         Command::Version => {
             println!(

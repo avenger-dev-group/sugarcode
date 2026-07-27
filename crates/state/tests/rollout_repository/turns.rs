@@ -204,11 +204,13 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
             workspace_write_policy: None,
             network_policy: Some("networkDeniedV1".to_string()),
+            workspace_write_risk: None,
         },
         DurableItemSnapshot::CommandApprovalDecision {
             id: ItemId::new("item_0000000000000004"),
             approval_id: "approval/one".to_string(),
             decision: "approved".to_string(),
+            workspace_write_risk_acknowledgement: None,
         },
         DurableItemSnapshot::ToolResult {
             id: ItemId::new("item_0000000000000005"),
@@ -354,11 +356,15 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
             sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
             workspace_write_policy: Some("commandWorkspaceWriteV1".to_string()),
             network_policy: Some("networkDeniedV1".to_string()),
+            workspace_write_risk: Some("nonTransactionalWorkspaceTreeV1".to_string()),
         },
         DurableItemSnapshot::CommandApprovalDecision {
             id: ItemId::new("item_0000000000000004"),
             approval_id: "approval/one".to_string(),
             decision: "approved".to_string(),
+            workspace_write_risk_acknowledgement: Some(
+                "nonTransactionalWorkspaceTreeV1".to_string(),
+            ),
         },
         DurableItemSnapshot::CommandExecutionAttempt {
             id: ItemId::new("item_0000000000000005"),
@@ -449,6 +455,106 @@ fn execution_attempt_requires_matching_approved_shell_audit() {
             kind: "invalidCommandExecutionAttempt"
         }
     ));
+}
+
+#[test]
+fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    repository
+        .begin_turn(
+            &thread_id,
+            &DurableTurnSnapshot {
+                id: turn_id.clone(),
+                status: DurableTurnStatus::InProgress,
+                items: vec![DurableItemSnapshot::UserMessage {
+                    id: ItemId::new("item_0000000000000001"),
+                    text: "Run it".to_string(),
+                }],
+                error: None,
+                usage: None,
+            },
+        )
+        .expect("turn start");
+    for item in [
+        DurableItemSnapshot::ToolCall {
+            id: ItemId::new("item_0000000000000002"),
+            call_id: "call_shell".to_string(),
+            name: "shell/exec".to_string(),
+            path: ".".to_string(),
+            query: None,
+            patch: None,
+            command: Some("/bin/echo".to_string()),
+            arguments: Some(vec!["ok".to_string()]),
+        },
+        DurableItemSnapshot::CommandApprovalRequest {
+            id: ItemId::new("item_0000000000000003"),
+            approval_id: "approval/one".to_string(),
+            call_id: "call_shell".to_string(),
+            command: "/bin/echo".to_string(),
+            arguments: vec!["ok".to_string()],
+            cwd: ".".to_string(),
+            environment_policy: "minimalV1".to_string(),
+            sandboxed: true,
+            sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
+            workspace_write_policy: Some("commandWorkspaceWriteV1".to_string()),
+            workspace_write_risk: Some("nonTransactionalWorkspaceTreeV1".to_string()),
+            network_policy: Some("networkDeniedV1".to_string()),
+        },
+    ] {
+        repository
+            .append_turn_item(&thread_id, &turn_id, &item)
+            .expect("append prerequisite");
+    }
+
+    let error = repository
+        .append_turn_item(
+            &thread_id,
+            &turn_id,
+            &DurableItemSnapshot::CommandApprovalDecision {
+                id: ItemId::new("item_0000000000000004"),
+                approval_id: "approval/one".to_string(),
+                decision: "approved".to_string(),
+                workspace_write_risk_acknowledgement: None,
+            },
+        )
+        .expect_err("missing acknowledgement");
+    assert!(matches!(
+        error,
+        RolloutError::InvalidRecord {
+            kind: "invalidCommandApprovalRisk"
+        }
+    ));
+
+    repository
+        .append_turn_item(
+            &thread_id,
+            &turn_id,
+            &DurableItemSnapshot::CommandApprovalDecision {
+                id: ItemId::new("item_0000000000000004"),
+                approval_id: "approval/one".to_string(),
+                decision: "approved".to_string(),
+                workspace_write_risk_acknowledgement: Some(
+                    "nonTransactionalWorkspaceTreeV1".to_string(),
+                ),
+            },
+        )
+        .expect("exact acknowledgement");
+    repository
+        .append_turn_item(
+            &thread_id,
+            &turn_id,
+            &DurableItemSnapshot::CommandExecutionAttempt {
+                id: ItemId::new("item_0000000000000005"),
+                approval_id: "approval/one".to_string(),
+                call_id: "call_shell".to_string(),
+            },
+        )
+        .expect("acknowledged attempt");
 }
 
 fn remove_command_policy_fields(value: &mut serde_json::Value) {

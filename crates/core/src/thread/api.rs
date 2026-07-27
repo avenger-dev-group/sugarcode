@@ -262,6 +262,7 @@ impl CoreApi for Core {
                         sandboxed,
                         sandbox_policy,
                         workspace_write_policy,
+                        workspace_write_risk,
                         network_policy,
                         ..
                     } => DurableItemSnapshot::CommandApprovalRequest {
@@ -275,16 +276,20 @@ impl CoreApi for Core {
                         sandboxed: *sandboxed,
                         sandbox_policy: sandbox_policy.clone(),
                         workspace_write_policy: workspace_write_policy.clone(),
+                        workspace_write_risk: workspace_write_risk.clone(),
                         network_policy: network_policy.clone(),
                     },
                     DurableItemSnapshot::CommandApprovalDecision {
                         approval_id,
                         decision,
+                        workspace_write_risk_acknowledgement,
                         ..
                     } => DurableItemSnapshot::CommandApprovalDecision {
                         id: ItemId::new(format!("item_{item_sequence:016}")),
                         approval_id: approval_id.clone(),
                         decision: decision.clone(),
+                        workspace_write_risk_acknowledgement: workspace_write_risk_acknowledgement
+                            .clone(),
                     },
                     DurableItemSnapshot::CommandExecutionAttempt {
                         approval_id,

@@ -68,11 +68,13 @@ pub enum CoreItemKind {
         sandboxed: bool,
         sandbox_policy: Option<CoreCommandSandboxPolicy>,
         workspace_write_policy: Option<CoreCommandWorkspaceWritePolicy>,
+        workspace_write_risk: Option<CoreCommandWorkspaceWriteRisk>,
         network_policy: Option<CoreCommandNetworkPolicy>,
     },
     CommandApprovalDecision {
         approval_id: String,
         decision: CoreCommandApprovalDecision,
+        workspace_write_risk_acknowledgement: Option<CoreCommandWorkspaceWriteRisk>,
     },
     CommandExecutionAttempt {
         approval_id: String,
@@ -151,6 +153,11 @@ pub enum CoreCommandWorkspaceWritePolicy {
     CommandWorkspaceWriteV1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreCommandWorkspaceWriteRisk {
+    NonTransactionalWorkspaceTreeV1,
+}
+
 impl fmt::Display for CoreCommandSandboxPolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -171,6 +178,14 @@ impl fmt::Display for CoreCommandWorkspaceWritePolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::CommandWorkspaceWriteV1 => "commandWorkspaceWriteV1",
+        })
+    }
+}
+
+impl fmt::Display for CoreCommandWorkspaceWriteRisk {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NonTransactionalWorkspaceTreeV1 => "nonTransactionalWorkspaceTreeV1",
         })
     }
 }

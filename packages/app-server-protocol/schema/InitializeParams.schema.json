@@ -54,6 +54,12 @@
         "commandApprovals": {
           "type": "boolean",
           "default": false
+        },
+        "commandWorkspaceWriteApprovals": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       }
     }

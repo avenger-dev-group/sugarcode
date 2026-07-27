@@ -6,6 +6,7 @@ use ts_rs::TS;
 use crate::CommandNetworkPolicy;
 use crate::CommandSandboxPolicy;
 use crate::CommandWorkspaceWritePolicy;
+use crate::CommandWorkspaceWriteRisk;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -88,6 +89,11 @@ pub enum Item {
         #[ts(rename = "workspaceWritePolicy")]
         #[ts(optional)]
         workspace_write_policy: Option<CommandWorkspaceWritePolicy>,
+        #[serde(rename = "workspaceWriteRisk")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "workspaceWriteRisk")]
+        #[ts(optional)]
+        workspace_write_risk: Option<CommandWorkspaceWriteRisk>,
         #[serde(rename = "networkPolicy")]
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(rename = "networkPolicy")]
@@ -100,6 +106,11 @@ pub enum Item {
         #[ts(rename = "approvalId")]
         approval_id: String,
         decision: String,
+        #[serde(rename = "workspaceWriteRiskAcknowledgement")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "workspaceWriteRiskAcknowledgement")]
+        #[ts(optional)]
+        workspace_write_risk_acknowledgement: Option<CommandWorkspaceWriteRisk>,
     },
     CommandExecutionAttempt {
         id: String,

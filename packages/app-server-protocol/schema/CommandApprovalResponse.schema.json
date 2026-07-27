@@ -5,6 +5,16 @@
   "properties": {
     "decision": {
       "$ref": "#/$defs/CommandApprovalResponseDecision"
+    },
+    "workspaceWriteRiskAcknowledgement": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommandWorkspaceWriteRisk"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "additionalProperties": false,
@@ -17,6 +27,12 @@
       "enum": [
         "approved",
         "denied"
+      ]
+    },
+    "CommandWorkspaceWriteRisk": {
+      "type": "string",
+      "enum": [
+        "nonTransactionalWorkspaceTreeV1"
       ]
     }
   }

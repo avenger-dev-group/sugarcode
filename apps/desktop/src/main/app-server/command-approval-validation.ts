@@ -81,7 +81,7 @@ export const parseCommandApprovalRequest = (
         'sandboxPolicy',
         'networkPolicy',
       ],
-      ['workspaceWritePolicy'],
+      ['workspaceWritePolicy', 'workspaceWriteRisk'],
     ) ||
     typeof id !== 'string' ||
     !isBoundedIdentifier(value.approvalId) ||
@@ -104,6 +104,12 @@ export const parseCommandApprovalRequest = (
     value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
     (value.workspaceWritePolicy !== undefined &&
       value.workspaceWritePolicy !== 'commandWorkspaceWriteV1') ||
+    (value.workspaceWriteRisk !== undefined &&
+      value.workspaceWriteRisk !==
+        'nonTransactionalWorkspaceTreeV1') ||
+    (value.workspaceWritePolicy === 'commandWorkspaceWriteV1') !==
+      (value.workspaceWriteRisk ===
+        'nonTransactionalWorkspaceTreeV1') ||
     value.networkPolicy !== 'networkDeniedV1'
   ) {
     return null;
@@ -131,7 +137,11 @@ export const parseCommandApprovalRequest = (
     sandboxed: true,
     sandboxPolicy: 'filesystemReadOnlyV1',
     ...(value.workspaceWritePolicy === 'commandWorkspaceWriteV1'
-      ? { workspaceWritePolicy: 'commandWorkspaceWriteV1' as const }
+      ? {
+          workspaceWritePolicy: 'commandWorkspaceWriteV1' as const,
+          workspaceWriteRisk:
+            'nonTransactionalWorkspaceTreeV1' as const,
+        }
       : {}),
     networkPolicy: 'networkDeniedV1',
   };
@@ -142,6 +152,9 @@ export type CommandApprovalCompletion = Readonly<{
   turnId: string;
   approvalId: string;
   decision: string;
+  workspaceWriteRiskAcknowledgement?:
+    | 'nonTransactionalWorkspaceTreeV1'
+    | undefined;
 }>;
 
 export const isCommandApprovalCompletionCandidate = (
@@ -162,16 +175,19 @@ export const parseCommandApprovalCompletion = (
     !isBoundedIdentifier(message.params.threadId) ||
     !isBoundedIdentifier(message.params.turnId) ||
     !isRecord(message.params.item) ||
-    !hasOnlyKeys(message.params.item, [
-      'type',
-      'id',
-      'approvalId',
-      'decision',
-    ]) ||
+    !hasOnlyKeys(
+      message.params.item,
+      ['type', 'id', 'approvalId', 'decision'],
+      ['workspaceWriteRiskAcknowledgement'],
+    ) ||
     message.params.item.type !== 'commandApprovalDecision' ||
     !isBoundedIdentifier(message.params.item.id) ||
     !isBoundedIdentifier(message.params.item.approvalId) ||
-    typeof message.params.item.decision !== 'string'
+    typeof message.params.item.decision !== 'string' ||
+    (message.params.item.workspaceWriteRiskAcknowledgement !==
+      undefined &&
+      message.params.item.workspaceWriteRiskAcknowledgement !==
+        'nonTransactionalWorkspaceTreeV1')
   ) {
     return null;
   }
@@ -186,5 +202,12 @@ export const parseCommandApprovalCompletion = (
     turnId: params.turnId,
     approvalId: item.approvalId,
     decision: item.decision,
+    ...(item.workspaceWriteRiskAcknowledgement ===
+    'nonTransactionalWorkspaceTreeV1'
+      ? {
+          workspaceWriteRiskAcknowledgement:
+            'nonTransactionalWorkspaceTreeV1' as const,
+        }
+      : {}),
   };
 };

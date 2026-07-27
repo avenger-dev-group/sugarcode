@@ -20,6 +20,9 @@ pub struct ClientInfo {
 pub struct InitializeCapabilities {
     #[serde(default)]
     pub command_approvals: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub command_workspace_write_approvals: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
@@ -55,6 +58,7 @@ pub struct PlatformInfo {
 #[ts(rename_all = "camelCase")]
 pub struct ServerCapabilities {
     pub command_approvals: bool,
+    pub command_workspace_write_approvals: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

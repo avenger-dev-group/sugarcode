@@ -94,3 +94,4 @@ pub use approval::CommandApprovalResponseDecision;
 pub use approval::CommandNetworkPolicy;
 pub use approval::CommandSandboxPolicy;
 pub use approval::CommandWorkspaceWritePolicy;
+pub use approval::CommandWorkspaceWriteRisk;

@@ -293,7 +293,91 @@ fn approved_shell_approval_matches_execution_attempt_golden_trace() {
         &sugarcode_home,
         Some(workspace.path()),
         false,
-        cfg!(target_os = "linux"),
+        false,
+    );
+}
+
+#[test]
+fn informed_workspace_write_approval_mutates_the_real_workspace_and_matches_golden() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let command = env!("CARGO_BIN_EXE_sugarcode");
+    let arguments = serde_json::to_string(&json!({
+        "command": command,
+        "arguments": ["__command-workspace-write-acceptance"],
+        "cwd": "."
+    }))
+    .expect("shell arguments");
+    let tool_call = format!(
+        "data: {}\n\ndata: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n",
+        json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_workspace_write_fixture",
+                        "type": "function",
+                        "function": {
+                            "name": "shell/exec",
+                            "arguments": arguments
+                        }
+                    }]
+                },
+                "finish_reason": Value::Null
+            }]
+        })
+    );
+    let final_answer = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Workspace command completed.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    )
+    .to_string();
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("create isolated workspace");
+    fs::write(workspace.path().join("updated.txt"), "before\n").expect("updated fixture");
+    fs::write(workspace.path().join("deleted.txt"), "delete\n").expect("deleted fixture");
+    fs::write(workspace.path().join("rename-source.txt"), "rename\n").expect("rename fixture");
+    fs::write(workspace.path().join("hardlink-source.txt"), "link\n").expect("hardlink fixture");
+    fs::write(workspace.path().join("symlink-target.txt"), "target\n").expect("symlink fixture");
+    let _provider =
+        MockProvider::start_with_owned_bodies(sugarcode_home.path(), vec![tool_call, final_answer]);
+
+    run_golden_with_options(
+        "turn-shell-workspace-write-informed",
+        &sugarcode_home,
+        Some(workspace.path()),
+        false,
+        true,
+    );
+
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("updated.txt")).expect("updated result"),
+        "after\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("created.txt")).expect("created result"),
+        "created\n"
+    );
+    assert!(!workspace.path().join("deleted.txt").exists());
+    assert!(!workspace.path().join("rename-source.txt").exists());
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("renamed.txt")).expect("renamed result"),
+        "rename\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("hardlink-created.txt")).expect("hardlink result"),
+        "link\n"
+    );
+    assert_eq!(
+        fs::read_link(workspace.path().join("symlink-created.txt")).expect("symlink result"),
+        std::path::PathBuf::from("symlink-target.txt")
+    );
+    assert_eq!(
+        fs::read(workspace.path().join("binary.bin")).expect("binary result"),
+        [0_u8, 159, 146, 150, 255]
     );
 }
 
@@ -978,41 +1062,9 @@ fn run_golden_with_options(
             "workspace-write policy is missing from the approval and process audit: {actual}"
         );
     }
-    let actual = if allow_command_workspace_write {
-        normalize_trace(&without_workspace_write_policy(&actual))
-    } else {
-        normalize_trace(&actual)
-    };
+    let actual = normalize_trace(&actual);
     let expected = normalize_trace(&expected);
     assert_eq!(actual, expected);
-}
-
-fn without_workspace_write_policy(output: &str) -> String {
-    let mut stripped = String::new();
-    for line in output.lines() {
-        let mut value = serde_json::from_str::<Value>(line).expect("stdout line is JSON");
-        remove_workspace_write_policy(&mut value);
-        stripped.push_str(&serde_json::to_string(&value).expect("stripped JSON serializes"));
-        stripped.push('\n');
-    }
-    stripped
-}
-
-fn remove_workspace_write_policy(value: &mut Value) {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                remove_workspace_write_policy(value);
-            }
-        }
-        Value::Object(object) => {
-            object.remove("workspaceWritePolicy");
-            for value in object.values_mut() {
-                remove_workspace_write_policy(value);
-            }
-        }
-        _ => {}
-    }
 }
 
 struct MockProvider {

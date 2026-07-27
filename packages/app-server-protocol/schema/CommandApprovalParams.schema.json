@@ -51,6 +51,16 @@
           "type": "null"
         }
       ]
+    },
+    "workspaceWriteRisk": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommandWorkspaceWriteRisk"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "additionalProperties": false,
@@ -85,6 +95,12 @@
       "type": "string",
       "enum": [
         "commandWorkspaceWriteV1"
+      ]
+    },
+    "CommandWorkspaceWriteRisk": {
+      "type": "string",
+      "enum": [
+        "nonTransactionalWorkspaceTreeV1"
       ]
     }
   }

@@ -14,7 +14,10 @@ const initializeParams = {
 };
 
 const initializeResult = {
-  capabilities: { commandApprovals: true },
+  capabilities: {
+    commandApprovals: true,
+    commandWorkspaceWriteApprovals: true,
+  },
   platform: {
     family: 'unix',
     os: 'macos',

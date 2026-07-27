@@ -16,6 +16,7 @@ pub struct CommandApprovalRequest {
     pub sandboxed: bool,
     pub sandbox_policy: sugarcode_protocol::CoreCommandSandboxPolicy,
     pub workspace_write_policy: Option<sugarcode_protocol::CoreCommandWorkspaceWritePolicy>,
+    pub workspace_write_risk: Option<sugarcode_protocol::CoreCommandWorkspaceWriteRisk>,
     pub network_policy: sugarcode_protocol::CoreCommandNetworkPolicy,
 }
 

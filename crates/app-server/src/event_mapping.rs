@@ -306,6 +306,7 @@ fn map_snapshot_parts(
                             sandboxed,
                             sandbox_policy,
                             workspace_write_policy,
+                            workspace_write_risk,
                             network_policy,
                         } => PublicItem::CommandApprovalRequest {
                             id: id.into_string(),
@@ -320,16 +321,23 @@ fn map_snapshot_parts(
                             workspace_write_policy: public_workspace_write_policy(
                                 workspace_write_policy.as_deref(),
                             ),
+                            workspace_write_risk: public_workspace_write_risk(
+                                workspace_write_risk.as_deref(),
+                            ),
                             network_policy: public_network_policy(network_policy.as_deref()),
                         },
                         DurableItemSnapshot::CommandApprovalDecision {
                             id,
                             approval_id,
                             decision,
+                            workspace_write_risk_acknowledgement,
                         } => PublicItem::CommandApprovalDecision {
                             id: id.into_string(),
                             approval_id,
                             decision,
+                            workspace_write_risk_acknowledgement: public_workspace_write_risk(
+                                workspace_write_risk_acknowledgement.as_deref(),
+                            ),
                         },
                         DurableItemSnapshot::CommandExecutionAttempt {
                             id,
@@ -525,6 +533,7 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             sandboxed,
             sandbox_policy,
             workspace_write_policy,
+            workspace_write_risk,
             network_policy,
         } => PublicItem::CommandApprovalRequest {
             id: item.id.into_string(),
@@ -545,6 +554,11 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
                     sugarcode_app_server_protocol::CommandWorkspaceWritePolicy::CommandWorkspaceWriteV1
                 }
             }),
+            workspace_write_risk: workspace_write_risk.map(|risk| match risk {
+                sugarcode_protocol::CoreCommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1 => {
+                    sugarcode_app_server_protocol::CommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1
+                }
+            }),
             network_policy: network_policy.map(|policy| match policy {
                 sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1 => {
                     sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1
@@ -554,10 +568,17 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
         CoreItemKind::CommandApprovalDecision {
             approval_id,
             decision,
+            workspace_write_risk_acknowledgement,
         } => PublicItem::CommandApprovalDecision {
             id: item.id.into_string(),
             approval_id,
             decision: decision.to_string(),
+            workspace_write_risk_acknowledgement:
+                workspace_write_risk_acknowledgement.map(|risk| match risk {
+                    sugarcode_protocol::CoreCommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1 => {
+                        sugarcode_app_server_protocol::CommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1
+                    }
+                }),
         },
         CoreItemKind::CommandExecutionAttempt {
             approval_id,
@@ -677,6 +698,17 @@ fn public_workspace_write_policy(
     match policy {
         Some("commandWorkspaceWriteV1") => Some(
             sugarcode_app_server_protocol::CommandWorkspaceWritePolicy::CommandWorkspaceWriteV1,
+        ),
+        Some(_) | None => None,
+    }
+}
+
+fn public_workspace_write_risk(
+    risk: Option<&str>,
+) -> Option<sugarcode_app_server_protocol::CommandWorkspaceWriteRisk> {
+    match risk {
+        Some("nonTransactionalWorkspaceTreeV1") => Some(
+            sugarcode_app_server_protocol::CommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1,
         ),
         Some(_) | None => None,
     }

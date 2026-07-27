@@ -32,7 +32,10 @@ const request = (
     sandboxed: true,
     sandboxPolicy: 'filesystemReadOnlyV1',
     ...(workspaceWrite
-      ? { workspaceWritePolicy: 'commandWorkspaceWriteV1' }
+      ? {
+          workspaceWritePolicy: 'commandWorkspaceWriteV1',
+          workspaceWriteRisk: 'nonTransactionalWorkspaceTreeV1',
+        }
       : {}),
     networkPolicy: 'networkDeniedV1',
   },
@@ -127,6 +130,30 @@ describe('CommandApprovalController', () => {
       ),
     );
     expect(onProtocolFailure).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toEqual({
+      revision: 0,
+      status: 'idle',
+    });
+  });
+
+  it('fails closed when workspace-write policy omits its risk contract', async () => {
+    const { controller, onProtocolFailure, writeDecision } =
+      createController('linux');
+    controller.markSurfaceReady();
+    const invalid = request('approval/write-invalid', true);
+    delete (
+      invalid.params as Record<string, unknown>
+    ).workspaceWriteRisk;
+
+    controller.handleServerRequest(invalid);
+
+    await vi.waitFor(() =>
+      expect(writeDecision).toHaveBeenCalledWith(
+        'approval/write-invalid',
+        'denied',
+      ),
+    );
+    expect(onProtocolFailure).toHaveBeenCalledOnce();
     expect(controller.getSnapshot()).toEqual({
       revision: 0,
       status: 'idle',

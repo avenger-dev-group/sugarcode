@@ -288,12 +288,15 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                 sandboxed: true,
                 sandbox_policy: Some(sandbox_policy),
                 workspace_write_policy: Some(workspace_write_policy),
+                workspace_write_risk: Some(workspace_write_risk),
                 network_policy: Some(network_policy),
                 ..
             },
             sugarcode_state::DurableItemSnapshot::CommandApprovalDecision {
                 decision,
                 approval_id,
+                workspace_write_risk_acknowledgement:
+                    Some(workspace_write_risk_acknowledgement),
                 ..
             },
             sugarcode_state::DurableItemSnapshot::CommandExecutionAttempt {
@@ -310,6 +313,9 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             && arguments == &["approved output".to_string()]
             && sandbox_policy == "filesystemReadOnlyV1"
             && workspace_write_policy == "commandWorkspaceWriteV1"
+            && workspace_write_risk == "nonTransactionalWorkspaceTreeV1"
+            && workspace_write_risk_acknowledgement
+                == "nonTransactionalWorkspaceTreeV1"
             && network_policy == "networkDeniedV1"
             && process.sandbox_policy.as_deref() == Some("filesystemReadOnlyV1")
             && process.workspace_write_policy.as_deref() == Some("commandWorkspaceWriteV1")

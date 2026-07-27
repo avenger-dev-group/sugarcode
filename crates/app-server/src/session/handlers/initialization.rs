@@ -48,6 +48,10 @@ where
             .capabilities
             .as_ref()
             .is_some_and(|capabilities| capabilities.command_approvals);
+        self.command_workspace_write_approvals =
+            params.capabilities.as_ref().is_some_and(|capabilities| {
+                capabilities.command_workspace_write_approvals == Some(true)
+            });
 
         let response = InitializeResponse {
             protocol_version: PROTOCOL_VERSION,
@@ -62,6 +66,7 @@ where
             },
             capabilities: ServerCapabilities {
                 command_approvals: true,
+                command_workspace_write_approvals: true,
             },
         };
         let result = serde_json::to_value(response).expect("initialize response must serialize");

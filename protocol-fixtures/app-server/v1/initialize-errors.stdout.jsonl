@@ -4,7 +4,7 @@
 {"jsonrpc":"2.0","id":"pre-init","error":{"code":-32001,"message":"Not initialized"}}
 {"jsonrpc":"2.0","id":"bad-version","error":{"code":-32000,"message":"Unsupported protocol version","data":{"requested":99,"supported":[1]}}}
 {"jsonrpc":"2.0","id":"bad-params","error":{"code":-32602,"message":"Invalid params"}}
-{"jsonrpc":"2.0","id":"init","result":{"capabilities":{"commandApprovals":true},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
+{"jsonrpc":"2.0","id":"init","result":{"capabilities":{"commandApprovals":true,"commandWorkspaceWriteApprovals":true},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
 {"jsonrpc":"2.0","id":"before-ack","error":{"code":-32001,"message":"Not initialized"}}
 {"jsonrpc":"2.0","id":"duplicate","error":{"code":-32002,"message":"Already initialized"}}
 {"jsonrpc":"2.0","id":"still-waiting","error":{"code":-32001,"message":"Not initialized"}}

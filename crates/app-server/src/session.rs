@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use sugarcode_app_server_protocol::CommandApprovalParams;
 use sugarcode_app_server_protocol::CommandApprovalResponse;
 use sugarcode_app_server_protocol::CommandApprovalResponseDecision;
+use sugarcode_app_server_protocol::CommandWorkspaceWriteRisk;
 use sugarcode_app_server_protocol::DEFAULT_THREAD_LIST_LIMIT;
 use sugarcode_app_server_protocol::DEFAULT_THREAD_SEARCH_LIMIT;
 use sugarcode_app_server_protocol::ERROR_ALREADY_INITIALIZED;
@@ -84,13 +85,20 @@ pub enum SessionState {
 }
 
 #[derive(Debug)]
+struct PendingApprovalResponse {
+    response: oneshot::Sender<CommandApprovalOutcome>,
+    workspace_write_risk: Option<CommandWorkspaceWriteRisk>,
+}
+
+#[derive(Debug)]
 pub struct Session<C = Core> {
     state: SessionState,
     core: C,
     accepted_request_ids: HashSet<RequestId>,
     pending_interrupts: HashMap<(String, String), RequestId>,
-    pending_approvals: HashMap<RequestId, oneshot::Sender<CommandApprovalOutcome>>,
+    pending_approvals: HashMap<RequestId, PendingApprovalResponse>,
     command_approvals: bool,
+    command_workspace_write_approvals: bool,
     last_core_request_sequence: u64,
 }
 
@@ -118,6 +126,7 @@ where
             pending_interrupts: HashMap::new(),
             pending_approvals: HashMap::new(),
             command_approvals: false,
+            command_workspace_write_approvals: false,
             last_core_request_sequence: 0,
         }
     }
@@ -172,6 +181,18 @@ where
             let _ = pending.response.send(CommandApprovalOutcome::Unsupported);
             return None;
         }
+        let workspace_write_risk = pending.request.workspace_write_risk.map(|risk| match risk {
+            sugarcode_protocol::CoreCommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1 => {
+                CommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1
+            }
+        });
+        let workspace_write_requested = pending.request.workspace_write_policy.is_some();
+        if workspace_write_requested != workspace_write_risk.is_some()
+            || (workspace_write_requested && !self.command_workspace_write_approvals)
+        {
+            let _ = pending.response.send(CommandApprovalOutcome::Unsupported);
+            return None;
+        }
         let id = RequestId::String(pending.request.approval_id.clone());
         if self.pending_approvals.contains_key(&id) {
             let _ = pending.response.send(CommandApprovalOutcome::Unsupported);
@@ -200,13 +221,20 @@ where
                     }
                 }
             }),
+            workspace_write_risk,
             network_policy: match pending.request.network_policy {
                 sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1 => {
                     sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1
                 }
             },
         };
-        self.pending_approvals.insert(id.clone(), pending.response);
+        self.pending_approvals.insert(
+            id.clone(),
+            PendingApprovalResponse {
+                response: pending.response,
+                workspace_write_risk,
+            },
+        );
         Some(JsonRpcMessage::Request(JsonRpcRequest {
             jsonrpc: JsonRpcVersion::V2,
             id,
@@ -428,20 +456,26 @@ where
         let Some(id) = parse_request_id(object.get("id")) else {
             return;
         };
-        let Some(sender) = self.pending_approvals.remove(&id) else {
+        let Some(pending) = self.pending_approvals.remove(&id) else {
             return;
         };
         let outcome = if let Some(result) = object.get("result") {
             serde_json::from_value::<CommandApprovalResponse>(result.clone())
                 .map(|response| match response.decision {
-                    CommandApprovalResponseDecision::Approved => CommandApprovalOutcome::Approved,
+                    CommandApprovalResponseDecision::Approved
+                        if response.workspace_write_risk_acknowledgement
+                            == pending.workspace_write_risk =>
+                    {
+                        CommandApprovalOutcome::Approved
+                    }
+                    CommandApprovalResponseDecision::Approved => CommandApprovalOutcome::Denied,
                     CommandApprovalResponseDecision::Denied => CommandApprovalOutcome::Denied,
                 })
                 .unwrap_or(CommandApprovalOutcome::Denied)
         } else {
             CommandApprovalOutcome::Denied
         };
-        let _ = sender.send(outcome);
+        let _ = pending.response.send(outcome);
     }
 }
 
