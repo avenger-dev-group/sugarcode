@@ -92,6 +92,48 @@ async fn workspace_instructions_are_first_redacted_developer_context() {
 }
 
 #[tokio::test]
+async fn nested_workspace_instructions_have_explicit_deeper_precedence() {
+    let (endpoint, server, request_rx) =
+        capturing_response_server(SUCCESS.as_bytes().to_vec()).await;
+    let provider = provider(endpoint);
+    let mut request = request();
+    let instruction = ModelInstruction {
+        source: ModelInstructionSource::WorkspaceAgentsHierarchyV1,
+        content: concat!(
+            "--- AGENTS.md: AGENTS.md ---\nroot\n\n",
+            "--- AGENTS.md: projects/active/AGENTS.md ---\nleaf"
+        )
+        .to_string(),
+    };
+    assert_eq!(
+        instruction.context_bytes(),
+        instruction.rendered_content().len()
+    );
+    request.instructions.push(instruction);
+
+    let events = provider
+        .stream(request)
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+    server.await.expect("mock server");
+    let body = request_rx.await.expect("captured request");
+    let content = body["messages"][0]["content"]
+        .as_str()
+        .expect("developer content");
+    assert!(content.starts_with(
+        "Workspace instructions discovered from the opened workspace root to the active workspace scope \
+         (boundedNestedWorkspaceInstructionsV1). All entries apply. If entries conflict, the later, \
+         deeper entry overrides the earlier, shallower entry.\n\n"
+    ));
+    assert!(
+        content.find("AGENTS.md ---\nroot") < content.find("projects/active/AGENTS.md ---\nleaf")
+    );
+}
+
+#[tokio::test]
 async fn fragmented_single_tool_call_is_assembled_into_one_typed_event() {
     let body = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/\",\"arguments\":\"{\\\"path\\\":\\\"READ\"}}]},\"finish_reason\":null}]}\n\n",

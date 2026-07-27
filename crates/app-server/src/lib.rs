@@ -42,18 +42,28 @@ pub async fn run_stdio(
         .transpose()
         .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
         .map(Arc::new);
-    let workspace = workspace_root
-        .as_ref()
-        .map(|tool| tool.derive_scope(workspace_scope.as_deref().unwrap_or(".")))
-        .transpose()
-        .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
-        .map(Arc::new);
+    let (workspace, workspace_instructions) = match workspace_root.as_ref() {
+        Some(tool) => {
+            let (scope, instructions) = tool
+                .derive_scope_with_instructions(workspace_scope.as_deref().unwrap_or("."))
+                .map_err(|kind| {
+                    let kind = match kind {
+                        sugarcode_tools::WorkspaceScopeInstructionsErrorKind::Scope(kind) => {
+                            format!("{kind:?}")
+                        }
+                        sugarcode_tools::WorkspaceScopeInstructionsErrorKind::Instructions(
+                            kind,
+                        ) => {
+                            format!("{kind:?}")
+                        }
+                    };
+                    io::Error::new(io::ErrorKind::InvalidInput, kind)
+                })?;
+            (Some(Arc::new(scope)), Some(instructions))
+        }
+        None => (None, None),
+    };
     let command_workspace_root = workspace.as_ref().map(|tool| tool.command_workspace_root());
-    let workspace_instructions = workspace_root
-        .as_ref()
-        .map(|tool| tool.load_root_instructions())
-        .transpose()
-        .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?;
     let workspace_read: Option<Arc<dyn sugarcode_tools::WorkspaceReadExecutor>> = workspace
         .as_ref()
         .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceReadExecutor>);

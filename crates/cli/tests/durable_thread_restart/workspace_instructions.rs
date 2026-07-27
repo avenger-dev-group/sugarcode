@@ -112,70 +112,120 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
 }
 
 #[test]
-fn scoped_agents_is_not_auto_discovered_but_can_be_read_as_ordinary_tool_data() {
+fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
     const ROOT_INSTRUCTION: &str = "root private instruction";
-    const NESTED_INSTRUCTION: &str = "nested explicit tool content";
-    const READ_CALL: &str = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_nested_agents\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\\\"path\\\":\\\"AGENTS.md\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
-        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
-        "data: [DONE]\n\n"
-    );
-    const FINAL: &str = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Nested file read.\"},\"finish_reason\":null}]}\n\n",
-        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-        "data: [DONE]\n\n"
-    );
+    const MIDDLE_INSTRUCTION: &str = "middle private instruction";
+    const FIRST_LEAF_INSTRUCTION: &str = "first leaf private instruction";
+    const SECOND_LEAF_INSTRUCTION: &str = "second leaf private instruction";
 
     let home = tempfile::tempdir().expect("isolated SugarCode home");
     let workspace = tempfile::tempdir().expect("isolated workspace");
     fs::create_dir_all(workspace.path().join("projects/active")).expect("active scope");
     fs::write(workspace.path().join("AGENTS.md"), ROOT_INSTRUCTION).expect("root instructions");
     fs::write(
-        workspace.path().join("projects/active/AGENTS.md"),
-        NESTED_INSTRUCTION,
+        workspace.path().join("projects/AGENTS.md"),
+        MIDDLE_INSTRUCTION,
     )
-    .expect("nested instructions");
-    let mut server = RunningServer::spawn_with_workspace_scope(
+    .expect("middle instructions");
+    let leaf = workspace.path().join("projects/active/AGENTS.md");
+    fs::write(&leaf, FIRST_LEAF_INSTRUCTION).expect("first leaf instructions");
+    let completed = include_str!("../../../model-provider/tests/fixtures/completed.sse");
+    let mut first = RunningServer::spawn_with_workspace_scope(
         home.path(),
         workspace.path(),
         "projects/active",
-        vec![READ_CALL, FINAL],
+        vec![completed],
     );
-    server.initialize();
-    server.send(
+    first.initialize();
+    first.send(
         json!({"jsonrpc":"2.0","id":"thread","method":"thread/start","params":{}}),
         2,
     );
-    let public = server.send(
+    let first_public = first.send(
         json!({
             "jsonrpc":"2.0",
-            "id":"turn",
+            "id":"turn-one",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":"Read nested AGENTS"}
+            "params":{"threadId":"thr_0000000000000001","input":"apply scoped rules"}
         }),
-        12,
+        8,
     );
-    assert_eq!(public[11]["params"]["turn"]["status"], "completed");
-    let requests = server.provider_requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(
-        requests[0]["messages"][0]["content"],
-        format!(
-            "Workspace instructions from the opened workspace root AGENTS.md (boundedWorkspaceInstructionsV1):\n\n{ROOT_INSTRUCTION}"
-        )
-    );
+    let first_request = &first.provider_requests()[0];
+    let first_developer = first_request["messages"][0]["content"]
+        .as_str()
+        .expect("developer message");
+    assert!(first_developer.contains("boundedNestedWorkspaceInstructionsV1"));
     assert!(
-        !requests[0].to_string().contains(NESTED_INSTRUCTION),
-        "nested AGENTS.md must not be auto-discovered"
+        first_developer.contains("the later, deeper entry overrides the earlier, shallower entry")
     );
-    let second_request = requests[1].to_string();
-    assert!(second_request.contains(ROOT_INSTRUCTION));
-    assert!(second_request.contains(NESTED_INSTRUCTION));
-    server.finish();
+    let root_index = first_developer
+        .find("--- AGENTS.md: AGENTS.md ---")
+        .expect("root label");
+    let middle_index = first_developer
+        .find("--- AGENTS.md: projects/AGENTS.md ---")
+        .expect("middle label");
+    let leaf_index = first_developer
+        .find("--- AGENTS.md: projects/active/AGENTS.md ---")
+        .expect("leaf label");
+    assert!(root_index < middle_index && middle_index < leaf_index);
+    assert!(first_developer.contains(ROOT_INSTRUCTION));
+    assert!(first_developer.contains(MIDDLE_INSTRUCTION));
+    assert!(first_developer.contains(FIRST_LEAF_INSTRUCTION));
+    let first_public = serde_json::to_string(&first_public).expect("public JSON");
+    assert!(!first_public.contains(ROOT_INSTRUCTION));
+    assert!(!first_public.contains(MIDDLE_INSTRUCTION));
+    assert!(!first_public.contains(FIRST_LEAF_INSTRUCTION));
+    first.finish();
 
+    fs::write(&leaf, SECOND_LEAF_INSTRUCTION).expect("second leaf instructions");
+    let mut second = RunningServer::spawn_with_workspace_scope(
+        home.path(),
+        workspace.path(),
+        "projects/active",
+        vec![completed],
+    );
+    second.initialize();
+    let resumed = second.send(
+        json!({
+            "jsonrpc":"2.0",
+            "id":"resume",
+            "method":"thread/resume",
+            "params":{"threadId":"thr_0000000000000001"}
+        }),
+        1,
+    );
+    let second_public = second.send(
+        json!({
+            "jsonrpc":"2.0",
+            "id":"turn-two",
+            "method":"turn/start",
+            "params":{"threadId":"thr_0000000000000001","input":"apply current rules"}
+        }),
+        8,
+    );
+    let second_request = &second.provider_requests()[0];
+    let second_developer = second_request["messages"][0]["content"]
+        .as_str()
+        .expect("developer message");
+    assert!(second_developer.contains(SECOND_LEAF_INSTRUCTION));
+    assert!(!second_developer.contains(FIRST_LEAF_INSTRUCTION));
+    let public = serde_json::to_string(&(resumed, second_public)).expect("public JSON");
+    assert!(!public.contains(ROOT_INSTRUCTION));
+    assert!(!public.contains(MIDDLE_INSTRUCTION));
+    assert!(!public.contains(FIRST_LEAF_INSTRUCTION));
+    assert!(!public.contains(SECOND_LEAF_INSTRUCTION));
+    assert!(!public.contains("workspaceInstructions"));
+    second.finish();
+
+    let rollout = fs::read_to_string(workspace.path().join("projects/active/AGENTS.md"))
+        .expect("live leaf remains readable");
+    assert_eq!(rollout, SECOND_LEAF_INSTRUCTION);
     let rollout = fs::read_to_string(home.path().join("rollouts/v1/thr_0000000000000001.jsonl"))
         .expect("rollout");
-    assert!(rollout.contains("\"source\":\"rootAgentsMdV1\""));
-    assert!(rollout.contains(NESTED_INSTRUCTION));
+    assert!(rollout.contains("\"source\":\"rootToActiveScopeAgentsMdV1\""));
     assert!(!rollout.contains(ROOT_INSTRUCTION));
+    assert!(!rollout.contains(MIDDLE_INSTRUCTION));
+    assert!(!rollout.contains(FIRST_LEAF_INSTRUCTION));
+    assert!(!rollout.contains(SECOND_LEAF_INSTRUCTION));
+    assert!(!rollout.contains("projects/active"));
 }

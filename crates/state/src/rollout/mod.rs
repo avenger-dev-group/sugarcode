@@ -80,6 +80,7 @@ pub struct DurableWorkspaceInstructionsAudit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurableWorkspaceInstructionsSource {
     RootAgentsMdV1,
+    RootToActiveScopeAgentsMdV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -440,13 +441,24 @@ pub(crate) fn valid_workspace_instructions_audit(
     let Some(audit) = audit else {
         return true;
     };
-    match audit.status {
-        DurableWorkspaceInstructionsStatus::Absent => {
-            audit.bytes.is_none() && audit.sha256.is_none()
-        }
-        DurableWorkspaceInstructionsStatus::Present => {
-            audit.bytes.is_some_and(|bytes| bytes <= 32 * 1024)
-                && audit.sha256.as_deref().is_some_and(valid_sha256)
+    match audit.source {
+        DurableWorkspaceInstructionsSource::RootAgentsMdV1 => match audit.status {
+            DurableWorkspaceInstructionsStatus::Absent => {
+                audit.bytes.is_none() && audit.sha256.is_none()
+            }
+            DurableWorkspaceInstructionsStatus::Present => {
+                audit.bytes.is_some_and(|bytes| bytes <= 32 * 1024)
+                    && audit.sha256.as_deref().is_some_and(valid_sha256)
+            }
+        },
+        DurableWorkspaceInstructionsSource::RootToActiveScopeAgentsMdV1 => {
+            let status_is_valid = match audit.status {
+                DurableWorkspaceInstructionsStatus::Absent => audit.bytes.is_none(),
+                DurableWorkspaceInstructionsStatus::Present => {
+                    audit.bytes.is_some_and(|bytes| bytes <= 32 * 1024)
+                }
+            };
+            status_is_valid && audit.sha256.as_deref().is_some_and(valid_sha256)
         }
     }
 }

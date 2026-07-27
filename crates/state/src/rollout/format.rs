@@ -415,6 +415,9 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
                 StoredWorkspaceInstructionsAuditRef {
                     source: match audit.source {
                         DurableWorkspaceInstructionsSource::RootAgentsMdV1 => "rootAgentsMdV1",
+                        DurableWorkspaceInstructionsSource::RootToActiveScopeAgentsMdV1 => {
+                            "rootToActiveScopeAgentsMdV1"
+                        }
                     },
                     status: match audit.status {
                         DurableWorkspaceInstructionsStatus::Absent => "absent",
@@ -602,6 +605,7 @@ struct StoredWorkspaceInstructionsAudit {
 #[serde(rename_all = "camelCase")]
 enum StoredWorkspaceInstructionsSource {
     RootAgentsMdV1,
+    RootToActiveScopeAgentsMdV1,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1271,6 +1275,9 @@ fn decode_workspace_instructions(
         source: match audit.source {
             StoredWorkspaceInstructionsSource::RootAgentsMdV1 => {
                 DurableWorkspaceInstructionsSource::RootAgentsMdV1
+            }
+            StoredWorkspaceInstructionsSource::RootToActiveScopeAgentsMdV1 => {
+                DurableWorkspaceInstructionsSource::RootToActiveScopeAgentsMdV1
             }
         },
         status: match audit.status {

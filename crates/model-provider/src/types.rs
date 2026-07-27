@@ -7,6 +7,9 @@ pub type ModelStream = BoxStream<'static, Result<ModelEvent, ModelError>>;
 pub type BoxModelFuture<'a> = BoxFuture<'a, Result<ModelStream, ModelError>>;
 pub const WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX: &str = "Workspace instructions from the opened workspace root AGENTS.md \
      (boundedWorkspaceInstructionsV1):\n\n";
+pub const WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX: &str = "Workspace instructions discovered from the opened workspace root to the active workspace \
+     scope (boundedNestedWorkspaceInstructionsV1). All entries apply. If entries conflict, the \
+     later, deeper entry overrides the earlier, shallower entry.\n\n";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ModelRequest {
@@ -34,6 +37,16 @@ pub struct ModelInstruction {
     pub content: String,
 }
 
+impl ModelInstruction {
+    pub fn rendered_content(&self) -> String {
+        format!("{}{}", self.source.prefix(), self.content)
+    }
+
+    pub fn context_bytes(&self) -> usize {
+        self.source.prefix().len() + self.content.len()
+    }
+}
+
 impl fmt::Debug for ModelInstruction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -47,6 +60,16 @@ impl fmt::Debug for ModelInstruction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelInstructionSource {
     WorkspaceRootAgentsV1,
+    WorkspaceAgentsHierarchyV1,
+}
+
+impl ModelInstructionSource {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::WorkspaceRootAgentsV1 => WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX,
+            Self::WorkspaceAgentsHierarchyV1 => WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]

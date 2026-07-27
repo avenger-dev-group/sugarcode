@@ -17,4 +17,5 @@ pub use types::ModelStream;
 pub use types::ModelToolCall;
 pub use types::ModelToolDefinition;
 pub use types::ModelUsage;
+pub use types::WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX;
 pub use types::WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX;

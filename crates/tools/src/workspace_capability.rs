@@ -29,7 +29,7 @@ pub enum WorkspaceReadErrorKind {
 
 pub struct WorkspaceTool {
     pub(crate) root: Dir,
-    root_reopen: WorkspaceRootReopen,
+    pub(crate) root_reopen: WorkspaceRootReopen,
 }
 
 pub(crate) enum WorkspaceRootReopen {
@@ -125,7 +125,10 @@ impl WorkspaceRootReopen {
     }
 }
 
-fn open_directory_component(parent: &Dir, component: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
+pub(crate) fn open_directory_component(
+    parent: &Dir,
+    component: &Path,
+) -> Result<Dir, WorkspaceReadErrorKind> {
     let directory = parent.open_dir_nofollow(component).map_err(|error| {
         match parent.symlink_metadata(component) {
             Ok(metadata) if metadata.file_type().is_symlink() => {

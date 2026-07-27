@@ -3,14 +3,12 @@ use crate::ModelError;
 use crate::ModelErrorKind;
 use crate::ModelEvent;
 use crate::ModelInstruction;
-use crate::ModelInstructionSource;
 use crate::ModelMessage;
 use crate::ModelProvider;
 use crate::ModelRequest;
 use crate::ModelRole;
 use crate::ModelToolCall;
 use crate::ModelUsage;
-use crate::WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX;
 use eventsource_stream::EventStreamError;
 use eventsource_stream::Eventsource;
 use futures_util::FutureExt;
@@ -434,14 +432,9 @@ impl From<ModelRequest> for ChatRequest {
 
 impl From<ModelInstruction> for ChatMessage {
     fn from(instruction: ModelInstruction) -> Self {
-        let source = match instruction.source {
-            ModelInstructionSource::WorkspaceRootAgentsV1 => {
-                WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX
-            }
-        };
         Self {
             role: "developer",
-            content: Some(format!("{source}{}", instruction.content)),
+            content: Some(instruction.rendered_content()),
             tool_calls: Vec::new(),
             tool_call_id: None,
         }

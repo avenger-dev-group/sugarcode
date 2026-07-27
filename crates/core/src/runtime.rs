@@ -28,7 +28,6 @@ use sugarcode_model_provider::ModelRole;
 use sugarcode_model_provider::ModelToolCall;
 use sugarcode_model_provider::ModelToolDefinition;
 use sugarcode_model_provider::ModelUsage;
-use sugarcode_model_provider::WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreFileChangeKind;
@@ -1324,29 +1323,71 @@ fn workspace_instructions_audit(
                 sha256: Some(sha256.clone()),
             }
         }
+        WorkspaceInstructionsSnapshot::Hierarchy {
+            present,
+            bytes,
+            sha256,
+            ..
+        } => DurableWorkspaceInstructionsAudit {
+            source: DurableWorkspaceInstructionsSource::RootToActiveScopeAgentsMdV1,
+            status: if *present {
+                DurableWorkspaceInstructionsStatus::Present
+            } else {
+                DurableWorkspaceInstructionsStatus::Absent
+            },
+            bytes: present.then_some(*bytes as u64),
+            sha256: Some(sha256.clone()),
+        },
     }
 }
 
 fn workspace_instruction_context_bytes(snapshot: &WorkspaceInstructionsSnapshot) -> usize {
-    match snapshot {
-        WorkspaceInstructionsSnapshot::Absent => 0,
-        WorkspaceInstructionsSnapshot::Present { content, .. } if content.is_empty() => 0,
-        WorkspaceInstructionsSnapshot::Present { content, .. } => {
-            WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX.len() + content.len()
-        }
-    }
+    model_instructions_for_snapshot(snapshot)
+        .iter()
+        .map(ModelInstruction::context_bytes)
+        .sum()
 }
 
 fn workspace_model_instructions(runtime: &CoreRuntime) -> Vec<ModelInstruction> {
-    match runtime.workspace_instructions.as_deref() {
-        Some(WorkspaceInstructionsSnapshot::Present { content, .. }) if !content.is_empty() => {
+    runtime
+        .workspace_instructions
+        .as_deref()
+        .map_or_else(Vec::new, model_instructions_for_snapshot)
+}
+
+fn model_instructions_for_snapshot(
+    snapshot: &WorkspaceInstructionsSnapshot,
+) -> Vec<ModelInstruction> {
+    match snapshot {
+        WorkspaceInstructionsSnapshot::Present { content, .. } if !content.is_empty() => {
             vec![ModelInstruction {
                 source: ModelInstructionSource::WorkspaceRootAgentsV1,
                 content: content.clone(),
             }]
         }
-        None | Some(WorkspaceInstructionsSnapshot::Absent) => Vec::new(),
-        Some(WorkspaceInstructionsSnapshot::Present { .. }) => Vec::new(),
+        WorkspaceInstructionsSnapshot::Hierarchy { entries, .. } => {
+            let mut content = String::new();
+            for entry in entries.iter().filter(|entry| !entry.content.is_empty()) {
+                if !content.is_empty() {
+                    content.push_str("\n\n");
+                }
+                content.push_str("--- AGENTS.md: ");
+                content.push_str(&entry.path);
+                content.push_str(" ---\n");
+                content.push_str(&entry.content);
+            }
+            if content.is_empty() {
+                Vec::new()
+            } else {
+                vec![ModelInstruction {
+                    source: ModelInstructionSource::WorkspaceAgentsHierarchyV1,
+                    content,
+                }]
+            }
+        }
+        WorkspaceInstructionsSnapshot::Absent | WorkspaceInstructionsSnapshot::Present { .. } => {
+            Vec::new()
+        }
     }
 }
 

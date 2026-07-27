@@ -117,3 +117,90 @@ fn workspace_instruction_bytes_share_the_provider_history_budget() {
         Err(CoreError::ContextTooLarge)
     );
 }
+
+#[tokio::test]
+async fn nested_workspace_hierarchy_is_one_ordered_instruction_and_one_aggregate_audit() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([vec![
+            Ok(ModelEvent::TextDelta("done".to_string())),
+            Ok(ModelEvent::Completed),
+        ]])),
+        requests: Arc::clone(&requests),
+    };
+    let mut core = Core::new();
+    let started = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread");
+    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+        panic!("thread event");
+    };
+    let (runtime, mut events) =
+        CoreRuntime::new(core, Arc::new(provider), "fixture-model".to_string());
+    let mut runtime =
+        runtime.with_workspace_instructions(Some(WorkspaceInstructionsSnapshot::Hierarchy {
+            entries: vec![
+                sugarcode_tools::WorkspaceInstructionEntry {
+                    path: "AGENTS.md".to_string(),
+                    content: "root rule".to_string(),
+                },
+                sugarcode_tools::WorkspaceInstructionEntry {
+                    path: "projects/AGENTS.md".to_string(),
+                    content: String::new(),
+                },
+                sugarcode_tools::WorkspaceInstructionEntry {
+                    path: "projects/active/AGENTS.md".to_string(),
+                    content: "deeper rule".to_string(),
+                },
+            ],
+            present: true,
+            bytes: "root ruledeeper rule".len(),
+            sha256: "b".repeat(64),
+        }));
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("apply instructions".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("asynchronous turn");
+    };
+    while !matches!(
+        events.recv().await.expect("terminal event").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    let requests = requests.lock().expect("requests");
+    assert_eq!(
+        requests[0].instructions,
+        vec![ModelInstruction {
+            source: ModelInstructionSource::WorkspaceAgentsHierarchyV1,
+            content: concat!(
+                "--- AGENTS.md: AGENTS.md ---\n",
+                "root rule\n\n",
+                "--- AGENTS.md: projects/active/AGENTS.md ---\n",
+                "deeper rule"
+            )
+            .to_string(),
+        }]
+    );
+    drop(requests);
+
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    let turn = snapshot
+        .turns
+        .iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert_eq!(
+        turn.workspace_instructions,
+        Some(DurableWorkspaceInstructionsAudit {
+            source: DurableWorkspaceInstructionsSource::RootToActiveScopeAgentsMdV1,
+            status: DurableWorkspaceInstructionsStatus::Present,
+            bytes: Some("root ruledeeper rule".len() as u64),
+            sha256: Some("b".repeat(64)),
+        })
+    );
+}

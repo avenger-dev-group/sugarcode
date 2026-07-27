@@ -128,6 +128,51 @@ fn workspace_instruction_audit_survives_recovery_without_persisting_content() {
 }
 
 #[test]
+fn nested_workspace_manifest_audit_survives_recovery_without_scope_or_content() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let audit = DurableWorkspaceInstructionsAudit {
+        source: DurableWorkspaceInstructionsSource::RootToActiveScopeAgentsMdV1,
+        status: DurableWorkspaceInstructionsStatus::Present,
+        bytes: Some(31),
+        sha256: Some("b".repeat(64)),
+    };
+    let mut started = started_text_turn();
+    started.workspace_instructions = Some(audit.clone());
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(&thread_id, &started)
+            .expect("durable turn start");
+    }
+
+    let repository = RolloutRepository::open(&home).expect("recover");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.turns[0].status, DurableTurnStatus::Interrupted);
+    assert_eq!(
+        snapshot.turns[0].workspace_instructions.as_ref(),
+        Some(&audit)
+    );
+    drop(repository);
+
+    let rollout = fs::read_to_string(
+        directory
+            .path()
+            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+    )
+    .expect("rollout");
+    assert!(rollout.contains("\"rootToActiveScopeAgentsMdV1\""));
+    assert!(rollout.contains(&"b".repeat(64)));
+    assert!(!rollout.contains("projects/active"));
+    assert!(!rollout.contains("private nested instruction"));
+}
+
+#[test]
 fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);

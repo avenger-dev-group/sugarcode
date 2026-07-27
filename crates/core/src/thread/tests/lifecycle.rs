@@ -233,7 +233,7 @@ fn fork_preserves_workspace_instruction_audit_without_any_instruction_content() 
     let mut core = Core::new();
     let source = start_thread(&mut core, 1);
     let audit = DurableWorkspaceInstructionsAudit {
-        source: sugarcode_state::DurableWorkspaceInstructionsSource::RootAgentsMdV1,
+        source: sugarcode_state::DurableWorkspaceInstructionsSource::RootToActiveScopeAgentsMdV1,
         status: sugarcode_state::DurableWorkspaceInstructionsStatus::Present,
         bytes: Some(19),
         sha256: Some("b".repeat(64)),
