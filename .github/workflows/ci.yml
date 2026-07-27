@@ -54,6 +54,14 @@ jobs:
       - name: Check TypeScript workspace
         run: pnpm check
 
+      - name: Test Desktop command approval in Electron (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm --filter @sugarcode/desktop test:electron
+
+      - name: Test Desktop command approval in Electron
+        if: runner.os != 'Linux'
+        run: pnpm --filter @sugarcode/desktop test:electron
+
       - name: Test native filesystem read-only sandbox
         run: cargo test -p sugarcode-sandbox --test filesystem_read_only --locked -- --nocapture
 

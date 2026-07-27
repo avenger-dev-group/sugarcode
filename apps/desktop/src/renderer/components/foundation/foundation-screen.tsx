@@ -1,6 +1,7 @@
 import { Moon, Sun } from 'lucide-react';
 
 import { ConnectionStatus } from '@/renderer/components/connection/connection-status';
+import { CommandApprovalSurface } from '@/renderer/components/command-approval/command-approval-surface';
 import { Button } from '@/renderer/components/ui/button';
 
 import { useStore } from './use-store';
@@ -49,6 +50,7 @@ export const FoundationScreen = () => {
           </Button>
         </section>
       </main>
+      <CommandApprovalSurface />
     </div>
   );
 };
