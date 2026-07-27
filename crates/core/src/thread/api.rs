@@ -284,6 +284,15 @@ impl CoreApi for Core {
                         approval_id: approval_id.clone(),
                         decision: decision.clone(),
                     },
+                    DurableItemSnapshot::CommandExecutionAttempt {
+                        approval_id,
+                        call_id,
+                        ..
+                    } => DurableItemSnapshot::CommandExecutionAttempt {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        approval_id: approval_id.clone(),
+                        call_id: call_id.clone(),
+                    },
                     DurableItemSnapshot::ToolResult {
                         call_id,
                         name,

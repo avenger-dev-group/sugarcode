@@ -289,6 +289,30 @@
         {
           "type": "object",
           "properties": {
+            "approvalId": {
+              "type": "string"
+            },
+            "callId": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "commandExecutionAttempt"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "approvalId",
+            "callId"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "callId": {
               "type": "string"
             },

@@ -319,6 +319,130 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
     ));
 }
 
+#[test]
+fn execution_attempt_without_result_recovers_as_interrupted_and_is_not_replayed() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let user = DurableItemSnapshot::UserMessage {
+        id: ItemId::new("item_0000000000000001"),
+        text: "Run it".to_string(),
+    };
+    let incremental = [
+        DurableItemSnapshot::ToolCall {
+            id: ItemId::new("item_0000000000000002"),
+            call_id: "call_shell".to_string(),
+            name: "shell/exec".to_string(),
+            path: ".".to_string(),
+            query: None,
+            patch: None,
+            command: Some("/bin/echo".to_string()),
+            arguments: Some(vec!["ok".to_string()]),
+        },
+        DurableItemSnapshot::CommandApprovalRequest {
+            id: ItemId::new("item_0000000000000003"),
+            approval_id: "approval/one".to_string(),
+            call_id: "call_shell".to_string(),
+            command: "/bin/echo".to_string(),
+            arguments: vec!["ok".to_string()],
+            cwd: ".".to_string(),
+            environment_policy: "minimalV1".to_string(),
+            sandboxed: true,
+            sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
+            network_policy: Some("networkDeniedV1".to_string()),
+        },
+        DurableItemSnapshot::CommandApprovalDecision {
+            id: ItemId::new("item_0000000000000004"),
+            approval_id: "approval/one".to_string(),
+            decision: "approved".to_string(),
+        },
+        DurableItemSnapshot::CommandExecutionAttempt {
+            id: ItemId::new("item_0000000000000005"),
+            approval_id: "approval/one".to_string(),
+            call_id: "call_shell".to_string(),
+        },
+    ];
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(
+                &thread_id,
+                &DurableTurnSnapshot {
+                    id: turn_id.clone(),
+                    status: DurableTurnStatus::InProgress,
+                    items: vec![user],
+                    error: None,
+                    usage: None,
+                },
+            )
+            .expect("turn start");
+        for item in &incremental {
+            repository
+                .append_turn_item(&thread_id, &turn_id, item)
+                .expect("append audit item");
+        }
+    }
+
+    let repository = RolloutRepository::open(&home).expect("recover");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.turns[0].status, DurableTurnStatus::Interrupted);
+    assert_eq!(snapshot.turns[0].items.last(), incremental.last());
+    assert!(
+        !snapshot.turns[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, DurableItemSnapshot::ToolResult { .. }))
+    );
+    assert_eq!(repository.id_sequences().item, 5);
+}
+
+#[test]
+fn execution_attempt_requires_matching_approved_shell_audit() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    repository
+        .begin_turn(
+            &thread_id,
+            &DurableTurnSnapshot {
+                id: turn_id.clone(),
+                status: DurableTurnStatus::InProgress,
+                items: vec![DurableItemSnapshot::UserMessage {
+                    id: ItemId::new("item_0000000000000001"),
+                    text: "Run it".to_string(),
+                }],
+                error: None,
+                usage: None,
+            },
+        )
+        .expect("turn start");
+    let error = repository
+        .append_turn_item(
+            &thread_id,
+            &turn_id,
+            &DurableItemSnapshot::CommandExecutionAttempt {
+                id: ItemId::new("item_0000000000000002"),
+                approval_id: "approval/missing".to_string(),
+                call_id: "call_missing".to_string(),
+            },
+        )
+        .expect_err("orphan attempt");
+    assert!(matches!(
+        error,
+        RolloutError::InvalidRecord {
+            kind: "invalidCommandExecutionAttempt"
+        }
+    ));
+}
+
 fn remove_command_policy_fields(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {

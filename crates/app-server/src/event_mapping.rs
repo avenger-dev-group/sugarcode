@@ -327,6 +327,15 @@ fn map_snapshot_parts(
                             approval_id,
                             decision,
                         },
+                        DurableItemSnapshot::CommandExecutionAttempt {
+                            id,
+                            approval_id,
+                            call_id,
+                        } => PublicItem::CommandExecutionAttempt {
+                            id: id.into_string(),
+                            approval_id,
+                            call_id,
+                        },
                         DurableItemSnapshot::ToolResult {
                             id,
                             call_id,
@@ -539,6 +548,14 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             id: item.id.into_string(),
             approval_id,
             decision: decision.to_string(),
+        },
+        CoreItemKind::CommandExecutionAttempt {
+            approval_id,
+            call_id,
+        } => PublicItem::CommandExecutionAttempt {
+            id: item.id.into_string(),
+            approval_id,
+            call_id,
         },
         CoreItemKind::ToolResult {
             call_id,

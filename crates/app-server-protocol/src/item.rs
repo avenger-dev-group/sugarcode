@@ -95,6 +95,15 @@ pub enum Item {
         approval_id: String,
         decision: String,
     },
+    CommandExecutionAttempt {
+        id: String,
+        #[serde(rename = "approvalId")]
+        #[ts(rename = "approvalId")]
+        approval_id: String,
+        #[serde(rename = "callId")]
+        #[ts(rename = "callId")]
+        call_id: String,
+    },
     ToolResult {
         id: String,
         #[serde(rename = "callId")]

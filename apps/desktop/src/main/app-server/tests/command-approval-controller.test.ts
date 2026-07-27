@@ -146,6 +146,21 @@ describe('CommandApprovalController', () => {
       completion('approval/other', 'approved'),
     );
     expect(controller.getSnapshot().status).toBe('pending');
+    controller.handleNotification({
+      kind: 'notification',
+      method: 'item/completed',
+      params: {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: {
+          type: 'commandExecutionAttempt',
+          id: 'item_attempt_1',
+          approvalId: 'approval/one',
+          callId: 'call_1',
+        },
+      },
+    });
+    expect(controller.getSnapshot().status).toBe('pending');
     controller.handleNotification(
       completion('approval/one', 'approved'),
     );

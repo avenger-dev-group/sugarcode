@@ -288,6 +288,7 @@ impl ThreadRepository for MemoryThreadRepository {
                         | DurableItemSnapshot::FileChange { .. }
                         | DurableItemSnapshot::CommandApprovalRequest { .. }
                         | DurableItemSnapshot::CommandApprovalDecision { .. }
+                        | DurableItemSnapshot::CommandExecutionAttempt { .. }
                         | DurableItemSnapshot::ToolResult { .. } => false,
                     })
             })

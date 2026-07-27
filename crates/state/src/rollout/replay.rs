@@ -232,9 +232,6 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     item,
                     sequence: _,
                 } => {
-                    if !super::valid_file_change_item(&item) {
-                        return Err(corrupt(&path, offset as u64, "invalidFileChangeItem"));
-                    }
                     let thread = snapshot
                         .as_mut()
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
@@ -243,6 +240,14 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     }
                     if pending_turn_id.as_ref() != Some(&turn_id) {
                         return Err(corrupt(&path, offset as u64, "turnItemAddedWhileInactive"));
+                    }
+                    let pending_items = &thread
+                        .turns
+                        .last()
+                        .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))?
+                        .items;
+                    if let Err(kind) = super::valid_incremental_item(pending_items, &item) {
+                        return Err(corrupt(&path, offset as u64, kind));
                     }
                     if matches!(item, super::DurableItemSnapshot::UserMessage { .. })
                         || matches!(
@@ -557,6 +562,10 @@ fn terminal_items_match(
                     super::DurableItemSnapshot::CommandApprovalDecision { .. },
                 )
                 | (
+                    super::DurableItemSnapshot::CommandExecutionAttempt { .. },
+                    super::DurableItemSnapshot::CommandExecutionAttempt { .. },
+                )
+                | (
                     super::DurableItemSnapshot::FileChange { .. },
                     super::DurableItemSnapshot::FileChange { .. },
                 ) => started == terminal,
@@ -581,7 +590,7 @@ fn validate_terminal_turn(
     path: &Path,
     offset: u64,
 ) -> Result<(), RolloutError> {
-    let valid = turn.items.iter().all(super::valid_file_change_item)
+    let valid = super::valid_turn_items(&turn.items)
         && match turn.status {
             super::DurableTurnStatus::InProgress => false,
             super::DurableTurnStatus::Completed => !turn.items.is_empty() && turn.error.is_none(),

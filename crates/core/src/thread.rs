@@ -227,6 +227,10 @@ enum ItemKind {
         approval_id: String,
         decision: sugarcode_protocol::CoreCommandApprovalDecision,
     },
+    CommandExecutionAttempt {
+        approval_id: String,
+        call_id: String,
+    },
     ToolResult {
         call_id: String,
         name: String,
@@ -261,6 +265,7 @@ impl Item {
             | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
+            | ItemKind::CommandExecutionAttempt { .. }
             | ItemKind::ToolResult { .. } => Err(CoreError::Internal(
                 "cannot append an agent delta to a tool item".to_string(),
             )),
@@ -346,6 +351,13 @@ impl Item {
             } => CoreItemKind::CommandApprovalDecision {
                 approval_id: approval_id.clone(),
                 decision: *decision,
+            },
+            ItemKind::CommandExecutionAttempt {
+                approval_id,
+                call_id,
+            } => CoreItemKind::CommandExecutionAttempt {
+                approval_id: approval_id.clone(),
+                call_id: call_id.clone(),
             },
             ItemKind::ToolResult {
                 call_id,
@@ -647,6 +659,18 @@ impl Core {
                             },
                         },
                     },
+                    DurableItemSnapshot::CommandExecutionAttempt {
+                        id,
+                        approval_id,
+                        call_id,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::CommandExecutionAttempt {
+                            approval_id: approval_id.clone(),
+                            call_id: call_id.clone(),
+                        },
+                    },
                     DurableItemSnapshot::ToolResult {
                         id,
                         call_id,
@@ -753,6 +777,7 @@ impl Core {
                     }),
                     ItemKind::CommandApprovalRequest { .. }
                     | ItemKind::CommandApprovalDecision { .. }
+                    | ItemKind::CommandExecutionAttempt { .. }
                     | ItemKind::FileChange { .. } => None,
                     ItemKind::ToolResult {
                         call_id,
@@ -936,6 +961,7 @@ impl Core {
                 | CoreItemKind::FileChange { .. }
                 | CoreItemKind::CommandApprovalRequest { .. }
                 | CoreItemKind::CommandApprovalDecision { .. }
+                | CoreItemKind::CommandExecutionAttempt { .. }
                 | CoreItemKind::ToolResult { .. }
         ) {
             return Err(CoreError::Internal(
@@ -1006,6 +1032,7 @@ impl Core {
             | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
+            | ItemKind::CommandExecutionAttempt { .. }
             | ItemKind::ToolResult { .. } => {
                 return Err(CoreError::Internal(
                     "active item is not an agent message".to_string(),

@@ -212,6 +212,53 @@ fn denied_shell_approval_matches_bidirectional_golden_trace() {
 
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn approved_shell_approval_matches_execution_attempt_golden_trace() {
+    let command = env!("CARGO_BIN_EXE_sugarcode");
+    let arguments = serde_json::to_string(&json!({
+        "command": command,
+        "arguments": ["version"],
+        "cwd": "."
+    }))
+    .expect("shell arguments");
+    let tool_call = format!(
+        "data: {}\n\ndata: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n",
+        json!({
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_shell_fixture",
+                        "type": "function",
+                        "function": {
+                            "name": "shell/exec",
+                            "arguments": arguments
+                        }
+                    }]
+                },
+                "finish_reason": Value::Null
+            }]
+        })
+    );
+    let final_answer = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Version checked.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    )
+    .to_string();
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("create isolated workspace");
+    let _provider =
+        MockProvider::start_with_owned_bodies(sugarcode_home.path(), vec![tool_call, final_answer]);
+    run_golden(
+        "turn-shell-approval-approved",
+        &sugarcode_home,
+        Some(workspace.path()),
+    );
+}
+
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn real_cli_approval_executes_the_exact_bundled_argv() {
     let command = env!("CARGO_BIN_EXE_sugarcode");
     let arguments = serde_json::to_string(&json!({
@@ -1177,6 +1224,9 @@ fn scrub_command_paths(value: &mut Value) {
                     "command".to_string(),
                     Value::String("<command>".to_string()),
                 );
+            }
+            if object.get("type").and_then(Value::as_str) == Some("process") {
+                object.insert("durationMs".to_string(), json!(0));
             }
             for value in object.values_mut() {
                 scrub_command_paths(value);

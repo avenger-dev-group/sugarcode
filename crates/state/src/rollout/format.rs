@@ -158,6 +158,11 @@ pub(super) enum StoredItemRef<'a> {
         approval_id: &'a str,
         decision: &'a str,
     },
+    CommandExecutionAttempt {
+        id: &'a str,
+        approval_id: &'a str,
+        call_id: &'a str,
+    },
     ToolResult {
         id: &'a str,
         call_id: &'a str,
@@ -287,6 +292,15 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 id: id.as_str(),
                 approval_id,
                 decision,
+            },
+            DurableItemSnapshot::CommandExecutionAttempt {
+                id,
+                approval_id,
+                call_id,
+            } => Self::CommandExecutionAttempt {
+                id: id.as_str(),
+                approval_id,
+                call_id,
             },
             DurableItemSnapshot::ToolResult {
                 id,
@@ -591,6 +605,11 @@ enum StoredItem {
         id: String,
         approval_id: String,
         decision: String,
+    },
+    CommandExecutionAttempt {
+        id: String,
+        approval_id: String,
+        call_id: String,
     },
     ToolResult {
         id: String,
@@ -1069,6 +1088,15 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             id: ItemId::new(id),
             approval_id,
             decision,
+        },
+        StoredItem::CommandExecutionAttempt {
+            id,
+            approval_id,
+            call_id,
+        } => DurableItemSnapshot::CommandExecutionAttempt {
+            id: ItemId::new(id),
+            approval_id,
+            call_id,
         },
         StoredItem::ToolResult {
             id,

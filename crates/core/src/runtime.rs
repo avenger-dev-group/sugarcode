@@ -838,6 +838,19 @@ async fn run_turn(
                                 (result, content)
                             }
                             Some(CommandApprovalOutcome::Approved) => {
+                                if append_completed_tool_item(
+                                    &runtime,
+                                    &prepared,
+                                    CoreItemKind::CommandExecutionAttempt {
+                                        approval_id: approval_id.clone(),
+                                        call_id: call.id.clone(),
+                                    },
+                                )
+                                .await
+                                .is_none()
+                                {
+                                    break 'rounds Terminal::StateUnavailable;
+                                }
                                 let execution = runtime
                                     .shell_executor
                                     .as_ref()

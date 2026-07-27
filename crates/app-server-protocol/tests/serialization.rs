@@ -605,6 +605,20 @@ fn shell_approval_and_process_results_are_provider_neutral() {
         })
     );
     assert_eq!(
+        serde_json::to_value(Item::CommandExecutionAttempt {
+            id: "item_0000000000000005".to_string(),
+            approval_id: "approval/one".to_string(),
+            call_id: "call_shell".to_string(),
+        })
+        .expect("execution attempt serializes"),
+        json!({
+            "type": "commandExecutionAttempt",
+            "id": "item_0000000000000005",
+            "approvalId": "approval/one",
+            "callId": "call_shell"
+        })
+    );
+    assert_eq!(
         serde_json::to_value(ToolResult::Process {
             stdout: "ok\n".to_string(),
             stderr: String::new(),

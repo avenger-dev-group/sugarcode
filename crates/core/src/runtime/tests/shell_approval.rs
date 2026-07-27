@@ -1,4 +1,5 @@
 use super::*;
+use sugarcode_state::ThreadRepository;
 
 #[derive(Debug)]
 struct FixedApproval(CommandApprovalOutcome);
@@ -52,6 +53,131 @@ impl ShellCommandExecutor for RecordedShell {
                     sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
             })
         })
+    }
+}
+
+#[derive(Debug)]
+struct CountingShell(Arc<AtomicUsize>);
+
+impl ShellCommandExecutor for CountingShell {
+    fn sandbox_policy(&self) -> sugarcode_tools::CommandSandboxPolicy {
+        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1
+    }
+
+    fn execute(
+        &self,
+        _arguments: ShellCommandArguments,
+        _cancellation: CancellationToken,
+    ) -> sugarcode_tools::ShellCommandFuture {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        Box::pin(async { ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable) })
+    }
+}
+
+#[derive(Debug)]
+struct FailOnAttemptRepository {
+    inner: sugarcode_state::RolloutRepository,
+    attempt_failure: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+impl sugarcode_state::ThreadRepository for FailOnAttemptRepository {
+    fn id_sequences(&self) -> sugarcode_state::IdSequences {
+        self.inner.id_sequences()
+    }
+
+    fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), sugarcode_state::RolloutError> {
+        self.inner.create_thread(thread_id)
+    }
+
+    fn create_thread_snapshot(
+        &mut self,
+        snapshot: &sugarcode_state::DurableThreadSnapshot,
+    ) -> Result<(), sugarcode_state::RolloutError> {
+        self.inner.create_thread_snapshot(snapshot)
+    }
+
+    fn append_completed_turn(
+        &mut self,
+        thread_id: &ThreadId,
+        turn: &sugarcode_state::DurableTurnSnapshot,
+    ) -> Result<(), sugarcode_state::RolloutError> {
+        self.inner.append_completed_turn(thread_id, turn)
+    }
+
+    fn begin_turn(
+        &mut self,
+        thread_id: &ThreadId,
+        turn: &sugarcode_state::DurableTurnSnapshot,
+    ) -> Result<(), sugarcode_state::RolloutError> {
+        self.inner.begin_turn(thread_id, turn)
+    }
+
+    fn finish_turn(
+        &mut self,
+        thread_id: &ThreadId,
+        turn: &sugarcode_state::DurableTurnSnapshot,
+    ) -> Result<(), sugarcode_state::RolloutError> {
+        self.inner.finish_turn(thread_id, turn)
+    }
+
+    fn append_turn_item(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &TurnId,
+        item: &sugarcode_state::DurableItemSnapshot,
+    ) -> Result<(), sugarcode_state::RolloutError> {
+        if matches!(
+            item,
+            sugarcode_state::DurableItemSnapshot::CommandExecutionAttempt { .. }
+        ) {
+            if let Some(sender) = self.attempt_failure.lock().expect("attempt failure").take() {
+                let _ = sender.send(());
+            }
+            return Err(sugarcode_state::RolloutError::Poisoned);
+        }
+        self.inner.append_turn_item(thread_id, turn_id, item)
+    }
+
+    fn archive_thread(
+        &mut self,
+        thread_id: &ThreadId,
+    ) -> Result<(), sugarcode_state::RolloutError> {
+        self.inner.archive_thread(thread_id)
+    }
+
+    fn unarchive_thread(
+        &mut self,
+        thread_id: &ThreadId,
+    ) -> Result<(), sugarcode_state::RolloutError> {
+        self.inner.unarchive_thread(thread_id)
+    }
+
+    fn delete_thread(&mut self, thread_id: &ThreadId) -> Result<(), sugarcode_state::RolloutError> {
+        self.inner.delete_thread(thread_id)
+    }
+
+    fn load_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<sugarcode_state::DurableThreadSnapshot>, sugarcode_state::RolloutError> {
+        self.inner.load_thread(thread_id)
+    }
+
+    fn list_threads(
+        &mut self,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<sugarcode_state::DurableThreadPage, sugarcode_state::RolloutError> {
+        self.inner.list_threads(cursor, limit)
+    }
+
+    fn search_threads(
+        &mut self,
+        query: &str,
+        cursor: Option<&ThreadId>,
+        limit: usize,
+    ) -> Result<sugarcode_state::DurableThreadPage, sugarcode_state::RolloutError> {
+        self.inner.search_threads(query, cursor, limit)
     }
 }
 
@@ -138,6 +264,12 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             },
             sugarcode_state::DurableItemSnapshot::CommandApprovalDecision {
                 decision,
+                approval_id,
+                ..
+            },
+            sugarcode_state::DurableItemSnapshot::CommandExecutionAttempt {
+                approval_id: attempt_approval_id,
+                call_id,
                 ..
             },
             sugarcode_state::DurableItemSnapshot::ToolResult {
@@ -152,6 +284,8 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             && process.sandbox_policy.as_deref() == Some("filesystemReadOnlyV1")
             && process.network_policy.as_deref() == Some("networkDeniedV1")
             && decision == "approved"
+            && attempt_approval_id == approval_id
+            && call_id == "call_shell_1"
     ));
     let fork = runtime
         .fork_thread(&thread_id)
@@ -167,12 +301,19 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                 ..
             },
             sugarcode_state::DurableItemSnapshot::CommandApprovalDecision { .. },
+            sugarcode_state::DurableItemSnapshot::CommandExecutionAttempt {
+                approval_id: attempt_approval_id,
+                call_id,
+                ..
+            },
             sugarcode_state::DurableItemSnapshot::ToolResult {
                 result: sugarcode_state::DurableToolResult::Process(_),
                 ..
             },
             sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
         ] if approval_id.contains("call_shell_1")
+            && attempt_approval_id == approval_id
+            && call_id == "call_shell_1"
     ));
     let requests = requests.lock().expect("requests");
     assert_eq!(requests.len(), 2);
@@ -183,6 +324,84 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             .any(|tool| tool.name == "shell/exec")
     );
     assert!(requests[1].tools.is_empty());
+}
+
+#[tokio::test]
+async fn failed_attempt_audit_never_calls_the_shell_executor() {
+    let home_directory = tempfile::tempdir().expect("home");
+    let home = sugarcode_state::resolve_sugarcode_home(sugarcode_state::HomeResolutionInputs {
+        cli_override: Some(home_directory.path().to_path_buf()),
+        ..Default::default()
+    })
+    .expect("resolved home");
+    let repository = sugarcode_state::RolloutRepository::open(&home).expect("repository");
+    let (attempt_failure_tx, attempt_failure_rx) = oneshot::channel();
+    let mut core = Core::with_repository(Box::new(FailOnAttemptRepository {
+        inner: repository,
+        attempt_failure: Mutex::new(Some(attempt_failure_tx)),
+    }));
+    let started = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread");
+    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+        panic!("thread event");
+    };
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([vec![
+            Ok(ModelEvent::ToolCall(ModelToolCall {
+                id: "call_shell_attempt_failure".to_string(),
+                name: "shell/exec".to_string(),
+                arguments: serde_json::json!({
+                    "command": test_absolute_command(),
+                    "arguments": [],
+                    "cwd": "."
+                }),
+            })),
+            Ok(ModelEvent::Completed),
+        ]])),
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let executions = Arc::new(AtomicUsize::new(0));
+    let workspace = tempfile::tempdir().expect("workspace");
+    let (mut runtime, _events) = CoreRuntime::new_with_shell(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        None,
+        None,
+        None,
+        Arc::new(CountingShell(executions.clone())),
+        Arc::new(FixedApproval(CommandApprovalOutcome::Approved)),
+        workspace.path().to_path_buf(),
+    );
+    runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Run it".to_string()),
+        )
+        .expect("start turn");
+    attempt_failure_rx.await.expect("attempt append reached");
+    assert_eq!(executions.load(Ordering::Acquire), 0);
+    drop(runtime);
+
+    let repository = sugarcode_state::RolloutRepository::open(&home).expect("recover");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    let items = &snapshot.turns[0].items;
+    assert!(items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::CommandApprovalDecision {
+            decision,
+            ..
+        } if decision == "approved"
+    )));
+    assert!(!items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::CommandExecutionAttempt { .. }
+    )));
 }
 
 #[tokio::test]
@@ -248,6 +467,10 @@ async fn denied_shell_command_persists_decision_without_running_process() {
             result: sugarcode_state::DurableToolResult::Error { kind },
             ..
         } if kind == "approvalDenied"
+    )));
+    assert!(!snapshot.turns[0].items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::CommandExecutionAttempt { .. }
     )));
 }
 
@@ -335,6 +558,10 @@ async fn interrupt_while_awaiting_approval_persists_cancelled_without_tool_resul
     assert!(!items.iter().any(|item| matches!(
         item,
         sugarcode_state::DurableItemSnapshot::ToolResult { .. }
+    )));
+    assert!(!items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::CommandExecutionAttempt { .. }
     )));
 }
 

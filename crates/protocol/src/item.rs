@@ -73,6 +73,10 @@ pub enum CoreItemKind {
         approval_id: String,
         decision: CoreCommandApprovalDecision,
     },
+    CommandExecutionAttempt {
+        approval_id: String,
+        call_id: String,
+    },
     ToolResult {
         call_id: String,
         name: String,

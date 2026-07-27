@@ -158,6 +158,11 @@ pub enum DurableItemSnapshot {
         approval_id: String,
         decision: String,
     },
+    CommandExecutionAttempt {
+        id: ItemId,
+        approval_id: String,
+        call_id: String,
+    },
     ToolResult {
         id: ItemId,
         call_id: String,
@@ -209,9 +214,130 @@ impl DurableItemSnapshot {
             | Self::FileChange { id, .. }
             | Self::CommandApprovalRequest { id, .. }
             | Self::CommandApprovalDecision { id, .. }
+            | Self::CommandExecutionAttempt { id, .. }
             | Self::ToolResult { id, .. } => id,
         }
     }
+}
+
+pub(crate) fn valid_incremental_item(
+    existing: &[DurableItemSnapshot],
+    item: &DurableItemSnapshot,
+) -> Result<(), &'static str> {
+    if !valid_file_change_item(item) {
+        return Err("invalidFileChangeItem");
+    }
+    let DurableItemSnapshot::CommandExecutionAttempt {
+        approval_id,
+        call_id,
+        ..
+    } = item
+    else {
+        return Ok(());
+    };
+    let mut matching_call = None;
+    let mut matching_request = None;
+    let mut matching_decision = None;
+    for existing_item in existing {
+        match existing_item {
+            DurableItemSnapshot::ToolCall {
+                call_id: existing_call_id,
+                name,
+                path,
+                command,
+                arguments,
+                ..
+            } if existing_call_id == call_id && name == "shell/exec" => {
+                if matching_call.is_some() {
+                    return Err("invalidCommandExecutionAttempt");
+                }
+                matching_call = Some((path, command, arguments));
+            }
+            DurableItemSnapshot::CommandApprovalRequest {
+                approval_id: existing_approval_id,
+                call_id: existing_call_id,
+                command,
+                arguments,
+                cwd,
+                environment_policy,
+                sandboxed,
+                sandbox_policy,
+                network_policy,
+                ..
+            } if existing_approval_id == approval_id && existing_call_id == call_id => {
+                if matching_request.is_some() {
+                    return Err("invalidCommandExecutionAttempt");
+                }
+                matching_request = Some((
+                    command,
+                    arguments,
+                    cwd,
+                    environment_policy,
+                    sandboxed,
+                    sandbox_policy,
+                    network_policy,
+                ));
+            }
+            DurableItemSnapshot::CommandApprovalDecision {
+                approval_id: existing_approval_id,
+                decision,
+                ..
+            } if existing_approval_id == approval_id => {
+                if matching_decision.is_some() {
+                    return Err("invalidCommandExecutionAttempt");
+                }
+                matching_decision = Some(decision);
+            }
+            DurableItemSnapshot::CommandExecutionAttempt {
+                approval_id: existing_approval_id,
+                call_id: existing_call_id,
+                ..
+            } if existing_approval_id == approval_id || existing_call_id == call_id => {
+                return Err("invalidCommandExecutionAttempt");
+            }
+            DurableItemSnapshot::ToolResult {
+                call_id: existing_call_id,
+                ..
+            } if existing_call_id == call_id => {
+                return Err("invalidCommandExecutionAttempt");
+            }
+            _ => {}
+        }
+    }
+    let Some((path, call_command, call_arguments)) = matching_call else {
+        return Err("invalidCommandExecutionAttempt");
+    };
+    let Some((
+        request_command,
+        request_arguments,
+        cwd,
+        environment_policy,
+        sandboxed,
+        sandbox_policy,
+        network_policy,
+    )) = matching_request
+    else {
+        return Err("invalidCommandExecutionAttempt");
+    };
+    if call_command.as_ref() != Some(request_command)
+        || call_arguments.as_ref() != Some(request_arguments)
+        || path != cwd
+        || environment_policy != "minimalV1"
+        || !sandboxed
+        || sandbox_policy.as_deref() != Some("filesystemReadOnlyV1")
+        || network_policy.as_deref() != Some("networkDeniedV1")
+        || matching_decision.is_none_or(|decision| decision != "approved")
+    {
+        return Err("invalidCommandExecutionAttempt");
+    }
+    Ok(())
+}
+
+pub(crate) fn valid_turn_items(items: &[DurableItemSnapshot]) -> bool {
+    items
+        .iter()
+        .enumerate()
+        .all(|(index, item)| valid_incremental_item(&items[..index], item).is_ok())
 }
 
 pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {

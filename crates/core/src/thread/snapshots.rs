@@ -87,6 +87,14 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             approval_id: approval_id.clone(),
             decision: decision.to_string(),
         },
+        CoreItemKind::CommandExecutionAttempt {
+            approval_id,
+            call_id,
+        } => DurableItemSnapshot::CommandExecutionAttempt {
+            id: item.id.clone(),
+            approval_id: approval_id.clone(),
+            call_id: call_id.clone(),
+        },
         CoreItemKind::ToolResult {
             call_id,
             name,
@@ -171,6 +179,13 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
         } => ItemKind::CommandApprovalDecision {
             approval_id: approval_id.clone(),
             decision: *decision,
+        },
+        CoreItemKind::CommandExecutionAttempt {
+            approval_id,
+            call_id,
+        } => ItemKind::CommandExecutionAttempt {
+            approval_id: approval_id.clone(),
+            call_id: call_id.clone(),
         },
         CoreItemKind::ToolResult {
             call_id,
