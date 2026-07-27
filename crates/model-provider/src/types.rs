@@ -10,6 +10,13 @@ pub const WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX: &str = "Workspace instructio
 pub const WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX: &str = "Workspace instructions discovered from the opened workspace root to the active workspace \
      scope (boundedNestedWorkspaceInstructionsV1). All entries apply. If entries conflict, the \
      later, deeper entry overrides the earlier, shallower entry.\n\n";
+pub const WORKSPACE_SKILLS_INVENTORY_INSTRUCTION_PREFIX: &str = "Available bounded local workspace Skills discovered from the opened workspace root to the \
+     active workspace scope (boundedLocalWorkspaceSkillsV1). A Skill is selected only for the \
+     current Turn when the user input contains its exact `$name` marker. Descriptions are inventory \
+     metadata; unselected SKILL.md bodies are not present.\n\n";
+pub const SELECTED_WORKSPACE_SKILLS_INSTRUCTION_PREFIX: &str = "Complete bounded local workspace SKILL.md instructions selected for this Turn \
+     (boundedLocalWorkspaceSkillsV1). Apply them subject to all earlier workspace instructions. \
+     When selected Skills conflict with each other, the later user mention takes precedence.\n\n";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ModelRequest {
@@ -73,6 +80,8 @@ impl fmt::Debug for ModelInstruction {
 pub enum ModelInstructionSource {
     WorkspaceRootAgentsV1,
     WorkspaceAgentsHierarchyV1,
+    WorkspaceSkillsInventoryV1,
+    SelectedWorkspaceSkillsV1,
 }
 
 impl ModelInstructionSource {
@@ -80,6 +89,8 @@ impl ModelInstructionSource {
         match self {
             Self::WorkspaceRootAgentsV1 => WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX,
             Self::WorkspaceAgentsHierarchyV1 => WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX,
+            Self::WorkspaceSkillsInventoryV1 => WORKSPACE_SKILLS_INVENTORY_INSTRUCTION_PREFIX,
+            Self::SelectedWorkspaceSkillsV1 => SELECTED_WORKSPACE_SKILLS_INSTRUCTION_PREFIX,
         }
     }
 }

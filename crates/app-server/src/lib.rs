@@ -42,26 +42,27 @@ pub async fn run_stdio(
         .transpose()
         .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
         .map(Arc::new);
-    let (workspace, workspace_instructions) = match workspace_root.as_ref() {
+    let (workspace, workspace_instructions, workspace_skills) = match workspace_root.as_ref() {
         Some(tool) => {
-            let (scope, instructions) = tool
-                .derive_scope_with_instructions(workspace_scope.as_deref().unwrap_or("."))
+            let (scope, instructions, skills) = tool
+                .derive_scope_with_context(workspace_scope.as_deref().unwrap_or("."))
                 .map_err(|kind| {
                     let kind = match kind {
-                        sugarcode_tools::WorkspaceScopeInstructionsErrorKind::Scope(kind) => {
+                        sugarcode_tools::WorkspaceScopeContextErrorKind::Scope(kind) => {
                             format!("{kind:?}")
                         }
-                        sugarcode_tools::WorkspaceScopeInstructionsErrorKind::Instructions(
-                            kind,
-                        ) => {
+                        sugarcode_tools::WorkspaceScopeContextErrorKind::Instructions(kind) => {
+                            format!("{kind:?}")
+                        }
+                        sugarcode_tools::WorkspaceScopeContextErrorKind::Skills(kind) => {
                             format!("{kind:?}")
                         }
                     };
                     io::Error::new(io::ErrorKind::InvalidInput, kind)
                 })?;
-            (Some(Arc::new(scope)), Some(instructions))
+            (Some(Arc::new(scope)), Some(instructions), Some(skills))
         }
-        None => (None, None),
+        None => (None, None, None),
     };
     let command_workspace_root = workspace.as_ref().map(|tool| tool.command_workspace_root());
     let workspace_read: Option<Arc<dyn sugarcode_tools::WorkspaceReadExecutor>> = workspace
@@ -173,7 +174,8 @@ pub async fn run_stdio(
     let session = Session::with_core(
         runtime
             .with_workspace_patch(workspace_patch)
-            .with_workspace_instructions(workspace_instructions),
+            .with_workspace_instructions(workspace_instructions)
+            .with_workspace_skills(workspace_skills),
     );
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());

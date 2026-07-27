@@ -202,6 +202,11 @@ impl ThreadRepository for RolloutRepository {
                 kind: "invalidWorkspaceInstructionsAudit",
             });
         }
+        if !super::valid_workspace_skills_audit(turn.workspace_skills.as_ref()) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidWorkspaceSkillsAudit",
+            });
+        }
         let prior_turns = &self
             .threads
             .get(thread_id)
@@ -295,6 +300,7 @@ impl ThreadRepository for RolloutRepository {
                 })
             })
             || !valid_workspace_instructions_audit(turn.workspace_instructions.as_ref())
+            || !super::valid_workspace_skills_audit(turn.workspace_skills.as_ref())
             || turn.error.is_some()
             || turn.usage.is_some()
         {
@@ -478,6 +484,7 @@ impl ThreadRepository for RolloutRepository {
         if pending.id != turn.id
             || pending.context_compaction != turn.context_compaction
             || pending.workspace_instructions != turn.workspace_instructions
+            || pending.workspace_skills != turn.workspace_skills
             || !terminal_items_match(&pending.items, &turn.items)
         {
             return Err(RolloutError::InvalidRecord {

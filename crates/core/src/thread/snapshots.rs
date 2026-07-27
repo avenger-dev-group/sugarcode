@@ -409,6 +409,7 @@ pub(super) fn durable_thread_snapshot(thread: &Thread) -> DurableThreadSnapshot 
                     .collect(),
                 context_compaction: turn.context_compaction.clone(),
                 workspace_instructions: turn.workspace_instructions.clone(),
+                workspace_skills: turn.workspace_skills.clone(),
                 error: turn.error.clone(),
                 usage: turn.usage.clone(),
             })

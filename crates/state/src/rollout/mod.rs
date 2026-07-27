@@ -66,8 +66,34 @@ pub struct DurableTurnSnapshot {
     pub items: Vec<DurableItemSnapshot>,
     pub context_compaction: Option<DurableContextCompaction>,
     pub workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
+    pub workspace_skills: Option<DurableWorkspaceSkillsAudit>,
     pub error: Option<DurableTurnError>,
     pub usage: Option<DurableUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableWorkspaceSkillsAudit {
+    pub source: DurableWorkspaceSkillsSource,
+    pub status: DurableWorkspaceSkillsStatus,
+    pub discovered_count: u64,
+    pub effective_count: u64,
+    pub selected_count: u64,
+    pub source_bytes: u64,
+    pub inventory_bytes: u64,
+    pub selected_bytes: u64,
+    pub manifest_sha256: String,
+    pub selection_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableWorkspaceSkillsSource {
+    RootToActiveScopeAgentsSkillsV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableWorkspaceSkillsStatus {
+    Absent,
+    Present,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,6 +508,46 @@ pub(crate) fn valid_workspace_instructions_audit(
             status_is_valid && audit.sha256.as_deref().is_some_and(valid_sha256)
         }
     }
+}
+
+pub(crate) fn valid_workspace_skills_audit(audit: Option<&DurableWorkspaceSkillsAudit>) -> bool {
+    let Some(audit) = audit else {
+        return true;
+    };
+    if audit.source != DurableWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1
+        || audit.discovered_count > 64
+        || audit.effective_count > audit.discovered_count
+        || audit.selected_count > audit.effective_count
+        || audit.selected_count > 4
+        || audit.source_bytes > 1024 * 1024
+        || audit.inventory_bytes > 96 * 1024
+        || audit.selected_bytes > 128 * 1024
+        || !valid_sha256(&audit.manifest_sha256)
+    {
+        return false;
+    }
+    let status_is_valid = match audit.status {
+        DurableWorkspaceSkillsStatus::Absent => {
+            audit.discovered_count == 0
+                && audit.effective_count == 0
+                && audit.source_bytes == 0
+                && audit.inventory_bytes == 0
+                && audit.selected_count == 0
+                && audit.selected_bytes == 0
+        }
+        DurableWorkspaceSkillsStatus::Present => {
+            audit.discovered_count > 0
+                && audit.effective_count > 0
+                && audit.source_bytes > 0
+                && audit.inventory_bytes > 0
+        }
+    };
+    let selection_is_valid = if audit.selected_count == 0 {
+        audit.selected_bytes == 0 && audit.selection_sha256.is_none()
+    } else {
+        audit.selected_bytes > 0 && audit.selection_sha256.as_deref().is_some_and(valid_sha256)
+    };
+    status_is_valid && selection_is_valid
 }
 
 pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {

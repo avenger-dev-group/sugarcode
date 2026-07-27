@@ -42,5 +42,7 @@ mod workspace_patch;
 mod workspace_scope;
 #[path = "durable_thread_restart/workspace_search.rs"]
 mod workspace_search;
+#[path = "durable_thread_restart/workspace_skills.rs"]
+mod workspace_skills;
 #[path = "durable_thread_restart/workspace_tools.rs"]
 mod workspace_tools;

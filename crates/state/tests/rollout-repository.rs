@@ -14,6 +14,9 @@ use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableWorkspaceInstructionsAudit;
 use sugarcode_state::DurableWorkspaceInstructionsSource;
 use sugarcode_state::DurableWorkspaceInstructionsStatus;
+use sugarcode_state::DurableWorkspaceSkillsAudit;
+use sugarcode_state::DurableWorkspaceSkillsSource;
+use sugarcode_state::DurableWorkspaceSkillsStatus;
 use sugarcode_state::HomeResolutionInputs;
 use sugarcode_state::RolloutError;
 use sugarcode_state::RolloutRepository;
@@ -31,6 +34,7 @@ fn completed_turn(sequence: u64) -> DurableTurnSnapshot {
         }],
         context_compaction: None,
         workspace_instructions: None,
+        workspace_skills: None,
         error: None,
         usage: None,
     }
@@ -52,6 +56,7 @@ fn started_text_turn() -> DurableTurnSnapshot {
         ],
         context_compaction: None,
         workspace_instructions: None,
+        workspace_skills: None,
         error: None,
         usage: None,
     }

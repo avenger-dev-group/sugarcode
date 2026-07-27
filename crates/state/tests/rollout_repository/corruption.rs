@@ -25,6 +25,7 @@ fn rejects_an_empty_completed_turn_before_writing() {
                 items: Vec::new(),
                 context_compaction: None,
                 workspace_instructions: None,
+                workspace_skills: None,
                 error: None,
                 usage: None,
             },
@@ -53,6 +54,7 @@ fn rejects_a_tampered_persisted_compaction_without_echoing_its_message() {
         }],
         context_compaction: Some(checkpoint),
         workspace_instructions: None,
+        workspace_skills: None,
         error: None,
         usage: None,
     };
@@ -89,6 +91,56 @@ fn rejects_a_tampered_persisted_compaction_without_echoing_its_message() {
     let error = RolloutRepository::open(&home).expect_err("tampering is fatal");
     assert!(matches!(error, RolloutError::Corrupt(_)));
     assert!(error.to_string().contains("invalidContextCompaction"));
+    assert!(!error.to_string().contains(sentinel));
+}
+
+#[test]
+fn rejects_invalid_workspace_skills_audit_with_redacted_diagnostics() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let mut started = started_text_turn();
+    started.workspace_skills = Some(DurableWorkspaceSkillsAudit {
+        source: DurableWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1,
+        status: DurableWorkspaceSkillsStatus::Present,
+        discovered_count: 1,
+        effective_count: 1,
+        selected_count: 0,
+        source_bytes: 40,
+        inventory_bytes: 20,
+        selected_bytes: 0,
+        manifest_sha256: "e".repeat(64),
+        selection_sha256: None,
+    });
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(&thread_id, &started)
+            .expect("turn start");
+    }
+    let path = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    let mut records = fs::read_to_string(&path)
+        .expect("rollout")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("record"))
+        .collect::<Vec<_>>();
+    let sentinel = "private-skill-name-must-not-leak";
+    records[1]["turn"]["workspaceSkills"]["manifestSha256"] =
+        serde_json::Value::String(sentinel.to_string());
+    let rewritten = records
+        .iter()
+        .map(|record| serde_json::to_string(record).expect("encode"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&path, rewritten).expect("tamper rollout");
+
+    let error = RolloutRepository::open(&home).expect_err("tampering is fatal");
+    assert!(matches!(error, RolloutError::Corrupt(_)));
+    assert!(error.to_string().contains("invalidWorkspaceSkillsAudit"));
     assert!(!error.to_string().contains(sentinel));
 }
 

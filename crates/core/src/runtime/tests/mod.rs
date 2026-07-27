@@ -138,4 +138,5 @@ mod shell_approval;
 mod workspace_instructions;
 mod workspace_patch;
 mod workspace_search;
+mod workspace_skills;
 mod workspace_tools;

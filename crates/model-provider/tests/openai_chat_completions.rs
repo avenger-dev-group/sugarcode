@@ -92,6 +92,72 @@ async fn workspace_instructions_are_first_redacted_developer_context() {
 }
 
 #[tokio::test]
+async fn workspace_skills_follow_agents_and_precede_compaction_history_and_input() {
+    let (endpoint, server, request_rx) =
+        capturing_response_server(SUCCESS.as_bytes().to_vec()).await;
+    let provider = provider(endpoint);
+    let mut request = request();
+    request.instructions = vec![
+        ModelInstruction {
+            source: ModelInstructionSource::WorkspaceRootAgentsV1,
+            content: "root rule".to_string(),
+        },
+        ModelInstruction {
+            source: ModelInstructionSource::WorkspaceSkillsInventoryV1,
+            content: "- $review: \"Review changes\"\n".to_string(),
+        },
+        ModelInstruction {
+            source: ModelInstructionSource::SelectedWorkspaceSkillsV1,
+            content: "--- Selected Skill: $review ---\nprivate body".to_string(),
+        },
+    ];
+    request.messages.insert(
+        0,
+        ModelMessage::ContextCompaction {
+            content: "checkpoint".to_string(),
+        },
+    );
+
+    let events = provider
+        .stream(request)
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+    server.await.expect("mock server");
+    let body = request_rx.await.expect("captured request");
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message["role"].as_str().expect("role"))
+            .collect::<Vec<_>>(),
+        vec!["developer", "developer", "developer", "user", "user"]
+    );
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .expect("agents")
+            .contains("boundedWorkspaceInstructionsV1")
+    );
+    assert!(
+        messages[1]["content"]
+            .as_str()
+            .expect("inventory")
+            .contains("Available bounded local workspace Skills")
+    );
+    assert!(
+        messages[2]["content"]
+            .as_str()
+            .expect("selected")
+            .contains("private body")
+    );
+    assert_eq!(messages[3]["content"], "checkpoint");
+    assert_eq!(messages[4]["content"], "Hello");
+}
+
+#[tokio::test]
 async fn persisted_compaction_is_a_redacted_user_message_after_developer_instructions() {
     let (endpoint, server, request_rx) =
         capturing_response_server(SUCCESS.as_bytes().to_vec()).await;

@@ -4,6 +4,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use sugarcode_model_provider::ModelInstruction;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreItemKind;
@@ -26,6 +27,7 @@ use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableUsage;
 use sugarcode_state::DurableWorkspaceInstructionsAudit;
+use sugarcode_state::DurableWorkspaceSkillsAudit;
 use sugarcode_state::IdSequences;
 use sugarcode_state::RolloutError;
 use sugarcode_state::ThreadRepository;
@@ -53,7 +55,9 @@ pub struct PreparedTextTurn {
     pub turn_id: TurnId,
     pub user_item: Option<CoreItemSnapshot>,
     pub history: Vec<PreparedMessage>,
+    pub instructions: Vec<ModelInstruction>,
     pub workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
+    pub workspace_skills: Option<DurableWorkspaceSkillsAudit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +127,7 @@ struct Turn {
     active_item_id: Option<ItemId>,
     context_compaction: Option<DurableContextCompaction>,
     workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
+    workspace_skills: Option<DurableWorkspaceSkillsAudit>,
     error: Option<DurableTurnError>,
     usage: Option<DurableUsage>,
 }
@@ -137,6 +142,7 @@ impl Turn {
             active_item_id: None,
             context_compaction: None,
             workspace_instructions: None,
+            workspace_skills: None,
             error: None,
             usage: None,
         }
@@ -734,6 +740,7 @@ impl Core {
                 active_item_id: None,
                 context_compaction: durable_turn.context_compaction.clone(),
                 workspace_instructions: durable_turn.workspace_instructions.clone(),
+                workspace_skills: durable_turn.workspace_skills.clone(),
                 error: durable_turn.error.clone(),
                 usage: durable_turn.usage.clone(),
             };
@@ -765,6 +772,28 @@ impl Core {
         thread_id: ThreadId,
         input: Option<String>,
         workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
+        instruction_context_bytes: usize,
+        tool_context_bytes: usize,
+    ) -> Result<PreparedTextTurn, CoreError> {
+        self.prepare_text_turn_with_context(
+            request_id,
+            thread_id,
+            input,
+            workspace_instructions,
+            None,
+            instruction_context_bytes,
+            tool_context_bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_text_turn_with_context(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+        input: Option<String>,
+        workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
+        workspace_skills: Option<DurableWorkspaceSkillsAudit>,
         instruction_context_bytes: usize,
         tool_context_bytes: usize,
     ) -> Result<PreparedTextTurn, CoreError> {
@@ -906,6 +935,7 @@ impl Core {
             items: durable_items,
             context_compaction: context_compaction.clone(),
             workspace_instructions: workspace_instructions.clone(),
+            workspace_skills: workspace_skills.clone(),
             error: None,
             usage: None,
         };
@@ -937,6 +967,7 @@ impl Core {
             active_item_id: None,
             context_compaction,
             workspace_instructions: workspace_instructions.clone(),
+            workspace_skills: workspace_skills.clone(),
             error: None,
             usage: None,
         };
@@ -957,7 +988,9 @@ impl Core {
             turn_id,
             user_item,
             history,
+            instructions: Vec::new(),
             workspace_instructions,
+            workspace_skills,
         })
     }
 
@@ -1106,6 +1139,7 @@ impl Core {
                 .collect(),
             context_compaction: turn.context_compaction.clone(),
             workspace_instructions: turn.workspace_instructions.clone(),
+            workspace_skills: turn.workspace_skills.clone(),
             error: Some(DurableTurnError {
                 kind: DurableTurnErrorKind::OutputTooLarge,
                 retryable: false,
@@ -1183,6 +1217,7 @@ impl Core {
                 .collect(),
             context_compaction: turn.context_compaction.clone(),
             workspace_instructions: turn.workspace_instructions.clone(),
+            workspace_skills: turn.workspace_skills.clone(),
             error: error.clone(),
             usage: usage.clone(),
         };
@@ -1286,6 +1321,7 @@ fn durable_turn_snapshot(turn: &Turn) -> DurableTurnSnapshot {
             .collect(),
         context_compaction: turn.context_compaction.clone(),
         workspace_instructions: turn.workspace_instructions.clone(),
+        workspace_skills: turn.workspace_skills.clone(),
         error: turn.error.clone(),
         usage: turn.usage.clone(),
     }

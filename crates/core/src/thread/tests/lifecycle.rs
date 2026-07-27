@@ -342,6 +342,51 @@ fn fork_preserves_workspace_instruction_audit_without_any_instruction_content() 
 }
 
 #[test]
+fn fork_preserves_workspace_skills_audit_without_rediscovery() {
+    let mut core = Core::new();
+    let source = start_thread(&mut core, 1);
+    let audit = sugarcode_state::DurableWorkspaceSkillsAudit {
+        source: sugarcode_state::DurableWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1,
+        status: sugarcode_state::DurableWorkspaceSkillsStatus::Present,
+        discovered_count: 2,
+        effective_count: 1,
+        selected_count: 1,
+        source_bytes: 80,
+        inventory_bytes: 24,
+        selected_bytes: 40,
+        manifest_sha256: "c".repeat(64),
+        selection_sha256: Some("d".repeat(64)),
+    };
+    let prepared = core
+        .prepare_text_turn_with_context(
+            CoreRequestId::new(2),
+            source.clone(),
+            Some("use $review".to_string()),
+            None,
+            Some(audit.clone()),
+            64,
+            0,
+        )
+        .expect("prepare source turn");
+    core.start_agent_message(&source, &prepared.turn_id)
+        .expect("start answer");
+    core.append_text_delta(&source, &prepared.turn_id, "answer")
+        .expect("append answer");
+    core.finish_text_turn(
+        &source,
+        &prepared.turn_id,
+        DurableTurnStatus::Completed,
+        None,
+        None,
+    )
+    .expect("finish source turn");
+
+    let fork = core.fork_thread(&source).expect("fork");
+    assert_eq!(fork.turns.len(), 1);
+    assert_eq!(fork.turns[0].workspace_skills, Some(audit));
+}
+
+#[test]
 fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_turns() {
     let mut core = Core::new();
     let source = start_thread(&mut core, 1);

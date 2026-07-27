@@ -108,6 +108,7 @@ fn failed_fork_write_does_not_materialize_or_advance_ids() {
             }],
             context_compaction: None,
             workspace_instructions: None,
+            workspace_skills: None,
             error: None,
             usage: None,
         }],

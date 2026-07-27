@@ -12,6 +12,9 @@ use super::DurableUsage;
 use super::DurableWorkspaceInstructionsAudit;
 use super::DurableWorkspaceInstructionsSource;
 use super::DurableWorkspaceInstructionsStatus;
+use super::DurableWorkspaceSkillsAudit;
+use super::DurableWorkspaceSkillsSource;
+use super::DurableWorkspaceSkillsStatus;
 use super::RolloutDiagnostic;
 use super::RolloutError;
 use serde::Deserialize;
@@ -105,6 +108,8 @@ pub(super) struct StoredTurnRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_instructions: Option<StoredWorkspaceInstructionsAuditRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_skills: Option<StoredWorkspaceSkillsAuditRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<StoredTurnErrorRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<StoredUsageRef>,
@@ -135,6 +140,22 @@ pub(super) struct StoredWorkspaceInstructionsAuditRef<'a> {
     pub bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredWorkspaceSkillsAuditRef<'a> {
+    pub source: &'static str,
+    pub status: &'static str,
+    pub discovered_count: u64,
+    pub effective_count: u64,
+    pub selected_count: u64,
+    pub source_bytes: u64,
+    pub inventory_bytes: u64,
+    pub selected_bytes: u64,
+    pub manifest_sha256: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection_sha256: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -466,6 +487,27 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
                     sha256: audit.sha256.as_deref(),
                 }
             }),
+            workspace_skills: turn.workspace_skills.as_ref().map(|audit| {
+                StoredWorkspaceSkillsAuditRef {
+                    source: match audit.source {
+                        DurableWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1 => {
+                            "rootToActiveScopeAgentsSkillsV1"
+                        }
+                    },
+                    status: match audit.status {
+                        DurableWorkspaceSkillsStatus::Absent => "absent",
+                        DurableWorkspaceSkillsStatus::Present => "present",
+                    },
+                    discovered_count: audit.discovered_count,
+                    effective_count: audit.effective_count,
+                    selected_count: audit.selected_count,
+                    source_bytes: audit.source_bytes,
+                    inventory_bytes: audit.inventory_bytes,
+                    selected_bytes: audit.selected_bytes,
+                    manifest_sha256: &audit.manifest_sha256,
+                    selection_sha256: audit.selection_sha256.as_deref(),
+                }
+            }),
             error: turn.error.as_ref().map(|error| StoredTurnErrorRef {
                 kind: stored_error_kind(error.kind),
                 retryable: error.retryable,
@@ -626,9 +668,40 @@ struct StoredTurn {
     #[serde(default)]
     workspace_instructions: Option<StoredWorkspaceInstructionsAudit>,
     #[serde(default)]
+    workspace_skills: Option<StoredWorkspaceSkillsAudit>,
+    #[serde(default)]
     error: Option<StoredTurnError>,
     #[serde(default)]
     usage: Option<StoredUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredWorkspaceSkillsAudit {
+    source: StoredWorkspaceSkillsSource,
+    status: StoredWorkspaceSkillsStatus,
+    discovered_count: u64,
+    effective_count: u64,
+    selected_count: u64,
+    source_bytes: u64,
+    inventory_bytes: u64,
+    selected_bytes: u64,
+    manifest_sha256: String,
+    #[serde(default)]
+    selection_sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StoredWorkspaceSkillsSource {
+    RootToActiveScopeAgentsSkillsV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StoredWorkspaceSkillsStatus {
+    Absent,
+    Present,
 }
 
 #[derive(Debug, Deserialize)]
@@ -989,6 +1062,7 @@ pub(super) fn decode_record(
                 items,
                 context_compaction,
                 workspace_instructions,
+                workspace_skills,
                 error,
                 usage,
             } = turn;
@@ -1014,6 +1088,7 @@ pub(super) fn decode_record(
                     context_compaction: context_compaction.map(decode_context_compaction),
                     workspace_instructions: workspace_instructions
                         .map(decode_workspace_instructions),
+                    workspace_skills: workspace_skills.map(decode_workspace_skills),
                     error: error.map(decode_error),
                     usage: usage.map(decode_usage),
                 },
@@ -1041,6 +1116,7 @@ pub(super) fn decode_record(
                 items,
                 context_compaction,
                 workspace_instructions,
+                workspace_skills,
                 error,
                 usage,
             } = turn;
@@ -1062,6 +1138,7 @@ pub(super) fn decode_record(
                     context_compaction: context_compaction.map(decode_context_compaction),
                     workspace_instructions: workspace_instructions
                         .map(decode_workspace_instructions),
+                    workspace_skills: workspace_skills.map(decode_workspace_skills),
                     error: None,
                     usage: None,
                 },
@@ -1355,6 +1432,28 @@ fn decode_workspace_instructions(
         },
         bytes: audit.bytes,
         sha256: audit.sha256,
+    }
+}
+
+fn decode_workspace_skills(audit: StoredWorkspaceSkillsAudit) -> DurableWorkspaceSkillsAudit {
+    DurableWorkspaceSkillsAudit {
+        source: match audit.source {
+            StoredWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1 => {
+                DurableWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1
+            }
+        },
+        status: match audit.status {
+            StoredWorkspaceSkillsStatus::Absent => DurableWorkspaceSkillsStatus::Absent,
+            StoredWorkspaceSkillsStatus::Present => DurableWorkspaceSkillsStatus::Present,
+        },
+        discovered_count: audit.discovered_count,
+        effective_count: audit.effective_count,
+        selected_count: audit.selected_count,
+        source_bytes: audit.source_bytes,
+        inventory_bytes: audit.inventory_bytes,
+        selected_bytes: audit.selected_bytes,
+        manifest_sha256: audit.manifest_sha256,
+        selection_sha256: audit.selection_sha256,
     }
 }
 

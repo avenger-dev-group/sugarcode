@@ -50,6 +50,9 @@ use sugarcode_state::DurableUsage;
 use sugarcode_state::DurableWorkspaceInstructionsAudit;
 use sugarcode_state::DurableWorkspaceInstructionsSource;
 use sugarcode_state::DurableWorkspaceInstructionsStatus;
+use sugarcode_state::DurableWorkspaceSkillsAudit;
+use sugarcode_state::DurableWorkspaceSkillsSource;
+use sugarcode_state::DurableWorkspaceSkillsStatus;
 use sugarcode_tools::ShellCommandArguments;
 use sugarcode_tools::ShellCommandErrorKind;
 use sugarcode_tools::ShellCommandExecution;
@@ -73,6 +76,7 @@ use sugarcode_tools::WorkspaceSearchArguments;
 use sugarcode_tools::WorkspaceSearchErrorKind;
 use sugarcode_tools::WorkspaceSearchExecutor;
 use sugarcode_tools::WorkspaceSearchOutcome;
+use sugarcode_tools::WorkspaceSkillsSnapshot;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -119,6 +123,7 @@ pub struct CoreRuntime {
     workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
     workspace_patch: Option<Arc<dyn WorkspacePatchExecutor>>,
     workspace_instructions: Option<Arc<WorkspaceInstructionsSnapshot>>,
+    workspace_skills: Option<Arc<WorkspaceSkillsSnapshot>>,
     shell_executor: Option<Arc<dyn ShellCommandExecutor>>,
     approval_requester: Option<Arc<dyn CommandApprovalRequester>>,
     event_tx: mpsc::Sender<CoreEvent>,
@@ -220,6 +225,7 @@ impl CoreRuntime {
                 workspace_search,
                 workspace_patch: None,
                 workspace_instructions: None,
+                workspace_skills: None,
                 shell_executor: None,
                 approval_requester: None,
                 event_tx,
@@ -269,6 +275,14 @@ impl CoreRuntime {
         self
     }
 
+    pub fn with_workspace_skills(
+        mut self,
+        workspace_skills: Option<WorkspaceSkillsSnapshot>,
+    ) -> Self {
+        self.workspace_skills = workspace_skills.map(Arc::new);
+        self
+    }
+
     pub fn without_model(core: Core) -> (Self, mpsc::Receiver<CoreEvent>) {
         let (event_tx, event_rx) = mpsc::channel(CORE_EVENT_CAPACITY);
         (
@@ -280,6 +294,7 @@ impl CoreRuntime {
                 workspace_search: None,
                 workspace_patch: None,
                 workspace_instructions: None,
+                workspace_skills: None,
                 shell_executor: None,
                 approval_requester: None,
                 event_tx,
@@ -370,25 +385,51 @@ impl CoreApi for CoreRuntime {
             .workspace_instructions
             .as_deref()
             .map(workspace_instructions_audit);
-        let instruction_context_bytes = self
-            .workspace_instructions
+        let selection = self
+            .workspace_skills
             .as_deref()
-            .map_or(0, workspace_instruction_context_bytes);
+            .map(|skills| skills.select(input.as_deref()))
+            .transpose()
+            .map_err(|_| CoreError::ContextTooLarge)?;
+        let workspace_skills = self
+            .workspace_skills
+            .as_deref()
+            .map(|skills| workspace_skills_audit(skills, selection.as_ref()));
+        let mut instructions = workspace_model_instructions(self);
+        if let Some(skills) = self.workspace_skills.as_deref()
+            && !skills.inventory().is_empty()
+        {
+            instructions.push(ModelInstruction {
+                source: ModelInstructionSource::WorkspaceSkillsInventoryV1,
+                content: skills.inventory().to_string(),
+            });
+        }
+        if let Some(content) = selection.and_then(|selection| selection.content) {
+            instructions.push(ModelInstruction {
+                source: ModelInstructionSource::SelectedWorkspaceSkillsV1,
+                content,
+            });
+        }
+        let instruction_context_bytes = instructions
+            .iter()
+            .map(ModelInstruction::context_bytes)
+            .try_fold(0usize, usize::checked_add)
+            .ok_or(CoreError::ContextTooLarge)?;
         let tool_context_bytes = workspace_tool_definitions(self)
             .iter()
             .map(sugarcode_model_provider::ModelToolDefinition::context_bytes)
             .try_fold(0usize, usize::checked_add)
             .ok_or(CoreError::ContextTooLarge)?;
-        let prepared = self
-            .lock_core()?
-            .prepare_text_turn_with_workspace_instructions(
-                request_id,
-                thread_id.clone(),
-                input,
-                workspace_instructions,
-                instruction_context_bytes,
-                tool_context_bytes,
-            )?;
+        let mut prepared = self.lock_core()?.prepare_text_turn_with_context(
+            request_id,
+            thread_id.clone(),
+            input,
+            workspace_instructions,
+            workspace_skills,
+            instruction_context_bytes,
+            tool_context_bytes,
+        )?;
+        prepared.instructions = instructions;
         let cancellation = CancellationToken::new();
         let terminal_state = Arc::new(Mutex::new(TurnPhase::Running));
         let done = Arc::new(TurnDone::default());
@@ -593,7 +634,7 @@ async fn run_turn(
         }
         let request = ModelRequest {
             model: model_gateway.model.to_string(),
-            instructions: workspace_model_instructions(&runtime),
+            instructions: prepared.instructions.clone(),
             messages: messages.clone(),
             tools: if round == 0 {
                 workspace_tool_definitions(&runtime)
@@ -1350,11 +1391,34 @@ fn workspace_instructions_audit(
     }
 }
 
-fn workspace_instruction_context_bytes(snapshot: &WorkspaceInstructionsSnapshot) -> usize {
-    model_instructions_for_snapshot(snapshot)
-        .iter()
-        .map(ModelInstruction::context_bytes)
-        .sum()
+fn workspace_skills_audit(
+    snapshot: &WorkspaceSkillsSnapshot,
+    selection: Option<&sugarcode_tools::WorkspaceSkillSelection>,
+) -> DurableWorkspaceSkillsAudit {
+    let selection = selection
+        .cloned()
+        .unwrap_or(sugarcode_tools::WorkspaceSkillSelection {
+            content: None,
+            selected_count: 0,
+            selected_bytes: 0,
+            sha256: None,
+        });
+    DurableWorkspaceSkillsAudit {
+        source: DurableWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1,
+        status: if snapshot.effective_count() == 0 {
+            DurableWorkspaceSkillsStatus::Absent
+        } else {
+            DurableWorkspaceSkillsStatus::Present
+        },
+        discovered_count: snapshot.discovered_count() as u64,
+        effective_count: snapshot.effective_count() as u64,
+        selected_count: selection.selected_count as u64,
+        source_bytes: snapshot.source_bytes() as u64,
+        inventory_bytes: snapshot.inventory().len() as u64,
+        selected_bytes: selection.selected_bytes as u64,
+        manifest_sha256: snapshot.manifest_sha256().to_string(),
+        selection_sha256: selection.sha256,
+    }
 }
 
 fn workspace_model_instructions(runtime: &CoreRuntime) -> Vec<ModelInstruction> {

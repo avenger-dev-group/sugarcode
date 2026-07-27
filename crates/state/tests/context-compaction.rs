@@ -17,6 +17,7 @@ fn completed_turn(items: Vec<DurableItemSnapshot>) -> DurableTurnSnapshot {
         items,
         context_compaction: None,
         workspace_instructions: None,
+        workspace_skills: None,
         error: None,
         usage: None,
     }

@@ -4,12 +4,15 @@ use crate::workspace_capability::WorkspaceRootReopen;
 use crate::workspace_capability::WorkspaceTool;
 use crate::workspace_capability::map_io_error;
 use crate::workspace_capability::open_directory_component;
-use crate::workspace_capability::open_regular_file_nofollow;
 use crate::workspace_capability::validate_relative_path;
+use crate::workspace_skills::WorkspaceScopeContextErrorKind;
+use crate::workspace_skills::WorkspaceSkillsSnapshot;
+use crate::workspace_skills::load_workspace_skills;
+use crate::workspace_snapshot::StableUtf8FileErrorKind;
+use crate::workspace_snapshot::read_stable_utf8_file_before_reopen;
 use cap_std::fs::Dir;
 use sha2::Digest;
 use sha2::Sha256;
-use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -209,6 +212,117 @@ impl WorkspaceTool {
             snapshot,
         ))
     }
+
+    pub fn derive_scope_with_context(
+        &self,
+        scope: &str,
+    ) -> Result<
+        (Self, WorkspaceInstructionsSnapshot, WorkspaceSkillsSnapshot),
+        WorkspaceScopeContextErrorKind,
+    > {
+        self.derive_scope_with_context_before_revalidate(scope, || {})
+    }
+
+    pub(crate) fn derive_scope_with_context_before_revalidate<F>(
+        &self,
+        scope: &str,
+        before_revalidate: F,
+    ) -> Result<
+        (Self, WorkspaceInstructionsSnapshot, WorkspaceSkillsSnapshot),
+        WorkspaceScopeContextErrorKind,
+    >
+    where
+        F: FnOnce(),
+    {
+        let components = if scope == "." {
+            Vec::new()
+        } else {
+            validate_relative_path(scope).map_err(WorkspaceScopeContextErrorKind::Scope)?
+        };
+        let mut directories = Vec::with_capacity(components.len() + 1);
+        directories.push(
+            self.root
+                .try_clone()
+                .map_err(|error| WorkspaceScopeContextErrorKind::Scope(map_io_error(&error)))?,
+        );
+        for component in &components {
+            let directory = open_directory_component(
+                directories.last().expect("workspace root is present"),
+                component,
+            )
+            .map_err(WorkspaceScopeContextErrorKind::Scope)?;
+            directories.push(directory);
+        }
+
+        let paths = instruction_paths(&components);
+        let mut candidates = Vec::with_capacity(directories.len());
+        let mut total_bytes = 0usize;
+        for directory in &directories {
+            let candidate = load_instruction_candidate(directory, || {})
+                .map_err(WorkspaceScopeContextErrorKind::Instructions)?;
+            if let CandidateSnapshot::Present { bytes, .. } = &candidate {
+                total_bytes = total_bytes.checked_add(*bytes).ok_or(
+                    WorkspaceScopeContextErrorKind::Instructions(
+                        WorkspaceInstructionsErrorKind::AggregateTooLarge,
+                    ),
+                )?;
+                if total_bytes > MAX_WORKSPACE_INSTRUCTIONS_BYTES {
+                    return Err(WorkspaceScopeContextErrorKind::Instructions(
+                        WorkspaceInstructionsErrorKind::AggregateTooLarge,
+                    ));
+                }
+            }
+            candidates.push(candidate);
+        }
+        let skills = load_workspace_skills(&directories, &components)
+            .map_err(WorkspaceScopeContextErrorKind::Skills)?;
+
+        before_revalidate();
+        revalidate_hierarchy(&directories, &components, &candidates)
+            .map_err(WorkspaceScopeContextErrorKind::Instructions)?;
+        let verified_skills = load_workspace_skills(&directories, &components).map_err(|_| {
+            WorkspaceScopeContextErrorKind::Skills(
+                crate::workspace_skills::WorkspaceSkillsErrorKind::ChangedDuringDiscovery,
+            )
+        })?;
+        if verified_skills != skills {
+            return Err(WorkspaceScopeContextErrorKind::Skills(
+                crate::workspace_skills::WorkspaceSkillsErrorKind::ChangedDuringDiscovery,
+            ));
+        }
+
+        let instructions = if components.is_empty() {
+            candidate_into_root_snapshot(
+                candidates
+                    .into_iter()
+                    .next()
+                    .expect("root instruction candidate is present"),
+            )
+        } else {
+            hierarchy_snapshot(&paths, candidates, total_bytes)
+        };
+        let scope = if components.is_empty() {
+            self.derive_scope(".")
+                .map_err(WorkspaceScopeContextErrorKind::Scope)?
+        } else {
+            let final_index = directories.len() - 1;
+            let root = directories[final_index]
+                .try_clone()
+                .map_err(|error| WorkspaceScopeContextErrorKind::Scope(map_io_error(&error)))?;
+            let parent = directories[final_index - 1]
+                .try_clone()
+                .map_err(|error| WorkspaceScopeContextErrorKind::Scope(map_io_error(&error)))?;
+            let name = components
+                .last()
+                .expect("non-root scope has a final component")
+                .clone();
+            Self {
+                root,
+                root_reopen: WorkspaceRootReopen::Relative { parent, name },
+            }
+        };
+        Ok((scope, instructions, skills))
+    }
 }
 
 fn load_instruction_candidate<F>(
@@ -219,63 +333,22 @@ where
     F: FnOnce(),
 {
     let file_name = Path::new(WORKSPACE_INSTRUCTIONS_FILE_NAME);
-    let (mut file, opened_snapshot) = match open_regular_file_nofollow(directory, file_name) {
-        Ok(opened) => opened,
-        Err(WorkspaceReadErrorKind::NotFound) => return Ok(CandidateSnapshot::Absent),
-        Err(kind) => return Err(map_workspace_error(kind)),
+    let snapshot = match read_stable_utf8_file_before_reopen(
+        directory,
+        file_name,
+        MAX_WORKSPACE_INSTRUCTIONS_BYTES,
+        before_reopen,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(StableUtf8FileErrorKind::Read(WorkspaceReadErrorKind::NotFound)) => {
+            return Ok(CandidateSnapshot::Absent);
+        }
+        Err(kind) => return Err(map_stable_file_error(kind)),
     };
-    if opened_snapshot.links() != 1 {
-        return Err(WorkspaceInstructionsErrorKind::HardLinkNotAllowed);
-    }
-    if opened_snapshot.len() > MAX_WORKSPACE_INSTRUCTIONS_BYTES as u64 {
-        return Err(WorkspaceInstructionsErrorKind::FileTooLarge);
-    }
-
-    let mut bytes = Vec::with_capacity(opened_snapshot.len() as usize);
-    let mut buffer = [0_u8; 8 * 1024];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|error| map_workspace_error(map_io_error(&error)))?;
-        if count == 0 {
-            break;
-        }
-        if bytes
-            .len()
-            .checked_add(count)
-            .is_none_or(|length| length > MAX_WORKSPACE_INSTRUCTIONS_BYTES)
-        {
-            return Err(WorkspaceInstructionsErrorKind::FileTooLarge);
-        }
-        bytes.extend_from_slice(&buffer[..count]);
-    }
-
-    let final_metadata = file
-        .metadata()
-        .map_err(|error| map_workspace_error(map_io_error(&error)))?;
-    let final_snapshot =
-        FileSnapshot::from_file(&file, &final_metadata).map_err(map_workspace_error)?;
-    if final_snapshot != opened_snapshot || bytes.len() as u64 != final_metadata.len() {
-        return Err(WorkspaceInstructionsErrorKind::ChangedDuringRead);
-    }
-
-    before_reopen();
-    let reopened_snapshot = open_regular_file_nofollow(directory, file_name)
-        .map(|(_, snapshot)| snapshot)
-        .map_err(|_| WorkspaceInstructionsErrorKind::ChangedDuringRead)?;
-    if reopened_snapshot != opened_snapshot {
-        return Err(WorkspaceInstructionsErrorKind::ChangedDuringRead);
-    }
-    if bytes.contains(&0) {
-        return Err(WorkspaceInstructionsErrorKind::InvalidEncoding);
-    }
-    let content =
-        String::from_utf8(bytes).map_err(|_| WorkspaceInstructionsErrorKind::InvalidEncoding)?;
-    let sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
     Ok(CandidateSnapshot::Present {
-        bytes: content.len(),
-        content,
-        sha256,
+        bytes: snapshot.bytes,
+        content: snapshot.content,
+        sha256: snapshot.sha256,
     })
 }
 
@@ -391,6 +464,20 @@ fn map_workspace_error(kind: WorkspaceReadErrorKind) -> WorkspaceInstructionsErr
         | WorkspaceReadErrorKind::NotFound
         | WorkspaceReadErrorKind::Cancelled
         | WorkspaceReadErrorKind::Unavailable => WorkspaceInstructionsErrorKind::Unavailable,
+    }
+}
+
+fn map_stable_file_error(kind: StableUtf8FileErrorKind) -> WorkspaceInstructionsErrorKind {
+    match kind {
+        StableUtf8FileErrorKind::Read(kind) => map_workspace_error(kind),
+        StableUtf8FileErrorKind::HardLinkNotAllowed => {
+            WorkspaceInstructionsErrorKind::HardLinkNotAllowed
+        }
+        StableUtf8FileErrorKind::FileTooLarge => WorkspaceInstructionsErrorKind::FileTooLarge,
+        StableUtf8FileErrorKind::InvalidEncoding => WorkspaceInstructionsErrorKind::InvalidEncoding,
+        StableUtf8FileErrorKind::ChangedDuringRead => {
+            WorkspaceInstructionsErrorKind::ChangedDuringRead
+        }
     }
 }
 

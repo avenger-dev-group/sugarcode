@@ -99,6 +99,7 @@ fn an_unfinished_checkpoint_is_retained_for_audit_but_remains_interrupted() {
         }],
         context_compaction: Some(checkpoint.clone()),
         workspace_instructions: None,
+        workspace_skills: None,
         error: None,
         usage: None,
     };
@@ -224,6 +225,55 @@ fn nested_workspace_manifest_audit_survives_recovery_without_scope_or_content() 
 }
 
 #[test]
+fn workspace_skills_audit_survives_recovery_without_inventory_path_or_content() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let audit = DurableWorkspaceSkillsAudit {
+        source: DurableWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1,
+        status: DurableWorkspaceSkillsStatus::Present,
+        discovered_count: 2,
+        effective_count: 1,
+        selected_count: 1,
+        source_bytes: 80,
+        inventory_bytes: 24,
+        selected_bytes: 40,
+        manifest_sha256: "c".repeat(64),
+        selection_sha256: Some("d".repeat(64)),
+    };
+    let mut started = started_text_turn();
+    started.workspace_skills = Some(audit.clone());
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(&thread_id, &started)
+            .expect("durable turn start");
+    }
+
+    let repository = RolloutRepository::open(&home).expect("recover");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.turns[0].status, DurableTurnStatus::Interrupted);
+    assert_eq!(snapshot.turns[0].workspace_skills.as_ref(), Some(&audit));
+    drop(repository);
+
+    let rollout = fs::read_to_string(
+        directory
+            .path()
+            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+    )
+    .expect("rollout");
+    assert!(rollout.contains("\"workspaceSkills\""));
+    assert!(rollout.contains("\"rootToActiveScopeAgentsSkillsV1\""));
+    assert!(!rollout.contains(".agents/skills"));
+    assert!(!rollout.contains("private skill body"));
+    assert!(!rollout.contains("Review changes"));
+}
+
+#[test]
 fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
@@ -240,6 +290,7 @@ fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
                     items: Vec::new(),
                     context_compaction: None,
                     workspace_instructions: None,
+                    workspace_skills: None,
                     error: None,
                     usage: None,
                 },
@@ -290,6 +341,7 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
                     }],
                     context_compaction: None,
                     workspace_instructions: None,
+                    workspace_skills: None,
                     error: None,
                     usage: None,
                 },
@@ -390,6 +442,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
                     items: vec![user.clone()],
                     context_compaction: None,
                     workspace_instructions: None,
+                    workspace_skills: None,
                     error: None,
                     usage: None,
                 },
@@ -411,6 +464,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
                     items,
                     context_compaction: None,
                     workspace_instructions: None,
+                    workspace_skills: None,
                     error: None,
                     usage: None,
                 },
@@ -534,6 +588,7 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
                     items: vec![user],
                     context_compaction: None,
                     workspace_instructions: None,
+                    workspace_skills: None,
                     error: None,
                     usage: None,
                 },
@@ -587,6 +642,7 @@ fn execution_attempt_requires_matching_approved_shell_audit() {
                 }],
                 context_compaction: None,
                 workspace_instructions: None,
+                workspace_skills: None,
                 error: None,
                 usage: None,
             },
@@ -631,6 +687,7 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
                 }],
                 context_compaction: None,
                 workspace_instructions: None,
+                workspace_skills: None,
                 error: None,
                 usage: None,
             },
@@ -769,6 +826,7 @@ fn file_change_proposal_survives_recovery_without_replaying_the_write() {
                     }],
                     context_compaction: None,
                     workspace_instructions: None,
+                    workspace_skills: None,
                     error: None,
                     usage: None,
                 },

@@ -339,6 +339,7 @@ impl CoreApi for Core {
                 items,
                 context_compaction,
                 workspace_instructions: source_turn.workspace_instructions.clone(),
+                workspace_skills: source_turn.workspace_skills.clone(),
                 error: source_turn.error.clone(),
                 usage: source_turn.usage.clone(),
             });
@@ -421,6 +422,7 @@ impl CoreApi for Core {
             items: vec![durable_item_snapshot(&item_completed)],
             context_compaction: None,
             workspace_instructions: None,
+            workspace_skills: None,
             error: None,
             usage: None,
         };

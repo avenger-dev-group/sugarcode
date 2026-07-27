@@ -38,6 +38,7 @@ fn turn(sequence: u64, text: &str) -> DurableTurnSnapshot {
         }],
         context_compaction: None,
         workspace_instructions: None,
+        workspace_skills: None,
         error: None,
         usage: None,
     }
@@ -71,6 +72,7 @@ fn started_turn(sequence: u64, input: &str) -> DurableTurnSnapshot {
         ],
         context_compaction: None,
         workspace_instructions: None,
+        workspace_skills: None,
         error: None,
         usage: None,
     }

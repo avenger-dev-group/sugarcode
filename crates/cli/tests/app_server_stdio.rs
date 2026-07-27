@@ -100,6 +100,41 @@ fn invalid_root_agents_file_fails_before_serving_protocol() {
 }
 
 #[test]
+fn invalid_workspace_skill_fails_before_serving_protocol_with_redacted_diagnostics() {
+    let sugarcode_home = tempfile::tempdir().expect("isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("isolated workspace");
+    let private = "private-skill-startup-sentinel";
+    let skill = workspace.path().join(".agents/skills/review/SKILL.md");
+    fs::create_dir_all(skill.parent().expect("Skill parent")).expect("Skill directory");
+    fs::write(
+        &skill,
+        format!("---\nname: review\ndescription: Review\n---\n{private}\0"),
+    )
+    .expect("invalid Skill");
+    configure_model(
+        sugarcode_home.path(),
+        "127.0.0.1:1".parse().expect("fixture endpoint"),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(sugarcode_home.path())
+        .args(["app-server", "--stdio", "--workspace"])
+        .arg(workspace.path())
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run invalid workspace Skill");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr, "sugarcode: InvalidEncoding\n");
+    assert!(!stderr.contains(private));
+    assert!(!stderr.contains("SKILL.md"));
+    assert!(!stderr.contains(".agents"));
+}
+
+#[test]
 #[cfg(not(target_os = "linux"))]
 fn unsupported_command_workspace_write_omits_shell_without_fallback() {
     let sugarcode_home = tempfile::tempdir().expect("isolated SugarCode home");
