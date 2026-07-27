@@ -45,11 +45,18 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
         });
     }
     if runtime.shell_executor.is_some() && runtime.approval_requester.is_some() {
+        let description = if runtime
+            .shell_executor
+            .as_ref()
+            .is_some_and(|executor| executor.sandbox_policy().workspace_write.is_some())
+        {
+            "Execute one exact absolute program and argv in the workspace root after per-command approval. This is not a shell. Filesystem reads and writes inside the workspace are allowed, writes outside the workspace are denied, and network access is denied."
+        } else {
+            "Execute one exact absolute program and argv in the workspace root after per-command approval. This is not a shell. Filesystem reads are allowed, filesystem writes are denied, and network access is denied."
+        };
         definitions.push(ModelToolDefinition {
             name: "shell/exec".to_string(),
-            description:
-                "Execute one exact absolute program and argv in the workspace root after per-command approval. This is not a shell. Filesystem reads are allowed, filesystem writes are denied, and network access is denied."
-                    .to_string(),
+            description: description.to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,

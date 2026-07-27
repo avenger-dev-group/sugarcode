@@ -18,8 +18,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const hasOnlyKeys = (
   value: Record<string, unknown>,
   required: readonly string[],
+  optional: readonly string[] = [],
 ): boolean => {
-  const allowed = new Set(required);
+  const allowed = new Set([...required, ...optional]);
   return (
     required.every((key) => Object.hasOwn(value, key)) &&
     Object.keys(value).every((key) => allowed.has(key))
@@ -64,20 +65,24 @@ export const parseCommandApprovalRequest = (
 ): CommandApprovalParams | null => {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      'approvalId',
-      'threadId',
-      'turnId',
-      'callId',
-      'command',
-      'arguments',
-      'cwd',
-      'approvalScope',
-      'environmentPolicy',
-      'sandboxed',
-      'sandboxPolicy',
-      'networkPolicy',
-    ]) ||
+    !hasOnlyKeys(
+      value,
+      [
+        'approvalId',
+        'threadId',
+        'turnId',
+        'callId',
+        'command',
+        'arguments',
+        'cwd',
+        'approvalScope',
+        'environmentPolicy',
+        'sandboxed',
+        'sandboxPolicy',
+        'networkPolicy',
+      ],
+      ['workspaceWritePolicy'],
+    ) ||
     typeof id !== 'string' ||
     !isBoundedIdentifier(value.approvalId) ||
     id !== value.approvalId ||
@@ -97,6 +102,8 @@ export const parseCommandApprovalRequest = (
     value.environmentPolicy !== 'minimalV1' ||
     value.sandboxed !== true ||
     value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
+    (value.workspaceWritePolicy !== undefined &&
+      value.workspaceWritePolicy !== 'commandWorkspaceWriteV1') ||
     value.networkPolicy !== 'networkDeniedV1'
   ) {
     return null;
@@ -123,6 +130,9 @@ export const parseCommandApprovalRequest = (
     environmentPolicy: 'minimalV1',
     sandboxed: true,
     sandboxPolicy: 'filesystemReadOnlyV1',
+    ...(value.workspaceWritePolicy === 'commandWorkspaceWriteV1'
+      ? { workspaceWritePolicy: 'commandWorkspaceWriteV1' as const }
+      : {}),
     networkPolicy: 'networkDeniedV1',
   };
 };

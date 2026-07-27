@@ -18,6 +18,43 @@ use std::thread;
 use std::thread::JoinHandle;
 
 #[test]
+fn command_workspace_write_requires_an_explicit_workspace() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["app-server", "--stdio", "--allow-command-workspace-write"])
+        .output()
+        .expect("run CLI argument validation");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--workspace <DIR>"),
+        "{output:?}"
+    );
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn unsupported_command_workspace_write_omits_shell_without_fallback() {
+    let sugarcode_home = tempfile::tempdir().expect("isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("isolated workspace");
+    configure_model(
+        sugarcode_home.path(),
+        "127.0.0.1:1".parse().expect("fixture endpoint"),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["app-server", "--stdio", "--workspace"])
+        .arg(workspace.path())
+        .arg("--allow-command-workspace-write")
+        .env("SUGARCODE_HOME", sugarcode_home.path())
+        .stdin(Stdio::null())
+        .output()
+        .expect("run unsupported command workspace-write mode");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "sugarcode: shell/exec unavailable: sandboxUnavailable\n"
+    );
+}
+
+#[test]
 fn initialization_happy_path_matches_golden_trace() {
     assert_golden("initialize-happy");
 }
@@ -156,6 +193,7 @@ fn workspace_apply_patch_lifecycle_matches_golden_trace() {
         &sugarcode_home,
         Some(workspace.path()),
         true,
+        false,
     );
     assert_eq!(
         fs::read_to_string(target).expect("read patched fixture"),
@@ -250,10 +288,12 @@ fn approved_shell_approval_matches_execution_attempt_golden_trace() {
     let workspace = tempfile::tempdir().expect("create isolated workspace");
     let _provider =
         MockProvider::start_with_owned_bodies(sugarcode_home.path(), vec![tool_call, final_answer]);
-    run_golden(
+    run_golden_with_options(
         "turn-shell-approval-approved",
         &sugarcode_home,
         Some(workspace.path()),
+        false,
+        cfg!(target_os = "linux"),
     );
 }
 
@@ -828,7 +868,7 @@ fn assert_golden_with_body(name: &str, provider_body: &'static str) {
 }
 
 fn run_golden(name: &str, sugarcode_home: &tempfile::TempDir, workspace: Option<&std::path::Path>) {
-    run_golden_with_options(name, sugarcode_home, workspace, false);
+    run_golden_with_options(name, sugarcode_home, workspace, false, false);
 }
 
 fn run_golden_with_options(
@@ -836,6 +876,7 @@ fn run_golden_with_options(
     sugarcode_home: &tempfile::TempDir,
     workspace: Option<&std::path::Path>,
     allow_workspace_write: bool,
+    allow_command_workspace_write: bool,
 ) {
     let fixture_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-fixtures/app-server/v1");
@@ -851,6 +892,9 @@ fn run_golden_with_options(
     }
     if allow_workspace_write {
         command.arg("--allow-workspace-write");
+    }
+    if allow_command_workspace_write {
+        command.arg("--allow-command-workspace-write");
     }
     let mut child = command
         .env("SUGARCODE_HOME", sugarcode_home.path())
@@ -925,9 +969,50 @@ fn run_golden_with_options(
         "unexpected protocol diagnostics"
     );
     assert!(output.stdout.is_empty(), "stdout was already captured");
-    let actual = normalize_trace(&actual);
+    if allow_command_workspace_write {
+        assert!(
+            actual
+                .matches(r#""workspaceWritePolicy":"commandWorkspaceWriteV1""#)
+                .count()
+                >= 4,
+            "workspace-write policy is missing from the approval and process audit: {actual}"
+        );
+    }
+    let actual = if allow_command_workspace_write {
+        normalize_trace(&without_workspace_write_policy(&actual))
+    } else {
+        normalize_trace(&actual)
+    };
     let expected = normalize_trace(&expected);
     assert_eq!(actual, expected);
+}
+
+fn without_workspace_write_policy(output: &str) -> String {
+    let mut stripped = String::new();
+    for line in output.lines() {
+        let mut value = serde_json::from_str::<Value>(line).expect("stdout line is JSON");
+        remove_workspace_write_policy(&mut value);
+        stripped.push_str(&serde_json::to_string(&value).expect("stripped JSON serializes"));
+        stripped.push('\n');
+    }
+    stripped
+}
+
+fn remove_workspace_write_policy(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                remove_workspace_write_policy(value);
+            }
+        }
+        Value::Object(object) => {
+            object.remove("workspaceWritePolicy");
+            for value in object.values_mut() {
+                remove_workspace_write_policy(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 struct MockProvider {

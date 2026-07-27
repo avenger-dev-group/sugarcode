@@ -14,6 +14,7 @@ import type { ServerMessage } from '../runtime-validation';
 
 const request = (
   approvalId = 'approval/one',
+  workspaceWrite = false,
 ): Extract<ServerMessage, { kind: 'request' }> => ({
   kind: 'request',
   id: approvalId,
@@ -30,6 +31,9 @@ const request = (
     environmentPolicy: 'minimalV1',
     sandboxed: true,
     sandboxPolicy: 'filesystemReadOnlyV1',
+    ...(workspaceWrite
+      ? { workspaceWritePolicy: 'commandWorkspaceWriteV1' }
+      : {}),
     networkPolicy: 'networkDeniedV1',
   },
 });
@@ -103,6 +107,26 @@ describe('CommandApprovalController', () => {
         'denied',
       ),
     );
+    expect(controller.getSnapshot()).toEqual({
+      revision: 0,
+      status: 'idle',
+    });
+  });
+
+  it('denies a valid workspace-write request without presenting or failing the protocol', async () => {
+    const { controller, onProtocolFailure, writeDecision } =
+      createController('linux');
+    controller.markSurfaceReady();
+
+    controller.handleServerRequest(request('approval/write', true));
+
+    await vi.waitFor(() =>
+      expect(writeDecision).toHaveBeenCalledWith(
+        'approval/write',
+        'denied',
+      ),
+    );
+    expect(onProtocolFailure).not.toHaveBeenCalled();
     expect(controller.getSnapshot()).toEqual({
       revision: 0,
       status: 'idle',

@@ -8,9 +8,12 @@ use tokio::sync::oneshot;
 async fn command_approval_request_correlates_one_client_response() {
     let mut session = approval_ready_session();
     let (response, receiver) = oneshot::channel();
+    let mut command_request = request("approval/one");
+    command_request.workspace_write_policy =
+        Some(sugarcode_protocol::CoreCommandWorkspaceWritePolicy::CommandWorkspaceWriteV1);
     let message = session
         .process_approval_request(PendingCommandApproval {
-            request: request("approval/one"),
+            request: command_request,
             response,
         })
         .expect("server request");
@@ -34,6 +37,14 @@ async fn command_approval_request_correlates_one_client_response() {
             .and_then(|params| params.get("sandboxPolicy"))
             .and_then(Value::as_str),
         Some("filesystemReadOnlyV1")
+    );
+    assert_eq!(
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("workspaceWritePolicy"))
+            .and_then(Value::as_str),
+        Some("commandWorkspaceWriteV1")
     );
     assert_eq!(
         request
@@ -116,6 +127,7 @@ fn request(approval_id: &str) -> CommandApprovalRequest {
         environment_policy: "minimalV1".to_string(),
         sandboxed: true,
         sandbox_policy: sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1,
+        workspace_write_policy: None,
         network_policy: sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1,
     }
 }

@@ -193,6 +193,13 @@ where
                     sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
                 }
             },
+            workspace_write_policy: pending.request.workspace_write_policy.map(|policy| {
+                match policy {
+                    sugarcode_protocol::CoreCommandWorkspaceWritePolicy::CommandWorkspaceWriteV1 => {
+                        sugarcode_app_server_protocol::CommandWorkspaceWritePolicy::CommandWorkspaceWriteV1
+                    }
+                }
+            }),
             network_policy: match pending.request.network_policy {
                 sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1 => {
                     sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1

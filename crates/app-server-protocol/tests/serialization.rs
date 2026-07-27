@@ -2,6 +2,7 @@ use serde_json::json;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
 use sugarcode_app_server_protocol::CommandNetworkPolicy;
 use sugarcode_app_server_protocol::CommandSandboxPolicy;
+use sugarcode_app_server_protocol::CommandWorkspaceWritePolicy;
 use sugarcode_app_server_protocol::ERROR_PARSE;
 use sugarcode_app_server_protocol::FileChangeKind;
 use sugarcode_app_server_protocol::FileChangeNewlineStyle;
@@ -587,6 +588,7 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             environment_policy: "minimalV1".to_string(),
             sandboxed: true,
             sandbox_policy: Some(CommandSandboxPolicy::FilesystemReadOnlyV1),
+            workspace_write_policy: Some(CommandWorkspaceWritePolicy::CommandWorkspaceWriteV1,),
             network_policy: Some(CommandNetworkPolicy::NetworkDeniedV1),
         })
         .expect("approval request serializes"),
@@ -601,6 +603,7 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             "environmentPolicy": "minimalV1",
             "sandboxed": true,
             "sandboxPolicy": "filesystemReadOnlyV1",
+            "workspaceWritePolicy": "commandWorkspaceWriteV1",
             "networkPolicy": "networkDeniedV1"
         })
     );
@@ -630,6 +633,7 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             duration_ms: 2,
             outcome: sugarcode_app_server_protocol::ProcessOutcome::ExitCode { code: 0 },
             sandbox_policy: Some(CommandSandboxPolicy::FilesystemReadOnlyV1),
+            workspace_write_policy: Some(CommandWorkspaceWritePolicy::CommandWorkspaceWriteV1,),
             network_policy: Some(CommandNetworkPolicy::NetworkDeniedV1),
         })
         .expect("process result serializes"),
@@ -645,6 +649,7 @@ fn shell_approval_and_process_results_are_provider_neutral() {
             "durationMs": 2,
             "outcome": {"type": "exitCode", "code": 0},
             "sandboxPolicy": "filesystemReadOnlyV1",
+            "workspaceWritePolicy": "commandWorkspaceWriteV1",
             "networkPolicy": "networkDeniedV1"
         })
     );

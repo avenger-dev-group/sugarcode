@@ -305,6 +305,7 @@ fn map_snapshot_parts(
                             environment_policy,
                             sandboxed,
                             sandbox_policy,
+                            workspace_write_policy,
                             network_policy,
                         } => PublicItem::CommandApprovalRequest {
                             id: id.into_string(),
@@ -316,6 +317,9 @@ fn map_snapshot_parts(
                             environment_policy,
                             sandboxed,
                             sandbox_policy: public_sandbox_policy(sandbox_policy.as_deref()),
+                            workspace_write_policy: public_workspace_write_policy(
+                                workspace_write_policy.as_deref(),
+                            ),
                             network_policy: public_network_policy(network_policy.as_deref()),
                         },
                         DurableItemSnapshot::CommandApprovalDecision {
@@ -520,6 +524,7 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             environment_policy,
             sandboxed,
             sandbox_policy,
+            workspace_write_policy,
             network_policy,
         } => PublicItem::CommandApprovalRequest {
             id: item.id.into_string(),
@@ -533,6 +538,11 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             sandbox_policy: sandbox_policy.map(|policy| match policy {
                 sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1 => {
                     sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
+                }
+            }),
+            workspace_write_policy: workspace_write_policy.map(|policy| match policy {
+                sugarcode_protocol::CoreCommandWorkspaceWritePolicy::CommandWorkspaceWriteV1 => {
+                    sugarcode_app_server_protocol::CommandWorkspaceWritePolicy::CommandWorkspaceWriteV1
                 }
             }),
             network_policy: network_policy.map(|policy| match policy {
@@ -597,6 +607,13 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
                             sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
                         }
                     }),
+                    workspace_write_policy: process.workspace_write_policy.map(|policy| {
+                        match policy {
+                            sugarcode_protocol::CoreCommandWorkspaceWritePolicy::CommandWorkspaceWriteV1 => {
+                                sugarcode_app_server_protocol::CommandWorkspaceWritePolicy::CommandWorkspaceWriteV1
+                            }
+                        }
+                    }),
                     network_policy: process.network_policy.map(|policy| match policy {
                         sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1 => {
                             sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1
@@ -635,6 +652,9 @@ fn map_durable_tool_result(result: sugarcode_state::DurableToolResult) -> Public
                 }
             },
             sandbox_policy: public_sandbox_policy(process.sandbox_policy.as_deref()),
+            workspace_write_policy: public_workspace_write_policy(
+                process.workspace_write_policy.as_deref(),
+            ),
             network_policy: public_network_policy(process.network_policy.as_deref()),
         },
     }
@@ -647,6 +667,17 @@ fn public_network_policy(
         Some("networkDeniedV1") => {
             Some(sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1)
         }
+        Some(_) | None => None,
+    }
+}
+
+fn public_workspace_write_policy(
+    policy: Option<&str>,
+) -> Option<sugarcode_app_server_protocol::CommandWorkspaceWritePolicy> {
+    match policy {
+        Some("commandWorkspaceWriteV1") => Some(
+            sugarcode_app_server_protocol::CommandWorkspaceWritePolicy::CommandWorkspaceWriteV1,
+        ),
         Some(_) | None => None,
     }
 }

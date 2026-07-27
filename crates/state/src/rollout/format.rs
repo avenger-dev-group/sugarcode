@@ -151,6 +151,8 @@ pub(super) enum StoredItemRef<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         sandbox_policy: Option<&'a str>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        workspace_write_policy: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         network_policy: Option<&'a str>,
     },
     CommandApprovalDecision {
@@ -193,6 +195,8 @@ pub(super) enum StoredToolResultRef<'a> {
         outcome: StoredProcessOutcomeRef,
         #[serde(skip_serializing_if = "Option::is_none")]
         sandbox_policy: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace_write_policy: Option<&'a str>,
         #[serde(skip_serializing_if = "Option::is_none")]
         network_policy: Option<&'a str>,
     },
@@ -271,6 +275,7 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 environment_policy,
                 sandboxed,
                 sandbox_policy,
+                workspace_write_policy,
                 network_policy,
             } => Self::CommandApprovalRequest {
                 id: id.as_str(),
@@ -282,6 +287,7 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 environment_policy,
                 sandboxed: *sandboxed,
                 sandbox_policy: sandbox_policy.as_deref(),
+                workspace_write_policy: workspace_write_policy.as_deref(),
                 network_policy: network_policy.as_deref(),
             },
             DurableItemSnapshot::CommandApprovalDecision {
@@ -338,6 +344,7 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                             }
                         },
                         sandbox_policy: process.sandbox_policy.as_deref(),
+                        workspace_write_policy: process.workspace_write_policy.as_deref(),
                         network_policy: process.network_policy.as_deref(),
                     },
                 },
@@ -599,6 +606,8 @@ enum StoredItem {
         #[serde(default)]
         sandbox_policy: Option<String>,
         #[serde(default)]
+        workspace_write_policy: Option<String>,
+        #[serde(default)]
         network_policy: Option<String>,
     },
     CommandApprovalDecision {
@@ -641,6 +650,8 @@ enum StoredToolResult {
         outcome: StoredProcessOutcome,
         #[serde(default)]
         sandbox_policy: Option<String>,
+        #[serde(default)]
+        workspace_write_policy: Option<String>,
         #[serde(default)]
         network_policy: Option<String>,
     },
@@ -1067,6 +1078,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             environment_policy,
             sandboxed,
             sandbox_policy,
+            workspace_write_policy,
             network_policy,
         } => DurableItemSnapshot::CommandApprovalRequest {
             id: ItemId::new(id),
@@ -1078,6 +1090,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             environment_policy,
             sandboxed,
             sandbox_policy,
+            workspace_write_policy,
             network_policy,
         },
         StoredItem::CommandApprovalDecision {
@@ -1123,6 +1136,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
                     duration_ms,
                     outcome,
                     sandbox_policy,
+                    workspace_write_policy,
                     network_policy,
                 } => DurableToolResult::Process(super::DurableProcessResult {
                     stdout,
@@ -1143,6 +1157,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
                         StoredProcessOutcome::TimedOut => super::DurableProcessOutcome::TimedOut,
                     },
                     sandbox_policy,
+                    workspace_write_policy,
                     network_policy,
                 }),
             },

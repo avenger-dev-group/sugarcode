@@ -112,6 +112,10 @@ export class CommandApprovalController {
       void this.denyThenFail(request.id, this.options.onProtocolFailure);
       return;
     }
+    if (params.workspaceWritePolicy === 'commandWorkspaceWriteV1') {
+      void this.writeDecision(request.id, 'denied');
+      return;
+    }
     if (this.options.platform === 'win32') {
       void this.denyThenFail(request.id, this.options.onProtocolFailure);
       return;

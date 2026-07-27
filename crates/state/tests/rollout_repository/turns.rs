@@ -202,6 +202,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             environment_policy: "minimalV1".to_string(),
             sandboxed: true,
             sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
+            workspace_write_policy: None,
             network_policy: Some("networkDeniedV1".to_string()),
         },
         DurableItemSnapshot::CommandApprovalDecision {
@@ -224,6 +225,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
                 duration_ms: 2,
                 outcome: DurableProcessOutcome::ExitCode { code: 0 },
                 sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
+                workspace_write_policy: None,
                 network_policy: Some("networkDeniedV1".to_string()),
             }),
         },
@@ -320,7 +322,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
 }
 
 #[test]
-fn execution_attempt_without_result_recovers_as_interrupted_and_is_not_replayed() {
+fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_replayed() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
     let thread_id = ThreadId::new("thr_0000000000000001");
@@ -350,6 +352,7 @@ fn execution_attempt_without_result_recovers_as_interrupted_and_is_not_replayed(
             environment_policy: "minimalV1".to_string(),
             sandboxed: true,
             sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
+            workspace_write_policy: Some("commandWorkspaceWriteV1".to_string()),
             network_policy: Some("networkDeniedV1".to_string()),
         },
         DurableItemSnapshot::CommandApprovalDecision {
@@ -392,12 +395,17 @@ fn execution_attempt_without_result_recovers_as_interrupted_and_is_not_replayed(
         .expect("thread");
     assert_eq!(snapshot.turns[0].status, DurableTurnStatus::Interrupted);
     assert_eq!(snapshot.turns[0].items.last(), incremental.last());
-    assert!(
-        !snapshot.turns[0]
-            .items
-            .iter()
-            .any(|item| matches!(item, DurableItemSnapshot::ToolResult { .. }))
-    );
+    assert!(matches!(
+        &snapshot.turns[0].items[2],
+        DurableItemSnapshot::CommandApprovalRequest {
+            workspace_write_policy: Some(policy),
+            ..
+        } if policy == "commandWorkspaceWriteV1"
+    ));
+    assert!(!snapshot.turns[0].items.iter().any(|item| matches!(
+        item,
+        DurableItemSnapshot::ToolResult { .. } | DurableItemSnapshot::FileChange { .. }
+    )));
     assert_eq!(repository.id_sequences().item, 5);
 }
 
@@ -447,8 +455,10 @@ fn remove_command_policy_fields(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
             object.remove("sandboxPolicy");
+            object.remove("workspaceWritePolicy");
             object.remove("networkPolicy");
             object.remove("sandbox_policy");
+            object.remove("workspace_write_policy");
             object.remove("network_policy");
             for value in object.values_mut() {
                 remove_command_policy_fields(value);

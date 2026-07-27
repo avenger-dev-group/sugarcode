@@ -151,6 +151,7 @@ pub enum DurableItemSnapshot {
         environment_policy: String,
         sandboxed: bool,
         sandbox_policy: Option<String>,
+        workspace_write_policy: Option<String>,
         network_policy: Option<String>,
     },
     CommandApprovalDecision {
@@ -190,6 +191,7 @@ pub struct DurableProcessResult {
     pub duration_ms: u64,
     pub outcome: DurableProcessOutcome,
     pub sandbox_policy: Option<String>,
+    pub workspace_write_policy: Option<String>,
     pub network_policy: Option<String>,
 }
 
@@ -262,6 +264,7 @@ pub(crate) fn valid_incremental_item(
                 environment_policy,
                 sandboxed,
                 sandbox_policy,
+                workspace_write_policy,
                 network_policy,
                 ..
             } if existing_approval_id == approval_id && existing_call_id == call_id => {
@@ -275,6 +278,7 @@ pub(crate) fn valid_incremental_item(
                     environment_policy,
                     sandboxed,
                     sandbox_policy,
+                    workspace_write_policy,
                     network_policy,
                 ));
             }
@@ -314,6 +318,7 @@ pub(crate) fn valid_incremental_item(
         environment_policy,
         sandboxed,
         sandbox_policy,
+        workspace_write_policy,
         network_policy,
     )) = matching_request
     else {
@@ -325,6 +330,10 @@ pub(crate) fn valid_incremental_item(
         || environment_policy != "minimalV1"
         || !sandboxed
         || sandbox_policy.as_deref() != Some("filesystemReadOnlyV1")
+        || !matches!(
+            workspace_write_policy.as_deref(),
+            None | Some("commandWorkspaceWriteV1")
+        )
         || network_policy.as_deref() != Some("networkDeniedV1")
         || matching_decision.is_none_or(|decision| decision != "approved")
     {

@@ -41,6 +41,16 @@
     },
     "turnId": {
       "type": "string"
+    },
+    "workspaceWritePolicy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommandWorkspaceWritePolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "additionalProperties": false,
@@ -69,6 +79,12 @@
       "type": "string",
       "enum": [
         "filesystemReadOnlyV1"
+      ]
+    },
+    "CommandWorkspaceWritePolicy": {
+      "type": "string",
+      "enum": [
+        "commandWorkspaceWriteV1"
       ]
     }
   }

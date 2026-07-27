@@ -27,6 +27,7 @@ pub async fn run_stdio(
     config: EffectiveConfig,
     workspace: Option<std::path::PathBuf>,
     allow_workspace_write: bool,
+    allow_command_workspace_write: bool,
 ) -> io::Result<()> {
     let workspace = workspace
         .as_deref()
@@ -85,9 +86,15 @@ pub async fn run_stdio(
                 };
             if let Some(Ok(command_workspace_root)) = command_workspace_root {
                 let executable = std::env::current_exe()?;
-                match sugarcode_tools::NativeShellCommandExecutor::new(
+                let command_policy = if allow_command_workspace_write {
+                    sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1
+                } else {
+                    sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1
+                };
+                match sugarcode_tools::NativeShellCommandExecutor::new_with_policy(
                     executable,
                     command_workspace_root,
+                    command_policy,
                 ) {
                     Ok(shell_executor) => CoreRuntime::new_with_shell(
                         core,

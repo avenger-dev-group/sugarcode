@@ -5,6 +5,7 @@ use ts_rs::TS;
 
 use crate::CommandNetworkPolicy;
 use crate::CommandSandboxPolicy;
+use crate::CommandWorkspaceWritePolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -82,6 +83,11 @@ pub enum Item {
         #[ts(rename = "sandboxPolicy")]
         #[ts(optional)]
         sandbox_policy: Option<CommandSandboxPolicy>,
+        #[serde(rename = "workspaceWritePolicy")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "workspaceWritePolicy")]
+        #[ts(optional)]
+        workspace_write_policy: Option<CommandWorkspaceWritePolicy>,
         #[serde(rename = "networkPolicy")]
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(rename = "networkPolicy")]
@@ -165,6 +171,11 @@ pub enum ToolResult {
         #[ts(rename = "sandboxPolicy")]
         #[ts(optional)]
         sandbox_policy: Option<CommandSandboxPolicy>,
+        #[serde(rename = "workspaceWritePolicy")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "workspaceWritePolicy")]
+        #[ts(optional)]
+        workspace_write_policy: Option<CommandWorkspaceWritePolicy>,
         #[serde(rename = "networkPolicy")]
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(rename = "networkPolicy")]

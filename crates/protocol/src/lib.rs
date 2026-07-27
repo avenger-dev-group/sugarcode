@@ -11,6 +11,7 @@ pub use event::CoreTurnErrorKind;
 pub use item::CoreCommandApprovalDecision;
 pub use item::CoreCommandNetworkPolicy;
 pub use item::CoreCommandSandboxPolicy;
+pub use item::CoreCommandWorkspaceWritePolicy;
 pub use item::CoreFileChangeKind;
 pub use item::CoreFileChangeNewlineStyle;
 pub use item::CoreItemKind;

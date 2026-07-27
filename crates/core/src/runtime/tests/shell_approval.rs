@@ -57,6 +57,36 @@ impl ShellCommandExecutor for RecordedShell {
 }
 
 #[derive(Debug)]
+struct RecordedWorkspaceWriteShell;
+
+impl ShellCommandExecutor for RecordedWorkspaceWriteShell {
+    fn sandbox_policy(&self) -> sugarcode_tools::CommandSandboxPolicy {
+        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1
+    }
+
+    fn execute(
+        &self,
+        _arguments: ShellCommandArguments,
+        _cancellation: CancellationToken,
+    ) -> sugarcode_tools::ShellCommandFuture {
+        Box::pin(async {
+            ShellCommandExecution::Completed(sugarcode_tools::ShellCommandOutput {
+                stdout: "approved output\n".to_string(),
+                stderr: String::new(),
+                stdout_bytes: 16,
+                stderr_bytes: 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                duration_ms: 7,
+                outcome: ShellCommandOutcome::ExitCode { code: 0 },
+                sandbox_policy:
+                    sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1,
+            })
+        })
+    }
+}
+
+#[derive(Debug)]
 struct CountingShell(Arc<AtomicUsize>);
 
 impl ShellCommandExecutor for CountingShell {
@@ -220,7 +250,7 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
         None,
         None,
         None,
-        Arc::new(RecordedShell),
+        Arc::new(RecordedWorkspaceWriteShell),
         Arc::new(FixedApproval(CommandApprovalOutcome::Approved)),
     );
     let TurnStartOutcome::Accepted { turn_id } = runtime
@@ -257,6 +287,7 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             sugarcode_state::DurableItemSnapshot::CommandApprovalRequest {
                 sandboxed: true,
                 sandbox_policy: Some(sandbox_policy),
+                workspace_write_policy: Some(workspace_write_policy),
                 network_policy: Some(network_policy),
                 ..
             },
@@ -278,8 +309,10 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
         ] if command == &test_absolute_command()
             && arguments == &["approved output".to_string()]
             && sandbox_policy == "filesystemReadOnlyV1"
+            && workspace_write_policy == "commandWorkspaceWriteV1"
             && network_policy == "networkDeniedV1"
             && process.sandbox_policy.as_deref() == Some("filesystemReadOnlyV1")
+            && process.workspace_write_policy.as_deref() == Some("commandWorkspaceWriteV1")
             && process.network_policy.as_deref() == Some("networkDeniedV1")
             && decision == "approved"
             && attempt_approval_id == approval_id
@@ -321,6 +354,11 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             .iter()
             .any(|tool| tool.name == "shell/exec")
     );
+    assert!(requests[0].tools.iter().any(|tool| {
+        tool.name == "shell/exec"
+            && tool.description.contains("writes inside the workspace")
+            && tool.description.contains("network access is denied")
+    }));
     assert!(requests[1].tools.is_empty());
 }
 

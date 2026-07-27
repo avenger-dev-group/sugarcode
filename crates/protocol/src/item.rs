@@ -67,6 +67,7 @@ pub enum CoreItemKind {
         environment_policy: String,
         sandboxed: bool,
         sandbox_policy: Option<CoreCommandSandboxPolicy>,
+        workspace_write_policy: Option<CoreCommandWorkspaceWritePolicy>,
         network_policy: Option<CoreCommandNetworkPolicy>,
     },
     CommandApprovalDecision {
@@ -114,6 +115,7 @@ pub struct CoreProcessResult {
     pub duration_ms: u64,
     pub outcome: CoreProcessOutcome,
     pub sandbox_policy: Option<CoreCommandSandboxPolicy>,
+    pub workspace_write_policy: Option<CoreCommandWorkspaceWritePolicy>,
     pub network_policy: Option<CoreCommandNetworkPolicy>,
 }
 
@@ -144,6 +146,11 @@ pub enum CoreCommandNetworkPolicy {
     NetworkDeniedV1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreCommandWorkspaceWritePolicy {
+    CommandWorkspaceWriteV1,
+}
+
 impl fmt::Display for CoreCommandSandboxPolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -156,6 +163,14 @@ impl fmt::Display for CoreCommandNetworkPolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::NetworkDeniedV1 => "networkDeniedV1",
+        })
+    }
+}
+
+impl fmt::Display for CoreCommandWorkspaceWritePolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::CommandWorkspaceWriteV1 => "commandWorkspaceWriteV1",
         })
     }
 }

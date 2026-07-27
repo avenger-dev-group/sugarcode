@@ -66,6 +66,7 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             environment_policy,
             sandboxed,
             sandbox_policy,
+            workspace_write_policy,
             network_policy,
         } => DurableItemSnapshot::CommandApprovalRequest {
             id: item.id.clone(),
@@ -77,6 +78,7 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             environment_policy: environment_policy.clone(),
             sandboxed: *sandboxed,
             sandbox_policy: sandbox_policy.map(|policy| policy.to_string()),
+            workspace_write_policy: workspace_write_policy.map(|policy| policy.to_string()),
             network_policy: network_policy.map(|policy| policy.to_string()),
         },
         CoreItemKind::CommandApprovalDecision {
@@ -161,6 +163,7 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
             environment_policy,
             sandboxed,
             sandbox_policy,
+            workspace_write_policy,
             network_policy,
         } => ItemKind::CommandApprovalRequest {
             approval_id: approval_id.clone(),
@@ -171,6 +174,7 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
             environment_policy: environment_policy.clone(),
             sandboxed: *sandboxed,
             sandbox_policy: *sandbox_policy,
+            workspace_write_policy: *workspace_write_policy,
             network_policy: *network_policy,
         },
         CoreItemKind::CommandApprovalDecision {
@@ -235,6 +239,9 @@ pub(super) fn durable_tool_result(result: &CoreToolResult) -> DurableToolResult 
                     }
                 },
                 sandbox_policy: process.sandbox_policy.map(|policy| policy.to_string()),
+                workspace_write_policy: process
+                    .workspace_write_policy
+                    .map(|policy| policy.to_string()),
                 network_policy: process.network_policy.map(|policy| policy.to_string()),
             })
         }
@@ -278,6 +285,15 @@ pub(super) fn core_tool_result(result: &DurableToolResult) -> CoreToolResult {
                         "filesystemReadOnlyV1" => {
                             Some(sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1)
                         }
+                        _ => None,
+                    }),
+                workspace_write_policy: process
+                    .workspace_write_policy
+                    .as_deref()
+                    .and_then(|policy| match policy {
+                        "commandWorkspaceWriteV1" => Some(
+                            sugarcode_protocol::CoreCommandWorkspaceWritePolicy::CommandWorkspaceWriteV1,
+                        ),
                         _ => None,
                     }),
                 network_policy: process

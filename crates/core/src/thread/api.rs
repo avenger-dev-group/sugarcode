@@ -261,6 +261,7 @@ impl CoreApi for Core {
                         environment_policy,
                         sandboxed,
                         sandbox_policy,
+                        workspace_write_policy,
                         network_policy,
                         ..
                     } => DurableItemSnapshot::CommandApprovalRequest {
@@ -273,6 +274,7 @@ impl CoreApi for Core {
                         environment_policy: environment_policy.clone(),
                         sandboxed: *sandboxed,
                         sandbox_policy: sandbox_policy.clone(),
+                        workspace_write_policy: workspace_write_policy.clone(),
                         network_policy: network_policy.clone(),
                     },
                     DurableItemSnapshot::CommandApprovalDecision {

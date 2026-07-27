@@ -17,6 +17,13 @@ pub enum CommandNetworkPolicy {
     NetworkDeniedV1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum CommandWorkspaceWritePolicy {
+    CommandWorkspaceWriteV1,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(rename_all = "camelCase")]
@@ -32,6 +39,9 @@ pub struct CommandApprovalParams {
     pub environment_policy: String,
     pub sandboxed: bool,
     pub sandbox_policy: CommandSandboxPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_write_policy: Option<CommandWorkspaceWritePolicy>,
     pub network_policy: CommandNetworkPolicy,
 }
 

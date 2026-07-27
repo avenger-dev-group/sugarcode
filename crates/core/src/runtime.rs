@@ -727,6 +727,9 @@ async fn run_turn(
                             .expect("validated shell executor")
                             .sandbox_policy();
                         let filesystem_policy = core_filesystem_policy(command_policy.filesystem);
+                        let workspace_write_policy = command_policy
+                            .workspace_write
+                            .map(core_workspace_write_policy);
                         let network_policy = core_network_policy(command_policy.network);
                         let approval_id = format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
                         if append_completed_tool_item(
@@ -741,6 +744,7 @@ async fn run_turn(
                                 environment_policy: "minimalV1".to_string(),
                                 sandboxed: true,
                                 sandbox_policy: Some(filesystem_policy),
+                                workspace_write_policy,
                                 network_policy: Some(network_policy),
                             },
                         )
@@ -764,6 +768,7 @@ async fn run_turn(
                                 environment_policy: "minimalV1".to_string(),
                                 sandboxed: true,
                                 sandbox_policy: filesystem_policy,
+                                workspace_write_policy,
                                 network_policy,
                             });
                         let approval = tokio::select! {
@@ -1295,6 +1300,10 @@ fn shell_execution_result(execution: ShellCommandExecution) -> Option<(CoreToolR
                     }
                 },
                 sandbox_policy: Some(core_filesystem_policy(output.sandbox_policy.filesystem)),
+                workspace_write_policy: output
+                    .sandbox_policy
+                    .workspace_write
+                    .map(core_workspace_write_policy),
                 network_policy: Some(core_network_policy(output.sandbox_policy.network)),
             })
         }
@@ -1331,6 +1340,16 @@ fn core_filesystem_policy(
     match policy {
         sugarcode_tools::SandboxPolicy::FilesystemReadOnlyV1 => {
             sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1
+        }
+    }
+}
+
+fn core_workspace_write_policy(
+    policy: sugarcode_tools::WorkspaceWritePolicy,
+) -> sugarcode_protocol::CoreCommandWorkspaceWritePolicy {
+    match policy {
+        sugarcode_tools::WorkspaceWritePolicy::CommandWorkspaceWriteV1 => {
+            sugarcode_protocol::CoreCommandWorkspaceWritePolicy::CommandWorkspaceWriteV1
         }
     }
 }

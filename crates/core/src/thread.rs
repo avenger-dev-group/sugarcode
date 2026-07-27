@@ -221,6 +221,7 @@ enum ItemKind {
         environment_policy: String,
         sandboxed: bool,
         sandbox_policy: Option<sugarcode_protocol::CoreCommandSandboxPolicy>,
+        workspace_write_policy: Option<sugarcode_protocol::CoreCommandWorkspaceWritePolicy>,
         network_policy: Option<sugarcode_protocol::CoreCommandNetworkPolicy>,
     },
     CommandApprovalDecision {
@@ -333,6 +334,7 @@ impl Item {
                 environment_policy,
                 sandboxed,
                 sandbox_policy,
+                workspace_write_policy,
                 network_policy,
             } => CoreItemKind::CommandApprovalRequest {
                 approval_id: approval_id.clone(),
@@ -343,6 +345,7 @@ impl Item {
                 environment_policy: environment_policy.clone(),
                 sandboxed: *sandboxed,
                 sandbox_policy: *sandbox_policy,
+                workspace_write_policy: *workspace_write_policy,
                 network_policy: *network_policy,
             },
             ItemKind::CommandApprovalDecision {
@@ -614,6 +617,7 @@ impl Core {
                         environment_policy,
                         sandboxed,
                         sandbox_policy,
+                        workspace_write_policy,
                         network_policy,
                     } => Item {
                         id: id.clone(),
@@ -627,6 +631,9 @@ impl Core {
                             environment_policy: environment_policy.clone(),
                             sandboxed: *sandboxed,
                             sandbox_policy: command_sandbox_policy(sandbox_policy.as_deref()),
+                            workspace_write_policy: command_workspace_write_policy(
+                                workspace_write_policy.as_deref(),
+                            ),
                             network_policy: command_network_policy(network_policy.as_deref()),
                         },
                     },
@@ -1188,6 +1195,17 @@ fn command_network_policy(
     match value {
         Some("networkDeniedV1") => {
             Some(sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1)
+        }
+        Some(_) | None => None,
+    }
+}
+
+fn command_workspace_write_policy(
+    value: Option<&str>,
+) -> Option<sugarcode_protocol::CoreCommandWorkspaceWritePolicy> {
+    match value {
+        Some("commandWorkspaceWriteV1") => {
+            Some(sugarcode_protocol::CoreCommandWorkspaceWritePolicy::CommandWorkspaceWriteV1)
         }
         Some(_) | None => None,
     }

@@ -30,6 +30,12 @@
         "filesystemReadOnlyV1"
       ]
     },
+    "CommandWorkspaceWritePolicy": {
+      "type": "string",
+      "enum": [
+        "commandWorkspaceWriteV1"
+      ]
+    },
     "FileChangeKind": {
       "type": "string",
       "enum": [
@@ -247,6 +253,16 @@
             "type": {
               "type": "string",
               "const": "commandApprovalRequest"
+            },
+            "workspaceWritePolicy": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CommandWorkspaceWritePolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -499,6 +515,16 @@
             "type": {
               "type": "string",
               "const": "process"
+            },
+            "workspaceWritePolicy": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CommandWorkspaceWritePolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [

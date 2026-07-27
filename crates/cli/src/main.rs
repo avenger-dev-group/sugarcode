@@ -115,6 +115,9 @@ struct AppServerArgs {
     /// Enable bounded workspace/apply-patch writes for this process only.
     #[arg(long, requires = "workspace")]
     allow_workspace_write: bool,
+    /// Enable sandboxed shell-command writes inside the explicit workspace.
+    #[arg(long, requires = "workspace")]
+    allow_command_workspace_write: bool,
     #[command(subcommand)]
     command: Option<AppServerCommand>,
 }
@@ -244,16 +247,22 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             args.command,
             args.workspace,
             args.allow_workspace_write,
+            args.allow_command_workspace_write,
         ) {
-            (true, None, workspace, allow_workspace_write) => {
+            (true, None, workspace, allow_workspace_write, allow_command_workspace_write) => {
                 let effective_config = sugarcode_state::load_effective_config(home)?;
-                sugarcode_app_server::run_stdio(effective_config, workspace, allow_workspace_write)
-                    .await?;
+                sugarcode_app_server::run_stdio(
+                    effective_config,
+                    workspace,
+                    allow_workspace_write,
+                    allow_command_workspace_write,
+                )
+                .await?;
             }
-            (false, Some(AppServerCommand::GenerateTs(args)), None, false) => {
+            (false, Some(AppServerCommand::GenerateTs(args)), None, false, false) => {
                 sugarcode_app_server::generate_typescript(&args.out)?;
             }
-            (false, Some(AppServerCommand::GenerateJsonSchema(args)), None, false) => {
+            (false, Some(AppServerCommand::GenerateJsonSchema(args)), None, false, false) => {
                 sugarcode_app_server::generate_json_schema(&args.out)?;
             }
             _ => {
