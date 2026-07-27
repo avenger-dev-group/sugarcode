@@ -81,6 +81,12 @@ const evaluate = async <Value>(source: string): Promise<Value> => {
   return window.webContents.executeJavaScript(source, true) as Promise<Value>;
 };
 
+const waitForAnimationFrame = async (): Promise<void> => {
+  await evaluate<void>(
+    'new Promise((resolve) => requestAnimationFrame(() => resolve()))',
+  );
+};
+
 const run = async (): Promise<void> => {
   const controller = new CommandApprovalController({
     platform: 'darwin',
@@ -136,6 +142,7 @@ const run = async (): Promise<void> => {
   });
 
   await window.loadFile(rendererPath);
+  window.show();
   await evaluate('window.sugarcode.getCommandApprovalState()');
   controller.handleServerRequest(request('approval/electron-approve'));
   await waitFor(
@@ -176,9 +183,7 @@ const run = async (): Promise<void> => {
   ) {
     throw new Error('Electron approval dialog did not preserve its UI contract.');
   }
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, 250);
-  });
+  await waitForAnimationFrame();
   const screenshot = await window.webContents.capturePage();
   if (screenshot.isEmpty()) {
     throw new Error('Electron approval dialog did not paint.');
@@ -266,9 +271,7 @@ const run = async (): Promise<void> => {
     ),
     'reload approval dialog',
   );
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, 250);
-  });
+  await waitForAnimationFrame();
   const darkDialogBackground = await evaluate<string>(
     `getComputedStyle(
       document.querySelector('[role="alertdialog"]'),
