@@ -1,11 +1,12 @@
 use super::*;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::WorkspaceTool;
 
 #[test]
 fn rejects_relative_commands_and_oversized_arguments() {
     let relative = ShellCommandArguments {
         command: "echo".to_string(),
         arguments: Vec::new(),
-        cwd: std::env::current_dir().expect("current directory"),
     };
     assert_eq!(
         validate_arguments(&relative),
@@ -19,7 +20,6 @@ fn rejects_relative_commands_and_oversized_arguments() {
             "/bin/echo".to_string()
         },
         arguments: vec!["x".repeat(MAX_SHELL_ARGUMENT_BYTES + 1)],
-        cwd: std::env::current_dir().expect("current directory"),
     };
     assert_eq!(
         validate_arguments(&oversized),
@@ -55,9 +55,15 @@ fn sandbox_unavailable_is_a_stable_supervisor_error() {
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn startup_probe_fails_closed_when_the_supervisor_cannot_spawn() {
-    let error = NativeShellCommandExecutor::new(PathBuf::from(
-        "/sugarcode-test/nonexistent-command-supervisor",
-    ))
+    let directory = tempfile::tempdir().expect("workspace");
+    let workspace = WorkspaceTool::open(directory.path()).expect("open workspace");
+    let command_root = workspace
+        .command_workspace_root()
+        .expect("bind command workspace root");
+    let error = NativeShellCommandExecutor::new(
+        PathBuf::from("/sugarcode-test/nonexistent-command-supervisor"),
+        command_root,
+    )
     .expect_err("missing supervisor must fail the command sandbox probe");
     assert_eq!(
         error.kind(),

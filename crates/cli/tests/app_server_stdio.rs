@@ -259,11 +259,11 @@ fn approved_shell_approval_matches_execution_attempt_golden_trace() {
 
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn real_cli_approval_executes_the_exact_bundled_argv() {
-    let command = env!("CARGO_BIN_EXE_sugarcode");
+fn approved_command_stays_bound_to_the_original_workspace_root() {
+    let command = "/bin/cat";
     let arguments = serde_json::to_string(&json!({
         "command": command,
-        "arguments": ["version"],
+        "arguments": ["marker.txt"],
         "cwd": "."
     }))
     .expect("shell arguments");
@@ -288,18 +288,25 @@ fn real_cli_approval_executes_the_exact_bundled_argv() {
         })
     );
     let final_answer = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Version checked.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Marker checked.\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
         "data: [DONE]\n\n"
     )
     .to_string();
     let home = tempfile::tempdir().expect("isolated SugarCode home");
-    let workspace = tempfile::tempdir().expect("isolated workspace");
+    let workspace_parent = tempfile::tempdir().expect("isolated workspace parent");
+    let workspace = workspace_parent.path().join("workspace");
+    let moved_workspace = workspace_parent.path().join("moved-workspace");
+    let replacement = workspace_parent.path().join("replacement");
+    fs::create_dir(&workspace).expect("create workspace");
+    fs::create_dir(&replacement).expect("create replacement");
+    fs::write(workspace.join("marker.txt"), "original").expect("write original marker");
+    fs::write(replacement.join("marker.txt"), "replacement").expect("write replacement marker");
     let _provider =
         MockProvider::start_with_owned_bodies(home.path(), vec![tool_call, final_answer]);
-    let mut child = Command::new(command)
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["app-server", "--stdio", "--workspace"])
-        .arg(workspace.path())
+        .arg(&workspace)
         .env("SUGARCODE_HOME", home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -316,7 +323,7 @@ fn real_cli_approval_executes_the_exact_bundled_argv() {
             "method": "initialize",
             "params": {
                 "protocolVersion": 1,
-                "clientInfo": {"name": "shell-real-test", "version": "1.0.0"},
+                "clientInfo": {"name": "shell-root-binding-test", "version": "1.0.0"},
                 "capabilities": {"commandApprovals": true}
             }
         }),
@@ -342,18 +349,22 @@ fn real_cli_approval_executes_the_exact_bundled_argv() {
             "jsonrpc": "2.0",
             "id": "turn",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Check version"}
+            "params": {"threadId": thread_id, "input": "Read marker"}
         }),
     );
     assert_eq!(read_json(&mut stdout)["id"], "turn");
 
     let mut process_result = None;
+    let mut saw_execution_attempt = false;
     loop {
         let message = read_json(&mut stdout);
         if message["method"] == "item/commandExecution/requestApproval" {
             assert_eq!(message["params"]["sandboxed"], true);
             assert_eq!(message["params"]["sandboxPolicy"], "filesystemReadOnlyV1");
             assert_eq!(message["params"]["networkPolicy"], "networkDeniedV1");
+            fs::rename(&workspace, &moved_workspace).expect("move original workspace");
+            std::os::unix::fs::symlink(&replacement, &workspace)
+                .expect("replace workspace path with symlink");
             send_json(
                 &mut stdin,
                 json!({
@@ -364,8 +375,14 @@ fn real_cli_approval_executes_the_exact_bundled_argv() {
             );
         }
         if message["method"] == "item/completed"
+            && message["params"]["item"]["type"] == "commandExecutionAttempt"
+        {
+            saw_execution_attempt = true;
+        }
+        if message["method"] == "item/completed"
             && message["params"]["item"]["type"] == "toolResult"
         {
+            assert!(saw_execution_attempt, "attempt must precede process result");
             process_result = Some(message["params"]["item"]["result"].clone());
         }
         if message["method"] == "turn/completed" {
@@ -379,12 +396,7 @@ fn real_cli_approval_executes_the_exact_bundled_argv() {
     assert_eq!(process_result["outcome"]["code"], 0);
     assert_eq!(process_result["sandboxPolicy"], "filesystemReadOnlyV1");
     assert_eq!(process_result["networkPolicy"], "networkDeniedV1");
-    assert!(
-        process_result["stdout"]
-            .as_str()
-            .expect("stdout")
-            .contains("sugarcode 1.0.0")
-    );
+    assert_eq!(process_result["stdout"], "original");
     drop(stdin);
     let output = child.wait_with_output().expect("wait app-server");
     assert!(output.status.success(), "{output:?}");

@@ -1,3 +1,6 @@
+use crate::CommandWorkspaceRoot;
+#[cfg(unix)]
+use crate::workspace_command_root::CommandWorkspaceRootIdentity;
 use serde::Deserialize;
 use serde::Serialize;
 use std::ffi::OsString;
@@ -9,6 +12,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 use std::time::Instant;
@@ -24,6 +28,7 @@ pub const MAX_SHELL_TOTAL_ARGUMENT_BYTES: usize = 32 * 1_024;
 pub const MAX_SHELL_OUTPUT_BYTES: usize = 24 * 1_024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPERVISOR_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(35);
+#[cfg(unix)]
 const SUPERVISOR_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const SUPERVISOR_RESULT_BYTES: usize = 2 * MAX_SHELL_OUTPUT_BYTES + 16 * 1_024;
 const SANDBOX_PROBE_SENTINEL: &str = "sugarcode-command-sandbox-probe-ok";
@@ -34,7 +39,6 @@ pub type ShellCommandFuture = Pin<Box<dyn Future<Output = ShellCommandExecution>
 pub struct ShellCommandArguments {
     pub command: String,
     pub arguments: Vec<String>,
-    pub cwd: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,36 +110,48 @@ pub trait ShellCommandExecutor: fmt::Debug + Send + Sync {
 pub struct NativeShellCommandExecutor {
     supervisor_executable: PathBuf,
     sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+    workspace_root: Arc<CommandWorkspaceRoot>,
 }
 
 impl NativeShellCommandExecutor {
-    pub fn new(supervisor_executable: PathBuf) -> Result<Self, sugarcode_sandbox::SandboxError> {
+    pub fn new(
+        supervisor_executable: PathBuf,
+        workspace_root: CommandWorkspaceRoot,
+    ) -> Result<Self, sugarcode_sandbox::SandboxError> {
         let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(
             sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
         )?;
-        probe_native_supervisor(&supervisor_executable, adapter.policy()).map_err(|error| {
-            sugarcode_sandbox::SandboxError::unavailable(format!(
-                "command sandbox supervisor probe failed: {error}"
-            ))
-        })?;
+        probe_native_supervisor(&supervisor_executable, adapter.policy(), &workspace_root)
+            .map_err(|error| {
+                sugarcode_sandbox::SandboxError::unavailable(format!(
+                    "command sandbox supervisor probe failed: {error}"
+                ))
+            })?;
         Ok(Self {
             supervisor_executable,
             sandbox_policy: adapter.policy(),
+            workspace_root: Arc::new(workspace_root),
         })
     }
 }
 
+#[cfg(unix)]
 fn probe_native_supervisor(
     executable: &Path,
     sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+    workspace_root: &CommandWorkspaceRoot,
 ) -> Result<(), ShellCommandErrorKind> {
-    let current_directory =
-        std::env::current_dir().map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
+    let directory = workspace_root
+        .try_clone_directory()
+        .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
+    use std::os::fd::AsRawFd;
+    let workspace_root_fd = directory.as_raw_fd();
     let request = SupervisorRequest {
         command: executable.to_string_lossy().into_owned(),
         arguments: vec!["__command-sandbox-probe".to_owned()],
-        cwd: current_directory,
         sandbox_policy,
+        workspace_root_fd,
+        workspace_root_identity: workspace_root.identity(),
     };
     let mut command = std::process::Command::new(executable);
     command
@@ -145,6 +161,7 @@ fn probe_native_supervisor(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     configure_minimal_environment_std(&mut command);
+    configure_workspace_root_inheritance_std(&mut command, workspace_root_fd)?;
     let mut child = command
         .spawn()
         .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
@@ -203,6 +220,15 @@ fn probe_native_supervisor(
     }
 }
 
+#[cfg(not(unix))]
+fn probe_native_supervisor(
+    _executable: &Path,
+    _sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+    _workspace_root: &CommandWorkspaceRoot,
+) -> Result<(), ShellCommandErrorKind> {
+    Err(ShellCommandErrorKind::SandboxUnavailable)
+}
+
 impl ShellCommandExecutor for NativeShellCommandExecutor {
     fn sandbox_policy(&self) -> sugarcode_sandbox::CommandSandboxPolicy {
         self.sandbox_policy
@@ -215,6 +241,7 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
     ) -> ShellCommandFuture {
         let executable = self.supervisor_executable.clone();
         let sandbox_policy = self.sandbox_policy;
+        let workspace_root = Arc::clone(&self.workspace_root);
         Box::pin(async move {
             if validate_arguments(&arguments).is_err() {
                 return ShellCommandExecution::Error(ShellCommandErrorKind::InvalidArguments);
@@ -222,10 +249,13 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
             let request = SupervisorRequest {
                 command: arguments.command,
                 arguments: arguments.arguments,
-                cwd: arguments.cwd,
                 sandbox_policy,
+                #[cfg(unix)]
+                workspace_root_fd: -1,
+                #[cfg(unix)]
+                workspace_root_identity: workspace_root.identity(),
             };
-            run_native(executable, request, cancellation).await
+            run_native(executable, request, workspace_root, cancellation).await
         })
     }
 }
@@ -235,8 +265,11 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
 struct SupervisorRequest {
     command: String,
     arguments: Vec<String>,
-    cwd: PathBuf,
     sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+    #[cfg(unix)]
+    workspace_root_fd: i32,
+    #[cfg(unix)]
+    workspace_root_identity: CommandWorkspaceRootIdentity,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -249,8 +282,26 @@ enum SupervisorResponse {
 async fn run_native(
     executable: PathBuf,
     request: SupervisorRequest,
+    workspace_root: Arc<CommandWorkspaceRoot>,
     cancellation: CancellationToken,
 ) -> ShellCommandExecution {
+    #[cfg(unix)]
+    let (request, directory) = {
+        let mut request = request;
+        let directory = match workspace_root.try_clone_directory() {
+            Ok(directory) => directory,
+            Err(_) => {
+                return ShellCommandExecution::Error(ShellCommandErrorKind::SandboxUnavailable);
+            }
+        };
+        {
+            use std::os::fd::AsRawFd;
+            request.workspace_root_fd = directory.as_raw_fd();
+        }
+        (request, directory)
+    };
+    #[cfg(not(unix))]
+    drop(workspace_root);
     let requested_policy = request.sandbox_policy;
     let mut command = Command::new(executable);
     command
@@ -261,10 +312,17 @@ async fn run_native(
         .stderr(Stdio::null())
         .kill_on_drop(true);
     configure_minimal_environment_tokio(&mut command);
+    #[cfg(unix)]
+    if configure_workspace_root_inheritance_tokio(&mut command, request.workspace_root_fd).is_err()
+    {
+        return ShellCommandExecution::Error(ShellCommandErrorKind::SandboxUnavailable);
+    }
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => return ShellCommandExecution::Error(map_spawn_error(&error)),
     };
+    #[cfg(unix)]
+    drop(directory);
 
     #[cfg(windows)]
     let job = match windows_job::Job::assign(&child) {
@@ -448,6 +506,7 @@ fn execute_supervised(
     request: SupervisorRequest,
     cancel_rx: std_mpsc::Receiver<()>,
 ) -> Result<ShellCommandOutput, ShellCommandErrorKind> {
+    let working_directory = inherited_working_directory(&request)?;
     let environment = minimal_environment();
     let started = Instant::now();
     let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(request.sandbox_policy)
@@ -456,7 +515,7 @@ fn execute_supervised(
         .spawn(sugarcode_sandbox::CommandSpec {
             command: request.command,
             arguments: request.arguments,
-            cwd: request.cwd,
+            working_directory,
             environment,
         })
         .map_err(map_sandbox_spawn_error)?;
@@ -542,45 +601,66 @@ fn read_bounded(mut reader: impl Read) -> BoundedOutput {
 }
 
 fn validate_arguments(arguments: &ShellCommandArguments) -> Result<(), ShellCommandErrorKind> {
-    let request = SupervisorRequest {
-        command: arguments.command.clone(),
-        arguments: arguments.arguments.clone(),
-        cwd: arguments.cwd.clone(),
-        sandbox_policy:
-            sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
-    };
-    validate_request(&request)
+    validate_command(&arguments.command, &arguments.arguments)
 }
 
 fn validate_request(request: &SupervisorRequest) -> Result<(), ShellCommandErrorKind> {
-    if request.command.is_empty()
-        || request.command.len() > MAX_SHELL_COMMAND_BYTES
-        || !Path::new(&request.command).is_absolute()
-        || invalid_text(&request.command)
-        || request.arguments.len() > MAX_SHELL_ARGUMENT_COUNT
-        || request
-            .arguments
+    validate_command(&request.command, &request.arguments)?;
+    #[cfg(unix)]
+    if request.workspace_root_fd < 3 {
+        return Err(ShellCommandErrorKind::InvalidArguments);
+    }
+    Ok(())
+}
+
+fn validate_command(command: &str, arguments: &[String]) -> Result<(), ShellCommandErrorKind> {
+    if command.is_empty()
+        || command.len() > MAX_SHELL_COMMAND_BYTES
+        || !Path::new(command).is_absolute()
+        || invalid_text(command)
+        || arguments.len() > MAX_SHELL_ARGUMENT_COUNT
+        || arguments
             .iter()
             .any(|argument| argument.len() > MAX_SHELL_ARGUMENT_BYTES || invalid_text(argument))
-        || request
-            .arguments
+        || arguments
             .iter()
-            .try_fold(request.command.len(), |total, argument| {
+            .try_fold(command.len(), |total, argument| {
                 total.checked_add(argument.len())
             })
             .is_none_or(|total| total > MAX_SHELL_TOTAL_ARGUMENT_BYTES)
-        || !request.cwd.is_absolute()
     {
         return Err(ShellCommandErrorKind::InvalidArguments);
     }
     #[cfg(windows)]
-    if request.command.starts_with(r"\\")
-        || request.command.starts_with(r"\\?\")
-        || request.command.starts_with(r"\\.\")
-    {
+    if command.starts_with(r"\\") || command.starts_with(r"\\?\") || command.starts_with(r"\\.\") {
         return Err(ShellCommandErrorKind::InvalidArguments);
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn inherited_working_directory(
+    request: &SupervisorRequest,
+) -> Result<sugarcode_sandbox::CommandWorkingDirectory, ShellCommandErrorKind> {
+    use std::os::fd::FromRawFd;
+
+    let directory = unsafe { std::fs::File::from_raw_fd(request.workspace_root_fd) };
+    let matches = request
+        .workspace_root_identity
+        .matches(&directory)
+        .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
+    if !matches {
+        return Err(ShellCommandErrorKind::SandboxUnavailable);
+    }
+    sugarcode_sandbox::CommandWorkingDirectory::from_directory(directory)
+        .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)
+}
+
+#[cfg(not(unix))]
+fn inherited_working_directory(
+    _request: &SupervisorRequest,
+) -> Result<sugarcode_sandbox::CommandWorkingDirectory, ShellCommandErrorKind> {
+    Err(ShellCommandErrorKind::SandboxUnavailable)
 }
 
 fn invalid_text(value: &str) -> bool {
@@ -657,19 +737,45 @@ fn configure_minimal_environment_tokio(command: &mut Command) {
     }
 }
 
+#[cfg(unix)]
 fn configure_minimal_environment_std(command: &mut std::process::Command) {
-    #[cfg(unix)]
-    {
-        command.env("LANG", "C").env("LC_ALL", "C");
+    command.env("LANG", "C").env("LC_ALL", "C");
+}
+
+#[cfg(unix)]
+fn configure_workspace_root_inheritance_std(
+    command: &mut std::process::Command,
+    descriptor: std::os::fd::RawFd,
+) -> Result<(), ShellCommandErrorKind> {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(move || clear_close_on_exec(descriptor));
     }
-    #[cfg(windows)]
-    {
-        for name in ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn configure_workspace_root_inheritance_tokio(
+    command: &mut Command,
+    descriptor: std::os::fd::RawFd,
+) -> Result<(), ShellCommandErrorKind> {
+    unsafe {
+        command.pre_exec(move || clear_close_on_exec(descriptor));
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn clear_close_on_exec(descriptor: std::os::fd::RawFd) -> std::io::Result<()> {
+    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+    if flags == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

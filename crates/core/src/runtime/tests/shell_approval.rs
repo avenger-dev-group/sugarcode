@@ -213,7 +213,6 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
     let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
         panic!("thread event");
     };
-    let directory = tempfile::tempdir().expect("workspace");
     let (mut runtime, mut events) = CoreRuntime::new_with_shell(
         core,
         Arc::new(provider),
@@ -223,7 +222,6 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
         None,
         Arc::new(RecordedShell),
         Arc::new(FixedApproval(CommandApprovalOutcome::Approved)),
-        directory.path().to_path_buf(),
     );
     let TurnStartOutcome::Accepted { turn_id } = runtime
         .start_text_turn(
@@ -362,7 +360,6 @@ async fn failed_attempt_audit_never_calls_the_shell_executor() {
         requests: Arc::new(Mutex::new(Vec::new())),
     };
     let executions = Arc::new(AtomicUsize::new(0));
-    let workspace = tempfile::tempdir().expect("workspace");
     let (mut runtime, _events) = CoreRuntime::new_with_shell(
         core,
         Arc::new(provider),
@@ -372,7 +369,6 @@ async fn failed_attempt_audit_never_calls_the_shell_executor() {
         None,
         Arc::new(CountingShell(executions.clone())),
         Arc::new(FixedApproval(CommandApprovalOutcome::Approved)),
-        workspace.path().to_path_buf(),
     );
     runtime
         .start_text_turn(
@@ -436,7 +432,6 @@ async fn denied_shell_command_persists_decision_without_running_process() {
     let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
         panic!("thread event");
     };
-    let directory = tempfile::tempdir().expect("workspace");
     let (mut runtime, mut events) = CoreRuntime::new_with_shell(
         core,
         Arc::new(provider),
@@ -446,7 +441,6 @@ async fn denied_shell_command_persists_decision_without_running_process() {
         None,
         Arc::new(RecordedShell),
         Arc::new(FixedApproval(CommandApprovalOutcome::Denied)),
-        directory.path().to_path_buf(),
     );
     runtime
         .start_text_turn(
@@ -498,7 +492,6 @@ async fn interrupt_while_awaiting_approval_persists_cancelled_without_tool_resul
     let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
         panic!("thread event");
     };
-    let directory = tempfile::tempdir().expect("workspace");
     let (mut runtime, mut events) = CoreRuntime::new_with_shell(
         core,
         Arc::new(provider),
@@ -508,7 +501,6 @@ async fn interrupt_while_awaiting_approval_persists_cancelled_without_tool_resul
         None,
         Arc::new(RecordedShell),
         Arc::new(PendingApproval),
-        directory.path().to_path_buf(),
     );
     let TurnStartOutcome::Accepted { turn_id } = runtime
         .start_text_turn(

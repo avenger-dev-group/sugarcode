@@ -7,6 +7,7 @@ mod process;
 mod windows;
 
 pub use process::CommandSpec;
+pub use process::CommandWorkingDirectory;
 pub use process::SupervisedChild;
 pub use process::spawn_supervised;
 

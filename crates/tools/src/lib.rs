@@ -1,5 +1,6 @@
 mod shell_command;
 mod workspace_capability;
+mod workspace_command_root;
 mod workspace_list;
 mod workspace_patch;
 mod workspace_read;
@@ -29,6 +30,7 @@ pub use workspace_capability::MAX_WORKSPACE_READ_BYTES;
 pub use workspace_capability::MAX_WORKSPACE_RELATIVE_PATH_BYTES;
 pub use workspace_capability::WorkspaceReadErrorKind;
 pub use workspace_capability::WorkspaceTool;
+pub use workspace_command_root::CommandWorkspaceRoot;
 pub use workspace_list::MAX_WORKSPACE_LIST_COMPONENTS;
 pub use workspace_list::MAX_WORKSPACE_LIST_ENTRIES;
 pub use workspace_list::MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES;

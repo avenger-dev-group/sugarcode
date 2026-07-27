@@ -195,7 +195,9 @@ fn run_adapter_role() {
                 "network_denied_v1_enforces_the_native_boundary".to_owned(),
                 "--nocapture".to_owned(),
             ],
-            cwd: std::env::current_dir().expect("current directory"),
+            working_directory: sugarcode_sandbox::CommandWorkingDirectory::from_path(
+                std::env::current_dir().expect("current directory"),
+            ),
             environment,
         })
         .expect("spawn sandbox target");

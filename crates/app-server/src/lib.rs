@@ -28,13 +28,13 @@ pub async fn run_stdio(
     workspace: Option<std::path::PathBuf>,
     allow_workspace_write: bool,
 ) -> io::Result<()> {
-    let shell_cwd = workspace.clone();
     let workspace = workspace
         .as_deref()
         .map(sugarcode_tools::WorkspaceTool::open)
         .transpose()
         .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
         .map(Arc::new);
+    let command_workspace_root = workspace.as_ref().map(|tool| tool.command_workspace_root());
     let workspace_read: Option<Arc<dyn sugarcode_tools::WorkspaceReadExecutor>> = workspace
         .as_ref()
         .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceReadExecutor>);
@@ -83,9 +83,12 @@ pub async fn run_stdio(
                             .map_err(io::Error::other)?,
                     ),
                 };
-            if let Some(shell_cwd) = shell_cwd {
+            if let Some(Ok(command_workspace_root)) = command_workspace_root {
                 let executable = std::env::current_exe()?;
-                match sugarcode_tools::NativeShellCommandExecutor::new(executable) {
+                match sugarcode_tools::NativeShellCommandExecutor::new(
+                    executable,
+                    command_workspace_root,
+                ) {
                     Ok(shell_executor) => CoreRuntime::new_with_shell(
                         core,
                         provider,
@@ -95,7 +98,6 @@ pub async fn run_stdio(
                         workspace_search,
                         Arc::new(shell_executor),
                         Arc::new(approval_requester),
-                        shell_cwd,
                     ),
                     Err(_) => {
                         eprintln!("sugarcode: shell/exec unavailable: sandboxUnavailable");
@@ -109,6 +111,16 @@ pub async fn run_stdio(
                         )
                     }
                 }
+            } else if command_workspace_root.is_some() {
+                eprintln!("sugarcode: shell/exec unavailable: sandboxUnavailable");
+                CoreRuntime::new_with_workspace_search(
+                    core,
+                    provider,
+                    model.model().to_string(),
+                    workspace_read,
+                    workspace_list,
+                    workspace_search,
+                )
             } else {
                 CoreRuntime::new_with_workspace_search(
                     core,

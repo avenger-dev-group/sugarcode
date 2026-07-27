@@ -114,7 +114,6 @@ pub struct CoreRuntime {
     workspace_patch: Option<Arc<dyn WorkspacePatchExecutor>>,
     shell_executor: Option<Arc<dyn ShellCommandExecutor>>,
     approval_requester: Option<Arc<dyn CommandApprovalRequester>>,
-    shell_cwd: Option<Arc<std::path::PathBuf>>,
     event_tx: mpsc::Sender<CoreEvent>,
     active: Arc<Mutex<BTreeMap<ThreadId, ActiveTurn>>>,
 }
@@ -215,7 +214,6 @@ impl CoreRuntime {
                 workspace_patch: None,
                 shell_executor: None,
                 approval_requester: None,
-                shell_cwd: None,
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -233,7 +231,6 @@ impl CoreRuntime {
         workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
         shell_executor: Arc<dyn ShellCommandExecutor>,
         approval_requester: Arc<dyn CommandApprovalRequester>,
-        shell_cwd: std::path::PathBuf,
     ) -> (Self, mpsc::Receiver<CoreEvent>) {
         let (mut runtime, events) = Self::new_with_workspace_search(
             core,
@@ -245,7 +242,6 @@ impl CoreRuntime {
         );
         runtime.shell_executor = Some(shell_executor);
         runtime.approval_requester = Some(approval_requester);
-        runtime.shell_cwd = Some(Arc::new(shell_cwd));
         (runtime, events)
     }
 
@@ -269,7 +265,6 @@ impl CoreRuntime {
                 workspace_patch: None,
                 shell_executor: None,
                 approval_requester: None,
-                shell_cwd: None,
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -681,9 +676,7 @@ async fn run_turn(
                         "workspace/search" => runtime.workspace_search.is_some(),
                         "workspace/apply-patch" => runtime.workspace_patch.is_some(),
                         "shell/exec" => {
-                            runtime.shell_executor.is_some()
-                                && runtime.approval_requester.is_some()
-                                && runtime.shell_cwd.is_some()
+                            runtime.shell_executor.is_some() && runtime.approval_requester.is_some()
                         }
                         _ => false,
                     };
@@ -859,12 +852,6 @@ async fn run_turn(
                                         ShellCommandArguments {
                                             command: arguments.command.clone(),
                                             arguments: arguments.arguments.clone(),
-                                            cwd: runtime
-                                                .shell_cwd
-                                                .as_ref()
-                                                .expect("validated shell cwd")
-                                                .as_ref()
-                                                .clone(),
                                         },
                                         cancellation.clone(),
                                     )

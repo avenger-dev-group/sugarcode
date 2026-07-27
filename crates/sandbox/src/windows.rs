@@ -197,10 +197,11 @@ fn spawn_filesystem_read_only(spec: CommandSpec) -> Result<SupervisedChild, Sand
     let CommandSpec {
         command,
         arguments,
-        cwd,
+        working_directory,
         environment,
     } = spec;
     let application = wide_nul(OsStr::new(&command));
+    let cwd = working_directory.into_path();
     let current_directory = wide_nul(cwd.as_os_str());
     let environment = environment_block(environment);
     let mut desktop = wide_nul(OsStr::new("Winsta0\\Default"));
@@ -290,7 +291,7 @@ fn probe_filesystem_read_only() -> Result<(), SandboxError> {
     let mut child = spawn_filesystem_read_only(CommandSpec {
         command,
         arguments: vec!["/D".to_owned(), "/C".to_owned(), "exit 0".to_owned()],
-        cwd,
+        working_directory: crate::CommandWorkingDirectory::from_path(cwd),
         environment,
     })
     .map_err(|error| SandboxError::unavailable(format!("Windows sandbox unavailable: {error}")))?;

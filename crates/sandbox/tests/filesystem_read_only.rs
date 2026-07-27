@@ -63,7 +63,7 @@ fn sandbox_adapter_child() {
                 "sandbox_payload_child".to_owned(),
                 "--nocapture".to_owned(),
             ],
-            cwd: root.clone(),
+            working_directory: sugarcode_sandbox::CommandWorkingDirectory::from_path(root.clone()),
             environment: sandbox_environment(&root, PAYLOAD_CHILD),
         })
         .expect("spawn sandboxed payload");

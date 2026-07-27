@@ -10,14 +10,15 @@ use sugarcode_tools::ShellCommandExecution;
 use sugarcode_tools::ShellCommandExecutor;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use sugarcode_tools::ShellCommandOutcome;
+use sugarcode_tools::WorkspaceTool;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn hidden_supervisor_executes_one_absolute_argv_command() {
-    let executor = NativeShellCommandExecutor::new(PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")))
-        .expect("native read-only sandbox");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let executor = native_executor(workspace.path());
     let execution = executor
         .execute(test_command(), CancellationToken::new())
         .await;
@@ -41,8 +42,8 @@ async fn hidden_supervisor_executes_one_absolute_argv_command() {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn cancellation_terminates_a_descendant_that_holds_output_pipes() {
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_sugarcode"));
-    let executor =
-        NativeShellCommandExecutor::new(executable.clone()).expect("native read-only sandbox");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let executor = native_executor(workspace.path());
     let cancellation = CancellationToken::new();
     let command = cancellation_tree_command(&executable);
     let execution = executor.execute(command, cancellation.clone());
@@ -62,13 +63,66 @@ async fn approved_command_cannot_write_workspace_files() {
     let workspace = tempfile::tempdir().expect("workspace");
     let target = workspace.path().join("target.txt");
     std::fs::write(&target, "original").expect("write fixture");
-    let executor = NativeShellCommandExecutor::new(PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")))
-        .expect("native read-only sandbox");
+    let executor = native_executor(workspace.path());
+    assert_write_denied(&executor, workspace.path(), &target).await;
+}
+
+#[tokio::test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn approved_command_cannot_write_outside_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = tempfile::tempdir().expect("outside");
+    let target = outside.path().join("target.txt");
+    std::fs::write(&target, "original").expect("write fixture");
+    let executor = native_executor(workspace.path());
+    assert_write_denied(&executor, workspace.path(), &target).await;
+}
+
+#[tokio::test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn command_root_binding_ignores_directory_replacement() {
+    let parent = tempfile::tempdir().expect("workspace parent");
+    let workspace = parent.path().join("workspace");
+    let moved_workspace = parent.path().join("moved-workspace");
+    std::fs::create_dir(&workspace).expect("create workspace");
+    std::fs::write(workspace.join("marker.txt"), "original").expect("write original marker");
+    let executor = native_executor(&workspace);
+
+    std::fs::rename(&workspace, &moved_workspace).expect("move original workspace");
+    std::fs::create_dir(&workspace).expect("create replacement workspace");
+    std::fs::write(workspace.join("marker.txt"), "replacement").expect("write replacement marker");
+
+    assert_bound_marker(&executor, "original").await;
+}
+
+#[tokio::test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn command_root_binding_ignores_symlink_replacement() {
+    let parent = tempfile::tempdir().expect("workspace parent");
+    let workspace = parent.path().join("workspace");
+    let moved_workspace = parent.path().join("moved-workspace");
+    let replacement = parent.path().join("replacement");
+    std::fs::create_dir(&workspace).expect("create workspace");
+    std::fs::create_dir(&replacement).expect("create replacement");
+    std::fs::write(workspace.join("marker.txt"), "original").expect("write original marker");
+    std::fs::write(replacement.join("marker.txt"), "replacement")
+        .expect("write replacement marker");
+    let executor = native_executor(&workspace);
+
+    std::fs::rename(&workspace, &moved_workspace).expect("move original workspace");
+    std::os::unix::fs::symlink(&replacement, &workspace).expect("replace workspace with symlink");
+
+    assert_bound_marker(&executor, "original").await;
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn assert_write_denied(
+    executor: &NativeShellCommandExecutor,
+    workspace: &Path,
+    target: &Path,
+) {
     let execution = executor
-        .execute(
-            write_command(workspace.path(), &target),
-            CancellationToken::new(),
-        )
+        .execute(write_command(workspace, target), CancellationToken::new())
         .await;
     let ShellCommandExecution::Completed(output) = execution else {
         panic!("expected completed denied write, got {execution:?}");
@@ -83,16 +137,45 @@ async fn approved_command_cannot_write_workspace_files() {
     );
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn assert_bound_marker(executor: &NativeShellCommandExecutor, expected: &str) {
+    let execution = executor
+        .execute(
+            ShellCommandArguments {
+                command: "/bin/cat".to_string(),
+                arguments: vec!["marker.txt".to_string()],
+            },
+            CancellationToken::new(),
+        )
+        .await;
+    let ShellCommandExecution::Completed(output) = execution else {
+        panic!("expected completed marker read, got {execution:?}");
+    };
+    assert_eq!(output.stdout, expected);
+    assert!(matches!(
+        output.outcome,
+        ShellCommandOutcome::ExitCode { code: 0 }
+    ));
+}
+
 #[test]
 #[cfg(windows)]
 fn native_shell_fails_closed_when_network_policy_is_unavailable() {
-    let error = NativeShellCommandExecutor::new(PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")))
-        .expect_err("networkDeniedV1 must fail closed on Windows");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let workspace = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let command_root = workspace
+        .command_workspace_root()
+        .expect("bind command workspace root");
+    let error = NativeShellCommandExecutor::new(
+        PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")),
+        command_root,
+    )
+    .expect_err("networkDeniedV1 must fail closed on Windows");
     assert_eq!(error.kind(), sugarcode_tools::SandboxErrorKind::Unavailable);
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn write_command(cwd: &Path, target: &Path) -> ShellCommandArguments {
+fn write_command(_cwd: &Path, target: &Path) -> ShellCommandArguments {
     ShellCommandArguments {
         command: "/bin/sh".to_string(),
         arguments: vec![
@@ -101,7 +184,6 @@ fn write_command(cwd: &Path, target: &Path) -> ShellCommandArguments {
             "sugarcode-test".to_string(),
             target.to_string_lossy().into_owned(),
         ],
-        cwd: cwd.to_path_buf(),
     }
 }
 
@@ -113,7 +195,6 @@ fn cancellation_tree_command(_executable: &Path) -> ShellCommandArguments {
             "-c".to_string(),
             "trap '' TERM; while :; do sleep 60; done".to_string(),
         ],
-        cwd: std::env::current_dir().expect("current directory"),
     }
 }
 
@@ -122,6 +203,15 @@ fn test_command() -> ShellCommandArguments {
     ShellCommandArguments {
         command: "/bin/echo".to_string(),
         arguments: vec!["supervisor-ok".to_string()],
-        cwd: std::env::current_dir().expect("current directory"),
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn native_executor(workspace_root: &Path) -> NativeShellCommandExecutor {
+    let workspace = WorkspaceTool::open(workspace_root).expect("open workspace");
+    let command_root = workspace
+        .command_workspace_root()
+        .expect("bind command workspace root");
+    NativeShellCommandExecutor::new(PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")), command_root)
+        .expect("native read-only sandbox")
 }

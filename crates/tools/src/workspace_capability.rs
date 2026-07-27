@@ -53,6 +53,12 @@ impl WorkspaceTool {
     pub fn root_path(&self) -> &Path {
         &self.root_path
     }
+
+    pub fn command_workspace_root(
+        &self,
+    ) -> Result<crate::CommandWorkspaceRoot, WorkspaceReadErrorKind> {
+        crate::CommandWorkspaceRoot::from_workspace(self)
+    }
 }
 
 pub(crate) fn open_regular_file_nofollow(

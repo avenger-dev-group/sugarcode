@@ -68,7 +68,7 @@ fn spawn_with_profile(
     let spec = CommandSpec {
         command: SANDBOX_EXEC.to_owned(),
         arguments,
-        cwd: spec.cwd,
+        working_directory: spec.working_directory,
         environment: spec.environment,
     };
     if sanitize_descriptors {

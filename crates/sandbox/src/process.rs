@@ -1,4 +1,6 @@
 use std::ffi::OsString;
+#[cfg(unix)]
+use std::fs::File;
 use std::io;
 use std::io::Read;
 use std::path::PathBuf;
@@ -12,12 +14,68 @@ use std::time::Instant;
 #[cfg(unix)]
 const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct CommandSpec {
     pub command: String,
     pub arguments: Vec<String>,
-    pub cwd: PathBuf,
+    pub working_directory: CommandWorkingDirectory,
     pub environment: Vec<(OsString, OsString)>,
+}
+
+#[derive(Debug)]
+pub struct CommandWorkingDirectory {
+    path: Option<PathBuf>,
+    #[cfg(unix)]
+    directory: Option<File>,
+}
+
+impl CommandWorkingDirectory {
+    pub fn from_path(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            #[cfg(unix)]
+            directory: None,
+        }
+    }
+
+    #[cfg(unix)]
+    pub fn from_directory(directory: File) -> io::Result<Self> {
+        if !directory.metadata()?.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "working directory handle is not a directory",
+            ));
+        }
+        use std::os::fd::AsRawFd;
+        let descriptor = directory.as_raw_fd();
+        let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+        if flags == -1
+            || unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags | libc::FD_CLOEXEC) } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            path: None,
+            directory: Some(directory),
+        })
+    }
+
+    fn path(&self) -> Option<&PathBuf> {
+        self.path.as_ref()
+    }
+
+    #[cfg(unix)]
+    fn directory_descriptor(&self) -> Option<std::os::fd::RawFd> {
+        use std::os::fd::AsRawFd;
+
+        self.directory.as_ref().map(AsRawFd::as_raw_fd)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn into_path(self) -> PathBuf {
+        self.path
+            .expect("Windows command working directories are path-backed")
+    }
 }
 
 #[cfg(not(windows))]
@@ -150,13 +208,20 @@ fn spawn_supervised_inner(
     let mut command = std::process::Command::new(spec.command);
     command
         .args(spec.arguments)
-        .current_dir(spec.cwd)
         .env_clear()
         .envs(spec.environment)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    configure_process_group(&mut command, sanitize_descriptors)?;
+    if let Some(path) = spec.working_directory.path() {
+        command.current_dir(path);
+    }
+    configure_process_group(
+        &mut command,
+        sanitize_descriptors,
+        #[cfg(unix)]
+        spec.working_directory.directory_descriptor(),
+    )?;
     command.spawn().map(|child| SupervisedChild {
         #[cfg(not(windows))]
         child,
@@ -169,6 +234,7 @@ fn spawn_supervised_inner(
 fn configure_process_group(
     command: &mut std::process::Command,
     sanitize_descriptors: bool,
+    working_directory_descriptor: Option<std::os::fd::RawFd>,
 ) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
     #[cfg(target_os = "macos")]
@@ -188,6 +254,11 @@ fn configure_process_group(
             }
             #[cfg(target_os = "linux")]
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if let Some(descriptor) = working_directory_descriptor
+                && libc::fchdir(descriptor) == -1
+            {
                 return Err(io::Error::last_os_error());
             }
             if sanitize_descriptors {
