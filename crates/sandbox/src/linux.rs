@@ -13,8 +13,10 @@ use landlock::ABI;
 use landlock::AccessFs;
 use landlock::CompatLevel;
 use landlock::Compatible;
+use landlock::PathBeneath;
 use landlock::Ruleset;
 use landlock::RulesetAttr;
+use landlock::RulesetCreatedAttr;
 use landlock::RulesetStatus;
 
 use crate::CommandSandboxPolicy;
@@ -24,12 +26,13 @@ use crate::SandboxError;
 use crate::SandboxPolicy;
 use crate::SandboxSpawnError;
 use crate::SupervisedChild;
+use crate::WorkspaceWritePolicy;
 
 const REQUIRED_ABI: ABI = ABI::V3;
 
 pub(crate) fn probe(policy: SandboxPolicy) -> Result<(), SandboxError> {
     match policy {
-        SandboxPolicy::FilesystemReadOnlyV1 => build_ruleset().map(|_| ()),
+        SandboxPolicy::FilesystemReadOnlyV1 => build_ruleset(None).map(|_| ()),
     }
 }
 
@@ -44,9 +47,13 @@ pub(crate) fn spawn(
 }
 
 pub(crate) fn probe_command(policy: CommandSandboxPolicy) -> Result<(), SandboxError> {
-    match (policy.filesystem, policy.network) {
-        (SandboxPolicy::FilesystemReadOnlyV1, NetworkPolicy::NetworkDeniedV1) => {
-            build_ruleset()?;
+    match (policy.filesystem, policy.workspace_write, policy.network) {
+        (
+            SandboxPolicy::FilesystemReadOnlyV1,
+            None | Some(WorkspaceWritePolicy::CommandWorkspaceWriteV1),
+            NetworkPolicy::NetworkDeniedV1,
+        ) => {
+            build_ruleset(None)?;
             build_network_denied_filter().map(|_| ())
         }
     }
@@ -56,25 +63,56 @@ pub(crate) fn spawn_command(
     policy: CommandSandboxPolicy,
     spec: CommandSpec,
 ) -> Result<SupervisedChild, SandboxSpawnError> {
-    match (policy.filesystem, policy.network) {
-        (SandboxPolicy::FilesystemReadOnlyV1, NetworkPolicy::NetworkDeniedV1) => {
-            enforce_filesystem_read_only()?;
+    match (policy.filesystem, policy.workspace_write, policy.network) {
+        (SandboxPolicy::FilesystemReadOnlyV1, workspace_write, NetworkPolicy::NetworkDeniedV1) => {
+            let writable_workspace = match workspace_write {
+                Some(WorkspaceWritePolicy::CommandWorkspaceWriteV1) => Some(
+                    spec.working_directory
+                        .try_clone_directory()
+                        .map_err(SandboxSpawnError::Process)?,
+                ),
+                None => None,
+            };
+            enforce_filesystem_policy(writable_workspace)?;
             install_network_denied_filter()?;
         }
     }
     crate::process::spawn_supervised_sanitized(spec)
 }
 
-fn build_ruleset() -> Result<landlock::RulesetCreated, SandboxError> {
-    Ruleset::default()
+fn build_ruleset(
+    writable_workspace: Option<std::fs::File>,
+) -> Result<landlock::RulesetCreated, SandboxError> {
+    let ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(AccessFs::from_write(REQUIRED_ABI))
         .and_then(Ruleset::create)
-        .map_err(|error| SandboxError::unavailable(format!("Landlock ABI v3 unavailable: {error}")))
+        .map_err(|error| {
+            SandboxError::unavailable(format!("Landlock ABI v3 unavailable: {error}"))
+        })?;
+    match writable_workspace {
+        Some(directory) => ruleset
+            .add_rule(PathBeneath::new(
+                directory,
+                AccessFs::from_write(REQUIRED_ABI),
+            ))
+            .map_err(|error| {
+                SandboxError::unavailable(format!(
+                    "Landlock commandWorkspaceWriteV1 rule unavailable: {error}"
+                ))
+            }),
+        None => Ok(ruleset),
+    }
 }
 
 fn enforce_filesystem_read_only() -> Result<(), SandboxSpawnError> {
-    let status = build_ruleset()
+    enforce_filesystem_policy(None)
+}
+
+fn enforce_filesystem_policy(
+    writable_workspace: Option<std::fs::File>,
+) -> Result<(), SandboxSpawnError> {
+    let status = build_ruleset(writable_workspace)
         .and_then(|ruleset| {
             ruleset.restrict_self().map_err(|error| {
                 SandboxError::unavailable(format!("Landlock restriction failed: {error}"))
@@ -83,7 +121,7 @@ fn enforce_filesystem_read_only() -> Result<(), SandboxSpawnError> {
         .map_err(SandboxSpawnError::Sandbox)?;
     if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
         return Err(SandboxSpawnError::Sandbox(SandboxError::unavailable(
-            "Landlock did not fully enforce filesystemReadOnlyV1",
+            "Landlock did not fully enforce the requested filesystem policy",
         )));
     }
     Ok(())

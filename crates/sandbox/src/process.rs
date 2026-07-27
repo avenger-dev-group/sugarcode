@@ -71,6 +71,19 @@ impl CommandWorkingDirectory {
         self.directory.as_ref().map(AsRawFd::as_raw_fd)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn try_clone_directory(&self) -> io::Result<File> {
+        self.directory
+            .as_ref()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "working directory is not capability-backed",
+                )
+            })?
+            .try_clone()
+    }
+
     #[cfg(windows)]
     pub(crate) fn into_path(self) -> PathBuf {
         self.path

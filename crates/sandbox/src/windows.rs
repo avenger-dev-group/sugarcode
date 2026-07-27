@@ -123,7 +123,7 @@ pub(crate) fn spawn(
 
 pub(crate) fn probe_command(_policy: CommandSandboxPolicy) -> Result<(), SandboxError> {
     Err(SandboxError::unavailable(
-        "networkDeniedV1 is unavailable on Windows",
+        "the requested command sandbox is unavailable on Windows",
     ))
 }
 
@@ -132,7 +132,7 @@ pub(crate) fn spawn_command(
     _spec: CommandSpec,
 ) -> Result<SupervisedChild, SandboxSpawnError> {
     Err(SandboxSpawnError::Sandbox(SandboxError::unavailable(
-        "networkDeniedV1 is unavailable on Windows",
+        "the requested command sandbox is unavailable on Windows",
     )))
 }
 

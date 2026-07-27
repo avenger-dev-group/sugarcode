@@ -7,6 +7,7 @@ use crate::SandboxError;
 use crate::SandboxPolicy;
 use crate::SandboxSpawnError;
 use crate::SupervisedChild;
+use crate::WorkspaceWritePolicy;
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 const FILESYSTEM_READ_ONLY_V1_PROFILE: &str = "(version 1)\n(allow default)\n(deny file-write*)";
@@ -35,10 +36,17 @@ pub(crate) fn spawn(
 }
 
 pub(crate) fn probe_command(policy: CommandSandboxPolicy) -> Result<(), SandboxError> {
-    match (policy.filesystem, policy.network) {
-        (SandboxPolicy::FilesystemReadOnlyV1, NetworkPolicy::NetworkDeniedV1) => {
+    match (policy.filesystem, policy.workspace_write, policy.network) {
+        (SandboxPolicy::FilesystemReadOnlyV1, None, NetworkPolicy::NetworkDeniedV1) => {
             probe_profile(FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1_PROFILE)
         }
+        (
+            SandboxPolicy::FilesystemReadOnlyV1,
+            Some(WorkspaceWritePolicy::CommandWorkspaceWriteV1),
+            NetworkPolicy::NetworkDeniedV1,
+        ) => Err(SandboxError::unavailable(
+            "commandWorkspaceWriteV1 is unavailable on macOS",
+        )),
     }
 }
 
@@ -46,9 +54,18 @@ pub(crate) fn spawn_command(
     policy: CommandSandboxPolicy,
     spec: CommandSpec,
 ) -> Result<SupervisedChild, SandboxSpawnError> {
-    let profile = match (policy.filesystem, policy.network) {
-        (SandboxPolicy::FilesystemReadOnlyV1, NetworkPolicy::NetworkDeniedV1) => {
+    let profile = match (policy.filesystem, policy.workspace_write, policy.network) {
+        (SandboxPolicy::FilesystemReadOnlyV1, None, NetworkPolicy::NetworkDeniedV1) => {
             FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1_PROFILE
+        }
+        (
+            SandboxPolicy::FilesystemReadOnlyV1,
+            Some(WorkspaceWritePolicy::CommandWorkspaceWriteV1),
+            NetworkPolicy::NetworkDeniedV1,
+        ) => {
+            return Err(SandboxSpawnError::Sandbox(SandboxError::unavailable(
+                "commandWorkspaceWriteV1 is unavailable on macOS",
+            )));
         }
     };
     spawn_with_profile(profile, spec, true)

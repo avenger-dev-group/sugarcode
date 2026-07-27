@@ -25,14 +25,29 @@ pub enum NetworkPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub enum WorkspaceWritePolicy {
+    CommandWorkspaceWriteV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandSandboxPolicy {
     pub filesystem: SandboxPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_write: Option<WorkspaceWritePolicy>,
     pub network: NetworkPolicy,
 }
 
 impl CommandSandboxPolicy {
     pub const FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1: Self = Self {
         filesystem: SandboxPolicy::FilesystemReadOnlyV1,
+        workspace_write: None,
+        network: NetworkPolicy::NetworkDeniedV1,
+    };
+
+    pub const FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1: Self = Self {
+        filesystem: SandboxPolicy::FilesystemReadOnlyV1,
+        workspace_write: Some(WorkspaceWritePolicy::CommandWorkspaceWriteV1),
         network: NetworkPolicy::NetworkDeniedV1,
     };
 }

@@ -118,9 +118,19 @@ impl NativeShellCommandExecutor {
         supervisor_executable: PathBuf,
         workspace_root: CommandWorkspaceRoot,
     ) -> Result<Self, sugarcode_sandbox::SandboxError> {
-        let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(
+        Self::new_with_policy(
+            supervisor_executable,
+            workspace_root,
             sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
-        )?;
+        )
+    }
+
+    pub fn new_with_policy(
+        supervisor_executable: PathBuf,
+        workspace_root: CommandWorkspaceRoot,
+        sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+    ) -> Result<Self, sugarcode_sandbox::SandboxError> {
+        let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(sandbox_policy)?;
         probe_native_supervisor(&supervisor_executable, adapter.policy(), &workspace_root)
             .map_err(|error| {
                 sugarcode_sandbox::SandboxError::unavailable(format!(

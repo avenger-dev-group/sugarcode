@@ -25,6 +25,7 @@ pub use sugarcode_sandbox::CommandSandboxPolicy;
 pub use sugarcode_sandbox::NetworkPolicy;
 pub use sugarcode_sandbox::SandboxErrorKind;
 pub use sugarcode_sandbox::SandboxPolicy;
+pub use sugarcode_sandbox::WorkspaceWritePolicy;
 pub use workspace_capability::MAX_WORKSPACE_PATH_COMPONENTS;
 pub use workspace_capability::MAX_WORKSPACE_READ_BYTES;
 pub use workspace_capability::MAX_WORKSPACE_RELATIVE_PATH_BYTES;
