@@ -36,6 +36,7 @@ fn command_workspace_write_v1_is_capability_bound_and_fail_closed() {
 fn run_linux_matrix() {
     use std::ffi::OsString;
     use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
     use sugarcode_sandbox::CommandSpec;
     use sugarcode_sandbox::CommandWorkingDirectory;
 
@@ -53,6 +54,9 @@ fn run_linux_matrix() {
     std::fs::hard_link(outside.path().join("outside.txt"), &same_filesystem_probe)
         .expect("prove cross-boundary fixtures share one filesystem");
     std::fs::remove_file(same_filesystem_probe).expect("remove same-filesystem probe");
+    set_user_xattr(&outside.path().join("outside.txt"), b"probe")
+        .expect("prove fixture filesystem supports user xattrs");
+    remove_user_xattr(&outside.path().join("outside.txt")).expect("remove fixture xattr probe");
     std::os::unix::fs::symlink(
         outside.path().join("outside.txt"),
         configured_workspace.join("outside-link"),
@@ -159,6 +163,22 @@ fn run_linux_matrix() {
     assert!(!outside.path().join("outside-created-dir").exists());
     assert!(!bound_workspace.join("outside-hard-link.txt").exists());
     assert!(outside.path().join("outside-rename.txt").is_file());
+    assert_eq!(
+        std::fs::metadata(bound_workspace.join("target.txt"))
+            .expect("bound target metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644
+    );
+    assert_eq!(
+        std::fs::metadata(outside.path().join("outside.txt"))
+            .expect("outside target metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -212,6 +232,7 @@ fn run_target() {
 #[cfg(target_os = "linux")]
 fn run_linux_target() {
     use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
     let configured_workspace = required_path(WORKSPACE_ENV);
@@ -294,6 +315,41 @@ fn run_linux_target() {
         std::fs::write("outside-link", "changed"),
     );
     assert_denied(
+        "chmod inside workspace",
+        std::fs::set_permissions("target.txt", std::fs::Permissions::from_mode(0o600)),
+    );
+    assert_denied(
+        "chmod outside workspace",
+        std::fs::set_permissions(
+            outside.join("outside.txt"),
+            std::fs::Permissions::from_mode(0o600),
+        ),
+    );
+    assert_denied(
+        "chown inside workspace",
+        chown_unchanged(std::path::Path::new("target.txt")),
+    );
+    assert_denied(
+        "chown outside workspace",
+        chown_unchanged(&outside.join("outside.txt")),
+    );
+    assert_denied(
+        "set xattr inside workspace",
+        set_user_xattr(std::path::Path::new("target.txt"), b"inside"),
+    );
+    assert_denied(
+        "set xattr outside workspace",
+        set_user_xattr(&outside.join("outside.txt"), b"outside"),
+    );
+    assert_denied(
+        "set timestamp inside workspace",
+        set_timestamp(std::path::Path::new("target.txt")),
+    );
+    assert_denied(
+        "set timestamp outside workspace",
+        set_timestamp(&outside.join("outside.txt")),
+    );
+    assert_denied(
         "network bind",
         std::net::TcpListener::bind(("127.0.0.1", 0)).map(drop),
     );
@@ -333,4 +389,66 @@ fn assert_refer_denied(operation: &str, result: std::io::Result<impl Sized>) {
         ),
         "{operation}: {error}"
     );
+}
+
+#[cfg(target_os = "linux")]
+fn set_user_xattr(path: &std::path::Path, value: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let name = c"user.sugarcode-command-test";
+    let result = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn remove_user_xattr(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let result =
+        unsafe { libc::removexattr(path.as_ptr(), c"user.sugarcode-command-test".as_ptr()) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn chown_unchanged(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let result = unsafe { libc::chown(path.as_ptr(), u32::MAX, u32::MAX) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn set_timestamp(path: &std::path::Path) -> std::io::Result<()> {
+    let file = std::fs::File::open(path)?;
+    file.set_times(
+        std::fs::FileTimes::new()
+            .set_accessed(std::time::UNIX_EPOCH)
+            .set_modified(std::time::UNIX_EPOCH),
+    )
 }

@@ -42,6 +42,12 @@ fn filesystem_read_only_v1_denies_writes_and_allows_reads() {
     assert!(!root.path().join("renamed.txt").exists());
     assert!(!root.path().join("hard-link.txt").exists());
     assert!(!root.path().join("nested.txt").exists());
+    assert!(
+        !std::fs::metadata(root.path().join("target.txt"))
+            .expect("target metadata")
+            .permissions()
+            .readonly()
+    );
 }
 
 #[test]
@@ -126,6 +132,14 @@ fn sandbox_payload_child() {
     assert_denied(
         "create hard link",
         std::fs::hard_link(root.join("target.txt"), root.join("hard-link.txt")),
+    );
+    let mut permissions = std::fs::metadata(root.join("target.txt"))
+        .expect("target metadata")
+        .permissions();
+    permissions.set_readonly(true);
+    assert_denied(
+        "change file permissions",
+        std::fs::set_permissions(root.join("target.txt"), permissions),
     );
 
     let status = Command::new(std::env::current_exe().expect("resolve nested executable"))

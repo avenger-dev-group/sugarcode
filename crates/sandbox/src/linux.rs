@@ -32,7 +32,10 @@ const REQUIRED_ABI: ABI = ABI::V3;
 
 pub(crate) fn probe(policy: SandboxPolicy) -> Result<(), SandboxError> {
     match policy {
-        SandboxPolicy::FilesystemReadOnlyV1 => build_ruleset(None).map(|_| ()),
+        SandboxPolicy::FilesystemReadOnlyV1 => {
+            build_ruleset(None)?;
+            build_metadata_denied_filter().map(|_| ())
+        }
     }
 }
 
@@ -43,6 +46,7 @@ pub(crate) fn spawn(
     match policy {
         SandboxPolicy::FilesystemReadOnlyV1 => enforce_filesystem_read_only()?,
     }
+    install_metadata_denied_filter()?;
     crate::spawn_supervised(spec).map_err(SandboxSpawnError::Process)
 }
 
@@ -54,6 +58,7 @@ pub(crate) fn probe_command(policy: CommandSandboxPolicy) -> Result<(), SandboxE
             NetworkPolicy::NetworkDeniedV1,
         ) => {
             build_ruleset(None)?;
+            build_metadata_denied_filter()?;
             build_network_denied_filter().map(|_| ())
         }
     }
@@ -74,6 +79,7 @@ pub(crate) fn spawn_command(
                 None => None,
             };
             enforce_filesystem_policy(writable_workspace)?;
+            install_metadata_denied_filter()?;
             install_network_denied_filter()?;
         }
     }
@@ -125,6 +131,49 @@ fn enforce_filesystem_policy(
         )));
     }
     Ok(())
+}
+
+fn build_metadata_denied_filter() -> Result<BpfProgram, SandboxError> {
+    let mut rules = BTreeMap::new();
+    for syscall in [
+        libc::SYS_fchmod,
+        libc::SYS_fchmodat,
+        libc::SYS_fchown,
+        libc::SYS_fchownat,
+        libc::SYS_setxattr,
+        libc::SYS_lsetxattr,
+        libc::SYS_fsetxattr,
+        libc::SYS_removexattr,
+        libc::SYS_lremovexattr,
+        libc::SYS_fremovexattr,
+        libc::SYS_utimensat,
+    ] {
+        rules.insert(syscall, Vec::new());
+    }
+    // fchmodat2 uses the asm-generic syscall number on both supported Linux
+    // architectures, but libc does not currently expose it on every target.
+    rules.insert(452, Vec::new());
+    #[cfg(target_arch = "x86_64")]
+    for syscall in [
+        libc::SYS_chmod,
+        libc::SYS_chown,
+        libc::SYS_lchown,
+        libc::SYS_utime,
+        libc::SYS_utimes,
+        libc::SYS_futimesat,
+    ] {
+        rules.insert(syscall, Vec::new());
+    }
+
+    let architecture = target_architecture()?;
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EPERM as u32),
+        architecture,
+    )
+    .map_err(seccomp_build_error)?;
+    filter.try_into().map_err(seccomp_build_error)
 }
 
 fn build_network_denied_filter() -> Result<BpfProgram, SandboxError> {
@@ -199,6 +248,15 @@ fn install_network_denied_filter() -> Result<(), SandboxSpawnError> {
     apply_filter(&filter).map_err(|error| {
         SandboxSpawnError::Sandbox(SandboxError::unavailable(format!(
             "seccomp restriction failed: {error}"
+        )))
+    })
+}
+
+fn install_metadata_denied_filter() -> Result<(), SandboxSpawnError> {
+    let filter = build_metadata_denied_filter().map_err(SandboxSpawnError::Sandbox)?;
+    apply_filter(&filter).map_err(|error| {
+        SandboxSpawnError::Sandbox(SandboxError::unavailable(format!(
+            "filesystem metadata restriction failed: {error}"
         )))
     })
 }
