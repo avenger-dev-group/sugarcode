@@ -36,6 +36,7 @@ fn turn(sequence: u64, text: &str) -> DurableTurnSnapshot {
             id: ItemId::new(format!("item_{sequence:016}")),
             text: text.to_string(),
         }],
+        workspace_instructions: None,
         error: None,
         usage: None,
     }
@@ -67,6 +68,7 @@ fn started_turn(sequence: u64, input: &str) -> DurableTurnSnapshot {
                 text: String::new(),
             },
         ],
+        workspace_instructions: None,
         error: None,
         usage: None,
     }

@@ -229,6 +229,43 @@ fn fork_remaps_complete_history_and_keeps_threads_independent() {
 }
 
 #[test]
+fn fork_preserves_workspace_instruction_audit_without_any_instruction_content() {
+    let mut core = Core::new();
+    let source = start_thread(&mut core, 1);
+    let audit = DurableWorkspaceInstructionsAudit {
+        source: sugarcode_state::DurableWorkspaceInstructionsSource::RootAgentsMdV1,
+        status: sugarcode_state::DurableWorkspaceInstructionsStatus::Present,
+        bytes: Some(19),
+        sha256: Some("b".repeat(64)),
+    };
+    let prepared = core
+        .prepare_text_turn_with_workspace_instructions(
+            CoreRequestId::new(2),
+            source.clone(),
+            Some("hello".to_string()),
+            Some(audit.clone()),
+            19,
+        )
+        .expect("prepare source turn");
+    core.start_agent_message(&source, &prepared.turn_id)
+        .expect("start answer");
+    core.append_text_delta(&source, &prepared.turn_id, "answer")
+        .expect("append answer");
+    core.finish_text_turn(
+        &source,
+        &prepared.turn_id,
+        DurableTurnStatus::Completed,
+        None,
+        None,
+    )
+    .expect("finish source turn");
+
+    let fork = core.fork_thread(&source).expect("fork");
+    assert_eq!(fork.turns.len(), 1);
+    assert_eq!(fork.turns[0].workspace_instructions, Some(audit));
+}
+
+#[test]
 fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_turns() {
     let mut core = Core::new();
     let source = start_thread(&mut core, 1);

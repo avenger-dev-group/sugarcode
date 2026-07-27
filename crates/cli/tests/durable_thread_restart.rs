@@ -34,6 +34,8 @@ mod history;
 mod lifecycle;
 #[path = "durable_thread_restart/projections.rs"]
 mod projections;
+#[path = "durable_thread_restart/workspace_instructions.rs"]
+mod workspace_instructions;
 #[path = "durable_thread_restart/workspace_patch.rs"]
 mod workspace_patch;
 #[path = "durable_thread_restart/workspace_search.rs"]

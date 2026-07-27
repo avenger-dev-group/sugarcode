@@ -82,6 +82,52 @@ fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
 }
 
 #[test]
+fn workspace_instruction_audit_survives_recovery_without_persisting_content() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let audit = DurableWorkspaceInstructionsAudit {
+        source: DurableWorkspaceInstructionsSource::RootAgentsMdV1,
+        status: DurableWorkspaceInstructionsStatus::Present,
+        bytes: Some(24),
+        sha256: Some("a".repeat(64)),
+    };
+    let mut started = started_text_turn();
+    started.workspace_instructions = Some(audit.clone());
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(&thread_id, &started)
+            .expect("durable turn start");
+    }
+
+    let repository = RolloutRepository::open(&home).expect("recover");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert_eq!(snapshot.turns[0].status, DurableTurnStatus::Interrupted);
+    assert_eq!(
+        snapshot.turns[0].workspace_instructions.as_ref(),
+        Some(&audit)
+    );
+    drop(repository);
+
+    let rollout = fs::read_to_string(
+        directory
+            .path()
+            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+    )
+    .expect("rollout");
+    assert!(rollout.contains("\"workspaceInstructions\""));
+    assert!(rollout.contains("\"rootAgentsMdV1\""));
+    assert!(rollout.contains(&"a".repeat(64)));
+    assert!(!rollout.contains("private workspace instruction"));
+    assert!(!rollout.contains("\"content\""));
+}
+
+#[test]
 fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
@@ -96,6 +142,7 @@ fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
                     id: TurnId::new("turn_0000000000000001"),
                     status: DurableTurnStatus::InProgress,
                     items: Vec::new(),
+                    workspace_instructions: None,
                     error: None,
                     usage: None,
                 },
@@ -144,6 +191,7 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
                         id: ItemId::new("item_0000000000000001"),
                         text: "Read it".to_string(),
                     }],
+                    workspace_instructions: None,
                     error: None,
                     usage: None,
                 },
@@ -242,6 +290,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![user.clone()],
+                    workspace_instructions: None,
                     error: None,
                     usage: None,
                 },
@@ -261,6 +310,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
                     id: turn_id.clone(),
                     status: DurableTurnStatus::Completed,
                     items,
+                    workspace_instructions: None,
                     error: None,
                     usage: None,
                 },
@@ -382,6 +432,7 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![user],
+                    workspace_instructions: None,
                     error: None,
                     usage: None,
                 },
@@ -433,6 +484,7 @@ fn execution_attempt_requires_matching_approved_shell_audit() {
                     id: ItemId::new("item_0000000000000001"),
                     text: "Run it".to_string(),
                 }],
+                workspace_instructions: None,
                 error: None,
                 usage: None,
             },
@@ -475,6 +527,7 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
                     id: ItemId::new("item_0000000000000001"),
                     text: "Run it".to_string(),
                 }],
+                workspace_instructions: None,
                 error: None,
                 usage: None,
             },
@@ -611,6 +664,7 @@ fn file_change_proposal_survives_recovery_without_replaying_the_write() {
                         id: ItemId::new("item_0000000000000001"),
                         text: "Update it".to_string(),
                     }],
+                    workspace_instructions: None,
                     error: None,
                     usage: None,
                 },

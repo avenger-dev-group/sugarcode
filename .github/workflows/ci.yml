@@ -93,6 +93,9 @@ jobs:
       - name: Test native command workspace-write boundary
         run: cargo test -p sugarcode-sandbox --test command_workspace_write --locked -- --nocapture
 
+      - name: Test root workspace instruction boundary
+        run: cargo test -p sugarcode-tools --test workspace_instructions --locked -- --nocapture
+
       - name: Test Rust workspace
         run: cargo test --workspace --locked
 

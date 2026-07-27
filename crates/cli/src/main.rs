@@ -112,7 +112,7 @@ struct AppServerArgs {
     /// Serve newline-delimited JSON-RPC over stdin/stdout.
     #[arg(long)]
     stdio: bool,
-    /// Explicit workspace root available to bounded model tools.
+    /// Explicit workspace root available to bounded model tools and root AGENTS.md instructions.
     #[arg(long, value_name = "DIR")]
     workspace: Option<PathBuf>,
     /// Enable bounded workspace/apply-patch writes for this process only.

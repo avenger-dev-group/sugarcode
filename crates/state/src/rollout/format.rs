@@ -7,6 +7,9 @@ use super::DurableTurnErrorKind;
 use super::DurableTurnSnapshot;
 use super::DurableTurnStatus;
 use super::DurableUsage;
+use super::DurableWorkspaceInstructionsAudit;
+use super::DurableWorkspaceInstructionsSource;
+use super::DurableWorkspaceInstructionsStatus;
 use super::RolloutDiagnostic;
 use super::RolloutError;
 use serde::Deserialize;
@@ -96,9 +99,22 @@ pub(super) struct StoredTurnRef<'a> {
     pub status: &'static str,
     pub items: Vec<StoredItemRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_instructions: Option<StoredWorkspaceInstructionsAuditRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<StoredTurnErrorRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<StoredUsageRef>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredWorkspaceInstructionsAuditRef<'a> {
+    pub source: &'static str,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -395,6 +411,19 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
                 DurableTurnStatus::Interrupted => "interrupted",
             },
             items: turn.items.iter().map(StoredItemRef::from).collect(),
+            workspace_instructions: turn.workspace_instructions.as_ref().map(|audit| {
+                StoredWorkspaceInstructionsAuditRef {
+                    source: match audit.source {
+                        DurableWorkspaceInstructionsSource::RootAgentsMdV1 => "rootAgentsMdV1",
+                    },
+                    status: match audit.status {
+                        DurableWorkspaceInstructionsStatus::Absent => "absent",
+                        DurableWorkspaceInstructionsStatus::Present => "present",
+                    },
+                    bytes: audit.bytes,
+                    sha256: audit.sha256.as_deref(),
+                }
+            }),
             error: turn.error.as_ref().map(|error| StoredTurnErrorRef {
                 kind: stored_error_kind(error.kind),
                 retryable: error.retryable,
@@ -551,9 +580,35 @@ struct StoredTurn {
     status: StoredTurnStatus,
     items: Vec<StoredItem>,
     #[serde(default)]
+    workspace_instructions: Option<StoredWorkspaceInstructionsAudit>,
+    #[serde(default)]
     error: Option<StoredTurnError>,
     #[serde(default)]
     usage: Option<StoredUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredWorkspaceInstructionsAudit {
+    source: StoredWorkspaceInstructionsSource,
+    status: StoredWorkspaceInstructionsStatus,
+    #[serde(default)]
+    bytes: Option<u64>,
+    #[serde(default)]
+    sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StoredWorkspaceInstructionsSource {
+    RootAgentsMdV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StoredWorkspaceInstructionsStatus {
+    Absent,
+    Present,
 }
 
 #[derive(Debug, Deserialize)]
@@ -865,6 +920,7 @@ pub(super) fn decode_record(
                 id,
                 status,
                 items,
+                workspace_instructions,
                 error,
                 usage,
             } = turn;
@@ -887,6 +943,8 @@ pub(super) fn decode_record(
                     id: TurnId::new(id),
                     status,
                     items: decode_items(items),
+                    workspace_instructions: workspace_instructions
+                        .map(decode_workspace_instructions),
                     error: error.map(decode_error),
                     usage: usage.map(decode_usage),
                 },
@@ -912,6 +970,7 @@ pub(super) fn decode_record(
                 id,
                 status,
                 items,
+                workspace_instructions,
                 error,
                 usage,
             } = turn;
@@ -930,6 +989,8 @@ pub(super) fn decode_record(
                     id: TurnId::new(id),
                     status: DurableTurnStatus::InProgress,
                     items: decode_items(items),
+                    workspace_instructions: workspace_instructions
+                        .map(decode_workspace_instructions),
                     error: None,
                     usage: None,
                 },
@@ -1200,6 +1261,26 @@ fn decode_error(error: StoredTurnError) -> DurableTurnError {
             StoredTurnErrorKind::StateUnavailable => DurableTurnErrorKind::StateUnavailable,
         },
         retryable: error.retryable,
+    }
+}
+
+fn decode_workspace_instructions(
+    audit: StoredWorkspaceInstructionsAudit,
+) -> DurableWorkspaceInstructionsAudit {
+    DurableWorkspaceInstructionsAudit {
+        source: match audit.source {
+            StoredWorkspaceInstructionsSource::RootAgentsMdV1 => {
+                DurableWorkspaceInstructionsSource::RootAgentsMdV1
+            }
+        },
+        status: match audit.status {
+            StoredWorkspaceInstructionsStatus::Absent => DurableWorkspaceInstructionsStatus::Absent,
+            StoredWorkspaceInstructionsStatus::Present => {
+                DurableWorkspaceInstructionsStatus::Present
+            }
+        },
+        bytes: audit.bytes,
+        sha256: audit.sha256,
     }
 }
 

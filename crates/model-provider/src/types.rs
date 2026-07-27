@@ -5,10 +5,13 @@ use std::fmt;
 
 pub type ModelStream = BoxStream<'static, Result<ModelEvent, ModelError>>;
 pub type BoxModelFuture<'a> = BoxFuture<'a, Result<ModelStream, ModelError>>;
+pub const WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX: &str = "Workspace instructions from the opened workspace root AGENTS.md \
+     (boundedWorkspaceInstructionsV1):\n\n";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct ModelRequest {
     pub model: String,
+    pub instructions: Vec<ModelInstruction>,
     pub messages: Vec<ModelMessage>,
     pub tools: Vec<ModelToolDefinition>,
 }
@@ -18,10 +21,32 @@ impl fmt::Debug for ModelRequest {
         formatter
             .debug_struct("ModelRequest")
             .field("model", &"<redacted>")
+            .field("instruction_count", &self.instructions.len())
             .field("message_count", &self.messages.len())
             .field("tool_count", &self.tools.len())
             .finish()
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ModelInstruction {
+    pub source: ModelInstructionSource,
+    pub content: String,
+}
+
+impl fmt::Debug for ModelInstruction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModelInstruction")
+            .field("source", &self.source)
+            .field("content", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelInstructionSource {
+    WorkspaceRootAgentsV1,
 }
 
 #[derive(Clone, PartialEq, Eq)]

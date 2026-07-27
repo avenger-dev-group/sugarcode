@@ -23,6 +23,7 @@ fn rejects_an_empty_completed_turn_before_writing() {
                 id: TurnId::new("turn_0000000000000001"),
                 status: DurableTurnStatus::Completed,
                 items: Vec::new(),
+                workspace_instructions: None,
                 error: None,
                 usage: None,
             },

@@ -106,6 +106,7 @@ fn failed_fork_write_does_not_materialize_or_advance_ids() {
                 id: ItemId::new("item_0000000000000001"),
                 text: DETERMINISTIC_AGENT_MESSAGE.to_string(),
             }],
+            workspace_instructions: None,
             error: None,
             usage: None,
         }],

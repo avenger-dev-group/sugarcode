@@ -188,6 +188,11 @@ impl ThreadRepository for RolloutRepository {
                 kind: "legacyTurnMustBeCompleted",
             });
         }
+        if !valid_workspace_instructions_audit(turn.workspace_instructions.as_ref()) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidWorkspaceInstructionsAudit",
+            });
+        }
         self.ensure_available()?;
         if turn.items.is_empty() {
             return Err(RolloutError::InvalidRecord {
@@ -260,6 +265,7 @@ impl ThreadRepository for RolloutRepository {
         self.ensure_available()?;
         if turn.status != DurableTurnStatus::InProgress
             || turn.items.len() > 2
+            || !valid_workspace_instructions_audit(turn.workspace_instructions.as_ref())
             || turn.error.is_some()
             || turn.usage.is_some()
         {
@@ -440,7 +446,10 @@ impl ThreadRepository for RolloutRepository {
                 kind: "turnNotActive",
             });
         };
-        if pending.id != turn.id || !terminal_items_match(&pending.items, &turn.items) {
+        if pending.id != turn.id
+            || pending.workspace_instructions != turn.workspace_instructions
+            || !terminal_items_match(&pending.items, &turn.items)
+        {
             return Err(RolloutError::InvalidRecord {
                 kind: "turnItemMismatch",
             });

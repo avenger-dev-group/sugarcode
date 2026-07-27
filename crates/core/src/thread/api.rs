@@ -318,6 +318,7 @@ impl CoreApi for Core {
                 id: TurnId::new(format!("turn_{turn_sequence:016}")),
                 status: source_turn.status,
                 items,
+                workspace_instructions: source_turn.workspace_instructions.clone(),
                 error: source_turn.error.clone(),
                 usage: source_turn.usage.clone(),
             });
@@ -397,6 +398,7 @@ impl CoreApi for Core {
             id: turn_id.clone(),
             status: DurableTurnStatus::Completed,
             items: vec![durable_item_snapshot(&item_completed)],
+            workspace_instructions: None,
             error: None,
             usage: None,
         };

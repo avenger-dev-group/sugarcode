@@ -24,6 +24,7 @@ use sugarcode_state::DurableTurnErrorKind;
 use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableUsage;
+use sugarcode_state::DurableWorkspaceInstructionsAudit;
 use sugarcode_state::IdSequences;
 use sugarcode_state::RolloutError;
 use sugarcode_state::ThreadRepository;
@@ -51,6 +52,7 @@ pub struct PreparedTextTurn {
     pub turn_id: TurnId,
     pub user_item: Option<CoreItemSnapshot>,
     pub history: Vec<PreparedMessage>,
+    pub workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +117,7 @@ struct Turn {
     state: TurnState,
     items: BTreeMap<ItemId, Item>,
     active_item_id: Option<ItemId>,
+    workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
     error: Option<DurableTurnError>,
     usage: Option<DurableUsage>,
 }
@@ -127,6 +130,7 @@ impl Turn {
             state: TurnState::InProgress,
             items: BTreeMap::new(),
             active_item_id: None,
+            workspace_instructions: None,
             error: None,
             usage: None,
         }
@@ -722,6 +726,7 @@ impl Core {
                 },
                 items,
                 active_item_id: None,
+                workspace_instructions: durable_turn.workspace_instructions.clone(),
                 error: durable_turn.error.clone(),
                 usage: durable_turn.usage.clone(),
             };
@@ -743,6 +748,17 @@ impl Core {
         request_id: CoreRequestId,
         thread_id: ThreadId,
         input: Option<String>,
+    ) -> Result<PreparedTextTurn, CoreError> {
+        self.prepare_text_turn_with_workspace_instructions(request_id, thread_id, input, None, 0)
+    }
+
+    pub fn prepare_text_turn_with_workspace_instructions(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+        input: Option<String>,
+        workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
+        instruction_context_bytes: usize,
     ) -> Result<PreparedTextTurn, CoreError> {
         if input
             .as_ref()
@@ -846,7 +862,10 @@ impl Core {
                 PreparedMessage::ToolResult { call_id, content } => call_id.len() + content.len(),
             })
         });
-        if history_bytes.is_none_or(|bytes| bytes > MAX_PROVIDER_HISTORY_BYTES) {
+        if history_bytes
+            .and_then(|bytes| bytes.checked_add(instruction_context_bytes))
+            .is_none_or(|bytes| bytes > MAX_PROVIDER_HISTORY_BYTES)
+        {
             return Err(CoreError::ContextTooLarge);
         }
 
@@ -883,6 +902,7 @@ impl Core {
             id: turn_id.clone(),
             status: DurableTurnStatus::InProgress,
             items: durable_items,
+            workspace_instructions: workspace_instructions.clone(),
             error: None,
             usage: None,
         };
@@ -912,6 +932,7 @@ impl Core {
             state: TurnState::InProgress,
             items,
             active_item_id: None,
+            workspace_instructions: workspace_instructions.clone(),
             error: None,
             usage: None,
         };
@@ -932,6 +953,7 @@ impl Core {
             turn_id,
             user_item,
             history,
+            workspace_instructions,
         })
     }
 
@@ -1078,6 +1100,7 @@ impl Core {
                 .values()
                 .map(|item| durable_item_snapshot(&item.snapshot()))
                 .collect(),
+            workspace_instructions: turn.workspace_instructions.clone(),
             error: Some(DurableTurnError {
                 kind: DurableTurnErrorKind::OutputTooLarge,
                 retryable: false,
@@ -1153,6 +1176,7 @@ impl Core {
                 .values()
                 .map(|item| durable_item_snapshot(&item.snapshot()))
                 .collect(),
+            workspace_instructions: turn.workspace_instructions.clone(),
             error: error.clone(),
             usage: usage.clone(),
         };

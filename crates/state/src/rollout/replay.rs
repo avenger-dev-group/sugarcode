@@ -296,7 +296,9 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                             .turns
                             .last_mut()
                             .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))?;
-                        if !terminal_items_match(&pending.items, &turn.items) {
+                        if pending.workspace_instructions != turn.workspace_instructions
+                            || !terminal_items_match(&pending.items, &turn.items)
+                        {
                             return Err(corrupt(&path, offset as u64, "turnItemMismatch"));
                         }
                         *pending = turn;
@@ -591,6 +593,7 @@ fn validate_terminal_turn(
     offset: u64,
 ) -> Result<(), RolloutError> {
     let valid = super::valid_turn_items(&turn.items)
+        && super::valid_workspace_instructions_audit(turn.workspace_instructions.as_ref())
         && match turn.status {
             super::DurableTurnStatus::InProgress => false,
             super::DurableTurnStatus::Completed => !turn.items.is_empty() && turn.error.is_none(),
@@ -612,6 +615,9 @@ fn validate_new_turn(
     item_ids: &mut BTreeSet<sugarcode_protocol::ItemId>,
     sequences: &mut IdSequences,
 ) -> Result<(), RolloutError> {
+    if !super::valid_workspace_instructions_audit(turn.workspace_instructions.as_ref()) {
+        return Err(corrupt(path, offset, "invalidWorkspaceInstructionsAudit"));
+    }
     let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")
         .map_err(|_| corrupt(path, offset, "invalidTurnId"))?;
     if !turn_ids.insert(turn.id.clone()) {

@@ -64,8 +64,28 @@ pub struct DurableTurnSnapshot {
     pub id: TurnId,
     pub status: DurableTurnStatus,
     pub items: Vec<DurableItemSnapshot>,
+    pub workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
     pub error: Option<DurableTurnError>,
     pub usage: Option<DurableUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableWorkspaceInstructionsAudit {
+    pub source: DurableWorkspaceInstructionsSource,
+    pub status: DurableWorkspaceInstructionsStatus,
+    pub bytes: Option<u64>,
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableWorkspaceInstructionsSource {
+    RootAgentsMdV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableWorkspaceInstructionsStatus {
+    Absent,
+    Present,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,6 +432,23 @@ pub(crate) fn valid_turn_items(items: &[DurableItemSnapshot]) -> bool {
         .iter()
         .enumerate()
         .all(|(index, item)| valid_incremental_item(&items[..index], item).is_ok())
+}
+
+pub(crate) fn valid_workspace_instructions_audit(
+    audit: Option<&DurableWorkspaceInstructionsAudit>,
+) -> bool {
+    let Some(audit) = audit else {
+        return true;
+    };
+    match audit.status {
+        DurableWorkspaceInstructionsStatus::Absent => {
+            audit.bytes.is_none() && audit.sha256.is_none()
+        }
+        DurableWorkspaceInstructionsStatus::Present => {
+            audit.bytes.is_some_and(|bytes| bytes <= 32 * 1024)
+                && audit.sha256.as_deref().is_some_and(valid_sha256)
+        }
+    }
 }
 
 pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {

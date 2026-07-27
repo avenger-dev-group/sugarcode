@@ -36,6 +36,11 @@ pub async fn run_stdio(
         .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
         .map(Arc::new);
     let command_workspace_root = workspace.as_ref().map(|tool| tool.command_workspace_root());
+    let workspace_instructions = workspace
+        .as_ref()
+        .map(|tool| tool.load_root_instructions())
+        .transpose()
+        .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?;
     let workspace_read: Option<Arc<dyn sugarcode_tools::WorkspaceReadExecutor>> = workspace
         .as_ref()
         .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceReadExecutor>);
@@ -142,7 +147,11 @@ pub async fn run_stdio(
         (None, Ok(None)) => CoreRuntime::without_model(core),
         (None, Ok(Some(_))) | (None, Err(_)) => unreachable!("token lookup requires a model"),
     };
-    let session = Session::with_core(runtime.with_workspace_patch(workspace_patch));
+    let session = Session::with_core(
+        runtime
+            .with_workspace_patch(workspace_patch)
+            .with_workspace_instructions(workspace_instructions),
+    );
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());
     stdio::serve_with_events_and_approvals(input, output, session, events, approvals).await

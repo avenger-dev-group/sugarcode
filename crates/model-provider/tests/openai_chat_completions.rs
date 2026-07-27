@@ -2,6 +2,8 @@ use futures_util::StreamExt;
 use std::sync::Arc;
 use sugarcode_model_provider::ModelErrorKind;
 use sugarcode_model_provider::ModelEvent;
+use sugarcode_model_provider::ModelInstruction;
+use sugarcode_model_provider::ModelInstructionSource;
 use sugarcode_model_provider::ModelMessage;
 use sugarcode_model_provider::ModelProvider;
 use sugarcode_model_provider::ModelRequest;
@@ -51,6 +53,42 @@ async fn recorded_success_stream_normalizes_text_and_usage() {
             Ok(ModelEvent::Completed),
         ]
     );
+}
+
+#[tokio::test]
+async fn workspace_instructions_are_first_redacted_developer_context() {
+    let (endpoint, server, request_rx) =
+        capturing_response_server(SUCCESS.as_bytes().to_vec()).await;
+    let provider = provider(endpoint);
+    let mut request = request();
+    request.instructions.push(ModelInstruction {
+        source: ModelInstructionSource::WorkspaceRootAgentsV1,
+        content: "Keep the repository green.".to_string(),
+    });
+    let debug = format!("{request:?}");
+    assert!(debug.contains("instruction_count: 1"));
+    assert!(!debug.contains("Keep the repository green."));
+
+    let events = provider
+        .stream(request)
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+    server.await.expect("mock server");
+    let body = request_rx.await.expect("captured request");
+    assert_eq!(body["messages"][0]["role"], "developer");
+    assert_eq!(
+        body["messages"][0]["content"],
+        concat!(
+            "Workspace instructions from the opened workspace root AGENTS.md ",
+            "(boundedWorkspaceInstructionsV1):\n\n",
+            "Keep the repository green."
+        )
+    );
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(body["messages"][1]["content"], "Hello");
 }
 
 #[tokio::test]
@@ -749,6 +787,7 @@ fn provider(endpoint: Url) -> Arc<dyn ModelProvider> {
 fn request() -> ModelRequest {
     ModelRequest {
         model: "fixture-model".to_string(),
+        instructions: Vec::new(),
         messages: vec![ModelMessage::Text {
             role: ModelRole::User,
             text: "Hello".to_string(),
@@ -824,6 +863,42 @@ async fn response_server_with_options(
     )
 }
 
+async fn capturing_response_server(
+    body: Vec<u8>,
+) -> (
+    Url,
+    tokio::task::JoinHandle<()>,
+    oneshot::Receiver<serde_json::Value>,
+) {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind capture server");
+    let address = listener.local_addr().expect("capture server address");
+    let (request_tx, request_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept request");
+        let request = read_request(&mut socket, true).await;
+        let _ = request_tx.send(request);
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write response headers");
+        socket.write_all(&body).await.expect("write response body");
+        socket.flush().await.expect("flush response");
+    });
+    (
+        Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint"),
+        server,
+        request_rx,
+    )
+}
+
 async fn status_server(status: u16) -> (Url, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
@@ -849,7 +924,7 @@ async fn status_server(status: u16) -> (Url, tokio::task::JoinHandle<()>) {
     )
 }
 
-async fn read_request(socket: &mut TcpStream, expect_auth: bool) {
+async fn read_request(socket: &mut TcpStream, expect_auth: bool) -> serde_json::Value {
     let mut request = Vec::new();
     let mut buffer = [0u8; 4096];
     let header_end = loop {
@@ -899,4 +974,5 @@ async fn read_request(socket: &mut TcpStream, expect_auth: bool) {
     }
     assert_eq!(keys, expected);
     assert_eq!(body["stream_options"]["include_usage"], true);
+    body
 }

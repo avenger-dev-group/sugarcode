@@ -26,6 +26,7 @@ use super::replay::parse_canonical_id;
 use super::replay::replay_all;
 use super::replay::sync_parent;
 use super::replay::unavailable;
+use super::valid_workspace_instructions_audit;
 use crate::HomeSource;
 use crate::SugarCodeHome;
 use crate::thread_discovery::ThreadDiscoveryProjection;
@@ -348,6 +349,7 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
 fn valid_terminal_turn(turn: &DurableTurnSnapshot) -> bool {
     !turn.items.is_empty()
         && super::valid_turn_items(&turn.items)
+        && super::valid_workspace_instructions_audit(turn.workspace_instructions.as_ref())
         && match turn.status {
             DurableTurnStatus::InProgress => false,
             DurableTurnStatus::Completed => turn.error.is_none(),

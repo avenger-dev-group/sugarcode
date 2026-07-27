@@ -19,6 +19,8 @@ use std::sync::atomic::Ordering;
 use sugarcode_model_provider::ModelError;
 use sugarcode_model_provider::ModelErrorKind;
 use sugarcode_model_provider::ModelEvent;
+use sugarcode_model_provider::ModelInstruction;
+use sugarcode_model_provider::ModelInstructionSource;
 use sugarcode_model_provider::ModelMessage;
 use sugarcode_model_provider::ModelProvider;
 use sugarcode_model_provider::ModelRequest;
@@ -26,6 +28,7 @@ use sugarcode_model_provider::ModelRole;
 use sugarcode_model_provider::ModelToolCall;
 use sugarcode_model_provider::ModelToolDefinition;
 use sugarcode_model_provider::ModelUsage;
+use sugarcode_model_provider::WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreFileChangeKind;
@@ -45,11 +48,15 @@ use sugarcode_state::DurableTurnError;
 use sugarcode_state::DurableTurnErrorKind;
 use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableUsage;
+use sugarcode_state::DurableWorkspaceInstructionsAudit;
+use sugarcode_state::DurableWorkspaceInstructionsSource;
+use sugarcode_state::DurableWorkspaceInstructionsStatus;
 use sugarcode_tools::ShellCommandArguments;
 use sugarcode_tools::ShellCommandErrorKind;
 use sugarcode_tools::ShellCommandExecution;
 use sugarcode_tools::ShellCommandExecutor;
 use sugarcode_tools::ShellCommandOutcome;
+use sugarcode_tools::WorkspaceInstructionsSnapshot;
 use sugarcode_tools::WorkspaceListArguments;
 use sugarcode_tools::WorkspaceListErrorKind;
 use sugarcode_tools::WorkspaceListExecutor;
@@ -112,6 +119,7 @@ pub struct CoreRuntime {
     workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
     workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
     workspace_patch: Option<Arc<dyn WorkspacePatchExecutor>>,
+    workspace_instructions: Option<Arc<WorkspaceInstructionsSnapshot>>,
     shell_executor: Option<Arc<dyn ShellCommandExecutor>>,
     approval_requester: Option<Arc<dyn CommandApprovalRequester>>,
     event_tx: mpsc::Sender<CoreEvent>,
@@ -212,6 +220,7 @@ impl CoreRuntime {
                 workspace_list,
                 workspace_search,
                 workspace_patch: None,
+                workspace_instructions: None,
                 shell_executor: None,
                 approval_requester: None,
                 event_tx,
@@ -253,6 +262,14 @@ impl CoreRuntime {
         self
     }
 
+    pub fn with_workspace_instructions(
+        mut self,
+        workspace_instructions: Option<WorkspaceInstructionsSnapshot>,
+    ) -> Self {
+        self.workspace_instructions = workspace_instructions.map(Arc::new);
+        self
+    }
+
     pub fn without_model(core: Core) -> (Self, mpsc::Receiver<CoreEvent>) {
         let (event_tx, event_rx) = mpsc::channel(CORE_EVENT_CAPACITY);
         (
@@ -263,6 +280,7 @@ impl CoreRuntime {
                 workspace_list: None,
                 workspace_search: None,
                 workspace_patch: None,
+                workspace_instructions: None,
                 shell_executor: None,
                 approval_requester: None,
                 event_tx,
@@ -349,9 +367,23 @@ impl CoreApi for CoreRuntime {
         if self.model_gateway.is_none() {
             return Err(CoreError::ModelUnavailable);
         }
+        let workspace_instructions = self
+            .workspace_instructions
+            .as_deref()
+            .map(workspace_instructions_audit);
+        let instruction_context_bytes = self
+            .workspace_instructions
+            .as_deref()
+            .map_or(0, workspace_instruction_context_bytes);
         let prepared = self
             .lock_core()?
-            .prepare_text_turn(request_id, thread_id.clone(), input)?;
+            .prepare_text_turn_with_workspace_instructions(
+                request_id,
+                thread_id.clone(),
+                input,
+                workspace_instructions,
+                instruction_context_bytes,
+            )?;
         let cancellation = CancellationToken::new();
         let terminal_state = Arc::new(Mutex::new(TurnPhase::Running));
         let done = Arc::new(TurnDone::default());
@@ -556,6 +588,7 @@ async fn run_turn(
         }
         let request = ModelRequest {
             model: model_gateway.model.to_string(),
+            instructions: workspace_model_instructions(&runtime),
             messages: messages.clone(),
             tools: if round == 0 {
                 workspace_tool_definitions(&runtime)
@@ -1271,6 +1304,50 @@ async fn run_turn(
         }
     }
     clear_active(&runtime, &thread_id, &turn_id);
+}
+
+fn workspace_instructions_audit(
+    snapshot: &WorkspaceInstructionsSnapshot,
+) -> DurableWorkspaceInstructionsAudit {
+    match snapshot {
+        WorkspaceInstructionsSnapshot::Absent => DurableWorkspaceInstructionsAudit {
+            source: DurableWorkspaceInstructionsSource::RootAgentsMdV1,
+            status: DurableWorkspaceInstructionsStatus::Absent,
+            bytes: None,
+            sha256: None,
+        },
+        WorkspaceInstructionsSnapshot::Present { bytes, sha256, .. } => {
+            DurableWorkspaceInstructionsAudit {
+                source: DurableWorkspaceInstructionsSource::RootAgentsMdV1,
+                status: DurableWorkspaceInstructionsStatus::Present,
+                bytes: Some(*bytes as u64),
+                sha256: Some(sha256.clone()),
+            }
+        }
+    }
+}
+
+fn workspace_instruction_context_bytes(snapshot: &WorkspaceInstructionsSnapshot) -> usize {
+    match snapshot {
+        WorkspaceInstructionsSnapshot::Absent => 0,
+        WorkspaceInstructionsSnapshot::Present { content, .. } if content.is_empty() => 0,
+        WorkspaceInstructionsSnapshot::Present { content, .. } => {
+            WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX.len() + content.len()
+        }
+    }
+}
+
+fn workspace_model_instructions(runtime: &CoreRuntime) -> Vec<ModelInstruction> {
+    match runtime.workspace_instructions.as_deref() {
+        Some(WorkspaceInstructionsSnapshot::Present { content, .. }) if !content.is_empty() => {
+            vec![ModelInstruction {
+                source: ModelInstructionSource::WorkspaceRootAgentsV1,
+                content: content.clone(),
+            }]
+        }
+        None | Some(WorkspaceInstructionsSnapshot::Absent) => Vec::new(),
+        Some(WorkspaceInstructionsSnapshot::Present { .. }) => Vec::new(),
+    }
 }
 
 fn shell_execution_result(execution: ShellCommandExecution) -> Option<(CoreToolResult, String)> {

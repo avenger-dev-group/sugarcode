@@ -2,12 +2,15 @@ use crate::BoxModelFuture;
 use crate::ModelError;
 use crate::ModelErrorKind;
 use crate::ModelEvent;
+use crate::ModelInstruction;
+use crate::ModelInstructionSource;
 use crate::ModelMessage;
 use crate::ModelProvider;
 use crate::ModelRequest;
 use crate::ModelRole;
 use crate::ModelToolCall;
 use crate::ModelUsage;
+use crate::WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX;
 use eventsource_stream::EventStreamError;
 use eventsource_stream::Eventsource;
 use futures_util::FutureExt;
@@ -400,9 +403,15 @@ struct StreamOptions {
 
 impl From<ModelRequest> for ChatRequest {
     fn from(request: ModelRequest) -> Self {
+        let messages = request
+            .instructions
+            .into_iter()
+            .map(ChatMessage::from)
+            .chain(request.messages.into_iter().map(ChatMessage::from))
+            .collect();
         Self {
             model: request.model,
-            messages: request.messages.into_iter().map(Into::into).collect(),
+            messages,
             stream: true,
             stream_options: StreamOptions {
                 include_usage: true,
@@ -419,6 +428,22 @@ impl From<ModelRequest> for ChatRequest {
                     },
                 })
                 .collect(),
+        }
+    }
+}
+
+impl From<ModelInstruction> for ChatMessage {
+    fn from(instruction: ModelInstruction) -> Self {
+        let source = match instruction.source {
+            ModelInstructionSource::WorkspaceRootAgentsV1 => {
+                WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX
+            }
+        };
+        Self {
+            role: "developer",
+            content: Some(format!("{source}{}", instruction.content)),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         }
     }
 }

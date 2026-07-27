@@ -31,6 +31,35 @@ fn command_workspace_write_requires_an_explicit_workspace() {
 }
 
 #[test]
+fn invalid_root_agents_file_fails_before_serving_protocol() {
+    let sugarcode_home = tempfile::tempdir().expect("isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("isolated workspace");
+    fs::write(workspace.path().join("AGENTS.md"), b"invalid\0instruction")
+        .expect("invalid instructions");
+    configure_model(
+        sugarcode_home.path(),
+        "127.0.0.1:1".parse().expect("fixture endpoint"),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(sugarcode_home.path())
+        .args(["app-server", "--stdio", "--workspace"])
+        .arg(workspace.path())
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run invalid workspace instructions");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "sugarcode: InvalidEncoding\n"
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("instruction"));
+}
+
+#[test]
 #[cfg(not(target_os = "linux"))]
 fn unsupported_command_workspace_write_omits_shell_without_fallback() {
     let sugarcode_home = tempfile::tempdir().expect("isolated SugarCode home");

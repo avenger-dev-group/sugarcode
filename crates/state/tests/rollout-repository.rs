@@ -11,6 +11,9 @@ use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableToolResult;
 use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::DurableTurnStatus;
+use sugarcode_state::DurableWorkspaceInstructionsAudit;
+use sugarcode_state::DurableWorkspaceInstructionsSource;
+use sugarcode_state::DurableWorkspaceInstructionsStatus;
 use sugarcode_state::HomeResolutionInputs;
 use sugarcode_state::RolloutError;
 use sugarcode_state::RolloutRepository;
@@ -26,6 +29,7 @@ fn completed_turn(sequence: u64) -> DurableTurnSnapshot {
             id: ItemId::new(format!("item_{sequence:016}")),
             text: "SugarCode deterministic response.".to_string(),
         }],
+        workspace_instructions: None,
         error: None,
         usage: None,
     }
@@ -45,6 +49,7 @@ fn started_text_turn() -> DurableTurnSnapshot {
                 text: String::new(),
             },
         ],
+        workspace_instructions: None,
         error: None,
         usage: None,
     }
