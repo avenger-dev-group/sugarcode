@@ -191,6 +191,88 @@ describe('ConnectionSupervisor', () => {
     supervisor.shutdown();
   });
 
+  it('writes one correlated decision and waits for the durable decision item', async () => {
+    const child = new FakeChild();
+    const { supervisor } = createSupervisor(child);
+    await supervisor.start();
+    supervisor.commandApprovals.markSurfaceReady();
+
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      child.stdin.on('data', (chunk: Buffer) => {
+        for (const line of chunk.toString('utf8').trim().split('\n')) {
+          const message = JSON.parse(line) as Record<string, unknown>;
+          if (message.id === 'approval/desktop-ui') {
+            resolve(message);
+          }
+        }
+      });
+    });
+    child.stdout.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'approval/desktop-ui',
+        method: 'item/commandExecution/requestApproval',
+        params: {
+          approvalId: 'approval/desktop-ui',
+          threadId: 'thr_0000000000000001',
+          turnId: 'turn_0000000000000001',
+          callId: 'call_1',
+          command: '/bin/echo',
+          arguments: ['hello'],
+          cwd: '.',
+          approvalScope: 'command',
+          environmentPolicy: 'minimalV1',
+          sandboxed: true,
+          sandboxPolicy: 'filesystemReadOnlyV1',
+          networkPolicy: 'networkDeniedV1',
+        },
+      })}\n`,
+    );
+    await vi.waitFor(() =>
+      expect(
+        supervisor.commandApprovals.getSnapshot().status,
+      ).toBe('pending'),
+    );
+    const presentationId =
+      supervisor.commandApprovals.getSnapshot().request?.presentationId;
+    expect(presentationId).toBeTypeOf('string');
+
+    await expect(
+      supervisor.commandApprovals.approve(presentationId),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(response).resolves.toMatchObject({
+      jsonrpc: '2.0',
+      id: 'approval/desktop-ui',
+      result: { decision: 'approved' },
+    });
+    expect(supervisor.commandApprovals.getSnapshot().status).toBe(
+      'pending',
+    );
+
+    child.stdout.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'item/completed',
+        params: {
+          threadId: 'thr_0000000000000001',
+          turnId: 'turn_0000000000000001',
+          item: {
+            type: 'commandApprovalDecision',
+            id: 'item_decision_1',
+            approvalId: 'approval/desktop-ui',
+            decision: 'approved',
+          },
+        },
+      })}\n`,
+    );
+    await vi.waitFor(() =>
+      expect(
+        supervisor.commandApprovals.getSnapshot().status,
+      ).toBe('approved'),
+    );
+    supervisor.shutdown();
+  });
+
   it.each([
     [
       { protocolVersion: 99 },

@@ -19,6 +19,7 @@ export type ConnectionDiagnosticCode =
   | 'protocol-version-mismatch'
   | 'product-version-mismatch'
   | 'platform-mismatch'
+  | 'approval-ui-unavailable'
   | 'write-failed'
   | 'server-closed'
   | 'server-crashed';
@@ -38,7 +39,7 @@ export type ConnectionStateListener = (
   snapshot: ConnectionStateSnapshot,
 ) => void;
 
-export type DesktopApi = Readonly<{
+export type ConnectionApi = Readonly<{
   getConnectionState: () => Promise<ConnectionStateSnapshot>;
   onConnectionStateChanged: (
     listener: ConnectionStateListener,
@@ -64,6 +65,7 @@ const CONNECTION_DIAGNOSTIC_CODES = new Set<ConnectionDiagnosticCode>([
   'protocol-version-mismatch',
   'product-version-mismatch',
   'platform-mismatch',
+  'approval-ui-unavailable',
   'write-failed',
   'server-closed',
   'server-crashed',

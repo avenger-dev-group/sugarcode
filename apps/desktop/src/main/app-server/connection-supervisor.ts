@@ -37,6 +37,7 @@ import {
   JsonlClient,
   RpcResponseError,
 } from './jsonl-client';
+import { CommandApprovalController } from './command-approval-controller';
 
 type SpawnProcess = (
   command: string,
@@ -73,6 +74,8 @@ const DIAGNOSTIC_SUMMARIES: Record<ConnectionDiagnosticCode, string> = {
   'product-version-mismatch':
     'The Desktop and local CLI product versions do not match.',
   'platform-mismatch': 'The local CLI does not match this host platform.',
+  'approval-ui-unavailable':
+    'SugarCode closed a pending command because its approval window became unavailable.',
   'write-failed': 'SugarCode could not write to the local CLI.',
   'server-closed': 'The local CLI connection closed.',
   'server-crashed': 'The local CLI stopped unexpectedly.',
@@ -86,6 +89,7 @@ const createDiagnostic = (
 });
 
 export class ConnectionSupervisor {
+  readonly commandApprovals: CommandApprovalController;
   private readonly options: Required<
     Pick<
       ConnectionSupervisorOptions,
@@ -121,6 +125,19 @@ export class ConnectionSupervisor {
       isPackaged: options.isPackaged ?? false,
       resourcesPath: options.resourcesPath ?? '',
     };
+    this.commandApprovals = new CommandApprovalController({
+      platform: this.options.platform,
+      writeDecision: async (requestId, decision) => {
+        if (!this.client) {
+          throw new ConnectionClosedError();
+        }
+        await this.client.respond(requestId, { decision });
+      },
+      onProtocolFailure: () => this.failAndTerminate('protocol-invalid'),
+      onWriteFailure: () => this.failAndTerminate('write-failed'),
+      onSurfaceFailure: () =>
+        this.failAndTerminate('approval-ui-unavailable'),
+    });
   }
 
   getSnapshot = (): ConnectionStateSnapshot => this.snapshot;
@@ -147,6 +164,7 @@ export class ConnectionSupervisor {
       return;
     }
     this.shuttingDown = true;
+    this.commandApprovals.shutdown();
     this.initializeAbortController?.abort();
     this.client?.close();
     if (
@@ -222,17 +240,13 @@ export class ConnectionSupervisor {
       stdin: this.child.stdin,
       stdout: this.child.stdout,
       onServerRequest: (request) => {
-        if (
-          request.method !== 'item/commandExecution/requestApproval' ||
-          !this.client
-        ) {
+        if (request.method !== 'item/commandExecution/requestApproval') {
           this.failAndTerminate('protocol-invalid');
           return;
         }
-        void this.client
-          .respond(request.id, { decision: 'denied' })
-          .catch(() => this.failAndTerminate('write-failed'));
+        this.commandApprovals.handleServerRequest(request);
       },
+      onNotification: this.commandApprovals.handleNotification,
       onFatalError: () => {
         this.failAndTerminate('protocol-invalid');
       },
@@ -351,6 +365,7 @@ export class ConnectionSupervisor {
     this.exitCode = code ?? this.exitCode;
     this.exitSignal = signal ?? this.exitSignal;
     this.client?.close();
+    this.commandApprovals.transportClosed();
     this.child = null;
     this.client = null;
 

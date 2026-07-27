@@ -4,11 +4,13 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { registerConnectionIpc } from '@/main/app-server/connection-ipc';
+import { registerCommandApprovalIpc } from '@/main/app-server/command-approval-ipc';
 import { ConnectionSupervisor } from '@/main/app-server/connection-supervisor';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
 let disposeConnectionIpc: (() => void) | null = null;
+let disposeCommandApprovalIpc: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -50,7 +52,19 @@ const createWindow = (): void => {
       event.preventDefault();
     }
   });
+  window.webContents.on(
+    'did-start-navigation',
+    (_event, _url, _isInPlace, isMainFrame) => {
+      if (isMainFrame) {
+        supervisor?.commandApprovals.surfaceUnavailable();
+      }
+    },
+  );
+  window.webContents.on('render-process-gone', () => {
+    supervisor?.commandApprovals.surfaceUnavailable();
+  });
   window.once('closed', () => {
+    supervisor?.commandApprovals.surfaceUnavailable();
     if (mainWindow === window) {
       mainWindow = null;
     }
@@ -74,6 +88,11 @@ const startApplication = async (): Promise<void> => {
   });
   disposeConnectionIpc = registerConnectionIpc({
     supervisor,
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  disposeCommandApprovalIpc = registerCommandApprovalIpc({
+    controller: supervisor.commandApprovals,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -106,5 +125,7 @@ if (started) {
     supervisor?.shutdown();
     disposeConnectionIpc?.();
     disposeConnectionIpc = null;
+    disposeCommandApprovalIpc?.();
+    disposeCommandApprovalIpc = null;
   });
 }
