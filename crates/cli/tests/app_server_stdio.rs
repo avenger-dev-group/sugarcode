@@ -298,10 +298,8 @@ fn approved_shell_approval_matches_execution_attempt_golden_trace() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn informed_workspace_write_approval_mutates_the_real_workspace_and_matches_golden() {
-    if !cfg!(target_os = "linux") {
-        return;
-    }
     let command = env!("CARGO_BIN_EXE_sugarcode");
     let arguments = serde_json::to_string(&json!({
         "command": command,
