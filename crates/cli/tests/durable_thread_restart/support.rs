@@ -399,7 +399,7 @@ pub(super) fn read_recorded_request(stream: &mut TcpStream) -> Value {
                 .and_then(|value| value.parse::<usize>().ok())
         })
         .expect("provider content length");
-    assert!(content_length <= 1024 * 1024);
+    assert!(content_length <= 4 * 1024 * 1024);
     while request.len() - header_end < content_length {
         let read = stream
             .read(&mut buffer)

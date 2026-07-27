@@ -113,6 +113,7 @@ fn workspace_instruction_bytes_share_the_provider_history_budget() {
             Some("x".to_string()),
             Some(audit),
             crate::thread::MAX_PROVIDER_HISTORY_BYTES,
+            0,
         ),
         Err(CoreError::ContextTooLarge)
     );

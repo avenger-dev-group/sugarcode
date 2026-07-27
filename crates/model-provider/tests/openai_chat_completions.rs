@@ -92,6 +92,52 @@ async fn workspace_instructions_are_first_redacted_developer_context() {
 }
 
 #[tokio::test]
+async fn persisted_compaction_is_a_redacted_user_message_after_developer_instructions() {
+    let (endpoint, server, request_rx) =
+        capturing_response_server(SUCCESS.as_bytes().to_vec()).await;
+    let provider = provider(endpoint);
+    let mut request = request();
+    request.instructions.push(ModelInstruction {
+        source: ModelInstructionSource::WorkspaceRootAgentsV1,
+        content: "Keep the repository green.".to_string(),
+    });
+    let compaction = "SugarCode deterministic persisted compaction v1\nreceipt".to_string();
+    request.messages.insert(
+        0,
+        ModelMessage::ContextCompaction {
+            content: compaction.clone(),
+        },
+    );
+    let expected_context_bytes = request
+        .instructions
+        .iter()
+        .map(ModelInstruction::context_bytes)
+        .sum::<usize>()
+        + request
+            .messages
+            .iter()
+            .map(ModelMessage::context_bytes)
+            .sum::<usize>();
+    assert_eq!(request.context_bytes(), expected_context_bytes);
+    assert!(!format!("{request:?}").contains(&compaction));
+
+    let events = provider
+        .stream(request)
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+    server.await.expect("mock server");
+    let body = request_rx.await.expect("captured request");
+    assert_eq!(body["messages"][0]["role"], "developer");
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(body["messages"][1]["content"], compaction);
+    assert_eq!(body["messages"][2]["role"], "user");
+    assert_eq!(body["messages"][2]["content"], "Hello");
+}
+
+#[tokio::test]
 async fn nested_workspace_instructions_have_explicit_deeper_precedence() {
     let (endpoint, server, request_rx) =
         capturing_response_server(SUCCESS.as_bytes().to_vec()).await;

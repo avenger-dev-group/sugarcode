@@ -1,4 +1,6 @@
 use super::CURRENT_ROLLOUT_SCHEMA_VERSION;
+use super::DurableContextCompaction;
+use super::DurableContextCompactionStrategy;
 use super::DurableItemSnapshot;
 use super::DurableThreadSnapshot;
 use super::DurableToolResult;
@@ -99,11 +101,29 @@ pub(super) struct StoredTurnRef<'a> {
     pub status: &'static str,
     pub items: Vec<StoredItemRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_compaction: Option<StoredContextCompactionRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_instructions: Option<StoredWorkspaceInstructionsAuditRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<StoredTurnErrorRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<StoredUsageRef>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredContextCompactionRef<'a> {
+    pub strategy: &'static str,
+    pub through_turn_id: &'a str,
+    pub source_turns: u64,
+    pub source_messages: u64,
+    pub source_bytes: u64,
+    pub source_sha256: &'a str,
+    pub message_bytes: u64,
+    pub message_sha256: &'a str,
+    pub message: &'a str,
+    pub pre_context_bytes: u64,
+    pub post_context_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -411,6 +431,25 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
                 DurableTurnStatus::Interrupted => "interrupted",
             },
             items: turn.items.iter().map(StoredItemRef::from).collect(),
+            context_compaction: turn.context_compaction.as_ref().map(|compaction| {
+                StoredContextCompactionRef {
+                    strategy: match compaction.strategy {
+                        DurableContextCompactionStrategy::DeterministicExtractiveV1 => {
+                            "deterministicExtractiveV1"
+                        }
+                    },
+                    through_turn_id: compaction.through_turn_id.as_str(),
+                    source_turns: compaction.source_turns,
+                    source_messages: compaction.source_messages,
+                    source_bytes: compaction.source_bytes,
+                    source_sha256: &compaction.source_sha256,
+                    message_bytes: compaction.message_bytes,
+                    message_sha256: &compaction.message_sha256,
+                    message: &compaction.message,
+                    pre_context_bytes: compaction.pre_context_bytes,
+                    post_context_bytes: compaction.post_context_bytes,
+                }
+            }),
             workspace_instructions: turn.workspace_instructions.as_ref().map(|audit| {
                 StoredWorkspaceInstructionsAuditRef {
                     source: match audit.source {
@@ -583,11 +622,35 @@ struct StoredTurn {
     status: StoredTurnStatus,
     items: Vec<StoredItem>,
     #[serde(default)]
+    context_compaction: Option<StoredContextCompaction>,
+    #[serde(default)]
     workspace_instructions: Option<StoredWorkspaceInstructionsAudit>,
     #[serde(default)]
     error: Option<StoredTurnError>,
     #[serde(default)]
     usage: Option<StoredUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredContextCompaction {
+    strategy: StoredContextCompactionStrategy,
+    through_turn_id: String,
+    source_turns: u64,
+    source_messages: u64,
+    source_bytes: u64,
+    source_sha256: String,
+    message_bytes: u64,
+    message_sha256: String,
+    message: String,
+    pre_context_bytes: u64,
+    post_context_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StoredContextCompactionStrategy {
+    DeterministicExtractiveV1,
 }
 
 #[derive(Debug, Deserialize)]
@@ -924,6 +987,7 @@ pub(super) fn decode_record(
                 id,
                 status,
                 items,
+                context_compaction,
                 workspace_instructions,
                 error,
                 usage,
@@ -947,6 +1011,7 @@ pub(super) fn decode_record(
                     id: TurnId::new(id),
                     status,
                     items: decode_items(items),
+                    context_compaction: context_compaction.map(decode_context_compaction),
                     workspace_instructions: workspace_instructions
                         .map(decode_workspace_instructions),
                     error: error.map(decode_error),
@@ -974,6 +1039,7 @@ pub(super) fn decode_record(
                 id,
                 status,
                 items,
+                context_compaction,
                 workspace_instructions,
                 error,
                 usage,
@@ -993,6 +1059,7 @@ pub(super) fn decode_record(
                     id: TurnId::new(id),
                     status: DurableTurnStatus::InProgress,
                     items: decode_items(items),
+                    context_compaction: context_compaction.map(decode_context_compaction),
                     workspace_instructions: workspace_instructions
                         .map(decode_workspace_instructions),
                     error: None,
@@ -1288,6 +1355,26 @@ fn decode_workspace_instructions(
         },
         bytes: audit.bytes,
         sha256: audit.sha256,
+    }
+}
+
+fn decode_context_compaction(compaction: StoredContextCompaction) -> DurableContextCompaction {
+    DurableContextCompaction {
+        strategy: match compaction.strategy {
+            StoredContextCompactionStrategy::DeterministicExtractiveV1 => {
+                DurableContextCompactionStrategy::DeterministicExtractiveV1
+            }
+        },
+        through_turn_id: TurnId::new(compaction.through_turn_id),
+        source_turns: compaction.source_turns,
+        source_messages: compaction.source_messages,
+        source_bytes: compaction.source_bytes,
+        source_sha256: compaction.source_sha256,
+        message_bytes: compaction.message_bytes,
+        message_sha256: compaction.message_sha256,
+        message: compaction.message,
+        pre_context_bytes: compaction.pre_context_bytes,
+        post_context_bytes: compaction.post_context_bytes,
     }
 }
 

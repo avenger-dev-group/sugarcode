@@ -464,6 +464,12 @@ impl From<ModelMessage> for ChatMessage {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
             },
+            ModelMessage::ContextCompaction { content } => Self {
+                role: "user",
+                content: Some(content),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            },
             ModelMessage::ToolCall(call) => Self {
                 role: "assistant",
                 content: None,

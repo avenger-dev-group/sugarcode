@@ -213,6 +213,11 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     if !valid_started_items(&turn.items) {
                         return Err(corrupt(&path, offset as u64, "invalidStartedTurnItems"));
                     }
+                    if turn.context_compaction.as_ref().is_some_and(|compaction| {
+                        !crate::validate_context_compaction(&thread.turns, compaction)
+                    }) {
+                        return Err(corrupt(&path, offset as u64, "invalidContextCompaction"));
+                    }
                     validate_new_turn(
                         &turn,
                         &path,
@@ -297,6 +302,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                             .last_mut()
                             .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))?;
                         if pending.workspace_instructions != turn.workspace_instructions
+                            || pending.context_compaction != turn.context_compaction
                             || !terminal_items_match(&pending.items, &turn.items)
                         {
                             return Err(corrupt(&path, offset as u64, "turnItemMismatch"));
@@ -316,6 +322,11 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     } else {
                         if turn.status != super::DurableTurnStatus::Completed {
                             return Err(corrupt(&path, offset as u64, "legacyTurnMustBeCompleted"));
+                        }
+                        if turn.context_compaction.as_ref().is_some_and(|compaction| {
+                            !crate::validate_context_compaction(&thread.turns, compaction)
+                        }) {
+                            return Err(corrupt(&path, offset as u64, "invalidContextCompaction"));
                         }
                         validate_new_turn(
                             &turn,

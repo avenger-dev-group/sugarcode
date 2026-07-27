@@ -407,6 +407,7 @@ pub(super) fn durable_thread_snapshot(thread: &Thread) -> DurableThreadSnapshot 
                     .values()
                     .map(|item| durable_item_snapshot(&item.snapshot()))
                     .collect(),
+                context_compaction: turn.context_compaction.clone(),
                 workspace_instructions: turn.workspace_instructions.clone(),
                 error: turn.error.clone(),
                 usage: turn.usage.clone(),

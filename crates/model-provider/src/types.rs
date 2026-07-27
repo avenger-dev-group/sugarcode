@@ -31,6 +31,18 @@ impl fmt::Debug for ModelRequest {
     }
 }
 
+impl ModelRequest {
+    pub fn context_bytes(&self) -> usize {
+        self.instructions
+            .iter()
+            .map(ModelInstruction::context_bytes)
+            .chain(self.messages.iter().map(ModelMessage::context_bytes))
+            .chain(self.tools.iter().map(ModelToolDefinition::context_bytes))
+            .try_fold(0usize, usize::checked_add)
+            .unwrap_or(usize::MAX)
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct ModelInstruction {
     pub source: ModelInstructionSource,
@@ -75,6 +87,7 @@ impl ModelInstructionSource {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ModelMessage {
     Text { role: ModelRole, text: String },
+    ContextCompaction { content: String },
     ToolCall(ModelToolCall),
     ToolResult { call_id: String, content: String },
 }
@@ -87,12 +100,36 @@ impl fmt::Debug for ModelMessage {
                 .field("role", role)
                 .field("text", &"<redacted>")
                 .finish(),
+            Self::ContextCompaction { .. } => formatter
+                .debug_struct("ContextCompaction")
+                .field("content", &"<redacted>")
+                .finish(),
             Self::ToolCall(call) => formatter.debug_tuple("ToolCall").field(call).finish(),
             Self::ToolResult { call_id, .. } => formatter
                 .debug_struct("ToolResult")
                 .field("call_id", call_id)
                 .field("content", &"<redacted>")
                 .finish(),
+        }
+    }
+}
+
+impl ModelMessage {
+    pub fn context_bytes(&self) -> usize {
+        match self {
+            Self::Text { text, .. } => text.len(),
+            Self::ContextCompaction { content } => content.len(),
+            Self::ToolCall(call) => call
+                .id
+                .len()
+                .checked_add(call.name.len())
+                .and_then(|total| {
+                    serde_json::to_vec(&call.arguments)
+                        .ok()
+                        .and_then(|arguments| total.checked_add(arguments.len()))
+                })
+                .unwrap_or(usize::MAX),
+            Self::ToolResult { call_id, content } => call_id.len().saturating_add(content.len()),
         }
     }
 }
@@ -130,6 +167,20 @@ pub struct ModelToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+}
+
+impl ModelToolDefinition {
+    pub fn context_bytes(&self) -> usize {
+        self.name
+            .len()
+            .checked_add(self.description.len())
+            .and_then(|total| {
+                serde_json::to_vec(&self.parameters)
+                    .ok()
+                    .and_then(|parameters| total.checked_add(parameters.len()))
+            })
+            .unwrap_or(usize::MAX)
+    }
 }
 
 impl fmt::Debug for ModelToolDefinition {

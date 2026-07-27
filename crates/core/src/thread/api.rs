@@ -186,10 +186,29 @@ impl CoreApi for Core {
             .iter()
             .filter(|turn| turn.status == DurableTurnStatus::Completed);
         let mut turns = Vec::new();
+        let mut remapped_turn_ids = BTreeMap::new();
         for source_turn in completed_turns {
             turn_sequence = turn_sequence
                 .checked_add(1)
                 .ok_or(CoreError::TurnIdExhausted)?;
+            let remapped_turn_id = TurnId::new(format!("turn_{turn_sequence:016}"));
+            let context_compaction = source_turn
+                .context_compaction
+                .as_ref()
+                .map(|compaction| {
+                    let mut compaction = compaction.clone();
+                    compaction.through_turn_id = remapped_turn_ids
+                        .get(&compaction.through_turn_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            CoreError::Internal(
+                                "compaction boundary is absent from completed fork history"
+                                    .to_string(),
+                            )
+                        })?;
+                    Ok(compaction)
+                })
+                .transpose()?;
             let mut items = Vec::with_capacity(source_turn.items.len());
             for source_item in &source_turn.items {
                 item_sequence = item_sequence
@@ -315,13 +334,15 @@ impl CoreApi for Core {
                 items.push(item);
             }
             turns.push(DurableTurnSnapshot {
-                id: TurnId::new(format!("turn_{turn_sequence:016}")),
+                id: remapped_turn_id.clone(),
                 status: source_turn.status,
                 items,
+                context_compaction,
                 workspace_instructions: source_turn.workspace_instructions.clone(),
                 error: source_turn.error.clone(),
                 usage: source_turn.usage.clone(),
             });
+            remapped_turn_ids.insert(source_turn.id.clone(), remapped_turn_id);
         }
         let snapshot = DurableThreadSnapshot {
             id: ThreadId::new(format!("thr_{thread_sequence:016}")),
@@ -398,6 +419,7 @@ impl CoreApi for Core {
             id: turn_id.clone(),
             status: DurableTurnStatus::Completed,
             items: vec![durable_item_snapshot(&item_completed)],
+            context_compaction: None,
             workspace_instructions: None,
             error: None,
             usage: None,

@@ -53,6 +53,15 @@ impl ThreadRepository for RolloutRepository {
                 kind: "invalidTerminalTurn",
             });
         }
+        if snapshot.turns.iter().enumerate().any(|(index, turn)| {
+            turn.context_compaction.as_ref().is_some_and(|compaction| {
+                !crate::validate_context_compaction(&snapshot.turns[..index], compaction)
+            })
+        }) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidContextCompaction",
+            });
+        }
         let thread_sequence = parse_canonical_id(snapshot.id.as_str(), "thr_", "thread")?;
         if self.threads.contains_key(&snapshot.id) || thread_sequence <= self.sequences.thread {
             return Err(RolloutError::Collision { kind: "thread" });
@@ -193,6 +202,21 @@ impl ThreadRepository for RolloutRepository {
                 kind: "invalidWorkspaceInstructionsAudit",
             });
         }
+        let prior_turns = &self
+            .threads
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?
+            .snapshot
+            .turns;
+        if turn
+            .context_compaction
+            .as_ref()
+            .is_some_and(|compaction| !crate::validate_context_compaction(prior_turns, compaction))
+        {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidContextCompaction",
+            });
+        }
         self.ensure_available()?;
         if turn.items.is_empty() {
             return Err(RolloutError::InvalidRecord {
@@ -265,6 +289,11 @@ impl ThreadRepository for RolloutRepository {
         self.ensure_available()?;
         if turn.status != DurableTurnStatus::InProgress
             || turn.items.len() > 2
+            || turn.context_compaction.as_ref().is_some_and(|compaction| {
+                self.threads.get(thread_id).is_none_or(|thread| {
+                    !crate::validate_context_compaction(&thread.snapshot.turns, compaction)
+                })
+            })
             || !valid_workspace_instructions_audit(turn.workspace_instructions.as_ref())
             || turn.error.is_some()
             || turn.usage.is_some()
@@ -447,6 +476,7 @@ impl ThreadRepository for RolloutRepository {
             });
         };
         if pending.id != turn.id
+            || pending.context_compaction != turn.context_compaction
             || pending.workspace_instructions != turn.workspace_instructions
             || !terminal_items_match(&pending.items, &turn.items)
         {

@@ -13,6 +13,7 @@ use sugarcode_protocol::CoreToolResult;
 use sugarcode_protocol::ItemId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
+use sugarcode_state::DurableContextCompaction;
 use sugarcode_state::DurableItemSnapshot;
 use sugarcode_state::DurableThreadLifecycle;
 use sugarcode_state::DurableThreadPage;
@@ -42,7 +43,7 @@ use snapshots::{
 
 const DETERMINISTIC_AGENT_MESSAGE: &str = "SugarCode deterministic response.";
 pub const MAX_AGENT_MESSAGE_BYTES: usize = 512 * 1024;
-pub const MAX_PROVIDER_HISTORY_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_PROVIDER_HISTORY_BYTES: usize = crate::context::MAX_PROVIDER_CONTEXT_BYTES;
 pub const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +61,9 @@ pub enum PreparedMessage {
     Text {
         role: PreparedMessageRole,
         text: String,
+    },
+    ContextCompaction {
+        content: String,
     },
     ToolCall {
         call_id: String,
@@ -117,6 +121,7 @@ struct Turn {
     state: TurnState,
     items: BTreeMap<ItemId, Item>,
     active_item_id: Option<ItemId>,
+    context_compaction: Option<DurableContextCompaction>,
     workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
     error: Option<DurableTurnError>,
     usage: Option<DurableUsage>,
@@ -130,6 +135,7 @@ impl Turn {
             state: TurnState::InProgress,
             items: BTreeMap::new(),
             active_item_id: None,
+            context_compaction: None,
             workspace_instructions: None,
             error: None,
             usage: None,
@@ -726,6 +732,7 @@ impl Core {
                 },
                 items,
                 active_item_id: None,
+                context_compaction: durable_turn.context_compaction.clone(),
                 workspace_instructions: durable_turn.workspace_instructions.clone(),
                 error: durable_turn.error.clone(),
                 usage: durable_turn.usage.clone(),
@@ -749,7 +756,7 @@ impl Core {
         thread_id: ThreadId,
         input: Option<String>,
     ) -> Result<PreparedTextTurn, CoreError> {
-        self.prepare_text_turn_with_workspace_instructions(request_id, thread_id, input, None, 0)
+        self.prepare_text_turn_with_workspace_instructions(request_id, thread_id, input, None, 0, 0)
     }
 
     pub fn prepare_text_turn_with_workspace_instructions(
@@ -759,6 +766,7 @@ impl Core {
         input: Option<String>,
         workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
         instruction_context_bytes: usize,
+        tool_context_bytes: usize,
     ) -> Result<PreparedTextTurn, CoreError> {
         if input
             .as_ref()
@@ -780,55 +788,33 @@ impl Core {
             });
         }
 
-        let mut history = thread
+        let completed_turns = thread
             .turns
             .values()
             .filter(|turn| turn.state == TurnState::Completed)
-            .flat_map(|turn| {
-                turn.items.values().filter_map(|item| match &item.kind {
-                    ItemKind::UserMessage { text } => Some(PreparedMessage::Text {
-                        role: PreparedMessageRole::User,
-                        text: text.clone(),
-                    }),
-                    ItemKind::AgentMessage { text } if !text.is_empty() => {
-                        Some(PreparedMessage::Text {
-                            role: PreparedMessageRole::Assistant,
-                            text: text.clone(),
-                        })
-                    }
-                    ItemKind::AgentMessage { .. } => None,
-                    ItemKind::ToolCall {
-                        call_id,
-                        name,
-                        path,
-                        query,
-                        patch,
-                        command,
-                        arguments,
-                    } => Some(PreparedMessage::ToolCall {
-                        call_id: call_id.clone(),
-                        name: name.clone(),
-                        path: path.clone(),
-                        query: query.clone(),
-                        patch: patch.clone(),
-                        command: command.clone(),
-                        arguments: arguments.clone(),
-                    }),
-                    ItemKind::CommandApprovalRequest { .. }
-                    | ItemKind::CommandApprovalDecision { .. }
-                    | ItemKind::CommandExecutionAttempt { .. }
-                    | ItemKind::FileChange { .. } => None,
-                    ItemKind::ToolResult {
-                        call_id,
-                        name,
-                        result,
-                    } => Some(PreparedMessage::ToolResult {
-                        call_id: call_id.clone(),
-                        content: tool_result_content(name, result),
-                    }),
-                })
-            })
             .collect::<Vec<_>>();
+        let latest_compaction = completed_turns
+            .iter()
+            .rev()
+            .find_map(|turn| turn.context_compaction.as_ref());
+        let mut history = Vec::new();
+        if let Some(compaction) = latest_compaction {
+            history.push(PreparedMessage::ContextCompaction {
+                content: compaction.message.clone(),
+            });
+            history.extend(
+                completed_turns
+                    .iter()
+                    .filter(|turn| turn.id > compaction.through_turn_id)
+                    .flat_map(|turn| prepared_messages_for_turn(turn)),
+            );
+        } else {
+            history.extend(
+                completed_turns
+                    .iter()
+                    .flat_map(|turn| prepared_messages_for_turn(turn)),
+            );
+        }
         if let Some(input) = input.as_ref() {
             history.push(PreparedMessage::Text {
                 role: PreparedMessageRole::User,
@@ -837,35 +823,51 @@ impl Core {
         } else if history.is_empty() {
             return Err(CoreError::InvalidInput);
         }
-        let history_bytes = history.iter().try_fold(0usize, |total, message| {
-            total.checked_add(match message {
-                PreparedMessage::Text { text, .. } => text.len(),
-                PreparedMessage::ToolCall {
-                    call_id,
-                    name,
-                    path,
-                    query,
-                    patch,
-                    command,
-                    arguments,
-                } => {
-                    call_id.len()
-                        + name.len()
-                        + path.len()
-                        + query.as_ref().map_or(0, String::len)
-                        + patch.as_ref().map_or(0, String::len)
-                        + command.as_ref().map_or(0, String::len)
-                        + arguments
-                            .as_ref()
-                            .map_or(0, |values| values.iter().map(String::len).sum())
-                }
-                PreparedMessage::ToolResult { call_id, content } => call_id.len() + content.len(),
-            })
-        });
-        if history_bytes
-            .and_then(|bytes| bytes.checked_add(instruction_context_bytes))
-            .is_none_or(|bytes| bytes > MAX_PROVIDER_HISTORY_BYTES)
-        {
+        let fixed_context_bytes = instruction_context_bytes
+            .checked_add(tool_context_bytes)
+            .ok_or(CoreError::ContextTooLarge)?;
+        let pre_context_bytes = crate::context::prepared_history_bytes(&history)
+            .and_then(|bytes| bytes.checked_add(fixed_context_bytes))
+            .ok_or(CoreError::ContextTooLarge)?;
+        let mut context_compaction = None;
+        if pre_context_bytes > crate::context::COMPACTION_TARGET_BYTES {
+            let durable_completed_turns = completed_turns
+                .iter()
+                .map(|turn| durable_turn_snapshot(turn))
+                .collect::<Vec<_>>();
+            let provisional = sugarcode_state::build_context_compaction(
+                &durable_completed_turns,
+                u64::try_from(pre_context_bytes).map_err(|_| CoreError::ContextTooLarge)?,
+                0,
+            )
+            .ok_or(CoreError::ContextTooLarge)?;
+            let mut compacted_history = vec![PreparedMessage::ContextCompaction {
+                content: provisional.message,
+            }];
+            if let Some(input) = input.as_ref() {
+                compacted_history.push(PreparedMessage::Text {
+                    role: PreparedMessageRole::User,
+                    text: input.clone(),
+                });
+            }
+            let post_context_bytes = crate::context::prepared_history_bytes(&compacted_history)
+                .and_then(|bytes| bytes.checked_add(fixed_context_bytes))
+                .ok_or(CoreError::ContextTooLarge)?;
+            if post_context_bytes > crate::context::COMPACTION_TARGET_BYTES {
+                return Err(CoreError::ContextTooLarge);
+            }
+            let compaction = sugarcode_state::build_context_compaction(
+                &durable_completed_turns,
+                u64::try_from(pre_context_bytes).map_err(|_| CoreError::ContextTooLarge)?,
+                u64::try_from(post_context_bytes).map_err(|_| CoreError::ContextTooLarge)?,
+            )
+            .ok_or(CoreError::ContextTooLarge)?;
+            compacted_history[0] = PreparedMessage::ContextCompaction {
+                content: compaction.message.clone(),
+            };
+            history = compacted_history;
+            context_compaction = Some(compaction);
+        } else if pre_context_bytes > MAX_PROVIDER_HISTORY_BYTES {
             return Err(CoreError::ContextTooLarge);
         }
 
@@ -902,6 +904,7 @@ impl Core {
             id: turn_id.clone(),
             status: DurableTurnStatus::InProgress,
             items: durable_items,
+            context_compaction: context_compaction.clone(),
             workspace_instructions: workspace_instructions.clone(),
             error: None,
             usage: None,
@@ -932,6 +935,7 @@ impl Core {
             state: TurnState::InProgress,
             items,
             active_item_id: None,
+            context_compaction,
             workspace_instructions: workspace_instructions.clone(),
             error: None,
             usage: None,
@@ -1100,6 +1104,7 @@ impl Core {
                 .values()
                 .map(|item| durable_item_snapshot(&item.snapshot()))
                 .collect(),
+            context_compaction: turn.context_compaction.clone(),
             workspace_instructions: turn.workspace_instructions.clone(),
             error: Some(DurableTurnError {
                 kind: DurableTurnErrorKind::OutputTooLarge,
@@ -1176,6 +1181,7 @@ impl Core {
                 .values()
                 .map(|item| durable_item_snapshot(&item.snapshot()))
                 .collect(),
+            context_compaction: turn.context_compaction.clone(),
             workspace_instructions: turn.workspace_instructions.clone(),
             error: error.clone(),
             usage: usage.clone(),
@@ -1215,6 +1221,73 @@ impl Core {
 impl Default for Core {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn prepared_messages_for_turn(turn: &Turn) -> Vec<PreparedMessage> {
+    turn.items
+        .values()
+        .filter_map(|item| match &item.kind {
+            ItemKind::UserMessage { text } => Some(PreparedMessage::Text {
+                role: PreparedMessageRole::User,
+                text: text.clone(),
+            }),
+            ItemKind::AgentMessage { text } if !text.is_empty() => Some(PreparedMessage::Text {
+                role: PreparedMessageRole::Assistant,
+                text: text.clone(),
+            }),
+            ItemKind::AgentMessage { .. } => None,
+            ItemKind::ToolCall {
+                call_id,
+                name,
+                path,
+                query,
+                patch,
+                command,
+                arguments,
+            } => Some(PreparedMessage::ToolCall {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                path: path.clone(),
+                query: query.clone(),
+                patch: patch.clone(),
+                command: command.clone(),
+                arguments: arguments.clone(),
+            }),
+            ItemKind::CommandApprovalRequest { .. }
+            | ItemKind::CommandApprovalDecision { .. }
+            | ItemKind::CommandExecutionAttempt { .. }
+            | ItemKind::FileChange { .. } => None,
+            ItemKind::ToolResult {
+                call_id,
+                name,
+                result,
+            } => Some(PreparedMessage::ToolResult {
+                call_id: call_id.clone(),
+                content: tool_result_content(name, result),
+            }),
+        })
+        .collect()
+}
+
+fn durable_turn_snapshot(turn: &Turn) -> DurableTurnSnapshot {
+    DurableTurnSnapshot {
+        id: turn.id.clone(),
+        status: match turn.state {
+            TurnState::InProgress => DurableTurnStatus::InProgress,
+            TurnState::Completed => DurableTurnStatus::Completed,
+            TurnState::Failed => DurableTurnStatus::Failed,
+            TurnState::Interrupted => DurableTurnStatus::Interrupted,
+        },
+        items: turn
+            .items
+            .values()
+            .map(|item| durable_item_snapshot(&item.snapshot()))
+            .collect(),
+        context_compaction: turn.context_compaction.clone(),
+        workspace_instructions: turn.workspace_instructions.clone(),
+        error: turn.error.clone(),
+        usage: turn.usage.clone(),
     }
 }
 

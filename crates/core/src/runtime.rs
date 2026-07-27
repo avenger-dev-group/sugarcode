@@ -374,6 +374,11 @@ impl CoreApi for CoreRuntime {
             .workspace_instructions
             .as_deref()
             .map_or(0, workspace_instruction_context_bytes);
+        let tool_context_bytes = workspace_tool_definitions(self)
+            .iter()
+            .map(sugarcode_model_provider::ModelToolDefinition::context_bytes)
+            .try_fold(0usize, usize::checked_add)
+            .ok_or(CoreError::ContextTooLarge)?;
         let prepared = self
             .lock_core()?
             .prepare_text_turn_with_workspace_instructions(
@@ -382,6 +387,7 @@ impl CoreApi for CoreRuntime {
                 input,
                 workspace_instructions,
                 instruction_context_bytes,
+                tool_context_bytes,
             )?;
         let cancellation = CancellationToken::new();
         let terminal_state = Arc::new(Mutex::new(TurnPhase::Running));
@@ -595,6 +601,9 @@ async fn run_turn(
                 Vec::new()
             },
         };
+        if request.context_bytes() > crate::context::MAX_PROVIDER_CONTEXT_BYTES {
+            break Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false));
+        }
         let stream = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break 'rounds Terminal::Interrupted,
@@ -1502,6 +1511,9 @@ fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {
             },
             text: text.clone(),
         },
+        PreparedMessage::ContextCompaction { content } => ModelMessage::ContextCompaction {
+            content: content.clone(),
+        },
         PreparedMessage::ToolCall {
             call_id,
             name,
@@ -1513,16 +1525,9 @@ fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {
         } => ModelMessage::ToolCall(ModelToolCall {
             id: call_id.clone(),
             name: name.clone(),
-            arguments: match (command, arguments, query, patch) {
-                (Some(command), Some(arguments), _, _) => serde_json::json!({
-                    "command": command,
-                    "arguments": arguments,
-                    "cwd": path,
-                }),
-                (_, _, Some(query), _) => serde_json::json!({ "path": path, "query": query }),
-                (_, _, _, Some(patch)) => serde_json::json!({ "path": path, "patch": patch }),
-                _ => serde_json::json!({ "path": path }),
-            },
+            arguments: crate::context::prepared_tool_arguments(
+                path, query, patch, command, arguments,
+            ),
         }),
         PreparedMessage::ToolResult { call_id, content } => ModelMessage::ToolResult {
             call_id: call_id.clone(),

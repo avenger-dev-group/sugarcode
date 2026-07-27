@@ -98,6 +98,131 @@ fn resumes_completed_history_across_two_cli_processes() {
 }
 
 #[test]
+fn persisted_compaction_is_reused_after_a_real_cli_restart() {
+    fn large_response() -> &'static str {
+        let delta = "x".repeat(64 * 1024);
+        let mut body = String::new();
+        for _ in 0..8 {
+            body.push_str(&format!(
+                concat!(
+                    "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{}\"}},",
+                    "\"finish_reason\":null}}]}}\n\n"
+                ),
+                delta
+            ));
+        }
+        body.push_str(concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},",
+            "\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        ));
+        Box::leak(body.into_boxed_str())
+    }
+
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let mut responses = (0..6)
+        .map(|_| MockResponse::Complete(large_response()))
+        .collect::<Vec<_>>();
+    responses.push(MockResponse::Complete(include_str!(
+        "../../../model-provider/tests/fixtures/completed.sse"
+    )));
+    let mut first = RunningServer::spawn_with_responses(home.path(), responses);
+    first.initialize();
+    first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "thread",
+            "method": "thread/start",
+            "params": {}
+        }),
+        2,
+    );
+    for turn in 1..=6 {
+        let completed = first.send(
+            json!({
+                "jsonrpc": "2.0",
+                "id": format!("large-{turn}"),
+                "method": "turn/start",
+                "params": {
+                    "threadId": "thr_0000000000000001",
+                    "input": "u"
+                }
+            }),
+            15,
+        );
+        assert_eq!(completed[14]["params"]["turn"]["status"], "completed");
+    }
+    let checkpoint = first.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "checkpoint",
+            "method": "turn/start",
+            "params": {
+                "threadId": "thr_0000000000000001",
+                "input": "checkpoint"
+            }
+        }),
+        8,
+    );
+    assert_eq!(checkpoint[7]["params"]["turn"]["status"], "completed");
+    let first_requests = first.provider_requests();
+    assert_eq!(first_requests.len(), 7);
+    assert_eq!(first_requests[6]["messages"][0]["role"], "user");
+    assert!(
+        first_requests[6]["messages"][0]["content"]
+            .as_str()
+            .expect("compaction")
+            .starts_with("SugarCode deterministic persisted compaction v1\n")
+    );
+    assert_eq!(first_requests[6]["messages"][1]["content"], "checkpoint");
+    first.finish();
+
+    let rollout = fs::read_to_string(home.path().join("rollouts/v1/thr_0000000000000001.jsonl"))
+        .expect("rollout");
+    assert!(rollout.contains("\"contextCompaction\""));
+    assert!(rollout.contains("\"deterministicExtractiveV1\""));
+
+    let mut second = RunningServer::spawn(home.path());
+    second.initialize();
+    second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "resume",
+            "method": "thread/resume",
+            "params": {"threadId": "thr_0000000000000001"}
+        }),
+        1,
+    );
+    let continued = second.send(
+        json!({
+            "jsonrpc": "2.0",
+            "id": "continued",
+            "method": "turn/start",
+            "params": {
+                "threadId": "thr_0000000000000001",
+                "input": "continued"
+            }
+        }),
+        8,
+    );
+    assert_eq!(continued[7]["params"]["turn"]["status"], "completed");
+    let request = &second.provider_requests()[0];
+    assert!(
+        request["messages"][0]["content"]
+            .as_str()
+            .expect("persisted compaction")
+            .starts_with("SugarCode deterministic persisted compaction v1\n")
+    );
+    assert_eq!(request["messages"][1]["content"], "checkpoint");
+    assert_eq!(
+        request["messages"][2]["content"],
+        "SugarCode deterministic response."
+    );
+    assert_eq!(request["messages"][3]["content"], "continued");
+    second.finish();
+}
+
+#[test]
 fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() {
     const TOOL_CALL: &str = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_restart\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\\\"path\\\":\\\"context.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\n",

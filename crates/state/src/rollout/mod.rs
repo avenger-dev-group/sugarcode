@@ -64,9 +64,30 @@ pub struct DurableTurnSnapshot {
     pub id: TurnId,
     pub status: DurableTurnStatus,
     pub items: Vec<DurableItemSnapshot>,
+    pub context_compaction: Option<DurableContextCompaction>,
     pub workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
     pub error: Option<DurableTurnError>,
     pub usage: Option<DurableUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableContextCompaction {
+    pub strategy: DurableContextCompactionStrategy,
+    pub through_turn_id: TurnId,
+    pub source_turns: u64,
+    pub source_messages: u64,
+    pub source_bytes: u64,
+    pub source_sha256: String,
+    pub message_bytes: u64,
+    pub message_sha256: String,
+    pub message: String,
+    pub pre_context_bytes: u64,
+    pub post_context_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableContextCompactionStrategy {
+    DeterministicExtractiveV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

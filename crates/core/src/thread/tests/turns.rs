@@ -163,11 +163,11 @@ fn provider_history_excludes_failed_and_interrupted_partial_turns() {
 }
 
 #[test]
-fn provider_history_fails_instead_of_truncating_over_four_mib() {
+fn provider_history_compacts_deterministically_above_the_three_mib_target() {
     let mut core = Core::new();
     let thread_id = start_thread(&mut core, 1);
     let maximum_output = "x".repeat(MAX_AGENT_MESSAGE_BYTES);
-    for request in 2..=9 {
+    for request in 2..=7 {
         let prepared = core
             .prepare_text_turn(
                 CoreRequestId::new(request),
@@ -186,14 +186,202 @@ fn provider_history_fails_instead_of_truncating_over_four_mib() {
         )
         .expect("complete turn");
     }
+
+    let compacted = core
+        .prepare_text_turn(
+            CoreRequestId::new(8),
+            thread_id.clone(),
+            Some("after-compaction".to_string()),
+        )
+        .expect("compaction makes the prospective request fit");
+    assert_eq!(compacted.history.len(), 2);
+    let PreparedMessage::ContextCompaction { content } = &compacted.history[0] else {
+        panic!("expected persisted compaction first");
+    };
+    assert!(content.starts_with("SugarCode deterministic persisted compaction v1\n"));
     assert_eq!(
-        core.prepare_text_turn(
-            CoreRequestId::new(10),
+        compacted.history[1],
+        PreparedMessage::Text {
+            role: PreparedMessageRole::User,
+            text: "after-compaction".to_string(),
+        }
+    );
+    core.start_agent_message(&thread_id, &compacted.turn_id)
+        .expect("start compacted response");
+    core.append_text_delta(&thread_id, &compacted.turn_id, "answer")
+        .expect("append response");
+    core.finish_text_turn(
+        &thread_id,
+        &compacted.turn_id,
+        DurableTurnStatus::Completed,
+        None,
+        None,
+    )
+    .expect("complete checkpoint turn");
+
+    let snapshot = core.resume_thread(&thread_id).expect("snapshot");
+    let checkpoint = snapshot.turns[6]
+        .context_compaction
+        .as_ref()
+        .expect("completed turn persists checkpoint");
+    assert_eq!(checkpoint.through_turn_id, snapshot.turns[5].id);
+    assert_eq!(checkpoint.source_turns, 6);
+    assert!(checkpoint.pre_context_bytes > crate::context::COMPACTION_TARGET_BYTES as u64);
+    assert!(checkpoint.post_context_bytes <= crate::context::COMPACTION_TARGET_BYTES as u64);
+
+    let continued = core
+        .prepare_text_turn(
+            CoreRequestId::new(9),
             thread_id,
-            Some("over-limit".to_string()),
+            Some("continued".to_string()),
+        )
+        .expect("completed checkpoint is effective");
+    assert_eq!(
+        continued.history[0],
+        PreparedMessage::ContextCompaction {
+            content: checkpoint.message.clone(),
+        }
+    );
+    assert_eq!(continued.history.len(), 4);
+}
+
+#[test]
+fn interrupted_checkpoint_is_auditable_but_not_effective_context() {
+    let mut core = Core::new();
+    let thread_id = start_thread(&mut core, 1);
+    let maximum_output = "x".repeat(MAX_AGENT_MESSAGE_BYTES);
+    for request in 2..=7 {
+        let prepared = core
+            .prepare_text_turn(
+                CoreRequestId::new(request),
+                thread_id.clone(),
+                Some("u".to_string()),
+            )
+            .expect("prepare history");
+        core.append_text_delta(&thread_id, &prepared.turn_id, &maximum_output)
+            .expect("maximum output");
+        core.finish_text_turn(
+            &thread_id,
+            &prepared.turn_id,
+            DurableTurnStatus::Completed,
+            None,
+            None,
+        )
+        .expect("complete history");
+    }
+    let interrupted = core
+        .prepare_text_turn(
+            CoreRequestId::new(8),
+            thread_id.clone(),
+            Some("retry".to_string()),
+        )
+        .expect("first checkpoint");
+    let PreparedMessage::ContextCompaction {
+        content: first_message,
+    } = &interrupted.history[0]
+    else {
+        panic!("checkpoint");
+    };
+    core.start_agent_message(&thread_id, &interrupted.turn_id)
+        .expect("start interrupted answer");
+    core.finish_text_turn(
+        &thread_id,
+        &interrupted.turn_id,
+        DurableTurnStatus::Interrupted,
+        None,
+        None,
+    )
+    .expect("interrupt checkpoint turn");
+    assert!(
+        core.resume_thread(&thread_id).expect("snapshot").turns[6]
+            .context_compaction
+            .is_some()
+    );
+
+    let retried = core
+        .prepare_text_turn(CoreRequestId::new(9), thread_id, Some("retry".to_string()))
+        .expect("rebuild checkpoint from completed originals");
+    assert_eq!(
+        retried.history[0],
+        PreparedMessage::ContextCompaction {
+            content: first_message.clone(),
+        }
+    );
+}
+
+#[test]
+fn compaction_trigger_is_strictly_above_target_and_failure_is_atomic() {
+    let mut core = Core::new();
+    let thread_id = start_thread(&mut core, 1);
+    let first = core
+        .prepare_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("u".to_string()),
+        )
+        .expect("first turn");
+    core.append_text_delta(&thread_id, &first.turn_id, "a")
+        .expect("first answer");
+    core.finish_text_turn(
+        &thread_id,
+        &first.turn_id,
+        DurableTurnStatus::Completed,
+        None,
+        None,
+    )
+    .expect("complete first turn");
+
+    let fixed_at_target = crate::context::COMPACTION_TARGET_BYTES - 3;
+    let exact = core
+        .prepare_text_turn_with_workspace_instructions(
+            CoreRequestId::new(3),
+            thread_id.clone(),
+            Some("n".to_string()),
+            None,
+            fixed_at_target,
+            0,
+        )
+        .expect("exact target does not compact");
+    assert_eq!(exact.turn_id.as_str(), "turn_0000000000000002");
+    assert!(
+        exact
+            .history
+            .iter()
+            .all(|message| !matches!(message, PreparedMessage::ContextCompaction { .. }))
+    );
+    core.start_agent_message(&thread_id, &exact.turn_id)
+        .expect("start interrupted exact-target answer");
+    core.finish_text_turn(
+        &thread_id,
+        &exact.turn_id,
+        DurableTurnStatus::Interrupted,
+        None,
+        None,
+    )
+    .expect("interrupt exact-target turn");
+
+    assert_eq!(
+        core.prepare_text_turn_with_workspace_instructions(
+            CoreRequestId::new(4),
+            thread_id.clone(),
+            Some("n".to_string()),
+            None,
+            fixed_at_target + 1,
+            0,
         ),
         Err(CoreError::ContextTooLarge)
     );
+    let after_failure = core
+        .prepare_text_turn_with_workspace_instructions(
+            CoreRequestId::new(5),
+            thread_id,
+            Some("n".to_string()),
+            None,
+            fixed_at_target,
+            0,
+        )
+        .expect("failed compaction did not reserve a turn");
+    assert_eq!(after_failure.turn_id.as_str(), "turn_0000000000000003");
 }
 
 #[test]

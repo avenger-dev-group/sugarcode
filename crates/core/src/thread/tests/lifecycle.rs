@@ -229,6 +229,81 @@ fn fork_remaps_complete_history_and_keeps_threads_independent() {
 }
 
 #[test]
+fn fork_remaps_a_completed_compaction_boundary_without_rewriting_the_summary() {
+    let mut core = Core::new();
+    let source = start_thread(&mut core, 1);
+    let maximum_output = "x".repeat(MAX_AGENT_MESSAGE_BYTES);
+    for request in 2..=7 {
+        let prepared = core
+            .prepare_text_turn(
+                CoreRequestId::new(request),
+                source.clone(),
+                Some("u".to_string()),
+            )
+            .expect("prepare source history");
+        core.append_text_delta(&source, &prepared.turn_id, &maximum_output)
+            .expect("append source output");
+        core.finish_text_turn(
+            &source,
+            &prepared.turn_id,
+            DurableTurnStatus::Completed,
+            None,
+            None,
+        )
+        .expect("complete source turn");
+    }
+    let compacted = core
+        .prepare_text_turn(
+            CoreRequestId::new(8),
+            source.clone(),
+            Some("checkpoint".to_string()),
+        )
+        .expect("prepare compacted turn");
+    core.start_agent_message(&source, &compacted.turn_id)
+        .expect("start answer");
+    core.append_text_delta(&source, &compacted.turn_id, "answer")
+        .expect("append answer");
+    core.finish_text_turn(
+        &source,
+        &compacted.turn_id,
+        DurableTurnStatus::Completed,
+        None,
+        None,
+    )
+    .expect("complete checkpoint turn");
+
+    let source_snapshot = core.resume_thread(&source).expect("source snapshot");
+    let source_checkpoint = source_snapshot.turns[6]
+        .context_compaction
+        .as_ref()
+        .expect("source checkpoint");
+    let fork = core.fork_thread(&source).expect("fork");
+    let fork_checkpoint = fork.turns[6]
+        .context_compaction
+        .as_ref()
+        .expect("fork checkpoint");
+
+    assert_eq!(
+        source_checkpoint.through_turn_id,
+        source_snapshot.turns[5].id
+    );
+    assert_eq!(fork_checkpoint.through_turn_id, fork.turns[5].id);
+    assert_ne!(
+        source_checkpoint.through_turn_id,
+        fork_checkpoint.through_turn_id
+    );
+    assert_eq!(source_checkpoint.message, fork_checkpoint.message);
+    assert_eq!(
+        source_checkpoint.message_sha256,
+        fork_checkpoint.message_sha256
+    );
+    assert_eq!(
+        source_checkpoint.source_sha256,
+        fork_checkpoint.source_sha256
+    );
+}
+
+#[test]
 fn fork_preserves_workspace_instruction_audit_without_any_instruction_content() {
     let mut core = Core::new();
     let source = start_thread(&mut core, 1);
@@ -245,6 +320,7 @@ fn fork_preserves_workspace_instruction_audit_without_any_instruction_content() 
             Some("hello".to_string()),
             Some(audit.clone()),
             19,
+            0,
         )
         .expect("prepare source turn");
     core.start_agent_message(&source, &prepared.turn_id)
