@@ -5,7 +5,7 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
     if runtime.workspace_read.is_some() {
         definitions.push(ModelToolDefinition {
             name: "workspace/read".to_string(),
-            description: "Read one UTF-8 text file inside the configured workspace.".to_string(),
+            description: "Read one UTF-8 text file inside the active workspace scope.".to_string(),
             parameters: workspace_path_parameters(),
         });
     }
@@ -13,7 +13,7 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
         definitions.push(ModelToolDefinition {
             name: "workspace/list".to_string(),
             description:
-                "List one directory non-recursively inside the configured workspace. Use '.' for the workspace root."
+                "List one directory non-recursively inside the active workspace scope. Use '.' for the active workspace scope."
                     .to_string(),
             parameters: workspace_path_parameters(),
         });
@@ -22,7 +22,7 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
         definitions.push(ModelToolDefinition {
             name: "workspace/search".to_string(),
             description:
-                "Search UTF-8 text file contents recursively inside one workspace directory. Returns workspace-relative paths and 1-based line numbers."
+                "Search UTF-8 text file contents recursively inside one active workspace scope directory. Returns active-scope-relative paths and 1-based line numbers."
                     .to_string(),
             parameters: workspace_search_parameters(),
         });
@@ -31,7 +31,7 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
         definitions.push(ModelToolDefinition {
             name: "workspace/apply-patch".to_string(),
             description:
-                "Apply strict unified hunks to one existing UTF-8 regular file. The write capability is explicit, bounded, conflict-checked, and not a sandbox or persistent permission."
+                "Apply strict unified hunks to one existing UTF-8 regular file inside the active workspace scope. The write capability is explicit, bounded, conflict-checked, and not a sandbox or persistent permission."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -50,9 +50,9 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
             .as_ref()
             .is_some_and(|executor| executor.sandbox_policy().workspace_write.is_some())
         {
-            "Execute one exact absolute program and argv in the workspace root after per-command approval. This is not a shell. Filesystem reads and writes inside the workspace are allowed, writes outside the workspace are denied, and network access is denied."
+            "Execute one exact absolute program and argv in the active workspace scope after per-command approval. This is not a shell. Filesystem reads and writes inside the active workspace scope are allowed, writes outside the active workspace scope are denied, and network access is denied."
         } else {
-            "Execute one exact absolute program and argv in the workspace root after per-command approval. This is not a shell. Filesystem reads are allowed, filesystem writes are denied, and network access is denied."
+            "Execute one exact absolute program and argv in the active workspace scope after per-command approval. This is not a shell. Filesystem reads are allowed wherever the SugarCode process can read, filesystem writes are denied, and network access is denied."
         };
         definitions.push(ModelToolDefinition {
             name: "shell/exec".to_string(),

@@ -110,3 +110,72 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
     assert!(!rollout.contains(SECOND_INSTRUCTION));
     assert!(!rollout.contains("\"content\""));
 }
+
+#[test]
+fn scoped_agents_is_not_auto_discovered_but_can_be_read_as_ordinary_tool_data() {
+    const ROOT_INSTRUCTION: &str = "root private instruction";
+    const NESTED_INSTRUCTION: &str = "nested explicit tool content";
+    const READ_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_nested_agents\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\\\"path\\\":\\\"AGENTS.md\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const FINAL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Nested file read.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("isolated workspace");
+    fs::create_dir_all(workspace.path().join("projects/active")).expect("active scope");
+    fs::write(workspace.path().join("AGENTS.md"), ROOT_INSTRUCTION).expect("root instructions");
+    fs::write(
+        workspace.path().join("projects/active/AGENTS.md"),
+        NESTED_INSTRUCTION,
+    )
+    .expect("nested instructions");
+    let mut server = RunningServer::spawn_with_workspace_scope(
+        home.path(),
+        workspace.path(),
+        "projects/active",
+        vec![READ_CALL, FINAL],
+    );
+    server.initialize();
+    server.send(
+        json!({"jsonrpc":"2.0","id":"thread","method":"thread/start","params":{}}),
+        2,
+    );
+    let public = server.send(
+        json!({
+            "jsonrpc":"2.0",
+            "id":"turn",
+            "method":"turn/start",
+            "params":{"threadId":"thr_0000000000000001","input":"Read nested AGENTS"}
+        }),
+        12,
+    );
+    assert_eq!(public[11]["params"]["turn"]["status"], "completed");
+    let requests = server.provider_requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0]["messages"][0]["content"],
+        format!(
+            "Workspace instructions from the opened workspace root AGENTS.md (boundedWorkspaceInstructionsV1):\n\n{ROOT_INSTRUCTION}"
+        )
+    );
+    assert!(
+        !requests[0].to_string().contains(NESTED_INSTRUCTION),
+        "nested AGENTS.md must not be auto-discovered"
+    );
+    let second_request = requests[1].to_string();
+    assert!(second_request.contains(ROOT_INSTRUCTION));
+    assert!(second_request.contains(NESTED_INSTRUCTION));
+    server.finish();
+
+    let rollout = fs::read_to_string(home.path().join("rollouts/v1/thr_0000000000000001.jsonl"))
+        .expect("rollout");
+    assert!(rollout.contains("\"source\":\"rootAgentsMdV1\""));
+    assert!(rollout.contains(NESTED_INSTRUCTION));
+    assert!(!rollout.contains(ROOT_INSTRUCTION));
+}

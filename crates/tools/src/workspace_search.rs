@@ -1,9 +1,9 @@
 use crate::workspace_capability::FileSnapshot;
 use crate::workspace_capability::WorkspaceReadErrorKind;
+use crate::workspace_capability::WorkspaceRootReopen;
 use crate::workspace_capability::WorkspaceTool;
 use crate::workspace_capability::map_io_error;
 use crate::workspace_capability::open_regular_file_nofollow;
-use crate::workspace_capability::open_root_nofollow;
 use crate::workspace_capability::validate_directory_handle;
 use crate::workspace_list::MAX_WORKSPACE_LIST_ENTRIES;
 use crate::workspace_list::WorkspaceListErrorKind;
@@ -112,7 +112,7 @@ struct DirectoryFrame {
     directory: Dir,
     parent: Option<Dir>,
     target_name: Option<PathBuf>,
-    root_path: Option<PathBuf>,
+    root_reopen: Option<WorkspaceRootReopen>,
     relative_path: String,
     depth: usize,
     opened_snapshot: FileSnapshot,
@@ -124,7 +124,7 @@ struct DirectoryFrameSeed {
     directory: Dir,
     parent: Option<Dir>,
     target_name: Option<PathBuf>,
-    root_path: Option<PathBuf>,
+    root_reopen: Option<WorkspaceRootReopen>,
     relative_path: String,
     depth: usize,
 }
@@ -241,7 +241,14 @@ impl WorkspaceTool {
                 directory,
                 parent,
                 target_name,
-                root_path: components.is_empty().then(|| self.root_path.clone()),
+                root_reopen: if components.is_empty() {
+                    match self.root_reopen_anchor() {
+                        Ok(anchor) => Some(anchor),
+                        Err(kind) => return error(map_read_error(kind)),
+                    }
+                } else {
+                    None
+                },
                 relative_path,
                 depth: 0,
             },
@@ -298,7 +305,7 @@ impl WorkspaceTool {
                             directory: child,
                             parent: Some(parent),
                             target_name: Some(PathBuf::from(&entry.name)),
-                            root_path: None,
+                            root_reopen: None,
                             relative_path,
                             depth: frame.depth + 1,
                         },
@@ -368,7 +375,7 @@ async fn build_directory_frame(
         directory,
         parent,
         target_name,
-        root_path,
+        root_reopen,
         relative_path,
         depth,
     } = seed;
@@ -428,7 +435,7 @@ async fn build_directory_frame(
         directory,
         parent,
         target_name,
-        root_path,
+        root_reopen,
         relative_path,
         depth,
         opened_snapshot,
@@ -546,13 +553,12 @@ fn verify_directory_frame(frame: &DirectoryFrame) -> Result<(), WorkspaceSearchE
         (Some(parent), Some(target_name)) => parent
             .open_dir_nofollow(target_name)
             .map_err(|_| WorkspaceSearchErrorKind::ChangedDuringSearch)?,
-        (None, None) => open_root_nofollow(
-            frame
-                .root_path
-                .as_deref()
-                .expect("root frame has a root path"),
-        )
-        .map_err(|_| WorkspaceSearchErrorKind::ChangedDuringSearch)?,
+        (None, None) => frame
+            .root_reopen
+            .as_ref()
+            .expect("root frame has a reopen anchor")
+            .open()
+            .map_err(|_| WorkspaceSearchErrorKind::ChangedDuringSearch)?,
         _ => unreachable!("target parent and name are paired"),
     };
     let reopened_snapshot = FileSnapshot::from_directory(&reopened)

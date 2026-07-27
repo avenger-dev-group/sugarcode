@@ -3,7 +3,6 @@ use crate::workspace_capability::WorkspaceReadErrorKind;
 use crate::workspace_capability::WorkspaceTool;
 use crate::workspace_capability::is_nofollow_error;
 use crate::workspace_capability::map_io_error;
-use crate::workspace_capability::open_root_nofollow;
 use crate::workspace_capability::validate_directory_handle;
 use crate::workspace_capability::validate_relative_path;
 use cap_fs_ext::DirExt;
@@ -188,7 +187,7 @@ impl WorkspaceTool {
                 Ok(directory) => directory,
                 Err(_) => return error(WorkspaceListErrorKind::ChangedDuringList),
             },
-            (None, None) => match open_root_nofollow(&self.root_path) {
+            (None, None) => match self.reopen_root() {
                 Ok(directory) => directory,
                 Err(_) => return error(WorkspaceListErrorKind::ChangedDuringList),
             },

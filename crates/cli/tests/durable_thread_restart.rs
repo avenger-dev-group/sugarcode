@@ -38,6 +38,8 @@ mod projections;
 mod workspace_instructions;
 #[path = "durable_thread_restart/workspace_patch.rs"]
 mod workspace_patch;
+#[path = "durable_thread_restart/workspace_scope.rs"]
+mod workspace_scope;
 #[path = "durable_thread_restart/workspace_search.rs"]
 mod workspace_search;
 #[path = "durable_thread_restart/workspace_tools.rs"]

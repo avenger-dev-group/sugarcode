@@ -1,3 +1,4 @@
+use cap_fs_ext::DirExt;
 use cap_fs_ext::FollowSymlinks;
 use cap_fs_ext::OpenOptionsFollowExt;
 use cap_std::fs::Dir;
@@ -27,8 +28,13 @@ pub enum WorkspaceReadErrorKind {
 }
 
 pub struct WorkspaceTool {
-    pub(crate) root_path: PathBuf,
     pub(crate) root: Dir,
+    root_reopen: WorkspaceRootReopen,
+}
+
+pub(crate) enum WorkspaceRootReopen {
+    AmbientPath(PathBuf),
+    Relative { parent: Dir, name: PathBuf },
 }
 
 impl fmt::Debug for WorkspaceTool {
@@ -47,11 +53,42 @@ impl WorkspaceTool {
         }
         let root_path = root.to_path_buf();
         let root = open_root_nofollow(root)?;
-        Ok(Self { root_path, root })
+        Ok(Self {
+            root,
+            root_reopen: WorkspaceRootReopen::AmbientPath(root_path),
+        })
     }
 
-    pub fn root_path(&self) -> &Path {
-        &self.root_path
+    pub fn derive_scope(&self, scope: &str) -> Result<Self, WorkspaceReadErrorKind> {
+        if scope == "." {
+            return Ok(Self {
+                root: self
+                    .root
+                    .try_clone()
+                    .map_err(|error| map_io_error(&error))?,
+                root_reopen: self.root_reopen.try_clone()?,
+            });
+        }
+        let components = validate_relative_path(scope)?;
+        let (name, parents) = components
+            .split_last()
+            .expect("validated scope has a final component");
+        let mut parent = self
+            .root
+            .try_clone()
+            .map_err(|error| map_io_error(&error))?;
+        for component in parents {
+            parent = open_directory_component(&parent, component)?;
+        }
+        let root = open_directory_component(&parent, name)?;
+        let reopen_parent = parent.try_clone().map_err(|error| map_io_error(&error))?;
+        Ok(Self {
+            root,
+            root_reopen: WorkspaceRootReopen::Relative {
+                parent: reopen_parent,
+                name: name.clone(),
+            },
+        })
     }
 
     pub fn command_workspace_root(
@@ -59,6 +96,48 @@ impl WorkspaceTool {
     ) -> Result<crate::CommandWorkspaceRoot, WorkspaceReadErrorKind> {
         crate::CommandWorkspaceRoot::from_workspace(self)
     }
+
+    pub(crate) fn reopen_root(&self) -> Result<Dir, WorkspaceReadErrorKind> {
+        self.root_reopen.open()
+    }
+
+    pub(crate) fn root_reopen_anchor(&self) -> Result<WorkspaceRootReopen, WorkspaceReadErrorKind> {
+        self.root_reopen.try_clone()
+    }
+}
+
+impl WorkspaceRootReopen {
+    fn try_clone(&self) -> Result<Self, WorkspaceReadErrorKind> {
+        match self {
+            Self::AmbientPath(path) => Ok(Self::AmbientPath(path.clone())),
+            Self::Relative { parent, name } => Ok(Self::Relative {
+                parent: parent.try_clone().map_err(|error| map_io_error(&error))?,
+                name: name.clone(),
+            }),
+        }
+    }
+
+    pub(crate) fn open(&self) -> Result<Dir, WorkspaceReadErrorKind> {
+        match self {
+            Self::AmbientPath(path) => open_root_nofollow(path),
+            Self::Relative { parent, name } => open_directory_component(parent, name),
+        }
+    }
+}
+
+fn open_directory_component(parent: &Dir, component: &Path) -> Result<Dir, WorkspaceReadErrorKind> {
+    let directory = parent.open_dir_nofollow(component).map_err(|error| {
+        match parent.symlink_metadata(component) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                WorkspaceReadErrorKind::PathNotAllowed
+            }
+            Ok(metadata) if !metadata.is_dir() => WorkspaceReadErrorKind::NotRegularFile,
+            Ok(_) if is_nofollow_error(&error) => WorkspaceReadErrorKind::PathNotAllowed,
+            _ => map_io_error(&error),
+        }
+    })?;
+    validate_directory_handle(&directory)?;
+    Ok(directory)
 }
 
 pub(crate) fn open_regular_file_nofollow(

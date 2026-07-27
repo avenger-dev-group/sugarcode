@@ -60,6 +60,36 @@ impl RunningServer {
         }
     }
 
+    pub(super) fn spawn_with_workspace_scope(
+        home: &Path,
+        workspace: &Path,
+        scope: &str,
+        provider_bodies: Vec<&'static str>,
+    ) -> Self {
+        let provider = MockProvider::start_with_bodies(home, provider_bodies);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+            .arg("--home")
+            .arg(home)
+            .args(["app-server", "--stdio", "--workspace"])
+            .arg(workspace)
+            .args(["--workspace-scope", scope])
+            .env_remove("SUGARCODE_HOME")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn app-server with workspace scope");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        Self {
+            child,
+            stdin,
+            stdout,
+            provider,
+            expects_sandbox_unavailable: cfg!(windows),
+        }
+    }
+
     pub(super) fn spawn_with_workspace_write(
         home: &Path,
         workspace: &Path,
@@ -82,6 +112,36 @@ impl RunningServer {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn app-server with workspace writes");
+        let stdin = child.stdin.take().expect("child stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        Self {
+            child,
+            stdin,
+            stdout,
+            provider,
+            expects_sandbox_unavailable: cfg!(windows),
+        }
+    }
+
+    pub(super) fn spawn_with_workspace_scope_write(
+        home: &Path,
+        workspace: &Path,
+        scope: &str,
+        provider_bodies: Vec<&'static str>,
+    ) -> Self {
+        let provider = MockProvider::start_with_bodies(home, provider_bodies);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+            .arg("--home")
+            .arg(home)
+            .args(["app-server", "--stdio", "--workspace"])
+            .arg(workspace)
+            .args(["--workspace-scope", scope, "--allow-workspace-write"])
+            .env_remove("SUGARCODE_HOME")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn app-server with scoped workspace writes");
         let stdin = child.stdin.take().expect("child stdin");
         let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
         Self {

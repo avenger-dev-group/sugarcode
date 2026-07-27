@@ -80,6 +80,114 @@ async fn approved_command_cannot_write_outside_workspace() {
 
 #[tokio::test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn scoped_read_only_command_uses_scope_cwd_and_can_read_external_files() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = tempfile::tempdir().expect("outside");
+    std::fs::create_dir_all(workspace.path().join("projects/active")).expect("active scope");
+    std::fs::write(
+        workspace.path().join("projects/active/relative.txt"),
+        "relative\n",
+    )
+    .expect("relative fixture");
+    let external = outside.path().join("external.txt");
+    std::fs::write(&external, "external\n").expect("external fixture");
+    let workspace = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let scope = workspace
+        .derive_scope("projects/active")
+        .expect("derive active scope");
+    let executor = native_executor_from_tool(&scope);
+    let execution = executor
+        .execute(
+            ShellCommandArguments {
+                command: "/bin/sh".to_string(),
+                arguments: vec![
+                    "-c".to_string(),
+                    "cat relative.txt; cat \"$1\"".to_string(),
+                    "sugarcode-test".to_string(),
+                    external.to_string_lossy().into_owned(),
+                ],
+            },
+            CancellationToken::new(),
+        )
+        .await;
+    let ShellCommandExecution::Completed(output) = execution else {
+        panic!("expected completed scoped read, got {execution:?}");
+    };
+    assert_eq!(output.stdout, "relative\nexternal\n");
+    assert!(matches!(
+        output.outcome,
+        ShellCommandOutcome::ExitCode { code: 0 }
+    ));
+    assert_eq!(
+        output.sandbox_policy,
+        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1
+    );
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn scoped_workspace_write_allows_scope_and_denies_outer_workspace_sibling() {
+    let workspace_directory = tempfile::tempdir().expect("workspace");
+    std::fs::create_dir_all(workspace_directory.path().join("projects/active"))
+        .expect("active scope");
+    let outside_scope = workspace_directory.path().join("outer.txt");
+    std::fs::write(&outside_scope, "outer\n").expect("outer fixture");
+    let workspace = WorkspaceTool::open(workspace_directory.path()).expect("open workspace");
+    let scope = workspace
+        .derive_scope("projects/active")
+        .expect("derive active scope");
+    let command_root = scope
+        .command_workspace_root()
+        .expect("bind scoped command root");
+    let executor = NativeShellCommandExecutor::new_with_policy(
+        PathBuf::from(env!("CARGO_BIN_EXE_sugarcode")),
+        command_root,
+        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1,
+    )
+    .expect("native scoped write sandbox");
+    let execution = executor
+        .execute(
+            ShellCommandArguments {
+                command: "/bin/sh".to_string(),
+                arguments: vec![
+                    "-c".to_string(),
+                    "printf inside > inside.txt; if printf escaped > \"$1\"; then exit 99; else printf outside-denied; fi".to_string(),
+                    "sugarcode-test".to_string(),
+                    outside_scope.to_string_lossy().into_owned(),
+                ],
+            },
+            CancellationToken::new(),
+        )
+        .await;
+    let ShellCommandExecution::Completed(output) = execution else {
+        panic!("expected completed scoped write, got {execution:?}");
+    };
+    assert_eq!(output.stdout, "outside-denied");
+    assert!(matches!(
+        output.outcome,
+        ShellCommandOutcome::ExitCode { code: 0 }
+    ));
+    assert_eq!(
+        output.sandbox_policy,
+        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            workspace_directory
+                .path()
+                .join("projects/active/inside.txt"),
+        )
+        .expect("inside write"),
+        "inside"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&outside_scope).expect("outside-scope unchanged"),
+        "outer\n"
+    );
+}
+
+#[tokio::test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn command_root_binding_ignores_directory_replacement() {
     let parent = tempfile::tempdir().expect("workspace parent");
     let workspace = parent.path().join("workspace");
@@ -209,6 +317,11 @@ fn test_command() -> ShellCommandArguments {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn native_executor(workspace_root: &Path) -> NativeShellCommandExecutor {
     let workspace = WorkspaceTool::open(workspace_root).expect("open workspace");
+    native_executor_from_tool(&workspace)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn native_executor_from_tool(workspace: &WorkspaceTool) -> NativeShellCommandExecutor {
     let command_root = workspace
         .command_workspace_root()
         .expect("bind command workspace root");

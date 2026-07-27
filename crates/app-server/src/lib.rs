@@ -26,17 +26,30 @@ use zeroize::Zeroizing;
 pub async fn run_stdio(
     config: EffectiveConfig,
     workspace: Option<std::path::PathBuf>,
+    workspace_scope: Option<String>,
     allow_workspace_write: bool,
     allow_command_workspace_write: bool,
 ) -> io::Result<()> {
-    let workspace = workspace
+    if workspace.is_none() && workspace_scope.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace scope requires a workspace",
+        ));
+    }
+    let workspace_root = workspace
         .as_deref()
         .map(sugarcode_tools::WorkspaceTool::open)
         .transpose()
         .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
         .map(Arc::new);
+    let workspace = workspace_root
+        .as_ref()
+        .map(|tool| tool.derive_scope(workspace_scope.as_deref().unwrap_or(".")))
+        .transpose()
+        .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
+        .map(Arc::new);
     let command_workspace_root = workspace.as_ref().map(|tool| tool.command_workspace_root());
-    let workspace_instructions = workspace
+    let workspace_instructions = workspace_root
         .as_ref()
         .map(|tool| tool.load_root_instructions())
         .transpose()

@@ -362,7 +362,9 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
     );
     assert!(requests[0].tools.iter().any(|tool| {
         tool.name == "shell/exec"
-            && tool.description.contains("writes inside the workspace")
+            && tool
+                .description
+                .contains("writes inside the active workspace scope")
             && tool.description.contains("network access is denied")
     }));
     assert!(requests[1].tools.is_empty());

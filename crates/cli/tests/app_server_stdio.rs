@@ -31,6 +31,46 @@ fn command_workspace_write_requires_an_explicit_workspace() {
 }
 
 #[test]
+fn workspace_scope_requires_an_explicit_workspace() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["app-server", "--stdio", "--workspace-scope", "src"])
+        .output()
+        .expect("run CLI argument validation");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--workspace <DIR>"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn invalid_workspace_scope_fails_before_serving_protocol() {
+    let sugarcode_home = tempfile::tempdir().expect("isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("isolated workspace");
+    configure_model(
+        sugarcode_home.path(),
+        "127.0.0.1:1".parse().expect("fixture endpoint"),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(sugarcode_home.path())
+        .args(["app-server", "--stdio", "--workspace"])
+        .arg(workspace.path())
+        .args(["--workspace-scope", "missing"])
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run invalid workspace scope");
+    assert!(!output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "sugarcode: NotFound\n"
+    );
+}
+
+#[test]
 fn invalid_root_agents_file_fails_before_serving_protocol() {
     let sugarcode_home = tempfile::tempdir().expect("isolated SugarCode home");
     let workspace = tempfile::tempdir().expect("isolated workspace");
@@ -410,7 +450,7 @@ fn informed_workspace_write_approval_mutates_the_real_workspace_and_matches_gold
 
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn approved_command_stays_bound_to_the_original_workspace_root() {
+fn approved_command_stays_bound_to_the_original_workspace_scope() {
     let command = "/bin/cat";
     let arguments = serde_json::to_string(&json!({
         "command": command,
@@ -447,17 +487,20 @@ fn approved_command_stays_bound_to_the_original_workspace_root() {
     let home = tempfile::tempdir().expect("isolated SugarCode home");
     let workspace_parent = tempfile::tempdir().expect("isolated workspace parent");
     let workspace = workspace_parent.path().join("workspace");
-    let moved_workspace = workspace_parent.path().join("moved-workspace");
+    let active_scope = workspace.join("active");
+    let moved_scope = workspace.join("moved-active");
     let replacement = workspace_parent.path().join("replacement");
-    fs::create_dir(&workspace).expect("create workspace");
+    fs::create_dir(&workspace).expect("create workspace root");
+    fs::create_dir(&active_scope).expect("create active scope");
     fs::create_dir(&replacement).expect("create replacement");
-    fs::write(workspace.join("marker.txt"), "original").expect("write original marker");
+    fs::write(active_scope.join("marker.txt"), "original").expect("write original marker");
     fs::write(replacement.join("marker.txt"), "replacement").expect("write replacement marker");
     let _provider =
         MockProvider::start_with_owned_bodies(home.path(), vec![tool_call, final_answer]);
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["app-server", "--stdio", "--workspace"])
         .arg(&workspace)
+        .args(["--workspace-scope", "active"])
         .env("SUGARCODE_HOME", home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -513,9 +556,9 @@ fn approved_command_stays_bound_to_the_original_workspace_root() {
             assert_eq!(message["params"]["sandboxed"], true);
             assert_eq!(message["params"]["sandboxPolicy"], "filesystemReadOnlyV1");
             assert_eq!(message["params"]["networkPolicy"], "networkDeniedV1");
-            fs::rename(&workspace, &moved_workspace).expect("move original workspace");
-            std::os::unix::fs::symlink(&replacement, &workspace)
-                .expect("replace workspace path with symlink");
+            fs::rename(&active_scope, &moved_scope).expect("move original scope");
+            std::os::unix::fs::symlink(&replacement, &active_scope)
+                .expect("replace scope path with symlink");
             send_json(
                 &mut stdin,
                 json!({

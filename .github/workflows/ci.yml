@@ -96,6 +96,9 @@ jobs:
       - name: Test root workspace instruction boundary
         run: cargo test -p sugarcode-tools --test workspace_instructions --locked -- --nocapture
 
+      - name: Test active workspace scope boundary
+        run: cargo test -p sugarcode-tools --test workspace_scope --locked -- --nocapture
+
       - name: Test Rust workspace
         run: cargo test --workspace --locked
 
