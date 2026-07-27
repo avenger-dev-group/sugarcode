@@ -924,6 +924,7 @@ impl MockProvider {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn start_with_owned_bodies(home: &std::path::Path, bodies: Vec<String>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock provider");
         let address = listener.local_addr().expect("mock provider address");
