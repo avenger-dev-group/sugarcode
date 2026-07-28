@@ -123,32 +123,47 @@ impl ManagedProcess {
     pub(crate) async fn shutdown(mut self) -> Result<(), DiscoveryError> {
         self.stdin.take();
         if wait_for_exit(&mut self.child).await {
-            self.tree.kill();
-            self.tree.disarm();
-            self.stderr_task.abort();
-            return Ok(());
+            return self.finish_shutdown().await;
         }
         self.tree.terminate();
         if wait_for_exit(&mut self.child).await {
-            self.tree.kill();
-            self.tree.disarm();
-            self.stderr_task.abort();
-            return Ok(());
+            return self.finish_shutdown().await;
         }
         self.tree.kill();
-        let waited = tokio::time::timeout(SHUTDOWN_GRACE, self.child.wait())
-            .await
-            .is_ok();
+        let waited = matches!(
+            tokio::time::timeout(SHUTDOWN_GRACE, self.child.wait()).await,
+            Ok(Ok(_))
+        );
         if waited {
-            self.tree.disarm();
-            self.stderr_task.abort();
-            Ok(())
+            self.finish_shutdown().await
         } else {
             Err(DiscoveryError::new(
                 &self.server_id,
                 DiscoveryErrorKind::ShutdownFailed,
             ))
         }
+    }
+
+    async fn finish_shutdown(&mut self) -> Result<(), DiscoveryError> {
+        self.tree.kill();
+        self.tree.disarm();
+        if !matches!(
+            tokio::time::timeout(SHUTDOWN_GRACE, &mut self.stderr_task).await,
+            Ok(Ok(()))
+        ) {
+            self.stderr_task.abort();
+            return Err(DiscoveryError::new(
+                &self.server_id,
+                DiscoveryErrorKind::ShutdownFailed,
+            ));
+        }
+        if self.stderr_exceeded() {
+            return Err(DiscoveryError::new(
+                &self.server_id,
+                DiscoveryErrorKind::StderrTooLarge,
+            ));
+        }
+        Ok(())
     }
 }
 

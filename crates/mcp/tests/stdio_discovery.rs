@@ -195,12 +195,6 @@ fn fixture_server(mode: &str, argument: Option<&str>) {
     assert_eq!(initialized["method"], "notifications/initialized");
     let list = read_message(&mut input);
     assert_eq!(list["method"], "tools/list");
-    if mode == "stderr-overflow" {
-        std::io::stderr()
-            .lock()
-            .write_all(&vec![b'x'; sugarcode_mcp::MAX_STDERR_BYTES + 1])
-            .expect("stderr");
-    }
     write_message(
         &mut output,
         &json!({"jsonrpc": "2.0", "id": 91, "method": "ping"}),
@@ -232,6 +226,13 @@ fn fixture_server(mode: &str, argument: Option<&str>) {
             }
         }),
     );
+    if mode == "stderr-overflow" {
+        let mut stderr = std::io::stderr().lock();
+        stderr
+            .write_all(&vec![b'x'; sugarcode_mcp::MAX_STDERR_BYTES + 1])
+            .expect("stderr");
+        stderr.flush().expect("flush stderr");
+    }
     wait_for_eof(&mut input);
 }
 
