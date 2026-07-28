@@ -275,6 +275,15 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
+          '[aria-label="Current durable Thread thr_0000000000000100"]',
+        )?.textContent === 'Thread thr_0000000000000100'`,
+      ),
+    'recovered durable Thread identity',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
           '[aria-label="Turn failure details"]',
         )?.textContent?.includes(
           'You can send another message to retry.',
@@ -446,6 +455,15 @@ const run = async (): Promise<void> => {
         )`,
       ),
     'completed Markdown snapshot after reload',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Current durable Thread thr_0000000000000100"]',
+        )?.textContent === 'Thread thr_0000000000000100'`,
+      ),
+    'durable Thread identity after Renderer reload',
   );
   await waitFor(
     () =>

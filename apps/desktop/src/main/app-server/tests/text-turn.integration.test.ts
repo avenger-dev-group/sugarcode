@@ -177,6 +177,8 @@ describe('real Desktop text Agent Turn', () => {
         },
         { timeout: 10_000 },
       );
+      const durableThreadId = first.conversation.getSnapshot().threadId;
+      expect(durableThreadId).toMatch(/^thr_[0-9a-f]{16}$/);
       expect(provider.requests).toHaveLength(1);
       expect(provider.requests[0]?.headers).toMatch(
         /^POST \/v1\/chat\/completions HTTP\/1\.1\r\n/,
@@ -200,6 +202,7 @@ describe('real Desktop text Agent Turn', () => {
       expect(second.getSnapshot().status).toBe('ready');
       expect(second.conversation.getSnapshot()).toMatchObject({
         phase: 'ready',
+        threadId: durableThreadId,
         turns: [
           {
             status: 'completed',

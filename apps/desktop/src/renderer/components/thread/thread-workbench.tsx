@@ -151,20 +151,37 @@ export const ThreadWorkbenchView = ({
               className="min-h-24 max-h-52 px-4 pt-3.5"
             />
             <div className="flex items-center justify-between gap-3 border-t px-3 py-2">
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="truncate text-xs text-secondary">
                   {store.thread.statusLabel}
                 </p>
-                <p
-                  id="conversation-input-hint"
-                  className={`font-mono text-[10px] ${
-                    store.inputBytes > store.inputLimitBytes
-                      ? 'text-destructive'
-                      : 'text-tertiary'
-                  }`}
-                >
-                  {store.inputHint}
-                </p>
+                <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[10px]">
+                  <span
+                    id="conversation-input-hint"
+                    className={
+                      store.inputBytes > store.inputLimitBytes
+                        ? 'text-destructive'
+                        : 'text-tertiary'
+                    }
+                  >
+                    {store.inputHint}
+                  </span>
+                  <span className="text-tertiary" aria-hidden="true">
+                    ·
+                  </span>
+                  <span
+                    className="min-w-0 break-all text-tertiary"
+                    aria-label={
+                      store.thread.threadIdentity
+                        ? `Current durable Thread ${store.thread.threadIdentity}`
+                        : 'No durable Thread yet'
+                    }
+                  >
+                    {store.thread.threadIdentity
+                      ? `Thread ${store.thread.threadIdentity}`
+                      : 'Thread not created'}
+                  </span>
+                </div>
               </div>
               {store.canStop ? (
                 <Button

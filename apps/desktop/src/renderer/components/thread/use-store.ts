@@ -182,9 +182,7 @@ export const toThreadViewModel = (
 
   return {
     phase: snapshot.phase,
-    threadLabel: snapshot.threadId
-      ? `Thread ${snapshot.threadId.slice(-6)}`
-      : 'New local thread',
+    threadIdentity: snapshot.threadId ?? null,
     turns: stableTurns,
     isEmpty: stableTurns.length === 0,
     statusLabel,

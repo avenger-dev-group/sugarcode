@@ -157,6 +157,14 @@ describe('ThreadWorkbenchView', () => {
       'The durable event arrives first.',
     );
     expect(document.body.textContent).toContain('Turn complete');
+    expect(document.body.textContent).toContain(
+      'Thread thr_0000000000000001',
+    );
+    expect(
+      document.querySelector(
+        '[aria-label="Current durable Thread thr_0000000000000001"]',
+      ),
+    ).not.toBeNull();
     expect(
       document.querySelector('[aria-label="Conversation transcript"]'),
     ).not.toBeNull();
@@ -183,6 +191,10 @@ describe('ThreadWorkbenchView', () => {
     await act(async () => {
       root.render(<ThreadWorkbenchView store={store} />);
     });
+    expect(document.body.textContent).toContain('Thread not created');
+    expect(
+      document.querySelector('[aria-label="No durable Thread yet"]'),
+    ).not.toBeNull();
     const textarea = document.querySelector('textarea');
     expect(textarea?.value).toBe('Exact input\n雪');
 
