@@ -19,6 +19,7 @@ type ProviderCapture = Readonly<{
   server: Server;
   port: number;
   requests: Array<Readonly<{ headers: string; body: unknown }>>;
+  errors: Error[];
 }>;
 
 const startProvider = async (
@@ -27,9 +28,16 @@ const startProvider = async (
   const requests: Array<
     Readonly<{ headers: string; body: unknown }>
   > = [];
+  const errors: Error[] = [];
   const server = createServer((socket) => {
     let bytes = Buffer.alloc(0);
     let responded = false;
+    socket.on('error', (error: NodeJS.ErrnoException) => {
+      if (!respond && error.code === 'ECONNRESET') {
+        return;
+      }
+      errors.push(error);
+    });
     socket.on('data', (chunk: Buffer) => {
       if (responded) {
         return;
@@ -73,7 +81,7 @@ const startProvider = async (
   if (!address || typeof address === 'string') {
     throw new Error('Loopback provider did not expose a TCP port.');
   }
-  return { server, port: address.port, requests };
+  return { server, port: address.port, requests, errors };
 };
 
 const closeServer = (server: Server): Promise<void> =>
@@ -236,6 +244,7 @@ describe('real Desktop text Agent Turn', () => {
           },
         ],
       });
+      expect(provider.errors).toEqual([]);
     } finally {
       first.shutdown();
       second?.shutdown();
@@ -310,6 +319,7 @@ describe('real Desktop text Agent Turn', () => {
         ],
       });
       expect(provider.requests).toHaveLength(1);
+      expect(provider.errors).toEqual([]);
     } finally {
       first.shutdown();
       second?.shutdown();
