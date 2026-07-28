@@ -89,9 +89,13 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+mod mcp_sequence;
 mod terminal;
 mod tool_dispatch;
 
+use mcp_sequence::MAX_PROVIDER_ROUNDS;
+use mcp_sequence::MCP_RESULT_RECEIPT_RESERVE_BYTES;
+use mcp_sequence::McpSequence;
 use terminal::Terminal;
 use terminal::claim_terminal;
 use terminal::clear_active;
@@ -106,6 +110,7 @@ use tool_dispatch::map_workspace_list_outcome;
 use tool_dispatch::map_workspace_patch_error;
 use tool_dispatch::map_workspace_read_outcome;
 use tool_dispatch::map_workspace_search_outcome;
+use tool_dispatch::mcp_tool_definitions;
 use tool_dispatch::serialized_file_change_bytes;
 use tool_dispatch::serialized_shell_tool_call_bytes;
 use tool_dispatch::serialized_tool_call_bytes;
@@ -114,7 +119,6 @@ use tool_dispatch::shell_tool_arguments;
 use tool_dispatch::workspace_tool_arguments;
 use tool_dispatch::workspace_tool_definitions;
 
-const MAX_PROVIDER_ROUNDS: u8 = 2;
 const MAX_TOOL_CALLS_PER_TURN: usize = 1;
 const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
@@ -660,6 +664,7 @@ async fn run_turn(
     let mut non_whitespace_text_seen = false;
     let mut tool_call_count = 0usize;
     let mut turn_tool_bytes = 0usize;
+    let mut mcp_sequence = McpSequence::default();
     let mut terminal = 'rounds: loop {
         if round >= MAX_PROVIDER_ROUNDS {
             break Terminal::Failed(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
@@ -668,11 +673,7 @@ async fn run_turn(
             model: model_gateway.model.to_string(),
             instructions: prepared.instructions.clone(),
             messages: messages.clone(),
-            tools: if round == 0 {
-                workspace_tool_definitions(&runtime)
-            } else {
-                Vec::new()
-            },
+            tools: mcp_sequence.tools_for_round(&runtime, round),
         };
         if request.context_bytes() > crate::context::MAX_PROVIDER_CONTEXT_BYTES {
             break Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false));
@@ -754,16 +755,22 @@ async fn run_turn(
                 }
                 Some(Ok(ModelEvent::TextDelta(_))) => {}
                 Some(Ok(ModelEvent::ToolCall(call))) => {
-                    if round != 0
+                    let call_allowed = if round == 0 {
+                        tool_call_count < MAX_TOOL_CALLS_PER_TURN
+                    } else {
+                        call.name.starts_with("mcp__")
+                    };
+                    if !call_allowed
                         || agent_item.is_some()
-                        || tool_call_count >= MAX_TOOL_CALLS_PER_TURN
-                        || tool_call.replace(call).is_some()
+                        || tool_call.is_some()
+                        || !mcp_sequence.observe_call(round, &call)
                     {
                         break 'rounds Terminal::Failed(ModelError::new(
                             ModelErrorKind::UnsupportedOutput,
                             false,
                         ));
                     }
+                    tool_call = Some(call);
                     tool_call_count += 1;
                 }
                 Some(Ok(ModelEvent::Usage(value))) => {
@@ -852,6 +859,7 @@ async fn run_turn(
                             .unwrap_or(usize::MAX);
                         if turn_tool_bytes
                             .checked_add(call_bytes)
+                            .and_then(|bytes| bytes.checked_add(MCP_RESULT_RECEIPT_RESERVE_BYTES))
                             .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
                         {
                             break 'rounds Terminal::Failed(ModelError::new(
@@ -878,127 +886,131 @@ async fn run_turn(
                             break 'rounds Terminal::StateUnavailable;
                         }
                         pending_tool_call = true;
-                        let lease = runtime.mcp_execution_lease.clone().try_acquire_owned();
-                        let (result, content, interrupted) = if let Ok(_lease) = lease {
-                            let approval_id =
-                                format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
-                            if append_completed_tool_item(
-                                &runtime,
-                                &prepared,
-                                CoreItemKind::McpToolCallApprovalRequest {
-                                    approval_id: approval_id.clone(),
-                                    call_id: call.id.clone(),
-                                    name: call.name.clone(),
-                                    arguments: prepared_call.arguments.clone(),
-                                    arguments_bytes: prepared_call.arguments_bytes,
-                                    arguments_sha256: prepared_call.arguments_sha256.clone(),
-                                    inventory_sha256: prepared_call.inventory_sha256.clone(),
-                                },
-                            )
-                            .await
-                            .is_none()
-                            {
-                                break 'rounds Terminal::StateUnavailable;
-                            }
-                            let approval = runtime
-                                .mcp_approval_requester
-                                .as_ref()
-                                .expect("validated MCP approval requester")
-                                .request(McpToolApprovalRequest {
-                                    approval_id: approval_id.clone(),
-                                    thread_id: thread_id.clone(),
-                                    turn_id: turn_id.clone(),
-                                    call_id: call.id.clone(),
-                                    name: call.name.clone(),
-                                    arguments: prepared_call.arguments.clone(),
-                                    arguments_bytes: prepared_call.arguments_bytes,
-                                    arguments_sha256: prepared_call.arguments_sha256.clone(),
-                                    inventory_sha256: prepared_call.inventory_sha256.clone(),
-                                });
-                            let approval = tokio::select! {
-                                biased;
-                                _ = cancellation.cancelled() => None,
-                                result = tokio::time::timeout(
-                                    std::time::Duration::from_secs(120),
-                                    approval,
-                                ) => Some(result.unwrap_or(McpToolApprovalOutcome::TimedOut)),
-                            };
-                            let decision = match approval {
-                                Some(McpToolApprovalOutcome::Approved) => {
-                                    sugarcode_protocol::CoreCommandApprovalDecision::Approved
-                                }
-                                Some(McpToolApprovalOutcome::Denied) => {
-                                    sugarcode_protocol::CoreCommandApprovalDecision::Denied
-                                }
-                                Some(McpToolApprovalOutcome::TimedOut) => {
-                                    sugarcode_protocol::CoreCommandApprovalDecision::TimedOut
-                                }
-                                Some(McpToolApprovalOutcome::Unsupported) => {
-                                    sugarcode_protocol::CoreCommandApprovalDecision::Unsupported
-                                }
-                                Some(McpToolApprovalOutcome::ClientDisconnected) => {
-                                    sugarcode_protocol::CoreCommandApprovalDecision::ClientDisconnected
-                                }
-                                None => {
-                                    sugarcode_protocol::CoreCommandApprovalDecision::Cancelled
-                                }
-                            };
-                            if append_completed_tool_item(
-                                &runtime,
-                                &prepared,
-                                CoreItemKind::McpToolCallApprovalDecision {
-                                    approval_id: approval_id.clone(),
-                                    decision,
-                                },
-                            )
-                            .await
-                            .is_none()
-                            {
-                                break 'rounds Terminal::StateUnavailable;
-                            }
-                            match approval {
-                                Some(McpToolApprovalOutcome::Approved) => {
-                                    if append_completed_tool_item(
-                                        &runtime,
-                                        &prepared,
-                                        CoreItemKind::McpToolExecutionAttempt {
-                                            approval_id,
-                                            call_id: call.id.clone(),
-                                            inventory_sha256: prepared_call
-                                                .inventory_sha256
-                                                .clone(),
-                                        },
-                                    )
-                                    .await
-                                    .is_none()
-                                    {
-                                        break 'rounds Terminal::StateUnavailable;
-                                    }
-                                    let outcome = runtime
-                                        .mcp_executor
-                                        .as_ref()
-                                        .expect("validated MCP executor")
-                                        .execute(prepared_call.clone(), cancellation.clone())
-                                        .await;
-                                    mcp_execution_result(outcome)
-                                }
-                                Some(McpToolApprovalOutcome::Denied) => {
-                                    mcp_error_result("approvalDenied", "notSent", false)
-                                }
-                                Some(McpToolApprovalOutcome::TimedOut) => {
-                                    mcp_error_result("approvalTimedOut", "notSent", false)
-                                }
-                                Some(McpToolApprovalOutcome::Unsupported) => {
-                                    mcp_error_result("approvalUnsupported", "notSent", false)
-                                }
-                                Some(McpToolApprovalOutcome::ClientDisconnected) => {
-                                    mcp_error_result("clientDisconnected", "notSent", true)
-                                }
-                                None => mcp_error_result("cancelled", "notSent", true),
-                            }
-                        } else {
-                            mcp_error_result("concurrencyDenied", "notSent", false)
+                        let approval_id = format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
+                        if append_completed_tool_item(
+                            &runtime,
+                            &prepared,
+                            CoreItemKind::McpToolCallApprovalRequest {
+                                approval_id: approval_id.clone(),
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                arguments: prepared_call.arguments.clone(),
+                                arguments_bytes: prepared_call.arguments_bytes,
+                                arguments_sha256: prepared_call.arguments_sha256.clone(),
+                                inventory_sha256: prepared_call.inventory_sha256.clone(),
+                            },
+                        )
+                        .await
+                        .is_none()
+                        {
+                            break 'rounds Terminal::StateUnavailable;
+                        }
+                        let approval = runtime
+                            .mcp_approval_requester
+                            .as_ref()
+                            .expect("validated MCP approval requester")
+                            .request(McpToolApprovalRequest {
+                                approval_id: approval_id.clone(),
+                                thread_id: thread_id.clone(),
+                                turn_id: turn_id.clone(),
+                                call_id: call.id.clone(),
+                                name: call.name.clone(),
+                                arguments: prepared_call.arguments.clone(),
+                                arguments_bytes: prepared_call.arguments_bytes,
+                                arguments_sha256: prepared_call.arguments_sha256.clone(),
+                                inventory_sha256: prepared_call.inventory_sha256.clone(),
+                            });
+                        let approval = tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => None,
+                            result = tokio::time::timeout(
+                                std::time::Duration::from_secs(120),
+                                approval,
+                            ) => Some(result.unwrap_or(McpToolApprovalOutcome::TimedOut)),
                         };
+                        let decision = match approval {
+                            Some(McpToolApprovalOutcome::Approved) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::Approved
+                            }
+                            Some(McpToolApprovalOutcome::Denied) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::Denied
+                            }
+                            Some(McpToolApprovalOutcome::TimedOut) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::TimedOut
+                            }
+                            Some(McpToolApprovalOutcome::Unsupported) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::Unsupported
+                            }
+                            Some(McpToolApprovalOutcome::ClientDisconnected) => {
+                                sugarcode_protocol::CoreCommandApprovalDecision::ClientDisconnected
+                            }
+                            None => sugarcode_protocol::CoreCommandApprovalDecision::Cancelled,
+                        };
+                        if append_completed_tool_item(
+                            &runtime,
+                            &prepared,
+                            CoreItemKind::McpToolCallApprovalDecision {
+                                approval_id: approval_id.clone(),
+                                decision,
+                            },
+                        )
+                        .await
+                        .is_none()
+                        {
+                            break 'rounds Terminal::StateUnavailable;
+                        }
+                        let (mut result, mut content, interrupted) = match approval {
+                            Some(McpToolApprovalOutcome::Approved) => {
+                                match runtime.mcp_execution_lease.clone().try_acquire_owned() {
+                                    Ok(_lease) => {
+                                        if append_completed_tool_item(
+                                            &runtime,
+                                            &prepared,
+                                            CoreItemKind::McpToolExecutionAttempt {
+                                                approval_id,
+                                                call_id: call.id.clone(),
+                                                inventory_sha256: prepared_call
+                                                    .inventory_sha256
+                                                    .clone(),
+                                            },
+                                        )
+                                        .await
+                                        .is_none()
+                                        {
+                                            break 'rounds Terminal::StateUnavailable;
+                                        }
+                                        let outcome = runtime
+                                            .mcp_executor
+                                            .as_ref()
+                                            .expect("validated MCP executor")
+                                            .execute(prepared_call.clone(), cancellation.clone())
+                                            .await;
+                                        mcp_execution_result(outcome)
+                                    }
+                                    Err(_) => {
+                                        mcp_error_result("concurrencyDenied", "notSent", false)
+                                    }
+                                }
+                            }
+                            Some(McpToolApprovalOutcome::Denied) => {
+                                mcp_error_result("approvalDenied", "notSent", false)
+                            }
+                            Some(McpToolApprovalOutcome::TimedOut) => {
+                                mcp_error_result("approvalTimedOut", "notSent", false)
+                            }
+                            Some(McpToolApprovalOutcome::Unsupported) => {
+                                mcp_error_result("approvalUnsupported", "notSent", false)
+                            }
+                            Some(McpToolApprovalOutcome::ClientDisconnected) => {
+                                mcp_error_result("clientDisconnected", "notSent", true)
+                            }
+                            None => mcp_error_result("cancelled", "notSent", true),
+                        };
+                        fit_mcp_result_to_budget(
+                            &mut result,
+                            &mut content,
+                            MAX_TURN_TOOL_BYTES.saturating_sub(turn_tool_bytes),
+                        );
                         let result_bytes = serialized_mcp_result_bytes(&result);
                         if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES
                             || turn_tool_bytes
@@ -1011,6 +1023,8 @@ async fn run_turn(
                             ));
                         }
                         turn_tool_bytes += result_bytes;
+                        let completed_result =
+                            matches!(result, CoreMcpToolResult::Completed { .. });
                         if append_completed_tool_item(
                             &runtime,
                             &prepared,
@@ -1026,6 +1040,7 @@ async fn run_turn(
                             break 'rounds Terminal::StateUnavailable;
                         }
                         pending_tool_call = false;
+                        mcp_sequence.record_result(completed_result);
                         if interrupted {
                             break 'rounds Terminal::Interrupted;
                         }
@@ -1034,7 +1049,7 @@ async fn run_turn(
                             call_id: call.id,
                             content,
                         });
-                        round = 1;
+                        round = round.saturating_add(1);
                         continue 'rounds;
                     }
                     if call.name == "shell/exec" {
@@ -1865,6 +1880,43 @@ fn mcp_error_result(
         format!("MCP tool error: {kind}"),
         interrupted,
     )
+}
+
+fn fit_mcp_result_to_budget(
+    result: &mut CoreMcpToolResult,
+    provider_content: &mut String,
+    available_bytes: usize,
+) {
+    if serialized_mcp_result_bytes(result) <= available_bytes {
+        return;
+    }
+    let CoreMcpToolResult::Completed {
+        content,
+        is_error,
+        canonical_bytes,
+        retained_bytes,
+        truncated,
+        sha256,
+        content_blocks,
+        structured_content,
+        ..
+    } = result
+    else {
+        return;
+    };
+    let receipt = serde_json::to_string(&serde_json::json!({
+        "isError": *is_error,
+        "truncated": true,
+        "canonicalBytes": *canonical_bytes,
+        "sha256": sha256,
+        "contentBlocks": *content_blocks,
+        "structuredContent": *structured_content,
+    }))
+    .expect("MCP aggregate-budget receipt serializes");
+    *retained_bytes = u64::try_from(receipt.len()).unwrap_or(u64::MAX);
+    *truncated = true;
+    *content = receipt.clone();
+    *provider_content = receipt;
 }
 
 fn serialized_mcp_result_bytes(result: &CoreMcpToolResult) -> usize {

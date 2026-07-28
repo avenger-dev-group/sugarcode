@@ -83,6 +83,17 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
     definitions
 }
 
+pub(super) fn mcp_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelToolDefinition> {
+    if runtime.mcp_capability.is_enabled()
+        && runtime.mcp_approval_requester.is_some()
+        && let Some(executor) = runtime.mcp_executor.as_ref()
+    {
+        executor.definitions()
+    } else {
+        Vec::new()
+    }
+}
+
 fn workspace_path_parameters() -> serde_json::Value {
     serde_json::json!({
         "type": "object",

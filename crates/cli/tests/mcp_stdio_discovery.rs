@@ -88,8 +88,13 @@ fn selection_and_discovery_fail_before_rollout_open() {
 }
 
 fn approved_model_driven_call_completes_real_cli_round_trip() {
-    const TOOL_CALL: &str = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_mcp_fixture\",\"type\":\"function\",\"function\":{\"name\":\"mcp__fixture__inspect\",\"arguments\":\"{\\\"value\\\":[\\\"arbitrary\\\",2]}\"}}]},\"finish_reason\":null}]}\n\n",
+    const FIRST_TOOL_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_mcp_fixture_1\",\"type\":\"function\",\"function\":{\"name\":\"mcp__fixture__inspect\",\"arguments\":\"{\\\"value\\\":[\\\"arbitrary\\\",2]}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const SECOND_TOOL_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_mcp_fixture_2\",\"type\":\"function\",\"function\":{\"name\":\"mcp__fixture__inspect\",\"arguments\":\"{\\\"value\\\":[\\\"arbitrary\\\",2]}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n"
     );
@@ -108,7 +113,10 @@ fn approved_model_driven_call_completes_real_cli_round_trip() {
         std::env::current_exe().expect("test executable"),
         Some(&marker),
     );
-    let provider = CallProvider::start(home.path(), [TOOL_CALL, FINAL_ANSWER]);
+    let provider = CallProvider::start(
+        home.path(),
+        [FIRST_TOOL_CALL, SECOND_TOOL_CALL, FINAL_ANSWER],
+    );
     let mut child = sugarcode(home.path())
         .args(["app-server", "--stdio", "--mcp-server", "fixture"])
         .stdin(Stdio::piped())
@@ -165,47 +173,23 @@ fn approved_model_driven_call_completes_real_cli_round_trip() {
         }),
     );
 
-    let mut saw_attempt = false;
-    let approval_id = loop {
+    let mut approval_count = 0usize;
+    let mut attempt_count = 0usize;
+    let mut result_count = 0usize;
+    let mut completed_types = Vec::new();
+    loop {
         let message = read_json(&mut stdout);
         assert!(message.get("error").is_none(), "protocol error: {message}");
         if message["method"] == "item/completed"
             && message["params"]["item"]["type"] == "mcpToolExecutionAttempt"
         {
-            saw_attempt = true;
+            attempt_count += 1;
         }
-        if message["method"] == "item/mcpToolCall/requestApproval" {
-            assert!(!saw_attempt, "attempt must follow approval");
-            assert_eq!(
-                message["params"]["arguments"],
-                json!({"value": ["arbitrary", 2]})
-            );
-            break message["id"].as_str().expect("approval id").to_owned();
+        if message["method"] == "item/completed"
+            && message["params"]["item"]["type"] == "mcpToolResult"
+        {
+            result_count += 1;
         }
-        if matches!(
-            message["method"].as_str(),
-            Some("turn/failed" | "turn/interrupted" | "server/runtimeFailed")
-        ) {
-            panic!("unexpected terminal message: {message}");
-        }
-    };
-    assert!(
-        !marker.exists(),
-        "server must not be called before approval response"
-    );
-    send_json(
-        &mut stdin,
-        json!({
-            "jsonrpc": "2.0",
-            "id": approval_id,
-            "result": {"decision": "approved"}
-        }),
-    );
-
-    let mut completed_types = Vec::new();
-    loop {
-        let message = read_json(&mut stdout);
-        assert!(message.get("error").is_none(), "protocol error: {message}");
         if message["method"] == "item/completed" {
             completed_types.push(
                 message["params"]["item"]["type"]
@@ -213,6 +197,37 @@ fn approved_model_driven_call_completes_real_cli_round_trip() {
                     .expect("item type")
                     .to_owned(),
             );
+        }
+        if message["method"] == "item/mcpToolCall/requestApproval" {
+            assert_eq!(
+                attempt_count, approval_count,
+                "attempt must follow its matching approval"
+            );
+            assert_eq!(
+                result_count, approval_count,
+                "next approval must follow the prior durable result"
+            );
+            assert_eq!(
+                message["params"]["arguments"],
+                json!({"value": ["arbitrary", 2]})
+            );
+            let prior_calls = fs::read_to_string(&marker)
+                .ok()
+                .map_or(0, |content| content.lines().count());
+            assert_eq!(
+                prior_calls, approval_count,
+                "a fresh server must not be called before approval"
+            );
+            let approval_id = message["id"].as_str().expect("approval id").to_owned();
+            send_json(
+                &mut stdin,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": approval_id,
+                    "result": {"decision": "approved"}
+                }),
+            );
+            approval_count += 1;
         }
         if message["method"] == "turn/completed" {
             break;
@@ -224,7 +239,17 @@ fn approved_model_driven_call_completes_real_cli_round_trip() {
             panic!("unexpected terminal message: {message}");
         }
     }
-    assert!(marker.exists(), "real MCP tools/call marker");
+    assert_eq!(approval_count, 2);
+    assert_eq!(attempt_count, 2);
+    assert_eq!(result_count, 2);
+    assert_eq!(
+        fs::read_to_string(&marker)
+            .expect("real MCP tools/call marker")
+            .lines()
+            .count(),
+        2,
+        "each call must use a fresh MCP process"
+    );
     assert!(
         completed_types
             .iter()
@@ -242,26 +267,32 @@ fn approved_model_driven_call_completes_real_cli_round_trip() {
     assert!(output.stderr.is_empty(), "{output:?}");
 
     let requests = provider.finish();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert_eq!(requests[0]["tools"].as_array().map(Vec::len), Some(1));
     assert_eq!(
         requests[0]["tools"][0]["function"]["name"],
         "mcp__fixture__inspect"
     );
-    assert!(
-        requests[1]["messages"]
+    assert_eq!(requests[1]["tools"].as_array().map(Vec::len), Some(1));
+    assert_eq!(requests[2]["tools"].as_array().map(Vec::len), Some(1));
+    for (request_index, expected_results) in [(1, 1), (2, 2)] {
+        let messages = requests[request_index]["messages"]
             .as_array()
-            .expect("second messages")
-            .iter()
-            .any(|message| {
-                message["role"] == "tool"
-                    && message["tool_call_id"] == "call_mcp_fixture"
-                    && message["content"]
-                        .as_str()
-                        .is_some_and(|content| content.contains("\"text\":[\"called\"]"))
-            }),
-        "normalized MCP result must be projected to the provider"
-    );
+            .expect("provider messages");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| {
+                    message["role"] == "tool"
+                        && message["content"]
+                            .as_str()
+                            .is_some_and(|content| content.contains("\"text\":[\"called\"]"))
+                })
+                .count(),
+            expected_results,
+            "each provider round must contain every prior correlated MCP result"
+        );
+    }
 }
 
 fn sugarcode(home: &Path) -> Command {
@@ -361,7 +392,12 @@ fn fixture_server(mode: &str, marker: Option<&str>) {
             call["params"]["arguments"],
             json!({"value": ["arbitrary", 2]})
         );
-        fs::write(marker.expect("call marker"), b"called").expect("write call marker");
+        let mut marker = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(marker.expect("call marker"))
+            .expect("open call marker");
+        writeln!(marker, "called").expect("write call marker");
         write_message(
             &mut output,
             &json!({
@@ -384,7 +420,7 @@ struct CallProvider {
 }
 
 impl CallProvider {
-    fn start(home: &Path, bodies: [&'static str; 2]) -> Self {
+    fn start<const N: usize>(home: &Path, bodies: [&'static str; N]) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind provider");
         configure_model(home, listener.local_addr().expect("provider address"));
         let (sender, requests) = mpsc::channel();

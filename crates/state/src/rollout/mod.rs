@@ -539,6 +539,7 @@ pub(crate) fn valid_incremental_item(
 }
 
 fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) -> bool {
+    const MAX_MCP_TOOL_CALLS_PER_TURN: usize = 4;
     match item {
         DurableItemSnapshot::McpToolCall {
             call_id,
@@ -552,6 +553,29 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
             let Ok(bytes) = serde_json::to_vec(arguments) else {
                 return false;
             };
+            let prior_calls = existing
+                .iter()
+                .filter_map(|item| match item {
+                    DurableItemSnapshot::McpToolCall {
+                        call_id,
+                        inventory_sha256,
+                        ..
+                    } => Some((call_id, inventory_sha256)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let prior_sequence_completed = prior_calls.last().is_none_or(|(prior_call_id, _)| {
+                existing.iter().any(|item| {
+                    matches!(
+                        item,
+                        DurableItemSnapshot::McpToolResult {
+                            call_id,
+                            result: DurableMcpToolResult::Completed { .. },
+                            ..
+                        } if call_id == *prior_call_id
+                    )
+                })
+            });
             arguments.is_object()
                 && !call_id.is_empty()
                 && call_id.len() <= 128
@@ -561,9 +585,14 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                 && *arguments_bytes == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
                 && arguments_sha256 == &sha256_bytes(&bytes)
                 && valid_sha256(inventory_sha256)
-                && !existing
+                && prior_calls.len() < MAX_MCP_TOOL_CALLS_PER_TURN
+                && prior_calls
                     .iter()
-                    .any(|item| matches!(item, DurableItemSnapshot::McpToolCall { .. }))
+                    .all(|(_, prior_inventory)| *prior_inventory == inventory_sha256)
+                && prior_calls
+                    .iter()
+                    .all(|(prior_call_id, _)| *prior_call_id != call_id)
+                && prior_sequence_completed
         }
         DurableItemSnapshot::McpToolCallApprovalRequest {
             approval_id,
@@ -600,8 +629,18 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                         item,
                         DurableItemSnapshot::McpToolCallApprovalRequest {
                             approval_id: existing_approval_id,
+                            call_id: existing_call_id,
                             ..
-                        } if existing_approval_id == approval_id
+                        } if existing_approval_id == approval_id || existing_call_id == call_id
+                    )
+                })
+                && !existing.iter().any(|item| {
+                    matches!(
+                        item,
+                        DurableItemSnapshot::McpToolResult {
+                            call_id: existing_call_id,
+                            ..
+                        } if existing_call_id == call_id
                     )
                 })
         }
@@ -633,6 +672,23 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                         approval_id: existing_approval_id,
                         ..
                     } if existing_approval_id == approval_id
+                )
+            }) && !existing.iter().any(|item| {
+                matches!(
+                    item,
+                    DurableItemSnapshot::McpToolResult {
+                        call_id,
+                        ..
+                    } if existing.iter().any(|candidate| {
+                        matches!(
+                            candidate,
+                            DurableItemSnapshot::McpToolCallApprovalRequest {
+                                approval_id: existing_approval_id,
+                                call_id: existing_call_id,
+                                ..
+                            } if existing_approval_id == approval_id && existing_call_id == call_id
+                        )
+                    })
                 )
             })
         }

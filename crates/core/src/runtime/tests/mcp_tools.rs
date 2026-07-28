@@ -166,7 +166,14 @@ async fn approved_mcp_call_crosses_attempt_before_one_execution_and_second_round
             .collect::<Vec<_>>(),
         vec!["mcp__fixture__inspect"]
     );
-    assert!(provider_requests[1].tools.is_empty());
+    assert_eq!(
+        provider_requests[1]
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["mcp__fixture__inspect"]
+    );
     assert!(matches!(
         provider_requests[1].messages.as_slice(),
         [
@@ -234,7 +241,165 @@ async fn approved_mcp_call_crosses_attempt_before_one_execution_and_second_round
 }
 
 #[tokio::test]
+async fn four_approved_mcp_calls_are_sequentially_correlated_and_then_tools_are_removed() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let mut rounds = VecDeque::new();
+    for ordinal in 1..=4 {
+        rounds.push_back(vec![
+            Ok(ModelEvent::ToolCall(ModelToolCall {
+                id: format!("call_mcp_{ordinal}"),
+                name: "mcp__fixture__inspect".to_string(),
+                arguments: serde_json::json!({"value": format!("value-{ordinal}")}),
+            })),
+            Ok(ModelEvent::Completed),
+        ]);
+    }
+    rounds.push_back(vec![
+        Ok(ModelEvent::TextDelta("Finished four calls.".to_string())),
+        Ok(ModelEvent::Completed),
+    ]);
+    let provider = SequencedProvider {
+        rounds: Mutex::new(rounds),
+        requests: requests.clone(),
+    };
+    let mut core = Core::new();
+    let started = core.start_thread(CoreRequestId::new(1)).expect("thread");
+    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+        panic!("thread event");
+    };
+    let executions = Arc::new(AtomicUsize::new(0));
+    let approvals = Arc::new(Mutex::new(Vec::new()));
+    let capability = McpToolCapability::default();
+    capability.set_enabled(true);
+    let (runtime, mut events) =
+        CoreRuntime::new(core, Arc::new(provider), "fixture-model".to_string());
+    let mut runtime = runtime.with_mcp(
+        Arc::new(RecordedMcpExecutor {
+            executions: executions.clone(),
+        }),
+        Arc::new(RecordedMcpApproval {
+            outcome: McpToolApprovalOutcome::Approved,
+            requests: approvals.clone(),
+        }),
+        capability,
+    );
+    runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Use MCP four times".to_string()),
+        )
+        .expect("turn");
+    loop {
+        match events.recv().await.expect("event").kind {
+            CoreEventKind::TurnCompleted { .. } => break,
+            CoreEventKind::TurnFailed { error, .. } => panic!("turn failed: {error:?}"),
+            CoreEventKind::TurnInterrupted { .. } => panic!("turn interrupted"),
+            _ => {}
+        }
+    }
+
+    assert_eq!(executions.load(Ordering::Acquire), 4);
+    let approvals = approvals.lock().expect("approvals");
+    assert_eq!(approvals.len(), 4);
+    assert_eq!(
+        approvals
+            .iter()
+            .map(|request| request.call_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["call_mcp_1", "call_mcp_2", "call_mcp_3", "call_mcp_4"]
+    );
+    drop(approvals);
+
+    let provider_requests = requests.lock().expect("provider requests");
+    assert_eq!(provider_requests.len(), 5);
+    assert!(provider_requests[..4].iter().all(
+        |request| request.tools.len() == 1 && request.tools[0].name == "mcp__fixture__inspect"
+    ));
+    assert!(provider_requests[4].tools.is_empty());
+    for request_index in 1..=4 {
+        let messages = &provider_requests[request_index].messages;
+        let expected_pairs = request_index;
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| matches!(message, ModelMessage::ToolCall(_)))
+                .count(),
+            expected_pairs
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| matches!(message, ModelMessage::ToolResult { .. }))
+                .count(),
+            expected_pairs
+        );
+        for ordinal in 1..=expected_pairs {
+            let call_id = format!("call_mcp_{ordinal}");
+            assert!(messages.iter().any(|message| {
+                matches!(
+                    message,
+                    ModelMessage::ToolCall(call) if call.id == call_id
+                )
+            }));
+            assert!(messages.iter().any(|message| {
+                matches!(
+                    message,
+                    ModelMessage::ToolResult {
+                        call_id: result_call_id,
+                        ..
+                    } if result_call_id == &call_id
+                )
+            }));
+        }
+    }
+    drop(provider_requests);
+
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    let turn = snapshot.turns.last().expect("turn");
+    assert_eq!(
+        turn.items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                sugarcode_state::DurableItemSnapshot::McpToolCall { .. }
+            ))
+            .count(),
+        4
+    );
+    assert_eq!(
+        turn.items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                sugarcode_state::DurableItemSnapshot::McpToolResult { .. }
+            ))
+            .count(),
+        4
+    );
+    let original_items = turn.items.clone();
+    let fork = runtime.fork_thread(&thread_id).expect("fork");
+    assert_eq!(fork.turns.len(), 1);
+    assert_eq!(fork.turns[0].items.len(), original_items.len());
+    assert_eq!(
+        fork.turns[0]
+            .items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                sugarcode_state::DurableItemSnapshot::McpToolCall { .. }
+            ))
+            .count(),
+        4
+    );
+    for (original, remapped) in original_items.iter().zip(&fork.turns[0].items) {
+        assert_ne!(original.id(), remapped.id());
+    }
+}
+
+#[tokio::test]
 async fn denied_mcp_call_never_crosses_attempt_or_executes() {
+    let provider_requests = Arc::new(Mutex::new(Vec::new()));
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
@@ -250,7 +415,7 @@ async fn denied_mcp_call_never_crosses_attempt_or_executes() {
                 Ok(ModelEvent::Completed),
             ],
         ])),
-        requests: Arc::new(Mutex::new(Vec::new())),
+        requests: provider_requests.clone(),
     };
     let mut core = Core::new();
     let started = core.start_thread(CoreRequestId::new(1)).expect("thread");
@@ -291,6 +456,10 @@ async fn denied_mcp_call_never_crosses_attempt_or_executes() {
         }
     }
     assert_eq!(executions.load(Ordering::Acquire), 0);
+    let provider_requests = provider_requests.lock().expect("provider requests");
+    assert_eq!(provider_requests.len(), 2);
+    assert!(provider_requests[1].tools.is_empty());
+    drop(provider_requests);
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
     let turn = snapshot.turns.last().expect("turn");
     assert!(!turn.items.iter().any(|item| {
