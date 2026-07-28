@@ -12,6 +12,7 @@ sugarcode-app-server-protocol = { path = "../app-server-protocol" }
 sugarcode-core = { path = "../core" }
 sugarcode-credential-store = { path = "../credential-store" }
 sugarcode-model-provider = { path = "../model-provider" }
+sugarcode-mcp = { path = "../mcp" }
 sugarcode-protocol = { path = "../protocol" }
 sugarcode-state = { path = "../state" }
 sugarcode-tools = { path = "../tools" }

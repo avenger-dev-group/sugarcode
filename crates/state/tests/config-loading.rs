@@ -274,3 +274,101 @@ fn legacy_plaintext_model_token_is_rejected_without_echoing_it() {
     assert!(matches!(error, ConfigError::UnknownField { .. }));
     assert!(!error.to_string().contains(sentinel));
 }
+
+#[test]
+fn local_stdio_mcp_config_is_explicit_and_bounded() {
+    let (directory, home) = resolved_home();
+    let executable = std::env::current_exe().expect("current executable");
+    let cwd = std::env::current_dir().expect("current directory");
+    fs::write(
+        directory.path().join("config.toml"),
+        format!(
+            "schema_version = 1\n\
+             [[mcp.servers]]\n\
+             id = \"local-fixture\"\n\
+             transport = \"stdio\"\n\
+             executable = {}\n\
+             argv = [\"--stdio\"]\n\
+             cwd = {}\n",
+            toml::Value::String(executable.to_string_lossy().into_owned()),
+            toml::Value::String(cwd.to_string_lossy().into_owned()),
+        ),
+    )
+    .expect("write MCP config");
+
+    let config = load_effective_config_for_home(home).expect("load MCP config");
+    let server = config.mcp_servers().first().expect("server");
+    assert_eq!(server.id(), "local-fixture");
+    assert_eq!(server.executable(), executable);
+    assert_eq!(server.argv(), ["--stdio"]);
+    assert_eq!(server.cwd(), cwd);
+}
+
+#[test]
+fn local_stdio_mcp_config_rejects_implicit_authority() {
+    let (directory, home) = resolved_home();
+    let config_path = directory.path().join("config.toml");
+    let cwd = std::env::current_dir().expect("current directory");
+    let cwd = toml::Value::String(cwd.to_string_lossy().into_owned());
+
+    for invalid in [
+        format!(
+            "[[mcp.servers]]\nid = \"fixture\"\ntransport = \"http\"\nexecutable = \"relative\"\nargv = []\ncwd = {cwd}\n"
+        ),
+        format!(
+            "[[mcp.servers]]\nid = \"fixture\"\ntransport = \"stdio\"\nexecutable = \"fixture\"\nargv = []\ncwd = {cwd}\n"
+        ),
+        format!(
+            "[[mcp.servers]]\nid = \"fixture\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\nenv = {{ TOKEN = \"secret\" }}\n"
+        ),
+        format!(
+            "[[mcp.servers]]\nid = \"Invalid\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\n"
+        ),
+        format!(
+            "[[mcp.servers]]\nid = \"one\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\n\
+             [[mcp.servers]]\nid = \"two\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\n"
+        ),
+        format!(
+            "[[mcp.servers]]\nid = \"fixture\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = [{}]\ncwd = {cwd}\n",
+            std::iter::repeat_n("\"argument\"", 33)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ] {
+        fs::write(&config_path, invalid).expect("write invalid MCP config");
+        assert!(load_effective_config_for_home(home.clone()).is_err());
+    }
+}
+
+#[test]
+fn saving_model_config_preserves_validated_mcp_authority() {
+    let (directory, home) = resolved_home();
+    let executable = std::env::current_exe().expect("current executable");
+    let cwd = std::env::current_dir().expect("current directory");
+    fs::write(
+        directory.path().join("config.toml"),
+        format!(
+            "[[mcp.servers]]\n\
+             id = \"fixture\"\n\
+             transport = \"stdio\"\n\
+             executable = {}\n\
+             argv = [\"--server\"]\n\
+             cwd = {}\n",
+            toml::Value::String(executable.to_string_lossy().into_owned()),
+            toml::Value::String(cwd.to_string_lossy().into_owned()),
+        ),
+    )
+    .expect("write MCP config");
+    let model = ModelConfig::new(
+        ModelApiFormat::OpenAiChatCompletions,
+        Url::parse("https://example.com/v1/chat/completions").expect("URL"),
+        "fixture-model".to_owned(),
+        None,
+    )
+    .expect("model");
+
+    let saved = save_model_config(&home, &model).expect("save model");
+    assert_eq!(saved.mcp_servers().len(), 1);
+    assert_eq!(saved.mcp_servers()[0].id(), "fixture");
+    assert_eq!(saved.mcp_servers()[0].argv(), ["--server"]);
+}

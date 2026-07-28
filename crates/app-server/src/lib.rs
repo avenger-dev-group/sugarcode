@@ -29,6 +29,7 @@ pub async fn run_stdio(
     workspace_scope: Option<String>,
     allow_workspace_write: bool,
     allow_command_workspace_write: bool,
+    mcp_server: Option<String>,
 ) -> io::Result<()> {
     if workspace.is_none() && workspace_scope.is_some() {
         return Err(io::Error::new(
@@ -82,6 +83,7 @@ pub async fn run_stdio(
                 })
             })
             .flatten();
+    let _mcp_inventory = discover_selected_mcp_server(&config, mcp_server.as_deref()).await?;
     let model = config.model().cloned();
     let model_token = model
         .as_ref()
@@ -180,6 +182,35 @@ pub async fn run_stdio(
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());
     stdio::serve_with_events_and_approvals(input, output, session, events, approvals).await
+}
+
+async fn discover_selected_mcp_server(
+    config: &EffectiveConfig,
+    selected_server_id: Option<&str>,
+) -> io::Result<Option<sugarcode_mcp::McpServerInventory>> {
+    let Some(selected_server_id) = selected_server_id else {
+        return Ok(None);
+    };
+    let server = config
+        .mcp_servers()
+        .iter()
+        .find(|server| server.id() == selected_server_id)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("MCP server `{selected_server_id}` is not configured for this process"),
+            )
+        })?;
+    let spec = sugarcode_mcp::StdioServerSpec::new(
+        server.id().to_owned(),
+        server.executable().to_path_buf(),
+        server.argv().to_vec(),
+        server.cwd().to_path_buf(),
+    );
+    sugarcode_mcp::discover_stdio(&spec)
+        .await
+        .map(Some)
+        .map_err(io::Error::other)
 }
 
 fn load_model_token(home: &std::path::Path, reference: &str) -> io::Result<Zeroizing<String>> {

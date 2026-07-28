@@ -23,5 +23,12 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+sugarcode-mcp = { path = "../mcp" }
 tempfile.workspace = true
 tokio-util.workspace = true
+toml.workspace = true
+
+[[test]]
+name = "mcp_stdio_discovery"
+path = "tests/mcp_stdio_discovery.rs"
+harness = false

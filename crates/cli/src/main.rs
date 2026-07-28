@@ -124,6 +124,9 @@ struct AppServerArgs {
     /// Enable sandboxed shell-command writes inside the explicit workspace.
     #[arg(long, requires = "workspace")]
     allow_command_workspace_write: bool,
+    /// Discover one explicitly configured local stdio MCP server before serving.
+    #[arg(long, value_name = "ID")]
+    mcp_server: Option<String>,
     #[command(subcommand)]
     command: Option<AppServerCommand>,
 }
@@ -267,6 +270,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             args.workspace_scope,
             args.allow_workspace_write,
             args.allow_command_workspace_write,
+            args.mcp_server,
         ) {
             (
                 true,
@@ -275,6 +279,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 workspace_scope,
                 allow_workspace_write,
                 allow_command_workspace_write,
+                mcp_server,
             ) => {
                 let effective_config = sugarcode_state::load_effective_config(home)?;
                 sugarcode_app_server::run_stdio(
@@ -283,13 +288,22 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     workspace_scope,
                     allow_workspace_write,
                     allow_command_workspace_write,
+                    mcp_server,
                 )
                 .await?;
             }
-            (false, Some(AppServerCommand::GenerateTs(args)), None, None, false, false) => {
+            (false, Some(AppServerCommand::GenerateTs(args)), None, None, false, false, None) => {
                 sugarcode_app_server::generate_typescript(&args.out)?;
             }
-            (false, Some(AppServerCommand::GenerateJsonSchema(args)), None, None, false, false) => {
+            (
+                false,
+                Some(AppServerCommand::GenerateJsonSchema(args)),
+                None,
+                None,
+                false,
+                false,
+                None,
+            ) => {
                 sugarcode_app_server::generate_json_schema(&args.out)?;
             }
             _ => {

@@ -1980,6 +1980,7 @@ dependencies = [
  "sugarcode-app-server-protocol",
  "sugarcode-core",
  "sugarcode-credential-store",
+ "sugarcode-mcp",
  "sugarcode-model-provider",
  "sugarcode-protocol",
  "sugarcode-state",
@@ -2009,11 +2010,13 @@ dependencies = [
  "sugarcode-app-server",
  "sugarcode-app-server-protocol",
  "sugarcode-credential-store",
+ "sugarcode-mcp",
  "sugarcode-state",
  "sugarcode-tools",
  "tempfile",
  "tokio",
  "tokio-util",
+ "toml",
  "url",
  "zeroize",
 ]
@@ -2040,6 +2043,17 @@ dependencies = [
  "keyring",
  "sha2",
  "zeroize",
+]
+
+[[package]]
+name = "sugarcode-mcp"
+version = "1.0.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

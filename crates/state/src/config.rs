@@ -16,6 +16,12 @@ pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 pub const MAX_MODEL_NAME_BYTES: usize = 256;
 pub const MAX_CREDENTIAL_REFERENCE_BYTES: usize = 64;
+pub const MAX_MCP_SERVERS: usize = 1;
+pub const MAX_MCP_SERVER_ID_BYTES: usize = 32;
+pub const MAX_MCP_PATH_BYTES: usize = 1024;
+pub const MAX_MCP_ARG_COUNT: usize = 32;
+pub const MAX_MCP_ARG_BYTES: usize = 8 * 1024;
+pub const MAX_MCP_ARGV_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelApiFormat {
@@ -88,11 +94,50 @@ impl fmt::Debug for ModelConfig {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+pub struct McpStdioServerConfig {
+    id: String,
+    executable: PathBuf,
+    argv: Vec<String>,
+    cwd: PathBuf,
+}
+
+impl McpStdioServerConfig {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    pub fn argv(&self) -> &[String] {
+        &self.argv
+    }
+
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+}
+
+impl fmt::Debug for McpStdioServerConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpStdioServerConfig")
+            .field("id", &self.id)
+            .field("executable", &"<redacted>")
+            .field("argv", &"<redacted>")
+            .field("cwd", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct EffectiveConfig {
     home: SugarCodeHome,
     config_path: PathBuf,
     schema_version: u32,
     model: Option<ModelConfig>,
+    mcp_servers: Vec<McpStdioServerConfig>,
 }
 
 impl EffectiveConfig {
@@ -111,6 +156,10 @@ impl EffectiveConfig {
     pub fn model(&self) -> Option<&ModelConfig> {
         self.model.as_ref()
     }
+
+    pub fn mcp_servers(&self) -> &[McpStdioServerConfig] {
+        &self.mcp_servers
+    }
 }
 
 impl fmt::Debug for EffectiveConfig {
@@ -121,6 +170,7 @@ impl fmt::Debug for EffectiveConfig {
             .field("config_path", &self.config_path)
             .field("schema_version", &self.schema_version)
             .field("model", &self.model)
+            .field("mcp_servers", &self.mcp_servers)
             .finish()
     }
 }
@@ -165,6 +215,13 @@ pub enum ConfigError {
     InvalidModelField {
         path: PathBuf,
         field: &'static str,
+        kind: &'static str,
+        line: usize,
+        column: usize,
+    },
+    InvalidMcpField {
+        path: PathBuf,
+        field: String,
         kind: &'static str,
         line: usize,
         column: usize,
@@ -252,6 +309,17 @@ impl fmt::Display for ConfigError {
                 "{}:{line}:{column}: invalid model configuration field `{field}` ({kind})",
                 path.display()
             ),
+            Self::InvalidMcpField {
+                path,
+                field,
+                kind,
+                line,
+                column,
+            } => write!(
+                formatter,
+                "{}:{line}:{column}: invalid MCP configuration field `{field}` ({kind})",
+                path.display()
+            ),
             Self::WriteFailed { path, kind } => {
                 write!(
                     formatter,
@@ -326,7 +394,7 @@ pub fn load_effective_config_for_home(home: SugarCodeHome) -> Result<EffectiveCo
 
     let mut unknown_fields = table
         .keys()
-        .filter(|field| !matches!(field.as_str(), "schema_version" | "model"))
+        .filter(|field| !matches!(field.as_str(), "schema_version" | "model" | "mcp"))
         .cloned()
         .collect::<Vec<_>>();
     unknown_fields.sort();
@@ -366,12 +434,17 @@ pub fn load_effective_config_for_home(home: SugarCodeHome) -> Result<EffectiveCo
         None => None,
         Some(value) => Some(parse_model_config(value, contents, &config_path)?),
     };
+    let mcp_servers = match table.get("mcp") {
+        None => Vec::new(),
+        Some(value) => parse_mcp_config(value, contents, &config_path)?,
+    };
 
     Ok(EffectiveConfig {
         home,
         config_path,
         schema_version: CURRENT_CONFIG_SCHEMA_VERSION,
         model,
+        mcp_servers,
     })
 }
 
@@ -381,6 +454,7 @@ fn default_config(home: SugarCodeHome, config_path: PathBuf) -> EffectiveConfig 
         config_path,
         schema_version: CURRENT_CONFIG_SCHEMA_VERSION,
         model: None,
+        mcp_servers: Vec::new(),
     }
 }
 
@@ -388,10 +462,11 @@ pub fn save_model_config(
     home: &SugarCodeHome,
     model: &ModelConfig,
 ) -> Result<EffectiveConfig, ConfigError> {
+    let existing = load_effective_config_for_home(home.clone())?;
     ensure_config_home(home)?;
     let config_path = home.path().join(CONFIG_FILE_NAME);
     reject_unsafe_config_target(&config_path)?;
-    let encoded = encode_model_config(model)?;
+    let encoded = encode_config(Some(model), existing.mcp_servers())?;
     if encoded.len() as u64 > MAX_CONFIG_BYTES {
         return Err(ConfigError::WriteFailed {
             path: config_path,
@@ -596,6 +671,264 @@ fn parse_model_config(
         .map_err(|kind| invalid_model_field(path, contents, "model", kind))
 }
 
+fn parse_mcp_config(
+    value: &toml::Value,
+    contents: &str,
+    path: &Path,
+) -> Result<Vec<McpStdioServerConfig>, ConfigError> {
+    let table = value
+        .as_table()
+        .ok_or_else(|| invalid_mcp_field(path, contents, "mcp", "expectedTable"))?;
+    let mut unknown = table
+        .keys()
+        .filter(|key| key.as_str() != "servers")
+        .cloned()
+        .collect::<Vec<_>>();
+    unknown.sort();
+    if let Some(field) = unknown.first() {
+        return Err(unknown_field(path, contents, format!("mcp.{field}"), field));
+    }
+    let Some(servers) = table.get("servers") else {
+        return Err(invalid_mcp_field(
+            path,
+            contents,
+            "mcp.servers",
+            "missingField",
+        ));
+    };
+    let servers = servers
+        .as_array()
+        .ok_or_else(|| invalid_mcp_field(path, contents, "mcp.servers", "expectedArray"))?;
+    if servers.len() > MAX_MCP_SERVERS {
+        return Err(invalid_mcp_field(
+            path,
+            contents,
+            "mcp.servers",
+            "tooManyServers",
+        ));
+    }
+
+    servers
+        .iter()
+        .enumerate()
+        .map(|(index, server)| parse_mcp_server(server, index, contents, path))
+        .collect()
+}
+
+fn parse_mcp_server(
+    value: &toml::Value,
+    index: usize,
+    contents: &str,
+    path: &Path,
+) -> Result<McpStdioServerConfig, ConfigError> {
+    let prefix = format!("mcp.servers[{index}]");
+    let table = value
+        .as_table()
+        .ok_or_else(|| invalid_mcp_field(path, contents, &prefix, "expectedTable"))?;
+    let mut unknown = table
+        .keys()
+        .filter(|key| {
+            !matches!(
+                key.as_str(),
+                "id" | "transport" | "executable" | "argv" | "cwd"
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    unknown.sort();
+    if let Some(field) = unknown.first() {
+        return Err(unknown_field(
+            path,
+            contents,
+            format!("{prefix}.{field}"),
+            field,
+        ));
+    }
+
+    let id = required_mcp_string(table, "id", &prefix, contents, path)?;
+    if !valid_mcp_server_id(id) {
+        return Err(invalid_mcp_field(
+            path,
+            contents,
+            &format!("{prefix}.id"),
+            "invalidServerId",
+        ));
+    }
+    let transport = required_mcp_string(table, "transport", &prefix, contents, path)?;
+    if transport != "stdio" {
+        return Err(invalid_mcp_field(
+            path,
+            contents,
+            &format!("{prefix}.transport"),
+            "unsupportedTransport",
+        ));
+    }
+    let executable = required_mcp_path(table, "executable", &prefix, contents, path)?;
+    let cwd = required_mcp_path(table, "cwd", &prefix, contents, path)?;
+    let argv_field = format!("{prefix}.argv");
+    let argv = table
+        .get("argv")
+        .ok_or_else(|| invalid_mcp_field(path, contents, &argv_field, "missingField"))?
+        .as_array()
+        .ok_or_else(|| invalid_mcp_field(path, contents, &argv_field, "expectedArray"))?;
+    if argv.len() > MAX_MCP_ARG_COUNT {
+        return Err(invalid_mcp_field(
+            path,
+            contents,
+            &argv_field,
+            "tooManyArguments",
+        ));
+    }
+    let mut argv_bytes = 0_usize;
+    let argv = argv
+        .iter()
+        .map(|value| {
+            let value = value.as_str().ok_or_else(|| {
+                invalid_mcp_field(path, contents, &argv_field, "expectedStringArray")
+            })?;
+            if value.len() > MAX_MCP_ARG_BYTES
+                || value.chars().any(|character| character.is_control())
+            {
+                return Err(invalid_mcp_field(
+                    path,
+                    contents,
+                    &argv_field,
+                    "invalidArgument",
+                ));
+            }
+            argv_bytes = argv_bytes.saturating_add(value.len());
+            Ok(value.to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if argv_bytes > MAX_MCP_ARGV_BYTES {
+        return Err(invalid_mcp_field(
+            path,
+            contents,
+            &argv_field,
+            "argumentsTooLarge",
+        ));
+    }
+
+    Ok(McpStdioServerConfig {
+        id: id.to_owned(),
+        executable,
+        argv,
+        cwd,
+    })
+}
+
+fn required_mcp_string<'a>(
+    table: &'a toml::map::Map<String, toml::Value>,
+    field: &str,
+    prefix: &str,
+    contents: &str,
+    path: &Path,
+) -> Result<&'a str, ConfigError> {
+    let full_field = format!("{prefix}.{field}");
+    table
+        .get(field)
+        .ok_or_else(|| invalid_mcp_field(path, contents, &full_field, "missingField"))?
+        .as_str()
+        .ok_or_else(|| invalid_mcp_field(path, contents, &full_field, "expectedString"))
+}
+
+fn required_mcp_path(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+    prefix: &str,
+    contents: &str,
+    path: &Path,
+) -> Result<PathBuf, ConfigError> {
+    let full_field = format!("{prefix}.{field}");
+    let value = required_mcp_string(table, field, prefix, contents, path)?;
+    if value.is_empty() || value.len() > MAX_MCP_PATH_BYTES || value.chars().any(char::is_control) {
+        return Err(invalid_mcp_field(
+            path,
+            contents,
+            &full_field,
+            "invalidPath",
+        ));
+    }
+    let value = PathBuf::from(value);
+    if !value.is_absolute() || has_forbidden_windows_path_prefix(&value) {
+        return Err(invalid_mcp_field(
+            path,
+            contents,
+            &full_field,
+            "pathMustBeExplicitAbsolute",
+        ));
+    }
+    Ok(value)
+}
+
+fn valid_mcp_server_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= MAX_MCP_SERVER_ID_BYTES
+        && bytes[0].is_ascii_lowercase()
+        && bytes[bytes.len() - 1].is_ascii_lowercase_or_digit()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase_or_digit() || *byte == b'-')
+}
+
+trait AsciiLowercaseOrDigit {
+    fn is_ascii_lowercase_or_digit(&self) -> bool;
+}
+
+impl AsciiLowercaseOrDigit for u8 {
+    fn is_ascii_lowercase_or_digit(&self) -> bool {
+        self.is_ascii_lowercase() || self.is_ascii_digit()
+    }
+}
+
+fn has_forbidden_windows_path_prefix(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+        use std::path::Prefix;
+        matches!(
+            path.components().next(),
+            Some(Component::Prefix(prefix))
+                if matches!(
+                    prefix.kind(),
+                    Prefix::UNC(..)
+                        | Prefix::Verbatim(..)
+                        | Prefix::DeviceNS(..)
+                        | Prefix::VerbatimUNC(..)
+                        | Prefix::VerbatimDisk(..)
+                )
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+fn invalid_mcp_field(path: &Path, contents: &str, field: &str, kind: &'static str) -> ConfigError {
+    let lookup = field.rsplit('.').next().unwrap_or(field);
+    let (line, column) = field_position(contents, lookup);
+    ConfigError::InvalidMcpField {
+        path: path.to_path_buf(),
+        field: field.to_owned(),
+        kind,
+        line,
+        column,
+    }
+}
+
+fn unknown_field(path: &Path, contents: &str, full_field: String, lookup: &str) -> ConfigError {
+    let (line, column) = field_position(contents, lookup);
+    ConfigError::UnknownField {
+        path: path.to_path_buf(),
+        field: full_field,
+        line,
+        column,
+    }
+}
+
 fn required_model_string<'a>(
     table: &'a toml::map::Map<String, toml::Value>,
     field: &'static str,
@@ -678,17 +1011,39 @@ fn invalid_model_field(
     }
 }
 
-fn encode_model_config(model: &ModelConfig) -> Result<String, ConfigError> {
-    let mut output = format!(
-        "schema_version = {}\n\n[model]\napi_format = {}\nendpoint = {}\nmodel = {}\n",
-        CURRENT_CONFIG_SCHEMA_VERSION,
-        toml_string(model.api_format.as_str()),
-        toml_string(model.endpoint.as_str()),
-        toml_string(model.model())
-    );
-    if let Some(reference) = model.credential_reference() {
-        output.push_str("credential = ");
-        output.push_str(&toml_string(reference));
+fn encode_config(
+    model: Option<&ModelConfig>,
+    mcp_servers: &[McpStdioServerConfig],
+) -> Result<String, ConfigError> {
+    let mut output = format!("schema_version = {}\n", CURRENT_CONFIG_SCHEMA_VERSION);
+    if let Some(model) = model {
+        output.push_str(&format!(
+            "\n[model]\napi_format = {}\nendpoint = {}\nmodel = {}\n",
+            toml_string(model.api_format.as_str()),
+            toml_string(model.endpoint.as_str()),
+            toml_string(model.model())
+        ));
+        if let Some(reference) = model.credential_reference() {
+            output.push_str("credential = ");
+            output.push_str(&toml_string(reference));
+            output.push('\n');
+        }
+    }
+    for server in mcp_servers {
+        output.push_str("\n[[mcp.servers]]\n");
+        output.push_str("id = ");
+        output.push_str(&toml_string(server.id()));
+        output.push_str("\ntransport = \"stdio\"\nexecutable = ");
+        output.push_str(&toml_string(&server.executable().to_string_lossy()));
+        output.push_str("\nargv = [");
+        for (index, argument) in server.argv().iter().enumerate() {
+            if index != 0 {
+                output.push_str(", ");
+            }
+            output.push_str(&toml_string(argument));
+        }
+        output.push_str("]\ncwd = ");
+        output.push_str(&toml_string(&server.cwd().to_string_lossy()));
         output.push('\n');
     }
     Ok(output)

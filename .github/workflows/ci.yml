@@ -99,6 +99,11 @@ jobs:
       - name: Test bounded local workspace Skills boundary
         run: cargo test -p sugarcode-tools --test workspace_skills --locked -- --nocapture
 
+      - name: Test bounded local MCP stdio discovery boundary
+        run: |
+          cargo test -p sugarcode-mcp --test stdio_discovery --locked -- --nocapture
+          cargo test -p sugarcode-cli --test mcp_stdio_discovery --locked -- --nocapture
+
       - name: Test active workspace scope boundary
         run: cargo test -p sugarcode-tools --test workspace_scope --locked -- --nocapture
 
