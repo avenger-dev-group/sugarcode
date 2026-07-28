@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   ipcMain,
+  type NativeImage,
 } from 'electron';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -90,6 +91,42 @@ const waitForAnimationFrame = async (): Promise<void> => {
   await evaluate<void>(
     'new Promise((resolve) => requestAnimationFrame(() => resolve()))',
   );
+};
+
+const capturePageWithRetry = async (
+  label: string,
+): Promise<NativeImage> => {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await waitForAnimationFrame();
+    let screenshot: NativeImage;
+    try {
+      if (!window || window.isDestroyed()) {
+        throw new Error('Electron test window is unavailable.');
+      }
+      screenshot = await window.webContents.capturePage();
+    } catch (error) {
+      const isTransientVizFailure =
+        error instanceof Error && error.message === 'UnknownVizError';
+      if (!isTransientVizFailure) {
+        throw error;
+      }
+      if (attempt === maxAttempts) {
+        throw new Error(
+          `Electron ${label} capture failed with UnknownVizError after ${maxAttempts} attempts.`,
+        );
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 50);
+      });
+      continue;
+    }
+    if (screenshot.isEmpty()) {
+      throw new Error(`Electron ${label} did not paint.`);
+    }
+    return screenshot;
+  }
+  throw new Error(`Electron ${label} capture exhausted unexpectedly.`);
 };
 
 const run = async (): Promise<void> => {
@@ -312,7 +349,7 @@ const run = async (): Promise<void> => {
   );
   await writeFile(
     path.join(__dirname, 'conversation-light.png'),
-    (await window.webContents.capturePage()).toPNG(),
+    (await capturePageWithRetry('light conversation')).toPNG(),
   );
 
   await sendConversationInput('Stop this desktop Turn.');
@@ -446,11 +483,7 @@ const run = async (): Promise<void> => {
   ) {
     throw new Error('Electron approval dialog did not preserve its UI contract.');
   }
-  await waitForAnimationFrame();
-  const screenshot = await window.webContents.capturePage();
-  if (screenshot.isEmpty()) {
-    throw new Error('Electron approval dialog did not paint.');
-  }
+  const screenshot = await capturePageWithRetry('light approval dialog');
   await writeFile(
     path.join(__dirname, 'command-approval-light.png'),
     screenshot.toPNG(),
@@ -527,7 +560,7 @@ const run = async (): Promise<void> => {
   );
   await writeFile(
     path.join(__dirname, 'conversation-dark.png'),
-    (await window.webContents.capturePage()).toPNG(),
+    (await capturePageWithRetry('dark conversation')).toPNG(),
   );
 
   controller.handleServerRequest(request('approval/electron-reload'));
@@ -549,7 +582,7 @@ const run = async (): Promise<void> => {
   }
   await writeFile(
     path.join(__dirname, 'command-approval-dark.png'),
-    (await window.webContents.capturePage()).toPNG(),
+    (await capturePageWithRetry('dark approval dialog')).toPNG(),
   );
   await evaluate('location.reload()');
   await waitFor(
