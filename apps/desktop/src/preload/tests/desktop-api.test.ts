@@ -272,5 +272,57 @@ describe('createDesktopApi', () => {
     await expect(api.getConversationState()).rejects.toThrow(
       'invalid conversation state snapshot',
     );
+
+    boundary.invoke.mockResolvedValue({
+      revision: 5,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          messages: [
+            {
+              id: 'item_0000000000000001',
+              role: 'agent',
+              text: 'Terminal content cannot remain active.',
+              status: 'inProgress',
+            },
+          ],
+        },
+      ],
+    });
+    await expect(api.getConversationState()).rejects.toThrow(
+      'invalid conversation state snapshot',
+    );
+
+    boundary.invoke.mockResolvedValue({
+      revision: 6,
+      phase: 'unavailable',
+      threadId: 'thr_0000000000000001',
+      activeTurnId: 'turn_0000000000000002',
+      turns: [
+        {
+          id: 'turn_0000000000000002',
+          status: 'inProgress',
+          messages: [
+            {
+              id: 'item_0000000000000002',
+              role: 'agent',
+              text: 'Partial response.',
+              status: 'inProgress',
+            },
+          ],
+        },
+      ],
+      notice: {
+        kind: 'connectionLost',
+        summary: 'The local Agent connection is unavailable.',
+      },
+    });
+    await expect(api.getConversationState()).resolves.toMatchObject({
+      phase: 'unavailable',
+      activeTurnId: 'turn_0000000000000002',
+    });
   });
 });

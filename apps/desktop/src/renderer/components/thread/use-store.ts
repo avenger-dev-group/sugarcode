@@ -8,10 +8,15 @@ import {
 } from '@/renderer/services/conversation';
 import {
   MAX_CONVERSATION_INPUT_BYTES,
+  type ConversationMessageStatus,
+  type ConversationPhase,
   type ConversationStateSnapshot,
   type ConversationTurnStatus,
 } from '@/shared/conversation';
 
+import type {
+  AgentMessagePresentationState,
+} from '../agent/types';
 import type {
   ThreadStore,
   ThreadViewModel,
@@ -36,6 +41,27 @@ const TERMINAL_LABELS: Record<
   inProgress: undefined,
 } as const;
 
+const toAgentMessagePresentationState = (
+  phase: ConversationPhase,
+  status: ConversationMessageStatus,
+): AgentMessagePresentationState => {
+  if (status === 'completed') {
+    return 'completed';
+  }
+  switch (phase) {
+    case 'inProgress':
+      return 'streaming';
+    case 'stopping':
+      return 'stopping';
+    case 'unavailable':
+      return 'uncertain';
+    default:
+      throw new Error(
+        'An active AgentMessage did not match the conversation phase.',
+      );
+  }
+};
+
 export const toThreadViewModel = (
   snapshot: ConversationStateSnapshot,
 ): ThreadViewModel => {
@@ -55,7 +81,10 @@ export const toThreadViewModel = (
                 message: {
                   id: message.id,
                   text: message.text,
-                  isStreaming: message.status === 'inProgress',
+                  state: toAgentMessagePresentationState(
+                    snapshot.phase,
+                    message.status,
+                  ),
                 },
               },
       ),

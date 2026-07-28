@@ -172,6 +172,11 @@ const run = async (): Promise<void> => {
               id: 'item_0000000000000100',
               text: 'Recovered rate-limited input.',
             },
+            {
+              type: 'agentMessage',
+              id: 'item_0000000000000101',
+              text: '',
+            },
           ],
           error: { kind: 'rateLimited', retryable: true },
         },
@@ -277,6 +282,17 @@ const run = async (): Promise<void> => {
       ),
     'recovered Electron Turn failure',
   );
+  if (
+    await evaluate<boolean>(
+      `document.body.textContent?.includes(
+        'Thinking through the turn',
+      ) === true`,
+    )
+  ) {
+    throw new Error(
+      'Recovered terminal AgentMessage displayed an active placeholder.',
+    );
+  }
 
   const sendConversationInput = async (input: string): Promise<void> => {
     await evaluate(`(() => {
@@ -508,6 +524,77 @@ const run = async (): Promise<void> => {
         `document.body.textContent?.includes('Turn stopped') === true`,
       ),
     'interrupted Turn presentation',
+  );
+
+  await sendConversationInput('Preserve an uncertain partial response.');
+  await waitFor(
+    () => conversation.getSnapshot().phase === 'inProgress',
+    'third conversation Turn',
+  );
+  const thirdTurnId = 'turn_0000000000000103';
+  conversation.handleNotification({
+    kind: 'notification',
+    method: 'turn/started',
+    params: {
+      threadId: 'thr_0000000000000100',
+      turn: { id: thirdTurnId, status: 'inProgress' },
+    },
+  });
+  conversation.handleNotification({
+    kind: 'notification',
+    method: 'item/started',
+    params: {
+      threadId: 'thr_0000000000000100',
+      turnId: thirdTurnId,
+      item: {
+        type: 'agentMessage',
+        id: `${thirdTurnId}/agent`,
+        text: '',
+      },
+    },
+  });
+  conversation.handleNotification({
+    kind: 'notification',
+    method: 'item/agentMessage/delta',
+    params: {
+      threadId: 'thr_0000000000000100',
+      turnId: thirdTurnId,
+      itemId: `${thirdTurnId}/agent`,
+      delta: 'Exact partial output before transport loss.',
+    },
+  });
+  conversation.transportClosed();
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Agent response status is unavailable"]',
+        )?.textContent?.includes(
+          'Exact partial output before transport loss.',
+        ) === true`,
+      ),
+    'uncertain Agent response',
+  );
+  if (
+    await evaluate<boolean>(
+      `Boolean(document.querySelector(
+        '[aria-label="Agent is responding"]',
+      ))`,
+    )
+  ) {
+    throw new Error(
+      'Transport loss retained an active Agent response indicator.',
+    );
+  }
+  await evaluate('location.reload()');
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Agent response status is unavailable"]',
+        )?.textContent?.includes('Final status unavailable') === true`,
+      ),
+    'uncertain response after Renderer reload',
   );
 
   controller.handleServerRequest(request('approval/electron-approve'));

@@ -418,6 +418,74 @@ describe('ConversationController', () => {
     expect(onProtocolFailure).toHaveBeenCalledOnce();
   });
 
+  it('keeps partial lifecycle uncertain after transport loss', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(
+        async (): Promise<TurnStartResponse> => ({
+          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+        }),
+      ),
+      interruptTurn: vi.fn(),
+    };
+    const { controller } = createHarness(rpc);
+
+    await controller.startTurn('Keep the partial response.');
+    controller.handleNotification(
+      notification('item/started', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: {
+          type: 'agentMessage',
+          id: 'item_0000000000000001',
+          text: '',
+        },
+      }),
+    );
+    controller.handleNotification(
+      notification('item/agentMessage/delta', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        itemId: 'item_0000000000000001',
+        delta: 'Durable status is not known yet.',
+      }),
+    );
+
+    controller.transportClosed();
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'unavailable',
+      threadId: 'thr_0000000000000001',
+      activeTurnId: 'turn_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'inProgress',
+          messages: [
+            {
+              id: 'item_0000000000000001',
+              role: 'agent',
+              text: 'Durable status is not known yet.',
+              status: 'inProgress',
+            },
+          ],
+        },
+      ],
+      notice: { kind: 'connectionLost' },
+    });
+    await expect(controller.startTurn('Do not replace it.')).resolves.toEqual({
+      accepted: false,
+      reason: 'unavailable',
+    });
+    await expect(controller.stopTurn()).resolves.toEqual({
+      accepted: false,
+      reason: 'unavailable',
+    });
+  });
+
   it('rejects invalid actions and fails closed on cross-Turn lifecycle', async () => {
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),

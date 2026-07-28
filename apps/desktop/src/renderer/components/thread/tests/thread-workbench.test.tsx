@@ -157,7 +157,7 @@ describe('ThreadWorkbenchView', () => {
               {
                 id: 'item_0000000000000003',
                 role: 'agent',
-                text: 'Still working',
+                text: '',
                 status: 'inProgress',
               },
             ],
@@ -173,12 +173,106 @@ describe('ThreadWorkbenchView', () => {
     expect(
       document.querySelector('[aria-label="Agent is responding"]'),
     ).not.toBeNull();
+    expect(document.body.textContent).toContain(
+      'Thinking through the turn',
+    );
     expect(document.querySelector('textarea')?.disabled).toBe(true);
     const stop = document.querySelector(
       '[aria-label="Stop current turn"]',
     ) as HTMLButtonElement;
     await act(async () => stop.click());
     expect(store.stop).toHaveBeenCalledOnce();
+
+    const stoppingStore = createStore({
+      thread: toThreadViewModel({
+        revision: 8,
+        phase: 'stopping',
+        threadId: 'thr_0000000000000001',
+        activeTurnId: 'turn_0000000000000002',
+        turns: [
+          {
+            id: 'turn_0000000000000002',
+            status: 'inProgress',
+            messages: [
+              {
+                id: 'item_0000000000000003',
+                role: 'agent',
+                text: 'Partial response before stop.',
+                status: 'inProgress',
+              },
+            ],
+          },
+        ],
+      }),
+      canStop: true,
+    });
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={stoppingStore} />);
+    });
+    expect(
+      document.querySelector('[aria-label="Agent response is stopping"]'),
+    ).not.toBeNull();
+    expect(document.body.textContent).toContain(
+      'Partial response before stop.',
+    );
+    expect(document.body.textContent).toContain('Stopping');
+    expect(
+      document.querySelector('[aria-label="Agent is responding"]'),
+    ).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it('distinguishes uncertain partial text from active streaming', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = createStore({
+      thread: toThreadViewModel({
+        revision: 8,
+        phase: 'unavailable',
+        threadId: 'thr_0000000000000001',
+        activeTurnId: 'turn_0000000000000002',
+        turns: [
+          {
+            id: 'turn_0000000000000002',
+            status: 'inProgress',
+            messages: [
+              {
+                id: 'item_0000000000000003',
+                role: 'agent',
+                text: 'Keep this exact partial response.',
+                status: 'inProgress',
+              },
+            ],
+          },
+        ],
+        notice: {
+          kind: 'connectionLost',
+          summary: 'The local Agent connection is unavailable.',
+        },
+      }),
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+    expect(
+      document.querySelector(
+        '[aria-label="Agent response status is unavailable"]',
+      ),
+    ).not.toBeNull();
+    expect(document.body.textContent).toContain(
+      'Keep this exact partial response.',
+    );
+    expect(document.body.textContent).toContain('Final status unavailable');
+    expect(document.body.textContent).not.toContain(
+      'Thinking through the turn',
+    );
+    expect(
+      document.querySelector('[aria-label="Agent is responding"]'),
+    ).toBeNull();
+    expect(document.querySelector('textarea')?.disabled).toBe(true);
 
     await act(async () => root.unmount());
   });
@@ -196,7 +290,14 @@ describe('ThreadWorkbenchView', () => {
           {
             id: 'turn_0000000000000003',
             status: 'failed',
-            messages: [],
+            messages: [
+              {
+                id: 'item_0000000000000004',
+                role: 'agent',
+                text: '',
+                status: 'completed',
+              },
+            ],
             error: { kind: 'rateLimited', retryable: true },
           },
         ],
@@ -218,6 +319,12 @@ describe('ThreadWorkbenchView', () => {
     );
     expect(failure?.textContent).toContain('Retryable failure');
     expect(failure?.textContent).not.toContain('rateLimited');
+    expect(document.body.textContent).not.toContain(
+      'Thinking through the turn',
+    );
+    expect(
+      document.querySelector('[aria-label="Agent response"]'),
+    ).toBeNull();
 
     await act(async () => root.unmount());
   });

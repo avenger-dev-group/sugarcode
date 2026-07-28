@@ -409,6 +409,22 @@ describe('real Desktop text Agent Turn', () => {
       );
 
       first.shutdown();
+      expect(first.conversation.getSnapshot()).toMatchObject({
+        phase: 'unavailable',
+        activeTurnId: expect.any(String),
+        turns: [
+          {
+            status: 'inProgress',
+            messages: [
+              {
+                role: 'user',
+                text: 'Recover this interrupted Turn.',
+                status: 'completed',
+              },
+            ],
+          },
+        ],
+      });
       second = createSupervisor();
       await second.start();
       expect(second.getSnapshot().status).toBe('ready');

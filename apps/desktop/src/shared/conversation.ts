@@ -169,6 +169,13 @@ const isTurn = (value: unknown): value is ConversationTurn => {
     return false;
   }
 
+  if (
+    value.status !== 'inProgress' &&
+    value.messages.some((message) => message.status !== 'completed')
+  ) {
+    return false;
+  }
+
   const hasError = Object.hasOwn(value, 'error');
   return value.status === 'failed'
     ? hasError && isTurnError(value.error)
