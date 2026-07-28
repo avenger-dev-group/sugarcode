@@ -1,6 +1,7 @@
 use crate::DurableContextCompaction;
 use crate::DurableContextCompactionStrategy;
 use crate::DurableItemSnapshot;
+use crate::DurableMcpToolResult;
 use crate::DurableProcessOutcome;
 use crate::DurableToolResult;
 use crate::DurableTurnSnapshot;
@@ -68,10 +69,44 @@ pub fn build_context_compaction(
                     index = result_index;
                 }
                 DurableItemSnapshot::ToolResult { .. } => return None,
+                call @ DurableItemSnapshot::McpToolCall { call_id, .. } => {
+                    let result_index = ((index + 1)..turn.items.len()).find(|candidate| {
+                        matches!(
+                            turn.items[*candidate],
+                            DurableItemSnapshot::McpToolResult { .. }
+                                | DurableItemSnapshot::UserMessage { .. }
+                                | DurableItemSnapshot::AgentMessage { .. }
+                                | DurableItemSnapshot::ToolCall { .. }
+                                | DurableItemSnapshot::McpToolCall { .. }
+                        )
+                    })?;
+                    let DurableItemSnapshot::McpToolResult {
+                        call_id: result_call_id,
+                        name: result_name,
+                        result,
+                        ..
+                    } = turn.items.get(result_index)?
+                    else {
+                        return None;
+                    };
+                    let DurableItemSnapshot::McpToolCall { name, .. } = call else {
+                        unreachable!();
+                    };
+                    if result_call_id != call_id || result_name != name {
+                        return None;
+                    }
+                    push_mcp_tool_entry(&mut canonical, call, result);
+                    source_messages = source_messages.checked_add(1)?;
+                    index = result_index;
+                }
+                DurableItemSnapshot::McpToolResult { .. } => return None,
                 DurableItemSnapshot::FileChange { .. }
                 | DurableItemSnapshot::CommandApprovalRequest { .. }
                 | DurableItemSnapshot::CommandApprovalDecision { .. }
-                | DurableItemSnapshot::CommandExecutionAttempt { .. } => {}
+                | DurableItemSnapshot::CommandExecutionAttempt { .. }
+                | DurableItemSnapshot::McpToolCallApprovalRequest { .. }
+                | DurableItemSnapshot::McpToolCallApprovalDecision { .. }
+                | DurableItemSnapshot::McpToolExecutionAttempt { .. } => {}
             }
             index += 1;
         }
@@ -102,6 +137,77 @@ pub fn build_context_compaction(
         pre_context_bytes,
         post_context_bytes,
     })
+}
+
+fn push_mcp_tool_entry(
+    canonical: &mut String,
+    call: &DurableItemSnapshot,
+    result: &DurableMcpToolResult,
+) {
+    let DurableItemSnapshot::McpToolCall {
+        name,
+        arguments,
+        arguments_bytes,
+        arguments_sha256,
+        inventory_sha256,
+        ..
+    } = call
+    else {
+        unreachable!();
+    };
+    canonical.push_str("{\"type\":\"mcpTool\",\"name\":");
+    canonical.push_str(&json_string(name));
+    canonical.push_str(",\"arguments\":");
+    canonical.push_str(&serde_json::to_string(arguments).expect("MCP arguments must serialize"));
+    canonical.push_str(",\"argumentsBytes\":");
+    canonical.push_str(&arguments_bytes.to_string());
+    canonical.push_str(",\"argumentsSha256\":");
+    canonical.push_str(&json_string(arguments_sha256));
+    canonical.push_str(",\"inventorySha256\":");
+    canonical.push_str(&json_string(inventory_sha256));
+    canonical.push_str(",\"result\":");
+    match result {
+        DurableMcpToolResult::Completed {
+            is_error,
+            observed_bytes,
+            canonical_bytes,
+            retained_bytes,
+            truncated,
+            sha256,
+            content_blocks,
+            structured_content,
+            ..
+        } => {
+            canonical.push_str("{\"type\":\"completed\",\"isError\":");
+            canonical.push_str(if *is_error { "true" } else { "false" });
+            canonical.push_str(",\"observedBytes\":");
+            canonical.push_str(&observed_bytes.to_string());
+            canonical.push_str(",\"canonicalBytes\":");
+            canonical.push_str(&canonical_bytes.to_string());
+            canonical.push_str(",\"retainedBytes\":");
+            canonical.push_str(&retained_bytes.to_string());
+            canonical.push_str(",\"truncated\":");
+            canonical.push_str(if *truncated { "true" } else { "false" });
+            canonical.push_str(",\"sha256\":");
+            canonical.push_str(&json_string(sha256));
+            canonical.push_str(",\"contentBlocks\":");
+            canonical.push_str(&content_blocks.to_string());
+            canonical.push_str(",\"structuredContent\":");
+            canonical.push_str(if *structured_content { "true" } else { "false" });
+            canonical.push('}');
+        }
+        DurableMcpToolResult::Error {
+            kind,
+            request_state,
+        } => {
+            canonical.push_str("{\"type\":\"error\",\"kind\":");
+            canonical.push_str(&json_string(kind));
+            canonical.push_str(",\"requestState\":");
+            canonical.push_str(&json_string(request_state));
+            canonical.push('}');
+        }
+    }
+    canonical.push_str("}\n");
 }
 
 pub fn validate_context_compaction(

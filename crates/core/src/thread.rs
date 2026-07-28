@@ -82,6 +82,15 @@ pub enum PreparedMessage {
         call_id: String,
         content: String,
     },
+    McpToolCall {
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    McpToolResult {
+        call_id: String,
+        content: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,6 +260,37 @@ enum ItemKind {
         approval_id: String,
         call_id: String,
     },
+    McpToolCall {
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+        arguments_bytes: u64,
+        arguments_sha256: String,
+        inventory_sha256: String,
+    },
+    McpToolCallApprovalRequest {
+        approval_id: String,
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+        arguments_bytes: u64,
+        arguments_sha256: String,
+        inventory_sha256: String,
+    },
+    McpToolCallApprovalDecision {
+        approval_id: String,
+        decision: sugarcode_protocol::CoreCommandApprovalDecision,
+    },
+    McpToolExecutionAttempt {
+        approval_id: String,
+        call_id: String,
+        inventory_sha256: String,
+    },
+    McpToolResult {
+        call_id: String,
+        name: String,
+        result: sugarcode_protocol::CoreMcpToolResult,
+    },
     ToolResult {
         call_id: String,
         name: String,
@@ -286,6 +326,11 @@ impl Item {
             | ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
             | ItemKind::CommandExecutionAttempt { .. }
+            | ItemKind::McpToolCall { .. }
+            | ItemKind::McpToolCallApprovalRequest { .. }
+            | ItemKind::McpToolCallApprovalDecision { .. }
+            | ItemKind::McpToolExecutionAttempt { .. }
+            | ItemKind::McpToolResult { .. }
             | ItemKind::ToolResult { .. } => Err(CoreError::Internal(
                 "cannot append an agent delta to a tool item".to_string(),
             )),
@@ -384,6 +429,63 @@ impl Item {
             } => CoreItemKind::CommandExecutionAttempt {
                 approval_id: approval_id.clone(),
                 call_id: call_id.clone(),
+            },
+            ItemKind::McpToolCall {
+                call_id,
+                name,
+                arguments,
+                arguments_bytes,
+                arguments_sha256,
+                inventory_sha256,
+            } => CoreItemKind::McpToolCall {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+                arguments_bytes: *arguments_bytes,
+                arguments_sha256: arguments_sha256.clone(),
+                inventory_sha256: inventory_sha256.clone(),
+            },
+            ItemKind::McpToolCallApprovalRequest {
+                approval_id,
+                call_id,
+                name,
+                arguments,
+                arguments_bytes,
+                arguments_sha256,
+                inventory_sha256,
+            } => CoreItemKind::McpToolCallApprovalRequest {
+                approval_id: approval_id.clone(),
+                call_id: call_id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+                arguments_bytes: *arguments_bytes,
+                arguments_sha256: arguments_sha256.clone(),
+                inventory_sha256: inventory_sha256.clone(),
+            },
+            ItemKind::McpToolCallApprovalDecision {
+                approval_id,
+                decision,
+            } => CoreItemKind::McpToolCallApprovalDecision {
+                approval_id: approval_id.clone(),
+                decision: *decision,
+            },
+            ItemKind::McpToolExecutionAttempt {
+                approval_id,
+                call_id,
+                inventory_sha256,
+            } => CoreItemKind::McpToolExecutionAttempt {
+                approval_id: approval_id.clone(),
+                call_id: call_id.clone(),
+                inventory_sha256: inventory_sha256.clone(),
+            },
+            ItemKind::McpToolResult {
+                call_id,
+                name,
+                result,
+            } => CoreItemKind::McpToolResult {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                result: result.clone(),
             },
             ItemKind::ToolResult {
                 call_id,
@@ -708,6 +810,88 @@ impl Core {
                         kind: ItemKind::CommandExecutionAttempt {
                             approval_id: approval_id.clone(),
                             call_id: call_id.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::McpToolCall {
+                        id,
+                        call_id,
+                        name,
+                        arguments,
+                        arguments_bytes,
+                        arguments_sha256,
+                        inventory_sha256,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::McpToolCall {
+                            call_id: call_id.clone(),
+                            name: name.clone(),
+                            arguments: arguments.clone(),
+                            arguments_bytes: *arguments_bytes,
+                            arguments_sha256: arguments_sha256.clone(),
+                            inventory_sha256: inventory_sha256.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::McpToolCallApprovalRequest {
+                        id,
+                        approval_id,
+                        call_id,
+                        name,
+                        arguments,
+                        arguments_bytes,
+                        arguments_sha256,
+                        inventory_sha256,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::McpToolCallApprovalRequest {
+                            approval_id: approval_id.clone(),
+                            call_id: call_id.clone(),
+                            name: name.clone(),
+                            arguments: arguments.clone(),
+                            arguments_bytes: *arguments_bytes,
+                            arguments_sha256: arguments_sha256.clone(),
+                            inventory_sha256: inventory_sha256.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::McpToolCallApprovalDecision {
+                        id,
+                        approval_id,
+                        decision,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::McpToolCallApprovalDecision {
+                            approval_id: approval_id.clone(),
+                            decision: core_approval_decision(decision),
+                        },
+                    },
+                    DurableItemSnapshot::McpToolExecutionAttempt {
+                        id,
+                        approval_id,
+                        call_id,
+                        inventory_sha256,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::McpToolExecutionAttempt {
+                            approval_id: approval_id.clone(),
+                            call_id: call_id.clone(),
+                            inventory_sha256: inventory_sha256.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::McpToolResult {
+                        id,
+                        call_id,
+                        name,
+                        result,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::McpToolResult {
+                            call_id: call_id.clone(),
+                            name: name.clone(),
+                            result: core_mcp_tool_result(result),
                         },
                     },
                     DurableItemSnapshot::ToolResult {
@@ -1044,6 +1228,11 @@ impl Core {
                 | CoreItemKind::CommandApprovalRequest { .. }
                 | CoreItemKind::CommandApprovalDecision { .. }
                 | CoreItemKind::CommandExecutionAttempt { .. }
+                | CoreItemKind::McpToolCall { .. }
+                | CoreItemKind::McpToolCallApprovalRequest { .. }
+                | CoreItemKind::McpToolCallApprovalDecision { .. }
+                | CoreItemKind::McpToolExecutionAttempt { .. }
+                | CoreItemKind::McpToolResult { .. }
                 | CoreItemKind::ToolResult { .. }
         ) {
             return Err(CoreError::Internal(
@@ -1115,6 +1304,11 @@ impl Core {
             | ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
             | ItemKind::CommandExecutionAttempt { .. }
+            | ItemKind::McpToolCall { .. }
+            | ItemKind::McpToolCallApprovalRequest { .. }
+            | ItemKind::McpToolCallApprovalDecision { .. }
+            | ItemKind::McpToolExecutionAttempt { .. }
+            | ItemKind::McpToolResult { .. }
             | ItemKind::ToolResult { .. } => {
                 return Err(CoreError::Internal(
                     "active item is not an agent message".to_string(),
@@ -1292,7 +1486,33 @@ fn prepared_messages_for_turn(turn: &Turn) -> Vec<PreparedMessage> {
             ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
             | ItemKind::CommandExecutionAttempt { .. }
+            | ItemKind::McpToolCallApprovalRequest { .. }
+            | ItemKind::McpToolCallApprovalDecision { .. }
+            | ItemKind::McpToolExecutionAttempt { .. }
             | ItemKind::FileChange { .. } => None,
+            ItemKind::McpToolCall {
+                call_id,
+                name,
+                arguments,
+                ..
+            } => Some(PreparedMessage::McpToolCall {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                arguments: arguments.clone(),
+            }),
+            ItemKind::McpToolResult {
+                call_id, result, ..
+            } => Some(PreparedMessage::McpToolResult {
+                call_id: call_id.clone(),
+                content: match result {
+                    sugarcode_protocol::CoreMcpToolResult::Completed { content, .. } => {
+                        content.clone()
+                    }
+                    sugarcode_protocol::CoreMcpToolResult::Error { kind, .. } => {
+                        format!("MCP tool error: {kind}")
+                    }
+                },
+            }),
             ItemKind::ToolResult {
                 call_id,
                 name,
@@ -1368,6 +1588,52 @@ fn command_workspace_write_risk(
             Some(sugarcode_protocol::CoreCommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1)
         }
         Some(_) | None => None,
+    }
+}
+
+fn core_approval_decision(value: &str) -> sugarcode_protocol::CoreCommandApprovalDecision {
+    match value {
+        "approved" => sugarcode_protocol::CoreCommandApprovalDecision::Approved,
+        "denied" => sugarcode_protocol::CoreCommandApprovalDecision::Denied,
+        "timedOut" => sugarcode_protocol::CoreCommandApprovalDecision::TimedOut,
+        "unsupported" => sugarcode_protocol::CoreCommandApprovalDecision::Unsupported,
+        "cancelled" => sugarcode_protocol::CoreCommandApprovalDecision::Cancelled,
+        _ => sugarcode_protocol::CoreCommandApprovalDecision::ClientDisconnected,
+    }
+}
+
+fn core_mcp_tool_result(
+    result: &sugarcode_state::DurableMcpToolResult,
+) -> sugarcode_protocol::CoreMcpToolResult {
+    match result {
+        sugarcode_state::DurableMcpToolResult::Completed {
+            content,
+            is_error,
+            observed_bytes,
+            canonical_bytes,
+            retained_bytes,
+            truncated,
+            sha256,
+            content_blocks,
+            structured_content,
+        } => sugarcode_protocol::CoreMcpToolResult::Completed {
+            content: content.clone(),
+            is_error: *is_error,
+            observed_bytes: *observed_bytes,
+            canonical_bytes: *canonical_bytes,
+            retained_bytes: *retained_bytes,
+            truncated: *truncated,
+            sha256: sha256.clone(),
+            content_blocks: *content_blocks,
+            structured_content: *structured_content,
+        },
+        sugarcode_state::DurableMcpToolResult::Error {
+            kind,
+            request_state,
+        } => sugarcode_protocol::CoreMcpToolResult::Error {
+            kind: kind.clone(),
+            request_state: request_state.clone(),
+        },
     }
 }
 

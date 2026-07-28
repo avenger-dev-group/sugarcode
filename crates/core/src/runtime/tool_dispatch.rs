@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelToolDefinition> {
-    let mut definitions = Vec::with_capacity(5);
+    let mut definitions = Vec::with_capacity(37);
     if runtime.workspace_read.is_some() {
         definitions.push(ModelToolDefinition {
             name: "workspace/read".to_string(),
@@ -71,6 +71,14 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
                 "required": ["command", "arguments", "cwd"]
             }),
         });
+    }
+    if runtime.mcp_capability.is_enabled()
+        && let (Some(executor), Some(_)) = (
+            runtime.mcp_executor.as_ref(),
+            runtime.mcp_approval_requester.as_ref(),
+        )
+    {
+        definitions.extend(executor.definitions());
     }
     definitions
 }

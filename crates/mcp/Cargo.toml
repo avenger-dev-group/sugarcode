@@ -6,8 +6,12 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+jsonschema.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -25,4 +29,9 @@ tempfile.workspace = true
 [[test]]
 name = "stdio_discovery"
 path = "tests/stdio_discovery.rs"
+harness = false
+
+[[test]]
+name = "stdio_tool_call"
+path = "tests/stdio_tool_call.rs"
 harness = false

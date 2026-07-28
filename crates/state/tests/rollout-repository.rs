@@ -4,6 +4,7 @@ use sugarcode_protocol::ItemId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
 use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableMcpToolResult;
 use sugarcode_state::DurableProcessOutcome;
 use sugarcode_state::DurableProcessResult;
 use sugarcode_state::DurableThreadLifecycle;
@@ -76,6 +77,8 @@ mod corruption;
 mod fork;
 #[path = "rollout_repository/lifecycle.rs"]
 mod lifecycle;
+#[path = "rollout_repository/mcp.rs"]
+mod mcp;
 #[path = "rollout_repository/projections.rs"]
 mod projections;
 #[path = "rollout_repository/turns.rs"]

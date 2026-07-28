@@ -234,11 +234,66 @@ pub enum DurableItemSnapshot {
         approval_id: String,
         call_id: String,
     },
+    McpToolCall {
+        id: ItemId,
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+        arguments_bytes: u64,
+        arguments_sha256: String,
+        inventory_sha256: String,
+    },
+    McpToolCallApprovalRequest {
+        id: ItemId,
+        approval_id: String,
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+        arguments_bytes: u64,
+        arguments_sha256: String,
+        inventory_sha256: String,
+    },
+    McpToolCallApprovalDecision {
+        id: ItemId,
+        approval_id: String,
+        decision: String,
+    },
+    McpToolExecutionAttempt {
+        id: ItemId,
+        approval_id: String,
+        call_id: String,
+        inventory_sha256: String,
+    },
+    McpToolResult {
+        id: ItemId,
+        call_id: String,
+        name: String,
+        result: DurableMcpToolResult,
+    },
     ToolResult {
         id: ItemId,
         call_id: String,
         name: String,
         result: DurableToolResult,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableMcpToolResult {
+    Completed {
+        content: String,
+        is_error: bool,
+        observed_bytes: u64,
+        canonical_bytes: u64,
+        retained_bytes: u64,
+        truncated: bool,
+        sha256: String,
+        content_blocks: u64,
+        structured_content: bool,
+    },
+    Error {
+        kind: String,
+        request_state: String,
     },
 }
 
@@ -287,6 +342,11 @@ impl DurableItemSnapshot {
             | Self::CommandApprovalRequest { id, .. }
             | Self::CommandApprovalDecision { id, .. }
             | Self::CommandExecutionAttempt { id, .. }
+            | Self::McpToolCall { id, .. }
+            | Self::McpToolCallApprovalRequest { id, .. }
+            | Self::McpToolCallApprovalDecision { id, .. }
+            | Self::McpToolExecutionAttempt { id, .. }
+            | Self::McpToolResult { id, .. }
             | Self::ToolResult { id, .. } => id,
         }
     }
@@ -298,6 +358,9 @@ pub(crate) fn valid_incremental_item(
 ) -> Result<(), &'static str> {
     if !valid_file_change_item(item) {
         return Err("invalidFileChangeItem");
+    }
+    if !valid_mcp_item(existing, item) {
+        return Err("invalidMcpToolItem");
     }
     if let DurableItemSnapshot::CommandApprovalRequest {
         workspace_write_policy,
@@ -473,6 +536,224 @@ pub(crate) fn valid_incremental_item(
         return Err("invalidCommandExecutionAttempt");
     }
     Ok(())
+}
+
+fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) -> bool {
+    match item {
+        DurableItemSnapshot::McpToolCall {
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+            ..
+        } => {
+            let Ok(bytes) = serde_json::to_vec(arguments) else {
+                return false;
+            };
+            arguments.is_object()
+                && !call_id.is_empty()
+                && call_id.len() <= 128
+                && name.starts_with("mcp__")
+                && name.len() <= 128
+                && bytes.len() <= 32 * 1024
+                && *arguments_bytes == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                && arguments_sha256 == &sha256_bytes(&bytes)
+                && valid_sha256(inventory_sha256)
+                && !existing
+                    .iter()
+                    .any(|item| matches!(item, DurableItemSnapshot::McpToolCall { .. }))
+        }
+        DurableItemSnapshot::McpToolCallApprovalRequest {
+            approval_id,
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+            ..
+        } => {
+            !approval_id.is_empty()
+                && existing.iter().any(|item| {
+                    matches!(
+                        item,
+                        DurableItemSnapshot::McpToolCall {
+                            call_id: existing_call_id,
+                            name: existing_name,
+                            arguments: existing_arguments,
+                            arguments_bytes: existing_arguments_bytes,
+                            arguments_sha256: existing_arguments_sha256,
+                            inventory_sha256: existing_inventory_sha256,
+                            ..
+                        } if existing_call_id == call_id
+                            && existing_name == name
+                            && existing_arguments == arguments
+                            && existing_arguments_bytes == arguments_bytes
+                            && existing_arguments_sha256 == arguments_sha256
+                            && existing_inventory_sha256 == inventory_sha256
+                    )
+                })
+                && !existing.iter().any(|item| {
+                    matches!(
+                        item,
+                        DurableItemSnapshot::McpToolCallApprovalRequest {
+                            approval_id: existing_approval_id,
+                            ..
+                        } if existing_approval_id == approval_id
+                    )
+                })
+        }
+        DurableItemSnapshot::McpToolCallApprovalDecision {
+            approval_id,
+            decision,
+            ..
+        } => {
+            matches!(
+                decision.as_str(),
+                "approved"
+                    | "denied"
+                    | "timedOut"
+                    | "unsupported"
+                    | "cancelled"
+                    | "clientDisconnected"
+            ) && existing.iter().any(|item| {
+                matches!(
+                    item,
+                    DurableItemSnapshot::McpToolCallApprovalRequest {
+                        approval_id: existing_approval_id,
+                        ..
+                    } if existing_approval_id == approval_id
+                )
+            }) && !existing.iter().any(|item| {
+                matches!(
+                    item,
+                    DurableItemSnapshot::McpToolCallApprovalDecision {
+                        approval_id: existing_approval_id,
+                        ..
+                    } if existing_approval_id == approval_id
+                )
+            })
+        }
+        DurableItemSnapshot::McpToolExecutionAttempt {
+            approval_id,
+            call_id,
+            inventory_sha256,
+            ..
+        } => {
+            let approved = existing.iter().any(|item| {
+                matches!(
+                    item,
+                    DurableItemSnapshot::McpToolCallApprovalDecision {
+                        approval_id: existing_approval_id,
+                        decision,
+                        ..
+                    } if existing_approval_id == approval_id && decision == "approved"
+                )
+            });
+            let request = existing.iter().any(|item| {
+                matches!(
+                    item,
+                    DurableItemSnapshot::McpToolCallApprovalRequest {
+                        approval_id: existing_approval_id,
+                        call_id: existing_call_id,
+                        inventory_sha256: existing_inventory_sha256,
+                        ..
+                    } if existing_approval_id == approval_id
+                        && existing_call_id == call_id
+                        && existing_inventory_sha256 == inventory_sha256
+                )
+            });
+            approved
+                && request
+                && !existing.iter().any(|item| {
+                    matches!(
+                        item,
+                        DurableItemSnapshot::McpToolExecutionAttempt {
+                            approval_id: existing_approval_id,
+                            call_id: existing_call_id,
+                            ..
+                        } if existing_approval_id == approval_id || existing_call_id == call_id
+                    )
+                })
+        }
+        DurableItemSnapshot::McpToolResult {
+            call_id,
+            name,
+            result,
+            ..
+        } => {
+            let call = existing.iter().any(|item| {
+                matches!(
+                    item,
+                    DurableItemSnapshot::McpToolCall {
+                        call_id: existing_call_id,
+                        name: existing_name,
+                        ..
+                    } if existing_call_id == call_id && existing_name == name
+                )
+            });
+            let attempt = existing.iter().any(|item| {
+                matches!(
+                    item,
+                    DurableItemSnapshot::McpToolExecutionAttempt {
+                        call_id: existing_call_id,
+                        ..
+                    } if existing_call_id == call_id
+                )
+            });
+            let no_prior_result = !existing.iter().any(|item| {
+                matches!(
+                    item,
+                    DurableItemSnapshot::McpToolResult {
+                        call_id: existing_call_id,
+                        ..
+                    } if existing_call_id == call_id
+                )
+            });
+            let result_valid = match result {
+                DurableMcpToolResult::Completed {
+                    content,
+                    observed_bytes,
+                    canonical_bytes,
+                    retained_bytes,
+                    truncated,
+                    sha256,
+                    ..
+                } => {
+                    attempt
+                        && *retained_bytes == u64::try_from(content.len()).unwrap_or(u64::MAX)
+                        && valid_sha256(sha256)
+                        && *observed_bytes > 0
+                        && if *truncated {
+                            *canonical_bytes > *retained_bytes
+                        } else {
+                            *canonical_bytes == *retained_bytes
+                        }
+                }
+                DurableMcpToolResult::Error {
+                    kind,
+                    request_state,
+                } => {
+                    !kind.is_empty()
+                        && kind.len() <= 64
+                        && matches!(
+                            request_state.as_str(),
+                            "notSent" | "mayHaveStarted" | "responded"
+                        )
+                        && (request_state == "notSent" || attempt)
+                }
+            };
+            call && no_prior_result && result_valid
+        }
+        _ => true,
+    }
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(bytes))
 }
 
 pub(crate) fn valid_turn_items(items: &[DurableItemSnapshot]) -> bool {

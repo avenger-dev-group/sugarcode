@@ -23,6 +23,9 @@ pub struct InitializeCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub command_workspace_write_approvals: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mcp_tool_call_approvals: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
@@ -59,6 +62,9 @@ pub struct PlatformInfo {
 pub struct ServerCapabilities {
     pub command_approvals: bool,
     pub command_workspace_write_approvals: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mcp_tool_call_approvals: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

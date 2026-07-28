@@ -1,5 +1,6 @@
 mod approval;
 mod event_mapping;
+mod mcp;
 mod session;
 mod stdio;
 
@@ -10,6 +11,7 @@ pub use stdio::serve_with_events;
 pub use stdio::serve_with_session;
 
 use approval::ChannelCommandApprovalRequester;
+use approval::ChannelMcpToolApprovalRequester;
 use std::io;
 use std::sync::Arc;
 use sugarcode_core::Core;
@@ -83,7 +85,7 @@ pub async fn run_stdio(
                 })
             })
             .flatten();
-    let _mcp_inventory = discover_selected_mcp_server(&config, mcp_server.as_deref()).await?;
+    let mcp = discover_selected_mcp_server(&config, mcp_server.as_deref()).await?;
     let model = config.model().cloned();
     let model_token = model
         .as_ref()
@@ -102,6 +104,7 @@ pub async fn run_stdio(
     }
     let core = Core::with_repository(Box::new(repository));
     let (approval_requester, approvals) = ChannelCommandApprovalRequester::channel(4);
+    let (mcp_approval_requester, mcp_approvals) = ChannelMcpToolApprovalRequester::channel(1);
     let (runtime, events) = match (model, model_token) {
         (Some(_), Err(_)) => {
             eprintln!("sugarcode: configured model credential is unavailable");
@@ -173,21 +176,39 @@ pub async fn run_stdio(
         (None, Ok(None)) => CoreRuntime::without_model(core),
         (None, Ok(Some(_))) | (None, Err(_)) => unreachable!("token lookup requires a model"),
     };
-    let session = Session::with_core(
-        runtime
-            .with_workspace_patch(workspace_patch)
-            .with_workspace_instructions(workspace_instructions)
-            .with_workspace_skills(workspace_skills),
-    );
+    let mut runtime = runtime
+        .with_workspace_patch(workspace_patch)
+        .with_workspace_instructions(workspace_instructions)
+        .with_workspace_skills(workspace_skills);
+    let mcp_capability = sugarcode_core::McpToolCapability::default();
+    let has_mcp = mcp.is_some();
+    if let Some((spec, inventory)) = mcp {
+        runtime = runtime.with_mcp(
+            Arc::new(mcp::McpRuntimeAdapter::new(spec, inventory)),
+            Arc::new(mcp_approval_requester),
+            mcp_capability.clone(),
+        );
+    }
+    let session = if has_mcp {
+        Session::with_core_and_mcp_capability(runtime, mcp_capability)
+    } else {
+        Session::with_core(runtime)
+    };
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());
-    stdio::serve_with_events_and_approvals(input, output, session, events, approvals).await
+    stdio::serve_with_events_and_approvals(input, output, session, events, approvals, mcp_approvals)
+        .await
 }
 
 async fn discover_selected_mcp_server(
     config: &EffectiveConfig,
     selected_server_id: Option<&str>,
-) -> io::Result<Option<sugarcode_mcp::McpServerInventory>> {
+) -> io::Result<
+    Option<(
+        sugarcode_mcp::StdioServerSpec,
+        sugarcode_mcp::McpServerInventory,
+    )>,
+> {
     let Some(selected_server_id) = selected_server_id else {
         return Ok(None);
     };
@@ -207,10 +228,10 @@ async fn discover_selected_mcp_server(
         server.argv().to_vec(),
         server.cwd().to_path_buf(),
     );
-    sugarcode_mcp::discover_stdio(&spec)
+    let inventory = sugarcode_mcp::discover_stdio(&spec)
         .await
-        .map(Some)
-        .map_err(io::Error::other)
+        .map_err(io::Error::other)?;
+    Ok(Some((spec, inventory)))
 }
 
 fn load_model_token(home: &std::path::Path, reference: &str) -> io::Result<Zeroizing<String>> {

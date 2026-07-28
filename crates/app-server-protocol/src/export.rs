@@ -22,6 +22,10 @@ use crate::JsonRpcNotification;
 use crate::JsonRpcRequest;
 use crate::JsonRpcResponse;
 use crate::JsonRpcVersion;
+use crate::McpToolCallApprovalParams;
+use crate::McpToolCallApprovalResponse;
+use crate::McpToolCallApprovalResponseDecision;
+use crate::McpToolResult;
 use crate::PlatformInfo;
 use crate::ProcessOutcome;
 use crate::RequestId;
@@ -92,10 +96,14 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         CommandWorkspaceWriteRisk::decl(),
         CommandApprovalParams::decl(),
         CommandApprovalResponse::decl(),
+        McpToolCallApprovalResponseDecision::decl(),
+        McpToolCallApprovalParams::decl(),
+        McpToolCallApprovalResponse::decl(),
         FileChangeKind::decl(),
         FileChangeNewlineStyle::decl(),
         ProcessOutcome::decl(),
         ToolResult::decl(),
+        McpToolResult::decl(),
         Item::decl(),
         ItemStartedNotification::decl(),
         AgentMessageDeltaNotification::decl(),
@@ -184,6 +192,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
         &schema_for!(CommandApprovalResponse),
     )?;
     write_schema(
+        out_dir.join("McpToolCallApprovalParams.schema.json"),
+        &schema_for!(McpToolCallApprovalParams),
+    )?;
+    write_schema(
+        out_dir.join("McpToolCallApprovalResponse.schema.json"),
+        &schema_for!(McpToolCallApprovalResponse),
+    )?;
+    write_schema(
         out_dir.join("FileChangeKind.schema.json"),
         &schema_for!(FileChangeKind),
     )?;
@@ -194,6 +210,10 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("ToolResult.schema.json"),
         &schema_for!(ToolResult),
+    )?;
+    write_schema(
+        out_dir.join("McpToolResult.schema.json"),
+        &schema_for!(McpToolResult),
     )?;
     write_schema(out_dir.join("Item.schema.json"), &schema_for!(Item))?;
     write_schema(

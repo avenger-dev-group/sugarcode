@@ -1,11 +1,18 @@
+mod call;
 mod inventory;
 mod process;
 mod protocol;
+mod result;
 mod transport;
 
+pub use call::McpCallErrorKind;
+pub use call::McpCallOutcome;
+pub use call::McpCallRequestState;
+pub use call::PreparedMcpCall;
 pub use inventory::McpServerInventory;
 pub use inventory::McpToolDefinition;
 pub use inventory::StdioServerSpec;
+pub use result::McpNormalizedResult;
 
 use std::error::Error;
 use std::fmt;
@@ -24,6 +31,10 @@ pub const MAX_MESSAGES: usize = 32;
 pub const MAX_JSON_DEPTH: usize = 32;
 pub const MAX_SCHEMA_DEPTH: usize = 16;
 pub const MAX_SCHEMA_NODES: usize = 2048;
+pub const MAX_CALL_ARGUMENT_BYTES: usize = 32 * 1024;
+pub const MAX_CALL_ARGUMENT_NODES: usize = 2048;
+pub const MAX_RESULT_CONTENT_BLOCKS: usize = 32;
+pub const MAX_STRUCTURED_RESULT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscoveryErrorKind {
@@ -82,6 +93,23 @@ impl Error for DiscoveryError {}
 
 pub async fn discover_stdio(spec: &StdioServerSpec) -> Result<McpServerInventory, DiscoveryError> {
     protocol::discover(spec).await
+}
+
+pub fn prepare_call(
+    inventory: &McpServerInventory,
+    callable_name: &str,
+    arguments: serde_json::Value,
+) -> Result<PreparedMcpCall, McpCallErrorKind> {
+    call::prepare(inventory, callable_name, arguments)
+}
+
+pub async fn call_stdio(
+    spec: &StdioServerSpec,
+    inventory: &McpServerInventory,
+    call: &PreparedMcpCall,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> McpCallOutcome {
+    call::execute(spec, inventory, call, cancellation).await
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use crate::approval::PendingCommandApproval;
+use crate::approval::PendingMcpToolApproval;
 use crate::event_mapping::EventMappingError;
 use crate::event_mapping::map_core_event;
 use crate::event_mapping::map_fork_snapshot;
@@ -37,6 +38,9 @@ use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcRequest;
 use sugarcode_app_server_protocol::JsonRpcResponse;
 use sugarcode_app_server_protocol::JsonRpcVersion;
+use sugarcode_app_server_protocol::McpToolCallApprovalParams;
+use sugarcode_app_server_protocol::McpToolCallApprovalResponse;
+use sugarcode_app_server_protocol::McpToolCallApprovalResponseDecision;
 use sugarcode_app_server_protocol::PROTOCOL_VERSION;
 use sugarcode_app_server_protocol::PlatformInfo;
 use sugarcode_app_server_protocol::RequestId;
@@ -67,6 +71,8 @@ use sugarcode_core::CommandApprovalOutcome;
 use sugarcode_core::Core;
 use sugarcode_core::CoreApi;
 use sugarcode_core::CoreError;
+use sugarcode_core::McpToolApprovalOutcome;
+use sugarcode_core::McpToolCapability;
 use sugarcode_core::TurnInterruptOutcome;
 use sugarcode_core::TurnStartOutcome;
 use sugarcode_protocol::CoreEventKind;
@@ -85,9 +91,14 @@ pub enum SessionState {
 }
 
 #[derive(Debug)]
-struct PendingApprovalResponse {
-    response: oneshot::Sender<CommandApprovalOutcome>,
-    workspace_write_risk: Option<CommandWorkspaceWriteRisk>,
+enum PendingApprovalResponse {
+    Command {
+        response: oneshot::Sender<CommandApprovalOutcome>,
+        workspace_write_risk: Option<CommandWorkspaceWriteRisk>,
+    },
+    Mcp {
+        response: oneshot::Sender<McpToolApprovalOutcome>,
+    },
 }
 
 #[derive(Debug)]
@@ -99,6 +110,8 @@ pub struct Session<C = Core> {
     pending_approvals: HashMap<RequestId, PendingApprovalResponse>,
     command_approvals: bool,
     command_workspace_write_approvals: bool,
+    mcp_tool_call_approvals: bool,
+    mcp_capability: Option<McpToolCapability>,
     last_core_request_sequence: u64,
 }
 
@@ -127,8 +140,16 @@ where
             pending_approvals: HashMap::new(),
             command_approvals: false,
             command_workspace_write_approvals: false,
+            mcp_tool_call_approvals: false,
+            mcp_capability: None,
             last_core_request_sequence: 0,
         }
+    }
+
+    pub(crate) fn with_core_and_mcp_capability(core: C, capability: McpToolCapability) -> Self {
+        let mut session = Self::with_core(core);
+        session.mcp_capability = Some(capability);
+        session
     }
 
     pub fn state(&self) -> SessionState {
@@ -169,6 +190,9 @@ where
     }
 
     pub fn shutdown(&mut self) -> futures_util::future::BoxFuture<'static, Result<(), CoreError>> {
+        if let Some(capability) = self.mcp_capability.as_ref() {
+            capability.set_enabled(false);
+        }
         self.pending_approvals.clear();
         self.core.shutdown()
     }
@@ -230,7 +254,7 @@ where
         };
         self.pending_approvals.insert(
             id.clone(),
-            PendingApprovalResponse {
+            PendingApprovalResponse::Command {
                 response: pending.response,
                 workspace_write_risk,
             },
@@ -240,6 +264,44 @@ where
             id,
             method: "item/commandExecution/requestApproval".to_string(),
             params: Some(serde_json::to_value(params).expect("approval params must serialize")),
+        }))
+    }
+
+    pub(crate) fn process_mcp_approval_request(
+        &mut self,
+        pending: PendingMcpToolApproval,
+    ) -> Option<JsonRpcMessage> {
+        if self.state != SessionState::Ready || !self.mcp_tool_call_approvals {
+            let _ = pending.response.send(McpToolApprovalOutcome::Unsupported);
+            return None;
+        }
+        let id = RequestId::String(pending.request.approval_id.clone());
+        if self.pending_approvals.contains_key(&id) {
+            let _ = pending.response.send(McpToolApprovalOutcome::Unsupported);
+            return None;
+        }
+        let params = McpToolCallApprovalParams {
+            approval_id: pending.request.approval_id,
+            thread_id: pending.request.thread_id.into_string(),
+            turn_id: pending.request.turn_id.into_string(),
+            call_id: pending.request.call_id,
+            name: pending.request.name,
+            arguments: pending.request.arguments,
+            arguments_bytes: pending.request.arguments_bytes,
+            arguments_sha256: pending.request.arguments_sha256,
+            inventory_sha256: pending.request.inventory_sha256,
+        };
+        self.pending_approvals.insert(
+            id.clone(),
+            PendingApprovalResponse::Mcp {
+                response: pending.response,
+            },
+        );
+        Some(JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: JsonRpcVersion::V2,
+            id,
+            method: "item/mcpToolCall/requestApproval".to_string(),
+            params: Some(serde_json::to_value(params).expect("MCP approval params serialize")),
         }))
     }
 
@@ -459,23 +521,52 @@ where
         let Some(pending) = self.pending_approvals.remove(&id) else {
             return;
         };
-        let outcome = if let Some(result) = object.get("result") {
-            serde_json::from_value::<CommandApprovalResponse>(result.clone())
-                .map(|response| match response.decision {
-                    CommandApprovalResponseDecision::Approved
-                        if response.workspace_write_risk_acknowledgement
-                            == pending.workspace_write_risk =>
-                    {
-                        CommandApprovalOutcome::Approved
-                    }
-                    CommandApprovalResponseDecision::Approved => CommandApprovalOutcome::Denied,
-                    CommandApprovalResponseDecision::Denied => CommandApprovalOutcome::Denied,
-                })
-                .unwrap_or(CommandApprovalOutcome::Denied)
-        } else {
-            CommandApprovalOutcome::Denied
-        };
-        let _ = pending.response.send(outcome);
+        match pending {
+            PendingApprovalResponse::Command {
+                response,
+                workspace_write_risk,
+            } => {
+                let outcome = if let Some(result) = object.get("result") {
+                    serde_json::from_value::<CommandApprovalResponse>(result.clone())
+                        .map(|response| match response.decision {
+                            CommandApprovalResponseDecision::Approved
+                                if response.workspace_write_risk_acknowledgement
+                                    == workspace_write_risk =>
+                            {
+                                CommandApprovalOutcome::Approved
+                            }
+                            CommandApprovalResponseDecision::Approved => {
+                                CommandApprovalOutcome::Denied
+                            }
+                            CommandApprovalResponseDecision::Denied => {
+                                CommandApprovalOutcome::Denied
+                            }
+                        })
+                        .unwrap_or(CommandApprovalOutcome::Denied)
+                } else {
+                    CommandApprovalOutcome::Denied
+                };
+                let _ = response.send(outcome);
+            }
+            PendingApprovalResponse::Mcp { response } => {
+                let outcome = object
+                    .get("result")
+                    .and_then(|result| {
+                        serde_json::from_value::<McpToolCallApprovalResponse>(result.clone()).ok()
+                    })
+                    .map_or(McpToolApprovalOutcome::Denied, |response| {
+                        match response.decision {
+                            McpToolCallApprovalResponseDecision::Approved => {
+                                McpToolApprovalOutcome::Approved
+                            }
+                            McpToolCallApprovalResponseDecision::Denied => {
+                                McpToolApprovalOutcome::Denied
+                            }
+                        }
+                    });
+                let _ = response.send(outcome);
+            }
+        }
     }
 }
 

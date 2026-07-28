@@ -85,6 +85,144 @@ fn request_ids_support_strings_and_integers() {
 }
 
 #[test]
+fn mcp_approval_protocol_is_provider_neutral_strict_and_json_capable() {
+    let params = sugarcode_app_server_protocol::McpToolCallApprovalParams {
+        approval_id: "approval/mcp".to_string(),
+        thread_id: "thr_0000000000000001".to_string(),
+        turn_id: "turn_0000000000000001".to_string(),
+        call_id: "call_mcp".to_string(),
+        name: "mcp__fixture__inspect".to_string(),
+        arguments: json!({"array": [true, null, 7], "object": {"z": "value"}}),
+        arguments_bytes: 52,
+        arguments_sha256: "a".repeat(64),
+        inventory_sha256: "b".repeat(64),
+    };
+    let value = serde_json::to_value(&params).expect("params serialize");
+    assert_eq!(value["name"], "mcp__fixture__inspect");
+    assert_eq!(
+        value["arguments"],
+        json!({"array": [true, null, 7], "object": {"z": "value"}})
+    );
+    assert_eq!(
+        serde_json::from_value::<sugarcode_app_server_protocol::McpToolCallApprovalParams>(
+            value.clone()
+        )
+        .expect("round trip"),
+        params
+    );
+    let mut unknown = value;
+    unknown["serverExecutable"] = json!("/private/server");
+    assert!(
+        serde_json::from_value::<sugarcode_app_server_protocol::McpToolCallApprovalParams>(unknown)
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<sugarcode_app_server_protocol::McpToolCallApprovalResponse>(
+            json!({"decision": "approved", "remember": true})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn mcp_approval_bidirectional_fixtures_match_public_types() {
+    let request: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../protocol-fixtures/app-server/v1/mcp-tool-call-approval.request.json"
+    ))
+    .expect("request fixture");
+    assert_eq!(request["method"], "item/mcpToolCall/requestApproval");
+    serde_json::from_value::<sugarcode_app_server_protocol::McpToolCallApprovalParams>(
+        request["params"].clone(),
+    )
+    .expect("request params fixture");
+
+    let response: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../protocol-fixtures/app-server/v1/mcp-tool-call-approval.response.json"
+    ))
+    .expect("response fixture");
+    assert_eq!(response["id"], request["id"]);
+    assert_eq!(
+        serde_json::from_value::<sugarcode_app_server_protocol::McpToolCallApprovalResponse>(
+            response["result"].clone(),
+        )
+        .expect("response fixture")
+        .decision,
+        sugarcode_app_server_protocol::McpToolCallApprovalResponseDecision::Approved
+    );
+}
+
+#[test]
+fn mcp_items_keep_call_approval_attempt_and_result_distinct() {
+    let items = [
+        Item::McpToolCall {
+            id: "item_0000000000000001".to_string(),
+            call_id: "call_mcp".to_string(),
+            name: "mcp__fixture__inspect".to_string(),
+            arguments: json!({"value": ["arbitrary", 2]}),
+            arguments_bytes: 25,
+            arguments_sha256: "a".repeat(64),
+            inventory_sha256: "b".repeat(64),
+        },
+        Item::McpToolCallApprovalRequest {
+            id: "item_0000000000000002".to_string(),
+            approval_id: "approval/mcp".to_string(),
+            call_id: "call_mcp".to_string(),
+            name: "mcp__fixture__inspect".to_string(),
+            arguments: json!({"value": ["arbitrary", 2]}),
+            arguments_bytes: 25,
+            arguments_sha256: "a".repeat(64),
+            inventory_sha256: "b".repeat(64),
+        },
+        Item::McpToolCallApprovalDecision {
+            id: "item_0000000000000003".to_string(),
+            approval_id: "approval/mcp".to_string(),
+            decision: "approved".to_string(),
+        },
+        Item::McpToolExecutionAttempt {
+            id: "item_0000000000000004".to_string(),
+            approval_id: "approval/mcp".to_string(),
+            call_id: "call_mcp".to_string(),
+            inventory_sha256: "b".repeat(64),
+        },
+        Item::McpToolResult {
+            id: "item_0000000000000005".to_string(),
+            call_id: "call_mcp".to_string(),
+            name: "mcp__fixture__inspect".to_string(),
+            result: sugarcode_app_server_protocol::McpToolResult::Completed {
+                content: r#"{"isError":false,"text":["called"]}"#.to_string(),
+                is_error: false,
+                observed_bytes: 128,
+                canonical_bytes: 39,
+                retained_bytes: 39,
+                truncated: false,
+                sha256: "c".repeat(64),
+                content_blocks: 1,
+                structured_content: false,
+            },
+        },
+    ];
+    let types = items
+        .iter()
+        .map(|item| {
+            let value = serde_json::to_value(item).expect("item serializes");
+            let decoded = serde_json::from_value::<Item>(value.clone()).expect("item round trip");
+            assert_eq!(&decoded, item);
+            value["type"].as_str().expect("item type").to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        types,
+        [
+            "mcpToolCall",
+            "mcpToolCallApprovalRequest",
+            "mcpToolCallApprovalDecision",
+            "mcpToolExecutionAttempt",
+            "mcpToolResult",
+        ]
+    );
+}
+
+#[test]
 fn file_change_item_serializes_a_bounded_update_review() {
     let item = Item::FileChange {
         id: "item_0000000000000003".to_string(),

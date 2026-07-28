@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpToolCallApprovalParams",
+  "type": "object",
+  "properties": {
+    "approvalId": {
+      "type": "string"
+    },
+    "arguments": true,
+    "argumentsBytes": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "argumentsSha256": {
+      "type": "string"
+    },
+    "callId": {
+      "type": "string"
+    },
+    "inventorySha256": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "approvalId",
+    "threadId",
+    "turnId",
+    "callId",
+    "name",
+    "arguments",
+    "argumentsBytes",
+    "argumentsSha256",
+    "inventorySha256"
+  ]
+}

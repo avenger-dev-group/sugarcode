@@ -340,6 +340,26 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                     DurableItemSnapshot::CommandExecutionAttempt { .. },
                 )
                 | (
+                    DurableItemSnapshot::McpToolCall { .. },
+                    DurableItemSnapshot::McpToolCall { .. },
+                )
+                | (
+                    DurableItemSnapshot::McpToolCallApprovalRequest { .. },
+                    DurableItemSnapshot::McpToolCallApprovalRequest { .. },
+                )
+                | (
+                    DurableItemSnapshot::McpToolCallApprovalDecision { .. },
+                    DurableItemSnapshot::McpToolCallApprovalDecision { .. },
+                )
+                | (
+                    DurableItemSnapshot::McpToolExecutionAttempt { .. },
+                    DurableItemSnapshot::McpToolExecutionAttempt { .. },
+                )
+                | (
+                    DurableItemSnapshot::McpToolResult { .. },
+                    DurableItemSnapshot::McpToolResult { .. },
+                )
+                | (
                     DurableItemSnapshot::FileChange { .. },
                     DurableItemSnapshot::FileChange { .. },
                 ) => started == terminal,

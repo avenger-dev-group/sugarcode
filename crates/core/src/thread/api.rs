@@ -319,6 +319,73 @@ impl CoreApi for Core {
                         approval_id: approval_id.clone(),
                         call_id: call_id.clone(),
                     },
+                    DurableItemSnapshot::McpToolCall {
+                        call_id,
+                        name,
+                        arguments,
+                        arguments_bytes,
+                        arguments_sha256,
+                        inventory_sha256,
+                        ..
+                    } => DurableItemSnapshot::McpToolCall {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                        arguments_bytes: *arguments_bytes,
+                        arguments_sha256: arguments_sha256.clone(),
+                        inventory_sha256: inventory_sha256.clone(),
+                    },
+                    DurableItemSnapshot::McpToolCallApprovalRequest {
+                        approval_id,
+                        call_id,
+                        name,
+                        arguments,
+                        arguments_bytes,
+                        arguments_sha256,
+                        inventory_sha256,
+                        ..
+                    } => DurableItemSnapshot::McpToolCallApprovalRequest {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        approval_id: approval_id.clone(),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                        arguments_bytes: *arguments_bytes,
+                        arguments_sha256: arguments_sha256.clone(),
+                        inventory_sha256: inventory_sha256.clone(),
+                    },
+                    DurableItemSnapshot::McpToolCallApprovalDecision {
+                        approval_id,
+                        decision,
+                        ..
+                    } => DurableItemSnapshot::McpToolCallApprovalDecision {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        approval_id: approval_id.clone(),
+                        decision: decision.clone(),
+                    },
+                    DurableItemSnapshot::McpToolExecutionAttempt {
+                        approval_id,
+                        call_id,
+                        inventory_sha256,
+                        ..
+                    } => DurableItemSnapshot::McpToolExecutionAttempt {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        approval_id: approval_id.clone(),
+                        call_id: call_id.clone(),
+                        inventory_sha256: inventory_sha256.clone(),
+                    },
+                    DurableItemSnapshot::McpToolResult {
+                        call_id,
+                        name,
+                        result,
+                        ..
+                    } => DurableItemSnapshot::McpToolResult {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        result: result.clone(),
+                    },
                     DurableItemSnapshot::ToolResult {
                         call_id,
                         name,

@@ -580,6 +580,26 @@ fn terminal_items_match(
                     super::DurableItemSnapshot::CommandExecutionAttempt { .. },
                 )
                 | (
+                    super::DurableItemSnapshot::McpToolCall { .. },
+                    super::DurableItemSnapshot::McpToolCall { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::McpToolCallApprovalRequest { .. },
+                    super::DurableItemSnapshot::McpToolCallApprovalRequest { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::McpToolCallApprovalDecision { .. },
+                    super::DurableItemSnapshot::McpToolCallApprovalDecision { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::McpToolExecutionAttempt { .. },
+                    super::DurableItemSnapshot::McpToolExecutionAttempt { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::McpToolResult { .. },
+                    super::DurableItemSnapshot::McpToolResult { .. },
+                )
+                | (
                     super::DurableItemSnapshot::FileChange { .. },
                     super::DurableItemSnapshot::FileChange { .. },
                 ) => started == terminal,

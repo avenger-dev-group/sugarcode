@@ -10,6 +10,8 @@ use crate::MAX_TOOL_NAME_BYTES;
 use crate::MAX_TOOL_SCHEMA_BYTES;
 use serde_json::Map;
 use serde_json::Value;
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -68,6 +70,7 @@ pub struct McpServerInventory {
     server_name: String,
     server_version: String,
     tools: Vec<McpToolDefinition>,
+    canonical_sha256: String,
 }
 
 impl McpServerInventory {
@@ -85,6 +88,23 @@ impl McpServerInventory {
 
     pub fn tools(&self) -> &[McpToolDefinition] {
         &self.tools
+    }
+
+    pub fn canonical_sha256(&self) -> &str {
+        &self.canonical_sha256
+    }
+
+    pub fn callable_name(&self, raw_name: &str) -> Option<String> {
+        self.tools
+            .iter()
+            .any(|tool| tool.name == raw_name)
+            .then(|| format!("mcp__{}__{raw_name}", self.server_id))
+    }
+
+    pub fn tool_for_callable(&self, callable_name: &str) -> Option<&McpToolDefinition> {
+        let prefix = format!("mcp__{}__", self.server_id);
+        let raw_name = callable_name.strip_prefix(&prefix)?;
+        self.tools.iter().find(|tool| tool.name == raw_name)
     }
 
     pub(crate) fn from_protocol(
@@ -121,13 +141,36 @@ impl McpServerInventory {
         }
         tools.sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
 
+        let canonical_sha256 =
+            canonical_inventory_sha256(server_id, &server_name, &server_version, &tools)
+                .map_err(|()| invalid(server_id))?;
         Ok(Self {
             server_id: server_id.to_owned(),
             server_name,
             server_version,
             tools,
+            canonical_sha256,
         })
     }
+}
+
+fn canonical_inventory_sha256(
+    server_id: &str,
+    server_name: &str,
+    server_version: &str,
+    tools: &[McpToolDefinition],
+) -> Result<String, ()> {
+    let value = serde_json::json!({
+        "protocolVersion": crate::MCP_PROTOCOL_VERSION,
+        "serverId": server_id,
+        "serverInfo": {
+            "name": server_name,
+            "version": server_version,
+        },
+        "tools": tools.iter().map(canonical_tool_value).collect::<Vec<_>>(),
+    });
+    let bytes = serde_json::to_vec(&value).map_err(|_| ())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn parse_tool(server_id: &str, value: Value) -> Result<McpToolDefinition, DiscoveryError> {

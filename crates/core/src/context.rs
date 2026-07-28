@@ -29,6 +29,22 @@ pub(crate) fn prepared_message_bytes(message: &PreparedMessage) -> usize {
         PreparedMessage::ToolResult { call_id, content } => {
             call_id.len().saturating_add(content.len())
         }
+        PreparedMessage::McpToolCall {
+            call_id,
+            name,
+            arguments,
+        } => serde_json::to_vec(arguments)
+            .ok()
+            .and_then(|arguments| {
+                call_id
+                    .len()
+                    .checked_add(name.len())
+                    .and_then(|total| total.checked_add(arguments.len()))
+            })
+            .unwrap_or(usize::MAX),
+        PreparedMessage::McpToolResult { call_id, content } => {
+            call_id.len().saturating_add(content.len())
+        }
     }
 }
 

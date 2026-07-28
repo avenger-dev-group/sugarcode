@@ -1,7 +1,10 @@
 use super::*;
 use crate::approval::PendingCommandApproval;
+use crate::approval::PendingMcpToolApproval;
 use sugarcode_core::CommandApprovalOutcome;
 use sugarcode_core::CommandApprovalRequest;
+use sugarcode_core::McpToolApprovalOutcome;
+use sugarcode_core::McpToolApprovalRequest;
 use tokio::sync::oneshot;
 
 #[tokio::test]
@@ -219,6 +222,90 @@ async fn read_only_approval_remains_backward_compatible_without_risk_acknowledge
     );
 }
 
+#[tokio::test]
+async fn mcp_approval_requires_explicit_client_capability() {
+    let capability = sugarcode_core::McpToolCapability::default();
+    let mut session = Session::with_core_and_mcp_capability(Core::new(), capability.clone());
+    assert_eq!(session.process_line(&initialize_line(1)).len(), 1);
+    assert!(
+        session
+            .process_line(r#"{"jsonrpc":"2.0","method":"initialized"}"#)
+            .is_empty()
+    );
+    assert!(!capability.is_enabled());
+
+    let (response, receiver) = oneshot::channel();
+    assert!(
+        session
+            .process_mcp_approval_request(PendingMcpToolApproval {
+                request: mcp_request("approval/mcp-hidden"),
+                response,
+            })
+            .is_none()
+    );
+    assert_eq!(
+        receiver.await.expect("unsupported response"),
+        McpToolApprovalOutcome::Unsupported
+    );
+}
+
+#[tokio::test]
+async fn mcp_approval_correlates_exact_request_and_defaults_malformed_response_to_deny() {
+    for (result, expected) in [
+        (
+            r#"{"decision":"approved"}"#,
+            McpToolApprovalOutcome::Approved,
+        ),
+        (
+            r#"{"decision":"approved","unexpected":true}"#,
+            McpToolApprovalOutcome::Denied,
+        ),
+    ] {
+        let capability = sugarcode_core::McpToolCapability::default();
+        let mut session = Session::with_core_and_mcp_capability(Core::new(), capability.clone());
+        assert_eq!(
+            session
+                .process_line(
+                    r#"{"jsonrpc":"2.0","id":"init-mcp","method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{"mcpToolCallApprovals":true}}}"#,
+                )
+                .len(),
+            1
+        );
+        assert!(
+            session
+                .process_line(r#"{"jsonrpc":"2.0","method":"initialized"}"#)
+                .is_empty()
+        );
+        assert!(capability.is_enabled());
+
+        let (response, receiver) = oneshot::channel();
+        let message = session
+            .process_mcp_approval_request(PendingMcpToolApproval {
+                request: mcp_request("approval/mcp-one"),
+                response,
+            })
+            .expect("server request");
+        let JsonRpcMessage::Request(request) = message else {
+            panic!("expected server request");
+        };
+        assert_eq!(
+            request.id,
+            RequestId::String("approval/mcp-one".to_string())
+        );
+        assert_eq!(request.method, "item/mcpToolCall/requestApproval");
+        let params = request.params.expect("approval params");
+        assert_eq!(params["name"], "mcp__fixture__inspect");
+        assert_eq!(params["arguments"], json!({"value": ["arbitrary", 2]}));
+        assert_eq!(params["argumentsBytes"], 25);
+        assert_eq!(params["argumentsSha256"], "a".repeat(64));
+        assert_eq!(params["inventorySha256"], "b".repeat(64));
+
+        let line = format!(r#"{{"jsonrpc":"2.0","id":"approval/mcp-one","result":{result}}}"#);
+        assert!(session.process_line(&line).is_empty());
+        assert_eq!(receiver.await.expect("approval response"), expected);
+    }
+}
+
 fn approval_ready_session() -> Session<Core> {
     let mut session = Session::new();
     assert_eq!(
@@ -274,5 +361,19 @@ fn request(approval_id: &str) -> CommandApprovalRequest {
         workspace_write_policy: None,
         workspace_write_risk: None,
         network_policy: sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1,
+    }
+}
+
+fn mcp_request(approval_id: &str) -> McpToolApprovalRequest {
+    McpToolApprovalRequest {
+        approval_id: approval_id.to_string(),
+        thread_id: ThreadId::new("thr_0000000000000001"),
+        turn_id: TurnId::new("turn_0000000000000001"),
+        call_id: "call_mcp".to_string(),
+        name: "mcp__fixture__inspect".to_string(),
+        arguments: json!({"value": ["arbitrary", 2]}),
+        arguments_bytes: 25,
+        arguments_sha256: "a".repeat(64),
+        inventory_sha256: "b".repeat(64),
     }
 }

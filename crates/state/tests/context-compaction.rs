@@ -3,6 +3,7 @@ use sha2::Sha256;
 use sugarcode_protocol::ItemId;
 use sugarcode_protocol::TurnId;
 use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableMcpToolResult;
 use sugarcode_state::DurableToolResult;
 use sugarcode_state::DurableTurnSnapshot;
 use sugarcode_state::DurableTurnStatus;
@@ -83,6 +84,71 @@ fn tool_history_becomes_a_deterministic_receipt_without_raw_output() {
     assert!(!first.message.contains(raw_output));
     assert!(!first.message.contains("audit-only"));
     assert!(validate_context_compaction(&[turn], &first));
+}
+
+#[test]
+fn mcp_history_keeps_canonical_arguments_and_result_receipt_but_drops_raw_result() {
+    let arguments = serde_json::json!({"path": "public/fixture.txt", "nested": [true, 2]});
+    let argument_bytes = serde_json::to_vec(&arguments).expect("arguments");
+    let raw_result = "private MCP result that must not survive compaction";
+    let turn = completed_turn(vec![
+        DurableItemSnapshot::McpToolCall {
+            id: ItemId::new("item_0000000000000001"),
+            call_id: "call_mcp".to_string(),
+            name: "mcp__fixture__inspect".to_string(),
+            arguments: arguments.clone(),
+            arguments_bytes: argument_bytes.len() as u64,
+            arguments_sha256: format!("{:x}", Sha256::digest(&argument_bytes)),
+            inventory_sha256: "b".repeat(64),
+        },
+        DurableItemSnapshot::McpToolCallApprovalRequest {
+            id: ItemId::new("item_0000000000000002"),
+            approval_id: "approval/mcp".to_string(),
+            call_id: "call_mcp".to_string(),
+            name: "mcp__fixture__inspect".to_string(),
+            arguments: arguments.clone(),
+            arguments_bytes: argument_bytes.len() as u64,
+            arguments_sha256: format!("{:x}", Sha256::digest(&argument_bytes)),
+            inventory_sha256: "b".repeat(64),
+        },
+        DurableItemSnapshot::McpToolCallApprovalDecision {
+            id: ItemId::new("item_0000000000000003"),
+            approval_id: "approval/mcp".to_string(),
+            decision: "approved".to_string(),
+        },
+        DurableItemSnapshot::McpToolExecutionAttempt {
+            id: ItemId::new("item_0000000000000004"),
+            approval_id: "approval/mcp".to_string(),
+            call_id: "call_mcp".to_string(),
+            inventory_sha256: "b".repeat(64),
+        },
+        DurableItemSnapshot::McpToolResult {
+            id: ItemId::new("item_0000000000000005"),
+            call_id: "call_mcp".to_string(),
+            name: "mcp__fixture__inspect".to_string(),
+            result: DurableMcpToolResult::Completed {
+                content: raw_result.to_string(),
+                is_error: false,
+                observed_bytes: 128,
+                canonical_bytes: raw_result.len() as u64,
+                retained_bytes: raw_result.len() as u64,
+                truncated: false,
+                sha256: format!("{:x}", Sha256::digest(raw_result.as_bytes())),
+                content_blocks: 1,
+                structured_content: false,
+            },
+        },
+    ]);
+
+    let compaction = build_context_compaction(std::slice::from_ref(&turn), 4_000_000, 30_000)
+        .expect("compaction");
+    assert!(compaction.message.contains("\"type\":\"mcpTool\""));
+    assert!(compaction.message.contains("\"arguments\":"));
+    assert!(compaction.message.contains("public/fixture.txt"));
+    assert!(compaction.message.contains("\"observedBytes\":128"));
+    assert!(compaction.message.contains("\"sha256\":"));
+    assert!(!compaction.message.contains(raw_result));
+    assert!(validate_context_compaction(&[turn], &compaction));
 }
 
 #[test]

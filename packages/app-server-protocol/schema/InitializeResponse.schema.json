@@ -52,6 +52,12 @@
         },
         "commandWorkspaceWriteApprovals": {
           "type": "boolean"
+        },
+        "mcpToolCallApprovals": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [

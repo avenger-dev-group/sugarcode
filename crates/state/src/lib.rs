@@ -31,6 +31,7 @@ pub use home::resolve_sugarcode_home_from_process;
 pub use rollout::DurableContextCompaction;
 pub use rollout::DurableContextCompactionStrategy;
 pub use rollout::DurableItemSnapshot;
+pub use rollout::DurableMcpToolResult;
 pub use rollout::DurableProcessOutcome;
 pub use rollout::DurableProcessResult;
 pub use rollout::DurableThreadLifecycle;

@@ -80,10 +80,60 @@ pub enum CoreItemKind {
         approval_id: String,
         call_id: String,
     },
+    McpToolCall {
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+        arguments_bytes: u64,
+        arguments_sha256: String,
+        inventory_sha256: String,
+    },
+    McpToolCallApprovalRequest {
+        approval_id: String,
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+        arguments_bytes: u64,
+        arguments_sha256: String,
+        inventory_sha256: String,
+    },
+    McpToolCallApprovalDecision {
+        approval_id: String,
+        decision: CoreCommandApprovalDecision,
+    },
+    McpToolExecutionAttempt {
+        approval_id: String,
+        call_id: String,
+        inventory_sha256: String,
+    },
+    McpToolResult {
+        call_id: String,
+        name: String,
+        result: CoreMcpToolResult,
+    },
     ToolResult {
         call_id: String,
         name: String,
         result: CoreToolResult,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreMcpToolResult {
+    Completed {
+        content: String,
+        is_error: bool,
+        observed_bytes: u64,
+        canonical_bytes: u64,
+        retained_bytes: u64,
+        truncated: bool,
+        sha256: String,
+        content_blocks: u64,
+        structured_content: bool,
+    },
+    Error {
+        kind: String,
+        request_state: String,
     },
 }
 

@@ -102,6 +102,68 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             approval_id: approval_id.clone(),
             call_id: call_id.clone(),
         },
+        CoreItemKind::McpToolCall {
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+        } => DurableItemSnapshot::McpToolCall {
+            id: item.id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+            arguments_bytes: *arguments_bytes,
+            arguments_sha256: arguments_sha256.clone(),
+            inventory_sha256: inventory_sha256.clone(),
+        },
+        CoreItemKind::McpToolCallApprovalRequest {
+            approval_id,
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+        } => DurableItemSnapshot::McpToolCallApprovalRequest {
+            id: item.id.clone(),
+            approval_id: approval_id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+            arguments_bytes: *arguments_bytes,
+            arguments_sha256: arguments_sha256.clone(),
+            inventory_sha256: inventory_sha256.clone(),
+        },
+        CoreItemKind::McpToolCallApprovalDecision {
+            approval_id,
+            decision,
+        } => DurableItemSnapshot::McpToolCallApprovalDecision {
+            id: item.id.clone(),
+            approval_id: approval_id.clone(),
+            decision: decision.to_string(),
+        },
+        CoreItemKind::McpToolExecutionAttempt {
+            approval_id,
+            call_id,
+            inventory_sha256,
+        } => DurableItemSnapshot::McpToolExecutionAttempt {
+            id: item.id.clone(),
+            approval_id: approval_id.clone(),
+            call_id: call_id.clone(),
+            inventory_sha256: inventory_sha256.clone(),
+        },
+        CoreItemKind::McpToolResult {
+            call_id,
+            name,
+            result,
+        } => DurableItemSnapshot::McpToolResult {
+            id: item.id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            result: durable_mcp_tool_result(result),
+        },
         CoreItemKind::ToolResult {
             call_id,
             name,
@@ -200,6 +262,63 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
             approval_id: approval_id.clone(),
             call_id: call_id.clone(),
         },
+        CoreItemKind::McpToolCall {
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+        } => ItemKind::McpToolCall {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+            arguments_bytes: *arguments_bytes,
+            arguments_sha256: arguments_sha256.clone(),
+            inventory_sha256: inventory_sha256.clone(),
+        },
+        CoreItemKind::McpToolCallApprovalRequest {
+            approval_id,
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+        } => ItemKind::McpToolCallApprovalRequest {
+            approval_id: approval_id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+            arguments_bytes: *arguments_bytes,
+            arguments_sha256: arguments_sha256.clone(),
+            inventory_sha256: inventory_sha256.clone(),
+        },
+        CoreItemKind::McpToolCallApprovalDecision {
+            approval_id,
+            decision,
+        } => ItemKind::McpToolCallApprovalDecision {
+            approval_id: approval_id.clone(),
+            decision: *decision,
+        },
+        CoreItemKind::McpToolExecutionAttempt {
+            approval_id,
+            call_id,
+            inventory_sha256,
+        } => ItemKind::McpToolExecutionAttempt {
+            approval_id: approval_id.clone(),
+            call_id: call_id.clone(),
+            inventory_sha256: inventory_sha256.clone(),
+        },
+        CoreItemKind::McpToolResult {
+            call_id,
+            name,
+            result,
+        } => ItemKind::McpToolResult {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            result: result.clone(),
+        },
         CoreItemKind::ToolResult {
             call_id,
             name,
@@ -214,6 +333,41 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
         id: snapshot.id.clone(),
         state,
         kind,
+    }
+}
+
+fn durable_mcp_tool_result(
+    result: &sugarcode_protocol::CoreMcpToolResult,
+) -> sugarcode_state::DurableMcpToolResult {
+    match result {
+        sugarcode_protocol::CoreMcpToolResult::Completed {
+            content,
+            is_error,
+            observed_bytes,
+            canonical_bytes,
+            retained_bytes,
+            truncated,
+            sha256,
+            content_blocks,
+            structured_content,
+        } => sugarcode_state::DurableMcpToolResult::Completed {
+            content: content.clone(),
+            is_error: *is_error,
+            observed_bytes: *observed_bytes,
+            canonical_bytes: *canonical_bytes,
+            retained_bytes: *retained_bytes,
+            truncated: *truncated,
+            sha256: sha256.clone(),
+            content_blocks: *content_blocks,
+            structured_content: *structured_content,
+        },
+        sugarcode_protocol::CoreMcpToolResult::Error {
+            kind,
+            request_state,
+        } => sugarcode_state::DurableMcpToolResult::Error {
+            kind: kind.clone(),
+            request_state: request_state.clone(),
+        },
     }
 }
 

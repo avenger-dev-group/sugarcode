@@ -17,6 +17,7 @@ pub use item::CoreFileChangeKind;
 pub use item::CoreFileChangeNewlineStyle;
 pub use item::CoreItemKind;
 pub use item::CoreItemSnapshot;
+pub use item::CoreMcpToolResult;
 pub use item::CoreProcessOutcome;
 pub use item::CoreProcessResult;
 pub use item::CoreToolErrorKind;

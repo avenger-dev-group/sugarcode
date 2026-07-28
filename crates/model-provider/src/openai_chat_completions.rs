@@ -19,7 +19,11 @@ use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::MapAccess;
+use serde::de::SeqAccess;
+use serde::de::Visitor;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
 use std::time::Duration;
@@ -641,7 +645,7 @@ impl ToolCallAssembler {
         if !self.saw_function || self.name.is_empty() || self.arguments.is_empty() {
             return Err(ModelError::new(ModelErrorKind::Protocol, false));
         }
-        let arguments: serde_json::Value = serde_json::from_str(&self.arguments)
+        let arguments = parse_json_without_duplicates(&self.arguments)
             .map_err(|_| ModelError::new(ModelErrorKind::Protocol, false))?;
         if !arguments.is_object() {
             return Err(ModelError::new(ModelErrorKind::Protocol, false));
@@ -652,6 +656,99 @@ impl ToolCallAssembler {
             arguments,
         })
     }
+}
+
+fn parse_json_without_duplicates(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    struct StrictValue(serde_json::Value);
+
+    impl<'de> Deserialize<'de> for StrictValue {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_any(StrictValueVisitor)
+        }
+    }
+
+    struct StrictValueVisitor;
+
+    impl<'de> Visitor<'de> for StrictValueVisitor {
+        type Value = StrictValue;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a JSON value without duplicate object fields")
+        }
+
+        fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+            Ok(StrictValue(serde_json::Value::Bool(value)))
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+            Ok(StrictValue(serde_json::Value::Number(value.into())))
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+            Ok(StrictValue(serde_json::Value::Number(value.into())))
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            serde_json::Number::from_f64(value)
+                .map(serde_json::Value::Number)
+                .map(StrictValue)
+                .ok_or_else(|| E::custom("non-finite JSON number"))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+            Ok(StrictValue(serde_json::Value::String(value.to_owned())))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+            Ok(StrictValue(serde_json::Value::String(value)))
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(StrictValue(serde_json::Value::Null))
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(StrictValue(serde_json::Value::Null))
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut values = Vec::new();
+            while let Some(value) = sequence.next_element::<StrictValue>()? {
+                values.push(value.0);
+            }
+            Ok(StrictValue(serde_json::Value::Array(values)))
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut fields = serde_json::Map::new();
+            let mut names = BTreeSet::new();
+            while let Some(name) = map.next_key::<String>()? {
+                if !names.insert(name.clone()) {
+                    return Err(serde::de::Error::custom("duplicate JSON object field"));
+                }
+                let value = map.next_value::<StrictValue>()?;
+                fields.insert(name, value.0);
+            }
+            Ok(StrictValue(serde_json::Value::Object(fields)))
+        }
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let value = StrictValue::deserialize(&mut deserializer)?.0;
+    deserializer.end()?;
+    Ok(value)
 }
 
 #[derive(Deserialize)]

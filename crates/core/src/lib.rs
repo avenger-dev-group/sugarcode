@@ -1,11 +1,23 @@
 mod approval;
 mod context;
+mod mcp;
 mod runtime;
 mod thread;
 
 pub use approval::CommandApprovalOutcome;
 pub use approval::CommandApprovalRequest;
 pub use approval::CommandApprovalRequester;
+pub use mcp::McpToolApprovalOutcome;
+pub use mcp::McpToolApprovalRequest;
+pub use mcp::McpToolApprovalRequester;
+pub use mcp::McpToolCapability;
+pub use mcp::McpToolExecutionError;
+pub use mcp::McpToolExecutionOutcome;
+pub use mcp::McpToolExecutionResult;
+pub use mcp::McpToolExecutor;
+pub use mcp::McpToolPrepareError;
+pub use mcp::McpToolRequestState;
+pub use mcp::PreparedMcpToolCall;
 pub use runtime::CoreRuntime;
 pub use thread::Core;
 pub use thread::CoreApi;

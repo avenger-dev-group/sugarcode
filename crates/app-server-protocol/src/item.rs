@@ -121,6 +121,72 @@ pub enum Item {
         #[ts(rename = "callId")]
         call_id: String,
     },
+    McpToolCall {
+        id: String,
+        #[serde(rename = "callId")]
+        #[ts(rename = "callId")]
+        call_id: String,
+        name: String,
+        #[ts(type = "JsonValue")]
+        arguments: serde_json::Value,
+        #[serde(rename = "argumentsBytes")]
+        #[ts(rename = "argumentsBytes")]
+        arguments_bytes: u64,
+        #[serde(rename = "argumentsSha256")]
+        #[ts(rename = "argumentsSha256")]
+        arguments_sha256: String,
+        #[serde(rename = "inventorySha256")]
+        #[ts(rename = "inventorySha256")]
+        inventory_sha256: String,
+    },
+    McpToolCallApprovalRequest {
+        id: String,
+        #[serde(rename = "approvalId")]
+        #[ts(rename = "approvalId")]
+        approval_id: String,
+        #[serde(rename = "callId")]
+        #[ts(rename = "callId")]
+        call_id: String,
+        name: String,
+        #[ts(type = "JsonValue")]
+        arguments: serde_json::Value,
+        #[serde(rename = "argumentsBytes")]
+        #[ts(rename = "argumentsBytes")]
+        arguments_bytes: u64,
+        #[serde(rename = "argumentsSha256")]
+        #[ts(rename = "argumentsSha256")]
+        arguments_sha256: String,
+        #[serde(rename = "inventorySha256")]
+        #[ts(rename = "inventorySha256")]
+        inventory_sha256: String,
+    },
+    McpToolCallApprovalDecision {
+        id: String,
+        #[serde(rename = "approvalId")]
+        #[ts(rename = "approvalId")]
+        approval_id: String,
+        decision: String,
+    },
+    McpToolExecutionAttempt {
+        id: String,
+        #[serde(rename = "approvalId")]
+        #[ts(rename = "approvalId")]
+        approval_id: String,
+        #[serde(rename = "callId")]
+        #[ts(rename = "callId")]
+        call_id: String,
+        #[serde(rename = "inventorySha256")]
+        #[ts(rename = "inventorySha256")]
+        inventory_sha256: String,
+    },
+    McpToolResult {
+        id: String,
+        #[serde(rename = "callId")]
+        #[ts(rename = "callId")]
+        call_id: String,
+        name: String,
+        result: McpToolResult,
+    },
     ToolResult {
         id: String,
         #[serde(rename = "callId")]
@@ -128,6 +194,27 @@ pub enum Item {
         call_id: String,
         name: String,
         result: ToolResult,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase")]
+pub enum McpToolResult {
+    Completed {
+        content: String,
+        is_error: bool,
+        observed_bytes: u64,
+        canonical_bytes: u64,
+        retained_bytes: u64,
+        truncated: bool,
+        sha256: String,
+        content_blocks: u64,
+        structured_content: bool,
+    },
+    Error {
+        kind: String,
+        request_state: String,
     },
 }
 

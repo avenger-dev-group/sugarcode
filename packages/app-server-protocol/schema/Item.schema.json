@@ -299,6 +299,170 @@
     {
       "type": "object",
       "properties": {
+        "arguments": true,
+        "argumentsBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "argumentsSha256": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inventorySha256": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "mcpToolCall"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "callId",
+        "name",
+        "arguments",
+        "argumentsBytes",
+        "argumentsSha256",
+        "inventorySha256"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "arguments": true,
+        "argumentsBytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "argumentsSha256": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inventorySha256": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "mcpToolCallApprovalRequest"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "approvalId",
+        "callId",
+        "name",
+        "arguments",
+        "argumentsBytes",
+        "argumentsSha256",
+        "inventorySha256"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "mcpToolCallApprovalDecision"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "approvalId",
+        "decision"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inventorySha256": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "mcpToolExecutionAttempt"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "approvalId",
+        "callId",
+        "inventorySha256"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/McpToolResult"
+        },
+        "type": {
+          "type": "string",
+          "const": "mcpToolResult"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "callId",
+        "name",
+        "result"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
         "callId": {
           "type": "string"
         },
@@ -361,6 +525,86 @@
       "enum": [
         "lf",
         "crLf"
+      ]
+    },
+    "McpToolResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "canonical_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "content": {
+              "type": "string"
+            },
+            "content_blocks": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "is_error": {
+              "type": "boolean"
+            },
+            "observed_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "retained_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "structured_content": {
+              "type": "boolean"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "completed"
+            }
+          },
+          "required": [
+            "type",
+            "content",
+            "is_error",
+            "observed_bytes",
+            "canonical_bytes",
+            "retained_bytes",
+            "truncated",
+            "sha256",
+            "content_blocks",
+            "structured_content"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "request_state": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "required": [
+            "type",
+            "kind",
+            "request_state"
+          ]
+        }
       ]
     },
     "ProcessOutcome": {

@@ -26,7 +26,7 @@ export type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcRespo
 
 export type ClientInfo = { name: string, title?: string, version: string, };
 
-export type InitializeCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals?: boolean, };
+export type InitializeCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals?: boolean, mcpToolCallApprovals?: boolean, };
 
 export type InitializeParams = { protocolVersion: number, clientInfo: ClientInfo, capabilities?: InitializeCapabilities, };
 
@@ -34,7 +34,7 @@ export type ServerInfo = { name: string, version: string, };
 
 export type PlatformInfo = { family: string, os: string, arch: string, };
 
-export type ServerCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals: boolean, };
+export type ServerCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals: boolean, mcpToolCallApprovals?: boolean, };
 
 export type InitializeResponse = { protocolVersion: number, serverInfo: ServerInfo, platform: PlatformInfo, capabilities: ServerCapabilities, };
 
@@ -52,6 +52,12 @@ export type CommandApprovalParams = { approvalId: string, threadId: string, turn
 
 export type CommandApprovalResponse = { decision: CommandApprovalResponseDecision, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, };
 
+export type McpToolCallApprovalResponseDecision = "approved" | "denied";
+
+export type McpToolCallApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, };
+
+export type McpToolCallApprovalResponse = { decision: McpToolCallApprovalResponseDecision, };
+
 export type FileChangeKind = "update";
 
 export type FileChangeNewlineStyle = "lf" | "crLf";
@@ -60,7 +66,9 @@ export type ProcessOutcome = { "type": "exitCode", code: bigint, } | { "type": "
 
 export type ToolResult = { "type": "success", content: string, bytes: bigint, } | { "type": "error", kind: string, } | { "type": "process", stdout: string, stderr: string, stdoutBytes: bigint, stderrBytes: bigint, stdoutTruncated: boolean, stderrTruncated: boolean, encoding: string, durationMs: bigint, outcome: ProcessOutcome, sandboxPolicy?: CommandSandboxPolicy, workspaceWritePolicy?: CommandWorkspaceWritePolicy, networkPolicy?: CommandNetworkPolicy, };
 
-export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, command?: string, arguments?: Array<string>, } | { "type": "fileChange", id: string, callId: string, path: string, kind: FileChangeKind, diff: string, beforeSha256: string, afterSha256: string, beforeBytes: bigint, afterBytes: bigint, newlineStyle: FileChangeNewlineStyle, finalNewline: boolean, } | { "type": "commandApprovalRequest", id: string, approvalId: string, callId: string, command: string, arguments: Array<string>, cwd: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy?: CommandSandboxPolicy, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy?: CommandNetworkPolicy, } | { "type": "commandApprovalDecision", id: string, approvalId: string, decision: string, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, } | { "type": "commandExecutionAttempt", id: string, approvalId: string, callId: string, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
+export type McpToolResult = { "type": "completed", content: string, is_error: boolean, observed_bytes: bigint, canonical_bytes: bigint, retained_bytes: bigint, truncated: boolean, sha256: string, content_blocks: bigint, structured_content: boolean, } | { "type": "error", kind: string, request_state: string, };
+
+export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, command?: string, arguments?: Array<string>, } | { "type": "fileChange", id: string, callId: string, path: string, kind: FileChangeKind, diff: string, beforeSha256: string, afterSha256: string, beforeBytes: bigint, afterBytes: bigint, newlineStyle: FileChangeNewlineStyle, finalNewline: boolean, } | { "type": "commandApprovalRequest", id: string, approvalId: string, callId: string, command: string, arguments: Array<string>, cwd: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy?: CommandSandboxPolicy, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy?: CommandNetworkPolicy, } | { "type": "commandApprovalDecision", id: string, approvalId: string, decision: string, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, } | { "type": "commandExecutionAttempt", id: string, approvalId: string, callId: string, } | { "type": "mcpToolCall", id: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalRequest", id: string, approvalId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalDecision", id: string, approvalId: string, decision: string, } | { "type": "mcpToolExecutionAttempt", id: string, approvalId: string, callId: string, inventorySha256: string, } | { "type": "mcpToolResult", id: string, callId: string, name: string, result: McpToolResult, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
 
 export type ItemStartedNotification = { threadId: string, turnId: string, item: Item, };
 

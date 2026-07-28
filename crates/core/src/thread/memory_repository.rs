@@ -289,6 +289,11 @@ impl ThreadRepository for MemoryThreadRepository {
                         | DurableItemSnapshot::CommandApprovalRequest { .. }
                         | DurableItemSnapshot::CommandApprovalDecision { .. }
                         | DurableItemSnapshot::CommandExecutionAttempt { .. }
+                        | DurableItemSnapshot::McpToolCall { .. }
+                        | DurableItemSnapshot::McpToolCallApprovalRequest { .. }
+                        | DurableItemSnapshot::McpToolCallApprovalDecision { .. }
+                        | DurableItemSnapshot::McpToolExecutionAttempt { .. }
+                        | DurableItemSnapshot::McpToolResult { .. }
                         | DurableItemSnapshot::ToolResult { .. } => false,
                     })
             })

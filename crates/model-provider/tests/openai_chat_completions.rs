@@ -325,6 +325,14 @@ async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
         ),
         (
             concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"mcp__fixture__inspect\",\"arguments\":\"{\\\"value\\\":1,\\\"value\\\":2}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            ModelErrorKind::Protocol,
+        ),
+        (
+            concat!(
                 "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"bad id\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
                 "data: [DONE]\n\n"
             ),

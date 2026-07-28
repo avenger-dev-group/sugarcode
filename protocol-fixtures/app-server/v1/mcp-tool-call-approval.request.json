@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "id": "approval/mcp",
+  "method": "item/mcpToolCall/requestApproval",
+  "params": {
+    "approvalId": "approval/mcp",
+    "threadId": "thr_0000000000000001",
+    "turnId": "turn_0000000000000001",
+    "callId": "call_mcp",
+    "name": "mcp__fixture__inspect",
+    "arguments": {
+      "value": [
+        "arbitrary",
+        2
+      ]
+    },
+    "argumentsBytes": 25,
+    "argumentsSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "inventorySha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

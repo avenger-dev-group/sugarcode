@@ -52,6 +52,14 @@ where
             params.capabilities.as_ref().is_some_and(|capabilities| {
                 capabilities.command_workspace_write_approvals == Some(true)
             });
+        self.mcp_tool_call_approvals = params
+            .capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.mcp_tool_call_approvals == Some(true))
+            && self.mcp_capability.is_some();
+        if let Some(capability) = self.mcp_capability.as_ref() {
+            capability.set_enabled(self.mcp_tool_call_approvals);
+        }
 
         let response = InitializeResponse {
             protocol_version: PROTOCOL_VERSION,
@@ -67,6 +75,7 @@ where
             capabilities: ServerCapabilities {
                 command_approvals: true,
                 command_workspace_write_approvals: true,
+                mcp_tool_call_approvals: self.mcp_capability.as_ref().map(|_| true),
             },
         };
         let result = serde_json::to_value(response).expect("initialize response must serialize");

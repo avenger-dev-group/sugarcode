@@ -20,43 +20,7 @@ pub(crate) async fn discover(spec: &StdioServerSpec) -> Result<McpServerInventor
 
 async fn discover_inner(spec: &StdioServerSpec) -> Result<McpServerInventory, DiscoveryError> {
     let mut transport = JsonRpcTransport::spawn(spec)?;
-    let result = async {
-        transport
-            .send(&json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": MCP_PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {
-                        "name": "sugarcode",
-                        "version": env!("CARGO_PKG_VERSION")
-                    }
-                }
-            }))
-            .await?;
-        let initialize = receive_response(&mut transport, 1).await?;
-        let (server_name, server_version) = validate_initialize(spec, &initialize)?;
-        transport
-            .send(&json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized"
-            }))
-            .await?;
-        transport
-            .send(&json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/list",
-                "params": {}
-            }))
-            .await?;
-        let list = receive_response(&mut transport, 2).await?;
-        let raw_tools = validate_tools_list(spec, &list)?;
-        McpServerInventory::from_protocol(&spec.id, server_name, server_version, raw_tools)
-    }
-    .await;
+    let result = negotiate(&mut transport, spec).await;
     let shutdown = transport.shutdown().await;
     match (result, shutdown) {
         (Err(error), _) => Err(error),
@@ -65,7 +29,47 @@ async fn discover_inner(spec: &StdioServerSpec) -> Result<McpServerInventory, Di
     }
 }
 
-async fn receive_response(
+pub(crate) async fn negotiate(
+    transport: &mut JsonRpcTransport,
+    spec: &StdioServerSpec,
+) -> Result<McpServerInventory, DiscoveryError> {
+    transport
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "sugarcode",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }
+        }))
+        .await?;
+    let initialize = receive_response(transport, 1).await?;
+    let (server_name, server_version) = validate_initialize(spec, &initialize)?;
+    transport
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .await?;
+    transport
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }))
+        .await?;
+    let list = receive_response(transport, 2).await?;
+    let raw_tools = validate_tools_list(spec, &list)?;
+    McpServerInventory::from_protocol(&spec.id, server_name, server_version, raw_tools)
+}
+
+pub(crate) async fn receive_response(
     transport: &mut JsonRpcTransport,
     expected_id: i64,
 ) -> Result<Value, DiscoveryError> {

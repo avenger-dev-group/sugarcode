@@ -17,6 +17,7 @@ sugarcode-protocol = { path = "../protocol" }
 sugarcode-state = { path = "../state" }
 sugarcode-tools = { path = "../tools" }
 tokio.workspace = true
+tokio-util.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

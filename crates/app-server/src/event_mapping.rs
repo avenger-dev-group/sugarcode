@@ -6,6 +6,7 @@ use sugarcode_app_server_protocol::ItemStartedNotification;
 use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcNotification;
 use sugarcode_app_server_protocol::JsonRpcVersion;
+use sugarcode_app_server_protocol::McpToolResult as PublicMcpToolResult;
 use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
 use sugarcode_app_server_protocol::ToolResult as PublicToolResult;
@@ -348,6 +349,73 @@ fn map_snapshot_parts(
                             approval_id,
                             call_id,
                         },
+                        DurableItemSnapshot::McpToolCall {
+                            id,
+                            call_id,
+                            name,
+                            arguments,
+                            arguments_bytes,
+                            arguments_sha256,
+                            inventory_sha256,
+                        } => PublicItem::McpToolCall {
+                            id: id.into_string(),
+                            call_id,
+                            name,
+                            arguments,
+                            arguments_bytes,
+                            arguments_sha256,
+                            inventory_sha256,
+                        },
+                        DurableItemSnapshot::McpToolCallApprovalRequest {
+                            id,
+                            approval_id,
+                            call_id,
+                            name,
+                            arguments,
+                            arguments_bytes,
+                            arguments_sha256,
+                            inventory_sha256,
+                        } => PublicItem::McpToolCallApprovalRequest {
+                            id: id.into_string(),
+                            approval_id,
+                            call_id,
+                            name,
+                            arguments,
+                            arguments_bytes,
+                            arguments_sha256,
+                            inventory_sha256,
+                        },
+                        DurableItemSnapshot::McpToolCallApprovalDecision {
+                            id,
+                            approval_id,
+                            decision,
+                        } => PublicItem::McpToolCallApprovalDecision {
+                            id: id.into_string(),
+                            approval_id,
+                            decision,
+                        },
+                        DurableItemSnapshot::McpToolExecutionAttempt {
+                            id,
+                            approval_id,
+                            call_id,
+                            inventory_sha256,
+                        } => PublicItem::McpToolExecutionAttempt {
+                            id: id.into_string(),
+                            approval_id,
+                            call_id,
+                            inventory_sha256,
+                        },
+                        DurableItemSnapshot::McpToolResult {
+                            id,
+                            call_id,
+                            name,
+                            result,
+                        } => PublicItem::McpToolResult {
+                            id: id.into_string(),
+                            call_id,
+                            name,
+                            result: map_durable_mcp_tool_result(result),
+                        },
                         DurableItemSnapshot::ToolResult {
                             id,
                             call_id,
@@ -588,6 +656,68 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             approval_id,
             call_id,
         },
+        CoreItemKind::McpToolCall {
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+        } => PublicItem::McpToolCall {
+            id: item.id.into_string(),
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+        },
+        CoreItemKind::McpToolCallApprovalRequest {
+            approval_id,
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+        } => PublicItem::McpToolCallApprovalRequest {
+            id: item.id.into_string(),
+            approval_id,
+            call_id,
+            name,
+            arguments,
+            arguments_bytes,
+            arguments_sha256,
+            inventory_sha256,
+        },
+        CoreItemKind::McpToolCallApprovalDecision {
+            approval_id,
+            decision,
+        } => PublicItem::McpToolCallApprovalDecision {
+            id: item.id.into_string(),
+            approval_id,
+            decision: decision.to_string(),
+        },
+        CoreItemKind::McpToolExecutionAttempt {
+            approval_id,
+            call_id,
+            inventory_sha256,
+        } => PublicItem::McpToolExecutionAttempt {
+            id: item.id.into_string(),
+            approval_id,
+            call_id,
+            inventory_sha256,
+        },
+        CoreItemKind::McpToolResult {
+            call_id,
+            name,
+            result,
+        } => PublicItem::McpToolResult {
+            id: item.id.into_string(),
+            call_id,
+            name,
+            result: map_core_mcp_tool_result(result),
+        },
         CoreItemKind::ToolResult {
             call_id,
             name,
@@ -677,6 +807,74 @@ fn map_durable_tool_result(result: sugarcode_state::DurableToolResult) -> Public
                 process.workspace_write_policy.as_deref(),
             ),
             network_policy: public_network_policy(process.network_policy.as_deref()),
+        },
+    }
+}
+
+fn map_core_mcp_tool_result(result: sugarcode_protocol::CoreMcpToolResult) -> PublicMcpToolResult {
+    match result {
+        sugarcode_protocol::CoreMcpToolResult::Completed {
+            content,
+            is_error,
+            observed_bytes,
+            canonical_bytes,
+            retained_bytes,
+            truncated,
+            sha256,
+            content_blocks,
+            structured_content,
+        } => PublicMcpToolResult::Completed {
+            content,
+            is_error,
+            observed_bytes,
+            canonical_bytes,
+            retained_bytes,
+            truncated,
+            sha256,
+            content_blocks,
+            structured_content,
+        },
+        sugarcode_protocol::CoreMcpToolResult::Error {
+            kind,
+            request_state,
+        } => PublicMcpToolResult::Error {
+            kind,
+            request_state,
+        },
+    }
+}
+
+fn map_durable_mcp_tool_result(
+    result: sugarcode_state::DurableMcpToolResult,
+) -> PublicMcpToolResult {
+    match result {
+        sugarcode_state::DurableMcpToolResult::Completed {
+            content,
+            is_error,
+            observed_bytes,
+            canonical_bytes,
+            retained_bytes,
+            truncated,
+            sha256,
+            content_blocks,
+            structured_content,
+        } => PublicMcpToolResult::Completed {
+            content,
+            is_error,
+            observed_bytes,
+            canonical_bytes,
+            retained_bytes,
+            truncated,
+            sha256,
+            content_blocks,
+            structured_content,
+        },
+        sugarcode_state::DurableMcpToolResult::Error {
+            kind,
+            request_state,
+        } => PublicMcpToolResult::Error {
+            kind,
+            request_state,
         },
     }
 }

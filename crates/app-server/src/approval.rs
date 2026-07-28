@@ -3,6 +3,9 @@ use futures_util::future::BoxFuture;
 use sugarcode_core::CommandApprovalOutcome;
 use sugarcode_core::CommandApprovalRequest;
 use sugarcode_core::CommandApprovalRequester;
+use sugarcode_core::McpToolApprovalOutcome;
+use sugarcode_core::McpToolApprovalRequest;
+use sugarcode_core::McpToolApprovalRequester;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
@@ -41,6 +44,46 @@ impl CommandApprovalRequester for ChannelCommandApprovalRequester {
             receiver
                 .await
                 .unwrap_or(CommandApprovalOutcome::ClientDisconnected)
+        }
+        .boxed()
+    }
+}
+
+pub(crate) struct PendingMcpToolApproval {
+    pub request: McpToolApprovalRequest,
+    pub response: oneshot::Sender<McpToolApprovalOutcome>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ChannelMcpToolApprovalRequester {
+    sender: mpsc::Sender<PendingMcpToolApproval>,
+}
+
+impl ChannelMcpToolApprovalRequester {
+    pub(crate) fn channel(capacity: usize) -> (Self, mpsc::Receiver<PendingMcpToolApproval>) {
+        let (sender, receiver) = mpsc::channel(capacity);
+        (Self { sender }, receiver)
+    }
+}
+
+impl McpToolApprovalRequester for ChannelMcpToolApprovalRequester {
+    fn request(
+        &self,
+        request: McpToolApprovalRequest,
+    ) -> BoxFuture<'static, McpToolApprovalOutcome> {
+        let sender = self.sender.clone();
+        async move {
+            let (response, receiver) = oneshot::channel();
+            if sender
+                .send(PendingMcpToolApproval { request, response })
+                .await
+                .is_err()
+            {
+                return McpToolApprovalOutcome::ClientDisconnected;
+            }
+            receiver
+                .await
+                .unwrap_or(McpToolApprovalOutcome::ClientDisconnected)
         }
         .boxed()
     }

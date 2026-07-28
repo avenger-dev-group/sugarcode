@@ -60,6 +60,12 @@
             "boolean",
             "null"
           ]
+        },
+        "mcpToolCallApprovals": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       }
     }
