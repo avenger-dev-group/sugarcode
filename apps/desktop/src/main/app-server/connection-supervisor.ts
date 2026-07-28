@@ -38,6 +38,11 @@ import {
   RpcResponseError,
 } from './jsonl-client';
 import { CommandApprovalController } from './command-approval-controller';
+import { ConversationController } from './conversation-controller';
+import {
+  ConversationRpcClient,
+  type ConversationRpc,
+} from './conversation-rpc';
 
 type SpawnProcess = (
   command: string,
@@ -90,6 +95,7 @@ const createDiagnostic = (
 
 export class ConnectionSupervisor {
   readonly commandApprovals: CommandApprovalController;
+  readonly conversation: ConversationController;
   private readonly options: Required<
     Pick<
       ConnectionSupervisorOptions,
@@ -108,6 +114,7 @@ export class ConnectionSupervisor {
   };
   private child: ChildProcessWithoutNullStreams | null = null;
   private client: JsonlClient | null = null;
+  private conversationRpc: ConversationRpc | null = null;
   private startPromise: Promise<void> | null = null;
   private initializeAbortController: AbortController | null = null;
   private shuttingDown = false;
@@ -138,6 +145,10 @@ export class ConnectionSupervisor {
       onSurfaceFailure: () =>
         this.failAndTerminate('approval-ui-unavailable'),
     });
+    this.conversation = new ConversationController({
+      getRpc: () => this.conversationRpc,
+      onProtocolFailure: () => this.failAndTerminate('protocol-invalid'),
+    });
   }
 
   getSnapshot = (): ConnectionStateSnapshot => this.snapshot;
@@ -165,6 +176,7 @@ export class ConnectionSupervisor {
     }
     this.shuttingDown = true;
     this.commandApprovals.shutdown();
+    this.conversation.transportClosed();
     this.initializeAbortController?.abort();
     this.client?.close();
     if (
@@ -246,7 +258,10 @@ export class ConnectionSupervisor {
         }
         this.commandApprovals.handleServerRequest(request);
       },
-      onNotification: this.commandApprovals.handleNotification,
+      onNotification: (notification) => {
+        this.commandApprovals.handleNotification(notification);
+        this.conversation.handleNotification(notification);
+      },
       onFatalError: () => {
         this.failAndTerminate('protocol-invalid');
       },
@@ -260,6 +275,7 @@ export class ConnectionSupervisor {
         }
       },
     });
+    this.conversationRpc = new ConversationRpcClient(this.client);
 
     const initializeParams: InitializeParams = {
       protocolVersion: PROTOCOL_VERSION,
@@ -288,6 +304,7 @@ export class ConnectionSupervisor {
       }
       await this.client.initialized();
       if (!this.shuttingDown && this.snapshot.status === 'connecting') {
+        this.conversation.connectionReady();
         this.transition('ready');
       }
     } catch (error) {
@@ -366,8 +383,10 @@ export class ConnectionSupervisor {
     this.exitSignal = signal ?? this.exitSignal;
     this.client?.close();
     this.commandApprovals.transportClosed();
+    this.conversation.transportClosed();
     this.child = null;
     this.client = null;
+    this.conversationRpc = null;
 
     if (this.shuttingDown || this.snapshot.status === 'closed') {
       this.transition('closed');
@@ -389,6 +408,7 @@ export class ConnectionSupervisor {
 
   private failAndTerminate = (code: ConnectionDiagnosticCode): void => {
     this.fail(code);
+    this.conversation.transportClosed();
     this.client?.close();
     if (
       this.child &&

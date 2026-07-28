@@ -9,6 +9,9 @@ import { pathToFileURL } from 'node:url';
 
 import { CommandApprovalController } from '@/main/app-server/command-approval-controller';
 import { registerCommandApprovalIpc } from '@/main/app-server/command-approval-ipc';
+import { ConversationController } from '@/main/app-server/conversation-controller';
+import { registerConversationIpc } from '@/main/app-server/conversation-ipc';
+import type { ConversationRpc } from '@/main/app-server/conversation-rpc';
 import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
@@ -21,6 +24,8 @@ type WrittenDecision = Readonly<{
 const resultPrefix = 'SUGARCODE_ELECTRON_RESULT:';
 const writtenDecisions: WrittenDecision[] = [];
 const lifecycleFailures: string[] = [];
+const conversationInputs: string[] = [];
+const interruptRequests: string[] = [];
 let window: BrowserWindow | null = null;
 
 const request = (approvalId: string) => ({
@@ -98,6 +103,35 @@ const run = async (): Promise<void> => {
     onWriteFailure: () => lifecycleFailures.push('write'),
     onSurfaceFailure: () => lifecycleFailures.push('surface'),
   });
+  let turnSequence = 0;
+  let resolveInterrupt: (() => void) | null = null;
+  const conversationRpc: ConversationRpc = {
+    startThread: async () => ({
+      thread: { id: 'thr_0000000000000100' },
+    }),
+    startTurn: async (_threadId, input) => {
+      turnSequence += 1;
+      conversationInputs.push(input);
+      return {
+        turn: {
+          id: `turn_000000000000010${turnSequence}`,
+          status: 'inProgress',
+        },
+      };
+    },
+    interruptTurn: async (_threadId, turnId) => {
+      interruptRequests.push(turnId);
+      await new Promise<void>((resolve) => {
+        resolveInterrupt = resolve;
+      });
+      return {};
+    },
+  };
+  const conversation = new ConversationController({
+    getRpc: () => conversationRpc,
+    onProtocolFailure: () => lifecycleFailures.push('conversation-protocol'),
+  });
+  conversation.connectionReady();
   const rendererPath = path.join(
     __dirname,
     'renderer',
@@ -140,10 +174,239 @@ const run = async (): Promise<void> => {
     getMainWindow: () => window,
     isAllowedUrl: (url) => url === rendererUrl,
   });
+  const disposeConversationIpc = registerConversationIpc({
+    controller: conversation,
+    getMainWindow: () => window,
+    isAllowedUrl: (url) => url === rendererUrl,
+  });
 
   await window.loadFile(rendererPath);
   window.show();
   await evaluate('window.sugarcode.getCommandApprovalState()');
+
+  const sendConversationInput = async (input: string): Promise<void> => {
+    await evaluate(`(() => {
+      const textarea = document.querySelector(
+        'textarea[aria-label="Message SugarCode"]',
+      );
+      if (!(textarea instanceof HTMLTextAreaElement)) {
+        throw new Error('Conversation textarea not found.');
+      }
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(textarea, ${JSON.stringify(input)});
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      const button = document.querySelector(
+        'button[aria-label="Send message"]',
+      );
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error('Conversation send button unavailable.');
+      }
+      button.click();
+    })()`);
+  };
+  const emitTextTurn = (
+    turnId: string,
+    input: string,
+    output: string,
+    terminal: 'completed' | 'interrupted',
+  ): void => {
+    conversation.handleNotification({
+      kind: 'notification',
+      method: 'turn/started',
+      params: {
+        threadId: 'thr_0000000000000100',
+        turn: { id: turnId, status: 'inProgress' },
+      },
+    });
+    for (const [method, item] of [
+      [
+        'item/started',
+        { type: 'userMessage', id: `${turnId}/user`, text: input },
+      ],
+      [
+        'item/completed',
+        { type: 'userMessage', id: `${turnId}/user`, text: input },
+      ],
+      [
+        'item/started',
+        { type: 'agentMessage', id: `${turnId}/agent`, text: '' },
+      ],
+    ] as const) {
+      conversation.handleNotification({
+        kind: 'notification',
+        method,
+        params: {
+          threadId: 'thr_0000000000000100',
+          turnId,
+          item,
+        },
+      });
+    }
+    if (output) {
+      conversation.handleNotification({
+        kind: 'notification',
+        method: 'item/agentMessage/delta',
+        params: {
+          threadId: 'thr_0000000000000100',
+          turnId,
+          itemId: `${turnId}/agent`,
+          delta: output,
+        },
+      });
+    }
+    conversation.handleNotification({
+      kind: 'notification',
+      method: 'item/completed',
+      params: {
+        threadId: 'thr_0000000000000100',
+        turnId,
+        item: {
+          type: 'agentMessage',
+          id: `${turnId}/agent`,
+          text: output,
+        },
+      },
+    });
+    conversation.handleNotification({
+      kind: 'notification',
+      method: 'turn/completed',
+      params: {
+        threadId: 'thr_0000000000000100',
+        turn: { id: turnId, status: terminal },
+      },
+    });
+  };
+
+  await sendConversationInput('Desktop exact input 雪');
+  await waitFor(
+    () => conversation.getSnapshot().phase === 'inProgress',
+    'first conversation Turn',
+  );
+  emitTextTurn(
+    'turn_0000000000000101',
+    'Desktop exact input 雪',
+    'Streamed desktop answer.',
+    'completed',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.body.textContent?.includes(
+          'Streamed desktop answer.',
+        ) === true`,
+      ),
+    'rendered conversation answer',
+  );
+  await evaluate('location.reload()');
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.body.textContent?.includes(
+          'Streamed desktop answer.',
+        ) === true`,
+      ),
+    'conversation snapshot after reload',
+  );
+  await writeFile(
+    path.join(__dirname, 'conversation-light.png'),
+    (await window.webContents.capturePage()).toPNG(),
+  );
+
+  await sendConversationInput('Stop this desktop Turn.');
+  await waitFor(
+    () => conversation.getSnapshot().phase === 'inProgress',
+    'second conversation Turn',
+  );
+  const secondTurnId = 'turn_0000000000000102';
+  conversation.handleNotification({
+    kind: 'notification',
+    method: 'turn/started',
+    params: {
+      threadId: 'thr_0000000000000100',
+      turn: { id: secondTurnId, status: 'inProgress' },
+    },
+  });
+  for (const [method, item] of [
+    [
+      'item/started',
+      {
+        type: 'userMessage',
+        id: `${secondTurnId}/user`,
+        text: 'Stop this desktop Turn.',
+      },
+    ],
+    [
+      'item/completed',
+      {
+        type: 'userMessage',
+        id: `${secondTurnId}/user`,
+        text: 'Stop this desktop Turn.',
+      },
+    ],
+    [
+      'item/started',
+      { type: 'agentMessage', id: `${secondTurnId}/agent`, text: '' },
+    ],
+  ] as const) {
+    conversation.handleNotification({
+      kind: 'notification',
+      method,
+      params: {
+        threadId: 'thr_0000000000000100',
+        turnId: secondTurnId,
+        item,
+      },
+    });
+  }
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `Boolean(document.querySelector(
+          'button[aria-label="Stop current turn"]',
+        ))`,
+      ),
+    'conversation Stop button',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Stop current turn"]',
+  )?.click()`);
+  await waitFor(
+    () => conversation.getSnapshot().phase === 'stopping',
+    'conversation stopping state',
+  );
+  conversation.handleNotification({
+    kind: 'notification',
+    method: 'item/completed',
+    params: {
+      threadId: 'thr_0000000000000100',
+      turnId: secondTurnId,
+      item: {
+        type: 'agentMessage',
+        id: `${secondTurnId}/agent`,
+        text: '',
+      },
+    },
+  });
+  conversation.handleNotification({
+    kind: 'notification',
+    method: 'turn/completed',
+    params: {
+      threadId: 'thr_0000000000000100',
+      turn: { id: secondTurnId, status: 'interrupted' },
+    },
+  });
+  resolveInterrupt?.();
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.body.textContent?.includes('Turn stopped') === true`,
+      ),
+    'interrupted Turn presentation',
+  );
+
   controller.handleServerRequest(request('approval/electron-approve'));
   await waitFor(
     () =>
@@ -262,6 +525,10 @@ const run = async (): Promise<void> => {
       ),
     'dark theme',
   );
+  await writeFile(
+    path.join(__dirname, 'conversation-dark.png'),
+    (await window.webContents.capturePage()).toPNG(),
+  );
 
   controller.handleServerRequest(request('approval/electron-reload'));
   await waitFor(
@@ -330,6 +597,7 @@ const run = async (): Promise<void> => {
   );
 
   disposeApprovalIpc();
+  disposeConversationIpc();
   ipcMain.removeHandler(CONNECTION_STATE_GET_CHANNEL);
   controller.shutdown();
   if (lifecycleFailures.length > 0) {
@@ -341,6 +609,8 @@ const run = async (): Promise<void> => {
     `${resultPrefix}${JSON.stringify({
       rendered,
       writtenDecisions,
+      conversationInputs,
+      interruptRequests,
     })}\n`,
   );
 };

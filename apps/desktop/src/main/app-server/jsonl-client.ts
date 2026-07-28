@@ -118,6 +118,19 @@ export class JsonlClient {
     this.initializationState = 'ready';
   };
 
+  requestReady = (
+    method: string,
+    params: JsonValue,
+    signal?: AbortSignal,
+  ): Promise<unknown> => {
+    if (this.initializationState !== 'ready') {
+      return Promise.reject(
+        new Error('App-server requests require a ready connection.'),
+      );
+    }
+    return this.request(method, params, signal);
+  };
+
   respond = (id: RequestId, result: JsonValue): Promise<void> =>
     this.enqueueMessage({
       jsonrpc: JSON_RPC_VERSION,

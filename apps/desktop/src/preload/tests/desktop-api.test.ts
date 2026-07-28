@@ -12,6 +12,13 @@ import {
   CONNECTION_STATE_CHANGED_CHANNEL,
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
+import {
+  CONVERSATION_SEND_CHANNEL,
+  CONVERSATION_STATE_CHANGED_CHANNEL,
+  CONVERSATION_STATE_GET_CHANNEL,
+  CONVERSATION_STOP_CHANNEL,
+  type ConversationStateSnapshot,
+} from '@/shared/conversation';
 
 import {
   createDesktopApi,
@@ -169,5 +176,72 @@ describe('createDesktopApi', () => {
     await expect(
       api.approveCommand('presentation/one'),
     ).rejects.toThrow('invalid command approval result');
+  });
+
+  it('exposes only the bounded conversation snapshot and actions', async () => {
+    const boundary = createIpcBoundary();
+    const api = createDesktopApi(boundary.ipc);
+    const snapshot: ConversationStateSnapshot = {
+      revision: 1,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [],
+    };
+    boundary.invoke.mockImplementation(
+      async (channel: string, input?: string) => {
+        if (channel === CONVERSATION_STATE_GET_CHANNEL) {
+          return snapshot;
+        }
+        if (
+          channel === CONVERSATION_SEND_CHANNEL &&
+          input === 'Exact input'
+        ) {
+          return { accepted: true, reason: 'accepted' };
+        }
+        if (channel === CONVERSATION_STOP_CHANNEL) {
+          return { accepted: false, reason: 'noActiveTurn' };
+        }
+        return null;
+      },
+    );
+
+    await expect(api.getConversationState()).resolves.toEqual(snapshot);
+    await expect(
+      api.sendConversationMessage('Exact input'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(api.stopConversationTurn()).resolves.toEqual({
+      accepted: false,
+      reason: 'noActiveTurn',
+    });
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      CONVERSATION_SEND_CHANNEL,
+      'Exact input',
+    );
+    expect(boundary.invoke).toHaveBeenCalledWith(CONVERSATION_STOP_CHANNEL);
+
+    const listener = vi.fn();
+    const unsubscribe = api.onConversationStateChanged(listener);
+    const handleStateChanged = boundary.listeners.get(
+      CONVERSATION_STATE_CHANGED_CHANNEL,
+    );
+    handleStateChanged?.({} as IpcRendererEvent, snapshot);
+    handleStateChanged?.({} as IpcRendererEvent, {
+      revision: 2,
+      phase: 'inProgress',
+      turns: [],
+    });
+    expect(listener).toHaveBeenCalledOnce();
+    unsubscribe();
+    expect(
+      boundary.listeners.has(CONVERSATION_STATE_CHANGED_CHANNEL),
+    ).toBe(false);
+
+    boundary.invoke.mockResolvedValue({
+      accepted: true,
+      reason: 'turnActive',
+    });
+    await expect(
+      api.sendConversationMessage('Exact input'),
+    ).rejects.toThrow('invalid conversation send result');
   });
 });

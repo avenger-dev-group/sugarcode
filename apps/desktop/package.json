@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "pnpm test:unit && pnpm test:integration",
     "test:unit": "vitest run --exclude \"**/*.integration.test.ts\"",
-    "test:integration": "vitest run src/main/app-server/tests/app-server-handshake.integration.test.ts",
+    "test:integration": "vitest run src/main/app-server/tests/app-server-handshake.integration.test.ts src/main/app-server/tests/conversation-turn.integration.test.ts",
     "build:electron-test": "vite build --config vite.electron-test-main.config.ts && vite build --config vite.electron-test-preload.config.ts && vite build --config vite.electron-test-renderer.config.ts",
     "test:electron": "pnpm build:electron-test && electron .electron-test/main.cjs",
     "check": "pnpm lint && pnpm typecheck && pnpm test:unit"

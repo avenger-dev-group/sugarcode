@@ -1,0 +1,185 @@
+// @vitest-environment jsdom
+
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { ThreadWorkbenchView } from '../thread-workbench';
+import type { ThreadStore } from '../types';
+import { toThreadViewModel } from '../use-store';
+
+Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
+  configurable: true,
+  value: true,
+});
+
+class ResizeObserverStub {
+  observe = vi.fn();
+  unobserve = vi.fn();
+  disconnect = vi.fn();
+}
+
+vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+Element.prototype.scrollIntoView = vi.fn();
+
+const createStore = (
+  overrides: Partial<ThreadStore> = {},
+): ThreadStore => ({
+  thread: toThreadViewModel({
+    revision: 4,
+    phase: 'ready',
+    threadId: 'thr_0000000000000001',
+    turns: [
+      {
+        id: 'turn_0000000000000001',
+        status: 'completed',
+        messages: [
+          {
+            id: 'item_0000000000000001',
+            role: 'user',
+            text: 'Explain the boundary.',
+            status: 'completed',
+          },
+          {
+            id: 'item_0000000000000002',
+            role: 'agent',
+            text: 'The durable event arrives first.',
+            status: 'completed',
+          },
+        ],
+      },
+    ],
+  }),
+  draft: '',
+  inputBytes: 0,
+  inputLimitBytes: 65_536,
+  inputHint: '0 / 64 KiB',
+  canSend: false,
+  canStop: false,
+  isSending: false,
+  actionError: null,
+  setDraft: vi.fn(),
+  send: vi.fn(async () => undefined),
+  stop: vi.fn(async () => undefined),
+  ...overrides,
+});
+
+afterEach(() => {
+  document.body.replaceChildren();
+  vi.clearAllMocks();
+});
+
+describe('ThreadWorkbenchView', () => {
+  it('renders durable user and Agent messages through view models', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={createStore()} />);
+    });
+    expect(document.body.textContent).toContain('Explain the boundary.');
+    expect(document.body.textContent).toContain(
+      'The durable event arrives first.',
+    );
+    expect(document.body.textContent).toContain('Turn complete');
+    expect(
+      document.querySelector('[aria-label="Conversation transcript"]'),
+    ).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it('keeps input exact, sends on Enter, and preserves Shift+Enter', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = createStore({
+      thread: toThreadViewModel({
+        revision: 1,
+        phase: 'idle',
+        turns: [],
+      }),
+      draft: 'Exact input\n雪',
+      inputBytes: 15,
+      inputHint: '1 / 64 KiB',
+      canSend: true,
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+    const textarea = document.querySelector('textarea');
+    expect(textarea?.value).toBe('Exact input\n雪');
+
+    await act(async () => {
+      textarea?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          bubbles: true,
+          cancelable: true,
+          key: 'Enter',
+        }),
+      );
+    });
+    expect(store.send).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      textarea?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          bubbles: true,
+          cancelable: true,
+          key: 'Enter',
+          shiftKey: true,
+        }),
+      );
+    });
+    expect(store.send).toHaveBeenCalledOnce();
+
+    await act(async () => root.unmount());
+  });
+
+  it('shows streaming and stopping states without enabling another send', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = createStore({
+      thread: toThreadViewModel({
+        revision: 7,
+        phase: 'inProgress',
+        threadId: 'thr_0000000000000001',
+        activeTurnId: 'turn_0000000000000002',
+        turns: [
+          {
+            id: 'turn_0000000000000002',
+            status: 'inProgress',
+            messages: [
+              {
+                id: 'item_0000000000000003',
+                role: 'agent',
+                text: 'Still working',
+                status: 'inProgress',
+              },
+            ],
+          },
+        ],
+      }),
+      canStop: true,
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+    expect(
+      document.querySelector('[aria-label="Agent is responding"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('textarea')?.disabled).toBe(true);
+    const stop = document.querySelector(
+      '[aria-label="Stop current turn"]',
+    ) as HTMLButtonElement;
+    await act(async () => stop.click());
+    expect(store.stop).toHaveBeenCalledOnce();
+
+    await act(async () => root.unmount());
+  });
+});

@@ -17,6 +17,16 @@ import {
   type ConnectionStateSnapshot,
 } from '@/shared/connection';
 import type { DesktopApi } from '@/shared/desktop-api';
+import {
+  CONVERSATION_SEND_CHANNEL,
+  CONVERSATION_STATE_CHANGED_CHANNEL,
+  CONVERSATION_STATE_GET_CHANNEL,
+  CONVERSATION_STOP_CHANNEL,
+  isConversationActionResult,
+  isConversationStateSnapshot,
+  type ConversationActionResult,
+  type ConversationStateSnapshot,
+} from '@/shared/conversation';
 
 type StateChangedHandler = (
   event: IpcRendererEvent,
@@ -114,4 +124,55 @@ export const createDesktopApi = (
     }
     return result;
   },
+  getConversationState:
+    async (): Promise<ConversationStateSnapshot> => {
+      const snapshot: unknown = await ipcRenderer.invoke(
+        CONVERSATION_STATE_GET_CHANNEL,
+      );
+      if (!isConversationStateSnapshot(snapshot)) {
+        throw new Error(
+          'Main returned an invalid conversation state snapshot.',
+        );
+      }
+      return snapshot;
+    },
+  onConversationStateChanged: (listener) => {
+    const handleStateChanged = (
+      _event: IpcRendererEvent,
+      snapshot: unknown,
+    ): void => {
+      if (isConversationStateSnapshot(snapshot)) {
+        listener(snapshot);
+      }
+    };
+    ipcRenderer.on(CONVERSATION_STATE_CHANGED_CHANNEL, handleStateChanged);
+    return () => {
+      ipcRenderer.removeListener(
+        CONVERSATION_STATE_CHANGED_CHANNEL,
+        handleStateChanged,
+      );
+    };
+  },
+  sendConversationMessage: async (
+    input: string,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_SEND_CHANNEL,
+      input,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid conversation send result.');
+    }
+    return result;
+  },
+  stopConversationTurn:
+    async (): Promise<ConversationActionResult> => {
+      const result: unknown = await ipcRenderer.invoke(
+        CONVERSATION_STOP_CHANNEL,
+      );
+      if (!isConversationActionResult(result)) {
+        throw new Error('Main returned an invalid conversation stop result.');
+      }
+      return result;
+    },
 });

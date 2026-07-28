@@ -2,6 +2,7 @@ import { Moon, Sun } from 'lucide-react';
 
 import { ConnectionStatus } from '@/renderer/components/connection/connection-status';
 import { CommandApprovalSurface } from '@/renderer/components/command-approval/command-approval-surface';
+import { ThreadWorkbench } from '@/renderer/components/thread/thread-workbench';
 import { Button } from '@/renderer/components/ui/button';
 
 import { useStore } from './use-store';
@@ -11,34 +12,34 @@ export const FoundationScreen = () => {
 
   return (
     <div className={isDark ? 'dark' : undefined}>
-      <main className="flex min-h-screen items-center justify-center bg-background px-6 py-12 text-foreground transition-colors">
-        <section className="w-full max-w-sm" aria-labelledby="foundation-title">
-          <div className="mb-10 flex items-center gap-2.5">
+      <main className="flex h-screen min-h-[30rem] flex-col overflow-hidden bg-background text-foreground">
+        <header className="relative z-10 flex min-h-20 items-center gap-4 border-b bg-background px-4 py-3 sm:px-6">
+          <div className="flex min-w-32 items-center gap-2.5">
             <span
               className="size-2 rounded-full bg-primary"
               aria-hidden="true"
             />
-            <p className="text-sm font-medium tracking-[-0.01em]">SugarCode</p>
+            <div>
+              <p className="text-sm font-medium tracking-[-0.01em]">
+                SugarCode
+              </p>
+              <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-tertiary">
+                Desktop
+              </p>
+            </div>
           </div>
 
-          <h1
-            id="foundation-title"
-            className="max-w-xs text-2xl font-medium tracking-[-0.03em]"
-          >
-            Local runtime, in view.
-          </h1>
-          <p className="mt-3 text-secondary">
-            SugarCode Desktop verifies its native CLI before work begins.
-          </p>
-
-          <div className="mt-8">
+          <div className="ml-auto w-full max-w-xs">
             <ConnectionStatus />
           </div>
 
           <Button
-            className="mt-6"
             type="button"
+            size="icon"
+            variant="ghost"
             aria-pressed={isDark}
+            aria-label={themeLabel}
+            title={themeLabel}
             onClick={toggleTheme}
           >
             {isDark ? (
@@ -46,9 +47,10 @@ export const FoundationScreen = () => {
             ) : (
               <Moon aria-hidden="true" />
             )}
-            {themeLabel}
+            <span className="sr-only">{themeLabel}</span>
           </Button>
-        </section>
+        </header>
+        <ThreadWorkbench />
       </main>
       <CommandApprovalSurface />
     </div>

@@ -5,12 +5,14 @@ import { pathToFileURL } from 'node:url';
 
 import { registerConnectionIpc } from '@/main/app-server/connection-ipc';
 import { registerCommandApprovalIpc } from '@/main/app-server/command-approval-ipc';
+import { registerConversationIpc } from '@/main/app-server/conversation-ipc';
 import { ConnectionSupervisor } from '@/main/app-server/connection-supervisor';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
 let disposeConnectionIpc: (() => void) | null = null;
 let disposeCommandApprovalIpc: (() => void) | null = null;
+let disposeConversationIpc: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -96,6 +98,11 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
+  disposeConversationIpc = registerConversationIpc({
+    controller: supervisor.conversation,
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
   createWindow();
   void supervisor.start();
 };
@@ -127,5 +134,7 @@ if (started) {
     disposeConnectionIpc = null;
     disposeCommandApprovalIpc?.();
     disposeCommandApprovalIpc = null;
+    disposeConversationIpc?.();
+    disposeConversationIpc = null;
   });
 }

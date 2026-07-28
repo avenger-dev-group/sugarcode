@@ -76,6 +76,7 @@
   --border: rgb(from var(--primary) r g b / 12%);
   --input: rgb(from var(--primary) r g b / 16%);
   --ring: var(--primary);
+  --shadow-soft: rgb(from var(--primary) r g b / 8%);
 }
 
 @layer base {
@@ -100,4 +101,12 @@
   #root {
     min-height: 100vh;
   }
+}
+
+@utility workbench-grid {
+  background-image:
+    linear-gradient(to right, rgb(from var(--primary) r g b / 3%) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(from var(--primary) r g b / 3%) 1px, transparent 1px);
+  background-size: 2rem 2rem;
+  mask-image: linear-gradient(to bottom, black, transparent 72%);
 }
