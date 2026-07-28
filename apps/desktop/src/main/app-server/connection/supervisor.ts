@@ -304,7 +304,17 @@ export class ConnectionSupervisor {
       }
       await this.client.initialized();
       if (!this.shuttingDown && this.snapshot.status === 'connecting') {
-        this.conversation.connectionReady();
+        const restored =
+          await this.conversation.restoreLatestActiveThread();
+        if (
+          this.shuttingDown ||
+          this.snapshot.status !== 'connecting'
+        ) {
+          return;
+        }
+        if (restored) {
+          this.conversation.connectionReady();
+        }
         this.transition('ready');
       }
     } catch (error) {

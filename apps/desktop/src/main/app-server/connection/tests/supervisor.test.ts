@@ -52,6 +52,10 @@ type InitializeOverrides = Readonly<{
   family?: string;
   os?: string;
   arch?: string;
+  latestThread?: Readonly<{
+    id: string;
+    turns: readonly unknown[];
+  }>;
 }>;
 
 const attachInitializeServer = (
@@ -91,6 +95,33 @@ const attachInitializeServer = (
                 version:
                   overrides.version ?? SUGARCODE_PRODUCT_VERSION,
               },
+            },
+          })}\n`,
+        );
+      } else if (message.method === 'thread/list') {
+        child.stdout.write(
+          `${JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              data: overrides.latestThread
+                ? [{ id: overrides.latestThread.id }]
+                : [],
+              nextCursor: null,
+            },
+          })}\n`,
+        );
+      } else if (
+        message.method === 'thread/resume' &&
+        overrides.latestThread
+      ) {
+        child.stdout.write(
+          `${JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              thread: { id: overrides.latestThread.id },
+              turns: overrides.latestThread.turns,
             },
           })}\n`,
         );
@@ -147,6 +178,50 @@ describe('ConnectionSupervisor', () => {
     supervisor.shutdown();
     expect(child.kill).toHaveBeenCalledOnce();
     expect(supervisor.getSnapshot().status).toBe('closed');
+  });
+
+  it('restores the latest active durable Thread before becoming ready', async () => {
+    const child = new FakeChild();
+    const { supervisor } = createSupervisor(child, {
+      latestThread: {
+        id: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000001',
+            status: 'completed',
+            items: [
+              {
+                type: 'userMessage',
+                id: 'item_0000000000000001',
+                text: 'Recovered in Main.',
+              },
+              {
+                type: 'agentMessage',
+                id: 'item_0000000000000002',
+                text: 'Durable response.',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    await supervisor.start();
+    expect(supervisor.getSnapshot().status).toBe('ready');
+    expect(supervisor.conversation.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          status: 'completed',
+          messages: [
+            { role: 'user', text: 'Recovered in Main.' },
+            { role: 'agent', text: 'Durable response.' },
+          ],
+        },
+      ],
+    });
+    supervisor.shutdown();
   });
 
   it('denies the known command approval request without exposing Renderer UI', async () => {

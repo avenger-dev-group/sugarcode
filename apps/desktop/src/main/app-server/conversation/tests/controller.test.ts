@@ -7,7 +7,9 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConversationController } from '../controller';
+import type { ResumeSnapshot } from '../protocol';
 import type { ConversationRpc } from '../rpc-client';
+import { RpcResponseError } from '../../transport/jsonl-client';
 
 type Deferred<Value> = Readonly<{
   promise: Promise<Value>;
@@ -40,9 +42,124 @@ const createHarness = (rpc: ConversationRpc) => {
 };
 
 describe('ConversationController', () => {
+  it('restores the latest active Thread before continuing it', async () => {
+    const startThread = vi.fn();
+    const startTurn = vi.fn(
+      async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000002', status: 'inProgress' },
+      }),
+    );
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(
+        async () => 'thr_0000000000000001',
+      ),
+      resumeThread: vi.fn(async (): Promise<ResumeSnapshot> => ({
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000001',
+            status: 'completed',
+            items: [
+              {
+                type: 'userMessage',
+                id: 'item_0000000000000001',
+                text: 'Recovered input.',
+              },
+              {
+                type: 'agentMessage',
+                id: 'item_0000000000000002',
+                text: 'Recovered output.',
+              },
+            ],
+          },
+        ],
+      })),
+      startThread,
+      startTurn,
+      interruptTurn: vi.fn(),
+    };
+    const onProtocolFailure = vi.fn();
+    const controller = new ConversationController({
+      getRpc: () => rpc,
+      onProtocolFailure,
+    });
+
+    await expect(
+      controller.restoreLatestActiveThread(),
+    ).resolves.toBe(true);
+    expect(controller.getSnapshot().phase).toBe('unavailable');
+    controller.connectionReady();
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          messages: [
+            { role: 'user', text: 'Recovered input.' },
+            { role: 'agent', text: 'Recovered output.' },
+          ],
+        },
+      ],
+    });
+
+    await expect(
+      controller.startTurn('Continue the recovered Thread.'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    expect(startThread).not.toHaveBeenCalled();
+    expect(startTurn).toHaveBeenCalledWith(
+      'thr_0000000000000001',
+      'Continue the recovered Thread.',
+      expect.any(AbortSignal),
+    );
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+  });
+
+  it('starts idle for an empty home and fails closed on recovery RPC error', async () => {
+    const emptyRpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(),
+      startTurn: vi.fn(),
+      interruptTurn: vi.fn(),
+    };
+    const empty = new ConversationController({
+      getRpc: () => emptyRpc,
+      onProtocolFailure: vi.fn(),
+    });
+    await expect(empty.restoreLatestActiveThread()).resolves.toBe(true);
+    empty.connectionReady();
+    expect(empty.getSnapshot()).toMatchObject({
+      phase: 'idle',
+      turns: [],
+    });
+
+    const failedRpc: ConversationRpc = {
+      ...emptyRpc,
+      findLatestActiveThread: vi.fn(async () => {
+        throw new RpcResponseError(-32002, 'State unavailable');
+      }),
+    };
+    const failed = new ConversationController({
+      getRpc: () => failedRpc,
+      onProtocolFailure: vi.fn(),
+    });
+    await expect(failed.restoreLatestActiveThread()).resolves.toBe(false);
+    expect(failed.getSnapshot()).toMatchObject({
+      phase: 'unavailable',
+      notice: {
+        kind: 'requestFailed',
+        summary: 'The durable conversation could not be restored safely.',
+      },
+    });
+  });
+
   it('buffers lifecycle delivered beside the accepted response and projects durable text', async () => {
     const turnResponse = deferred<TurnStartResponse>();
     const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
       startThread: vi.fn(async (): Promise<ThreadStartResponse> => ({
         thread: { id: 'thr_0000000000000001' },
       })),
@@ -183,6 +300,8 @@ describe('ConversationController', () => {
   it('treats interrupt response as acknowledgement after the terminal lifecycle', async () => {
     const interruptResponse = deferred<TurnInterruptResponse>();
     const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
@@ -245,6 +364,8 @@ describe('ConversationController', () => {
 
   it('rejects invalid actions and fails closed on cross-Turn lifecycle', async () => {
     const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),

@@ -13,6 +13,7 @@ import {
   type ConversationLifecycle,
   parseConversationLifecycle,
 } from './protocol';
+import { recoverConversation } from './recovery';
 import type { ConversationRpc } from './rpc-client';
 import {
   ConnectionClosedError,
@@ -74,6 +75,60 @@ export class ConversationController {
   subscribe = (listener: ConversationStateListener): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  };
+
+  restoreLatestActiveThread = async (): Promise<boolean> => {
+    const rpc = this.getRpc();
+    if (
+      !rpc ||
+      this.phase !== 'unavailable' ||
+      this.threadId ||
+      this.turns.length > 0
+    ) {
+      return false;
+    }
+
+    const abortController = new AbortController();
+    this.actionAbortController = abortController;
+    try {
+      const threadId = await rpc.findLatestActiveThread(
+        abortController.signal,
+      );
+      if (!threadId) {
+        return true;
+      }
+      const snapshot = await rpc.resumeThread(
+        threadId,
+        abortController.signal,
+      );
+      const recovered = recoverConversation(threadId, snapshot);
+      this.threadId = recovered.threadId;
+      this.turns = recovered.turns.map((turn) => ({
+        id: turn.id,
+        status: turn.status,
+        messages: turn.messages.map((message) => ({ ...message })),
+        ...(turn.error ? { error: { ...turn.error } } : {}),
+      }));
+      return true;
+    } catch (error) {
+      if (error instanceof ConnectionClosedError || isAbortError(error)) {
+        throw error;
+      }
+      if (error instanceof RpcResponseError) {
+        this.notice = {
+          kind: 'requestFailed',
+          summary: 'The durable conversation could not be restored safely.',
+        };
+        this.publish();
+        return false;
+      }
+      this.onProtocolFailure();
+      return false;
+    } finally {
+      if (this.actionAbortController === abortController) {
+        this.actionAbortController = null;
+      }
+    }
   };
 
   connectionReady = (): void => {

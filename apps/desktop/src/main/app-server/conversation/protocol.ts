@@ -2,8 +2,10 @@ import type {
   AgentMessageDeltaNotification,
   ItemCompletedNotification,
   ItemStartedNotification,
+  ThreadListResponse,
   ThreadStartResponse,
   ThreadStartedNotification,
+  TurnSnapshotStatus,
   TurnCompletedNotification,
   TurnError,
   TurnInterruptResponse,
@@ -17,6 +19,25 @@ type TextItem = Extract<
   ItemStartedNotification['item'],
   { type: 'userMessage' | 'agentMessage' }
 >;
+
+export type ResumeItem =
+  | TextItem
+  | Readonly<{
+      type: 'other';
+      id: string;
+    }>;
+
+export type ResumeTurn = Readonly<{
+  id: string;
+  status: TurnSnapshotStatus;
+  items: readonly ResumeItem[];
+  error?: TurnError;
+}>;
+
+export type ResumeSnapshot = Readonly<{
+  threadId: string;
+  turns: readonly ResumeTurn[];
+}>;
 
 export type ConversationLifecycle =
   | Readonly<{
@@ -127,6 +148,82 @@ export const parseThreadStartResponse = (
     throw new Error('Invalid thread/start response.');
   }
   return { thread: { id: value.thread.id } };
+};
+
+export const parseThreadListResponse = (
+  value: unknown,
+): ThreadListResponse => {
+  if (!isRecord(value) || !Array.isArray(value.data)) {
+    throw new Error('Invalid thread/list response.');
+  }
+  if (value.data.length > 1) {
+    throw new Error('Invalid thread/list response.');
+  }
+  const nextCursor = value.nextCursor;
+  let parsedNextCursor: string | null;
+  if (nextCursor === null) {
+    parsedNextCursor = null;
+  } else if (isId(nextCursor)) {
+    parsedNextCursor = nextCursor;
+  } else {
+    throw new Error('Invalid thread/list response.');
+  }
+  const data = value.data.map((thread) => {
+    if (!isRecord(thread) || !isId(thread.id)) {
+      throw new Error('Invalid Thread in thread/list response.');
+    }
+    return { id: thread.id };
+  });
+  return {
+    data,
+    nextCursor: parsedNextCursor,
+  };
+};
+
+const parseResumeItem = (value: unknown): ResumeItem => {
+  if (!isRecord(value) || !isId(value.id) || typeof value.type !== 'string') {
+    throw new Error('Invalid Item in thread/resume response.');
+  }
+  if (value.type !== 'userMessage' && value.type !== 'agentMessage') {
+    return { type: 'other', id: value.id };
+  }
+  if (typeof value.text !== 'string') {
+    throw new Error('Invalid text Item in thread/resume response.');
+  }
+  return {
+    type: value.type,
+    id: value.id,
+    text: value.text,
+  };
+};
+
+export const parseThreadResumeResponse = (
+  value: unknown,
+): ResumeSnapshot => {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.thread) ||
+    !isId(value.thread.id) ||
+    !Array.isArray(value.turns)
+  ) {
+    throw new Error('Invalid thread/resume response.');
+  }
+  const turns = value.turns.map((turn): ResumeTurn => {
+    if (!isRecord(turn) || !Array.isArray(turn.items)) {
+      throw new Error('Invalid Turn in thread/resume response.');
+    }
+    const parsedTurn = parseTurn(turn);
+    return {
+      id: parsedTurn.id,
+      status: parsedTurn.status,
+      items: turn.items.map(parseResumeItem),
+      ...(parsedTurn.error ? { error: parsedTurn.error } : {}),
+    };
+  });
+  return {
+    threadId: value.thread.id,
+    turns,
+  };
 };
 
 export const parseTurnStartResponse = (

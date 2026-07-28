@@ -18,18 +18,15 @@ const RESPONSE_BODY = [
 type ProviderCapture = Readonly<{
   server: Server;
   port: number;
-  request: Promise<Readonly<{ headers: string; body: unknown }>>;
+  requests: Array<Readonly<{ headers: string; body: unknown }>>;
 }>;
 
-const startProvider = async (): Promise<ProviderCapture> => {
-  let resolveRequest!: (
-    value: Readonly<{ headers: string; body: unknown }>,
-  ) => void;
-  const request = new Promise<
+const startProvider = async (
+  respond = true,
+): Promise<ProviderCapture> => {
+  const requests: Array<
     Readonly<{ headers: string; body: unknown }>
-  >((resolve) => {
-    resolveRequest = resolve;
-  });
+  > = [];
   const server = createServer((socket) => {
     let bytes = Buffer.alloc(0);
     let responded = false;
@@ -54,12 +51,15 @@ const startProvider = async (): Promise<ProviderCapture> => {
         return;
       }
       responded = true;
-      resolveRequest({
+      requests.push({
         headers,
         body: JSON.parse(
           bytes.subarray(bodyStart, bodyStart + length).toString('utf8'),
         ) as unknown,
       });
+      if (!respond) {
+        return;
+      }
       socket.end(
         `HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: ${Buffer.byteLength(RESPONSE_BODY)}\r\nConnection: close\r\n\r\n${RESPONSE_BODY}`,
       );
@@ -73,7 +73,7 @@ const startProvider = async (): Promise<ProviderCapture> => {
   if (!address || typeof address === 'string') {
     throw new Error('Loopback provider did not expose a TCP port.');
   }
-  return { server, port: address.port, request };
+  return { server, port: address.port, requests };
 };
 
 const closeServer = (server: Server): Promise<void> =>
@@ -92,7 +92,7 @@ afterEach(async () => {
 });
 
 describe('real Desktop text Agent Turn', () => {
-  it('projects one durable streamed Turn from the repository CLI', async () => {
+  it('restores and continues one durable Thread across Desktop CLI processes', async () => {
     const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
     temporaryHomes.push(home);
     const provider = await startProvider();
@@ -108,29 +108,32 @@ describe('real Desktop text Agent Turn', () => {
         '',
       ].join('\n'),
     );
-    const supervisor = new ConnectionSupervisor({
-      clientVersion: '1.0.0',
-      desktopAppPath: process.cwd(),
-      environment: {
-        SUGARCODE_HOME: home,
-        HOME: process.env.HOME,
-        TMPDIR: process.env.TMPDIR,
-        TEMP: process.env.TEMP,
-        TMP: process.env.TMP,
-        SYSTEMROOT: process.env.SYSTEMROOT,
-        WINDIR: process.env.WINDIR,
-      },
-    });
+    const createSupervisor = (): ConnectionSupervisor =>
+      new ConnectionSupervisor({
+        clientVersion: '1.0.0',
+        desktopAppPath: process.cwd(),
+        environment: {
+          SUGARCODE_HOME: home,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          SYSTEMROOT: process.env.SYSTEMROOT,
+          WINDIR: process.env.WINDIR,
+        },
+      });
+    const first = createSupervisor();
+    let second: ConnectionSupervisor | null = null;
 
     try {
-      await supervisor.start();
-      expect(supervisor.getSnapshot().status).toBe('ready');
+      await first.start();
+      expect(first.getSnapshot().status).toBe('ready');
       await expect(
-        supervisor.conversation.startTurn('Keep this input exact: 雪'),
+        first.conversation.startTurn('Keep this input exact: 雪'),
       ).resolves.toEqual({ accepted: true, reason: 'accepted' });
       await vi.waitFor(
         () => {
-          expect(supervisor.conversation.getSnapshot()).toMatchObject({
+          expect(first.conversation.getSnapshot()).toMatchObject({
             phase: 'ready',
             turns: [
               {
@@ -153,12 +156,14 @@ describe('real Desktop text Agent Turn', () => {
         },
         { timeout: 10_000 },
       );
-      const captured = await provider.request;
-      expect(captured.headers).toMatch(
+      expect(provider.requests).toHaveLength(1);
+      expect(provider.requests[0]?.headers).toMatch(
         /^POST \/v1\/chat\/completions HTTP\/1\.1\r\n/,
       );
-      expect(captured.headers.toLowerCase()).not.toContain('authorization:');
-      expect(captured.body).toMatchObject({
+      expect(provider.requests[0]?.headers.toLowerCase()).not.toContain(
+        'authorization:',
+      );
+      expect(provider.requests[0]?.body).toMatchObject({
         model: 'desktop-fixture-model',
         messages: [
           {
@@ -167,8 +172,147 @@ describe('real Desktop text Agent Turn', () => {
           },
         ],
       });
+
+      first.shutdown();
+      second = createSupervisor();
+      await second.start();
+      expect(second.getSnapshot().status).toBe('ready');
+      expect(second.conversation.getSnapshot()).toMatchObject({
+        phase: 'ready',
+        turns: [
+          {
+            status: 'completed',
+            messages: [
+              {
+                role: 'user',
+                text: 'Keep this input exact: 雪',
+                status: 'completed',
+              },
+              {
+                role: 'agent',
+                text: 'Durable response.',
+                status: 'completed',
+              },
+            ],
+          },
+        ],
+      });
+
+      await expect(
+        second.conversation.startTurn('Continue after restart.'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      await vi.waitFor(
+        () => {
+          expect(second?.conversation.getSnapshot()).toMatchObject({
+            phase: 'ready',
+            turns: [
+              { status: 'completed' },
+              {
+                status: 'completed',
+                messages: [
+                  { role: 'user', text: 'Continue after restart.' },
+                  { role: 'agent', text: 'Durable response.' },
+                ],
+              },
+            ],
+          });
+          expect(provider.requests).toHaveLength(2);
+        },
+        { timeout: 10_000 },
+      );
+      expect(provider.requests[1]?.body).toMatchObject({
+        messages: [
+          {
+            role: 'user',
+            content: 'Keep this input exact: 雪',
+          },
+          {
+            role: 'assistant',
+            content: 'Durable response.',
+          },
+          {
+            role: 'user',
+            content: 'Continue after restart.',
+          },
+        ],
+      });
     } finally {
-      supervisor.shutdown();
+      first.shutdown();
+      second?.shutdown();
+    }
+  });
+
+  it('accepts only Core durable interruption after an active process exits', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
+    temporaryHomes.push(home);
+    const provider = await startProvider(false);
+    providers.push(provider.server);
+    await writeFile(
+      path.join(home, 'config.toml'),
+      [
+        'schema_version = 1',
+        '[model]',
+        'api_format = "openai-chat-completions"',
+        `endpoint = "http://127.0.0.1:${provider.port}/v1/chat/completions"`,
+        'model = "desktop-fixture-model"',
+        '',
+      ].join('\n'),
+    );
+    const createSupervisor = (): ConnectionSupervisor =>
+      new ConnectionSupervisor({
+        clientVersion: '1.0.0',
+        desktopAppPath: process.cwd(),
+        environment: {
+          SUGARCODE_HOME: home,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          SYSTEMROOT: process.env.SYSTEMROOT,
+          WINDIR: process.env.WINDIR,
+        },
+      });
+    const first = createSupervisor();
+    let second: ConnectionSupervisor | null = null;
+
+    try {
+      await first.start();
+      await expect(
+        first.conversation.startTurn('Recover this interrupted Turn.'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      await vi.waitFor(
+        () => {
+          expect(first.conversation.getSnapshot().phase).toBe(
+            'inProgress',
+          );
+          expect(provider.requests).toHaveLength(1);
+        },
+        { timeout: 10_000 },
+      );
+
+      first.shutdown();
+      second = createSupervisor();
+      await second.start();
+      expect(second.getSnapshot().status).toBe('ready');
+      expect(second.conversation.getSnapshot()).toMatchObject({
+        phase: 'ready',
+        turns: [
+          {
+            status: 'interrupted',
+            messages: [
+              {
+                role: 'user',
+                text: 'Recover this interrupted Turn.',
+                status: 'completed',
+              },
+            ],
+          },
+        ],
+      });
+      expect(provider.requests).toHaveLength(1);
+    } finally {
+      first.shutdown();
+      second?.shutdown();
     }
   });
 });

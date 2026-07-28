@@ -143,6 +143,28 @@ const run = async (): Promise<void> => {
   let turnSequence = 0;
   let resolveInterrupt: (() => void) | null = null;
   const conversationRpc: ConversationRpc = {
+    findLatestActiveThread: async () => 'thr_0000000000000100',
+    resumeThread: async () => ({
+      threadId: 'thr_0000000000000100',
+      turns: [
+        {
+          id: 'turn_0000000000000099',
+          status: 'completed',
+          items: [
+            {
+              type: 'userMessage',
+              id: 'item_0000000000000098',
+              text: 'Recovered Electron input.',
+            },
+            {
+              type: 'agentMessage',
+              id: 'item_0000000000000099',
+              text: 'Recovered Electron answer.',
+            },
+          ],
+        },
+      ],
+    }),
     startThread: async () => ({
       thread: { id: 'thr_0000000000000100' },
     }),
@@ -168,6 +190,9 @@ const run = async (): Promise<void> => {
     getRpc: () => conversationRpc,
     onProtocolFailure: () => lifecycleFailures.push('conversation-protocol'),
   });
+  if (!(await conversation.restoreLatestActiveThread())) {
+    throw new Error('Electron conversation recovery failed.');
+  }
   conversation.connectionReady();
   const rendererPath = path.join(
     __dirname,
@@ -220,6 +245,15 @@ const run = async (): Promise<void> => {
   await window.loadFile(rendererPath);
   window.show();
   await evaluate('window.sugarcode.getCommandApprovalState()');
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.body.textContent?.includes(
+          'Recovered Electron answer.',
+        ) === true`,
+      ),
+    'recovered Electron conversation',
+  );
 
   const sendConversationInput = async (input: string): Promise<void> => {
     await evaluate(`(() => {

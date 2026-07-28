@@ -1,0 +1,189 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  parseThreadListResponse,
+  parseThreadResumeResponse,
+} from '../protocol';
+import { recoverConversation } from '../recovery';
+
+describe('conversation recovery', () => {
+  it('parses one latest active Thread and projects terminal text only', () => {
+    const listed = parseThreadListResponse({
+      data: [{ id: 'thr_0000000000000002' }],
+      nextCursor: 'thr_0000000000000001',
+    });
+    expect(listed.data).toEqual([{ id: 'thr_0000000000000002' }]);
+
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000002' },
+      turns: [
+        {
+          id: 'turn_0000000000000003',
+          status: 'completed',
+          items: [
+            {
+              type: 'userMessage',
+              id: 'item_0000000000000004',
+              text: 'Persist this.',
+            },
+            {
+              type: 'toolCall',
+              id: 'item_0000000000000005',
+              callId: 'call_1',
+              name: 'workspace/read',
+              path: 'notes.txt',
+            },
+            {
+              type: 'agentMessage',
+              id: 'item_0000000000000006',
+              text: 'Recovered answer.',
+            },
+          ],
+        },
+        {
+          id: 'turn_0000000000000007',
+          status: 'failed',
+          items: [],
+          error: { kind: 'transport', retryable: true },
+        },
+        {
+          id: 'turn_0000000000000008',
+          status: 'interrupted',
+          items: [],
+        },
+      ],
+    });
+
+    expect(
+      recoverConversation('thr_0000000000000002', resumed),
+    ).toEqual({
+      threadId: 'thr_0000000000000002',
+      turns: [
+        {
+          id: 'turn_0000000000000003',
+          status: 'completed',
+          messages: [
+            {
+              id: 'item_0000000000000004',
+              role: 'user',
+              text: 'Persist this.',
+              status: 'completed',
+            },
+            {
+              id: 'item_0000000000000006',
+              role: 'agent',
+              text: 'Recovered answer.',
+              status: 'completed',
+            },
+          ],
+        },
+        {
+          id: 'turn_0000000000000007',
+          status: 'failed',
+          messages: [],
+          error: { kind: 'transport', retryable: true },
+        },
+        {
+          id: 'turn_0000000000000008',
+          status: 'interrupted',
+          messages: [],
+        },
+      ],
+    });
+  });
+
+  it('accepts an empty discovery page', () => {
+    expect(
+      parseThreadListResponse({ data: [], nextCursor: null }),
+    ).toEqual({ data: [], nextCursor: null });
+  });
+
+  it.each([
+    {
+      data: [
+        { id: 'thr_0000000000000002' },
+        { id: 'thr_0000000000000001' },
+      ],
+      nextCursor: null,
+    },
+    { data: [{ id: '' }], nextCursor: null },
+    { data: [], nextCursor: 1 },
+  ])('rejects an invalid bounded discovery response', (response) => {
+    expect(() => parseThreadListResponse(response)).toThrow(
+      'Invalid',
+    );
+  });
+
+  it('rejects mismatched, active and duplicate durable snapshots', () => {
+    const active = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'inProgress',
+          items: [],
+        },
+      ],
+    });
+    expect(() =>
+      recoverConversation('thr_0000000000000001', active),
+    ).toThrow('in-progress Turn');
+    expect(() =>
+      recoverConversation('thr_0000000000000002', {
+        threadId: 'thr_0000000000000001',
+        turns: [],
+      }),
+    ).toThrow('another Thread');
+
+    const duplicate = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            {
+              type: 'userMessage',
+              id: 'item_0000000000000001',
+              text: 'First.',
+            },
+            {
+              type: 'agentMessage',
+              id: 'item_0000000000000001',
+              text: 'Duplicate.',
+            },
+          ],
+        },
+      ],
+    });
+    expect(() =>
+      recoverConversation('thr_0000000000000001', duplicate),
+    ).toThrow('duplicate Item ID');
+  });
+
+  it.each([
+    {
+      thread: { id: 'thr_0000000000000001' },
+      turns: {},
+    },
+    {
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            {
+              type: 'userMessage',
+              id: 'item_0000000000000001',
+            },
+          ],
+        },
+      ],
+    },
+  ])('rejects malformed known resume data', (response) => {
+    expect(() => parseThreadResumeResponse(response)).toThrow(
+      'Invalid',
+    );
+  });
+});
