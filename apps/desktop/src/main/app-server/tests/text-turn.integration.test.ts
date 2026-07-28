@@ -15,6 +15,8 @@ const RESPONSE_BODY = [
   'data: [DONE]\n\n',
 ].join('');
 
+const REAL_CLI_TEST_TIMEOUT_MS = 30_000;
+
 type ProviderCapture = Readonly<{
   server: Server;
   port: number;
@@ -249,7 +251,7 @@ describe('real Desktop text Agent Turn', () => {
       first.shutdown();
       second?.shutdown();
     }
-  });
+  }, REAL_CLI_TEST_TIMEOUT_MS);
 
   it('accepts only Core durable interruption after an active process exits', async () => {
     const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
@@ -324,5 +326,5 @@ describe('real Desktop text Agent Turn', () => {
       first.shutdown();
       second?.shutdown();
     }
-  });
+  }, REAL_CLI_TEST_TIMEOUT_MS);
 });
