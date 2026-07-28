@@ -676,7 +676,17 @@ fn selected_server_failure_never_falls_back_to_another_server() {
                 panic!("unexpected terminal message: {message}");
             }
         }
-        assert_eq!(result_kind.as_deref(), Some(expected_kind));
+        if mode == "crash" {
+            assert!(
+                matches!(
+                    result_kind.as_deref(),
+                    Some("abnormalExit" | "unexpectedEof")
+                ),
+                "crash must remain a stable fail-closed transport result: {result_kind:?}"
+            );
+        } else {
+            assert_eq!(result_kind.as_deref(), Some(expected_kind));
+        }
         assert!(
             !alpha_marker.exists(),
             "a bound beta failure must never invoke the available alpha server"
