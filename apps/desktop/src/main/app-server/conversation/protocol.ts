@@ -11,8 +11,7 @@ import type {
   TurnStartedNotification,
 } from '@sugarcode/app-server-protocol';
 
-import type { JsonlClient } from './jsonl-client';
-import type { ServerMessage } from './runtime-validation';
+import type { ServerMessage } from '../transport/server-message';
 
 type TextItem = Extract<
   ItemStartedNotification['item'],
@@ -117,7 +116,9 @@ const parseTurn = (
   };
 };
 
-const parseThreadStartResponse = (value: unknown): ThreadStartResponse => {
+export const parseThreadStartResponse = (
+  value: unknown,
+): ThreadStartResponse => {
   if (
     !isRecord(value) ||
     !isRecord(value.thread) ||
@@ -128,7 +129,9 @@ const parseThreadStartResponse = (value: unknown): ThreadStartResponse => {
   return { thread: { id: value.thread.id } };
 };
 
-const parseTurnStartResponse = (value: unknown): TurnStartResponse => {
+export const parseTurnStartResponse = (
+  value: unknown,
+): TurnStartResponse => {
   if (!isRecord(value)) {
     throw new Error('Invalid turn/start response.');
   }
@@ -139,7 +142,7 @@ const parseTurnStartResponse = (value: unknown): TurnStartResponse => {
   return { turn };
 };
 
-const parseTurnInterruptResponse = (
+export const parseTurnInterruptResponse = (
   value: unknown,
 ): TurnInterruptResponse => {
   if (!isRecord(value) || Object.keys(value).length !== 0) {
@@ -257,54 +260,3 @@ export const parseConversationLifecycle = (
       return null;
   }
 };
-
-export type ConversationRpc = Readonly<{
-  startThread: (signal?: AbortSignal) => Promise<ThreadStartResponse>;
-  startTurn: (
-    threadId: string,
-    input: string,
-    signal?: AbortSignal,
-  ) => Promise<TurnStartResponse>;
-  interruptTurn: (
-    threadId: string,
-    turnId: string,
-    signal?: AbortSignal,
-  ) => Promise<TurnInterruptResponse>;
-}>;
-
-export class ConversationRpcClient implements ConversationRpc {
-  constructor(private readonly client: JsonlClient) {}
-
-  startThread = async (
-    signal?: AbortSignal,
-  ): Promise<ThreadStartResponse> =>
-    parseThreadStartResponse(
-      await this.client.requestReady('thread/start', {}, signal),
-    );
-
-  startTurn = async (
-    threadId: string,
-    input: string,
-    signal?: AbortSignal,
-  ): Promise<TurnStartResponse> =>
-    parseTurnStartResponse(
-      await this.client.requestReady(
-        'turn/start',
-        { threadId, input },
-        signal,
-      ),
-    );
-
-  interruptTurn = async (
-    threadId: string,
-    turnId: string,
-    signal?: AbortSignal,
-  ): Promise<TurnInterruptResponse> =>
-    parseTurnInterruptResponse(
-      await this.client.requestReady(
-        'turn/interrupt',
-        { threadId, turnId },
-        signal,
-      ),
-    );
-}

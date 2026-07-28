@@ -11,14 +11,14 @@ import { isValidConversationInput } from '@/shared/conversation';
 
 import {
   type ConversationLifecycle,
-  type ConversationRpc,
   parseConversationLifecycle,
-} from './conversation-rpc';
+} from './protocol';
+import type { ConversationRpc } from './rpc-client';
 import {
   ConnectionClosedError,
   RpcResponseError,
-} from './jsonl-client';
-import type { ServerMessage } from './runtime-validation';
+} from '../transport/jsonl-client';
+import type { ServerMessage } from '../transport/server-message';
 
 const MAX_BUFFERED_LIFECYCLE = 64;
 

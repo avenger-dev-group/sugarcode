@@ -3,10 +3,10 @@ import started from 'electron-squirrel-startup';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { registerConnectionIpc } from '@/main/app-server/connection-ipc';
-import { registerCommandApprovalIpc } from '@/main/app-server/command-approval-ipc';
-import { registerConversationIpc } from '@/main/app-server/conversation-ipc';
-import { ConnectionSupervisor } from '@/main/app-server/connection-supervisor';
+import { registerCommandApprovalIpc } from '@/main/app-server/command-approval/ipc';
+import { registerConnectionIpc } from '@/main/app-server/connection/ipc';
+import { ConnectionSupervisor } from '@/main/app-server/connection/supervisor';
+import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;

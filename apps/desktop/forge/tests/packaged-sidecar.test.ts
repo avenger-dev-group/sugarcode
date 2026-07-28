@@ -16,7 +16,7 @@ import {
 import {
   getCliTarget,
   requireNativeCliTarget,
-} from '../../src/main/app-server/cli-platform';
+} from '../../src/main/app-server/cli/platform';
 
 type PreparedSidecar = Parameters<typeof smokePackagedSidecar>[0];
 type PackageResult = Parameters<typeof smokePackagedSidecar>[1];

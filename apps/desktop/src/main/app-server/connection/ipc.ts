@@ -8,11 +8,11 @@ import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
 
-import type { ConnectionSupervisor } from './connection-supervisor';
+import type { ConnectionSupervisor } from './supervisor';
 import {
   getTrustedMainWindow,
   isTrustedIpcSender,
-} from './ipc-sender-validation';
+} from '../ipc/trusted-sender';
 
 type ConnectionIpcOptions = Readonly<{
   supervisor: ConnectionSupervisor;

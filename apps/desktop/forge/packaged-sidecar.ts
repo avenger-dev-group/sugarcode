@@ -33,12 +33,12 @@ import path from 'node:path';
 import {
   createCliEnvironment,
   resolvePackagedCli,
-} from '../src/main/app-server/cli-resolution';
+} from '../src/main/app-server/cli/resolution';
 import {
   requireNativeCliTarget,
   type CliTarget,
-} from '../src/main/app-server/cli-platform';
-import { JsonlClient } from '../src/main/app-server/jsonl-client';
+} from '../src/main/app-server/cli/platform';
+import { JsonlClient } from '../src/main/app-server/transport/jsonl-client';
 
 const RESOURCE_DIRECTORY_NAME = 'sugarcode-sidecar';
 const PROCESS_OUTPUT_LIMIT = 64 * 1024;

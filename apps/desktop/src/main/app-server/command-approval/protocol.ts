@@ -5,7 +5,7 @@ import type {
 } from '@sugarcode/app-server-protocol';
 import path from 'node:path';
 
-import type { ServerMessage } from './runtime-validation';
+import type { ServerMessage } from '../transport/server-message';
 
 const MAX_COMMAND_BYTES = 1024;
 const MAX_ARGUMENT_BYTES = 8 * 1024;

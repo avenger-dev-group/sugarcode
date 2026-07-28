@@ -6,8 +6,8 @@ import type {
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { ConversationController } from '../conversation-controller';
-import type { ConversationRpc } from '../conversation-rpc';
+import { ConversationController } from '../controller';
+import type { ConversationRpc } from '../rpc-client';
 
 type Deferred<Value> = Readonly<{
   promise: Promise<Value>;

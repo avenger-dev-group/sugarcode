@@ -11,7 +11,7 @@ import {
   parseInitializeResponse,
   parseServerMessage,
   type ServerMessage,
-} from './runtime-validation';
+} from './server-message';
 
 const DEFAULT_MAX_LINE_BYTES = 1024 * 1024;
 const MAX_ABORTED_IDS = 256;

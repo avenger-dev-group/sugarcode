@@ -17,8 +17,8 @@ import {
   isCommandApprovalCompletionCandidate,
   parseCommandApprovalCompletion,
   parseCommandApprovalRequest,
-} from './command-approval-validation';
-import type { ServerMessage } from './runtime-validation';
+} from './protocol';
+import type { ServerMessage } from '../transport/server-message';
 
 const LOCAL_APPROVAL_WINDOW_MS = 120_000;
 

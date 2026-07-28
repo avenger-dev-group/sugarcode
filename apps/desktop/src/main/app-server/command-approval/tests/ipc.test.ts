@@ -21,8 +21,8 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { registerCommandApprovalIpc } from '../command-approval-ipc';
-import type { CommandApprovalController } from '../command-approval-controller';
+import { registerCommandApprovalIpc } from '../ipc';
+import type { CommandApprovalController } from '../controller';
 
 describe('registerCommandApprovalIpc', () => {
   it('exposes only bounded approval handlers to the owned main frame', async () => {

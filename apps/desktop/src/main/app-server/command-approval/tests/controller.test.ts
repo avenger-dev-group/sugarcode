@@ -9,8 +9,8 @@ import {
   vi,
 } from 'vitest';
 
-import { CommandApprovalController } from '../command-approval-controller';
-import type { ServerMessage } from '../runtime-validation';
+import { CommandApprovalController } from '../controller';
+import type { ServerMessage } from '../../transport/server-message';
 
 const request = (
   approvalId = 'approval/one',

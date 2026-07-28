@@ -26,23 +26,23 @@ import {
   resolveCli,
   type CliResolutionOptions,
   type ResolvedCli,
-} from './cli-resolution';
+} from '../cli/resolution';
 import {
   getCliTarget,
   type ExpectedCliPlatform,
-} from './cli-platform';
+} from '../cli/platform';
 import { DiagnosticTailBuffer } from './diagnostics';
 import {
   ConnectionClosedError,
   JsonlClient,
   RpcResponseError,
-} from './jsonl-client';
-import { CommandApprovalController } from './command-approval-controller';
-import { ConversationController } from './conversation-controller';
+} from '../transport/jsonl-client';
+import { CommandApprovalController } from '../command-approval/controller';
+import { ConversationController } from '../conversation/controller';
 import {
   ConversationRpcClient,
   type ConversationRpc,
-} from './conversation-rpc';
+} from '../conversation/rpc-client';
 
 type SpawnProcess = (
   command: string,

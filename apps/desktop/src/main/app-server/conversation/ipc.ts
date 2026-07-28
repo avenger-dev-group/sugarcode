@@ -7,12 +7,12 @@ import {
   CONVERSATION_STOP_CHANNEL,
 } from '@/shared/conversation';
 
-import type { ConversationController } from './conversation-controller';
+import type { ConversationController } from './controller';
 import {
   getTrustedMainWindow,
   isTrustedIpcSender,
   type IpcSenderValidationOptions,
-} from './ipc-sender-validation';
+} from '../ipc/trusted-sender';
 
 type ConversationIpcOptions = IpcSenderValidationOptions &
   Readonly<{

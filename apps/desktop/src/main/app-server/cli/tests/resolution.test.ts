@@ -9,7 +9,7 @@ import {
   resolveCli,
   resolveDevelopmentCli,
   resolvePackagedCli,
-} from '../cli-resolution';
+} from '../resolution';
 
 const temporaryRoots: string[] = [];
 

@@ -7,12 +7,12 @@ import {
   COMMAND_APPROVAL_STATE_GET_CHANNEL,
 } from '@/shared/command-approval';
 
-import type { CommandApprovalController } from './command-approval-controller';
+import type { CommandApprovalController } from './controller';
 import {
   getTrustedMainWindow,
   isTrustedIpcSender,
   type IpcSenderValidationOptions,
-} from './ipc-sender-validation';
+} from '../ipc/trusted-sender';
 
 type CommandApprovalIpcOptions = IpcSenderValidationOptions &
   Readonly<{

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   parseInitializeResponse,
   parseServerMessage,
-} from '../runtime-validation';
+} from '../server-message';
 
 describe('parseServerMessage', () => {
   it('distinguishes results, errors, notifications, and requests', () => {

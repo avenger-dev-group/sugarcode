@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ConnectionSupervisor } from '../connection-supervisor';
+import { ConnectionSupervisor } from '../connection/supervisor';
 
 const RESPONSE_BODY = [
   'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{"content":"Durable "},"finish_reason":null}]}\n\n',

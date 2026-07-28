@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { ConnectionSupervisor } from '../connection-supervisor';
+import { ConnectionSupervisor } from '../connection/supervisor';
 
 describe('real development app-server handshake', () => {
   it('reaches ready using only the repository debug CLI path', async () => {

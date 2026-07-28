@@ -8,8 +8,8 @@ import { PassThrough } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { ConnectionSupervisor } from '../connection-supervisor';
-import { CliResolutionError } from '../cli-resolution';
+import { ConnectionSupervisor } from '../supervisor';
+import { CliResolutionError } from '../../cli/resolution';
 
 class FakeChild extends EventEmitter {
   readonly stdin = new PassThrough();

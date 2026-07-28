@@ -7,11 +7,11 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { CommandApprovalController } from '@/main/app-server/command-approval-controller';
-import { registerCommandApprovalIpc } from '@/main/app-server/command-approval-ipc';
-import { ConversationController } from '@/main/app-server/conversation-controller';
-import { registerConversationIpc } from '@/main/app-server/conversation-ipc';
-import type { ConversationRpc } from '@/main/app-server/conversation-rpc';
+import { CommandApprovalController } from '@/main/app-server/command-approval/controller';
+import { registerCommandApprovalIpc } from '@/main/app-server/command-approval/ipc';
+import { ConversationController } from '@/main/app-server/conversation/controller';
+import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
+import type { ConversationRpc } from '@/main/app-server/conversation/rpc-client';
 import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';

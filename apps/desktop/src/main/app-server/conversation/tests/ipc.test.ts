@@ -22,8 +22,8 @@ vi.mock('electron', () => ({
   },
 }));
 
-import type { ConversationController } from '../conversation-controller';
-import { registerConversationIpc } from '../conversation-ipc';
+import type { ConversationController } from '../controller';
+import { registerConversationIpc } from '../ipc';
 
 describe('registerConversationIpc', () => {
   it('keeps send, stop and snapshots on the trusted main frame', async () => {
