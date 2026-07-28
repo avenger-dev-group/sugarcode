@@ -8,6 +8,7 @@ use sugarcode_core::McpToolExecutor;
 use sugarcode_core::McpToolPrepareError;
 use sugarcode_core::McpToolRequestState;
 use sugarcode_core::PreparedMcpToolCall;
+use sugarcode_mcp::LoopbackStreamableHttpServerSpec;
 use sugarcode_mcp::McpCallErrorKind;
 use sugarcode_mcp::McpCallOutcome;
 use sugarcode_mcp::McpCallRequestState;
@@ -18,8 +19,23 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 struct McpServerRuntime {
-    spec: StdioServerSpec,
+    spec: McpServerSpec,
     inventory: McpServerInventory,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum McpServerSpec {
+    Stdio(StdioServerSpec),
+    LoopbackStreamableHttp(LoopbackStreamableHttpServerSpec),
+}
+
+impl McpServerSpec {
+    pub(crate) fn id(&self) -> &str {
+        match self {
+            Self::Stdio(spec) => spec.id(),
+            Self::LoopbackStreamableHttp(spec) => spec.id(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -40,7 +56,7 @@ impl fmt::Debug for McpRuntimeAdapter {
 
 impl McpRuntimeAdapter {
     pub(crate) fn new(
-        mut discovered: Vec<(StdioServerSpec, McpServerInventory)>,
+        mut discovered: Vec<(McpServerSpec, McpServerInventory)>,
     ) -> Result<Self, &'static str> {
         if discovered.is_empty() || discovered.len() > sugarcode_state::MAX_MCP_SERVERS {
             return Err("invalid MCP server set");
@@ -150,7 +166,21 @@ impl McpToolExecutor for McpRuntimeAdapter {
                     };
                 }
             };
-            match sugarcode_mcp::call_stdio(&spec, &inventory, &prepared, cancellation).await {
+            let outcome = match &spec {
+                McpServerSpec::Stdio(spec) => {
+                    sugarcode_mcp::call_stdio(spec, &inventory, &prepared, cancellation).await
+                }
+                McpServerSpec::LoopbackStreamableHttp(spec) => {
+                    sugarcode_mcp::call_loopback_streamable_http(
+                        spec,
+                        &inventory,
+                        &prepared,
+                        cancellation,
+                    )
+                    .await
+                }
+            };
+            match outcome {
                 McpCallOutcome::Completed(result) => {
                     McpToolExecutionOutcome::Completed(McpToolExecutionResult {
                         content: result.content().to_owned(),
@@ -228,5 +258,11 @@ fn map_execution_error(kind: McpCallErrorKind) -> McpToolExecutionError {
         McpCallErrorKind::UnsupportedContent => McpToolExecutionError::UnsupportedContent,
         McpCallErrorKind::OutputSchemaMismatch => McpToolExecutionError::OutputSchemaMismatch,
         McpCallErrorKind::ResultTooLarge => McpToolExecutionError::ResultTooLarge,
+        McpCallErrorKind::HttpTransport => McpToolExecutionError::HttpTransport,
+        McpCallErrorKind::HttpStatus => McpToolExecutionError::HttpStatus,
+        McpCallErrorKind::InvalidContentType => McpToolExecutionError::InvalidContentType,
+        McpCallErrorKind::InvalidSse => McpToolExecutionError::InvalidSse,
+        McpCallErrorKind::InvalidSession => McpToolExecutionError::InvalidSession,
+        McpCallErrorKind::SessionExpired => McpToolExecutionError::SessionExpired,
     }
 }

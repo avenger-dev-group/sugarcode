@@ -2330,12 +2330,14 @@ version = "1.0.0"
 dependencies = [
  "jsonschema",
  "libc",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
  "tokio-util",
+ "url",
  "windows-sys 0.61.2",
 ]
 

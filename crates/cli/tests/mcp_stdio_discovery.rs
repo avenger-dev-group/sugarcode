@@ -10,6 +10,8 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::mpsc;
 use std::thread;
 use tempfile::tempdir;
@@ -27,9 +29,279 @@ fn main() {
     selected_server_completes_real_cli_discovery();
     configured_server_is_inert_without_explicit_selection();
     selection_and_discovery_fail_before_rollout_open();
+    streamable_http_selection_is_single_and_not_mixed();
+    streamable_http_ignores_environment_proxy();
     approved_model_driven_call_completes_real_cli_round_trip();
+    approved_streamable_http_call_completes_real_cli_round_trip();
     multiple_selected_servers_complete_one_cross_server_turn();
     selected_server_failure_never_falls_back_to_another_server();
+}
+
+fn streamable_http_ignores_environment_proxy() {
+    let home = tempdir().expect("home");
+    let fixture = HttpMcpFixture::start(4);
+    fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "[[mcp.servers]]\n\
+             id = \"http-fixture\"\n\
+             transport = \"streamable-http\"\n\
+             endpoint = \"http://{}/mcp\"\n",
+            fixture.address
+        ),
+    )
+    .expect("write HTTP MCP config");
+    let output = sugarcode(home.path())
+        .args(["app-server", "--stdio", "--mcp-server", "http-fixture"])
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("ALL_PROXY", "http://127.0.0.1:9")
+        .env("NO_PROXY", "")
+        .output()
+        .expect("run SugarCode");
+    assert!(
+        output.status.success(),
+        "HTTP MCP must bypass environment proxies: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fixture.finish();
+}
+
+fn streamable_http_selection_is_single_and_not_mixed() {
+    let executable = std::env::current_exe().expect("test executable");
+    let cwd = std::env::current_dir().expect("cwd");
+    let inert_home = tempdir().expect("home");
+    fs::write(
+        inert_home.path().join("config.toml"),
+        "[[mcp.servers]]\n\
+         id = \"http-inert\"\n\
+         transport = \"streamable-http\"\n\
+         endpoint = \"http://127.0.0.1:9/mcp\"\n",
+    )
+    .expect("write inert HTTP config");
+    let output = sugarcode(inert_home.path())
+        .args(["app-server", "--stdio"])
+        .output()
+        .expect("run SugarCode");
+    assert!(
+        output.status.success(),
+        "unselected HTTP config must remain inert: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for config in [
+        format!(
+            "[[mcp.servers]]\n\
+             id = \"stdio-fixture\"\n\
+             transport = \"stdio\"\n\
+             executable = {}\n\
+             argv = [\"--fixture-server\", \"ok\"]\n\
+             cwd = {}\n\
+             [[mcp.servers]]\n\
+             id = \"http-fixture\"\n\
+             transport = \"streamable-http\"\n\
+             endpoint = \"http://127.0.0.1:9/mcp\"\n",
+            toml::Value::String(executable.to_string_lossy().into_owned()),
+            toml::Value::String(cwd.to_string_lossy().into_owned()),
+        ),
+        "[[mcp.servers]]\n\
+         id = \"http-one\"\n\
+         transport = \"streamable-http\"\n\
+         endpoint = \"http://127.0.0.1:9/mcp\"\n\
+         [[mcp.servers]]\n\
+         id = \"http-two\"\n\
+         transport = \"streamable-http\"\n\
+         endpoint = \"http://127.0.0.1:10/mcp\"\n"
+            .to_owned(),
+    ] {
+        let home = tempdir().expect("home");
+        fs::write(home.path().join("config.toml"), config).expect("write config");
+        let ids = if fs::read_to_string(home.path().join("config.toml"))
+            .expect("config")
+            .contains("stdio-fixture")
+        {
+            ["stdio-fixture", "http-fixture"]
+        } else {
+            ["http-one", "http-two"]
+        };
+        let output = sugarcode(home.path())
+            .args([
+                "app-server",
+                "--stdio",
+                "--mcp-server",
+                ids[0],
+                "--mcp-server",
+                ids[1],
+            ])
+            .output()
+            .expect("run SugarCode");
+        assert!(!output.status.success());
+        assert_eq!(
+            fs::read_dir(home.path())
+                .expect("read home")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect::<Vec<_>>(),
+            vec![std::ffi::OsString::from("config.toml")],
+            "invalid HTTP selection must fail before rollout open"
+        );
+    }
+}
+
+fn approved_streamable_http_call_completes_real_cli_round_trip() {
+    const TOOL_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_http_fixture_1\",\"type\":\"function\",\"function\":{\"name\":\"mcp__http-fixture__inspect\",\"arguments\":\"{\\\"value\\\":7}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const FINAL_ANSWER: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"HTTP MCP completed.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    let home = tempdir().expect("home");
+    let fixture = HttpMcpFixture::start(9);
+    fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "schema_version = 1\n\
+             [[mcp.servers]]\n\
+             id = \"http-fixture\"\n\
+             transport = \"streamable-http\"\n\
+             endpoint = \"http://{}/mcp\"\n",
+            fixture.address
+        ),
+    )
+    .expect("write HTTP MCP config");
+    let provider = CallProvider::start(home.path(), [TOOL_CALL, FINAL_ANSWER]);
+    let mut child = sugarcode(home.path())
+        .args(["app-server", "--stdio", "--mcp-server", "http-fixture"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn SugarCode");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {"name": "fixture-client", "version": "1.0.0"},
+                "capabilities": {"mcpToolCallApprovals": true}
+            }
+        }),
+    );
+    assert_eq!(
+        read_json(&mut stdout)["result"]["capabilities"]["mcpToolCallApprovals"],
+        true
+    );
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "initialized"}),
+    );
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": "thread", "method": "thread/start", "params": {}}),
+    );
+    let thread = read_json(&mut stdout);
+    let thread_id = thread["result"]["thread"]["id"]
+        .as_str()
+        .expect("thread id")
+        .to_owned();
+    assert_eq!(read_json(&mut stdout)["method"], "thread/started");
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn",
+            "method": "turn/start",
+            "params": {"threadId": thread_id, "input": "Use loopback HTTP MCP."}
+        }),
+    );
+
+    let mut approved = false;
+    let mut attempted = false;
+    let mut resulted = false;
+    loop {
+        let message = read_json(&mut stdout);
+        assert!(message.get("error").is_none(), "protocol error: {message}");
+        if message["method"] == "item/mcpToolCall/requestApproval" {
+            assert!(!approved);
+            assert_eq!(
+                fixture.requests.lock().expect("requests").len(),
+                4,
+                "only eager discovery may reach the endpoint before approval"
+            );
+            let approval_id = message["id"].as_str().expect("approval id").to_owned();
+            send_json(
+                &mut stdin,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": approval_id,
+                    "result": {"decision": "approved"}
+                }),
+            );
+            approved = true;
+        }
+        if message["method"] == "item/completed"
+            && message["params"]["item"]["type"] == "mcpToolExecutionAttempt"
+        {
+            assert!(approved);
+            attempted = true;
+        }
+        if message["method"] == "item/completed"
+            && message["params"]["item"]["type"] == "mcpToolResult"
+        {
+            assert!(attempted);
+            resulted = true;
+        }
+        if message["method"] == "turn/completed" {
+            break;
+        }
+        if matches!(
+            message["method"].as_str(),
+            Some("turn/failed" | "turn/interrupted" | "server/runtimeFailed")
+        ) {
+            panic!("unexpected terminal message: {message}");
+        }
+    }
+    assert!(approved && attempted && resulted);
+    drop(stdin);
+    let output = child.wait_with_output().expect("wait for SugarCode");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let provider_requests = provider.finish();
+    assert_eq!(provider_requests.len(), 2);
+    assert_eq!(
+        provider_requests[0]["tools"][0]["function"]["name"],
+        "mcp__http-fixture__inspect"
+    );
+    assert!(
+        provider_requests[1]["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .any(|message| {
+                message["role"] == "tool"
+                    && message["tool_call_id"] == "call_http_fixture_1"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("\"text\":[\"called\"]"))
+            }),
+        "the next provider round must retain the exact call/result association"
+    );
+    fixture.finish();
 }
 
 fn selected_server_completes_real_cli_discovery() {
@@ -874,6 +1146,228 @@ fn fixture_server(mode: &str, marker: Option<&str>) {
         );
     }
     wait_for_eof(&mut input);
+}
+
+struct HttpMcpFixture {
+    address: std::net::SocketAddr,
+    expected_requests: usize,
+    requests: Arc<Mutex<Vec<HttpMcpRequest>>>,
+    thread: thread::JoinHandle<()>,
+}
+
+impl HttpMcpFixture {
+    fn start(expected_requests: usize) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind HTTP MCP");
+        let address = listener.local_addr().expect("HTTP MCP address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&requests);
+        let thread = thread::spawn(move || {
+            for index in 0..expected_requests {
+                let (mut stream, _) = listener.accept().expect("accept HTTP MCP");
+                let request = read_http_mcp_request(&mut stream);
+                validate_http_mcp_request(index, &request);
+                recorded.lock().expect("requests").push(request);
+                let response = http_mcp_response(index);
+                stream.write_all(&response).expect("HTTP MCP response");
+                stream.flush().expect("HTTP MCP flush");
+            }
+        });
+        Self {
+            address,
+            expected_requests,
+            requests,
+            thread,
+        }
+    }
+
+    fn finish(self) {
+        self.thread.join().expect("HTTP MCP thread");
+        assert_eq!(
+            self.requests.lock().expect("requests").len(),
+            self.expected_requests
+        );
+    }
+}
+
+#[derive(Debug)]
+struct HttpMcpRequest {
+    http_method: String,
+    rpc_method: Option<String>,
+    session_id: Option<String>,
+    protocol_version: Option<String>,
+}
+
+fn validate_http_mcp_request(index: usize, request: &HttpMcpRequest) {
+    let expected_rpc = match index {
+        0 | 4 => Some("initialize"),
+        1 | 5 => Some("notifications/initialized"),
+        2 | 6 => Some("tools/list"),
+        7 => Some("tools/call"),
+        3 | 8 => None,
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        request.rpc_method.as_deref(),
+        expected_rpc,
+        "request {index}"
+    );
+    assert_eq!(
+        request.http_method,
+        if matches!(index, 3 | 8) {
+            "DELETE"
+        } else {
+            "POST"
+        }
+    );
+    if matches!(index, 0 | 4) {
+        assert!(request.session_id.is_none());
+        assert!(request.protocol_version.is_none());
+    } else {
+        assert_eq!(
+            request.session_id.as_deref(),
+            Some(if index < 4 { "session-1" } else { "session-2" })
+        );
+        assert_eq!(
+            request.protocol_version.as_deref(),
+            Some(sugarcode_mcp::MCP_PROTOCOL_VERSION)
+        );
+    }
+}
+
+fn http_mcp_response(index: usize) -> Vec<u8> {
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "protocolVersion": sugarcode_mcp::MCP_PROTOCOL_VERSION,
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "cli-http-fixture", "version": "1.0.0"}
+        }
+    });
+    let list = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+            "tools": [{
+                "name": "inspect",
+                "description": "HTTP inspect",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"value": {"type": "integer"}},
+                    "required": ["value"],
+                    "additionalProperties": false
+                }
+            }]
+        }
+    });
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+            "content": [{"type": "text", "text": "called"}],
+            "structuredContent": {"ok": true},
+            "isError": false
+        }
+    });
+    match index {
+        0 => http_response(
+            "200 OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("Mcp-Session-Id", "session-1"),
+            ],
+            initialize.to_string().as_bytes(),
+        ),
+        1 | 5 => http_response("202 Accepted", &[], b""),
+        2 => http_sse_response(&list, &[]),
+        3 | 8 => http_response("200 OK", &[], b""),
+        4 => http_sse_response(&initialize, &[("Mcp-Session-Id", "session-2")]),
+        6 => http_response(
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            list.to_string().as_bytes(),
+        ),
+        7 => http_sse_response(&call, &[]),
+        _ => unreachable!(),
+    }
+}
+
+fn http_sse_response(value: &Value, extra_headers: &[(&str, &str)]) -> Vec<u8> {
+    let body = format!("event: message\ndata: {value}\n\n");
+    let mut headers = vec![("Content-Type", "text/event-stream")];
+    headers.extend_from_slice(extra_headers);
+    http_response("200 OK", &headers, body.as_bytes())
+}
+
+fn http_response(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        body.len()
+    )
+    .into_bytes();
+    for (name, value) in headers {
+        response.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    response.extend_from_slice(b"\r\n");
+    response.extend_from_slice(body);
+    response
+}
+
+fn read_http_mcp_request(stream: &mut TcpStream) -> HttpMcpRequest {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        let read = stream.read(&mut buffer).expect("HTTP MCP request");
+        assert_ne!(read, 0, "HTTP MCP headers");
+        request.extend_from_slice(&buffer[..read]);
+        if let Some(position) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+    let headers = std::str::from_utf8(&request[..header_end]).expect("HTTP MCP headers");
+    let mut lines = headers.split("\r\n");
+    let http_method = lines
+        .next()
+        .expect("request line")
+        .split_whitespace()
+        .next()
+        .expect("HTTP method")
+        .to_owned();
+    let mut content_length = 0_usize;
+    let mut session_id = None;
+    let mut protocol_version = None;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        match name.to_ascii_lowercase().as_str() {
+            "content-length" => content_length = value.trim().parse().expect("content length"),
+            "mcp-session-id" => session_id = Some(value.trim().to_owned()),
+            "mcp-protocol-version" => protocol_version = Some(value.trim().to_owned()),
+            _ => {}
+        }
+    }
+    while request.len() - header_end < content_length {
+        let read = stream.read(&mut buffer).expect("HTTP MCP body");
+        assert_ne!(read, 0, "HTTP MCP body EOF");
+        request.extend_from_slice(&buffer[..read]);
+    }
+    let body = &request[header_end..header_end + content_length];
+    let rpc_method = if body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<Value>(body)
+            .expect("HTTP MCP JSON")
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    HttpMcpRequest {
+        http_method,
+        rpc_method,
+        session_id,
+        protocol_version,
+    }
 }
 
 struct CallProvider {

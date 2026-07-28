@@ -172,7 +172,7 @@ impl JsonRpcTransport {
     }
 }
 
-fn parse_json_without_duplicates(text: &str) -> Result<Value, serde_json::Error> {
+pub(crate) fn parse_json_without_duplicates(text: &str) -> Result<Value, serde_json::Error> {
     struct StrictValue(Value);
 
     impl<'de> Deserialize<'de> for StrictValue {
@@ -265,7 +265,7 @@ fn parse_json_without_duplicates(text: &str) -> Result<Value, serde_json::Error>
     Ok(value)
 }
 
-fn validate_json_depth(value: &Value, depth: usize) -> Result<(), ()> {
+pub(crate) fn validate_json_depth(value: &Value, depth: usize) -> Result<(), ()> {
     if depth > MAX_JSON_DEPTH {
         return Err(());
     }

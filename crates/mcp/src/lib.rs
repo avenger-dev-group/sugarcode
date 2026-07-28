@@ -3,6 +3,7 @@ mod inventory;
 mod process;
 mod protocol;
 mod result;
+mod streamable_http;
 mod transport;
 
 pub use call::McpCallErrorKind;
@@ -13,6 +14,7 @@ pub use inventory::McpServerInventory;
 pub use inventory::McpToolDefinition;
 pub use inventory::StdioServerSpec;
 pub use result::McpNormalizedResult;
+pub use streamable_http::LoopbackStreamableHttpServerSpec;
 
 use std::error::Error;
 use std::fmt;
@@ -54,6 +56,12 @@ pub enum DiscoveryErrorKind {
     UnsupportedServerRequest,
     InvalidToolInventory,
     ShutdownFailed,
+    HttpTransport,
+    HttpStatus,
+    InvalidContentType,
+    InvalidSse,
+    InvalidSession,
+    SessionExpired,
 }
 
 #[derive(Debug)]
@@ -95,6 +103,12 @@ pub async fn discover_stdio(spec: &StdioServerSpec) -> Result<McpServerInventory
     protocol::discover(spec).await
 }
 
+pub async fn discover_loopback_streamable_http(
+    spec: &LoopbackStreamableHttpServerSpec,
+) -> Result<McpServerInventory, DiscoveryError> {
+    streamable_http::discover(spec).await
+}
+
 pub fn prepare_call(
     inventory: &McpServerInventory,
     callable_name: &str,
@@ -110,6 +124,15 @@ pub async fn call_stdio(
     cancellation: tokio_util::sync::CancellationToken,
 ) -> McpCallOutcome {
     call::execute(spec, inventory, call, cancellation).await
+}
+
+pub async fn call_loopback_streamable_http(
+    spec: &LoopbackStreamableHttpServerSpec,
+    inventory: &McpServerInventory,
+    call: &PreparedMcpCall,
+    cancellation: tokio_util::sync::CancellationToken,
+) -> McpCallOutcome {
+    streamable_http::call(spec, inventory, call, cancellation).await
 }
 
 #[cfg(test)]

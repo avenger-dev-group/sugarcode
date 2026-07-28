@@ -204,12 +204,7 @@ pub async fn run_stdio(
 async fn discover_selected_mcp_servers(
     config: &EffectiveConfig,
     mut selected_server_ids: Vec<String>,
-) -> io::Result<
-    Vec<(
-        sugarcode_mcp::StdioServerSpec,
-        sugarcode_mcp::McpServerInventory,
-    )>,
-> {
+) -> io::Result<Vec<(mcp::McpServerSpec, sugarcode_mcp::McpServerInventory)>> {
     if selected_server_ids.len() > sugarcode_state::MAX_MCP_SERVERS {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -224,10 +219,10 @@ async fn discover_selected_mcp_servers(
         ));
     }
 
-    let specs = selected_server_ids
+    let selected = selected_server_ids
         .into_iter()
         .map(|selected_server_id| {
-            let server = config
+            config
                 .mcp_servers()
                 .iter()
                 .find(|server| server.id() == selected_server_id)
@@ -238,21 +233,61 @@ async fn discover_selected_mcp_servers(
                             "MCP server `{selected_server_id}` is not configured for this process"
                         ),
                     )
-                })?;
-            Ok(sugarcode_mcp::StdioServerSpec::new(
-                server.id().to_owned(),
-                server.executable().to_path_buf(),
-                server.argv().to_vec(),
-                server.cwd().to_path_buf(),
-            ))
+                })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if selected
+        .iter()
+        .any(|server| server.as_loopback_streamable_http().is_some())
+        && (selected.len() != 1 || selected[0].as_loopback_streamable_http().is_none())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Streamable HTTP MCP requires exactly one selected HTTP server",
+        ));
+    }
+    let specs = selected
+        .into_iter()
+        .map(|server| {
+            if let Some(server) = server.as_stdio() {
+                Ok(mcp::McpServerSpec::Stdio(
+                    sugarcode_mcp::StdioServerSpec::new(
+                        server.id().to_owned(),
+                        server.executable().to_path_buf(),
+                        server.argv().to_vec(),
+                        server.cwd().to_path_buf(),
+                    ),
+                ))
+            } else if let Some(server) = server.as_loopback_streamable_http() {
+                sugarcode_mcp::LoopbackStreamableHttpServerSpec::new(
+                    server.id().to_owned(),
+                    server.endpoint().as_str().to_owned(),
+                )
+                .map(mcp::McpServerSpec::LoopbackStreamableHttp)
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "invalid loopback Streamable HTTP MCP endpoint",
+                    )
+                })
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unsupported MCP transport",
+                ))
+            }
         })
         .collect::<io::Result<Vec<_>>>()?;
 
     let mut discovered = Vec::with_capacity(specs.len());
     for spec in specs {
-        let inventory = sugarcode_mcp::discover_stdio(&spec)
-            .await
-            .map_err(io::Error::other)?;
+        let inventory = match &spec {
+            mcp::McpServerSpec::Stdio(spec) => sugarcode_mcp::discover_stdio(spec).await,
+            mcp::McpServerSpec::LoopbackStreamableHttp(spec) => {
+                sugarcode_mcp::discover_loopback_streamable_http(spec).await
+            }
+        }
+        .map_err(io::Error::other)?;
         discovered.push((spec, inventory));
     }
     Ok(discovered)

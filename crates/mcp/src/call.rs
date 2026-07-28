@@ -53,6 +53,12 @@ pub enum McpCallErrorKind {
     UnsupportedContent,
     OutputSchemaMismatch,
     ResultTooLarge,
+    HttpTransport,
+    HttpStatus,
+    InvalidContentType,
+    InvalidSse,
+    InvalidSession,
+    SessionExpired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,15 +171,10 @@ async fn execute_inner(
             ));
         }
         transport
-            .send(&json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": call.raw_name,
-                    "arguments": call.arguments,
-                }
-            }))
+            .send(&protocol::tools_call_request(
+                call.raw_name(),
+                call.arguments(),
+            ))
             .await
             .map_err(|error| CallFailure::Discovery(error, McpCallRequestState::NotSent))?;
         request_sent = true;
@@ -244,14 +245,7 @@ async fn receive_call_result(
         let message = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
-                let _ = transport.send(&json!({
-                    "jsonrpc": "2.0",
-                    "method": "notifications/cancelled",
-                    "params": {
-                        "requestId": 3,
-                        "reason": "cancelled",
-                    }
-                })).await;
+                let _ = transport.send(&protocol::cancelled_notification()).await;
                 return Err(CallFailure::Cancelled);
             }
             message = transport.receive(CALL_TIMEOUT) => {
@@ -333,7 +327,10 @@ async fn receive_call_result(
     }
 }
 
-fn discovery_outcome(error: DiscoveryError, request_state: McpCallRequestState) -> McpCallOutcome {
+pub(crate) fn discovery_outcome(
+    error: DiscoveryError,
+    request_state: McpCallRequestState,
+) -> McpCallOutcome {
     let kind = match error.kind() {
         DiscoveryErrorKind::SpawnFailed => McpCallErrorKind::SpawnFailed,
         DiscoveryErrorKind::ProcessControlUnavailable => {
@@ -355,6 +352,12 @@ fn discovery_outcome(error: DiscoveryError, request_state: McpCallRequestState) 
         DiscoveryErrorKind::UnsupportedServerRequest => McpCallErrorKind::UnsupportedServerRequest,
         DiscoveryErrorKind::InvalidToolInventory => McpCallErrorKind::InvalidToolInventory,
         DiscoveryErrorKind::ShutdownFailed => McpCallErrorKind::ShutdownFailed,
+        DiscoveryErrorKind::HttpTransport => McpCallErrorKind::HttpTransport,
+        DiscoveryErrorKind::HttpStatus => McpCallErrorKind::HttpStatus,
+        DiscoveryErrorKind::InvalidContentType => McpCallErrorKind::InvalidContentType,
+        DiscoveryErrorKind::InvalidSse => McpCallErrorKind::InvalidSse,
+        DiscoveryErrorKind::InvalidSession => McpCallErrorKind::InvalidSession,
+        DiscoveryErrorKind::SessionExpired => McpCallErrorKind::SessionExpired,
     };
     McpCallOutcome::Error {
         kind,

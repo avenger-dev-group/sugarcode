@@ -84,6 +84,12 @@ pub enum McpToolExecutionError {
     UnsupportedContent,
     OutputSchemaMismatch,
     ResultTooLarge,
+    HttpTransport,
+    HttpStatus,
+    InvalidContentType,
+    InvalidSse,
+    InvalidSession,
+    SessionExpired,
 }
 
 impl fmt::Display for McpToolExecutionError {
@@ -112,6 +118,12 @@ impl fmt::Display for McpToolExecutionError {
             Self::UnsupportedContent => "unsupportedContent",
             Self::OutputSchemaMismatch => "outputSchemaMismatch",
             Self::ResultTooLarge => "resultTooLarge",
+            Self::HttpTransport => "httpTransport",
+            Self::HttpStatus => "httpStatus",
+            Self::InvalidContentType => "invalidContentType",
+            Self::InvalidSse => "invalidSse",
+            Self::InvalidSession => "invalidSession",
+            Self::SessionExpired => "sessionExpired",
         })
     }
 }

@@ -19,6 +19,7 @@ pub const MAX_CREDENTIAL_REFERENCE_BYTES: usize = 64;
 pub const MAX_MCP_SERVERS: usize = 2;
 pub const MAX_MCP_SERVER_ID_BYTES: usize = 32;
 pub const MAX_MCP_PATH_BYTES: usize = 1024;
+pub const MAX_MCP_ENDPOINT_BYTES: usize = 1024;
 pub const MAX_MCP_ARG_COUNT: usize = 32;
 pub const MAX_MCP_ARG_BYTES: usize = 8 * 1024;
 pub const MAX_MCP_ARGV_BYTES: usize = 32 * 1024;
@@ -132,12 +133,76 @@ impl fmt::Debug for McpStdioServerConfig {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+pub struct McpStreamableHttpServerConfig {
+    id: String,
+    endpoint: Url,
+}
+
+impl McpStreamableHttpServerConfig {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn endpoint(&self) -> &Url {
+        &self.endpoint
+    }
+}
+
+impl fmt::Debug for McpStreamableHttpServerConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpStreamableHttpServerConfig")
+            .field("id", &self.id)
+            .field("endpoint", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum McpServerConfig {
+    Stdio(McpStdioServerConfig),
+    LoopbackStreamableHttp(McpStreamableHttpServerConfig),
+}
+
+impl McpServerConfig {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Stdio(server) => server.id(),
+            Self::LoopbackStreamableHttp(server) => server.id(),
+        }
+    }
+
+    pub fn as_stdio(&self) -> Option<&McpStdioServerConfig> {
+        match self {
+            Self::Stdio(server) => Some(server),
+            Self::LoopbackStreamableHttp(_) => None,
+        }
+    }
+
+    pub fn as_loopback_streamable_http(&self) -> Option<&McpStreamableHttpServerConfig> {
+        match self {
+            Self::Stdio(_) => None,
+            Self::LoopbackStreamableHttp(server) => Some(server),
+        }
+    }
+}
+
+impl fmt::Debug for McpServerConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stdio(server) => server.fmt(formatter),
+            Self::LoopbackStreamableHttp(server) => server.fmt(formatter),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct EffectiveConfig {
     home: SugarCodeHome,
     config_path: PathBuf,
     schema_version: u32,
     model: Option<ModelConfig>,
-    mcp_servers: Vec<McpStdioServerConfig>,
+    mcp_servers: Vec<McpServerConfig>,
 }
 
 impl EffectiveConfig {
@@ -157,7 +222,7 @@ impl EffectiveConfig {
         self.model.as_ref()
     }
 
-    pub fn mcp_servers(&self) -> &[McpStdioServerConfig] {
+    pub fn mcp_servers(&self) -> &[McpServerConfig] {
         &self.mcp_servers
     }
 }
@@ -675,7 +740,7 @@ fn parse_mcp_config(
     value: &toml::Value,
     contents: &str,
     path: &Path,
-) -> Result<Vec<McpStdioServerConfig>, ConfigError> {
+) -> Result<Vec<McpServerConfig>, ConfigError> {
     let table = value
         .as_table()
         .ok_or_else(|| invalid_mcp_field(path, contents, "mcp", "expectedTable"))?;
@@ -732,31 +797,11 @@ fn parse_mcp_server(
     index: usize,
     contents: &str,
     path: &Path,
-) -> Result<McpStdioServerConfig, ConfigError> {
+) -> Result<McpServerConfig, ConfigError> {
     let prefix = format!("mcp.servers[{index}]");
     let table = value
         .as_table()
         .ok_or_else(|| invalid_mcp_field(path, contents, &prefix, "expectedTable"))?;
-    let mut unknown = table
-        .keys()
-        .filter(|key| {
-            !matches!(
-                key.as_str(),
-                "id" | "transport" | "executable" | "argv" | "cwd"
-            )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    unknown.sort();
-    if let Some(field) = unknown.first() {
-        return Err(unknown_field(
-            path,
-            contents,
-            format!("{prefix}.{field}"),
-            field,
-        ));
-    }
-
     let id = required_mcp_string(table, "id", &prefix, contents, path)?;
     if !valid_mcp_server_id(id) {
         return Err(invalid_mcp_field(
@@ -767,16 +812,34 @@ fn parse_mcp_server(
         ));
     }
     let transport = required_mcp_string(table, "transport", &prefix, contents, path)?;
-    if transport != "stdio" {
-        return Err(invalid_mcp_field(
+    match transport {
+        "stdio" => parse_mcp_stdio_server(table, id, &prefix, contents, path),
+        "streamable-http" => parse_mcp_streamable_http_server(table, id, &prefix, contents, path),
+        _ => Err(invalid_mcp_field(
             path,
             contents,
             &format!("{prefix}.transport"),
             "unsupportedTransport",
-        ));
+        )),
     }
-    let executable = required_mcp_path(table, "executable", &prefix, contents, path)?;
-    let cwd = required_mcp_path(table, "cwd", &prefix, contents, path)?;
+}
+
+fn parse_mcp_stdio_server(
+    table: &toml::map::Map<String, toml::Value>,
+    id: &str,
+    prefix: &str,
+    contents: &str,
+    path: &Path,
+) -> Result<McpServerConfig, ConfigError> {
+    reject_unknown_mcp_server_fields(
+        table,
+        &["id", "transport", "executable", "argv", "cwd"],
+        prefix,
+        contents,
+        path,
+    )?;
+    let executable = required_mcp_path(table, "executable", prefix, contents, path)?;
+    let cwd = required_mcp_path(table, "cwd", prefix, contents, path)?;
     let argv_field = format!("{prefix}.argv");
     let argv = table
         .get("argv")
@@ -821,12 +884,105 @@ fn parse_mcp_server(
         ));
     }
 
-    Ok(McpStdioServerConfig {
+    Ok(McpServerConfig::Stdio(McpStdioServerConfig {
         id: id.to_owned(),
         executable,
         argv,
         cwd,
-    })
+    }))
+}
+
+fn parse_mcp_streamable_http_server(
+    table: &toml::map::Map<String, toml::Value>,
+    id: &str,
+    prefix: &str,
+    contents: &str,
+    path: &Path,
+) -> Result<McpServerConfig, ConfigError> {
+    reject_unknown_mcp_server_fields(
+        table,
+        &["id", "transport", "endpoint"],
+        prefix,
+        contents,
+        path,
+    )?;
+    let endpoint = required_mcp_string(table, "endpoint", prefix, contents, path)?;
+    let endpoint = validate_loopback_streamable_http_endpoint(endpoint)
+        .map_err(|kind| invalid_mcp_field(path, contents, &format!("{prefix}.endpoint"), kind))?;
+    Ok(McpServerConfig::LoopbackStreamableHttp(
+        McpStreamableHttpServerConfig {
+            id: id.to_owned(),
+            endpoint,
+        },
+    ))
+}
+
+fn reject_unknown_mcp_server_fields(
+    table: &toml::map::Map<String, toml::Value>,
+    allowed: &[&str],
+    prefix: &str,
+    contents: &str,
+    path: &Path,
+) -> Result<(), ConfigError> {
+    let mut unknown = table
+        .keys()
+        .filter(|key| !allowed.contains(&key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    unknown.sort();
+    if let Some(field) = unknown.first() {
+        return Err(unknown_field(
+            path,
+            contents,
+            format!("{prefix}.{field}"),
+            field,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_loopback_streamable_http_endpoint(raw: &str) -> Result<Url, &'static str> {
+    if raw.is_empty()
+        || raw.len() > MAX_MCP_ENDPOINT_BYTES
+        || raw
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte == b'\\')
+        || raw.contains(['?', '#'])
+    {
+        return Err("invalidEndpoint");
+    }
+    let authority_and_path = raw
+        .strip_prefix("http://127.0.0.1:")
+        .or_else(|| raw.strip_prefix("http://[::1]:"))
+        .ok_or("invalidEndpoint")?;
+    let (port, path) = authority_and_path
+        .split_once('/')
+        .ok_or("invalidEndpoint")?;
+    if port.is_empty()
+        || port.len() > 5
+        || !port.bytes().all(|byte| byte.is_ascii_digit())
+        || port.parse::<u16>().ok().filter(|port| *port != 0).is_none()
+        || path.is_empty()
+    {
+        return Err("invalidEndpoint");
+    }
+    let endpoint = Url::parse(raw).map_err(|_| "invalidEndpoint")?;
+    if endpoint.scheme() != "http"
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.port().is_none()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || endpoint.path() == "/"
+    {
+        return Err("invalidEndpoint");
+    }
+    match endpoint.host() {
+        Some(url::Host::Ipv4(address)) if address.is_loopback() => {}
+        Some(url::Host::Ipv6(address)) if address == std::net::Ipv6Addr::LOCALHOST => {}
+        _ => return Err("invalidEndpoint"),
+    }
+    Ok(endpoint)
 }
 
 fn required_mcp_string<'a>(
@@ -1025,7 +1181,7 @@ fn invalid_model_field(
 
 fn encode_config(
     model: Option<&ModelConfig>,
-    mcp_servers: &[McpStdioServerConfig],
+    mcp_servers: &[McpServerConfig],
 ) -> Result<String, ConfigError> {
     let mut output = format!("schema_version = {}\n", CURRENT_CONFIG_SCHEMA_VERSION);
     if let Some(model) = model {
@@ -1045,18 +1201,27 @@ fn encode_config(
         output.push_str("\n[[mcp.servers]]\n");
         output.push_str("id = ");
         output.push_str(&toml_string(server.id()));
-        output.push_str("\ntransport = \"stdio\"\nexecutable = ");
-        output.push_str(&toml_string(&server.executable().to_string_lossy()));
-        output.push_str("\nargv = [");
-        for (index, argument) in server.argv().iter().enumerate() {
-            if index != 0 {
-                output.push_str(", ");
+        match server {
+            McpServerConfig::Stdio(server) => {
+                output.push_str("\ntransport = \"stdio\"\nexecutable = ");
+                output.push_str(&toml_string(&server.executable().to_string_lossy()));
+                output.push_str("\nargv = [");
+                for (index, argument) in server.argv().iter().enumerate() {
+                    if index != 0 {
+                        output.push_str(", ");
+                    }
+                    output.push_str(&toml_string(argument));
+                }
+                output.push_str("]\ncwd = ");
+                output.push_str(&toml_string(&server.cwd().to_string_lossy()));
+                output.push('\n');
             }
-            output.push_str(&toml_string(argument));
+            McpServerConfig::LoopbackStreamableHttp(server) => {
+                output.push_str("\ntransport = \"streamable-http\"\nendpoint = ");
+                output.push_str(&toml_string(server.endpoint().as_str()));
+                output.push('\n');
+            }
         }
-        output.push_str("]\ncwd = ");
-        output.push_str(&toml_string(&server.cwd().to_string_lossy()));
-        output.push('\n');
     }
     Ok(output)
 }
