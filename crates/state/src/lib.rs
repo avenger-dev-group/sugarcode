@@ -11,6 +11,7 @@ pub use config::ConfigError;
 pub use config::EffectiveConfig;
 pub use config::MAX_CONFIG_BYTES;
 pub use config::MAX_CREDENTIAL_REFERENCE_BYTES;
+pub use config::MAX_MCP_SERVERS;
 pub use config::MAX_MODEL_NAME_BYTES;
 pub use config::McpStdioServerConfig;
 pub use config::ModelApiFormat;

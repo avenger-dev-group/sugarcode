@@ -16,7 +16,7 @@ pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 pub const MAX_MODEL_NAME_BYTES: usize = 256;
 pub const MAX_CREDENTIAL_REFERENCE_BYTES: usize = 64;
-pub const MAX_MCP_SERVERS: usize = 1;
+pub const MAX_MCP_SERVERS: usize = 2;
 pub const MAX_MCP_SERVER_ID_BYTES: usize = 32;
 pub const MAX_MCP_PATH_BYTES: usize = 1024;
 pub const MAX_MCP_ARG_COUNT: usize = 32;
@@ -708,11 +708,23 @@ fn parse_mcp_config(
         ));
     }
 
-    servers
+    let servers = servers
         .iter()
         .enumerate()
         .map(|(index, server)| parse_mcp_server(server, index, contents, path))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut ids = std::collections::BTreeSet::new();
+    for (index, server) in servers.iter().enumerate() {
+        if !ids.insert(server.id()) {
+            return Err(invalid_mcp_field(
+                path,
+                contents,
+                &format!("mcp.servers[{index}].id"),
+                "duplicateServerId",
+            ));
+        }
+    }
+    Ok(servers)
 }
 
 fn parse_mcp_server(

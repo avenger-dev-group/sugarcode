@@ -17,9 +17,14 @@ use sugarcode_model_provider::ModelToolDefinition;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
-pub(crate) struct McpRuntimeAdapter {
+struct McpServerRuntime {
     spec: StdioServerSpec,
     inventory: McpServerInventory,
+}
+
+#[derive(Clone)]
+pub(crate) struct McpRuntimeAdapter {
+    servers: Vec<McpServerRuntime>,
     definitions: Vec<ModelToolDefinition>,
 }
 
@@ -27,30 +32,61 @@ impl fmt::Debug for McpRuntimeAdapter {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("McpRuntimeAdapter")
-            .field("server_id", &self.inventory.server_id())
-            .field("tool_count", &self.inventory.tools().len())
+            .field("server_count", &self.servers.len())
+            .field("tool_count", &self.definitions.len())
             .finish()
     }
 }
 
 impl McpRuntimeAdapter {
-    pub(crate) fn new(spec: StdioServerSpec, inventory: McpServerInventory) -> Self {
-        let definitions = inventory
-            .tools()
-            .iter()
-            .map(|tool| ModelToolDefinition {
-                name: inventory
-                    .callable_name(tool.name())
-                    .expect("inventory tool has a callable name"),
-                description: tool.description().unwrap_or("").to_owned(),
-                parameters: tool.input_schema().clone(),
-            })
-            .collect();
-        Self {
-            spec,
-            inventory,
-            definitions,
+    pub(crate) fn new(
+        mut discovered: Vec<(StdioServerSpec, McpServerInventory)>,
+    ) -> Result<Self, &'static str> {
+        if discovered.is_empty() || discovered.len() > sugarcode_state::MAX_MCP_SERVERS {
+            return Err("invalid MCP server set");
         }
+        discovered.sort_by(|left, right| {
+            left.1
+                .server_id()
+                .as_bytes()
+                .cmp(right.1.server_id().as_bytes())
+        });
+        let mut callable_names = std::collections::BTreeSet::new();
+        let mut definitions = Vec::new();
+        let mut servers = Vec::with_capacity(discovered.len());
+        for (spec, inventory) in discovered {
+            if spec.id() != inventory.server_id()
+                || servers.last().is_some_and(|server: &McpServerRuntime| {
+                    server.inventory.server_id() == inventory.server_id()
+                })
+            {
+                return Err("invalid MCP server identity");
+            }
+            for tool in inventory.tools() {
+                let name = inventory
+                    .callable_name(tool.name())
+                    .ok_or("invalid MCP callable identity")?;
+                if !callable_names.insert(name.clone()) {
+                    return Err("duplicate MCP callable identity");
+                }
+                definitions.push(ModelToolDefinition {
+                    name,
+                    description: tool.description().unwrap_or("").to_owned(),
+                    parameters: tool.input_schema().clone(),
+                });
+            }
+            servers.push(McpServerRuntime { spec, inventory });
+        }
+        Ok(Self {
+            servers,
+            definitions,
+        })
+    }
+
+    fn server_for_callable(&self, callable_name: &str) -> Option<&McpServerRuntime> {
+        self.servers
+            .iter()
+            .find(|server| server.inventory.tool_for_callable(callable_name).is_some())
     }
 }
 
@@ -64,7 +100,10 @@ impl McpToolExecutor for McpRuntimeAdapter {
         callable_name: &str,
         arguments: serde_json::Value,
     ) -> Result<PreparedMcpToolCall, McpToolPrepareError> {
-        let call = sugarcode_mcp::prepare_call(&self.inventory, callable_name, arguments)
+        let server = self
+            .server_for_callable(callable_name)
+            .ok_or(McpToolPrepareError::Unavailable)?;
+        let call = sugarcode_mcp::prepare_call(&server.inventory, callable_name, arguments)
             .map_err(map_prepare_error)?;
         Ok(PreparedMcpToolCall {
             callable_name: call.callable_name().to_owned(),
@@ -80,8 +119,17 @@ impl McpToolExecutor for McpRuntimeAdapter {
         call: PreparedMcpToolCall,
         cancellation: CancellationToken,
     ) -> BoxFuture<'static, McpToolExecutionOutcome> {
-        let spec = self.spec.clone();
-        let inventory = self.inventory.clone();
+        let Some(server) = self.server_for_callable(&call.callable_name) else {
+            return async {
+                McpToolExecutionOutcome::Error {
+                    kind: McpToolExecutionError::InvalidResult,
+                    request_state: McpToolRequestState::NotSent,
+                }
+            }
+            .boxed();
+        };
+        let spec = server.spec.clone();
+        let inventory = server.inventory.clone();
         async move {
             let prepared = match sugarcode_mcp::prepare_call(
                 &inventory,

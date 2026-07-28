@@ -124,9 +124,9 @@ struct AppServerArgs {
     /// Enable sandboxed shell-command writes inside the explicit workspace.
     #[arg(long, requires = "workspace")]
     allow_command_workspace_write: bool,
-    /// Discover one explicitly configured local stdio MCP server before serving.
-    #[arg(long, value_name = "ID")]
-    mcp_server: Option<String>,
+    /// Discover an explicitly configured local stdio MCP server before serving (maximum 2).
+    #[arg(long, value_name = "ID", action = clap::ArgAction::Append)]
+    mcp_server: Vec<String>,
     #[command(subcommand)]
     command: Option<AppServerCommand>,
 }
@@ -292,7 +292,15 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .await?;
             }
-            (false, Some(AppServerCommand::GenerateTs(args)), None, None, false, false, None) => {
+            (
+                false,
+                Some(AppServerCommand::GenerateTs(args)),
+                None,
+                None,
+                false,
+                false,
+                mcp_servers,
+            ) if mcp_servers.is_empty() => {
                 sugarcode_app_server::generate_typescript(&args.out)?;
             }
             (
@@ -302,8 +310,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 None,
                 false,
                 false,
-                None,
-            ) => {
+                mcp_servers,
+            ) if mcp_servers.is_empty() => {
                 sugarcode_app_server::generate_json_schema(&args.out)?;
             }
             _ => {

@@ -175,6 +175,41 @@ fn four_completed_calls_are_valid_but_duplicate_and_fifth_calls_are_rejected() {
     assert_eq!(fs::read(&rollout).expect("after invalid calls"), before);
 }
 
+#[test]
+fn different_server_hashes_are_valid_but_each_server_inventory_stays_frozen() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    begin_mcp_turn(&mut repository, &thread_id);
+
+    for item in completed_call_items_for(1, "alpha", 'a') {
+        repository
+            .append_turn_item(&thread_id, &turn_id, &item)
+            .expect("alpha MCP item");
+    }
+    for item in completed_call_items_for(2, "beta", 'b') {
+        repository
+            .append_turn_item(&thread_id, &turn_id, &item)
+            .expect("beta MCP item");
+    }
+    for item in completed_call_items_for(3, "alpha", 'a') {
+        repository
+            .append_turn_item(&thread_id, &turn_id, &item)
+            .expect("second alpha MCP item");
+    }
+
+    let drifted_alpha = completed_call_items_for(4, "alpha", 'c').remove(0);
+    assert!(matches!(
+        repository.append_turn_item(&thread_id, &turn_id, &drifted_alpha),
+        Err(RolloutError::InvalidRecord {
+            kind: "invalidMcpToolItem"
+        })
+    ));
+}
+
 fn begin_mcp_turn(repository: &mut RolloutRepository, thread_id: &ThreadId) {
     repository
         .begin_turn(
@@ -239,6 +274,14 @@ fn approved_attempt_items() -> Vec<DurableItemSnapshot> {
 }
 
 fn completed_call_items(ordinal: u64) -> Vec<DurableItemSnapshot> {
+    completed_call_items_for(ordinal, "fixture", 'b')
+}
+
+fn completed_call_items_for(
+    ordinal: u64,
+    server_id: &str,
+    inventory_hash_character: char,
+) -> Vec<DurableItemSnapshot> {
     let arguments = serde_json::json!({"value": format!("value-{ordinal}")});
     let bytes = serde_json::to_vec(&arguments).expect("arguments");
     let arguments_sha256 = format!("{:x}", Sha256::digest(&bytes));
@@ -247,25 +290,27 @@ fn completed_call_items(ordinal: u64) -> Vec<DurableItemSnapshot> {
     let item = |offset| ItemId::new(format!("item_{:016}", 2 + (ordinal - 1) * 5 + offset));
     let call_id = format!("call_mcp_{ordinal}");
     let approval_id = format!("approval/mcp/{ordinal}");
+    let name = format!("mcp__{server_id}__inspect");
+    let inventory_sha256 = inventory_hash_character.to_string().repeat(64);
     vec![
         DurableItemSnapshot::McpToolCall {
             id: item(0),
             call_id: call_id.clone(),
-            name: "mcp__fixture__inspect".to_string(),
+            name: name.clone(),
             arguments: arguments.clone(),
             arguments_bytes: bytes.len() as u64,
             arguments_sha256: arguments_sha256.clone(),
-            inventory_sha256: "b".repeat(64),
+            inventory_sha256: inventory_sha256.clone(),
         },
         DurableItemSnapshot::McpToolCallApprovalRequest {
             id: item(1),
             approval_id: approval_id.clone(),
             call_id: call_id.clone(),
-            name: "mcp__fixture__inspect".to_string(),
+            name: name.clone(),
             arguments,
             arguments_bytes: bytes.len() as u64,
             arguments_sha256,
-            inventory_sha256: "b".repeat(64),
+            inventory_sha256: inventory_sha256.clone(),
         },
         DurableItemSnapshot::McpToolCallApprovalDecision {
             id: item(2),
@@ -276,12 +321,12 @@ fn completed_call_items(ordinal: u64) -> Vec<DurableItemSnapshot> {
             id: item(3),
             approval_id,
             call_id: call_id.clone(),
-            inventory_sha256: "b".repeat(64),
+            inventory_sha256,
         },
         DurableItemSnapshot::McpToolResult {
             id: item(4),
             call_id,
-            name: "mcp__fixture__inspect".to_string(),
+            name,
             result: DurableMcpToolResult::Completed {
                 content: content.clone(),
                 is_error: false,

@@ -28,6 +28,8 @@ fn main() {
     configured_server_is_inert_without_explicit_selection();
     selection_and_discovery_fail_before_rollout_open();
     approved_model_driven_call_completes_real_cli_round_trip();
+    multiple_selected_servers_complete_one_cross_server_turn();
+    selected_server_failure_never_falls_back_to_another_server();
 }
 
 fn selected_server_completes_real_cli_discovery() {
@@ -85,6 +87,59 @@ fn selection_and_discovery_fail_before_rollout_open() {
             .collect::<Vec<_>>();
         assert_eq!(entries, vec![std::ffi::OsString::from("config.toml")]);
     }
+
+    let home = tempdir().expect("home");
+    write_multiple_config(
+        home.path(),
+        [("alpha", "ok", None), ("beta", "bad-version", None)],
+    );
+    let output = sugarcode(home.path())
+        .args([
+            "app-server",
+            "--stdio",
+            "--mcp-server",
+            "alpha",
+            "--mcp-server",
+            "beta",
+        ])
+        .output()
+        .expect("run SugarCode");
+    assert!(!output.status.success());
+    assert_eq!(
+        fs::read_dir(home.path())
+            .expect("read home")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<Vec<_>>(),
+        vec![std::ffi::OsString::from("config.toml")],
+        "one failed selected server must fail the complete frozen set before rollout open"
+    );
+
+    let home = tempdir().expect("home");
+    write_config(
+        home.path(),
+        "ok",
+        std::env::current_exe().expect("test executable"),
+    );
+    let output = sugarcode(home.path())
+        .args([
+            "app-server",
+            "--stdio",
+            "--mcp-server",
+            "fixture",
+            "--mcp-server",
+            "fixture",
+        ])
+        .output()
+        .expect("run SugarCode");
+    assert!(!output.status.success());
+    assert_eq!(
+        fs::read_dir(home.path())
+            .expect("read home")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<Vec<_>>(),
+        vec![std::ffi::OsString::from("config.toml")],
+        "duplicate selection must fail before rollout open"
+    );
 }
 
 fn approved_model_driven_call_completes_real_cli_round_trip() {
@@ -295,6 +350,357 @@ fn approved_model_driven_call_completes_real_cli_round_trip() {
     }
 }
 
+fn multiple_selected_servers_complete_one_cross_server_turn() {
+    const ALPHA_CALL_1: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_alpha_1\",\"type\":\"function\",\"function\":{\"name\":\"mcp__alpha__inspect\",\"arguments\":\"{\\\"value\\\":\\\"alpha-one\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const BETA_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_beta_1\",\"type\":\"function\",\"function\":{\"name\":\"mcp__beta__inspect\",\"arguments\":\"{\\\"value\\\":\\\"beta\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const ALPHA_CALL_2: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_alpha_2\",\"type\":\"function\",\"function\":{\"name\":\"mcp__alpha__inspect\",\"arguments\":\"{\\\"value\\\":\\\"alpha-two\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const FINAL_ANSWER: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Both MCP servers completed.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    let home = tempdir().expect("home");
+    let marker_directory = tempdir().expect("marker directory");
+    let alpha_marker = marker_directory.path().join("alpha-called");
+    let beta_marker = marker_directory.path().join("beta-called");
+    write_multiple_config(
+        home.path(),
+        [
+            ("beta", "call", Some(beta_marker.as_path())),
+            ("alpha", "call", Some(alpha_marker.as_path())),
+        ],
+    );
+    let provider = CallProvider::start(
+        home.path(),
+        [ALPHA_CALL_1, BETA_CALL, ALPHA_CALL_2, FINAL_ANSWER],
+    );
+    let mut child = sugarcode(home.path())
+        .args([
+            "app-server",
+            "--stdio",
+            "--mcp-server",
+            "beta",
+            "--mcp-server",
+            "alpha",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn SugarCode");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {"name": "fixture-client", "version": "1.0.0"},
+                "capabilities": {"mcpToolCallApprovals": true}
+            }
+        }),
+    );
+    assert_eq!(
+        read_json(&mut stdout)["result"]["capabilities"]["mcpToolCallApprovals"],
+        true
+    );
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "initialized"}),
+    );
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": "thread", "method": "thread/start", "params": {}}),
+    );
+    let thread = read_json(&mut stdout);
+    let thread_id = thread["result"]["thread"]["id"]
+        .as_str()
+        .expect("thread id")
+        .to_owned();
+    assert_eq!(read_json(&mut stdout)["method"], "thread/started");
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn",
+            "method": "turn/start",
+            "params": {"threadId": thread_id, "input": "Use both MCP servers in order."}
+        }),
+    );
+
+    let mut approval_names = Vec::new();
+    let mut inventory_hashes = Vec::new();
+    let mut durable_results = 0usize;
+    loop {
+        let message = read_json(&mut stdout);
+        assert!(message.get("error").is_none(), "protocol error: {message}");
+        if message["method"] == "item/completed"
+            && message["params"]["item"]["type"] == "mcpToolResult"
+        {
+            durable_results += 1;
+        }
+        if message["method"] == "item/mcpToolCall/requestApproval" {
+            assert_eq!(
+                durable_results,
+                approval_names.len(),
+                "each cross-server proposal must follow the prior durable result"
+            );
+            approval_names.push(
+                message["params"]["name"]
+                    .as_str()
+                    .expect("callable name")
+                    .to_owned(),
+            );
+            inventory_hashes.push(
+                message["params"]["inventorySha256"]
+                    .as_str()
+                    .expect("inventory hash")
+                    .to_owned(),
+            );
+            let approval_id = message["id"].as_str().expect("approval id");
+            send_json(
+                &mut stdin,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": approval_id,
+                    "result": {"decision": "approved"}
+                }),
+            );
+        }
+        if message["method"] == "turn/completed" {
+            break;
+        }
+        if matches!(
+            message["method"].as_str(),
+            Some("turn/failed" | "turn/interrupted" | "server/runtimeFailed")
+        ) {
+            panic!("unexpected terminal message: {message}");
+        }
+    }
+    assert_eq!(
+        approval_names,
+        [
+            "mcp__alpha__inspect",
+            "mcp__beta__inspect",
+            "mcp__alpha__inspect"
+        ]
+    );
+    assert_eq!(durable_results, 3);
+    assert_eq!(inventory_hashes[0], inventory_hashes[2]);
+    assert_ne!(inventory_hashes[0], inventory_hashes[1]);
+    assert_eq!(
+        fs::read_to_string(&alpha_marker)
+            .expect("alpha calls")
+            .lines()
+            .count(),
+        2
+    );
+    assert_eq!(
+        fs::read_to_string(&beta_marker)
+            .expect("beta calls")
+            .lines()
+            .count(),
+        1
+    );
+
+    drop(stdin);
+    let output = child.wait_with_output().expect("wait for SugarCode");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let requests = provider.finish();
+    assert_eq!(requests.len(), 4);
+    for request in &requests {
+        let names = request["tools"]
+            .as_array()
+            .expect("stable MCP definitions")
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["mcp__alpha__inspect", "mcp__beta__inspect"],
+            "built-in-free MCP definitions must sort by raw ASCII server ID"
+        );
+    }
+    for (request_index, expected_results) in [(1, 1), (2, 2), (3, 3)] {
+        let messages = requests[request_index]["messages"]
+            .as_array()
+            .expect("provider messages");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .count(),
+            expected_results,
+            "every round must retain exact prior call/result correlation"
+        );
+    }
+}
+
+fn selected_server_failure_never_falls_back_to_another_server() {
+    const BETA_CALL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_beta_failure\",\"type\":\"function\",\"function\":{\"name\":\"mcp__beta__inspect\",\"arguments\":\"{\\\"value\\\":\\\"beta\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    const FINAL_ANSWER: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"MCP failure observed.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    for (mode, expected_kind) in [
+        ("drift", "inventoryDrift"),
+        ("crash", "abnormalExit"),
+        ("timeout", "timeout"),
+    ] {
+        let home = tempdir().expect("home");
+        let marker_directory = tempdir().expect("marker directory");
+        let alpha_marker = marker_directory.path().join("alpha-called");
+        let beta_marker = marker_directory.path().join("beta-state");
+        write_multiple_config(
+            home.path(),
+            [
+                ("alpha", "call", Some(alpha_marker.as_path())),
+                ("beta", mode, Some(beta_marker.as_path())),
+            ],
+        );
+        let provider = CallProvider::start(home.path(), [BETA_CALL, FINAL_ANSWER]);
+        let mut child = sugarcode(home.path())
+            .args([
+                "app-server",
+                "--stdio",
+                "--mcp-server",
+                "alpha",
+                "--mcp-server",
+                "beta",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn SugarCode");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        send_json(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "initialize",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": 1,
+                    "clientInfo": {"name": "fixture-client", "version": "1.0.0"},
+                    "capabilities": {"mcpToolCallApprovals": true}
+                }
+            }),
+        );
+        assert_eq!(
+            read_json(&mut stdout)["result"]["capabilities"]["mcpToolCallApprovals"],
+            true
+        );
+        send_json(
+            &mut stdin,
+            json!({"jsonrpc": "2.0", "method": "initialized"}),
+        );
+        send_json(
+            &mut stdin,
+            json!({"jsonrpc": "2.0", "id": "thread", "method": "thread/start", "params": {}}),
+        );
+        let thread = read_json(&mut stdout);
+        let thread_id = thread["result"]["thread"]["id"]
+            .as_str()
+            .expect("thread id")
+            .to_owned();
+        assert_eq!(read_json(&mut stdout)["method"], "thread/started");
+        send_json(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "turn",
+                "method": "turn/start",
+                "params": {"threadId": thread_id, "input": "Call beta only."}
+            }),
+        );
+
+        let mut result_kind = None;
+        loop {
+            let message = read_json(&mut stdout);
+            if message["method"] == "item/mcpToolCall/requestApproval" {
+                let approval_id = message["id"].as_str().expect("approval id");
+                send_json(
+                    &mut stdin,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": approval_id,
+                        "result": {"decision": "approved"}
+                    }),
+                );
+            }
+            if message["method"] == "item/completed"
+                && message["params"]["item"]["type"] == "mcpToolResult"
+            {
+                result_kind = message["params"]["item"]["result"]["kind"]
+                    .as_str()
+                    .map(str::to_owned);
+            }
+            if message["method"] == "turn/completed" {
+                break;
+            }
+            if matches!(
+                message["method"].as_str(),
+                Some("turn/failed" | "turn/interrupted" | "server/runtimeFailed")
+            ) {
+                panic!("unexpected terminal message: {message}");
+            }
+        }
+        assert_eq!(result_kind.as_deref(), Some(expected_kind));
+        assert!(
+            !alpha_marker.exists(),
+            "a bound beta failure must never invoke the available alpha server"
+        );
+
+        drop(stdin);
+        let output = child.wait_with_output().expect("wait for SugarCode");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let requests = provider.finish();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["tools"].as_array().map(Vec::len), Some(2));
+        assert!(
+            requests[1]["tools"]
+                .as_array()
+                .is_none_or(|tools| tools.is_empty()),
+            "transport and drift failures must close the sequence without server fallback"
+        );
+    }
+}
+
 fn sugarcode(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sugarcode"));
     command.arg("--home").arg(home);
@@ -337,8 +743,45 @@ fn write_config_with_marker(
     .expect("write config");
 }
 
+fn write_multiple_config<const N: usize>(home: &Path, servers: [(&str, &str, Option<&Path>); N]) {
+    let executable = std::env::current_exe().expect("test executable");
+    let cwd = std::env::current_dir().expect("cwd");
+    let mut config = "schema_version = 1\n".to_string();
+    for (id, mode, marker) in servers {
+        let mut argv = vec![
+            toml::Value::String("--fixture-server".to_owned()),
+            toml::Value::String(mode.to_owned()),
+        ];
+        if let Some(marker) = marker {
+            argv.push(toml::Value::String(marker.to_string_lossy().into_owned()));
+        }
+        config.push_str(&format!(
+            "[[mcp.servers]]\n\
+             id = {}\n\
+             transport = \"stdio\"\n\
+             executable = {}\n\
+             argv = {}\n\
+             cwd = {}\n",
+            toml::Value::String(id.to_owned()),
+            toml::Value::String(executable.to_string_lossy().into_owned()),
+            toml::Value::Array(argv),
+            toml::Value::String(cwd.to_string_lossy().into_owned()),
+        ));
+    }
+    fs::write(home.join("config.toml"), config).expect("write config");
+}
+
 fn fixture_server(mode: &str, marker: Option<&str>) {
     assert!(std::env::var_os("PATH").is_none());
+    let drifted = mode == "drift" && marker.is_some_and(|path| Path::new(path).exists());
+    if mode == "drift" {
+        let mut state = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(marker.expect("drift state marker"))
+            .expect("open drift state marker");
+        writeln!(state, "start").expect("write drift state marker");
+    }
     let mut input = std::io::BufReader::new(std::io::stdin().lock());
     let mut output = std::io::stdout().lock();
     let initialize = read_message(&mut input);
@@ -376,21 +819,23 @@ fn fixture_server(mode: &str, marker: Option<&str>) {
             "id": 2,
             "result": {
                 "tools": [{
-                    "name": "inspect",
+                    "name": if drifted { "changed" } else { "inspect" },
                     "description": "discovery only",
                     "inputSchema": {"type": "object"}
                 }]
             }
         }),
     );
-    if mode == "call" {
-        let call = read_message(&mut input);
+    if matches!(mode, "call" | "crash" | "timeout") {
+        let Some(call) = read_optional_message(&mut input) else {
+            return;
+        };
         assert_eq!(call["id"], 3);
         assert_eq!(call["method"], "tools/call");
         assert_eq!(call["params"]["name"], "inspect");
-        assert_eq!(
-            call["params"]["arguments"],
-            json!({"value": ["arbitrary", 2]})
+        assert!(
+            call["params"]["arguments"]["value"].is_array()
+                || call["params"]["arguments"]["value"].is_string()
         );
         let mut marker = fs::OpenOptions::new()
             .create(true)
@@ -398,6 +843,13 @@ fn fixture_server(mode: &str, marker: Option<&str>) {
             .open(marker.expect("call marker"))
             .expect("open call marker");
         writeln!(marker, "called").expect("write call marker");
+        if mode == "crash" {
+            std::process::exit(7);
+        }
+        if mode == "timeout" {
+            wait_for_eof(&mut input);
+            return;
+        }
         write_message(
             &mut output,
             &json!({
@@ -516,6 +968,12 @@ fn read_message(input: &mut impl BufRead) -> Value {
     let mut line = String::new();
     assert_ne!(input.read_line(&mut line).expect("read"), 0);
     serde_json::from_str(&line).expect("JSON")
+}
+
+fn read_optional_message(input: &mut impl BufRead) -> Option<Value> {
+    let mut line = String::new();
+    (input.read_line(&mut line).expect("read") != 0)
+        .then(|| serde_json::from_str(&line).expect("JSON"))
 }
 
 fn write_message(output: &mut impl Write, value: &Value) {

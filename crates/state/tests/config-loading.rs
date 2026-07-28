@@ -289,7 +289,15 @@ fn local_stdio_mcp_config_is_explicit_and_bounded() {
              transport = \"stdio\"\n\
              executable = {}\n\
              argv = [\"--stdio\"]\n\
+             cwd = {}\n\
+             [[mcp.servers]]\n\
+             id = \"second-fixture\"\n\
+             transport = \"stdio\"\n\
+             executable = {}\n\
+             argv = [\"--second\"]\n\
              cwd = {}\n",
+            toml::Value::String(executable.to_string_lossy().into_owned()),
+            toml::Value::String(cwd.to_string_lossy().into_owned()),
             toml::Value::String(executable.to_string_lossy().into_owned()),
             toml::Value::String(cwd.to_string_lossy().into_owned()),
         ),
@@ -302,6 +310,9 @@ fn local_stdio_mcp_config_is_explicit_and_bounded() {
     assert_eq!(server.executable(), executable);
     assert_eq!(server.argv(), ["--stdio"]);
     assert_eq!(server.cwd(), cwd);
+    assert_eq!(config.mcp_servers().len(), 2);
+    assert_eq!(config.mcp_servers()[1].id(), "second-fixture");
+    assert_eq!(config.mcp_servers()[1].argv(), ["--second"]);
 }
 
 #[test]
@@ -326,7 +337,12 @@ fn local_stdio_mcp_config_rejects_implicit_authority() {
         ),
         format!(
             "[[mcp.servers]]\nid = \"one\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\n\
-             [[mcp.servers]]\nid = \"two\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\n"
+             [[mcp.servers]]\nid = \"two\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\n\
+             [[mcp.servers]]\nid = \"three\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\n"
+        ),
+        format!(
+            "[[mcp.servers]]\nid = \"same\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\n\
+             [[mcp.servers]]\nid = \"same\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = []\ncwd = {cwd}\n"
         ),
         format!(
             "[[mcp.servers]]\nid = \"fixture\"\ntransport = \"stdio\"\nexecutable = {cwd}\nargv = [{}]\ncwd = {cwd}\n",
@@ -353,7 +369,15 @@ fn saving_model_config_preserves_validated_mcp_authority() {
              transport = \"stdio\"\n\
              executable = {}\n\
              argv = [\"--server\"]\n\
+             cwd = {}\n\
+             [[mcp.servers]]\n\
+             id = \"second\"\n\
+             transport = \"stdio\"\n\
+             executable = {}\n\
+             argv = [\"--second\"]\n\
              cwd = {}\n",
+            toml::Value::String(executable.to_string_lossy().into_owned()),
+            toml::Value::String(cwd.to_string_lossy().into_owned()),
             toml::Value::String(executable.to_string_lossy().into_owned()),
             toml::Value::String(cwd.to_string_lossy().into_owned()),
         ),
@@ -368,7 +392,9 @@ fn saving_model_config_preserves_validated_mcp_authority() {
     .expect("model");
 
     let saved = save_model_config(&home, &model).expect("save model");
-    assert_eq!(saved.mcp_servers().len(), 1);
+    assert_eq!(saved.mcp_servers().len(), 2);
     assert_eq!(saved.mcp_servers()[0].id(), "fixture");
     assert_eq!(saved.mcp_servers()[0].argv(), ["--server"]);
+    assert_eq!(saved.mcp_servers()[1].id(), "second");
+    assert_eq!(saved.mcp_servers()[1].argv(), ["--second"]);
 }

@@ -558,28 +558,32 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                 .filter_map(|item| match item {
                     DurableItemSnapshot::McpToolCall {
                         call_id,
+                        name,
                         inventory_sha256,
                         ..
-                    } => Some((call_id, inventory_sha256)),
+                    } => Some((call_id, name, inventory_sha256)),
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            let prior_sequence_completed = prior_calls.last().is_none_or(|(prior_call_id, _)| {
-                existing.iter().any(|item| {
-                    matches!(
-                        item,
-                        DurableItemSnapshot::McpToolResult {
-                            call_id,
-                            result: DurableMcpToolResult::Completed { .. },
-                            ..
-                        } if call_id == *prior_call_id
-                    )
-                })
-            });
+            let prior_sequence_completed =
+                prior_calls.last().is_none_or(|(prior_call_id, _, _)| {
+                    existing.iter().any(|item| {
+                        matches!(
+                            item,
+                            DurableItemSnapshot::McpToolResult {
+                                call_id,
+                                result: DurableMcpToolResult::Completed { .. },
+                                ..
+                            } if call_id == *prior_call_id
+                        )
+                    })
+                });
+            let Some(server_id) = mcp_server_id(name) else {
+                return false;
+            };
             arguments.is_object()
                 && !call_id.is_empty()
                 && call_id.len() <= 128
-                && name.starts_with("mcp__")
                 && name.len() <= 128
                 && bytes.len() <= 32 * 1024
                 && *arguments_bytes == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
@@ -588,10 +592,11 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                 && prior_calls.len() < MAX_MCP_TOOL_CALLS_PER_TURN
                 && prior_calls
                     .iter()
-                    .all(|(_, prior_inventory)| *prior_inventory == inventory_sha256)
+                    .filter(|(_, prior_name, _)| mcp_server_id(prior_name) == Some(server_id))
+                    .all(|(_, _, prior_inventory)| *prior_inventory == inventory_sha256)
                 && prior_calls
                     .iter()
-                    .all(|(prior_call_id, _)| *prior_call_id != call_id)
+                    .all(|(prior_call_id, _, _)| *prior_call_id != call_id)
                 && prior_sequence_completed
         }
         DurableItemSnapshot::McpToolCallApprovalRequest {
@@ -805,6 +810,26 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
         }
         _ => true,
     }
+}
+
+fn mcp_server_id(name: &str) -> Option<&str> {
+    let identity = name.strip_prefix("mcp__")?;
+    let (server_id, raw_name) = identity.split_once("__")?;
+    let server_bytes = server_id.as_bytes();
+    let valid_server = !server_bytes.is_empty()
+        && server_bytes.len() <= 32
+        && server_bytes[0].is_ascii_lowercase()
+        && (server_bytes[server_bytes.len() - 1].is_ascii_lowercase()
+            || server_bytes[server_bytes.len() - 1].is_ascii_digit())
+        && server_bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-');
+    let valid_tool = !raw_name.is_empty()
+        && raw_name.len() <= 64
+        && raw_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'));
+    (valid_server && valid_tool).then_some(server_id)
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {

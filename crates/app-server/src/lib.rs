@@ -31,7 +31,7 @@ pub async fn run_stdio(
     workspace_scope: Option<String>,
     allow_workspace_write: bool,
     allow_command_workspace_write: bool,
-    mcp_server: Option<String>,
+    mcp_servers: Vec<String>,
 ) -> io::Result<()> {
     if workspace.is_none() && workspace_scope.is_some() {
         return Err(io::Error::new(
@@ -85,7 +85,7 @@ pub async fn run_stdio(
                 })
             })
             .flatten();
-    let mcp = discover_selected_mcp_server(&config, mcp_server.as_deref()).await?;
+    let mcp = discover_selected_mcp_servers(&config, mcp_servers).await?;
     let model = config.model().cloned();
     let model_token = model
         .as_ref()
@@ -181,10 +181,11 @@ pub async fn run_stdio(
         .with_workspace_instructions(workspace_instructions)
         .with_workspace_skills(workspace_skills);
     let mcp_capability = sugarcode_core::McpToolCapability::default();
-    let has_mcp = mcp.is_some();
-    if let Some((spec, inventory)) = mcp {
+    let has_mcp = !mcp.is_empty();
+    if !mcp.is_empty() {
+        let adapter = mcp::McpRuntimeAdapter::new(mcp).map_err(io::Error::other)?;
         runtime = runtime.with_mcp(
-            Arc::new(mcp::McpRuntimeAdapter::new(spec, inventory)),
+            Arc::new(adapter),
             Arc::new(mcp_approval_requester),
             mcp_capability.clone(),
         );
@@ -200,38 +201,61 @@ pub async fn run_stdio(
         .await
 }
 
-async fn discover_selected_mcp_server(
+async fn discover_selected_mcp_servers(
     config: &EffectiveConfig,
-    selected_server_id: Option<&str>,
+    mut selected_server_ids: Vec<String>,
 ) -> io::Result<
-    Option<(
+    Vec<(
         sugarcode_mcp::StdioServerSpec,
         sugarcode_mcp::McpServerInventory,
     )>,
 > {
-    let Some(selected_server_id) = selected_server_id else {
-        return Ok(None);
-    };
-    let server = config
-        .mcp_servers()
-        .iter()
-        .find(|server| server.id() == selected_server_id)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("MCP server `{selected_server_id}` is not configured for this process"),
-            )
-        })?;
-    let spec = sugarcode_mcp::StdioServerSpec::new(
-        server.id().to_owned(),
-        server.executable().to_path_buf(),
-        server.argv().to_vec(),
-        server.cwd().to_path_buf(),
-    );
-    let inventory = sugarcode_mcp::discover_stdio(&spec)
-        .await
-        .map_err(io::Error::other)?;
-    Ok(Some((spec, inventory)))
+    if selected_server_ids.len() > sugarcode_state::MAX_MCP_SERVERS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "too many MCP servers selected for this process",
+        ));
+    }
+    selected_server_ids.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    if selected_server_ids.windows(2).any(|ids| ids[0] == ids[1]) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "duplicate MCP server selection",
+        ));
+    }
+
+    let specs = selected_server_ids
+        .into_iter()
+        .map(|selected_server_id| {
+            let server = config
+                .mcp_servers()
+                .iter()
+                .find(|server| server.id() == selected_server_id)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "MCP server `{selected_server_id}` is not configured for this process"
+                        ),
+                    )
+                })?;
+            Ok(sugarcode_mcp::StdioServerSpec::new(
+                server.id().to_owned(),
+                server.executable().to_path_buf(),
+                server.argv().to_vec(),
+                server.cwd().to_path_buf(),
+            ))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+
+    let mut discovered = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let inventory = sugarcode_mcp::discover_stdio(&spec)
+            .await
+            .map_err(io::Error::other)?;
+        discovered.push((spec, inventory));
+    }
+    Ok(discovered)
 }
 
 fn load_model_token(home: &std::path::Path, reference: &str) -> io::Result<Zeroizing<String>> {
