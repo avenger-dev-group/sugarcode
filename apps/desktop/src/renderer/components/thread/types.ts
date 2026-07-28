@@ -1,3 +1,5 @@
+import type { RefObject, UIEvent } from 'react';
+
 import type {
   ConversationPhase,
   ConversationTurnStatus,
@@ -61,4 +63,13 @@ export type ThreadStore = Readonly<{
 
 export type ThreadWorkbenchViewProps = Readonly<{
   store: ThreadStore;
+}>;
+
+export type TranscriptTurnProps = Readonly<{
+  turn: TurnViewModel;
+}>;
+
+export type TranscriptFollow = Readonly<{
+  transcriptEnd: RefObject<HTMLDivElement | null>;
+  recordScrollPosition: (event: UIEvent<HTMLDivElement>) => void;
 }>;

@@ -71,6 +71,79 @@ afterEach(() => {
 });
 
 describe('ThreadWorkbenchView', () => {
+  it('preserves completed Turn identities while a later message grows', () => {
+    const initial = toThreadViewModel({
+      revision: 1,
+      phase: 'inProgress',
+      threadId: 'thr_0000000000000001',
+      activeTurnId: 'turn_0000000000000002',
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          messages: [
+            {
+              id: 'item_0000000000000001',
+              role: 'agent',
+              text: 'Stable durable response.',
+              status: 'completed',
+            },
+          ],
+        },
+        {
+          id: 'turn_0000000000000002',
+          status: 'inProgress',
+          messages: [
+            {
+              id: 'item_0000000000000002',
+              role: 'agent',
+              text: 'Mutable',
+              status: 'inProgress',
+            },
+          ],
+        },
+      ],
+    });
+    const updated = toThreadViewModel(
+      {
+        revision: 2,
+        phase: 'inProgress',
+        threadId: 'thr_0000000000000001',
+        activeTurnId: 'turn_0000000000000002',
+        turns: [
+          {
+            id: 'turn_0000000000000001',
+            status: 'completed',
+            messages: [
+              {
+                id: 'item_0000000000000001',
+                role: 'agent',
+                text: 'Stable durable response.',
+                status: 'completed',
+              },
+            ],
+          },
+          {
+            id: 'turn_0000000000000002',
+            status: 'inProgress',
+            messages: [
+              {
+                id: 'item_0000000000000002',
+                role: 'agent',
+                text: 'Mutable tail',
+                status: 'inProgress',
+              },
+            ],
+          },
+        ],
+      },
+      initial,
+    );
+
+    expect(updated.turns[0]).toBe(initial.turns[0]);
+    expect(updated.turns[1]).not.toBe(initial.turns[1]);
+  });
+
   it('renders durable user and Agent messages through view models', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -220,6 +293,45 @@ describe('ThreadWorkbenchView', () => {
       document.querySelector('[aria-label="Agent is responding"]'),
     ).toBeNull();
 
+    await act(async () => root.unmount());
+  });
+
+  it('does not force transcript following after the reader scrolls away', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = createStore();
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+    const viewport = document.querySelector(
+      '[aria-label="Conversation transcript"]',
+    ) as HTMLDivElement;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 1_200 },
+      scrollTop: { configurable: true, value: 100 },
+    });
+    viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
+    vi.mocked(Element.prototype.scrollIntoView).mockClear();
+
+    await act(async () => {
+      root.render(
+        <ThreadWorkbenchView
+          store={{
+            ...store,
+            thread: {
+              ...store.thread,
+              phase: 'inProgress',
+              statusLabel: 'Agent working',
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 

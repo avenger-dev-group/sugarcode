@@ -1,6 +1,7 @@
 import { LoaderCircle } from 'lucide-react';
-import type { ReactElement } from 'react';
+import { memo, type ReactElement } from 'react';
 
+import { AgentMarkdown } from './agent-markdown';
 import type { AgentMessageProps } from './types';
 
 const ARIA_LABELS: Record<AgentMessageProps['message']['state'], string> = {
@@ -17,7 +18,7 @@ const STATE_LABELS: Partial<
   uncertain: 'Final status unavailable',
 };
 
-export const AgentMessage = ({
+const AgentMessageView = ({
   message,
 }: AgentMessageProps): ReactElement | null => {
   const isStreaming = message.state === 'streaming';
@@ -54,18 +55,19 @@ export const AgentMessage = ({
             </span>
           ) : null}
         </div>
-        <p
-          className={`whitespace-pre-wrap break-words text-sm font-normal leading-[22px] ${
-            message.state === 'completed'
-              ? 'text-foreground'
-              : 'text-process'
-          }`}
-        >
-          {message.text || (
-            <span className="text-process">Thinking through the turn…</span>
-          )}
-        </p>
+        {message.state === 'completed' ||
+        (message.state === 'streaming' && message.text.length > 0) ? (
+          <AgentMarkdown source={message.text} isStreaming={isStreaming} />
+        ) : (
+          <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-process">
+            {message.text || (
+              <span className="text-process">Thinking through the turn…</span>
+            )}
+          </p>
+        )}
       </div>
     </article>
   );
 };
+
+export const AgentMessage = memo(AgentMessageView);

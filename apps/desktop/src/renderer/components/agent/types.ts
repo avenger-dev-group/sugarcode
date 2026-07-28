@@ -13,3 +13,8 @@ export type AgentMessageViewModel = Readonly<{
 export type AgentMessageProps = Readonly<{
   message: AgentMessageViewModel;
 }>;
+
+export type AgentMarkdownProps = Readonly<{
+  source: string;
+  isStreaming: boolean;
+}>;

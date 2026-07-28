@@ -7,9 +7,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ConnectionSupervisor } from '../connection/supervisor';
 
+const DURABLE_MARKDOWN_RESPONSE =
+  '## Durable response\n\n- exact restart item';
+
 const RESPONSE_BODY = [
-  'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{"content":"Durable "},"finish_reason":null}]}\n\n',
-  'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{"content":"response."},"finish_reason":null}]}\n\n',
+  'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{"content":"## Durable response\\n\\n"},"finish_reason":null}]}\n\n',
+  'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{"content":"- exact restart item"},"finish_reason":null}]}\n\n',
   'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
   'data: {"id":"desktop-fixture","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}\n\n',
   'data: [DONE]\n\n',
@@ -164,7 +167,7 @@ describe('real Desktop text Agent Turn', () => {
                   },
                   {
                     role: 'agent',
-                    text: 'Durable response.',
+                    text: DURABLE_MARKDOWN_RESPONSE,
                     status: 'completed',
                   },
                 ],
@@ -208,7 +211,7 @@ describe('real Desktop text Agent Turn', () => {
               },
               {
                 role: 'agent',
-                text: 'Durable response.',
+                text: DURABLE_MARKDOWN_RESPONSE,
                 status: 'completed',
               },
             ],
@@ -229,7 +232,7 @@ describe('real Desktop text Agent Turn', () => {
                 status: 'completed',
                 messages: [
                   { role: 'user', text: 'Continue after restart.' },
-                  { role: 'agent', text: 'Durable response.' },
+                  { role: 'agent', text: DURABLE_MARKDOWN_RESPONSE },
                 ],
               },
             ],
@@ -246,7 +249,7 @@ describe('real Desktop text Agent Turn', () => {
           },
           {
             role: 'assistant',
-            content: 'Durable response.',
+            content: DURABLE_MARKDOWN_RESPONSE,
           },
           {
             role: 'user',

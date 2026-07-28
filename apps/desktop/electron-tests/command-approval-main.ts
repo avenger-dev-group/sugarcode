@@ -159,7 +159,7 @@ const run = async (): Promise<void> => {
             {
               type: 'agentMessage',
               id: 'item_0000000000000099',
-              text: 'Recovered Electron answer.',
+              text: '## Recovered Electron answer\n\n- Durable restart item',
             },
           ],
         },
@@ -265,9 +265,9 @@ const run = async (): Promise<void> => {
   await waitFor(
     () =>
       evaluate<boolean>(
-        `document.body.textContent?.includes(
-          'Recovered Electron answer.',
-        ) === true`,
+        `document.querySelector(
+          '[aria-label="Agent response"] h2',
+        )?.textContent === 'Recovered Electron answer'`,
       ),
     'recovered Electron conversation',
   );
@@ -317,12 +317,13 @@ const run = async (): Promise<void> => {
       button.click();
     })()`);
   };
-  const emitTextTurn = (
+  const emitTextTurn = async (
     turnId: string,
     input: string,
     output: string,
     terminal: 'completed' | 'interrupted',
-  ): void => {
+    afterDelta?: () => Promise<void>,
+  ): Promise<void> => {
     conversation.handleNotification({
       kind: 'notification',
       method: 'turn/started',
@@ -366,6 +367,7 @@ const run = async (): Promise<void> => {
           delta: output,
         },
       });
+      await afterDelta?.();
     }
     conversation.handleNotification({
       kind: 'notification',
@@ -395,30 +397,55 @@ const run = async (): Promise<void> => {
     () => conversation.getSnapshot().phase === 'inProgress',
     'first conversation Turn',
   );
-  emitTextTurn(
+  await emitTextTurn(
     'turn_0000000000000101',
     'Desktop exact input 雪',
-    'Streamed desktop answer.',
+    '## Streamed desktop answer\n\nUse **durable truth**.',
     'completed',
+    async () => {
+      await waitFor(
+        () =>
+          evaluate<boolean>(
+            `(() => {
+              const response = document.querySelector(
+                '[aria-label="Agent is responding"]',
+              );
+              return response?.querySelector('h2')?.textContent ===
+                'Streamed desktop answer' &&
+                response.querySelector('strong')?.textContent ===
+                  'durable truth';
+            })()`,
+          ),
+        'incremental streaming Markdown projection',
+      );
+    },
   );
   await waitFor(
     () =>
       evaluate<boolean>(
-        `document.body.textContent?.includes(
-          'Streamed desktop answer.',
-        ) === true`,
+        `Array.from(document.querySelectorAll(
+          '[aria-label="Agent response"]',
+        )).some((response) =>
+          response.querySelector('h2')?.textContent ===
+            'Streamed desktop answer' &&
+          response.querySelector('strong')?.textContent === 'durable truth'
+        )`,
       ),
-    'rendered conversation answer',
+    'rendered completed Markdown answer',
   );
   await evaluate('location.reload()');
   await waitFor(
     () =>
       evaluate<boolean>(
-        `document.body.textContent?.includes(
-          'Streamed desktop answer.',
-        ) === true`,
+        `Array.from(document.querySelectorAll(
+          '[aria-label="Agent response"]',
+        )).some((response) =>
+          response.querySelector('h2')?.textContent ===
+            'Streamed desktop answer' &&
+          response.querySelector('strong')?.textContent === 'durable truth'
+        )`,
       ),
-    'conversation snapshot after reload',
+    'completed Markdown snapshot after reload',
   );
   await waitFor(
     () =>
@@ -426,9 +453,14 @@ const run = async (): Promise<void> => {
         `document.querySelector(
           '[aria-label="Turn failure details"]',
         )?.textContent?.includes('The model is rate limited') === true`,
-      ),
+    ),
     'Turn failure after Renderer reload',
   );
+  await evaluate(`Array.from(document.querySelectorAll(
+    '[aria-label="Agent response"]',
+  )).find((response) =>
+    response.querySelector('h2')?.textContent === 'Streamed desktop answer'
+  )?.scrollIntoView({ block: 'start' })`);
   await writeFile(
     path.join(__dirname, 'conversation-light.png'),
     (await capturePageWithRetry('light conversation')).toPNG(),
@@ -560,7 +592,7 @@ const run = async (): Promise<void> => {
       threadId: 'thr_0000000000000100',
       turnId: thirdTurnId,
       itemId: `${thirdTurnId}/agent`,
-      delta: 'Exact partial output before transport loss.',
+      delta: 'Exact **partial** output before transport loss.',
     },
   });
   conversation.transportClosed();
@@ -570,8 +602,10 @@ const run = async (): Promise<void> => {
         `document.querySelector(
           '[aria-label="Agent response status is unavailable"]',
         )?.textContent?.includes(
-          'Exact partial output before transport loss.',
-        ) === true`,
+          'Exact **partial** output before transport loss.',
+        ) === true && !document.querySelector(
+          '[aria-label="Agent response status is unavailable"] strong',
+        )`,
       ),
     'uncertain Agent response',
   );

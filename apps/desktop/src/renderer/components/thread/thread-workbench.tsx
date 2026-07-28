@@ -1,22 +1,80 @@
 import { ArrowUp, Square } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { memo } from 'react';
 
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
 import { Button } from '@/renderer/components/ui/button';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { Textarea } from '@/renderer/components/ui/textarea';
 
-import type { ThreadWorkbenchViewProps } from './types';
-import { useStore } from './use-store';
+import type {
+  ThreadWorkbenchViewProps,
+  TranscriptTurnProps,
+} from './types';
+import { useStore, useTranscriptFollow } from './use-store';
+
+const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
+  <section
+    className={`space-y-7 ${
+      turn.status === 'inProgress'
+        ? ''
+        : '[contain-intrinsic-size:auto_240px] [content-visibility:auto]'
+    }`}
+    aria-label={`Turn ${turn.id}`}
+  >
+    {turn.messages.map((entry) =>
+      entry.role === 'agent' ? (
+        <AgentMessage key={entry.message.id} message={entry.message} />
+      ) : (
+        <article
+          key={entry.message.id}
+          className="ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-surface px-4 py-3"
+          aria-label="Your message"
+        >
+          <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
+            {entry.message.text}
+          </p>
+        </article>
+      ),
+    )}
+    {turn.failure ? (
+      <div
+        className="ml-10 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3"
+        role="alert"
+        aria-label="Turn failure details"
+      >
+        <p className="text-sm font-medium text-destructive">
+          {turn.failure.summary}
+        </p>
+        <p className="mt-1 text-sm font-normal leading-normal text-secondary">
+          {turn.failure.guidance}
+        </p>
+        <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
+          {turn.failure.retryable
+            ? 'Retryable failure'
+            : 'Not automatically retryable'}
+        </p>
+      </div>
+    ) : turn.terminalLabel ? (
+      <p
+        className={`pl-10 font-mono text-[10px] uppercase tracking-[0.14em] ${
+          turn.isError ? 'text-destructive' : 'text-tertiary'
+        }`}
+        role={turn.isError ? 'alert' : 'status'}
+      >
+        {turn.terminalLabel}
+      </p>
+    ) : null}
+  </section>
+);
+
+const TranscriptTurn = memo(TranscriptTurnView);
 
 export const ThreadWorkbenchView = ({
   store,
 }: ThreadWorkbenchViewProps) => {
-  const transcriptEnd = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    transcriptEnd.current?.scrollIntoView({ block: 'end' });
-  }, [store.thread.turns, store.thread.phase]);
+  const { transcriptEnd, recordScrollPosition } = useTranscriptFollow(
+    store.thread,
+  );
 
   return (
     <section className="relative flex min-h-0 flex-1 flex-col">
@@ -26,6 +84,7 @@ export const ThreadWorkbenchView = ({
         viewportProps={{
           'aria-label': 'Conversation transcript',
           tabIndex: 0,
+          onScroll: recordScrollPosition,
         }}
       >
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-44 pt-10 sm:px-10">
@@ -48,58 +107,7 @@ export const ThreadWorkbenchView = ({
           ) : (
             <div className="space-y-10">
               {store.thread.turns.map((turn) => (
-                <section
-                  key={turn.id}
-                  className="space-y-7"
-                  aria-label={`Turn ${turn.id}`}
-                >
-                  {turn.messages.map((entry) =>
-                    entry.role === 'agent' ? (
-                      <AgentMessage
-                        key={entry.message.id}
-                        message={entry.message}
-                      />
-                    ) : (
-                      <article
-                        key={entry.message.id}
-                        className="ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-surface px-4 py-3"
-                        aria-label="Your message"
-                      >
-                        <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
-                          {entry.message.text}
-                        </p>
-                      </article>
-                    ),
-                  )}
-                  {turn.failure ? (
-                    <div
-                      className="ml-10 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3"
-                      role="alert"
-                      aria-label="Turn failure details"
-                    >
-                      <p className="text-sm font-medium text-destructive">
-                        {turn.failure.summary}
-                      </p>
-                      <p className="mt-1 text-sm font-normal leading-normal text-secondary">
-                        {turn.failure.guidance}
-                      </p>
-                      <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
-                        {turn.failure.retryable
-                          ? 'Retryable failure'
-                          : 'Not automatically retryable'}
-                      </p>
-                    </div>
-                  ) : turn.terminalLabel ? (
-                    <p
-                      className={`pl-10 font-mono text-[10px] uppercase tracking-[0.14em] ${
-                        turn.isError ? 'text-destructive' : 'text-tertiary'
-                      }`}
-                      role={turn.isError ? 'alert' : 'status'}
-                    >
-                      {turn.terminalLabel}
-                    </p>
-                  ) : null}
-                </section>
+                <TranscriptTurn key={turn.id} turn={turn} />
               ))}
             </div>
           )}

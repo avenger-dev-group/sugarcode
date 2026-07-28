@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type UIEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import {
   getConversationState,
@@ -20,6 +26,7 @@ import type {
 import type {
   ThreadStore,
   ThreadViewModel,
+  TranscriptFollow,
   TranscriptMessageViewModel,
   TurnViewModel,
 } from './types';
@@ -64,39 +71,97 @@ const toAgentMessagePresentationState = (
 
 export const toThreadViewModel = (
   snapshot: ConversationStateSnapshot,
+  previous?: ThreadViewModel,
 ): ThreadViewModel => {
-  const turns = snapshot.turns.map(
-    (turn): TurnViewModel => ({
-      id: turn.id,
-      status: turn.status,
-      messages: turn.messages.map(
-        (message): TranscriptMessageViewModel =>
-          message.role === 'user'
-            ? {
-                role: 'user',
-                message: { id: message.id, text: message.text },
-              }
-            : {
-                role: 'agent',
-                message: {
-                  id: message.id,
-                  text: message.text,
-                  state: toAgentMessagePresentationState(
-                    snapshot.phase,
-                    message.status,
-                  ),
-                },
-              },
-      ),
-      ...(TERMINAL_LABELS[turn.status]
-        ? { terminalLabel: TERMINAL_LABELS[turn.status] }
-        : {}),
-      ...(turn.error
-        ? { failure: toTurnFailureViewModel(turn.error) }
-        : {}),
-      isError: turn.status === 'failed',
-    }),
+  const previousTurns = new Map(
+    previous?.turns.map((turn) => [turn.id, turn]) ?? [],
   );
+  const turns = snapshot.turns.map(
+    (turn): TurnViewModel => {
+      const previousTurn = previousTurns.get(turn.id);
+      const messages = turn.messages.map(
+        (message): TranscriptMessageViewModel => {
+          const previousMessage = previousTurn?.messages.find(
+            (entry) => entry.message.id === message.id,
+          );
+          if (message.role === 'user') {
+            if (
+              previousMessage?.role === 'user' &&
+              previousMessage.message.text === message.text
+            ) {
+              return previousMessage;
+            }
+            return {
+              role: 'user',
+              message: { id: message.id, text: message.text },
+            };
+          }
+          const state = toAgentMessagePresentationState(
+            snapshot.phase,
+            message.status,
+          );
+          if (
+            previousMessage?.role === 'agent' &&
+            previousMessage.message.text === message.text &&
+            previousMessage.message.state === state
+          ) {
+            return previousMessage;
+          }
+          return {
+            role: 'agent',
+            message: {
+              id: message.id,
+              text: message.text,
+              state,
+            },
+          };
+        },
+      );
+      const stableMessages =
+        previousTurn &&
+        previousTurn.messages.length === messages.length &&
+        previousTurn.messages.every(
+          (message, index) => message === messages[index],
+        )
+          ? previousTurn.messages
+          : messages;
+      const nextFailure = turn.error
+        ? toTurnFailureViewModel(turn.error)
+        : undefined;
+      const failure =
+        nextFailure &&
+        previousTurn?.failure?.summary === nextFailure.summary &&
+        previousTurn.failure.guidance === nextFailure.guidance &&
+        previousTurn.failure.retryable === nextFailure.retryable
+          ? previousTurn.failure
+          : nextFailure;
+      const terminalLabel = TERMINAL_LABELS[turn.status];
+      const isError = turn.status === 'failed';
+      if (
+        previousTurn?.status === turn.status &&
+        previousTurn.messages === stableMessages &&
+        previousTurn.terminalLabel === terminalLabel &&
+        previousTurn.failure === failure &&
+        previousTurn.isError === isError
+      ) {
+        return previousTurn;
+      }
+      return {
+        id: turn.id,
+        status: turn.status,
+        messages: stableMessages,
+        ...(terminalLabel ? { terminalLabel } : {}),
+        ...(failure ? { failure } : {}),
+        isError,
+      };
+    },
+  );
+  const stableTurns =
+    previous &&
+    previous.turns.length === turns.length &&
+    previous.turns.every((turn, index) => turn === turns[index])
+      ? previous.turns
+      : turns;
 
   const statusLabel = (() => {
     switch (snapshot.phase) {
@@ -120,8 +185,8 @@ export const toThreadViewModel = (
     threadLabel: snapshot.threadId
       ? `Thread ${snapshot.threadId.slice(-6)}`
       : 'New local thread',
-    turns,
-    isEmpty: turns.length === 0,
+    turns: stableTurns,
+    isEmpty: stableTurns.length === 0,
     statusLabel,
     ...(snapshot.notice ? { notice: snapshot.notice.summary } : {}),
   };
@@ -135,6 +200,28 @@ export const shouldAcceptSnapshot = (
   snapshot: ConversationStateSnapshot,
 ): boolean => snapshot.revision > currentRevision;
 
+export const useTranscriptFollow = (
+  thread: ThreadViewModel,
+): TranscriptFollow => {
+  const transcriptEnd = useRef<HTMLDivElement | null>(null);
+  const shouldFollowTranscript = useRef<boolean>(true);
+
+  const recordScrollPosition = (event: UIEvent<HTMLDivElement>): void => {
+    const viewport = event.currentTarget;
+    const distanceFromBottom =
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    shouldFollowTranscript.current = distanceFromBottom <= 48;
+  };
+
+  useEffect(() => {
+    if (shouldFollowTranscript.current) {
+      transcriptEnd.current?.scrollIntoView({ block: 'end' });
+    }
+  }, [thread.turns, thread.phase]);
+
+  return { transcriptEnd, recordScrollPosition };
+};
+
 export const useStore = (): ThreadStore => {
   const [snapshot, setSnapshot] =
     useState<ConversationStateSnapshot>(INITIAL_SNAPSHOT);
@@ -142,6 +229,7 @@ export const useStore = (): ThreadStore => {
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const revision = useRef<number>(-1);
+  const previousThread = useRef<ThreadViewModel | undefined>(undefined);
 
   useEffect(() => {
     let active = true;
@@ -213,10 +301,11 @@ export const useStore = (): ThreadStore => {
     }
   };
 
-  const thread = useMemo<ThreadViewModel>(
-    () => toThreadViewModel(snapshot),
-    [snapshot],
-  );
+  const thread = useMemo<ThreadViewModel>(() => {
+    const next = toThreadViewModel(snapshot, previousThread.current);
+    previousThread.current = next;
+    return next;
+  }, [snapshot]);
   const inputHint =
     bytes > MAX_CONVERSATION_INPUT_BYTES
       ? 'Message exceeds the 64 KiB limit'

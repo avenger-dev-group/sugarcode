@@ -110,3 +110,23 @@
   background-size: 2rem 2rem;
   mask-image: linear-gradient(to bottom, black, transparent 72%);
 }
+
+@keyframes agent-markdown-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.agent-markdown-segment {
+  animation: agent-markdown-enter 120ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-markdown-segment {
+    animation: none;
+  }
+}
