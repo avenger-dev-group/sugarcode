@@ -157,14 +157,23 @@ const isMessage = (value: unknown): value is ConversationMessage =>
   typeof value.status === 'string' &&
   MESSAGE_STATUSES.has(value.status as ConversationMessageStatus);
 
-const isTurn = (value: unknown): value is ConversationTurn =>
-  isRecord(value) &&
-  isId(value.id) &&
-  typeof value.status === 'string' &&
-  TURN_STATUSES.has(value.status as ConversationTurnStatus) &&
-  Array.isArray(value.messages) &&
-  value.messages.every(isMessage) &&
-  (!Object.hasOwn(value, 'error') || isTurnError(value.error));
+const isTurn = (value: unknown): value is ConversationTurn => {
+  if (
+    !isRecord(value) ||
+    !isId(value.id) ||
+    typeof value.status !== 'string' ||
+    !TURN_STATUSES.has(value.status as ConversationTurnStatus) ||
+    !Array.isArray(value.messages) ||
+    !value.messages.every(isMessage)
+  ) {
+    return false;
+  }
+
+  const hasError = Object.hasOwn(value, 'error');
+  return value.status === 'failed'
+    ? hasError && isTurnError(value.error)
+    : !hasError;
+};
 
 const isNotice = (value: unknown): value is ConversationNotice =>
   isRecord(value) &&

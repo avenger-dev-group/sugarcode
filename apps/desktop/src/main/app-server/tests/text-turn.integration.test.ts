@@ -24,8 +24,10 @@ type ProviderCapture = Readonly<{
   errors: Error[];
 }>;
 
+type ProviderMode = 'success' | 'hang' | 'rateLimited';
+
 const startProvider = async (
-  respond = true,
+  mode: ProviderMode = 'success',
 ): Promise<ProviderCapture> => {
   const requests: Array<
     Readonly<{ headers: string; body: unknown }>
@@ -35,7 +37,7 @@ const startProvider = async (
     let bytes = Buffer.alloc(0);
     let responded = false;
     socket.on('error', (error: NodeJS.ErrnoException) => {
-      if (!respond && error.code === 'ECONNRESET') {
+      if (mode === 'hang' && error.code === 'ECONNRESET') {
         return;
       }
       errors.push(error);
@@ -67,7 +69,13 @@ const startProvider = async (
           bytes.subarray(bodyStart, bodyStart + length).toString('utf8'),
         ) as unknown,
       });
-      if (!respond) {
+      if (mode === 'hang') {
+        return;
+      }
+      if (mode === 'rateLimited') {
+        socket.end(
+          'HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
+        );
         return;
       }
       socket.end(
@@ -253,10 +261,109 @@ describe('real Desktop text Agent Turn', () => {
     }
   }, REAL_CLI_TEST_TIMEOUT_MS);
 
+  it('restores exact durable failure details without replaying the provider', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
+    temporaryHomes.push(home);
+    const provider = await startProvider('rateLimited');
+    providers.push(provider.server);
+    await writeFile(
+      path.join(home, 'config.toml'),
+      [
+        'schema_version = 1',
+        '[model]',
+        'api_format = "openai-chat-completions"',
+        `endpoint = "http://127.0.0.1:${provider.port}/v1/chat/completions"`,
+        'model = "desktop-fixture-model"',
+        '',
+      ].join('\n'),
+    );
+    const createSupervisor = (): ConnectionSupervisor =>
+      new ConnectionSupervisor({
+        clientVersion: '1.0.0',
+        desktopAppPath: process.cwd(),
+        environment: {
+          SUGARCODE_HOME: home,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          SYSTEMROOT: process.env.SYSTEMROOT,
+          WINDIR: process.env.WINDIR,
+        },
+      });
+    const first = createSupervisor();
+    let second: ConnectionSupervisor | null = null;
+
+    try {
+      await first.start();
+      await expect(
+        first.conversation.startTurn('Preserve this failed Turn.'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      await vi.waitFor(
+        () => {
+          expect(first.conversation.getSnapshot()).toMatchObject({
+            phase: 'ready',
+            turns: [
+              {
+                status: 'failed',
+                messages: [
+                  {
+                    role: 'user',
+                    text: 'Preserve this failed Turn.',
+                    status: 'completed',
+                  },
+                  {
+                    role: 'agent',
+                    text: '',
+                    status: 'completed',
+                  },
+                ],
+                error: { kind: 'rateLimited', retryable: true },
+              },
+            ],
+          });
+          expect(provider.requests).toHaveLength(1);
+        },
+        { timeout: 10_000 },
+      );
+
+      first.shutdown();
+      second = createSupervisor();
+      await second.start();
+      expect(second.getSnapshot().status).toBe('ready');
+      expect(second.conversation.getSnapshot()).toMatchObject({
+        phase: 'ready',
+        turns: [
+          {
+            status: 'failed',
+            messages: [
+              {
+                role: 'user',
+                text: 'Preserve this failed Turn.',
+                status: 'completed',
+              },
+              {
+                role: 'agent',
+                text: '',
+                status: 'completed',
+              },
+            ],
+            error: { kind: 'rateLimited', retryable: true },
+          },
+        ],
+      });
+      expect(provider.requests).toHaveLength(1);
+      expect(provider.errors).toEqual([]);
+    } finally {
+      first.shutdown();
+      second?.shutdown();
+    }
+  }, REAL_CLI_TEST_TIMEOUT_MS);
+
   it('accepts only Core durable interruption after an active process exits', async () => {
     const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
     temporaryHomes.push(home);
-    const provider = await startProvider(false);
+    const provider = await startProvider('hang');
     providers.push(provider.server);
     await writeFile(
       path.join(home, 'config.toml'),

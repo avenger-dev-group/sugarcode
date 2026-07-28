@@ -20,11 +20,18 @@ export type TranscriptMessageViewModel =
       message: AgentMessageViewModel;
     }>;
 
+export type TurnFailureViewModel = Readonly<{
+  summary: string;
+  guidance: string;
+  retryable: boolean;
+}>;
+
 export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
   messages: readonly TranscriptMessageViewModel[];
   terminalLabel?: string;
+  failure?: TurnFailureViewModel;
   isError: boolean;
 }>;
 

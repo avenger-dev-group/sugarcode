@@ -182,4 +182,43 @@ describe('ThreadWorkbenchView', () => {
 
     await act(async () => root.unmount());
   });
+
+  it('presents durable retryable failure details without exposing raw diagnostics', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = createStore({
+      thread: toThreadViewModel({
+        revision: 8,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000003',
+            status: 'failed',
+            messages: [],
+            error: { kind: 'rateLimited', retryable: true },
+          },
+        ],
+      }),
+      canSend: false,
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+
+    const failure = document.querySelector(
+      '[aria-label="Turn failure details"]',
+    );
+    expect(failure?.getAttribute('role')).toBe('alert');
+    expect(failure?.textContent).toContain('The model is rate limited');
+    expect(failure?.textContent).toContain(
+      'You can send another message to retry.',
+    );
+    expect(failure?.textContent).toContain('Retryable failure');
+    expect(failure?.textContent).not.toContain('rateLimited');
+
+    await act(async () => root.unmount());
+  });
 });

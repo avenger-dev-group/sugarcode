@@ -18,6 +18,7 @@ import type {
   TranscriptMessageViewModel,
   TurnViewModel,
 } from './types';
+import { toTurnFailureViewModel } from './turn-failure';
 
 const INITIAL_SNAPSHOT: ConversationStateSnapshot = {
   revision: 0,
@@ -60,6 +61,9 @@ export const toThreadViewModel = (
       ),
       ...(TERMINAL_LABELS[turn.status]
         ? { terminalLabel: TERMINAL_LABELS[turn.status] }
+        : {}),
+      ...(turn.error
+        ? { failure: toTurnFailureViewModel(turn.error) }
         : {}),
       isError: turn.status === 'failed',
     }),

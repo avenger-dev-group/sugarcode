@@ -181,6 +181,38 @@ describe('conversation recovery', () => {
         },
       ],
     },
+    {
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'failed',
+          items: [],
+        },
+      ],
+    },
+    {
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [],
+          error: { kind: 'transport', retryable: true },
+        },
+      ],
+    },
+    {
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'failed',
+          items: [],
+          error: { kind: 'providerSecret', retryable: false },
+        },
+      ],
+    },
   ])('rejects malformed known resume data', (response) => {
     expect(() => parseThreadResumeResponse(response)).toThrow(
       'Invalid',

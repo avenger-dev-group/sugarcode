@@ -71,7 +71,25 @@ export const ThreadWorkbenchView = ({
                       </article>
                     ),
                   )}
-                  {turn.terminalLabel ? (
+                  {turn.failure ? (
+                    <div
+                      className="ml-10 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3"
+                      role="alert"
+                      aria-label="Turn failure details"
+                    >
+                      <p className="text-sm font-medium text-destructive">
+                        {turn.failure.summary}
+                      </p>
+                      <p className="mt-1 text-sm font-normal leading-normal text-secondary">
+                        {turn.failure.guidance}
+                      </p>
+                      <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
+                        {turn.failure.retryable
+                          ? 'Retryable failure'
+                          : 'Not automatically retryable'}
+                      </p>
+                    </div>
+                  ) : turn.terminalLabel ? (
                     <p
                       className={`pl-10 font-mono text-[10px] uppercase tracking-[0.14em] ${
                         turn.isError ? 'text-destructive' : 'text-tertiary'

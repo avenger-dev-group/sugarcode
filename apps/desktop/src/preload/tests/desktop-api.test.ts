@@ -230,6 +230,18 @@ describe('createDesktopApi', () => {
       phase: 'inProgress',
       turns: [],
     });
+    handleStateChanged?.({} as IpcRendererEvent, {
+      revision: 3,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'failed',
+          messages: [],
+        },
+      ],
+    });
     expect(listener).toHaveBeenCalledOnce();
     unsubscribe();
     expect(
@@ -243,5 +255,22 @@ describe('createDesktopApi', () => {
     await expect(
       api.sendConversationMessage('Exact input'),
     ).rejects.toThrow('invalid conversation send result');
+
+    boundary.invoke.mockResolvedValue({
+      revision: 4,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          messages: [],
+          error: { kind: 'transport', retryable: true },
+        },
+      ],
+    });
+    await expect(api.getConversationState()).rejects.toThrow(
+      'invalid conversation state snapshot',
+    );
   });
 });

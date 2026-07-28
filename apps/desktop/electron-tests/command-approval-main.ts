@@ -163,6 +163,18 @@ const run = async (): Promise<void> => {
             },
           ],
         },
+        {
+          id: 'turn_0000000000000100',
+          status: 'failed',
+          items: [
+            {
+              type: 'userMessage',
+              id: 'item_0000000000000100',
+              text: 'Recovered rate-limited input.',
+            },
+          ],
+          error: { kind: 'rateLimited', retryable: true },
+        },
       ],
     }),
     startThread: async () => ({
@@ -253,6 +265,17 @@ const run = async (): Promise<void> => {
         ) === true`,
       ),
     'recovered Electron conversation',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Turn failure details"]',
+        )?.textContent?.includes(
+          'You can send another message to retry.',
+        ) === true`,
+      ),
+    'recovered Electron Turn failure',
   );
 
   const sendConversationInput = async (input: string): Promise<void> => {
@@ -380,6 +403,15 @@ const run = async (): Promise<void> => {
         ) === true`,
       ),
     'conversation snapshot after reload',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Turn failure details"]',
+        )?.textContent?.includes('The model is rate limited') === true`,
+      ),
+    'Turn failure after Renderer reload',
   );
   await writeFile(
     path.join(__dirname, 'conversation-light.png'),

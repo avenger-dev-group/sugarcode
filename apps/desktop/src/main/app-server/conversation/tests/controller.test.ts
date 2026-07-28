@@ -362,6 +362,62 @@ describe('ConversationController', () => {
     });
   });
 
+  it('projects only the correlated durable Turn failure', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(
+        async (): Promise<TurnStartResponse> => ({
+          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+        }),
+      ),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+
+    await expect(controller.startTurn('Reach a durable failure.')).resolves
+      .toEqual({
+        accepted: true,
+        reason: 'accepted',
+      });
+    controller.handleNotification(
+      notification('turn/completed', {
+        threadId: 'thr_0000000000000001',
+        turn: {
+          id: 'turn_0000000000000001',
+          status: 'failed',
+          error: { kind: 'rateLimited', retryable: true },
+        },
+      }),
+    );
+
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      turns: [
+        {
+          status: 'failed',
+          error: { kind: 'rateLimited', retryable: true },
+        },
+      ],
+    });
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+
+    controller.handleNotification(
+      notification('turn/completed', {
+        threadId: 'thr_0000000000000001',
+        turn: {
+          id: 'turn_0000000000000001',
+          status: 'failed',
+          error: { kind: 'rateLimited', retryable: true },
+        },
+      }),
+    );
+    expect(onProtocolFailure).toHaveBeenCalledOnce();
+  });
+
   it('rejects invalid actions and fails closed on cross-Turn lifecycle', async () => {
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),
