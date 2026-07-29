@@ -874,21 +874,36 @@ const run = async (): Promise<void> => {
   await evaluate(`document.querySelector(
     'button[aria-label="Hide Thread navigator"]',
   )?.click()`);
+  await waitForAnimationFrame();
+  await waitForAnimationFrame();
   await waitFor(
     () =>
       evaluate<boolean>(`(() => {
         const result = document.querySelector(
           '[aria-label="Execution result recorded: Command exited with code 7"]',
         );
-        if (!(result instanceof HTMLElement)) {
+        const appliedReview = document.querySelector(
+          '[aria-label="File change applied: recovered/notes.txt"]',
+        );
+        const unknownReview = document.querySelector(
+          '[aria-label="File change outcome unknown: recovered/pending.txt"]',
+        );
+        if (
+          !(result instanceof HTMLElement) ||
+          !(appliedReview instanceof HTMLElement) ||
+          !(unknownReview instanceof HTMLElement)
+        ) {
           return false;
         }
-        const bounds = result.getBoundingClientRect();
+        const elements = [result, appliedReview, unknownReview];
         return document.documentElement.scrollWidth <=
           document.documentElement.clientWidth &&
-          bounds.left >= 0 && bounds.right <= window.innerWidth;
+          elements.every((element) => {
+            const bounds = element.getBoundingClientRect();
+            return bounds.left >= 0 && bounds.right <= window.innerWidth;
+          });
       })()`),
-    'narrow command execution result layout',
+    'narrow command result and FileChange review layout',
   );
   window.setSize(800, 600);
 

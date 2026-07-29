@@ -122,7 +122,7 @@ export const FileChangeReview = ({ review }: FileChangeReviewProps) => {
 
   return (
     <section
-      className="ml-10 min-w-0 overflow-hidden rounded-xl border bg-surface"
+      className="ml-10 max-w-[calc(100%-2.5rem)] min-w-0 overflow-hidden rounded-xl border bg-surface"
       role={
         review.state === 'failed' || review.state === 'outcomeUnknown'
           ? 'alert'
@@ -186,9 +186,12 @@ export const FileChangeReview = ({ review }: FileChangeReviewProps) => {
       </div>
 
       {change && store.expanded ? (
-        <div id={`file-change-${change.id}`} className="border-t">
+        <div
+          id={`file-change-${change.id}`}
+          className="max-w-full min-w-0 overflow-hidden border-t"
+        >
           <div
-            className="max-h-96 overflow-auto font-mono text-xs font-normal leading-5"
+            className="max-h-96 max-w-full min-w-0 overflow-auto font-mono text-xs font-normal leading-5"
             tabIndex={0}
             role="region"
             aria-label={`Unified diff for ${review.path}`}

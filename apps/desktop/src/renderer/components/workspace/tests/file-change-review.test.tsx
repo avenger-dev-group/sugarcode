@@ -111,6 +111,16 @@ describe('FileChangeReview', () => {
     expect(document.body.textContent).toContain('+second');
     expect(document.body.textContent).toContain(BEFORE_SHA256);
     expect(
+      document.querySelector(
+        '[aria-label="File change applied: notes.txt"]',
+      )?.className,
+    ).toContain('max-w-[calc(100%-2.5rem)]');
+    expect(
+      document.querySelector(
+        '[aria-label="Unified diff for notes.txt"]',
+      )?.className,
+    ).toContain('max-w-full');
+    expect(
       document.querySelectorAll('button, a, input, textarea'),
     ).toHaveLength(1);
 
