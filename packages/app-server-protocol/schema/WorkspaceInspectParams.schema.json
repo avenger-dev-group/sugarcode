@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceInspectParams",
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "path"
+  ]
+}

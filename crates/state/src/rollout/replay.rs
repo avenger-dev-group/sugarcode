@@ -142,6 +142,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                 .map_err(|_| corrupt(&path, 0, "invalidThreadId"))?,
         );
         let mut snapshot: Option<DurableThreadSnapshot> = None;
+        let mut workspace_binding_id: Option<String> = None;
         let mut turn_record_sequences = Vec::new();
         let mut expected_sequence = 1u64;
         let mut offset = 0usize;
@@ -184,6 +185,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                 DecodedRecord::ThreadCreated {
                     thread_id,
                     sequence: _,
+                    workspace_binding_id: binding,
                 } => {
                     if expected_sequence != 1
                         || thread_id != expected_thread_id
@@ -192,6 +194,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                         return Err(corrupt(&path, offset as u64, "invalidThreadCreated"));
                     }
                     snapshot = Some(empty_thread(thread_id));
+                    workspace_binding_id = binding;
                 }
                 DecodedRecord::TurnStarted {
                     thread_id,
@@ -517,6 +520,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
         let thread_id = snapshot.id.clone();
         let state = RolloutThreadState {
             snapshot,
+            workspace_binding_id,
             last_record_sequence: expected_sequence - 1,
             turn_record_sequences,
         };

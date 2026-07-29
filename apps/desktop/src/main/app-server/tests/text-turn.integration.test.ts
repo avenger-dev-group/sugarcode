@@ -646,8 +646,8 @@ describe('real Desktop text Agent Turn', () => {
         '',
       ].join('\n'),
     );
-    const createSupervisor = (): ConnectionSupervisor =>
-      new ConnectionSupervisor({
+    const createSupervisor = (): ConnectionSupervisor => {
+      const supervisor = new ConnectionSupervisor({
         clientVersion: '1.0.0',
         desktopAppPath: process.cwd(),
         environment: {
@@ -660,12 +660,14 @@ describe('real Desktop text Agent Turn', () => {
           WINDIR: process.env.WINDIR,
         },
         spawnProcess: (command, arguments_, options) =>
-          spawn(
-            command,
-            [...arguments_, '--workspace', workspace],
-            { ...options, stdio: ['pipe', 'pipe', 'pipe'] },
-          ),
+          spawn(command, arguments_, {
+            ...options,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }),
       });
+      supervisor.configureInitialWorkspace(workspace);
+      return supervisor;
+    };
     const first = createSupervisor();
     let second: ConnectionSupervisor | null = null;
 
@@ -736,8 +738,8 @@ describe('real Desktop text Agent Turn', () => {
         '',
       ].join('\n'),
     );
-    const createSupervisor = (): ConnectionSupervisor =>
-      new ConnectionSupervisor({
+    const createSupervisor = (): ConnectionSupervisor => {
+      const supervisor = new ConnectionSupervisor({
         clientVersion: '1.0.0',
         desktopAppPath: process.cwd(),
         environment: {
@@ -750,12 +752,14 @@ describe('real Desktop text Agent Turn', () => {
           WINDIR: process.env.WINDIR,
         },
         spawnProcess: (command, arguments_, options) =>
-          spawn(
-            command,
-            [...arguments_, '--workspace', workspace],
-            { ...options, stdio: ['pipe', 'pipe', 'pipe'] },
-          ),
+          spawn(command, arguments_, {
+            ...options,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }),
       });
+      supervisor.configureInitialWorkspace(workspace);
+      return supervisor;
+    };
     const first = createSupervisor();
     let second: ConnectionSupervisor | null = null;
 
@@ -828,8 +832,8 @@ describe('real Desktop text Agent Turn', () => {
         '',
       ].join('\n'),
     );
-    const createSupervisor = (): ConnectionSupervisor =>
-      new ConnectionSupervisor({
+    const createSupervisor = (): ConnectionSupervisor => {
+      const supervisor = new ConnectionSupervisor({
         clientVersion: '1.0.0',
         desktopAppPath: process.cwd(),
         environment: {
@@ -842,12 +846,14 @@ describe('real Desktop text Agent Turn', () => {
           WINDIR: process.env.WINDIR,
         },
         spawnProcess: (command, arguments_, options) =>
-          spawn(
-            command,
-            [...arguments_, '--workspace', workspace],
-            { ...options, stdio: ['pipe', 'pipe', 'pipe'] },
-          ),
+          spawn(command, arguments_, {
+            ...options,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }),
       });
+      supervisor.configureInitialWorkspace(workspace);
+      return supervisor;
+    };
     const first = createSupervisor();
     let second: ConnectionSupervisor | null = null;
 
@@ -925,8 +931,8 @@ describe('real Desktop text Agent Turn', () => {
         '',
       ].join('\n'),
     );
-    const createSupervisor = (): ConnectionSupervisor =>
-      new ConnectionSupervisor({
+    const createSupervisor = (): ConnectionSupervisor => {
+      const supervisor = new ConnectionSupervisor({
         clientVersion: '1.0.0',
         desktopAppPath: process.cwd(),
         environment: {
@@ -943,13 +949,14 @@ describe('real Desktop text Agent Turn', () => {
             command,
             [
               ...arguments_,
-              '--workspace',
-              workspace,
               '--allow-workspace-write',
             ],
             { ...options, stdio: ['pipe', 'pipe', 'pipe'] },
           ),
       });
+      supervisor.configureInitialWorkspace(workspace);
+      return supervisor;
+    };
     const first = createSupervisor();
     let second: ConnectionSupervisor | null = null;
 
@@ -1222,8 +1229,8 @@ describe('real Desktop text Agent Turn', () => {
           '',
         ].join('\n'),
       );
-      const createSupervisor = (): ConnectionSupervisor =>
-        new ConnectionSupervisor({
+      const createSupervisor = (): ConnectionSupervisor => {
+        const supervisor = new ConnectionSupervisor({
           clientVersion: '1.0.0',
           desktopAppPath: process.cwd(),
           environment: {
@@ -1234,11 +1241,14 @@ describe('real Desktop text Agent Turn', () => {
             TMP: process.env.TMP,
           },
           spawnProcess: (command, arguments_, options) =>
-            spawn(command, [...arguments_, '--workspace', workspace], {
+            spawn(command, arguments_, {
               ...options,
               stdio: ['pipe', 'pipe', 'pipe'],
             }),
         });
+        supervisor.configureInitialWorkspace(workspace);
+        return supervisor;
+      };
       const first = createSupervisor();
       let second: ConnectionSupervisor | null = null;
 

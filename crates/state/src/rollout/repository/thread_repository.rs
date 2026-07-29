@@ -18,7 +18,8 @@ impl ThreadRepository for RolloutRepository {
             });
         }
         let path = self.thread_path(thread_id)?;
-        let bytes = encode_thread_created(1, thread_id)?;
+        let bytes =
+            encode_thread_created(1, thread_id, self.active_workspace_binding_id.as_deref())?;
         self.append_record(&path, &bytes, true, 1)?;
         self.threads.insert(
             thread_id.clone(),
@@ -28,6 +29,7 @@ impl ThreadRepository for RolloutRepository {
                     turns: Vec::new(),
                     lifecycle: DurableThreadLifecycle::Active,
                 },
+                workspace_binding_id: self.active_workspace_binding_id.clone(),
                 last_record_sequence: 1,
                 turn_record_sequences: Vec::new(),
             },
@@ -100,7 +102,11 @@ impl ThreadRepository for RolloutRepository {
         }
 
         let mut records = Vec::with_capacity(record_count);
-        records.push(encode_thread_created(1, &snapshot.id)?);
+        records.push(encode_thread_created(
+            1,
+            &snapshot.id,
+            self.active_workspace_binding_id.as_deref(),
+        )?);
         let mut turn_sequence = self.sequences.turn;
         let mut item_sequence = self.sequences.item;
         for (index, turn) in snapshot.turns.iter().enumerate() {
@@ -175,6 +181,7 @@ impl ThreadRepository for RolloutRepository {
             })?;
         let state = RolloutThreadState {
             snapshot: snapshot.clone(),
+            workspace_binding_id: self.active_workspace_binding_id.clone(),
             last_record_sequence,
             turn_record_sequences: (2..=last_record_sequence).collect(),
         };
@@ -687,6 +694,30 @@ impl ThreadRepository for RolloutRepository {
         limit: usize,
     ) -> Result<DurableThreadPage, RolloutError> {
         self.ensure_available()?;
+        if self.active_workspace_binding_id.is_some() {
+            let mut matching = self
+                .threads
+                .values()
+                .rev()
+                .filter(|thread| {
+                    thread.snapshot.lifecycle == DurableThreadLifecycle::Active
+                        && cursor.is_none_or(|cursor| thread.snapshot.id < *cursor)
+                })
+                .map(|thread| DurableThreadSummary {
+                    id: thread.snapshot.id.clone(),
+                })
+                .take(limit.saturating_add(1))
+                .collect::<Vec<_>>();
+            let has_more = matching.len() > limit;
+            matching.truncate(limit);
+            let next_cursor = has_more
+                .then(|| matching.last().map(|thread| thread.id.clone()))
+                .flatten();
+            return Ok(DurableThreadPage {
+                data: matching,
+                next_cursor,
+            });
+        }
         self.projection
             .list_threads(&self.threads, self.total_records, cursor, limit)
     }
@@ -698,6 +729,38 @@ impl ThreadRepository for RolloutRepository {
         limit: usize,
     ) -> Result<DurableThreadPage, RolloutError> {
         self.ensure_available()?;
+        if self.active_workspace_binding_id.is_some() {
+            let mut results = Vec::with_capacity(limit.saturating_add(1));
+            let mut projection_cursor = cursor.cloned();
+            loop {
+                let page = self.search_projection.search_threads(
+                    &self.threads,
+                    self.total_records,
+                    query,
+                    projection_cursor.as_ref(),
+                    100,
+                )?;
+                results.extend(
+                    page.data
+                        .into_iter()
+                        .filter(|thread| self.threads.contains_key(&thread.id))
+                        .take(limit.saturating_add(1).saturating_sub(results.len())),
+                );
+                if results.len() > limit || page.next_cursor.is_none() {
+                    break;
+                }
+                projection_cursor = page.next_cursor;
+            }
+            let has_more = results.len() > limit;
+            results.truncate(limit);
+            let next_cursor = has_more
+                .then(|| results.last().map(|thread| thread.id.clone()))
+                .flatten();
+            return Ok(DurableThreadPage {
+                data: results,
+                next_cursor,
+            });
+        }
         self.search_projection.search_threads(
             &self.threads,
             self.total_records,

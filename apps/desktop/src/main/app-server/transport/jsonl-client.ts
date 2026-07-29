@@ -13,7 +13,7 @@ import {
   type ServerMessage,
 } from './server-message';
 
-const DEFAULT_MAX_LINE_BYTES = 1024 * 1024;
+const DEFAULT_MAX_LINE_BYTES = 6 * 1024 * 1024;
 const MAX_ABORTED_IDS = 256;
 
 type PendingRequest = {

@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 futures-util.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sugarcode-app-server-protocol = { path = "../app-server-protocol" }
 sugarcode-core = { path = "../core" }
@@ -21,4 +22,5 @@ tokio-util.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

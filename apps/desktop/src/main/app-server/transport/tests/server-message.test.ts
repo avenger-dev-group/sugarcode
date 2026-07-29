@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   parseInitializeResponse,
   parseServerMessage,
+  parseWorkspaceInspectResponse,
+  parseWorkspaceListResponse,
 } from '../server-message';
 
 describe('parseServerMessage', () => {
@@ -113,5 +115,105 @@ describe('parseInitializeResponse', () => {
     },
   ])('rejects invalid initialize results', (value) => {
     expect(() => parseInitializeResponse(value)).toThrow();
+  });
+});
+
+describe('workspace browser responses', () => {
+  it('accepts only exact bounded list and inspection results', () => {
+    expect(
+      parseWorkspaceListResponse(
+        {
+          path: 'src',
+          entries: [
+            {
+              name: 'main.ts',
+              path: 'src/main.ts',
+              kind: 'file',
+            },
+          ],
+        },
+        'src',
+      ),
+    ).toMatchObject({ path: 'src' });
+    expect(
+      parseWorkspaceInspectResponse(
+        {
+          status: 'complete',
+          path: 'src/main.ts',
+          content: 'one\n',
+          bytes: 4,
+          lines: 1,
+          hasUtf8Bom: false,
+        },
+        'src/main.ts',
+      ),
+    ).toMatchObject({ status: 'complete', lines: 1 });
+    expect(
+      parseWorkspaceInspectResponse(
+        {
+          status: 'truncated',
+          path: 'large.txt',
+          content: 'preview\n',
+          bytes: 1_048_577,
+          returnedBytes: 8,
+          lines: 20_001,
+          hasUtf8Bom: false,
+        },
+        'large.txt',
+      ),
+    ).toMatchObject({ status: 'truncated', returnedBytes: 8 });
+  });
+
+  it.each([
+    () =>
+      parseWorkspaceListResponse(
+        {
+          path: '',
+          entries: [
+            {
+              name: 'escape',
+              path: '../escape',
+              kind: 'file',
+            },
+          ],
+        },
+        '',
+      ),
+    () =>
+      parseWorkspaceListResponse(
+        {
+          path: '',
+          entries: [],
+          absolutePath: '/private/workspace',
+        },
+        '',
+      ),
+    () =>
+      parseWorkspaceInspectResponse(
+        {
+          status: 'complete',
+          path: 'notes.txt',
+          content: 'secret',
+          bytes: 6,
+          lines: 1,
+          hasUtf8Bom: false,
+          diagnostic: 'unexpected',
+        },
+        'notes.txt',
+      ),
+    () =>
+      parseWorkspaceInspectResponse(
+        {
+          status: 'complete',
+          path: 'notes.txt',
+          content: 'x'.repeat(1_048_577),
+          bytes: 1_048_577,
+          lines: 1,
+          hasUtf8Bom: false,
+        },
+        'notes.txt',
+      ),
+  ])('rejects malformed, escaping, unknown, or oversized data', (parse) => {
+    expect(parse).toThrow();
   });
 });

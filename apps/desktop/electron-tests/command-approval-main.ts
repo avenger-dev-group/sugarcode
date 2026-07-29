@@ -21,6 +21,7 @@ import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
 import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
+import { WORKSPACE_STATE_GET_CHANNEL } from '@/shared/workspace';
 
 type WrittenDecision = Readonly<{
   id: string | number;
@@ -575,6 +576,11 @@ const run = async (): Promise<void> => {
   ipcMain.handle(CONNECTION_STATE_GET_CHANNEL, () => ({
     revision: 1,
     status: 'ready',
+  }));
+  ipcMain.handle(WORKSPACE_STATE_GET_CHANNEL, () => ({
+    revision: 1,
+    generation: 0,
+    status: 'unselected',
   }));
   const disposeApprovalIpc = registerCommandApprovalIpc({
     controller,
@@ -2142,6 +2148,7 @@ const run = async (): Promise<void> => {
   disposeMcpIpc();
   disposeModelConfigIpc();
   ipcMain.removeHandler(CONNECTION_STATE_GET_CHANNEL);
+  ipcMain.removeHandler(WORKSPACE_STATE_GET_CHANNEL);
   controller.shutdown();
   mcpApprovals.shutdown();
   if (lifecycleFailures.length > 0) {

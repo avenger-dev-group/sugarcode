@@ -230,10 +230,20 @@ const waitForCleanExit = (
 
 const verifyHandshake = async (
   executablePath: string,
-  workingDirectory: string,
   target: CliTarget,
   verificationHome: string,
 ): Promise<void> => {
+  const verificationWorkspace = path.join(
+    path.dirname(verificationHome),
+    'verification-workspace',
+  );
+  const inspectionFixture = 'packaged workspace inspection\n';
+  await mkdir(verificationWorkspace, { recursive: true });
+  await writeFile(
+    path.join(verificationWorkspace, 'inspection.txt'),
+    inspectionFixture,
+    'utf8',
+  );
   const environment = createCliEnvironment(
     {
       ...process.env,
@@ -241,14 +251,18 @@ const verifyHandshake = async (
     },
     target.platform,
   );
-  const child = spawn(executablePath, ['app-server', '--stdio'], {
-    cwd: workingDirectory,
-    detached: false,
-    env: environment,
-    shell: false,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  const child = spawn(
+    executablePath,
+    ['app-server', '--stdio', '--workspace', verificationWorkspace],
+    {
+      cwd: verificationWorkspace,
+      detached: false,
+      env: environment,
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  );
   const exit = waitForCleanExit(child);
   let fatalError: Error | null = null;
   const client = new JsonlClient({
@@ -281,11 +295,43 @@ const verifyHandshake = async (
       response.serverInfo.version !== SUGARCODE_PRODUCT_VERSION ||
       response.platform.family !== target.expectedPlatform.family ||
       response.platform.os !== target.expectedPlatform.os ||
-      response.platform.arch !== target.expectedPlatform.arch
+      response.platform.arch !== target.expectedPlatform.arch ||
+      response.capabilities.workspaceBrowser !== true ||
+      !response.workspace ||
+      !/^[0-9a-f]{64}$/.test(response.workspace.id)
     ) {
       throw new Error('The packaged CLI handshake did not match its target.');
     }
     await client.initialized();
+    const listing = await client.requestReady(
+      'workspace/list',
+      { path: '' },
+      AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+    );
+    const inspection = await client.requestReady(
+      'workspace/inspect',
+      { path: 'inspection.txt' },
+      AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+    );
+    if (
+      !listing ||
+      typeof listing !== 'object' ||
+      !Array.isArray((listing as { entries?: unknown }).entries) ||
+      !(listing as { entries: unknown[] }).entries.some(
+        (entry) =>
+          entry !== null &&
+          typeof entry === 'object' &&
+          (entry as { path?: unknown }).path === 'inspection.txt' &&
+          (entry as { kind?: unknown }).kind === 'file',
+      ) ||
+      !inspection ||
+      typeof inspection !== 'object' ||
+      (inspection as { status?: unknown }).status !== 'complete' ||
+      (inspection as { path?: unknown }).path !== 'inspection.txt' ||
+      (inspection as { content?: unknown }).content !== inspectionFixture
+    ) {
+      throw new Error('The packaged CLI workspace browser smoke check failed.');
+    }
     if (fatalError) {
       throw fatalError;
     }
@@ -316,7 +362,6 @@ const verifyExecutable = async (
   );
   await verifyHandshake(
     executablePath,
-    workingDirectory,
     target,
     verificationHome,
   );

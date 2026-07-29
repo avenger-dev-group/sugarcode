@@ -31,6 +31,8 @@ pub(super) struct ThreadCreatedRecord<'a> {
     #[serde(rename = "type")]
     pub record_type: &'static str,
     pub thread_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_binding_id: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -701,6 +703,8 @@ struct StoredThreadCreated {
     #[serde(rename = "type")]
     record_type: ThreadCreatedType,
     thread_id: String,
+    #[serde(default)]
+    workspace_binding_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1125,6 +1129,7 @@ pub(super) enum DecodedRecord {
     ThreadCreated {
         sequence: u64,
         thread_id: ThreadId,
+        workspace_binding_id: Option<String>,
     },
     TurnStarted {
         sequence: u64,
@@ -1240,12 +1245,14 @@ pub(super) fn decode_record(
                 schema_version,
                 sequence,
                 thread_id,
+                workspace_binding_id,
                 record_type: ThreadCreatedType::ThreadCreated,
             } = record;
             debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
             Ok(DecodedRecord::ThreadCreated {
                 sequence,
                 thread_id: ThreadId::new(thread_id),
+                workspace_binding_id,
             })
         }
         "turnCompleted" => {
@@ -1794,12 +1801,14 @@ fn decode_usage(usage: StoredUsage) -> DurableUsage {
 pub(super) fn encode_thread_created(
     sequence: u64,
     thread_id: &ThreadId,
+    workspace_binding_id: Option<&str>,
 ) -> Result<Vec<u8>, RolloutError> {
     serde_json::to_vec(&ThreadCreatedRecord {
         schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
         sequence,
         record_type: "threadCreated",
         thread_id: thread_id.as_str(),
+        workspace_binding_id,
     })
     .map_err(|_| RolloutError::Poisoned)
 }

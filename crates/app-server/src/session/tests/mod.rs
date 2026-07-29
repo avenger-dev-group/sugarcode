@@ -28,6 +28,7 @@ mod discovery;
 mod initialization;
 mod thread_lifecycle;
 mod turns;
+mod workspace;
 
 fn ready_session<C>(core: C) -> Session<C>
 where

@@ -37,6 +37,7 @@ pub struct DurableThreadSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RolloutThreadState {
     pub snapshot: DurableThreadSnapshot,
+    pub workspace_binding_id: Option<String>,
     pub last_record_sequence: u64,
     pub turn_record_sequences: Vec<u64>,
 }

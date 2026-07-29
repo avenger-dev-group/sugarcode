@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog } from 'electron';
 import started from 'electron-squirrel-startup';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,6 +10,8 @@ import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
 import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
 import { ModelConfigController } from '@/main/app-server/model-config/controller';
 import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
+import { WorkspaceController } from '@/main/app-server/workspace/controller';
+import { registerWorkspaceIpc } from '@/main/app-server/workspace/ipc';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
@@ -18,6 +20,7 @@ let disposeCommandApprovalIpc: (() => void) | null = null;
 let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
+let disposeWorkspaceIpc: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -96,6 +99,13 @@ const startApplication = async (): Promise<void> => {
     resourcesPath: process.resourcesPath,
     clientVersion: app.getVersion(),
   });
+  const workspaceController = new WorkspaceController({
+    supervisor,
+    dialog,
+    getMainWindow: () => mainWindow,
+    sessionPath: path.join(app.getPath('userData'), 'workspace-session-v1.json'),
+  });
+  await workspaceController.restore();
   disposeConnectionIpc = registerConnectionIpc({
     supervisor,
     getMainWindow: () => mainWindow,
@@ -119,6 +129,11 @@ const startApplication = async (): Promise<void> => {
   });
   disposeModelConfigIpc = registerModelConfigIpc({
     controller: new ModelConfigController({ supervisor }),
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  disposeWorkspaceIpc = registerWorkspaceIpc({
+    controller: workspaceController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -159,5 +174,7 @@ if (started) {
     disposeMcpIpc = null;
     disposeModelConfigIpc?.();
     disposeModelConfigIpc = null;
+    disposeWorkspaceIpc?.();
+    disposeWorkspaceIpc = null;
   });
 }

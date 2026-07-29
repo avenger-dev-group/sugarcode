@@ -2253,6 +2253,7 @@ name = "sugarcode-app-server"
 version = "1.0.0"
 dependencies = [
  "futures-util",
+ "serde",
  "serde_json",
  "sugarcode-app-server-protocol",
  "sugarcode-core",
@@ -2262,6 +2263,7 @@ dependencies = [
  "sugarcode-protocol",
  "sugarcode-state",
  "sugarcode-tools",
+ "tempfile",
  "tokio",
  "tokio-util",
  "zeroize",

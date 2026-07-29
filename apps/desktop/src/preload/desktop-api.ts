@@ -59,6 +59,23 @@ import {
   type ModelConfigInspection,
   type ModelConfigSaveRequest,
 } from '@/shared/model-config';
+import {
+  isWorkspaceInspectResult,
+  isWorkspaceListResult,
+  isWorkspaceSelectResult,
+  isWorkspaceStateSnapshot,
+  WORKSPACE_INSPECT_CHANNEL,
+  WORKSPACE_LIST_CHANNEL,
+  WORKSPACE_SELECT_CHANNEL,
+  WORKSPACE_STATE_CHANGED_CHANNEL,
+  WORKSPACE_STATE_GET_CHANNEL,
+  type WorkspaceInspectRequest,
+  type WorkspaceInspectResult,
+  type WorkspaceListRequest,
+  type WorkspaceListResult,
+  type WorkspaceSelectResult,
+  type WorkspaceStateSnapshot,
+} from '@/shared/workspace';
 
 type StateChangedHandler = (
   event: IpcRendererEvent,
@@ -381,4 +398,62 @@ export const createDesktopApi = (
       }
       return action;
     },
+  getWorkspaceState: async (): Promise<WorkspaceStateSnapshot> => {
+    const state: unknown = await ipcRenderer.invoke(
+      WORKSPACE_STATE_GET_CHANNEL,
+    );
+    if (!isWorkspaceStateSnapshot(state)) {
+      throw new Error('Main returned an invalid workspace state.');
+    }
+    return state;
+  },
+  onWorkspaceStateChanged: (listener) => {
+    const handler = (
+      _event: IpcRendererEvent,
+      state: unknown,
+    ): void => {
+      if (isWorkspaceStateSnapshot(state)) {
+        listener(state);
+      }
+    };
+    ipcRenderer.on(WORKSPACE_STATE_CHANGED_CHANNEL, handler);
+    return () =>
+      ipcRenderer.removeListener(
+        WORKSPACE_STATE_CHANGED_CHANNEL,
+        handler,
+      );
+  },
+  selectWorkspace: async (): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_SELECT_CHANNEL,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid workspace selection result.');
+    }
+    return result;
+  },
+  listWorkspace: async (
+    request: WorkspaceListRequest,
+  ): Promise<WorkspaceListResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_LIST_CHANNEL,
+      request,
+    );
+    if (!isWorkspaceListResult(result)) {
+      throw new Error('Main returned an invalid workspace list result.');
+    }
+    return result;
+  },
+  inspectWorkspace: async (
+    request: WorkspaceInspectRequest,
+  ): Promise<WorkspaceInspectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_INSPECT_CHANNEL,
+      request,
+    );
+    if (!isWorkspaceInspectResult(result)) {
+      throw new Error('Main returned an invalid workspace inspect result.');
+    }
+    return result;
+  },
 });

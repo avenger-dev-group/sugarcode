@@ -3,6 +3,8 @@ use cap_fs_ext::FollowSymlinks;
 use cap_fs_ext::OpenOptionsFollowExt;
 use cap_std::fs::Dir;
 use cap_std::fs::OpenOptions;
+use sha2::Digest;
+use sha2::Sha256;
 use std::fmt;
 use std::fs::File;
 use std::path::Component;
@@ -30,6 +32,7 @@ pub enum WorkspaceReadErrorKind {
 pub struct WorkspaceTool {
     pub(crate) root: Dir,
     pub(crate) root_reopen: WorkspaceRootReopen,
+    pub(crate) binding_id: String,
 }
 
 pub(crate) enum WorkspaceRootReopen {
@@ -52,10 +55,12 @@ impl WorkspaceTool {
             return Err(WorkspaceReadErrorKind::InvalidPath);
         }
         let root_path = root.to_path_buf();
+        let binding_id = workspace_binding_id(root);
         let root = open_root_nofollow(root)?;
         Ok(Self {
             root,
             root_reopen: WorkspaceRootReopen::AmbientPath(root_path),
+            binding_id,
         })
     }
 
@@ -67,6 +72,7 @@ impl WorkspaceTool {
                     .try_clone()
                     .map_err(|error| map_io_error(&error))?,
                 root_reopen: self.root_reopen.try_clone()?,
+                binding_id: self.binding_id.clone(),
             });
         }
         let components = validate_relative_path(scope)?;
@@ -88,7 +94,12 @@ impl WorkspaceTool {
                 parent: reopen_parent,
                 name: name.clone(),
             },
+            binding_id: derived_workspace_binding_id(&self.binding_id, scope),
         })
+    }
+
+    pub fn binding_id(&self) -> &str {
+        &self.binding_id
     }
 
     pub fn command_workspace_root(
@@ -147,7 +158,15 @@ pub(crate) fn open_regular_file_nofollow(
     directory: &Dir,
     file_name: &Path,
 ) -> Result<(File, FileSnapshot), WorkspaceReadErrorKind> {
-    open_regular_file_nofollow_with_access(directory, file_name, false)
+    open_regular_file_nofollow_with_limit(directory, file_name, MAX_WORKSPACE_READ_BYTES as u64)
+}
+
+pub(crate) fn open_regular_file_nofollow_with_limit(
+    directory: &Dir,
+    file_name: &Path,
+    max_bytes: u64,
+) -> Result<(File, FileSnapshot), WorkspaceReadErrorKind> {
+    open_regular_file_nofollow_with_access(directory, file_name, false, max_bytes)
 }
 
 #[cfg(windows)]
@@ -155,13 +174,19 @@ pub(crate) fn open_regular_file_nofollow_for_flush(
     directory: &Dir,
     file_name: &Path,
 ) -> Result<(File, FileSnapshot), WorkspaceReadErrorKind> {
-    open_regular_file_nofollow_with_access(directory, file_name, true)
+    open_regular_file_nofollow_with_access(
+        directory,
+        file_name,
+        true,
+        MAX_WORKSPACE_READ_BYTES as u64,
+    )
 }
 
 fn open_regular_file_nofollow_with_access(
     directory: &Dir,
     file_name: &Path,
     write: bool,
+    max_bytes: u64,
 ) -> Result<(File, FileSnapshot), WorkspaceReadErrorKind> {
     let mut options = OpenOptions::new();
     options.read(true).write(write).follow(FollowSymlinks::No);
@@ -195,11 +220,27 @@ fn open_regular_file_nofollow_with_access(
     if !metadata.is_file() {
         return Err(WorkspaceReadErrorKind::NotRegularFile);
     }
-    if metadata.len() > MAX_WORKSPACE_READ_BYTES as u64 {
+    if metadata.len() > max_bytes {
         return Err(WorkspaceReadErrorKind::FileTooLarge);
     }
     let snapshot = FileSnapshot::from_file(&file, &metadata)?;
     Ok((file, snapshot))
+}
+
+fn workspace_binding_id(root: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"sugarcode-workspace-v1\0");
+    hasher.update(root.to_string_lossy().as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub(crate) fn derived_workspace_binding_id(parent: &str, scope: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"sugarcode-workspace-scope-v1\0");
+    hasher.update(parent.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(scope.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 pub(crate) fn classify_component_open_error(

@@ -83,3 +83,5 @@ mod mcp;
 mod projections;
 #[path = "rollout_repository/turns.rs"]
 mod turns;
+#[path = "rollout_repository/workspace_binding.rs"]
+mod workspace_binding;

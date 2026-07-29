@@ -1,6 +1,8 @@
 import type {
   InitializeParams,
   InitializeResponse,
+  WorkspaceInspectResponse,
+  WorkspaceListResponse,
 } from '@sugarcode/app-server-protocol';
 import {
   PROTOCOL_VERSION,
@@ -38,6 +40,10 @@ import {
   JsonlClient,
   RpcResponseError,
 } from '../transport/jsonl-client';
+import {
+  parseWorkspaceInspectResponse,
+  parseWorkspaceListResponse,
+} from '../transport/server-message';
 import { CommandApprovalController } from '../command-approval/controller';
 import { ConversationController } from '../conversation/controller';
 import {
@@ -143,6 +149,10 @@ export class ConnectionSupervisor {
   private restarting = false;
   private connectionGeneration = 0;
   private modelConfigTransaction = false;
+  private workspaceTransaction = false;
+  private workspacePath: string | null = null;
+  private workspaceBindingId: string | null = null;
+  private preferredInitialThreadId: string | undefined;
 
   constructor(options: ConnectionSupervisorOptions) {
     this.options = {
@@ -169,7 +179,8 @@ export class ConnectionSupervisor {
     this.conversation = new ConversationController({
       getRpc: () => this.conversationRpc,
       onProtocolFailure: () => this.failAndTerminate('protocol-invalid'),
-      getActionBlocked: () => this.modelConfigTransaction,
+      getActionBlocked: () =>
+        this.modelConfigTransaction || this.workspaceTransaction,
     });
     this.mcpSession = new McpSessionController({
       getRestartBlock: this.getMcpRestartBlock,
@@ -199,6 +210,106 @@ export class ConnectionSupervisor {
       this.options.environment,
       this.options.platform,
     );
+
+  configureInitialWorkspace = (
+    workspacePath: string | null,
+    preferredThreadId?: string,
+  ): boolean => {
+    if (this.snapshot.status !== 'idle' || this.startPromise) {
+      return false;
+    }
+    this.workspacePath = workspacePath;
+    this.preferredInitialThreadId = preferredThreadId;
+    return true;
+  };
+
+  getWorkspaceSwitchBlock = (): ModelConfigRestartBlock | null =>
+    this.getModelConfigRestartBlock();
+
+  switchWorkspace = async (workspacePath: string): Promise<boolean> => {
+    const target = getCliTarget(this.options.platform, this.options.arch);
+    const lease = this.beginWorkspaceTransaction();
+    if (
+      typeof lease === 'string' ||
+      !target ||
+      !this.resolvedCli ||
+      this.shuttingDown
+    ) {
+      return false;
+    }
+    const previousPath = this.workspacePath;
+    const previousThreadId = this.conversation.getSnapshot().threadId ?? undefined;
+    try {
+      if (!(await this.closeForRestart())) {
+        return false;
+      }
+      this.workspacePath = workspacePath;
+      this.workspaceBindingId = null;
+      this.mcpSession.initialize(this.mcpSession.getSnapshot().servers);
+      this.transition('connecting');
+      const connected = await this.connect(
+        [],
+        undefined,
+        target.expectedPlatform,
+        false,
+      );
+      if (connected) {
+        return true;
+      }
+      this.workspacePath = previousPath;
+      if (previousPath && !this.shuttingDown) {
+        await this.closeForRestart();
+        this.transition('connecting');
+        await this.connect(
+          [],
+          previousThreadId,
+          target.expectedPlatform,
+        );
+      }
+      return false;
+    } finally {
+      lease.release();
+    }
+  };
+
+  listWorkspace = async (path: string): Promise<WorkspaceListResponse> => {
+    if (!this.client || !this.workspaceBindingId) {
+      throw new ConnectionClosedError('Workspace browser is unavailable.');
+    }
+    const result = await this.client.requestReady('workspace/list', { path });
+    return parseWorkspaceListResponse(result, path);
+  };
+
+  inspectWorkspace = async (
+    path: string,
+  ): Promise<WorkspaceInspectResponse> => {
+    if (!this.client || !this.workspaceBindingId) {
+      throw new ConnectionClosedError('Workspace inspector is unavailable.');
+    }
+    const result = await this.client.requestReady('workspace/inspect', {
+      path,
+    });
+    return parseWorkspaceInspectResponse(result, path);
+  };
+
+  private beginWorkspaceTransaction = ():
+    | Readonly<{ release: () => void }>
+    | ModelConfigRestartBlock => {
+    const block = this.getModelConfigRestartBlock();
+    if (block) {
+      return block;
+    }
+    this.workspaceTransaction = true;
+    let released = false;
+    return {
+      release: () => {
+        if (!released) {
+          released = true;
+          this.workspaceTransaction = false;
+        }
+      },
+    };
+  };
 
   beginModelConfigTransaction = ():
     | Readonly<{ release: () => void }>
@@ -329,13 +440,18 @@ export class ConnectionSupervisor {
         'Configured MCP servers could not be read safely.',
       );
     }
-    await this.connect([], undefined, target.expectedPlatform);
+    await this.connect(
+      [],
+      this.preferredInitialThreadId,
+      target.expectedPlatform,
+    );
   };
 
   private connect = async (
     mcpServerIds: readonly string[],
     preferredThreadId: string | undefined,
     expectedPlatform: ExpectedCliPlatform,
+    restoreConversation = true,
   ): Promise<boolean> => {
     const cli = this.resolvedCli;
     if (!cli) {
@@ -351,13 +467,16 @@ export class ConnectionSupervisor {
         [
           'app-server',
           '--stdio',
+          ...(this.workspacePath
+            ? ['--workspace', this.workspacePath]
+            : []),
           ...mcpServerIds.flatMap((serverId) => [
             '--mcp-server',
             serverId,
           ]),
         ],
         {
-          cwd: cli.workingDirectory,
+          cwd: this.workspacePath ?? cli.workingDirectory,
           detached: false,
           env: createCliEnvironment(
             this.options.environment,
@@ -449,6 +568,7 @@ export class ConnectionSupervisor {
         response,
         expectedPlatform,
         mcpServerIds.length > 0,
+        this.workspacePath !== null,
       );
       if (mismatch) {
         this.failAndTerminate(mismatch);
@@ -459,9 +579,10 @@ export class ConnectionSupervisor {
         return false;
       }
       if (!this.shuttingDown && this.snapshot.status === 'connecting') {
-        const restored = await this.conversation.restoreForConnection(
-          preferredThreadId,
-        );
+        this.workspaceBindingId = response.workspace?.id ?? null;
+        const restored = restoreConversation
+          ? await this.conversation.restoreForConnection(preferredThreadId)
+          : true;
         if (
           this.shuttingDown ||
           this.snapshot.status !== 'connecting'
@@ -505,6 +626,7 @@ export class ConnectionSupervisor {
     response: InitializeResponse,
     expectedPlatform: ExpectedCliPlatform,
     expectsMcp: boolean,
+    expectsWorkspace: boolean,
   ): ConnectionDiagnosticCode | null => {
     if (response.protocolVersion !== PROTOCOL_VERSION) {
       return 'protocol-version-mismatch';
@@ -524,6 +646,14 @@ export class ConnectionSupervisor {
     }
     if (
       (response.capabilities.mcpToolCallApprovals === true) !== expectsMcp
+    ) {
+      return 'protocol-invalid';
+    }
+    if (
+      (response.capabilities.workspaceBrowser === true) !== expectsWorkspace ||
+      (response.workspace !== undefined) !== expectsWorkspace ||
+      (response.workspace !== undefined &&
+        !/^[0-9a-f]{64}$/.test(response.workspace.id))
     ) {
       return 'protocol-invalid';
     }
@@ -620,7 +750,7 @@ export class ConnectionSupervisor {
     | 'busy'
     | 'unavailable'
     | null => {
-    if (this.modelConfigTransaction) {
+    if (this.modelConfigTransaction || this.workspaceTransaction) {
       return 'busy';
     }
     if (this.snapshot.status !== 'ready' || !this.resolvedCli) {
@@ -677,6 +807,7 @@ export class ConnectionSupervisor {
   private getModelConfigRestartBlock = (): ModelConfigRestartBlock | null => {
     if (
       this.modelConfigTransaction ||
+      this.workspaceTransaction ||
       this.restarting ||
       this.snapshot.status === 'connecting'
     ) {
@@ -744,6 +875,7 @@ export class ConnectionSupervisor {
     this.initializeAbortController = null;
     this.client = null;
     this.conversationRpc = null;
+    this.workspaceBindingId = null;
   };
 
   private fail = (code: ConnectionDiagnosticCode): void => {

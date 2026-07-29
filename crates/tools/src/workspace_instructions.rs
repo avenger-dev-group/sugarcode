@@ -208,6 +208,10 @@ impl WorkspaceTool {
             Self {
                 root,
                 root_reopen: WorkspaceRootReopen::Relative { parent, name },
+                binding_id: crate::workspace_capability::derived_workspace_binding_id(
+                    self.binding_id(),
+                    scope,
+                ),
             },
             snapshot,
         ))
@@ -319,6 +323,10 @@ impl WorkspaceTool {
             Self {
                 root,
                 root_reopen: WorkspaceRootReopen::Relative { parent, name },
+                binding_id: crate::workspace_capability::derived_workspace_binding_id(
+                    self.binding_id(),
+                    scope,
+                ),
             }
         };
         Ok((scope, instructions, skills))

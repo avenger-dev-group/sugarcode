@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceListResponse",
+  "type": "object",
+  "properties": {
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WorkspaceEntry"
+      }
+    },
+    "path": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "path",
+    "entries"
+  ],
+  "$defs": {
+    "WorkspaceEntry": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WorkspaceEntryKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "path",
+        "kind"
+      ]
+    },
+    "WorkspaceEntryKind": {
+      "type": "string",
+      "enum": [
+        "file",
+        "directory",
+        "link",
+        "other"
+      ]
+    }
+  }
+}

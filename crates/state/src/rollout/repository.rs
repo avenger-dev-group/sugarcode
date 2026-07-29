@@ -2,6 +2,7 @@ use super::DurableItemSnapshot;
 use super::DurableThreadLifecycle;
 use super::DurableThreadPage;
 use super::DurableThreadSnapshot;
+use super::DurableThreadSummary;
 use super::DurableTurnSnapshot;
 use super::DurableTurnStatus;
 use super::IdSequences;
@@ -61,10 +62,28 @@ pub struct RolloutRepository {
     projection: ThreadDiscoveryProjection,
     search_projection: ThreadSearchProjection,
     poisoned: bool,
+    active_workspace_binding_id: Option<String>,
 }
 
 impl RolloutRepository {
     pub fn open(home: &SugarCodeHome) -> Result<Self, RolloutError> {
+        Self::open_with_workspace_binding(home, None)
+    }
+
+    pub fn open_with_workspace_binding(
+        home: &SugarCodeHome,
+        active_workspace_binding_id: Option<&str>,
+    ) -> Result<Self, RolloutError> {
+        if active_workspace_binding_id.is_some_and(|binding_id| {
+            binding_id.len() != 64
+                || !binding_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        }) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidWorkspaceBinding",
+            });
+        }
         ensure_home(home)?;
         let rollouts = checked_directory(&home.path().join(ROLLOUTS_DIRECTORY))?;
         let root = checked_directory(&rollouts.join(ROLLOUT_LAYOUT_DIRECTORY))?;
@@ -80,11 +99,16 @@ impl RolloutRepository {
                 return Err(unavailable(&lock_path, error));
             }
         }
-        let replay = replay_all(&root)?;
+        let mut replay = replay_all(&root)?;
         let projection =
             ThreadDiscoveryProjection::open(home, &replay.threads, replay.record_count)?;
         let search_projection =
             ThreadSearchProjection::open(home, &replay.threads, replay.record_count);
+        if let Some(binding_id) = active_workspace_binding_id {
+            replay
+                .threads
+                .retain(|_, thread| thread.workspace_binding_id.as_deref() == Some(binding_id));
+        }
         Ok(Self {
             root,
             _writer_lock: writer_lock,
@@ -97,6 +121,7 @@ impl RolloutRepository {
             projection,
             search_projection,
             poisoned: false,
+            active_workspace_binding_id: active_workspace_binding_id.map(str::to_owned),
         })
     }
 

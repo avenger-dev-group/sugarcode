@@ -249,6 +249,19 @@ fn workspace_list_tool_lifecycle_matches_golden_trace() {
 }
 
 #[test]
+fn desktop_workspace_browser_matches_golden_trace() {
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("create isolated workspace");
+    fs::write(workspace.path().join("README.md"), "# Fixture\n").expect("write README");
+    fs::create_dir(workspace.path().join("src")).expect("create src");
+    run_golden(
+        "workspace-browser-happy",
+        &sugarcode_home,
+        Some(workspace.path()),
+    );
+}
+
+#[test]
 fn workspace_search_tool_lifecycle_matches_golden_trace() {
     const TOOL_CALL: &str = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_search_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/search\",\"arguments\":\"{\\\"path\\\":\\\"src\\\",\\\"query\\\":\\\"needle\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
@@ -1472,6 +1485,13 @@ fn normalize_trace(output: &str) -> String {
                 "family": "<family>",
                 "os": "<os>"
             });
+        }
+        if let Some(binding) = value
+            .get_mut("result")
+            .and_then(|result| result.get_mut("workspace"))
+            .and_then(|workspace| workspace.get_mut("id"))
+        {
+            *binding = Value::String("<workspace-binding>".to_string());
         }
         scrub_command_paths(&mut value);
         normalized.push_str(&serde_json::to_string(&value).expect("normalized JSON serializes"));

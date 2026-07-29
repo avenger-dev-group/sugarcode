@@ -1,0 +1,317 @@
+export const WORKSPACE_STATE_GET_CHANNEL = 'workspace-state:get';
+export const WORKSPACE_STATE_CHANGED_CHANNEL = 'workspace-state:changed';
+export const WORKSPACE_SELECT_CHANNEL = 'workspace:select';
+export const WORKSPACE_LIST_CHANNEL = 'workspace:list';
+export const WORKSPACE_INSPECT_CHANNEL = 'workspace:inspect';
+
+export type WorkspaceStatus =
+  | 'unselected'
+  | 'selecting'
+  | 'ready'
+  | 'failed';
+
+export type WorkspaceStateSnapshot = Readonly<{
+  revision: number;
+  generation: number;
+  status: WorkspaceStatus;
+  name?: string;
+  error?: string;
+}>;
+
+export type WorkspaceEntryKind =
+  | 'file'
+  | 'directory'
+  | 'link'
+  | 'other';
+
+export type WorkspaceEntry = Readonly<{
+  name: string;
+  path: string;
+  kind: WorkspaceEntryKind;
+}>;
+
+export type WorkspaceListRequest = Readonly<{
+  generation: number;
+  path: string;
+}>;
+
+export type WorkspaceListResult =
+  | Readonly<{
+      accepted: true;
+      generation: number;
+      path: string;
+      entries: readonly WorkspaceEntry[];
+    }>
+  | Readonly<{
+      accepted: false;
+      reason: 'stale' | 'unavailable' | 'invalid' | 'failed';
+    }>;
+
+export type WorkspaceInspectRequest = Readonly<{
+  generation: number;
+  path: string;
+}>;
+
+export type WorkspaceInspectDocument =
+  | Readonly<{
+      status: 'complete';
+      path: string;
+      content: string;
+      bytes: number;
+      lines: number;
+      hasUtf8Bom: boolean;
+    }>
+  | Readonly<{
+      status: 'truncated';
+      path: string;
+      content: string;
+      bytes: number;
+      returnedBytes: number;
+      lines: number;
+      hasUtf8Bom: boolean;
+    }>
+  | Readonly<{
+      status: 'error';
+      path: string;
+      kind:
+        | 'invalidPath'
+        | 'notFound'
+        | 'accessDenied'
+        | 'pathNotAllowed'
+        | 'notRegularFile'
+        | 'oversized'
+        | 'binary'
+        | 'invalidEncoding'
+        | 'longLine'
+        | 'changed'
+        | 'unavailable';
+    }>;
+
+export type WorkspaceInspectResult =
+  | Readonly<{
+      accepted: true;
+      generation: number;
+      document: WorkspaceInspectDocument;
+    }>
+  | Readonly<{
+      accepted: false;
+      reason: 'stale' | 'unavailable' | 'invalid' | 'failed';
+    }>;
+
+export type WorkspaceSelectResult = Readonly<{
+  accepted: boolean;
+  reason?: 'cancelled' | 'busy' | 'invalid' | 'failed';
+}>;
+
+export type WorkspaceApi = Readonly<{
+  getWorkspaceState: () => Promise<WorkspaceStateSnapshot>;
+  onWorkspaceStateChanged: (
+    listener: (snapshot: WorkspaceStateSnapshot) => void,
+  ) => () => void;
+  selectWorkspace: () => Promise<WorkspaceSelectResult>;
+  listWorkspace: (
+    request: WorkspaceListRequest,
+  ) => Promise<WorkspaceListResult>;
+  inspectWorkspace: (
+    request: WorkspaceInspectRequest,
+  ) => Promise<WorkspaceInspectResult>;
+}>;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const hasOnlyKeys = (
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean => Object.keys(value).every((key) => keys.includes(key));
+
+const isSafeRelativePath = (
+  value: unknown,
+  allowRoot: boolean,
+): value is string =>
+  typeof value === 'string' &&
+  new TextEncoder().encode(value).byteLength <= 1_024 &&
+  (allowRoot || value.length > 0) &&
+  (value.length === 0 ||
+    (!value.startsWith('/') &&
+      !value.startsWith('\\') &&
+      value.split(/[\\/]/u).length <= 64 &&
+      !value
+        .split(/[\\/]/u)
+        .some(
+          (part) =>
+            part.length === 0 ||
+            part === '.' ||
+            part === '..',
+        ) &&
+      ![...value].some((character) => {
+        const code = character.charCodeAt(0);
+        return code <= 0x1f || code === 0x7f;
+      })));
+
+export const isWorkspaceStateSnapshot = (
+  value: unknown,
+): value is WorkspaceStateSnapshot =>
+  isRecord(value) &&
+  hasOnlyKeys(value, [
+    'revision',
+    'generation',
+    'status',
+    'name',
+    'error',
+  ]) &&
+  Number.isSafeInteger(value.revision) &&
+  (value.revision as number) >= 0 &&
+  Number.isSafeInteger(value.generation) &&
+  (value.generation as number) >= 0 &&
+  ['unselected', 'selecting', 'ready', 'failed'].includes(
+    value.status as string,
+  ) &&
+  (value.name === undefined ||
+    (typeof value.name === 'string' && value.name.length > 0)) &&
+  (value.error === undefined || typeof value.error === 'string');
+
+export const isWorkspaceListRequest = (
+  value: unknown,
+): value is WorkspaceListRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['generation', 'path']) &&
+  Number.isSafeInteger(value.generation) &&
+  (value.generation as number) >= 0 &&
+  isSafeRelativePath(value.path, true);
+
+export const isWorkspaceInspectRequest = (
+  value: unknown,
+): value is WorkspaceInspectRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['generation', 'path']) &&
+  Number.isSafeInteger(value.generation) &&
+  (value.generation as number) >= 0 &&
+  isSafeRelativePath(value.path, false);
+
+export const isWorkspaceSelectResult = (
+  value: unknown,
+): value is WorkspaceSelectResult =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['accepted', 'reason']) &&
+  typeof value.accepted === 'boolean' &&
+  (value.reason === undefined ||
+    ['cancelled', 'busy', 'invalid', 'failed'].includes(
+      value.reason as string,
+    ));
+
+const ENTRY_KINDS = ['file', 'directory', 'link', 'other'];
+
+export const isWorkspaceListResult = (
+  value: unknown,
+): value is WorkspaceListResult => {
+  if (!isRecord(value) || typeof value.accepted !== 'boolean') {
+    return false;
+  }
+  if (!value.accepted) {
+    return (
+      hasOnlyKeys(value, ['accepted', 'reason']) &&
+      ['stale', 'unavailable', 'invalid', 'failed'].includes(
+        value.reason as string,
+      )
+    );
+  }
+  return (
+    hasOnlyKeys(value, [
+      'accepted',
+      'generation',
+      'path',
+      'entries',
+    ]) &&
+    Number.isSafeInteger(value.generation) &&
+    isSafeRelativePath(value.path, true) &&
+    Array.isArray(value.entries) &&
+    value.entries.every(
+      (entry) =>
+        isRecord(entry) &&
+        hasOnlyKeys(entry, ['name', 'path', 'kind']) &&
+        typeof entry.name === 'string' &&
+        isSafeRelativePath(entry.path, false) &&
+        ENTRY_KINDS.includes(entry.kind as string),
+    )
+  );
+};
+
+export const isWorkspaceInspectResult = (
+  value: unknown,
+): value is WorkspaceInspectResult => {
+  if (!isRecord(value) || typeof value.accepted !== 'boolean') {
+    return false;
+  }
+  if (!value.accepted) {
+    return (
+      hasOnlyKeys(value, ['accepted', 'reason']) &&
+      ['stale', 'unavailable', 'invalid', 'failed'].includes(
+        value.reason as string,
+      )
+    );
+  }
+  if (
+    !(
+      hasOnlyKeys(value, ['accepted', 'generation', 'document']) &&
+      Number.isSafeInteger(value.generation) &&
+      isRecord(value.document) &&
+      typeof value.document.status === 'string' &&
+      isSafeRelativePath(value.document.path, false)
+    )
+  ) {
+    return false;
+  }
+  const document = value.document;
+  if (document.status === 'error') {
+    return (
+      hasOnlyKeys(document, ['status', 'path', 'kind']) &&
+      [
+        'invalidPath',
+        'notFound',
+        'accessDenied',
+        'pathNotAllowed',
+        'notRegularFile',
+        'oversized',
+        'binary',
+        'invalidEncoding',
+        'longLine',
+        'changed',
+        'unavailable',
+      ].includes(document.kind as string)
+    );
+  }
+  if (document.status === 'complete') {
+    return (
+      hasOnlyKeys(document, [
+        'status',
+        'path',
+        'content',
+        'bytes',
+        'lines',
+        'hasUtf8Bom',
+      ]) &&
+      typeof document.content === 'string' &&
+      Number.isSafeInteger(document.bytes) &&
+      Number.isSafeInteger(document.lines) &&
+      typeof document.hasUtf8Bom === 'boolean'
+    );
+  }
+  return (
+    document.status === 'truncated' &&
+    hasOnlyKeys(document, [
+      'status',
+      'path',
+      'content',
+      'bytes',
+      'returnedBytes',
+      'lines',
+      'hasUtf8Bom',
+    ]) &&
+    typeof document.content === 'string' &&
+    Number.isSafeInteger(document.bytes) &&
+    Number.isSafeInteger(document.returnedBytes) &&
+    Number.isSafeInteger(document.lines) &&
+    typeof document.hasUtf8Bom === 'boolean'
+  );
+};

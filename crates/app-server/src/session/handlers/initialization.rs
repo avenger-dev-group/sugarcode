@@ -76,7 +76,11 @@ where
                 command_approvals: true,
                 command_workspace_write_approvals: true,
                 mcp_tool_call_approvals: self.mcp_capability.as_ref().map(|_| true),
+                workspace_browser: self.workspace.as_ref().map(|_| true),
             },
+            workspace: self.workspace.as_ref().map(|workspace| WorkspaceBinding {
+                id: workspace.binding_id().to_string(),
+            }),
         };
         let result = serde_json::to_value(response).expect("initialize response must serialize");
         self.state = SessionState::AwaitingInitialized;

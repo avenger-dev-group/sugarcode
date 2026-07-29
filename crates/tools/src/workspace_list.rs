@@ -101,6 +101,83 @@ pub trait WorkspaceListExecutor: fmt::Debug + Send + Sync {
 }
 
 impl WorkspaceTool {
+    pub fn list_now(&self, arguments: &WorkspaceListArguments) -> WorkspaceListOutcome {
+        let components = match validate_list_path(&arguments.path) {
+            Ok(components) => components,
+            Err(kind) => return error(kind),
+        };
+        let mut directory = match self.root.try_clone() {
+            Ok(directory) => directory,
+            Err(error_value) => return error(map_list_io_error(&error_value)),
+        };
+        let mut parent = None;
+        let mut target_name = None;
+        for component in &components {
+            let next = match directory.open_dir_nofollow(component) {
+                Ok(next) => next,
+                Err(error_value) => {
+                    return error(classify_directory_open_error(
+                        &directory,
+                        component,
+                        &error_value,
+                    ));
+                }
+            };
+            if let Err(kind) = validate_directory_handle(&next) {
+                return error(map_read_error(kind));
+            }
+            parent = Some(directory);
+            target_name = Some(component.clone());
+            directory = next;
+        }
+
+        let opened_snapshot = match FileSnapshot::from_directory(&directory) {
+            Ok(snapshot) => snapshot,
+            Err(kind) => return error(map_read_error(kind)),
+        };
+        let (mut entries, name_bytes) = match collect_directory_entries_now(&directory) {
+            Ok(result) => result,
+            Err(kind) => return error(kind),
+        };
+        let (mut verified_entries, verified_name_bytes) =
+            match collect_directory_entries_now(&directory) {
+                Ok(result) => result,
+                Err(_) => return error(WorkspaceListErrorKind::ChangedDuringList),
+            };
+        entries.sort_unstable_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+        verified_entries
+            .sort_unstable_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+        if entries != verified_entries || name_bytes != verified_name_bytes {
+            return error(WorkspaceListErrorKind::ChangedDuringList);
+        }
+        let final_snapshot = match FileSnapshot::from_directory(&directory) {
+            Ok(snapshot) => snapshot,
+            Err(_) => return error(WorkspaceListErrorKind::ChangedDuringList),
+        };
+        let reopened = match (parent.as_ref(), target_name.as_ref()) {
+            (Some(parent), Some(target_name)) => match parent.open_dir_nofollow(target_name) {
+                Ok(directory) => directory,
+                Err(_) => return error(WorkspaceListErrorKind::ChangedDuringList),
+            },
+            (None, None) => match self.reopen_root() {
+                Ok(directory) => directory,
+                Err(_) => return error(WorkspaceListErrorKind::ChangedDuringList),
+            },
+            _ => unreachable!("target parent and name are paired"),
+        };
+        let reopened_snapshot = match FileSnapshot::from_directory(&reopened) {
+            Ok(snapshot) => snapshot,
+            Err(_) => return error(WorkspaceListErrorKind::ChangedDuringList),
+        };
+        if opened_snapshot != final_snapshot || opened_snapshot != reopened_snapshot {
+            return error(WorkspaceListErrorKind::ChangedDuringList);
+        }
+        WorkspaceListOutcome::Entries {
+            entries,
+            name_bytes,
+        }
+    }
+
     pub async fn list(
         &self,
         arguments: &WorkspaceListArguments,
@@ -209,6 +286,51 @@ impl WorkspaceTool {
             name_bytes,
         }
     }
+}
+
+fn collect_directory_entries_now(
+    directory: &Dir,
+) -> Result<(Vec<WorkspaceListEntry>, usize), WorkspaceListErrorKind> {
+    let mut read_dir = directory
+        .entries()
+        .map_err(|error_value| map_list_io_error(&error_value))?;
+    let mut entries = Vec::new();
+    let mut name_bytes = 0usize;
+    for entry in &mut read_dir {
+        let entry = entry.map_err(|error_value| map_iteration_error(&error_value))?;
+        if entries.len() >= MAX_WORKSPACE_LIST_ENTRIES {
+            return Err(WorkspaceListErrorKind::TooManyEntries);
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| WorkspaceListErrorKind::InvalidEncoding)?;
+        if name.is_empty()
+            || name.len() > MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            return Err(WorkspaceListErrorKind::InvalidName);
+        }
+        name_bytes = match name_bytes.checked_add(name.len()) {
+            Some(bytes) if bytes <= MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES => bytes,
+            _ => return Err(WorkspaceListErrorKind::ResultTooLarge),
+        };
+        let metadata = directory
+            .symlink_metadata(&name)
+            .map_err(|error_value| map_iteration_error(&error_value))?;
+        let file_type = metadata.file_type();
+        let kind = if file_type.is_symlink() || cap_metadata_is_reparse_point(&metadata) {
+            WorkspaceListEntryKind::Link
+        } else if file_type.is_file() {
+            WorkspaceListEntryKind::File
+        } else if file_type.is_dir() {
+            WorkspaceListEntryKind::Directory
+        } else {
+            WorkspaceListEntryKind::Other
+        };
+        entries.push(WorkspaceListEntry { name, kind });
+    }
+    Ok((entries, name_bytes))
 }
 
 async fn collect_directory_entries(

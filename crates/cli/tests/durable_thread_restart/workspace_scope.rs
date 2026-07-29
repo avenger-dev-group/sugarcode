@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn restart_preserves_old_scoped_paths_without_replay_and_uses_the_new_process_scope() {
+fn restart_keeps_threads_bound_to_their_scope_and_uses_the_new_process_scope() {
     const PATCH_CALL: &str = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_scope_patch\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-patch\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"patch\\\":\\\"@@ -1,3 +1,3 @@\\\\n one\\\\n-two\\\\n+scope-a\\\\n three\\\\n\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
@@ -91,19 +91,23 @@ fn restart_preserves_old_scoped_paths_without_replay_and_uses_the_new_process_sc
         }),
         1,
     );
-    let prior_items = resumed[0]["result"]["turns"][0]["items"]
-        .as_array()
-        .expect("resumed items");
-    assert_eq!(prior_items[1]["path"], "notes.txt");
-    assert_eq!(prior_items[2]["type"], "fileChange");
-    assert_eq!(prior_items[2]["path"], "notes.txt");
+    assert_eq!(resumed[0]["error"]["code"], -32004);
+
+    let started = second.send(
+        json!({"jsonrpc":"2.0","id":"thread-b","method":"thread/start","params":{}}),
+        2,
+    );
+    let second_thread_id = started[0]["result"]["thread"]["id"]
+        .as_str()
+        .expect("scope B thread")
+        .to_owned();
 
     let completed = second.send(
         json!({
             "jsonrpc":"2.0",
             "id":"scope-b-turn",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":"List current scope"}
+            "params":{"threadId":second_thread_id,"input":"List current scope"}
         }),
         12,
     );

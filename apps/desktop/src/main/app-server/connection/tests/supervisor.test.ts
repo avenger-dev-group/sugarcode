@@ -53,6 +53,7 @@ type InitializeOverrides = Readonly<{
   os?: string;
   arch?: string;
   mcpToolCallApprovals?: boolean;
+  workspace?: boolean;
   latestThread?: Readonly<{
     id: string;
     turns: readonly unknown[];
@@ -89,6 +90,9 @@ const attachInitializeServer = (
                         overrides.mcpToolCallApprovals,
                     }
                   : {}),
+                ...(overrides.workspace
+                  ? { workspaceBrowser: true }
+                  : {}),
               },
               platform: {
                 family: overrides.family ?? 'unix',
@@ -102,6 +106,9 @@ const attachInitializeServer = (
                 version:
                   overrides.version ?? SUGARCODE_PRODUCT_VERSION,
               },
+              ...(overrides.workspace
+                ? { workspace: { id: 'a'.repeat(64) } }
+                : {}),
             },
           })}\n`,
         );
@@ -129,6 +136,34 @@ const attachInitializeServer = (
             result: {
               thread: { id: overrides.latestThread.id },
               turns: overrides.latestThread.turns,
+            },
+          })}\n`,
+        );
+      } else if (message.method === 'workspace/list') {
+        child.stdout.write(
+          `${JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              path: '',
+              entries: [
+                { name: 'src', path: 'src', kind: 'directory' },
+              ],
+            },
+          })}\n`,
+        );
+      } else if (message.method === 'workspace/inspect') {
+        child.stdout.write(
+          `${JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              status: 'complete',
+              path: 'README.md',
+              content: '# Workspace\n',
+              bytes: 12,
+              lines: 1,
+              hasUtf8Bom: false,
             },
           })}\n`,
         );
@@ -185,6 +220,41 @@ describe('ConnectionSupervisor', () => {
     supervisor.shutdown();
     expect(child.kill).toHaveBeenCalledOnce();
     expect(supervisor.getSnapshot().status).toBe('closed');
+  });
+
+  it('binds an explicit workspace to argv, cwd, and browser RPCs', async () => {
+    const child = new FakeChild();
+    const { spawnProcess, supervisor } = createSupervisor(child, {
+      workspace: true,
+    });
+    expect(
+      supervisor.configureInitialWorkspace('/projects/sugar code'),
+    ).toBe(true);
+    await supervisor.start();
+
+    expect(spawnProcess).toHaveBeenCalledWith(
+      '/workspace/target/debug/sugarcode',
+      [
+        'app-server',
+        '--stdio',
+        '--workspace',
+        '/projects/sugar code',
+      ],
+      expect.objectContaining({
+        cwd: '/projects/sugar code',
+        shell: false,
+      }),
+    );
+    await expect(supervisor.listWorkspace('')).resolves.toMatchObject({
+      entries: [{ path: 'src', kind: 'directory' }],
+    });
+    await expect(
+      supervisor.inspectWorkspace('README.md'),
+    ).resolves.toMatchObject({
+      status: 'complete',
+      content: '# Workspace\n',
+    });
+    supervisor.shutdown();
   });
 
   it('restores the latest active durable Thread before becoming ready', async () => {

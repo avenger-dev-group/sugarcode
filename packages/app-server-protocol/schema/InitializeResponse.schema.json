@@ -16,6 +16,16 @@
     },
     "serverInfo": {
       "$ref": "#/$defs/ServerInfo"
+    },
+    "workspace": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkspaceBinding"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -58,6 +68,12 @@
             "boolean",
             "null"
           ]
+        },
+        "workspaceBrowser": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [
@@ -78,6 +94,17 @@
       "required": [
         "name",
         "version"
+      ]
+    },
+    "WorkspaceBinding": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
       ]
     }
   }

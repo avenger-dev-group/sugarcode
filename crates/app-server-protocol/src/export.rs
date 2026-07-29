@@ -62,6 +62,14 @@ use crate::TurnStartParams;
 use crate::TurnStartResponse;
 use crate::TurnStartedNotification;
 use crate::TurnStatus;
+use crate::WorkspaceBinding;
+use crate::WorkspaceEntry;
+use crate::WorkspaceEntryKind;
+use crate::WorkspaceInspectErrorKind;
+use crate::WorkspaceInspectParams;
+use crate::WorkspaceInspectResponse;
+use crate::WorkspaceListParams;
+use crate::WorkspaceListResponse;
 use schemars::schema_for;
 use std::fs;
 use std::io;
@@ -88,6 +96,7 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         ServerInfo::decl(),
         PlatformInfo::decl(),
         ServerCapabilities::decl(),
+        WorkspaceBinding::decl(),
         InitializeResponse::decl(),
         CommandApprovalResponseDecision::decl(),
         CommandNetworkPolicy::decl(),
@@ -138,6 +147,13 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         TurnCompletedNotification::decl(),
         TurnInterruptParams::decl(),
         TurnInterruptResponse::decl(),
+        WorkspaceEntryKind::decl(),
+        WorkspaceEntry::decl(),
+        WorkspaceListParams::decl(),
+        WorkspaceListResponse::decl(),
+        WorkspaceInspectErrorKind::decl(),
+        WorkspaceInspectParams::decl(),
+        WorkspaceInspectResponse::decl(),
     ];
 
     let mut protocol = String::from(GENERATED_HEADER);
@@ -182,6 +198,22 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("InitializeResponse.schema.json"),
         &schema_for!(InitializeResponse),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceListParams.schema.json"),
+        &schema_for!(WorkspaceListParams),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceListResponse.schema.json"),
+        &schema_for!(WorkspaceListResponse),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceInspectParams.schema.json"),
+        &schema_for!(WorkspaceInspectParams),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceInspectResponse.schema.json"),
+        &schema_for!(WorkspaceInspectResponse),
     )?;
     write_schema(
         out_dir.join("CommandApprovalParams.schema.json"),

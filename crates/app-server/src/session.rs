@@ -9,6 +9,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use sugarcode_app_server_protocol::CommandApprovalParams;
 use sugarcode_app_server_protocol::CommandApprovalResponse;
 use sugarcode_app_server_protocol::CommandApprovalResponseDecision;
@@ -29,6 +30,7 @@ use sugarcode_app_server_protocol::ERROR_THREAD_NOT_FOUND;
 use sugarcode_app_server_protocol::ERROR_TURN_ACTIVE;
 use sugarcode_app_server_protocol::ERROR_TURN_NOT_ACTIVE;
 use sugarcode_app_server_protocol::ERROR_UNSUPPORTED_PROTOCOL_VERSION;
+use sugarcode_app_server_protocol::ERROR_WORKSPACE_UNAVAILABLE;
 use sugarcode_app_server_protocol::InitializeParams;
 use sugarcode_app_server_protocol::InitializeResponse;
 use sugarcode_app_server_protocol::JSON_RPC_VERSION;
@@ -67,6 +69,14 @@ use sugarcode_app_server_protocol::TurnInterruptParams;
 use sugarcode_app_server_protocol::TurnInterruptResponse;
 use sugarcode_app_server_protocol::TurnStartParams;
 use sugarcode_app_server_protocol::TurnStartResponse;
+use sugarcode_app_server_protocol::WorkspaceBinding;
+use sugarcode_app_server_protocol::WorkspaceEntry;
+use sugarcode_app_server_protocol::WorkspaceEntryKind;
+use sugarcode_app_server_protocol::WorkspaceInspectErrorKind as PublicWorkspaceInspectErrorKind;
+use sugarcode_app_server_protocol::WorkspaceInspectParams;
+use sugarcode_app_server_protocol::WorkspaceInspectResponse;
+use sugarcode_app_server_protocol::WorkspaceListParams as PublicWorkspaceListParams;
+use sugarcode_app_server_protocol::WorkspaceListResponse;
 use sugarcode_core::CommandApprovalOutcome;
 use sugarcode_core::Core;
 use sugarcode_core::CoreApi;
@@ -79,6 +89,13 @@ use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
+use sugarcode_tools::WorkspaceInspectArguments;
+use sugarcode_tools::WorkspaceInspectErrorKind;
+use sugarcode_tools::WorkspaceInspectOutcome;
+use sugarcode_tools::WorkspaceListArguments;
+use sugarcode_tools::WorkspaceListEntryKind;
+use sugarcode_tools::WorkspaceListOutcome;
+use sugarcode_tools::WorkspaceTool;
 use tokio::sync::oneshot;
 
 mod handlers;
@@ -112,6 +129,7 @@ pub struct Session<C = Core> {
     command_workspace_write_approvals: bool,
     mcp_tool_call_approvals: bool,
     mcp_capability: Option<McpToolCapability>,
+    workspace: Option<Arc<WorkspaceTool>>,
     last_core_request_sequence: u64,
 }
 
@@ -142,14 +160,25 @@ where
             command_workspace_write_approvals: false,
             mcp_tool_call_approvals: false,
             mcp_capability: None,
+            workspace: None,
             last_core_request_sequence: 0,
         }
     }
 
-    pub(crate) fn with_core_and_mcp_capability(core: C, capability: McpToolCapability) -> Self {
+    pub(crate) fn with_core_and_workspace(
+        core: C,
+        workspace: Option<Arc<WorkspaceTool>>,
+        mcp_capability: Option<McpToolCapability>,
+    ) -> Self {
         let mut session = Self::with_core(core);
-        session.mcp_capability = Some(capability);
+        session.workspace = workspace;
+        session.mcp_capability = mcp_capability;
         session
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_core_and_mcp_capability(core: C, capability: McpToolCapability) -> Self {
+        Self::with_core_and_workspace(core, None, Some(capability))
     }
 
     pub fn state(&self) -> SessionState {
@@ -497,6 +526,34 @@ where
                     )];
                 }
                 self.interrupt_turn(id, object.get("params").cloned())
+            }
+            "workspace/list" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                vec![self.list_workspace(id, object.get("params").cloned())]
+            }
+            "workspace/inspect" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                vec![self.inspect_workspace(id, object.get("params").cloned())]
             }
             _ if request_id.is_none() => Vec::new(),
             _ if self.state != SessionState::Ready => vec![error(

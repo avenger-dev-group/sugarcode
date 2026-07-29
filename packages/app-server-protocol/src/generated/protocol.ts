@@ -34,9 +34,11 @@ export type ServerInfo = { name: string, version: string, };
 
 export type PlatformInfo = { family: string, os: string, arch: string, };
 
-export type ServerCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals: boolean, mcpToolCallApprovals?: boolean, };
+export type ServerCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals: boolean, mcpToolCallApprovals?: boolean, workspaceBrowser?: boolean, };
 
-export type InitializeResponse = { protocolVersion: number, serverInfo: ServerInfo, platform: PlatformInfo, capabilities: ServerCapabilities, };
+export type WorkspaceBinding = { id: string, };
+
+export type InitializeResponse = { protocolVersion: number, serverInfo: ServerInfo, platform: PlatformInfo, capabilities: ServerCapabilities, workspace?: WorkspaceBinding, };
 
 export type CommandApprovalResponseDecision = "approved" | "denied";
 
@@ -135,4 +137,18 @@ export type TurnCompletedNotification = { threadId: string, turn: Turn, };
 export type TurnInterruptParams = { threadId: string, turnId: string, };
 
 export type TurnInterruptResponse = Record<string, never>;
+
+export type WorkspaceEntryKind = "file" | "directory" | "link" | "other";
+
+export type WorkspaceEntry = { name: string, path: string, kind: WorkspaceEntryKind, };
+
+export type WorkspaceListParams = { path: string, };
+
+export type WorkspaceListResponse = { path: string, entries: Array<WorkspaceEntry>, };
+
+export type WorkspaceInspectErrorKind = "invalidPath" | "notFound" | "accessDenied" | "pathNotAllowed" | "notRegularFile" | "oversized" | "binary" | "invalidEncoding" | "longLine" | "changed" | "unavailable";
+
+export type WorkspaceInspectParams = { path: string, };
+
+export type WorkspaceInspectResponse = { "status": "complete", path: string, content: string, bytes: number, lines: number, hasUtf8Bom: boolean, } | { "status": "truncated", path: string, content: string, bytes: number, returnedBytes: number, lines: number, hasUtf8Bom: boolean, } | { "status": "error", path: string, kind: WorkspaceInspectErrorKind, };
 

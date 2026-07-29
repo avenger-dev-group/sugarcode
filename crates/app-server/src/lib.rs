@@ -92,7 +92,11 @@ pub async fn run_stdio(
         .and_then(|model| model.credential_reference())
         .map(|reference| load_model_token(config.home().path(), reference))
         .transpose();
-    let repository = RolloutRepository::open(config.home()).map_err(io::Error::other)?;
+    let repository = RolloutRepository::open_with_workspace_binding(
+        config.home(),
+        workspace.as_ref().map(|workspace| workspace.binding_id()),
+    )
+    .map_err(io::Error::other)?;
     for diagnostic in repository.diagnostics() {
         eprintln!("sugarcode: {diagnostic}");
     }
@@ -190,11 +194,8 @@ pub async fn run_stdio(
             mcp_capability.clone(),
         );
     }
-    let session = if has_mcp {
-        Session::with_core_and_mcp_capability(runtime, mcp_capability)
-    } else {
-        Session::with_core(runtime)
-    };
+    let session =
+        Session::with_core_and_workspace(runtime, workspace, has_mcp.then_some(mcp_capability));
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());
     stdio::serve_with_events_and_approvals(input, output, session, events, approvals, mcp_approvals)
