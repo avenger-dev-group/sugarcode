@@ -1857,14 +1857,15 @@ const run = async (): Promise<void> => {
       ),
     'MCP Escape denial dialog',
   );
-  window.webContents.sendInputEvent({
-    type: 'keyDown',
-    keyCode: 'Escape',
-  });
-  window.webContents.sendInputEvent({
-    type: 'keyUp',
-    keyCode: 'Escape',
-  });
+  await waitForAnimationFrame();
+  await evaluate(`document.dispatchEvent(
+    new KeyboardEvent('keydown', {
+      key: 'Escape',
+      code: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    }),
+  )`);
   await waitFor(
     () =>
       mcpWrittenDecisions.some(
