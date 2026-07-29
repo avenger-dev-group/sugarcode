@@ -180,8 +180,14 @@ describe('real Desktop text Agent Turn', () => {
       const durableThreadId = first.conversation.getSnapshot().threadId;
       const durableTurnId =
         first.conversation.getSnapshot().turns[0]?.id;
+      const durableUserItemId =
+        first.conversation.getSnapshot().turns[0]?.messages[0]?.id;
+      const durableAgentItemId =
+        first.conversation.getSnapshot().turns[0]?.messages[1]?.id;
       expect(durableThreadId).toMatch(/^thr_[0-9a-f]{16}$/);
       expect(durableTurnId).toMatch(/^turn_[0-9a-f]{16}$/);
+      expect(durableUserItemId).toMatch(/^item_[0-9a-f]{16}$/);
+      expect(durableAgentItemId).toMatch(/^item_[0-9a-f]{16}$/);
       expect(provider.requests).toHaveLength(1);
       expect(provider.requests[0]?.headers).toMatch(
         /^POST \/v1\/chat\/completions HTTP\/1\.1\r\n/,
@@ -212,11 +218,13 @@ describe('real Desktop text Agent Turn', () => {
             status: 'completed',
             messages: [
               {
+                id: durableUserItemId,
                 role: 'user',
                 text: 'Keep this input exact: 雪',
                 status: 'completed',
               },
               {
+                id: durableAgentItemId,
                 role: 'agent',
                 text: DURABLE_MARKDOWN_RESPONSE,
                 status: 'completed',

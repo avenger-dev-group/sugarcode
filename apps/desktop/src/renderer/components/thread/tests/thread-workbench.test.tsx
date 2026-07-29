@@ -175,6 +175,23 @@ describe('ThreadWorkbenchView', () => {
     expect(turnIdentity?.className).toContain('text-tertiary');
     expect(turnIdentity?.className).not.toContain('uppercase');
     expect(durableTurn?.querySelector('a, button')).toBeNull();
+    for (const itemId of [
+      'item_0000000000000001',
+      'item_0000000000000002',
+    ]) {
+      const itemIdentity = document.querySelector(
+        `[aria-label="Durable Item ${itemId}"]`,
+      );
+      expect(
+        document.querySelectorAll(`[aria-label="Durable Item ${itemId}"]`),
+      ).toHaveLength(1);
+      expect(itemIdentity?.textContent).toBe(`Item ${itemId}`);
+      expect(itemIdentity?.className).toContain('break-all');
+      expect(itemIdentity?.className).toContain('font-mono');
+      expect(itemIdentity?.className).toContain('text-tertiary');
+      expect(itemIdentity?.className).not.toContain('uppercase');
+      expect(itemIdentity?.querySelector('a, button')).toBeNull();
+    }
     expect(document.body.textContent).toContain(
       'Thread thr_0000000000000001',
     );
@@ -215,6 +232,9 @@ describe('ThreadWorkbenchView', () => {
     ).not.toBeNull();
     expect(
       document.querySelector('[aria-label^="Durable Turn "]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[aria-label^="Durable Item "]'),
     ).toBeNull();
     const textarea = document.querySelector('textarea');
     expect(textarea?.value).toBe('Exact input\n雪');
@@ -284,6 +304,11 @@ describe('ThreadWorkbenchView', () => {
         '[aria-label="Durable Turn turn_0000000000000002"]',
       )?.textContent,
     ).toContain('Turn turn_0000000000000002');
+    expect(
+      document.querySelector(
+        '[aria-label="Durable Item item_0000000000000003"]',
+      )?.textContent,
+    ).toBe('Item item_0000000000000003');
     expect(document.body.textContent).toContain(
       'Thinking through the turn',
     );
@@ -417,6 +442,11 @@ describe('ThreadWorkbenchView', () => {
         '[aria-label="Durable Turn turn_0000000000000002"]',
       )?.textContent,
     ).toContain('Turn turn_0000000000000002');
+    expect(
+      document.querySelector(
+        '[aria-label="Durable Item item_0000000000000003"]',
+      )?.textContent,
+    ).toBe('Item item_0000000000000003');
     expect(document.body.textContent).toContain(
       'Keep this exact partial response.',
     );
@@ -474,6 +504,11 @@ describe('ThreadWorkbenchView', () => {
     );
     expect(failure?.textContent).toContain('Retryable failure');
     expect(failure?.textContent).not.toContain('rateLimited');
+    expect(
+      document.querySelector(
+        '[aria-label="Durable Item item_0000000000000004"]',
+      )?.textContent,
+    ).toBe('Item item_0000000000000004');
     expect(document.body.textContent).not.toContain(
       'Thinking through the turn',
     );

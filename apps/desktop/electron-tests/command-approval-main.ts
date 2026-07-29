@@ -258,6 +258,19 @@ const run = async (): Promise<void> => {
     getMainWindow: () => window,
     isAllowedUrl: (url) => url === rendererUrl,
   });
+  const waitForDurableItemIdentity = async (
+    itemId: string,
+    label: string,
+  ): Promise<void> => {
+    const selector = `[aria-label="Durable Item ${itemId}"]`;
+    await waitFor(
+      () =>
+        evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(selector)})?.textContent === ${JSON.stringify(`Item ${itemId}`)}`,
+        ),
+      label,
+    );
+  };
 
   await window.loadFile(rendererPath);
   window.show();
@@ -292,6 +305,17 @@ const run = async (): Promise<void> => {
           )?.textContent?.includes('Turn ${turnId}') === true`,
         ),
       `recovered durable Turn identity ${turnId}`,
+    );
+  }
+  for (const itemId of [
+    'item_0000000000000098',
+    'item_0000000000000099',
+    'item_0000000000000100',
+    'item_0000000000000101',
+  ]) {
+    await waitForDurableItemIdentity(
+      itemId,
+      `recovered durable Item identity ${itemId}`,
     );
   }
   await waitFor(
@@ -437,6 +461,14 @@ const run = async (): Promise<void> => {
           ),
         'live durable Turn identity',
       );
+      await waitForDurableItemIdentity(
+        'turn_0000000000000101/user',
+        'live durable UserMessage Item identity',
+      );
+      await waitForDurableItemIdentity(
+        'turn_0000000000000101/agent',
+        'live durable AgentMessage Item identity',
+      );
       await waitFor(
         () =>
           evaluate<boolean>(
@@ -500,6 +532,14 @@ const run = async (): Promise<void> => {
         ) === true`,
       ),
     'durable Turn identity after Renderer reload',
+  );
+  await waitForDurableItemIdentity(
+    'turn_0000000000000101/user',
+    'durable UserMessage Item identity after Renderer reload',
+  );
+  await waitForDurableItemIdentity(
+    'turn_0000000000000101/agent',
+    'durable AgentMessage Item identity after Renderer reload',
   );
   await waitFor(
     () =>
@@ -593,6 +633,14 @@ const run = async (): Promise<void> => {
       ),
     'stopping durable Turn identity',
   );
+  await waitForDurableItemIdentity(
+    `${secondTurnId}/user`,
+    'stopping durable UserMessage Item identity',
+  );
+  await waitForDurableItemIdentity(
+    `${secondTurnId}/agent`,
+    'stopping durable AgentMessage Item identity',
+  );
   conversation.handleNotification({
     kind: 'notification',
     method: 'item/completed',
@@ -632,6 +680,10 @@ const run = async (): Promise<void> => {
         ) === true`,
       ),
     'interrupted durable Turn identity',
+  );
+  await waitForDurableItemIdentity(
+    `${secondTurnId}/agent`,
+    'interrupted durable AgentMessage Item identity',
   );
 
   await sendConversationInput('Preserve an uncertain partial response.');
@@ -696,6 +748,10 @@ const run = async (): Promise<void> => {
       ),
     'transport-uncertain durable Turn identity',
   );
+  await waitForDurableItemIdentity(
+    `${thirdTurnId}/agent`,
+    'transport-uncertain durable AgentMessage Item identity',
+  );
   if (
     await evaluate<boolean>(
       `Boolean(document.querySelector(
@@ -727,6 +783,10 @@ const run = async (): Promise<void> => {
         ) === true`,
       ),
     'transport-uncertain durable Turn identity after reload',
+  );
+  await waitForDurableItemIdentity(
+    `${thirdTurnId}/agent`,
+    'transport-uncertain durable AgentMessage Item identity after reload',
   );
 
   controller.handleServerRequest(request('approval/electron-approve'));

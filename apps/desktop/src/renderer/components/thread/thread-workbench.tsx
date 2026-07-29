@@ -30,17 +30,32 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
     <div className="mt-3 space-y-7">
       {turn.messages.map((entry) =>
         entry.role === 'agent' ? (
-          <AgentMessage key={entry.message.id} message={entry.message} />
-        ) : (
-          <article
-            key={entry.message.id}
-            className="ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-surface px-4 py-3"
-            aria-label="Your message"
-          >
-            <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
-              {entry.message.text}
+          <div key={entry.message.id}>
+            <p
+              className="mb-2 min-w-0 break-all pl-10 font-mono text-[10px] tracking-[0.08em] text-tertiary"
+              aria-label={`Durable Item ${entry.message.id}`}
+            >
+              Item {entry.message.id}
             </p>
-          </article>
+            <AgentMessage message={entry.message} />
+          </div>
+        ) : (
+          <div key={entry.message.id} className="ml-auto max-w-[82%]">
+            <p
+              className="mb-2 min-w-0 break-all text-right font-mono text-[10px] tracking-[0.08em] text-tertiary"
+              aria-label={`Durable Item ${entry.message.id}`}
+            >
+              Item {entry.message.id}
+            </p>
+            <article
+              className="rounded-2xl rounded-br-md bg-surface px-4 py-3"
+              aria-label="Your message"
+            >
+              <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
+                {entry.message.text}
+              </p>
+            </article>
+          </div>
         ),
       )}
       {turn.failure ? (
