@@ -151,7 +151,7 @@ export const ThreadWorkbenchView = ({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
       <aside className="hidden min-h-0 w-60 shrink-0 md:block">
         <ThreadNavigator store={store} />
       </aside>
@@ -160,7 +160,7 @@ export const ThreadWorkbenchView = ({
           <ThreadNavigator id="thread-navigator" store={store} />
         </div>
       ) : null}
-      <section className="relative flex min-h-0 flex-1 flex-col">
+      <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="pointer-events-none absolute inset-0 workbench-grid" />
       <Button
         type="button"
@@ -179,7 +179,7 @@ export const ThreadWorkbenchView = ({
         <PanelLeft aria-hidden="true" />
       </Button>
       <ScrollArea
-        className="relative min-h-0 flex-1"
+        className="relative min-h-0 min-w-0 flex-1"
         viewportProps={{
           'aria-label': 'Conversation transcript',
           tabIndex: 0,

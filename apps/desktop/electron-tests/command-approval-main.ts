@@ -144,6 +144,32 @@ const waitForAnimationFrame = async (): Promise<void> => {
   );
 };
 
+const resizeWindow = async (
+  width: number,
+  height: number,
+): Promise<void> => {
+  if (!window || window.isDestroyed()) {
+    throw new Error('Electron test window is unavailable.');
+  }
+  window.setSize(width, height);
+  await waitFor(async () => {
+    if (!window || window.isDestroyed()) {
+      return false;
+    }
+    const [actualWidth, actualHeight] = window.getSize();
+    const rendererIsNarrow = await evaluate<boolean>(
+      "window.matchMedia('(max-width: 639px)').matches",
+    );
+    return (
+      actualWidth === width &&
+      actualHeight === height &&
+      rendererIsNarrow === (width < 640)
+    );
+  }, `${width}x${height} Electron window resize`);
+  await waitForAnimationFrame();
+  await waitForAnimationFrame();
+};
+
 const capturePageWithRetry = async (
   label: string,
 ): Promise<NativeImage> => {
@@ -694,8 +720,7 @@ const run = async (): Promise<void> => {
       ),
     'model configuration save and redaction',
   );
-  window.setSize(360, 600);
-  await waitForAnimationFrame();
+  await resizeWindow(360, 600);
   if (
     await evaluate<boolean>(
       'document.documentElement.scrollWidth > window.innerWidth',
@@ -706,7 +731,14 @@ const run = async (): Promise<void> => {
   await evaluate(`document.querySelector(
     'button[aria-label="Close model settings"]',
   )?.click()`);
-  window.setSize(800, 600);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[role="dialog"]') === null`,
+      ),
+    'model configuration dialog dismissal',
+  );
+  await resizeWindow(800, 600);
   await evaluate('window.sugarcode.getCommandApprovalState()');
   await waitFor(
     () =>
@@ -1015,7 +1047,7 @@ const run = async (): Promise<void> => {
       ),
     'recovered command execution attempt presentation',
   );
-  window.setSize(360, 600);
+  await resizeWindow(360, 600);
   await waitFor(
     () =>
       evaluate<boolean>(
@@ -1047,38 +1079,57 @@ const run = async (): Promise<void> => {
   await evaluate(`document.querySelector(
     'button[aria-label="Hide Thread navigator"]',
   )?.click()`);
-  await waitForAnimationFrame();
-  await waitForAnimationFrame();
   await waitFor(
     () =>
-      evaluate<boolean>(`(() => {
-        const result = document.querySelector(
-          '[aria-label="Execution result recorded: Command exited with code 7"]',
-        );
-        const appliedReview = document.querySelector(
-          '[aria-label="File change applied: recovered/notes.txt"]',
-        );
-        const unknownReview = document.querySelector(
-          '[aria-label="File change outcome unknown: recovered/pending.txt"]',
-        );
-        if (
-          !(result instanceof HTMLElement) ||
-          !(appliedReview instanceof HTMLElement) ||
-          !(unknownReview instanceof HTMLElement)
-        ) {
-          return false;
-        }
-        const elements = [result, appliedReview, unknownReview];
-        return document.documentElement.scrollWidth <=
-          document.documentElement.clientWidth &&
-          elements.every((element) => {
-            const bounds = element.getBoundingClientRect();
-            return bounds.left >= 0 && bounds.right <= window.innerWidth;
-          });
-      })()`),
-    'narrow command result and FileChange review layout',
+      evaluate<boolean>(
+        `document.querySelector(
+          'button[aria-label="Hide Thread navigator"]',
+        ) === null`,
+      ),
+    'narrow Thread navigator dismissal',
   );
-  window.setSize(800, 600);
+  const narrowLayoutTargets = [
+    {
+      selector:
+        '[aria-label="Execution result recorded: Command exited with code 7"]',
+      label: 'command result',
+    },
+    {
+      selector:
+        '[aria-label="File change applied: recovered/notes.txt"]',
+      label: 'applied FileChange review',
+    },
+    {
+      selector:
+        '[aria-label="File change outcome unknown: recovered/pending.txt"]',
+      label: 'unknown FileChange review',
+    },
+  ] as const;
+  for (const target of narrowLayoutTargets) {
+    await evaluate(`document.querySelector(
+      ${JSON.stringify(target.selector)},
+    )?.scrollIntoView({ block: 'center', inline: 'nearest' })`);
+    await waitForAnimationFrame();
+    await waitForAnimationFrame();
+    await waitFor(
+      () =>
+        evaluate<boolean>(`(() => {
+          const element = document.querySelector(
+            ${JSON.stringify(target.selector)},
+          );
+          if (!(element instanceof HTMLElement)) {
+            return false;
+          }
+          const bounds = element.getBoundingClientRect();
+          return document.documentElement.scrollWidth <=
+            document.documentElement.clientWidth &&
+            bounds.left >= 0 &&
+            bounds.right <= window.innerWidth;
+        })()`),
+      `narrow ${target.label} layout`,
+    );
+  }
+  await resizeWindow(800, 600);
 
   const sendConversationInput = async (input: string): Promise<void> => {
     await evaluate(`(() => {
@@ -1459,7 +1510,7 @@ const run = async (): Promise<void> => {
       ),
     'command execution result after Renderer reload',
   );
-  window.setSize(360, 600);
+  await resizeWindow(360, 600);
   await waitFor(
     () =>
       evaluate<boolean>(`(() => {
@@ -1478,7 +1529,7 @@ const run = async (): Promise<void> => {
       })()`),
     'narrow fenced-code line-count layout',
   );
-  window.setSize(800, 600);
+  await resizeWindow(800, 600);
   await evaluate(`Array.from(document.querySelectorAll(
     '[aria-label="Agent response"]',
   )).find((response) =>
@@ -1904,8 +1955,7 @@ const run = async (): Promise<void> => {
   ) {
     throw new Error('Electron MCP approval did not preserve its UI contract.');
   }
-  window.setSize(360, 720);
-  await waitForAnimationFrame();
+  await resizeWindow(360, 720);
   const mcpNarrowContained = await evaluate<boolean>(`(() => {
     const dialog = document.querySelector('[role="alertdialog"]');
     if (!(dialog instanceof HTMLElement)) {
@@ -1925,8 +1975,7 @@ const run = async (): Promise<void> => {
     path.join(__dirname, 'mcp-approval-light.png'),
     (await capturePageWithRetry('light MCP approval dialog')).toPNG(),
   );
-  window.setSize(800, 600);
-  await waitForAnimationFrame();
+  await resizeWindow(800, 600);
   await evaluate(`(() => {
     const button = Array.from(document.querySelectorAll('button'))
       .find((candidate) => candidate.textContent === 'Approve once');
