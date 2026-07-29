@@ -12,6 +12,7 @@ import type {
   TurnStartResponse,
   TurnStartedNotification,
 } from '@sugarcode/app-server-protocol';
+import path from 'node:path';
 
 import type { ServerMessage } from '../transport/server-message';
 
@@ -73,6 +74,36 @@ export type WorkspaceSearchResultItem = Readonly<{
     | Readonly<{ type: 'error'; kind: string }>;
 }>;
 
+export type CommandCallItem = Readonly<{
+  type: 'commandCall';
+  id: string;
+  callId: string;
+  command: string;
+  arguments: readonly string[];
+}>;
+
+export type CommandApprovalRequestItem = Readonly<{
+  type: 'commandApprovalRequest';
+  id: string;
+  approvalId: string;
+  callId: string;
+  command: string;
+  arguments: readonly string[];
+}>;
+
+export type CommandApprovalDecisionItem = Readonly<{
+  type: 'commandApprovalDecision';
+  id: string;
+  approvalId: string;
+  decision:
+    | 'approved'
+    | 'denied'
+    | 'timedOut'
+    | 'unsupported'
+    | 'cancelled'
+    | 'clientDisconnected';
+}>;
+
 type ConversationItem =
   | TextItem
   | WorkspaceReadCallItem
@@ -80,7 +111,10 @@ type ConversationItem =
   | WorkspaceListCallItem
   | WorkspaceListResultItem
   | WorkspaceSearchCallItem
-  | WorkspaceSearchResultItem;
+  | WorkspaceSearchResultItem
+  | CommandCallItem
+  | CommandApprovalRequestItem
+  | CommandApprovalDecisionItem;
 
 export type ResumeItem =
   | ConversationItem
@@ -144,6 +178,18 @@ const MAX_WORKSPACE_SEARCH_QUERY_BYTES = 256;
 const MAX_WORKSPACE_SEARCH_MATCHES = 200;
 const MAX_WORKSPACE_SEARCH_PATH_BYTES = 1_024;
 const MAX_WORKSPACE_SEARCH_TOTAL_PATH_BYTES = 256 * 1_024;
+const MAX_COMMAND_BYTES = 1_024;
+const MAX_COMMAND_ARGUMENT_BYTES = 8 * 1_024;
+const MAX_COMMAND_TOTAL_BYTES = 32 * 1_024;
+const MAX_COMMAND_ARGUMENTS = 64;
+const COMMAND_APPROVAL_DECISIONS = new Set([
+  'approved',
+  'denied',
+  'timedOut',
+  'unsupported',
+  'cancelled',
+  'clientDisconnected',
+]);
 const WORKSPACE_LIST_ENTRY_KINDS = new Set([
   'file',
   'directory',
@@ -153,6 +199,49 @@ const WORKSPACE_LIST_ENTRY_KINDS = new Set([
 
 const utf8Bytes = (value: string): number =>
   new TextEncoder().encode(value).byteLength;
+
+const hasControlCharacters = (value: string): boolean =>
+  Array.from(value).some((character) => /\p{Cc}/u.test(character));
+
+const parseCommandArguments = (value: unknown): readonly string[] => {
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_COMMAND_ARGUMENTS ||
+    value.some(
+      (argument) =>
+        typeof argument !== 'string' ||
+        utf8Bytes(argument) > MAX_COMMAND_ARGUMENT_BYTES ||
+        hasControlCharacters(argument),
+    )
+  ) {
+    throw new Error('Invalid shell/exec arguments.');
+  }
+  return [...(value as string[])];
+};
+
+const validateCommandPayload = (
+  command: unknown,
+  argumentsValue: unknown,
+): Readonly<{ command: string; arguments: readonly string[] }> => {
+  if (
+    typeof command !== 'string' ||
+    command.length === 0 ||
+    !path.isAbsolute(command) ||
+    utf8Bytes(command) > MAX_COMMAND_BYTES ||
+    hasControlCharacters(command)
+  ) {
+    throw new Error('Invalid shell/exec command.');
+  }
+  const argumentsList = parseCommandArguments(argumentsValue);
+  if (
+    utf8Bytes(command) +
+      argumentsList.reduce((total, argument) => total + utf8Bytes(argument), 0) >
+    MAX_COMMAND_TOTAL_BYTES
+  ) {
+    throw new Error('Invalid shell/exec command size.');
+  }
+  return { command, arguments: argumentsList };
+};
 
 const parseWorkspaceListEntryCount = (content: string): number => {
   let parsed: unknown;
@@ -421,6 +510,65 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       type: value.type,
       id: value.id,
       text: value.text,
+    };
+  }
+  if (value.type === 'toolCall' && value.name === 'shell/exec') {
+    if (
+      !isId(value.callId) ||
+      value.path !== '.' ||
+      Object.hasOwn(value, 'query')
+    ) {
+      throw new Error('Invalid shell/exec ToolCall Item.');
+    }
+    return {
+      type: 'commandCall',
+      id: value.id,
+      callId: value.callId,
+      ...validateCommandPayload(value.command, value.arguments),
+    };
+  }
+  if (value.type === 'commandApprovalRequest') {
+    if (
+      !isId(value.approvalId) ||
+      !isId(value.callId) ||
+      value.cwd !== '.' ||
+      value.environmentPolicy !== 'minimalV1' ||
+      value.sandboxed !== true ||
+      value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
+      value.networkPolicy !== 'networkDeniedV1'
+    ) {
+      throw new Error('Invalid command approval request Item.');
+    }
+    if (
+      Object.hasOwn(value, 'workspaceWritePolicy') ||
+      Object.hasOwn(value, 'workspaceWriteRisk')
+    ) {
+      return null;
+    }
+    return {
+      type: 'commandApprovalRequest',
+      id: value.id,
+      approvalId: value.approvalId,
+      callId: value.callId,
+      ...validateCommandPayload(value.command, value.arguments),
+    };
+  }
+  if (value.type === 'commandApprovalDecision') {
+    if (Object.hasOwn(value, 'workspaceWriteRiskAcknowledgement')) {
+      return null;
+    }
+    if (
+      !isId(value.approvalId) ||
+      typeof value.decision !== 'string' ||
+      !COMMAND_APPROVAL_DECISIONS.has(value.decision)
+    ) {
+      throw new Error('Invalid command approval decision Item.');
+    }
+    return {
+      type: 'commandApprovalDecision',
+      id: value.id,
+      approvalId: value.approvalId,
+      decision: value.decision as CommandApprovalDecisionItem['decision'],
     };
   }
   if (value.type === 'toolCall' && value.name === 'workspace/read') {

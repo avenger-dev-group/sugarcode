@@ -1,5 +1,6 @@
 import type {
   ConversationMessage,
+  ConversationCommandApprovalActivity,
   ConversationTurn,
   ConversationWorkspaceListActivity,
   ConversationWorkspaceReadActivity,
@@ -36,6 +37,15 @@ export const recoverConversation = (
     let workspaceRead: ConversationWorkspaceReadActivity | undefined;
     let workspaceList: ConversationWorkspaceListActivity | undefined;
     let workspaceSearch: ConversationWorkspaceSearchActivity | undefined;
+    let commandCall:
+      | Readonly<{
+          id: string;
+          callId: string;
+          command: string;
+          arguments: readonly string[];
+        }>
+      | undefined;
+    let commandApproval: ConversationCommandApprovalActivity | undefined;
     for (const item of turn.items) {
       if (itemIds.has(item.id)) {
         throw new Error('thread/resume returned a duplicate Item ID.');
@@ -51,7 +61,7 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceReadCall') {
-        if (workspaceRead || workspaceList || workspaceSearch) {
+        if (workspaceRead || workspaceList || workspaceSearch || commandCall || commandApproval) {
           throw new Error(
             'thread/resume returned duplicate workspace/read activity.',
           );
@@ -85,7 +95,7 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceListCall') {
-        if (workspaceList || workspaceRead || workspaceSearch) {
+        if (workspaceList || workspaceRead || workspaceSearch || commandCall || commandApproval) {
           throw new Error(
             'thread/resume returned duplicate workspace/list activity.',
           );
@@ -119,7 +129,7 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceSearchCall') {
-        if (workspaceSearch || workspaceRead || workspaceList) {
+        if (workspaceSearch || workspaceRead || workspaceList || commandCall || commandApproval) {
           throw new Error(
             'thread/resume returned duplicate workspace/search activity.',
           );
@@ -149,6 +159,71 @@ export const recoverConversation = (
             id: item.id,
             status: 'completed',
             outcome: { ...item.outcome },
+          },
+        };
+        continue;
+      }
+      if (item.type === 'commandCall') {
+        if (
+          workspaceRead ||
+          workspaceList ||
+          workspaceSearch ||
+          commandCall ||
+          commandApproval
+        ) {
+          throw new Error(
+            'thread/resume returned duplicate command approval activity.',
+          );
+        }
+        commandCall = {
+          id: item.id,
+          callId: item.callId,
+          command: item.command,
+          arguments: [...item.arguments],
+        };
+        continue;
+      }
+      if (item.type === 'commandApprovalRequest') {
+        if (
+          !commandCall ||
+          commandApproval ||
+          commandCall.callId !== item.callId ||
+          commandCall.command !== item.command ||
+          JSON.stringify(commandCall.arguments) !== JSON.stringify(item.arguments)
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched command approval request.',
+          );
+        }
+        commandApproval = {
+          callItemId: commandCall.id,
+          id: item.id,
+          callId: item.callId,
+          approvalId: item.approvalId,
+          command: item.command,
+          argumentCount: item.arguments.length,
+          requestStatus: 'completed',
+        };
+        continue;
+      }
+      if (item.type === 'commandApprovalDecision') {
+        if (!commandApproval) {
+          continue;
+        }
+        if (
+          commandApproval.approvalId !== item.approvalId ||
+          commandApproval.decision
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched command approval decision.',
+          );
+        }
+        commandApproval = {
+          ...commandApproval,
+          decision: {
+            id: item.id,
+            status: 'completed',
+            value: item.decision,
           },
         };
       }
@@ -181,6 +256,15 @@ export const recoverConversation = (
         'thread/resume returned terminal workspace/search activity without a result.',
       );
     }
+    if (
+      commandApproval &&
+      turn.status !== 'interrupted' &&
+      !commandApproval.decision
+    ) {
+      throw new Error(
+        'thread/resume returned terminal command approval activity without a decision.',
+      );
+    }
 
     return {
       id: turn.id,
@@ -189,6 +273,7 @@ export const recoverConversation = (
       ...(workspaceRead ? { workspaceRead } : {}),
       ...(workspaceList ? { workspaceList } : {}),
       ...(workspaceSearch ? { workspaceSearch } : {}),
+      ...(commandApproval ? { commandApproval } : {}),
       ...(turn.error ? { error: { ...turn.error } } : {}),
     };
   });

@@ -8,6 +8,7 @@ import type {
 
 import type {
   AgentMessageViewModel,
+  CommandApprovalActivityViewModel,
   WorkspaceListActivityViewModel,
   WorkspaceReadActivityViewModel,
   WorkspaceSearchActivityViewModel,
@@ -42,6 +43,7 @@ export type TurnViewModel = Readonly<{
   workspaceRead?: WorkspaceReadActivityViewModel;
   workspaceList?: WorkspaceListActivityViewModel;
   workspaceSearch?: WorkspaceSearchActivityViewModel;
+  commandApproval?: CommandApprovalActivityViewModel;
   terminalLabel?: string;
   failure?: TurnFailureViewModel;
   isError: boolean;

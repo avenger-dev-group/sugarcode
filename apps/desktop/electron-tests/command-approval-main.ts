@@ -266,6 +266,33 @@ const run = async (): Promise<void> => {
             },
           ],
         },
+        {
+          id: 'turn_0000000000000094',
+          status: 'completed',
+          items: [
+            {
+              type: 'commandCall',
+              id: 'item_recovered_command',
+              callId: 'call_recovered_command',
+              command: '/usr/bin/printf',
+              arguments: ['private-electron-argument'],
+            },
+            {
+              type: 'commandApprovalRequest',
+              id: 'item_recovered_command_request',
+              approvalId: 'approval_recovered_command',
+              callId: 'call_recovered_command',
+              command: '/usr/bin/printf',
+              arguments: ['private-electron-argument'],
+            },
+            {
+              type: 'commandApprovalDecision',
+              id: 'item_recovered_command_decision',
+              approvalId: 'approval_recovered_command',
+              decision: 'denied',
+            },
+          ],
+        },
       ],
     }),
     startThread: async () => ({
@@ -507,6 +534,23 @@ const run = async (): Promise<void> => {
         })()`,
       ),
     'recovered failed workspace search presentation',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const activity = document.querySelector(
+            '[aria-label="Command denied: /usr/bin/printf"]',
+          );
+          return activity?.getAttribute('role') === 'alert' &&
+            activity.getAttribute('data-state') === 'denied' &&
+            activity.textContent?.includes('1 argument') === true &&
+            activity.textContent?.includes('execution is not shown') === false &&
+            !activity.textContent?.includes('private-electron-argument') &&
+            !activity.querySelector('button, a');
+        })()`,
+      ),
+    'recovered command approval presentation',
   );
 
   const sendConversationInput = async (input: string): Promise<void> => {
@@ -852,6 +896,15 @@ const run = async (): Promise<void> => {
         )?.textContent?.includes('Failure kind accessDenied') === true`,
       ),
     'failed workspace search after Renderer reload',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Command denied: /usr/bin/printf"]',
+        )?.getAttribute('data-state') === 'denied'`,
+      ),
+    'command approval after Renderer reload',
   );
   await evaluate(`Array.from(document.querySelectorAll(
     '[aria-label="Agent response"]',

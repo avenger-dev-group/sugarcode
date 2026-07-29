@@ -932,4 +932,75 @@ describe('ConversationController', () => {
     );
     expect(onProtocolFailure).toHaveBeenCalledOnce();
   });
+
+  it('projects a live command approval receipt without sharing arguments', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await controller.startTurn('Ask before running.');
+    const correlate = {
+      threadId: 'thr_0000000000000001',
+      turnId: 'turn_0000000000000001',
+    };
+    const call = {
+      type: 'toolCall',
+      id: 'item_command',
+      callId: 'call_command',
+      name: 'shell/exec',
+      path: '.',
+      command: '/usr/bin/printf',
+      arguments: ['private-value'],
+    };
+    const request = {
+      type: 'commandApprovalRequest',
+      id: 'item_request',
+      approvalId: 'approval_command',
+      callId: 'call_command',
+      command: '/usr/bin/printf',
+      arguments: ['private-value'],
+      cwd: '.',
+      environmentPolicy: 'minimalV1',
+      sandboxed: true,
+      sandboxPolicy: 'filesystemReadOnlyV1',
+      networkPolicy: 'networkDeniedV1',
+    };
+    const decision = {
+      type: 'commandApprovalDecision',
+      id: 'item_decision',
+      approvalId: 'approval_command',
+      decision: 'approved',
+    };
+    for (const item of [call, request, decision]) {
+      controller.handleNotification(
+        notification('item/started', { ...correlate, item }),
+      );
+      controller.handleNotification(
+        notification('item/completed', { ...correlate, item }),
+      );
+    }
+    controller.handleNotification(
+      notification('turn/completed', {
+        threadId: correlate.threadId,
+        turn: { id: correlate.turnId, status: 'completed' },
+      }),
+    );
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.turns[0]?.commandApproval).toMatchObject({
+      command: '/usr/bin/printf',
+      argumentCount: 1,
+      decision: { value: 'approved', status: 'completed' },
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('private-value');
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+  });
 });

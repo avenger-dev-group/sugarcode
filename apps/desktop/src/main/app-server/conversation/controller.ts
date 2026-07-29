@@ -1,5 +1,6 @@
 import type {
   ConversationActionResult,
+  ConversationCommandApprovalDecision,
   ConversationMessage,
   ConversationStateListener,
   ConversationStateSnapshot,
@@ -73,6 +74,30 @@ type MutableWorkspaceSearchActivity = {
   };
 };
 
+type MutableCommandCall = {
+  id: string;
+  callId: string;
+  command: string;
+  arguments: readonly string[];
+  status: ConversationMessage['status'];
+};
+
+type MutableCommandApprovalActivity = {
+  callItemId: string;
+  id: string;
+  callId: string;
+  approvalId: string;
+  command: string;
+  argumentCount: number;
+  requestStatus: ConversationMessage['status'];
+  decision?: {
+    id: string;
+    status: ConversationMessage['status'];
+    value: ConversationCommandApprovalDecision;
+  };
+  argumentSignature: string;
+};
+
 type MutableTurn = {
   id: string;
   status: ConversationTurnStatus;
@@ -80,6 +105,8 @@ type MutableTurn = {
   workspaceRead?: MutableWorkspaceReadActivity;
   workspaceList?: MutableWorkspaceListActivity;
   workspaceSearch?: MutableWorkspaceSearchActivity;
+  pendingCommandCall?: MutableCommandCall;
+  commandApproval?: MutableCommandApprovalActivity;
   error?: ConversationTurnError;
 };
 
@@ -195,6 +222,17 @@ export class ConversationController {
                       },
                     }
                   : {}),
+              },
+            }
+          : {}),
+        ...(turn.commandApproval
+          ? {
+              commandApproval: {
+                ...turn.commandApproval,
+                ...(turn.commandApproval.decision
+                  ? { decision: { ...turn.commandApproval.decision } }
+                  : {}),
+                argumentSignature: '',
               },
             }
           : {}),
@@ -449,7 +487,9 @@ export class ConversationController {
           if (
             turn.workspaceRead ||
             turn.workspaceList ||
-            turn.workspaceSearch
+            turn.workspaceSearch ||
+            turn.pendingCommandCall ||
+            turn.commandApproval
           ) {
             throw new Error('Duplicate workspace/read activity.');
           }
@@ -481,7 +521,9 @@ export class ConversationController {
           if (
             turn.workspaceList ||
             turn.workspaceRead ||
-            turn.workspaceSearch
+            turn.workspaceSearch ||
+            turn.pendingCommandCall ||
+            turn.commandApproval
           ) {
             throw new Error('Duplicate workspace/list activity.');
           }
@@ -511,7 +553,9 @@ export class ConversationController {
           if (
             turn.workspaceSearch ||
             turn.workspaceRead ||
-            turn.workspaceList
+            turn.workspaceList ||
+            turn.pendingCommandCall ||
+            turn.commandApproval
           ) {
             throw new Error('Duplicate workspace/search activity.');
           }
@@ -522,7 +566,7 @@ export class ConversationController {
             query: lifecycle.params.item.query,
             callStatus: 'inProgress',
           };
-        } else {
+        } else if (lifecycle.params.item.type === 'workspaceSearchResult') {
           const workspaceSearch = this.requireWorkspaceSearch(
             turn,
             lifecycle.params.item.callId,
@@ -537,6 +581,65 @@ export class ConversationController {
             id: lifecycle.params.item.id,
             status: 'inProgress',
             outcome: { ...lifecycle.params.item.outcome },
+          };
+        } else if (lifecycle.params.item.type === 'commandCall') {
+          if (
+            turn.workspaceRead ||
+            turn.workspaceList ||
+            turn.workspaceSearch ||
+            turn.pendingCommandCall ||
+            turn.commandApproval
+          ) {
+            throw new Error('Duplicate command approval activity.');
+          }
+          turn.pendingCommandCall = {
+            id: lifecycle.params.item.id,
+            callId: lifecycle.params.item.callId,
+            command: lifecycle.params.item.command,
+            arguments: [...lifecycle.params.item.arguments],
+            status: 'inProgress',
+          };
+        } else if (
+          lifecycle.params.item.type === 'commandApprovalRequest'
+        ) {
+          const call = turn.pendingCommandCall;
+          if (
+            !call ||
+            call.status !== 'completed' ||
+            call.callId !== lifecycle.params.item.callId ||
+            call.command !== lifecycle.params.item.command ||
+            JSON.stringify(call.arguments) !==
+              JSON.stringify(lifecycle.params.item.arguments)
+          ) {
+            throw new Error('Command approval request did not match its call.');
+          }
+          turn.commandApproval = {
+            callItemId: call.id,
+            id: lifecycle.params.item.id,
+            callId: call.callId,
+            approvalId: lifecycle.params.item.approvalId,
+            command: call.command,
+            argumentCount: call.arguments.length,
+            requestStatus: 'inProgress',
+            argumentSignature: JSON.stringify(call.arguments),
+          };
+          turn.pendingCommandCall = undefined;
+        } else {
+          const activity = turn.commandApproval;
+          if (!activity) {
+            return;
+          }
+          if (
+            activity.requestStatus !== 'completed' ||
+            activity.approvalId !== lifecycle.params.item.approvalId ||
+            activity.decision
+          ) {
+            throw new Error('Command approval decision started out of order.');
+          }
+          activity.decision = {
+            id: lifecycle.params.item.id,
+            status: 'inProgress',
+            value: lifecycle.params.item.decision,
           };
         }
         this.publish();
@@ -657,7 +760,7 @@ export class ConversationController {
             );
           }
           workspaceSearch.callStatus = 'completed';
-        } else {
+        } else if (lifecycle.params.item.type === 'workspaceSearchResult') {
           const workspaceSearch = this.requireWorkspaceSearch(
             turn,
             lifecycle.params.item.callId,
@@ -677,6 +780,54 @@ export class ConversationController {
             );
           }
           result.status = 'completed';
+        } else if (lifecycle.params.item.type === 'commandCall') {
+          const call = turn.pendingCommandCall;
+          if (
+            !call ||
+            call.id !== lifecycle.params.item.id ||
+            call.callId !== lifecycle.params.item.callId ||
+            call.command !== lifecycle.params.item.command ||
+            JSON.stringify(call.arguments) !==
+              JSON.stringify(lifecycle.params.item.arguments) ||
+            call.status !== 'inProgress'
+          ) {
+            throw new Error('Completed command call did not match its started Item.');
+          }
+          call.status = 'completed';
+        } else if (
+          lifecycle.params.item.type === 'commandApprovalRequest'
+        ) {
+          const activity = this.requireCommandApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
+          if (
+            activity.id !== lifecycle.params.item.id ||
+            activity.callId !== lifecycle.params.item.callId ||
+            activity.command !== lifecycle.params.item.command ||
+            activity.argumentSignature !==
+              JSON.stringify(lifecycle.params.item.arguments) ||
+            activity.requestStatus !== 'inProgress'
+          ) {
+            throw new Error('Completed command approval request did not match its started Item.');
+          }
+          activity.requestStatus = 'completed';
+        } else {
+          const activity = turn.commandApproval;
+          if (!activity) {
+            return;
+          }
+          const decision = activity.decision;
+          if (
+            activity.approvalId !== lifecycle.params.item.approvalId ||
+            !decision ||
+            decision.id !== lifecycle.params.item.id ||
+            decision.status !== 'inProgress' ||
+            decision.value !== lifecycle.params.item.decision
+          ) {
+            throw new Error('Completed command approval decision did not match its started Item.');
+          }
+          decision.status = 'completed';
         }
         this.publish();
         return;
@@ -723,6 +874,18 @@ export class ConversationController {
         ) {
           throw new Error(
             'Turn completed before workspace/search activity completed.',
+          );
+        }
+        if (
+          turn.commandApproval &&
+          (turn.commandApproval.requestStatus !== 'completed' ||
+            (lifecycle.params.turn.status !== 'interrupted' &&
+              turn.commandApproval.decision?.status !== 'completed') ||
+            (turn.commandApproval.decision &&
+              turn.commandApproval.decision.status !== 'completed'))
+        ) {
+          throw new Error(
+            'Turn completed before command approval activity completed.',
           );
         }
         turn.status = lifecycle.params.turn.status;
@@ -801,6 +964,19 @@ export class ConversationController {
     return turn.workspaceSearch;
   };
 
+  private requireCommandApproval = (
+    turn: MutableTurn,
+    approvalId: string,
+  ): MutableCommandApprovalActivity => {
+    if (
+      !turn.commandApproval ||
+      turn.commandApproval.approvalId !== approvalId
+    ) {
+      throw new Error('Command approval lifecycle referenced another request.');
+    }
+    return turn.commandApproval;
+  };
+
   private hasItemId = (turn: MutableTurn, itemId: string): boolean =>
     Boolean(
       turn.messages.some((message) => message.id === itemId) ||
@@ -809,7 +985,11 @@ export class ConversationController {
         turn.workspaceList?.id === itemId ||
         turn.workspaceList?.result?.id === itemId ||
         turn.workspaceSearch?.id === itemId ||
-        turn.workspaceSearch?.result?.id === itemId,
+        turn.workspaceSearch?.result?.id === itemId ||
+        turn.pendingCommandCall?.id === itemId ||
+        turn.commandApproval?.callItemId === itemId ||
+        turn.commandApproval?.id === itemId ||
+        turn.commandApproval?.decision?.id === itemId,
     );
 
   private createSnapshot = (): ConversationStateSnapshot => ({
@@ -863,6 +1043,22 @@ export class ConversationController {
                         outcome: { ...turn.workspaceSearch.result.outcome },
                       },
                     }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(turn.commandApproval
+          ? {
+              commandApproval: {
+                callItemId: turn.commandApproval.callItemId,
+                id: turn.commandApproval.id,
+                callId: turn.commandApproval.callId,
+                approvalId: turn.commandApproval.approvalId,
+                command: turn.commandApproval.command,
+                argumentCount: turn.commandApproval.argumentCount,
+                requestStatus: turn.commandApproval.requestStatus,
+                ...(turn.commandApproval.decision
+                  ? { decision: { ...turn.commandApproval.decision } }
                   : {}),
               },
             }

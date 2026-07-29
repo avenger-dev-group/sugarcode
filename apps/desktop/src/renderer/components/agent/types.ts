@@ -76,6 +76,29 @@ export type WorkspaceSearchActivityProps = Readonly<{
   activity: WorkspaceSearchActivityViewModel;
 }>;
 
+export type CommandApprovalPresentationState =
+  | 'awaiting'
+  | 'stopping'
+  | 'uncertain'
+  | 'interrupted'
+  | 'approved'
+  | 'denied'
+  | 'timedOut'
+  | 'unsupported'
+  | 'cancelled'
+  | 'clientDisconnected';
+
+export type CommandApprovalActivityViewModel = Readonly<{
+  id: string;
+  command: string;
+  argumentCount: number;
+  state: CommandApprovalPresentationState;
+}>;
+
+export type CommandApprovalActivityProps = Readonly<{
+  activity: CommandApprovalActivityViewModel;
+}>;
+
 export type AgentMarkdownProps = Readonly<{
   source: string;
   isStreaming: boolean;

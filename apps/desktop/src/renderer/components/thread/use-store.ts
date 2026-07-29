@@ -15,6 +15,7 @@ import {
 import {
   MAX_CONVERSATION_INPUT_BYTES,
   type ConversationMessageStatus,
+  type ConversationCommandApprovalActivity,
   type ConversationPhase,
   type ConversationStateSnapshot,
   type ConversationTurnStatus,
@@ -25,6 +26,8 @@ import {
 
 import type {
   AgentMessagePresentationState,
+  CommandApprovalActivityViewModel,
+  CommandApprovalPresentationState,
   WorkspaceListActivityViewModel,
   WorkspaceListPresentationState,
   WorkspaceReadActivityViewModel,
@@ -159,6 +162,32 @@ const toWorkspaceSearchPresentationState = (
       return 'uncertain';
     default:
       throw new Error('Workspace search activity did not match its Turn phase.');
+  }
+};
+
+const toCommandApprovalPresentationState = (
+  phase: ConversationPhase,
+  turnStatus: ConversationTurnStatus,
+  activity: ConversationCommandApprovalActivity,
+): CommandApprovalPresentationState => {
+  if (activity.decision?.status === 'completed') {
+    return activity.decision.value;
+  }
+  if (turnStatus === 'interrupted') {
+    return 'interrupted';
+  }
+  if (turnStatus !== 'inProgress') {
+    throw new Error('A terminal command approval has no durable decision.');
+  }
+  switch (phase) {
+    case 'inProgress':
+      return 'awaiting';
+    case 'stopping':
+      return 'stopping';
+    case 'unavailable':
+      return 'uncertain';
+    default:
+      throw new Error('Command approval activity did not match its Turn phase.');
   }
 };
 
@@ -316,6 +345,27 @@ export const toThreadViewModel = (
           nextWorkspaceSearch.errorKind
           ? previousTurn.workspaceSearch
           : nextWorkspaceSearch;
+      const nextCommandApproval = turn.commandApproval
+        ? {
+            id: turn.commandApproval.id,
+            command: turn.commandApproval.command,
+            argumentCount: turn.commandApproval.argumentCount,
+            state: toCommandApprovalPresentationState(
+              snapshot.phase,
+              turn.status,
+              turn.commandApproval,
+            ),
+          } satisfies CommandApprovalActivityViewModel
+        : undefined;
+      const commandApproval =
+        nextCommandApproval &&
+        previousTurn?.commandApproval?.id === nextCommandApproval.id &&
+        previousTurn.commandApproval.command === nextCommandApproval.command &&
+        previousTurn.commandApproval.argumentCount ===
+          nextCommandApproval.argumentCount &&
+        previousTurn.commandApproval.state === nextCommandApproval.state
+          ? previousTurn.commandApproval
+          : nextCommandApproval;
       const nextFailure = turn.error
         ? toTurnFailureViewModel(turn.error)
         : undefined;
@@ -335,6 +385,7 @@ export const toThreadViewModel = (
         previousTurn.workspaceRead === workspaceRead &&
         previousTurn.workspaceList === workspaceList &&
         previousTurn.workspaceSearch === workspaceSearch &&
+        previousTurn.commandApproval === commandApproval &&
         previousTurn.terminalLabel === terminalLabel &&
         previousTurn.failure === failure &&
         previousTurn.isError === isError
@@ -348,6 +399,7 @@ export const toThreadViewModel = (
         ...(workspaceRead ? { workspaceRead } : {}),
         ...(workspaceList ? { workspaceList } : {}),
         ...(workspaceSearch ? { workspaceSearch } : {}),
+        ...(commandApproval ? { commandApproval } : {}),
         ...(terminalLabel ? { terminalLabel } : {}),
         ...(failure ? { failure } : {}),
         isError,

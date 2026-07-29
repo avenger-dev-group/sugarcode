@@ -259,6 +259,114 @@ describe('conversation recovery', () => {
     expect(JSON.stringify(recovered)).not.toContain('"line"');
   });
 
+  it('recovers a read-only command approval receipt and discards arguments', () => {
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            {
+              type: 'toolCall',
+              id: 'item_command',
+              callId: 'call_command',
+              name: 'shell/exec',
+              path: '.',
+              command: '/usr/bin/printf',
+              arguments: ['private-value', '%s'],
+            },
+            {
+              type: 'commandApprovalRequest',
+              id: 'item_request',
+              approvalId: 'approval_command',
+              callId: 'call_command',
+              command: '/usr/bin/printf',
+              arguments: ['private-value', '%s'],
+              cwd: '.',
+              environmentPolicy: 'minimalV1',
+              sandboxed: true,
+              sandboxPolicy: 'filesystemReadOnlyV1',
+              networkPolicy: 'networkDeniedV1',
+            },
+            {
+              type: 'commandApprovalDecision',
+              id: 'item_decision',
+              approvalId: 'approval_command',
+              decision: 'denied',
+            },
+          ],
+        },
+      ],
+    });
+
+    const recovered = recoverConversation('thr_0000000000000001', resumed);
+    expect(recovered.turns[0]?.commandApproval).toEqual({
+      callItemId: 'item_command',
+      id: 'item_request',
+      callId: 'call_command',
+      approvalId: 'approval_command',
+      command: '/usr/bin/printf',
+      argumentCount: 2,
+      requestStatus: 'completed',
+      decision: {
+        id: 'item_decision',
+        status: 'completed',
+        value: 'denied',
+      },
+    });
+    expect(JSON.stringify(recovered)).not.toContain('private-value');
+  });
+
+  it('leaves workspace-write command approvals outside the projection', () => {
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            {
+              type: 'toolCall',
+              id: 'item_command',
+              callId: 'call_command',
+              name: 'shell/exec',
+              path: '.',
+              command: '/usr/bin/true',
+              arguments: [],
+            },
+            {
+              type: 'commandApprovalRequest',
+              id: 'item_request',
+              approvalId: 'approval_command',
+              callId: 'call_command',
+              command: '/usr/bin/true',
+              arguments: [],
+              cwd: '.',
+              environmentPolicy: 'minimalV1',
+              sandboxed: true,
+              sandboxPolicy: 'filesystemReadOnlyV1',
+              workspaceWritePolicy: 'commandWorkspaceWriteV1',
+              workspaceWriteRisk: 'nonTransactionalWorkspaceTreeV1',
+              networkPolicy: 'networkDeniedV1',
+            },
+            {
+              type: 'commandApprovalDecision',
+              id: 'item_decision',
+              approvalId: 'approval_command',
+              decision: 'denied',
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(
+      recoverConversation('thr_0000000000000001', resumed).turns[0]
+        ?.commandApproval,
+    ).toBeUndefined();
+  });
+
   it.each([
     {
       data: [

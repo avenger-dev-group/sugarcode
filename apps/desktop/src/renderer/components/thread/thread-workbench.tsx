@@ -2,6 +2,7 @@ import { ArrowUp, Square } from 'lucide-react';
 import { memo } from 'react';
 
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
+import { CommandApprovalActivity } from '@/renderer/components/agent/command-approval-activity';
 import { WorkspaceReadActivity } from '@/renderer/components/agent/workspace-read-activity';
 import { WorkspaceListActivity } from '@/renderer/components/agent/workspace-list-activity';
 import { WorkspaceSearchActivity } from '@/renderer/components/agent/workspace-search-activity';
@@ -77,6 +78,9 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
       ) : null}
       {turn.workspaceSearch ? (
         <WorkspaceSearchActivity activity={turn.workspaceSearch} />
+      ) : null}
+      {turn.commandApproval ? (
+        <CommandApprovalActivity activity={turn.commandApproval} />
       ) : null}
       {turn.messages
         .filter((entry) => entry.role === 'agent')

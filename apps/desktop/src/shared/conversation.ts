@@ -96,6 +96,29 @@ export type ConversationWorkspaceSearchActivity = Readonly<{
   }>;
 }>;
 
+export type ConversationCommandApprovalDecision =
+  | 'approved'
+  | 'denied'
+  | 'timedOut'
+  | 'unsupported'
+  | 'cancelled'
+  | 'clientDisconnected';
+
+export type ConversationCommandApprovalActivity = Readonly<{
+  callItemId: string;
+  id: string;
+  callId: string;
+  approvalId: string;
+  command: string;
+  argumentCount: number;
+  requestStatus: ConversationMessageStatus;
+  decision?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    value: ConversationCommandApprovalDecision;
+  }>;
+}>;
+
 export type ConversationTurnError = Readonly<{
   kind:
     | 'authentication'
@@ -121,6 +144,7 @@ export type ConversationTurn = Readonly<{
   workspaceRead?: ConversationWorkspaceReadActivity;
   workspaceList?: ConversationWorkspaceListActivity;
   workspaceSearch?: ConversationWorkspaceSearchActivity;
+  commandApproval?: ConversationCommandApprovalActivity;
   error?: ConversationTurnError;
 }>;
 
@@ -198,6 +222,15 @@ const ERROR_KINDS = new Set<ConversationTurnError['kind']>([
   'unsupportedOutput',
   'outputTooLarge',
   'stateUnavailable',
+]);
+
+const COMMAND_APPROVAL_DECISIONS = new Set<ConversationCommandApprovalDecision>([
+  'approved',
+  'denied',
+  'timedOut',
+  'unsupported',
+  'cancelled',
+  'clientDisconnected',
 ]);
 
 const ACTION_REASONS = new Set<ConversationActionResult['reason']>([
@@ -385,6 +418,49 @@ const isWorkspaceSearchActivity = (
   );
 };
 
+const isCommandApprovalActivity = (
+  value: unknown,
+): value is ConversationCommandApprovalActivity => {
+  if (
+    !isRecord(value) ||
+    !isId(value.callItemId) ||
+    !isId(value.id) ||
+    value.callItemId === value.id ||
+    !isId(value.callId) ||
+    !isId(value.approvalId) ||
+    typeof value.command !== 'string' ||
+    value.command.length === 0 ||
+    new TextEncoder().encode(value.command).byteLength > 1_024 ||
+    Array.from(value.command).some((character) => /\p{Cc}/u.test(character)) ||
+    typeof value.argumentCount !== 'number' ||
+    !Number.isSafeInteger(value.argumentCount) ||
+    value.argumentCount < 0 ||
+    value.argumentCount > 64 ||
+    typeof value.requestStatus !== 'string' ||
+    !MESSAGE_STATUSES.has(value.requestStatus as ConversationMessageStatus)
+  ) {
+    return false;
+  }
+  if (!Object.hasOwn(value, 'decision')) {
+    return true;
+  }
+  return (
+    value.requestStatus === 'completed' &&
+    isRecord(value.decision) &&
+    isId(value.decision.id) &&
+    value.decision.id !== value.id &&
+    value.decision.id !== value.callItemId &&
+    typeof value.decision.status === 'string' &&
+    MESSAGE_STATUSES.has(
+      value.decision.status as ConversationMessageStatus,
+    ) &&
+    typeof value.decision.value === 'string' &&
+    COMMAND_APPROVAL_DECISIONS.has(
+      value.decision.value as ConversationCommandApprovalDecision,
+    )
+  );
+};
+
 const isTurn = (value: unknown): value is ConversationTurn => {
   if (
     !isRecord(value) ||
@@ -399,10 +475,13 @@ const isTurn = (value: unknown): value is ConversationTurn => {
       !isWorkspaceListActivity(value.workspaceList)) ||
     (Object.hasOwn(value, 'workspaceSearch') &&
       !isWorkspaceSearchActivity(value.workspaceSearch)) ||
+    (Object.hasOwn(value, 'commandApproval') &&
+      !isCommandApprovalActivity(value.commandApproval)) ||
     [
       Object.hasOwn(value, 'workspaceRead'),
       Object.hasOwn(value, 'workspaceList'),
       Object.hasOwn(value, 'workspaceSearch'),
+      Object.hasOwn(value, 'commandApproval'),
     ].filter(Boolean).length > 1
   ) {
     return false;
@@ -456,6 +535,21 @@ const isTurn = (value: unknown): value is ConversationTurn => {
         workspaceSearch.result.status !== 'completed') ||
       (value.status !== 'interrupted' &&
         workspaceSearch.result?.status !== 'completed'))
+  ) {
+    return false;
+  }
+
+  const commandApproval = value.commandApproval as
+    | ConversationCommandApprovalActivity
+    | undefined;
+  if (
+    value.status !== 'inProgress' &&
+    commandApproval &&
+    (commandApproval.requestStatus !== 'completed' ||
+      (commandApproval.decision &&
+        commandApproval.decision.status !== 'completed') ||
+      (value.status !== 'interrupted' &&
+        commandApproval.decision?.status !== 'completed'))
   ) {
     return false;
   }

@@ -913,4 +913,150 @@ describe('ThreadWorkbenchView', () => {
       }).turns[0]?.workspaceSearch,
     ).toMatchObject({ state: 'failed', errorKind: 'notFound' });
   });
+
+  it('presents a durable command approval receipt without controls or arguments', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = createStore({
+      thread: toThreadViewModel({
+        revision: 21,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000013',
+            status: 'completed',
+            messages: [],
+            commandApproval: {
+              callItemId: 'item_command',
+              id: 'item_request',
+              callId: 'call_command',
+              approvalId: 'approval_command',
+              command: '/usr/bin/printf',
+              argumentCount: 2,
+              requestStatus: 'completed',
+              decision: {
+                id: 'item_decision',
+                status: 'completed',
+                value: 'approved',
+              },
+            },
+          },
+        ],
+      }),
+    });
+
+    await act(async () => root.render(<ThreadWorkbenchView store={store} />));
+    const activity = document.querySelector(
+      '[aria-label="Command approved: /usr/bin/printf"]',
+    );
+    expect(activity?.getAttribute('role')).toBe('status');
+    expect(activity?.getAttribute('data-state')).toBe('approved');
+    expect(activity?.textContent).toContain('/usr/bin/printf');
+    expect(activity?.textContent).toContain('2 arguments');
+    expect(activity?.textContent).toContain(
+      'Approval recorded; execution is not shown',
+    );
+    expect(activity?.querySelector('button, a')).toBeNull();
+    expect(activity?.textContent).not.toContain('approval_command');
+    expect(activity?.textContent).not.toContain('private-value');
+
+    await act(async () => root.unmount());
+  });
+
+  it.each([
+    ['inProgress', 'awaiting'],
+    ['stopping', 'stopping'],
+    ['unavailable', 'uncertain'],
+  ] as const)('derives command approval %s state', (phase, expected) => {
+    expect(
+      toThreadViewModel({
+        revision: 22,
+        phase,
+        threadId: 'thr_0000000000000001',
+        activeTurnId: 'turn_0000000000000014',
+        turns: [
+          {
+            id: 'turn_0000000000000014',
+            status: 'inProgress',
+            messages: [],
+            commandApproval: {
+              callItemId: 'item_command',
+              id: 'item_request',
+              callId: 'call_command',
+              approvalId: 'approval_command',
+              command: '/usr/bin/true',
+              argumentCount: 0,
+              requestStatus: 'completed',
+            },
+          },
+        ],
+      }).turns[0]?.commandApproval?.state,
+    ).toBe(expected);
+  });
+
+  it.each([
+    'approved',
+    'denied',
+    'timedOut',
+    'unsupported',
+    'cancelled',
+    'clientDisconnected',
+  ] as const)('preserves the exact durable command decision %s', (decision) => {
+    expect(
+      toThreadViewModel({
+        revision: 23,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000015',
+            status: 'completed',
+            messages: [],
+            commandApproval: {
+              callItemId: 'item_command',
+              id: 'item_request',
+              callId: 'call_command',
+              approvalId: 'approval_command',
+              command: '/usr/bin/true',
+              argumentCount: 0,
+              requestStatus: 'completed',
+              decision: {
+                id: 'item_decision',
+                status: 'completed',
+                value: decision,
+              },
+            },
+          },
+        ],
+      }).turns[0]?.commandApproval?.state,
+    ).toBe(decision);
+  });
+
+  it('shows an interrupted request without inventing a decision', () => {
+    expect(
+      toThreadViewModel({
+        revision: 24,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000016',
+            status: 'interrupted',
+            messages: [],
+            commandApproval: {
+              callItemId: 'item_command',
+              id: 'item_request',
+              callId: 'call_command',
+              approvalId: 'approval_command',
+              command: '/usr/bin/true',
+              argumentCount: 0,
+              requestStatus: 'completed',
+            },
+          },
+        ],
+      }).turns[0]?.commandApproval?.state,
+    ).toBe('interrupted');
+  });
 });

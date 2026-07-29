@@ -55,6 +55,18 @@ const WORKSPACE_SEARCH_FINAL_BODY = [
   'data: [DONE]\n\n',
 ].join('');
 
+const SHELL_COMMAND_CALL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_desktop_command","type":"function","function":{"name":"shell/exec","arguments":"{\\"command\\":\\"/usr/bin/printf\\",\\"arguments\\":[\\"private-command-argument\\"],\\"cwd\\":\\".\\"}"}}]},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
+const SHELL_COMMAND_FINAL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"content":"Command approval recorded."},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
 const REAL_CLI_TEST_TIMEOUT_MS = 30_000;
 
 type ProviderCapture = Readonly<{
@@ -70,7 +82,8 @@ type ProviderMode =
   | 'rateLimited'
   | 'workspaceRead'
   | 'workspaceList'
-  | 'workspaceSearch';
+  | 'workspaceSearch'
+  | 'shellApproval';
 
 const startProvider = async (
   mode: ProviderMode = 'success',
@@ -139,6 +152,11 @@ const startProvider = async (
           return requests.length === 1
             ? WORKSPACE_SEARCH_CALL_BODY
             : WORKSPACE_SEARCH_FINAL_BODY;
+        }
+        if (mode === 'shellApproval') {
+          return requests.length === 1
+            ? SHELL_COMMAND_CALL_BODY
+            : SHELL_COMMAND_FINAL_BODY;
         }
         return RESPONSE_BODY;
       })();
@@ -807,4 +825,154 @@ describe('real Desktop text Agent Turn', () => {
       second?.shutdown();
     }
   }, REAL_CLI_TEST_TIMEOUT_MS);
+
+  it.skipIf(process.platform === 'win32')(
+    'restores a real CLI command approval receipt without replaying arguments',
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
+      const workspace = await mkdtemp(
+        path.join(tmpdir(), 'sugarcode-workspace-test-'),
+      );
+      temporaryHomes.push(home, workspace);
+      const provider = await startProvider('shellApproval');
+      providers.push(provider.server);
+      await writeFile(
+        path.join(home, 'config.toml'),
+        [
+          'schema_version = 1',
+          '[model]',
+          'api_format = "openai-chat-completions"',
+          `endpoint = "http://127.0.0.1:${provider.port}/v1/chat/completions"`,
+          'model = "desktop-fixture-model"',
+          '',
+        ].join('\n'),
+      );
+      const createSupervisor = (): ConnectionSupervisor =>
+        new ConnectionSupervisor({
+          clientVersion: '1.0.0',
+          desktopAppPath: process.cwd(),
+          environment: {
+            SUGARCODE_HOME: home,
+            HOME: process.env.HOME,
+            TMPDIR: process.env.TMPDIR,
+            TEMP: process.env.TEMP,
+            TMP: process.env.TMP,
+          },
+          spawnProcess: (command, arguments_, options) =>
+            spawn(command, [...arguments_, '--workspace', workspace], {
+              ...options,
+              stdio: ['pipe', 'pipe', 'pipe'],
+            }),
+        });
+      const first = createSupervisor();
+      let second: ConnectionSupervisor | null = null;
+
+      try {
+        await first.start();
+        first.commandApprovals.markSurfaceReady();
+        await first.conversation.startTurn('Request a command approval.');
+        await vi.waitFor(
+          () => expect(first.commandApprovals.getSnapshot().status).toBe('pending'),
+          { timeout: 10_000 },
+        );
+        const presentationId = first.commandApprovals.getSnapshot().request
+          ?.presentationId;
+        if (!presentationId) {
+          throw new Error('Real CLI approval did not expose a presentation.');
+        }
+        await expect(
+          first.commandApprovals.deny(presentationId),
+        ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+        await vi.waitFor(
+          () =>
+            expect(first.conversation.getSnapshot()).toMatchObject({
+              phase: 'ready',
+              turns: [
+                {
+                  status: 'completed',
+                  commandApproval: {
+                    command: '/usr/bin/printf',
+                    argumentCount: 1,
+                    decision: { value: 'denied', status: 'completed' },
+                  },
+                },
+              ],
+            }),
+          { timeout: 10_000 },
+        );
+        const durableActivity =
+          first.conversation.getSnapshot().turns[0]?.commandApproval;
+        expect(JSON.stringify(durableActivity)).not.toContain(
+          'private-command-argument',
+        );
+
+        first.shutdown();
+        second = createSupervisor();
+        await second.start();
+        expect(second.conversation.getSnapshot().turns[0]?.commandApproval)
+          .toEqual(durableActivity);
+        expect(provider.requests).toHaveLength(2);
+        expect(provider.errors).toEqual([]);
+      } finally {
+        first.shutdown();
+        second?.shutdown();
+      }
+    },
+    REAL_CLI_TEST_TIMEOUT_MS,
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'omits shell/exec from the real Windows CLI tool inventory',
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
+      const workspace = await mkdtemp(
+        path.join(tmpdir(), 'sugarcode-workspace-test-'),
+      );
+      temporaryHomes.push(home, workspace);
+      const provider = await startProvider();
+      providers.push(provider.server);
+      await writeFile(
+        path.join(home, 'config.toml'),
+        [
+          'schema_version = 1',
+          '[model]',
+          'api_format = "openai-chat-completions"',
+          `endpoint = "http://127.0.0.1:${provider.port}/v1/chat/completions"`,
+          'model = "desktop-fixture-model"',
+          '',
+        ].join('\n'),
+      );
+      const supervisor = new ConnectionSupervisor({
+        clientVersion: '1.0.0',
+        desktopAppPath: process.cwd(),
+        environment: {
+          SUGARCODE_HOME: home,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          SYSTEMROOT: process.env.SYSTEMROOT,
+          WINDIR: process.env.WINDIR,
+        },
+        spawnProcess: (command, arguments_, options) =>
+          spawn(command, [...arguments_, '--workspace', workspace], {
+            ...options,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }),
+      });
+      try {
+        await supervisor.start();
+        await supervisor.conversation.startTurn('Inspect the tools.');
+        await vi.waitFor(() => expect(provider.requests).toHaveLength(1), {
+          timeout: 10_000,
+        });
+        expect(JSON.stringify(provider.requests[0]?.body)).not.toContain(
+          'shell/exec',
+        );
+      } finally {
+        supervisor.shutdown();
+      }
+    },
+    REAL_CLI_TEST_TIMEOUT_MS,
+  );
 });
