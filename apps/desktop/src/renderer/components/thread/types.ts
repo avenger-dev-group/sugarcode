@@ -13,6 +13,7 @@ import type {
   WorkspaceReadActivityViewModel,
   WorkspaceSearchActivityViewModel,
 } from '../agent/types';
+import type { FileChangeReviewViewModel } from '../workspace/types';
 
 export type UserMessageViewModel = Readonly<{
   id: string;
@@ -43,6 +44,7 @@ export type TurnViewModel = Readonly<{
   workspaceRead?: WorkspaceReadActivityViewModel;
   workspaceList?: WorkspaceListActivityViewModel;
   workspaceSearch?: WorkspaceSearchActivityViewModel;
+  fileChange?: FileChangeReviewViewModel;
   commandApproval?: CommandApprovalActivityViewModel;
   terminalLabel?: string;
   failure?: TurnFailureViewModel;

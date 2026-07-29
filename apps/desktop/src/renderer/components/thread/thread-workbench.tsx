@@ -9,6 +9,7 @@ import { WorkspaceSearchActivity } from '@/renderer/components/agent/workspace-s
 import { Button } from '@/renderer/components/ui/button';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { Textarea } from '@/renderer/components/ui/textarea';
+import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 
 import type {
   ThreadWorkbenchViewProps,
@@ -79,6 +80,9 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
       ) : null}
       {turn.workspaceSearch ? (
         <WorkspaceSearchActivity activity={turn.workspaceSearch} />
+      ) : null}
+      {turn.fileChange ? (
+        <FileChangeReview review={turn.fileChange} />
       ) : null}
       {turn.commandApproval ? (
         <CommandApprovalActivity activity={turn.commandApproval} />

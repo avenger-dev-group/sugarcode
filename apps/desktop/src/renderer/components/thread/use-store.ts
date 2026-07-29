@@ -40,6 +40,7 @@ import type {
   WorkspaceSearchActivityViewModel,
   WorkspaceSearchPresentationState,
 } from '../agent/types';
+import { toFileChangeReviewViewModel } from '../workspace/use-store';
 import type {
   ThreadStore,
   ThreadNavigatorViewModel,
@@ -410,6 +411,23 @@ export const toThreadViewModel = (
           nextWorkspaceSearch.errorKind
           ? previousTurn.workspaceSearch
           : nextWorkspaceSearch;
+      const nextFileChange = turn.fileChange
+        ? toFileChangeReviewViewModel(
+            snapshot.phase,
+            turn.status,
+            turn.fileChange,
+          )
+        : undefined;
+      const fileChange =
+        nextFileChange &&
+        previousTurn?.fileChange?.id === nextFileChange.id &&
+        previousTurn.fileChange.path === nextFileChange.path &&
+        previousTurn.fileChange.state === nextFileChange.state &&
+        previousTurn.fileChange.errorKind === nextFileChange.errorKind &&
+        JSON.stringify(previousTurn.fileChange.change) ===
+          JSON.stringify(nextFileChange.change)
+          ? previousTurn.fileChange
+          : nextFileChange;
       const nextCommandApproval = turn.commandApproval
         ? {
             id: turn.commandApproval.id,
@@ -486,6 +504,7 @@ export const toThreadViewModel = (
         previousTurn.workspaceRead === workspaceRead &&
         previousTurn.workspaceList === workspaceList &&
         previousTurn.workspaceSearch === workspaceSearch &&
+        previousTurn.fileChange === fileChange &&
         previousTurn.commandApproval === commandApproval &&
         previousTurn.terminalLabel === terminalLabel &&
         previousTurn.failure === failure &&
@@ -500,6 +519,7 @@ export const toThreadViewModel = (
         ...(workspaceRead ? { workspaceRead } : {}),
         ...(workspaceList ? { workspaceList } : {}),
         ...(workspaceSearch ? { workspaceSearch } : {}),
+        ...(fileChange ? { fileChange } : {}),
         ...(commandApproval ? { commandApproval } : {}),
         ...(terminalLabel ? { terminalLabel } : {}),
         ...(failure ? { failure } : {}),

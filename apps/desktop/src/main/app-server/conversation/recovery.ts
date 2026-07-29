@@ -1,6 +1,7 @@
 import type {
   ConversationMessage,
   ConversationCommandApprovalActivity,
+  ConversationFileChangeActivity,
   ConversationTurn,
   ConversationWorkspaceListActivity,
   ConversationWorkspaceReadActivity,
@@ -37,6 +38,7 @@ export const recoverConversation = (
     let workspaceRead: ConversationWorkspaceReadActivity | undefined;
     let workspaceList: ConversationWorkspaceListActivity | undefined;
     let workspaceSearch: ConversationWorkspaceSearchActivity | undefined;
+    let fileChange: ConversationFileChangeActivity | undefined;
     let commandCall:
       | Readonly<{
           id: string;
@@ -61,7 +63,14 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceReadCall') {
-        if (workspaceRead || workspaceList || workspaceSearch || commandCall || commandApproval) {
+        if (
+          workspaceRead ||
+          workspaceList ||
+          workspaceSearch ||
+          fileChange ||
+          commandCall ||
+          commandApproval
+        ) {
           throw new Error(
             'thread/resume returned duplicate workspace/read activity.',
           );
@@ -95,7 +104,14 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceListCall') {
-        if (workspaceList || workspaceRead || workspaceSearch || commandCall || commandApproval) {
+        if (
+          workspaceList ||
+          workspaceRead ||
+          workspaceSearch ||
+          fileChange ||
+          commandCall ||
+          commandApproval
+        ) {
           throw new Error(
             'thread/resume returned duplicate workspace/list activity.',
           );
@@ -129,7 +145,14 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceSearchCall') {
-        if (workspaceSearch || workspaceRead || workspaceList || commandCall || commandApproval) {
+        if (
+          workspaceSearch ||
+          workspaceRead ||
+          workspaceList ||
+          fileChange ||
+          commandCall ||
+          commandApproval
+        ) {
           throw new Error(
             'thread/resume returned duplicate workspace/search activity.',
           );
@@ -163,11 +186,91 @@ export const recoverConversation = (
         };
         continue;
       }
+      if (item.type === 'workspacePatchCall') {
+        if (
+          workspaceRead ||
+          workspaceList ||
+          workspaceSearch ||
+          fileChange ||
+          commandCall ||
+          commandApproval
+        ) {
+          throw new Error(
+            'thread/resume returned duplicate workspace/apply-patch activity.',
+          );
+        }
+        fileChange = {
+          id: item.id,
+          callId: item.callId,
+          path: item.path,
+          callStatus: 'completed',
+        };
+        continue;
+      }
+      if (item.type === 'workspacePatchChange') {
+        if (
+          !fileChange ||
+          fileChange.callId !== item.callId ||
+          fileChange.path !== item.path ||
+          fileChange.change ||
+          fileChange.result
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched FileChange proposal.',
+          );
+        }
+        fileChange = {
+          ...fileChange,
+          change: {
+            id: item.id,
+            status: 'completed',
+            path: item.path,
+            kind: item.kind,
+            diff: item.diff,
+            beforeSha256: item.beforeSha256,
+            afterSha256: item.afterSha256,
+            beforeBytes: item.beforeBytes,
+            afterBytes: item.afterBytes,
+            newlineStyle: item.newlineStyle,
+            finalNewline: item.finalNewline,
+          },
+        };
+        continue;
+      }
+      if (item.type === 'workspacePatchResult') {
+        if (
+          !fileChange ||
+          fileChange.callId !== item.callId ||
+          fileChange.result ||
+          (item.outcome.type === 'success' &&
+            (!fileChange.change ||
+              fileChange.change.path !== item.outcome.path ||
+              fileChange.change.beforeSha256 !==
+                item.outcome.beforeSha256 ||
+              fileChange.change.afterSha256 !== item.outcome.afterSha256 ||
+              fileChange.change.beforeBytes !== item.outcome.beforeBytes ||
+              fileChange.change.afterBytes !== item.outcome.afterBytes))
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched workspace/apply-patch result.',
+          );
+        }
+        fileChange = {
+          ...fileChange,
+          result: {
+            id: item.id,
+            status: 'completed',
+            outcome: { ...item.outcome },
+          },
+        };
+        continue;
+      }
       if (item.type === 'commandCall') {
         if (
           workspaceRead ||
           workspaceList ||
           workspaceSearch ||
+          fileChange ||
           commandCall ||
           commandApproval
         ) {
@@ -319,6 +422,15 @@ export const recoverConversation = (
       );
     }
     if (
+      fileChange &&
+      turn.status !== 'interrupted' &&
+      !fileChange.result
+    ) {
+      throw new Error(
+        'thread/resume returned terminal workspace/apply-patch activity without a result.',
+      );
+    }
+    if (
       commandApproval &&
       turn.status !== 'interrupted' &&
       !commandApproval.decision
@@ -344,6 +456,7 @@ export const recoverConversation = (
       ...(workspaceRead ? { workspaceRead } : {}),
       ...(workspaceList ? { workspaceList } : {}),
       ...(workspaceSearch ? { workspaceSearch } : {}),
+      ...(fileChange ? { fileChange } : {}),
       ...(commandApproval ? { commandApproval } : {}),
       ...(turn.error ? { error: { ...turn.error } } : {}),
     };

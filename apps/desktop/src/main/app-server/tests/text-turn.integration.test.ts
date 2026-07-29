@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -56,6 +56,18 @@ const WORKSPACE_SEARCH_FINAL_BODY = [
   'data: [DONE]\n\n',
 ].join('');
 
+const WORKSPACE_PATCH_CALL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_desktop_patch","type":"function","function":{"name":"workspace/apply-patch","arguments":"{\\"path\\":\\"notes.txt\\",\\"patch\\":\\"@@ -1,3 +1,3 @@\\\\n one\\\\n-two\\\\n+second\\\\n three\\\\n\\"}"}}]},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
+const WORKSPACE_PATCH_FINAL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"content":"Workspace patch complete."},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
 const SHELL_COMMAND_CALL_BODY = [
   'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_desktop_command","type":"function","function":{"name":"shell/exec","arguments":"{\\"command\\":\\"/usr/bin/printf\\",\\"arguments\\":[\\"private-command-argument\\"],\\"cwd\\":\\".\\"}"}}]},"finish_reason":null}]}\n\n',
   'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
@@ -84,6 +96,7 @@ type ProviderMode =
   | 'workspaceRead'
   | 'workspaceList'
   | 'workspaceSearch'
+  | 'workspacePatch'
   | 'shellApproval';
 
 const startProvider = async (
@@ -153,6 +166,11 @@ const startProvider = async (
           return requests.length === 1
             ? WORKSPACE_SEARCH_CALL_BODY
             : WORKSPACE_SEARCH_FINAL_BODY;
+        }
+        if (mode === 'workspacePatch') {
+          return requests.length === 1
+            ? WORKSPACE_PATCH_CALL_BODY
+            : WORKSPACE_PATCH_FINAL_BODY;
         }
         if (mode === 'shellApproval') {
           return requests.length === 1
@@ -649,6 +667,113 @@ describe('real Desktop text Agent Turn', () => {
       await second.start();
       expect(second.conversation.getSnapshot().turns[0]?.workspaceSearch)
         .toEqual(durableActivity);
+      expect(provider.requests).toHaveLength(2);
+      expect(provider.errors).toEqual([]);
+    } finally {
+      first.shutdown();
+      second?.shutdown();
+    }
+  }, REAL_CLI_TEST_TIMEOUT_MS);
+
+  it('restores one durable file change review without replaying the write', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), 'sugarcode-workspace-test-'),
+    );
+    temporaryHomes.push(home, workspace);
+    const filePath = path.join(workspace, 'notes.txt');
+    await writeFile(filePath, 'one\ntwo\nthree\n');
+    const provider = await startProvider('workspacePatch');
+    providers.push(provider.server);
+    await writeFile(
+      path.join(home, 'config.toml'),
+      [
+        'schema_version = 1',
+        '[model]',
+        'api_format = "openai-chat-completions"',
+        `endpoint = "http://127.0.0.1:${provider.port}/v1/chat/completions"`,
+        'model = "desktop-fixture-model"',
+        '',
+      ].join('\n'),
+    );
+    const createSupervisor = (): ConnectionSupervisor =>
+      new ConnectionSupervisor({
+        clientVersion: '1.0.0',
+        desktopAppPath: process.cwd(),
+        environment: {
+          SUGARCODE_HOME: home,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          SYSTEMROOT: process.env.SYSTEMROOT,
+          WINDIR: process.env.WINDIR,
+        },
+        spawnProcess: (command, arguments_, options) =>
+          spawn(
+            command,
+            [
+              ...arguments_,
+              '--workspace',
+              workspace,
+              '--allow-workspace-write',
+            ],
+            { ...options, stdio: ['pipe', 'pipe', 'pipe'] },
+          ),
+      });
+    const first = createSupervisor();
+    let second: ConnectionSupervisor | null = null;
+
+    try {
+      await first.start();
+      await expect(
+        first.conversation.startTurn('Update notes.txt.'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      await vi.waitFor(
+        () => {
+          expect(first.conversation.getSnapshot()).toMatchObject({
+            phase: 'ready',
+            turns: [
+              {
+                status: 'completed',
+                fileChange: {
+                  path: 'notes.txt',
+                  callStatus: 'completed',
+                  change: {
+                    status: 'completed',
+                    kind: 'update',
+                    diff: expect.stringContaining('-two\n+second\n'),
+                    newlineStyle: 'lf',
+                    finalNewline: true,
+                  },
+                  result: {
+                    status: 'completed',
+                    outcome: {
+                      type: 'success',
+                      path: 'notes.txt',
+                    },
+                  },
+                },
+              },
+            ],
+          });
+          expect(provider.requests).toHaveLength(2);
+        },
+        { timeout: 10_000 },
+      );
+      expect(await readFile(filePath, 'utf8')).toBe('one\nsecond\nthree\n');
+      const durableActivity =
+        first.conversation.getSnapshot().turns[0]?.fileChange;
+
+      first.shutdown();
+      await writeFile(filePath, 'changed after durable result\n');
+      second = createSupervisor();
+      await second.start();
+      expect(second.conversation.getSnapshot().turns[0]?.fileChange)
+        .toEqual(durableActivity);
+      expect(await readFile(filePath, 'utf8')).toBe(
+        'changed after durable result\n',
+      );
       expect(provider.requests).toHaveLength(2);
       expect(provider.errors).toEqual([]);
     } finally {

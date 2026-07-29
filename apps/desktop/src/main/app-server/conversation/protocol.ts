@@ -14,6 +14,10 @@ import type {
 import path from 'node:path';
 
 import type { ServerMessage } from '../transport/server-message';
+import {
+  parseWorkspacePatchItem,
+  type WorkspacePatchItem,
+} from './file-change-protocol';
 
 export { parseThreadListResponse } from './thread-protocol';
 
@@ -145,6 +149,7 @@ type ConversationItem =
   | WorkspaceListResultItem
   | WorkspaceSearchCallItem
   | WorkspaceSearchResultItem
+  | WorkspacePatchItem
   | CommandCallItem
   | CommandApprovalRequestItem
   | CommandApprovalDecisionItem
@@ -516,6 +521,10 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       id: value.id,
       text: value.text,
     };
+  }
+  const workspacePatch = parseWorkspacePatchItem(value);
+  if (workspacePatch) {
+    return workspacePatch;
   }
   if (value.type === 'toolCall' && value.name === 'shell/exec') {
     if (

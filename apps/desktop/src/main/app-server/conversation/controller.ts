@@ -2,6 +2,9 @@ import type {
   ConversationActionResult,
   ConversationCommandApprovalDecision,
   ConversationCommandExecutionResultOutcome,
+  ConversationFileChangeActivity,
+  ConversationFileChangeProposal,
+  ConversationFileChangeResultOutcome,
   ConversationMessage,
   ConversationStateListener,
   ConversationStateSnapshot,
@@ -24,6 +27,10 @@ import {
   type ConversationLifecycle,
   parseConversationLifecycle,
 } from './protocol';
+import type {
+  WorkspacePatchChangeItem,
+  WorkspacePatchResultItem,
+} from './file-change-protocol';
 import {
   recoverConversation,
   type RecoveredConversation,
@@ -88,6 +95,19 @@ type MutableWorkspaceSearchActivity = {
   };
 };
 
+type MutableFileChangeActivity = {
+  id: string;
+  callId: string;
+  path: string;
+  callStatus: ConversationMessage['status'];
+  change?: ConversationFileChangeProposal;
+  result?: {
+    id: string;
+    status: ConversationMessage['status'];
+    outcome: ConversationFileChangeResultOutcome;
+  };
+};
+
 type MutableCommandCall = {
   id: string;
   callId: string;
@@ -128,6 +148,7 @@ type MutableTurn = {
   workspaceRead?: MutableWorkspaceReadActivity;
   workspaceList?: MutableWorkspaceListActivity;
   workspaceSearch?: MutableWorkspaceSearchActivity;
+  fileChange?: MutableFileChangeActivity;
   pendingCommandCall?: MutableCommandCall;
   commandApproval?: MutableCommandApprovalActivity;
   error?: ConversationTurnError;
@@ -631,6 +652,7 @@ export class ConversationController {
             turn.workspaceRead ||
             turn.workspaceList ||
             turn.workspaceSearch ||
+            turn.fileChange ||
             turn.pendingCommandCall ||
             turn.commandApproval
           ) {
@@ -665,6 +687,7 @@ export class ConversationController {
             turn.workspaceList ||
             turn.workspaceRead ||
             turn.workspaceSearch ||
+            turn.fileChange ||
             turn.pendingCommandCall ||
             turn.commandApproval
           ) {
@@ -697,6 +720,7 @@ export class ConversationController {
             turn.workspaceSearch ||
             turn.workspaceRead ||
             turn.workspaceList ||
+            turn.fileChange ||
             turn.pendingCommandCall ||
             turn.commandApproval
           ) {
@@ -725,11 +749,65 @@ export class ConversationController {
             status: 'inProgress',
             outcome: { ...lifecycle.params.item.outcome },
           };
+        } else if (lifecycle.params.item.type === 'workspacePatchCall') {
+          if (
+            turn.workspaceRead ||
+            turn.workspaceList ||
+            turn.workspaceSearch ||
+            turn.fileChange ||
+            turn.pendingCommandCall ||
+            turn.commandApproval
+          ) {
+            throw new Error('Duplicate workspace/apply-patch activity.');
+          }
+          turn.fileChange = {
+            id: lifecycle.params.item.id,
+            callId: lifecycle.params.item.callId,
+            path: lifecycle.params.item.path,
+            callStatus: 'inProgress',
+          };
+        } else if (lifecycle.params.item.type === 'workspacePatchChange') {
+          const activity = this.requireFileChange(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            activity.callStatus !== 'completed' ||
+            activity.path !== lifecycle.params.item.path ||
+            activity.change ||
+            activity.result
+          ) {
+            throw new Error('FileChange proposal started out of order.');
+          }
+          activity.change = toFileChangeProposal(lifecycle.params.item);
+        } else if (lifecycle.params.item.type === 'workspacePatchResult') {
+          const activity = this.requireFileChange(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            activity.callStatus !== 'completed' ||
+            activity.result ||
+            !patchResultMatchesChange(
+              lifecycle.params.item.outcome,
+              activity.change,
+            )
+          ) {
+            throw new Error(
+              'Workspace apply-patch result started out of order.',
+            );
+          }
+          activity.result = {
+            id: lifecycle.params.item.id,
+            status: 'inProgress',
+            outcome: { ...lifecycle.params.item.outcome },
+          };
         } else if (lifecycle.params.item.type === 'commandCall') {
           if (
             turn.workspaceRead ||
             turn.workspaceList ||
             turn.workspaceSearch ||
+            turn.fileChange ||
             turn.pendingCommandCall ||
             turn.commandApproval
           ) {
@@ -988,6 +1066,62 @@ export class ConversationController {
             );
           }
           result.status = 'completed';
+        } else if (lifecycle.params.item.type === 'workspacePatchCall') {
+          const activity = this.requireFileChange(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            activity.id !== lifecycle.params.item.id ||
+            activity.path !== lifecycle.params.item.path ||
+            activity.callStatus !== 'inProgress'
+          ) {
+            throw new Error(
+              'Completed workspace/apply-patch call did not match its started Item.',
+            );
+          }
+          activity.callStatus = 'completed';
+        } else if (lifecycle.params.item.type === 'workspacePatchChange') {
+          const activity = this.requireFileChange(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            !activity.change ||
+            activity.change.status !== 'inProgress' ||
+            !fileChangeProposalsEqual(
+              activity.change,
+              toFileChangeProposal(lifecycle.params.item),
+            )
+          ) {
+            throw new Error(
+              'Completed FileChange did not match its started Item.',
+            );
+          }
+          activity.change = {
+            ...activity.change,
+            status: 'completed',
+          };
+        } else if (lifecycle.params.item.type === 'workspacePatchResult') {
+          const activity = this.requireFileChange(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          const result = activity.result;
+          if (
+            !result ||
+            result.id !== lifecycle.params.item.id ||
+            result.status !== 'inProgress' ||
+            !fileChangeResultsEqual(
+              result.outcome,
+              lifecycle.params.item.outcome,
+            )
+          ) {
+            throw new Error(
+              'Completed workspace/apply-patch result did not match its started Item.',
+            );
+          }
+          result.status = 'completed';
         } else if (lifecycle.params.item.type === 'commandCall') {
           const call = turn.pendingCommandCall;
           if (
@@ -1151,6 +1285,20 @@ export class ConversationController {
           );
         }
         if (
+          turn.fileChange &&
+          (turn.fileChange.callStatus !== 'completed' ||
+            (turn.fileChange.change &&
+              turn.fileChange.change.status !== 'completed') ||
+            (turn.fileChange.result &&
+              turn.fileChange.result.status !== 'completed') ||
+            (lifecycle.params.turn.status !== 'interrupted' &&
+              turn.fileChange.result?.status !== 'completed'))
+        ) {
+          throw new Error(
+            'Turn completed before workspace/apply-patch activity completed.',
+          );
+        }
+        if (
           turn.commandApproval &&
           (turn.commandApproval.requestStatus !== 'completed' ||
             (lifecycle.params.turn.status !== 'interrupted' &&
@@ -1245,6 +1393,18 @@ export class ConversationController {
     return turn.workspaceSearch;
   };
 
+  private requireFileChange = (
+    turn: MutableTurn,
+    callId: string,
+  ): MutableFileChangeActivity => {
+    if (!turn.fileChange || turn.fileChange.callId !== callId) {
+      throw new Error(
+        'Workspace apply-patch lifecycle referenced another call.',
+      );
+    }
+    return turn.fileChange;
+  };
+
   private requireCommandApproval = (
     turn: MutableTurn,
     approvalId: string,
@@ -1267,6 +1427,9 @@ export class ConversationController {
         turn.workspaceList?.result?.id === itemId ||
         turn.workspaceSearch?.id === itemId ||
         turn.workspaceSearch?.result?.id === itemId ||
+        turn.fileChange?.id === itemId ||
+        turn.fileChange?.change?.id === itemId ||
+        turn.fileChange?.result?.id === itemId ||
         turn.pendingCommandCall?.id === itemId ||
         turn.commandApproval?.callItemId === itemId ||
         turn.commandApproval?.id === itemId ||
@@ -1327,6 +1490,11 @@ export class ConversationController {
                   }
                 : {}),
             },
+          }
+        : {}),
+      ...(turn.fileChange
+        ? {
+            fileChange: cloneFileChangeActivity(turn.fileChange),
           }
         : {}),
       ...(turn.commandApproval
@@ -1416,6 +1584,11 @@ export class ConversationController {
               },
             }
           : {}),
+        ...(turn.fileChange
+          ? {
+              fileChange: cloneFileChangeActivity(turn.fileChange),
+            }
+          : {}),
         ...(turn.commandApproval
           ? {
               commandApproval: {
@@ -1467,6 +1640,68 @@ export class ConversationController {
 
 const isAbortError = (error: unknown): boolean =>
   error instanceof Error && error.name === 'AbortError';
+
+const toFileChangeProposal = (
+  item: WorkspacePatchChangeItem,
+): ConversationFileChangeProposal => ({
+  id: item.id,
+  status: item.status,
+  path: item.path,
+  kind: item.kind,
+  diff: item.diff,
+  beforeSha256: item.beforeSha256,
+  afterSha256: item.afterSha256,
+  beforeBytes: item.beforeBytes,
+  afterBytes: item.afterBytes,
+  newlineStyle: item.newlineStyle,
+  finalNewline: item.finalNewline,
+});
+
+const patchResultMatchesChange = (
+  outcome: WorkspacePatchResultItem['outcome'],
+  change: ConversationFileChangeProposal | undefined,
+): boolean =>
+  outcome.type === 'error' ||
+  Boolean(
+    change?.status === 'completed' &&
+      outcome.path === change.path &&
+      outcome.beforeSha256 === change.beforeSha256 &&
+      outcome.afterSha256 === change.afterSha256 &&
+      outcome.beforeBytes === change.beforeBytes &&
+      outcome.afterBytes === change.afterBytes,
+  );
+
+const fileChangeProposalsEqual = (
+  left: ConversationFileChangeProposal,
+  right: ConversationFileChangeProposal,
+): boolean => JSON.stringify(left) === JSON.stringify(right);
+
+const fileChangeResultsEqual = (
+  left: ConversationFileChangeResultOutcome,
+  right: WorkspacePatchResultItem['outcome'],
+): boolean => JSON.stringify(left) === JSON.stringify(right);
+
+const cloneFileChangeActivity = (
+  activity: MutableFileChangeActivity | ConversationFileChangeActivity,
+): ConversationFileChangeActivity => ({
+  id: activity.id,
+  callId: activity.callId,
+  path: activity.path,
+  callStatus: activity.callStatus,
+  ...(activity.change
+    ? {
+        change: { ...activity.change },
+      }
+    : {}),
+  ...(activity.result
+    ? {
+        result: {
+          ...activity.result,
+          outcome: { ...activity.result.outcome },
+        },
+      }
+    : {}),
+});
 
 const outcomesEqual = (
   left: ConversationWorkspaceReadOutcome,

@@ -27,6 +27,14 @@ const writtenDecisions: WrittenDecision[] = [];
 const lifecycleFailures: string[] = [];
 const conversationInputs: string[] = [];
 const interruptRequests: string[] = [];
+const fileChangeBeforeSha256 = 'a'.repeat(64);
+const fileChangeAfterSha256 = 'b'.repeat(64);
+const fileChangeDiff =
+  '--- a/recovered/notes.txt\n' +
+  '+++ b/recovered/notes.txt\n' +
+  '@@ -1,1 +1,1 @@\n' +
+  '-old\n' +
+  '+new\n';
 let window: BrowserWindow | null = null;
 
 const request = (approvalId: string) => ({
@@ -307,6 +315,76 @@ const run = async (): Promise<void> => {
               id: 'item_0000000000000094-search-result',
               callId: 'call_recovered_search_failure',
               outcome: { type: 'error', kind: 'accessDenied' },
+            },
+          ],
+        },
+        {
+          id: 'turn_0000000000000093',
+          status: 'completed',
+          items: [
+            {
+              type: 'workspacePatchCall',
+              id: 'item_0000000000000093-patch',
+              callId: 'call_recovered_patch',
+              path: 'recovered/notes.txt',
+            },
+            {
+              type: 'workspacePatchChange',
+              id: 'item_0000000000000093-change',
+              callId: 'call_recovered_patch',
+              path: 'recovered/notes.txt',
+              kind: 'update',
+              diff: fileChangeDiff,
+              beforeSha256: fileChangeBeforeSha256,
+              afterSha256: fileChangeAfterSha256,
+              beforeBytes: 4,
+              afterBytes: 4,
+              newlineStyle: 'lf',
+              finalNewline: true,
+              status: 'inProgress',
+            },
+            {
+              type: 'workspacePatchResult',
+              id: 'item_0000000000000093-result',
+              callId: 'call_recovered_patch',
+              outcome: {
+                type: 'success',
+                path: 'recovered/notes.txt',
+                beforeSha256: fileChangeBeforeSha256,
+                afterSha256: fileChangeAfterSha256,
+                beforeBytes: 4,
+                afterBytes: 4,
+              },
+            },
+          ],
+        },
+        {
+          id: 'turn_0000000000000092',
+          status: 'interrupted',
+          items: [
+            {
+              type: 'workspacePatchCall',
+              id: 'item_0000000000000092-patch',
+              callId: 'call_interrupted_patch',
+              path: 'recovered/pending.txt',
+            },
+            {
+              type: 'workspacePatchChange',
+              id: 'item_0000000000000092-change',
+              callId: 'call_interrupted_patch',
+              path: 'recovered/pending.txt',
+              kind: 'update',
+              diff: fileChangeDiff.replaceAll(
+                'recovered/notes.txt',
+                'recovered/pending.txt',
+              ),
+              beforeSha256: fileChangeBeforeSha256,
+              afterSha256: fileChangeAfterSha256,
+              beforeBytes: 4,
+              afterBytes: 4,
+              newlineStyle: 'lf',
+              finalNewline: true,
+              status: 'inProgress',
             },
           ],
         },
@@ -691,6 +769,46 @@ const run = async (): Promise<void> => {
         })()`,
       ),
     'recovered failed workspace search presentation',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const review = document.querySelector(
+            '[aria-label="File change applied: recovered/notes.txt"]',
+          );
+          const diff = review?.querySelector(
+            '[aria-label="Unified diff for recovered/notes.txt"]',
+          );
+          return review?.getAttribute('role') === 'status' &&
+            review.getAttribute('data-state') === 'applied' &&
+            review.textContent?.includes('Durable success result recorded') === true &&
+            review.textContent?.includes('@@ -1,1 +1,1 @@') === true &&
+            review.textContent?.includes('-old') === true &&
+            review.textContent?.includes('+new') === true &&
+            review.textContent?.includes(${JSON.stringify(fileChangeBeforeSha256)}) === true &&
+            review.textContent?.includes(${JSON.stringify(fileChangeAfterSha256)}) === true &&
+            diff?.getAttribute('role') === 'region' &&
+            review.querySelectorAll('button, a, input, textarea').length === 1;
+        })()`,
+      ),
+    'recovered applied FileChange review',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const review = document.querySelector(
+            '[aria-label="File change outcome unknown: recovered/pending.txt"]',
+          );
+          return review?.getAttribute('role') === 'alert' &&
+            review.getAttribute('data-state') === 'outcomeUnknown' &&
+            review.textContent?.includes(
+              'A durable proposal exists without a durable result',
+            ) === true;
+        })()`,
+      ),
+    'recovered unknown FileChange outcome',
   );
   await waitFor(
     () =>
