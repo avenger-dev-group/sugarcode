@@ -67,15 +67,19 @@ describe('AgentMarkdown', () => {
       'exact fenced output',
     );
     const codeFigure = document.querySelector(
-      '[aria-labelledby$="language-hint"]',
+      '[aria-labelledby$="code-fence-caption"]',
     );
     expect(codeFigure?.querySelector('figcaption')?.textContent).toContain(
-      'Language hinttext',
+      'Language hinttext1 line',
     );
     expect(codeFigure?.getAttribute('aria-labelledby')).toBe(
       codeFigure?.querySelector('figcaption')?.id,
     );
+    expect(
+      codeFigure?.querySelector('figcaption')?.getAttribute('aria-label'),
+    ).toBe('Language hint text, 1 line');
     expect(codeFigure?.querySelector('button, a')).toBeNull();
+    expect(codeFigure?.querySelector('[aria-live]')).toBeNull();
 
     await unmount();
   });
@@ -101,11 +105,61 @@ describe('AgentMarkdown', () => {
     );
 
     const captions = Array.from(document.querySelectorAll('figcaption'));
-    expect(captions).toHaveLength(1);
+    expect(captions).toHaveLength(3);
     expect(captions[0]?.textContent).toContain('Language hintRust');
+    expect(captions[0]?.textContent).toContain('1 line');
+    expect(captions[1]?.textContent).toContain('Code fence');
+    expect(captions[1]?.textContent).toContain('1 line');
+    expect(captions[2]?.textContent).toContain('Code fence');
+    expect(captions[2]?.textContent).toContain('1 line');
     expect(document.querySelectorAll('pre code')).toHaveLength(3);
     expect(document.querySelector('script')).toBeNull();
     expect(document.querySelector('[class*="language-"]')).toBeNull();
+
+    await unmount();
+  });
+
+  it('counts only fenced-code content lines including intentional blanks', async () => {
+    const unmount = await render(
+      <AgentMarkdown
+        source={[
+          '```',
+          '```',
+          '',
+          '```text',
+          'one line',
+          '```',
+          '',
+          '~~~Rust',
+          'first line',
+          'second line',
+          '',
+          '~~~',
+          '',
+          '    indented code',
+        ].join('\n')}
+        isStreaming={false}
+      />,
+    );
+
+    const captions = Array.from(document.querySelectorAll('figcaption'));
+    expect(captions.map((caption) => caption.textContent)).toEqual([
+      'Code fence0 lines',
+      'Language hinttext1 line',
+      'Language hintRust3 lines',
+    ]);
+    expect(document.querySelectorAll('figure')).toHaveLength(3);
+    expect(document.querySelectorAll('pre code')).toHaveLength(4);
+    expect(
+      captions.map((caption) => caption.getAttribute('aria-label')),
+    ).toEqual([
+      'Code fence, 0 lines',
+      'Language hint text, 1 line',
+      'Language hint Rust, 3 lines',
+    ]);
+    expect(
+      Array.from(document.querySelectorAll('pre')).at(-1)?.closest('figure'),
+    ).toBeNull();
 
     await unmount();
   });
@@ -148,6 +202,7 @@ describe('AgentMarkdown', () => {
       '',
       '```text',
       'partial code',
+      'second line',
     ].join('\n');
     const repaired = repairStreamingMarkdown(source);
     expect(source).not.toContain('```\n```');
@@ -165,10 +220,10 @@ describe('AgentMarkdown', () => {
 
     expect(document.querySelector('h2')?.textContent).toBe('Live heading');
     expect(document.querySelector('pre code')?.textContent).toBe(
-      'partial code',
+      'partial code\nsecond line',
     );
     expect(document.querySelector('figcaption')?.textContent).toContain(
-      'Language hinttext',
+      'Language hinttext2 lines',
     );
     expect(document.body.textContent).not.toContain('```');
     expect(

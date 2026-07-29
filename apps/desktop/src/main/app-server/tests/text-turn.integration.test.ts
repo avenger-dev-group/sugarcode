@@ -9,12 +9,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConnectionSupervisor } from '../connection/supervisor';
 
 const DURABLE_MARKDOWN_RESPONSE =
-  '## Durable response\n\n- exact restart item\n\n```Rust title="restart-proof"\nfn main() {}\n```';
+  '## Durable response\n\n- exact restart item\n\n```Rust title="restart-proof"\nfn main() {\n    println!("restart-proof");\n}\n```';
 
 const RESPONSE_BODY = [
   'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{"content":"## Durable response\\n\\n"},"finish_reason":null}]}\n\n',
   'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{"content":"- exact restart item\\n\\n```Rust title=\\"restart-proof\\"\\n"},"finish_reason":null}]}\n\n',
-  'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{"content":"fn main() {}\\n```"},"finish_reason":null}]}\n\n',
+  'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{"content":"fn main() {\\n    println!(\\"restart-proof\\");\\n}\\n```"},"finish_reason":null}]}\n\n',
   'data: {"id":"desktop-fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
   'data: {"id":"desktop-fixture","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}\n\n',
   'data: [DONE]\n\n',

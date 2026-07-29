@@ -177,7 +177,9 @@ const run = async (): Promise<void> => {
                 '- Durable restart item',
                 '',
                 '```Rust title="restart-proof"',
-                'fn recovered() {}',
+                'fn recovered() {',
+                '  println!("restart-proof");',
+                '}',
                 '```',
               ].join('\n'),
             },
@@ -438,11 +440,12 @@ const run = async (): Promise<void> => {
       evaluate<boolean>(
         `Array.from(document.querySelectorAll('figure')).some((figure) =>
           figure.textContent?.includes('Language hintRust') === true &&
+          figure.textContent?.includes('3 lines') === true &&
           figure.querySelector('pre code')?.textContent ===
-            'fn recovered() {}'
+            'fn recovered() {\\n  println!("restart-proof");\\n}'
         )`,
       ),
-    'recovered fenced-code language hint',
+    'recovered fenced-code line count',
   );
   await waitFor(
     () =>
@@ -498,12 +501,13 @@ const run = async (): Promise<void> => {
           '[aria-label="Agent response"] figure',
         )).some((figure) =>
           figure.textContent?.includes('Language hintTypeScript') === true &&
+          figure.textContent?.includes('1 line') === true &&
           figure.querySelector('pre code')?.textContent?.includes(
             'throw new Error',
           ) === true
         )`,
       ),
-    'failed Turn fenced-code language hint',
+    'failed Turn fenced-code line count',
   );
   if (
     await evaluate<boolean>(
@@ -855,6 +859,9 @@ const run = async (): Promise<void> => {
                   'durable truth' &&
                 response.querySelector('figure')?.textContent?.includes(
                   'Language hintTSX',
+                ) === true &&
+                response.querySelector('figure')?.textContent?.includes(
+                  '1 line',
                 ) === true;
             })()`,
           ),
@@ -879,6 +886,9 @@ const run = async (): Promise<void> => {
           response.querySelector('strong')?.textContent === 'durable truth' &&
           response.querySelector('figure')?.textContent?.includes(
             'Language hintTSX',
+          ) === true &&
+          response.querySelector('figure')?.textContent?.includes(
+            '1 line',
           ) === true
         )`,
       ),
@@ -912,6 +922,9 @@ const run = async (): Promise<void> => {
           response.querySelector('strong')?.textContent === 'durable truth' &&
           response.querySelector('figure')?.textContent?.includes(
             'Language hintTSX',
+          ) === true &&
+          response.querySelector('figure')?.textContent?.includes(
+            '1 line',
           ) === true
         )`,
       ),
@@ -1031,9 +1044,10 @@ const run = async (): Promise<void> => {
         return document.documentElement.scrollWidth <=
           document.documentElement.clientWidth &&
           bounds.left >= 0 && bounds.right <= window.innerWidth &&
+          figure.textContent?.includes('1 line') === true &&
           !figure.querySelector('button, a');
       })()`),
-    'narrow fenced-code language hint layout',
+    'narrow fenced-code line-count layout',
   );
   window.setSize(800, 600);
   await evaluate(`Array.from(document.querySelectorAll(
@@ -1315,10 +1329,11 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `Array.from(document.querySelectorAll('figure')).some((figure) =>
-          figure.textContent?.includes('Language hintTSX') === true
+          figure.textContent?.includes('Language hintTSX') === true &&
+          figure.textContent?.includes('1 line') === true
         )`,
       ),
-    'completed fenced-code hint after transport loss',
+    'completed fenced-code line count after transport loss',
   );
   if (
     await evaluate<boolean>(

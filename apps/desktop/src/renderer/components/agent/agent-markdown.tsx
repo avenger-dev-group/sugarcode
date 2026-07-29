@@ -17,11 +17,28 @@ import type { AgentMarkdownProps } from './types';
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
 const CODE_LANGUAGE_HINT_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9_+.#-]{0,63}$/u;
+const FENCED_CODE_PATTERN = /^ {0,3}(?:`{3,}|~{3,})/u;
 
 const codeLanguageHint = (language: string | undefined): string | null => {
   const hint = language?.trimStart().split(/\s+/u, 1)[0];
   return hint && CODE_LANGUAGE_HINT_PATTERN.test(hint) ? hint : null;
 };
+
+const codeFenceLineCount = (text: string): number => {
+  if (text.length === 0) {
+    return 0;
+  }
+  let lines = 1;
+  for (const character of text) {
+    if (character === '\n') {
+      lines += 1;
+    }
+  }
+  return lines;
+};
+
+const codeFenceLineLabel = (lines: number): string =>
+  `${lines} ${lines === 1 ? 'line' : 'lines'}`;
 
 const renderText = (
   text: string,
@@ -157,8 +174,7 @@ const renderTokens = (
             ];
       }
       case 'code': {
-        const languageHint = codeLanguageHint(token.lang);
-        if (!languageHint) {
+        if (!FENCED_CODE_PATTERN.test(token.raw)) {
           return [
             <pre
               key={key}
@@ -168,7 +184,14 @@ const renderTokens = (
             </pre>,
           ];
         }
-        const captionId = `${key}:language-hint`;
+        const languageHint = codeLanguageHint(token.lang);
+        const lineLabel = codeFenceLineLabel(
+          codeFenceLineCount(token.text),
+        );
+        const captionLabel = languageHint
+          ? `Language hint ${languageHint}, ${lineLabel}`
+          : `Code fence, ${lineLabel}`;
+        const captionId = `${key}:code-fence-caption`;
         return [
           <figure
             key={key}
@@ -177,13 +200,19 @@ const renderTokens = (
           >
             <figcaption
               id={captionId}
+              aria-label={captionLabel}
               className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 border-b px-3 py-2 font-mono text-[10px] text-tertiary"
             >
               <span className="uppercase tracking-[0.14em]">
-                Language hint
+                {languageHint ? 'Language hint' : 'Code fence'}
               </span>
-              <span className="min-w-0 break-all tracking-[0.08em]">
-                {languageHint}
+              {languageHint ? (
+                <span className="min-w-0 break-all tracking-[0.08em]">
+                  {languageHint}
+                </span>
+              ) : null}
+              <span className="ml-auto shrink-0 whitespace-nowrap tracking-[0.08em]">
+                {lineLabel}
               </span>
             </figcaption>
             <pre className="max-w-full overflow-x-auto p-3 font-mono text-xs font-normal leading-normal">
