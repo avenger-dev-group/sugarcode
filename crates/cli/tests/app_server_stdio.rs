@@ -254,10 +254,13 @@ fn desktop_workspace_browser_matches_golden_trace() {
     let workspace = tempfile::tempdir().expect("create isolated workspace");
     fs::write(workspace.path().join("README.md"), "# Fixture\n").expect("write README");
     fs::create_dir(workspace.path().join("src")).expect("create src");
-    run_golden(
+    run_golden_with_options(
         "workspace-browser-happy",
         &sugarcode_home,
         Some(workspace.path()),
+        false,
+        false,
+        false,
     );
 }
 
@@ -311,6 +314,7 @@ fn workspace_apply_patch_lifecycle_matches_golden_trace() {
         Some(workspace.path()),
         true,
         false,
+        true,
     );
     assert_eq!(
         fs::read_to_string(target).expect("read patched fixture"),
@@ -411,6 +415,7 @@ fn approved_shell_approval_matches_execution_attempt_golden_trace() {
         Some(workspace.path()),
         false,
         false,
+        true,
     );
 }
 
@@ -465,6 +470,7 @@ fn informed_workspace_write_approval_mutates_the_real_workspace_and_matches_gold
         &sugarcode_home,
         Some(workspace.path()),
         false,
+        true,
         true,
     );
 
@@ -1070,7 +1076,14 @@ fn assert_golden_with_body(name: &str, provider_body: &'static str) {
 }
 
 fn run_golden(name: &str, sugarcode_home: &tempfile::TempDir, workspace: Option<&std::path::Path>) {
-    run_golden_with_options(name, sugarcode_home, workspace, false, false);
+    run_golden_with_options(
+        name,
+        sugarcode_home,
+        workspace,
+        false,
+        false,
+        workspace.is_some(),
+    );
 }
 
 fn run_golden_with_options(
@@ -1079,6 +1092,7 @@ fn run_golden_with_options(
     workspace: Option<&std::path::Path>,
     allow_workspace_write: bool,
     allow_command_workspace_write: bool,
+    expect_windows_shell_unavailable: bool,
 ) {
     let fixture_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-fixtures/app-server/v1");
@@ -1160,7 +1174,7 @@ fn run_golden_with_options(
     let output = child.wait_with_output().expect("wait for app-server");
 
     assert!(output.status.success(), "app-server failed: {output:?}");
-    let expected_stderr = if cfg!(windows) && workspace.is_some() {
+    let expected_stderr = if cfg!(windows) && expect_windows_shell_unavailable {
         "sugarcode: shell/exec unavailable: sandboxUnavailable\n"
     } else {
         ""
