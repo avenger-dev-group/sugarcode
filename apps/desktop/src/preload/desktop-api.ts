@@ -48,6 +48,17 @@ import {
   type McpSessionActionResult,
   type McpSessionStateSnapshot,
 } from '@/shared/mcp';
+import {
+  isModelConfigActionResult,
+  isModelConfigInspection,
+  MODEL_CONFIG_DELETE_CREDENTIAL_CHANNEL,
+  MODEL_CONFIG_GET_CHANNEL,
+  MODEL_CONFIG_RETRY_CONNECTION_CHANNEL,
+  MODEL_CONFIG_SAVE_CHANNEL,
+  type ModelConfigActionResult,
+  type ModelConfigInspection,
+  type ModelConfigSaveRequest,
+} from '@/shared/model-config';
 
 type StateChangedHandler = (
   event: IpcRendererEvent,
@@ -321,4 +332,53 @@ export const createDesktopApi = (
     }
     return action;
   },
+  getModelConfig: async (): Promise<ModelConfigInspection> => {
+    const inspection: unknown = await ipcRenderer.invoke(
+      MODEL_CONFIG_GET_CHANNEL,
+    );
+    if (!isModelConfigInspection(inspection)) {
+      throw new Error('Main returned an invalid model configuration.');
+    }
+    return inspection;
+  },
+  saveModelConfig: async (
+    request: ModelConfigSaveRequest,
+  ): Promise<ModelConfigActionResult> => {
+    const action: unknown = await ipcRenderer.invoke(
+      MODEL_CONFIG_SAVE_CHANNEL,
+      request,
+    );
+    if (!isModelConfigActionResult(action)) {
+      throw new Error(
+        'Main returned an invalid model configuration action.',
+      );
+    }
+    return action;
+  },
+  deleteModelCredential: async (
+    expectedRevision: string,
+  ): Promise<ModelConfigActionResult> => {
+    const action: unknown = await ipcRenderer.invoke(
+      MODEL_CONFIG_DELETE_CREDENTIAL_CHANNEL,
+      expectedRevision,
+    );
+    if (!isModelConfigActionResult(action)) {
+      throw new Error(
+        'Main returned an invalid credential deletion action.',
+      );
+    }
+    return action;
+  },
+  retryModelConnection:
+    async (): Promise<ModelConfigActionResult> => {
+      const action: unknown = await ipcRenderer.invoke(
+        MODEL_CONFIG_RETRY_CONNECTION_CHANNEL,
+      );
+      if (!isModelConfigActionResult(action)) {
+        throw new Error(
+          'Main returned an invalid model reconnect action.',
+        );
+      }
+      return action;
+    },
 });

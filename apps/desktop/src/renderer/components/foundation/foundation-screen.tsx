@@ -5,6 +5,7 @@ import { CommandApprovalSurface } from '@/renderer/components/command-approval/c
 import { ThreadWorkbench } from '@/renderer/components/thread/thread-workbench';
 import { Button } from '@/renderer/components/ui/button';
 import { McpApprovalSurface } from '@/renderer/components/mcp/approval-surface';
+import { ModelConfigWorkbench } from '@/renderer/components/model-config/model-config-workbench';
 
 import { useStore } from './use-store';
 
@@ -33,6 +34,8 @@ export const FoundationScreen = () => {
           <div className="ml-auto w-full max-w-xs">
             <ConnectionStatus />
           </div>
+
+          <ModelConfigWorkbench />
 
           <Button
             type="button"

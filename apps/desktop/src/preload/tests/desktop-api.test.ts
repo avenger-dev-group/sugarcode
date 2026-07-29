@@ -21,6 +21,13 @@ import {
   CONVERSATION_THREAD_SELECT_CHANNEL,
   type ConversationStateSnapshot,
 } from '@/shared/conversation';
+import {
+  MODEL_CONFIG_DELETE_CREDENTIAL_CHANNEL,
+  MODEL_CONFIG_GET_CHANNEL,
+  MODEL_CONFIG_RETRY_CONNECTION_CHANNEL,
+  MODEL_CONFIG_SAVE_CHANNEL,
+  type ModelConfigInspection,
+} from '@/shared/model-config';
 
 import {
   createDesktopApi,
@@ -76,6 +83,65 @@ describe('createDesktopApi', () => {
     boundary.invoke.mockResolvedValue({ revision: -1, status: 'ready' });
     await expect(api.getConnectionState()).rejects.toThrow(
       'invalid connection state',
+    );
+  });
+
+  it('validates model configuration receipts across the preload boundary', async () => {
+    const boundary = createIpcBoundary();
+    const api = createDesktopApi(boundary.ipc);
+    const inspection: ModelConfigInspection = {
+      contractVersion: 1,
+      revision: 'a'.repeat(64),
+      config: {
+        apiFormat: 'openai-chat-completions',
+        endpoint: 'http://127.0.0.1:18080/v1/chat/completions',
+        model: 'fixture-model',
+        credentialReference: 'model-api-token',
+      },
+      credentialStatus: 'present',
+    };
+    boundary.invoke.mockImplementation(async (channel: string) => {
+      if (channel === MODEL_CONFIG_GET_CHANNEL) {
+        return inspection;
+      }
+      return {
+        accepted: true,
+        state: 'active',
+        inspection,
+      };
+    });
+
+    await expect(api.getModelConfig()).resolves.toEqual(inspection);
+    await expect(
+      api.saveModelConfig({
+        expectedRevision: inspection.revision,
+        config: inspection.config,
+      }),
+    ).resolves.toMatchObject({ accepted: true, state: 'active' });
+    await expect(
+      api.deleteModelCredential(inspection.revision),
+    ).resolves.toMatchObject({ accepted: true });
+    await expect(api.retryModelConnection()).resolves.toMatchObject({
+      accepted: true,
+    });
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      MODEL_CONFIG_SAVE_CHANNEL,
+      expect.any(Object),
+    );
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      MODEL_CONFIG_DELETE_CREDENTIAL_CHANNEL,
+      inspection.revision,
+    );
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      MODEL_CONFIG_RETRY_CONNECTION_CHANNEL,
+    );
+
+    boundary.invoke.mockResolvedValue({
+      ...inspection,
+      credentialStatus: 'backendError',
+    });
+    await expect(api.getModelConfig()).rejects.toThrow(
+      'invalid model configuration',
     );
   });
 

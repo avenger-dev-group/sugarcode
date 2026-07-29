@@ -67,15 +67,66 @@ struct ModelConfigArgs {
 
 #[derive(Debug, Subcommand)]
 enum ModelConfigCommand {
-    /// Read a complete model configuration from standard input and save it.
+    /// Inspect the saved model configuration and credential status.
+    Inspect {
+        /// Emit one versioned JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate a complete model configuration from standard input.
+    Validate {
+        /// Require JSON configuration input on standard input.
+        #[arg(long)]
+        stdin: bool,
+        /// Emit one versioned JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read a complete non-secret model configuration from standard input and save it.
     Set {
         /// Require JSON configuration input on standard input.
         #[arg(long)]
         stdin: bool,
+        /// Emit one versioned JSON object.
+        #[arg(long)]
+        json: bool,
     },
-    /// Print the active model configuration without its token.
-    Show {
-        /// Emit one JSON object.
+    /// Manage the credential referenced by the model configuration.
+    Credential(ModelCredentialArgs),
+}
+
+#[derive(Debug, Args)]
+struct ModelCredentialArgs {
+    #[command(subcommand)]
+    command: ModelCredentialCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ModelCredentialCommand {
+    /// Read a model API token from standard input and store it.
+    Set {
+        /// Non-secret logical credential reference.
+        reference: String,
+        /// Require secret input on standard input.
+        #[arg(long)]
+        stdin: bool,
+        /// Emit one versioned JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report whether a model API token is present.
+    Status {
+        /// Non-secret logical credential reference.
+        reference: String,
+        /// Emit one versioned JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a model API token if present.
+    Delete {
+        /// Non-secret logical credential reference.
+        reference: String,
+        /// Emit one versioned JSON object.
         #[arg(long)]
         json: bool,
     },
@@ -230,10 +281,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Config(ConfigArgs {
             command:
                 ConfigCommand::Model(ModelConfigArgs {
-                    command: ModelConfigCommand::Set { stdin },
+                    command: ModelConfigCommand::Set { stdin, json },
                 }),
         }) => {
-            if !stdin || std::io::stdin().is_terminal() {
+            if !stdin || !json || std::io::stdin().is_terminal() {
                 return Err(Box::new(config::ModelConfigCommandError::StdinRequired));
             }
             let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
@@ -248,14 +299,75 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Config(ConfigArgs {
             command:
                 ConfigCommand::Model(ModelConfigArgs {
-                    command: ModelConfigCommand::Show { json },
+                    command: ModelConfigCommand::Inspect { json },
                 }),
         }) => {
             if !json {
-                return Err("config model show requires --json".into());
+                return Err("config model inspect requires --json".into());
             }
-            let effective_config = sugarcode_state::load_effective_config(home)?;
-            config::show_model_config(&effective_config, &mut std::io::stdout().lock())?;
+            let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
+            let store = OsCredentialStore::new(resolved_home.path());
+            config::inspect_model_config(&resolved_home, &store, &mut std::io::stdout().lock())?;
+        }
+        Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Model(ModelConfigArgs {
+                    command: ModelConfigCommand::Validate { stdin, json },
+                }),
+        }) => {
+            if !stdin || !json || std::io::stdin().is_terminal() {
+                return Err(Box::new(config::ModelConfigCommandError::StdinRequired));
+            }
+            config::validate_model_config(
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout().lock(),
+            )?;
+        }
+        Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Model(ModelConfigArgs {
+                    command: ModelConfigCommand::Credential(args),
+                }),
+        }) => {
+            let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
+            let store = OsCredentialStore::new(resolved_home.path());
+            match args.command {
+                ModelCredentialCommand::Set {
+                    reference,
+                    stdin,
+                    json,
+                } => {
+                    if !stdin || !json || std::io::stdin().is_terminal() {
+                        return Err(Box::new(config::ModelConfigCommandError::StdinRequired));
+                    }
+                    config::set_model_credential(
+                        &store,
+                        &reference,
+                        &mut std::io::stdin().lock(),
+                        &mut std::io::stdout().lock(),
+                    )?;
+                }
+                ModelCredentialCommand::Status { reference, json } => {
+                    if !json {
+                        return Err("config model credential status requires --json".into());
+                    }
+                    config::show_model_credential_status(
+                        &store,
+                        &reference,
+                        &mut std::io::stdout().lock(),
+                    )?;
+                }
+                ModelCredentialCommand::Delete { reference, json } => {
+                    if !json {
+                        return Err("config model credential delete requires --json".into());
+                    }
+                    config::delete_model_credential(
+                        &store,
+                        &reference,
+                        &mut std::io::stdout().lock(),
+                    )?;
+                }
+            }
         }
         Command::Config(ConfigArgs {
             command:

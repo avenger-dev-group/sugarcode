@@ -112,7 +112,7 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home.path())
-        .args(["config", "model", "set", "--stdin"])
+        .args(["config", "model", "set", "--stdin", "--json"])
         .env_remove("SUGARCODE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -123,18 +123,22 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
         child.stdin.take().expect("stdin"),
         "{}",
         serde_json::json!({
-            "apiFormat": "openai-chat-completions",
-            "endpoint": "http://127.0.0.1:18080/custom/v1/chat/completions",
-            "model": "custom-model"
+            "contractVersion": 1,
+            "expectedRevision": "45686ea2c125fee4f29640cef339e7971c01979f11bad3df6db75d8110ffbb78",
+            "config": {
+                "apiFormat": "openai-chat-completions",
+                "endpoint": "http://127.0.0.1:18080/custom/v1/chat/completions",
+                "model": "custom-model",
+                "credentialReference": null
+            }
         })
     )
     .expect("write model config");
     let set = child.wait_with_output().expect("wait for config set");
     assert!(set.status.success(), "{set:?}");
-    assert_eq!(
-        String::from_utf8(set.stdout).expect("UTF-8 stdout"),
-        "Model configuration saved.\n"
-    );
+    let set_receipt =
+        serde_json::from_slice::<serde_json::Value>(&set.stdout).expect("set receipt");
+    assert_eq!(set_receipt["contractVersion"], 1);
     assert!(set.stderr.is_empty());
 
     let stored = fs::read_to_string(home.path().join("config.toml")).expect("stored config");
@@ -157,7 +161,7 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
     let mut replacement = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home.path())
-        .args(["config", "model", "set", "--stdin"])
+        .args(["config", "model", "set", "--stdin", "--json"])
         .env_remove("SUGARCODE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -168,9 +172,14 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
         replacement.stdin.take().expect("replacement stdin"),
         "{}",
         serde_json::json!({
-            "apiFormat": "openai-chat-completions",
-            "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
-            "model": "replacement-model"
+            "contractVersion": 1,
+            "expectedRevision": set_receipt["revision"],
+            "config": {
+                "apiFormat": "openai-chat-completions",
+                "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
+                "model": "replacement-model",
+                "credentialReference": null
+            }
         })
     )
     .expect("write replacement model config");
@@ -183,7 +192,7 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
     let show = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home.path())
-        .args(["config", "model", "show", "--json"])
+        .args(["config", "model", "inspect", "--json"])
         .env_remove("SUGARCODE_HOME")
         .output()
         .expect("run model config show");
@@ -192,10 +201,16 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&stdout).expect("show JSON"),
         serde_json::json!({
-            "apiFormat": "openai-chat-completions",
-            "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
-            "model": "replacement-model",
-            "hasToken": false
+            "contractVersion": 1,
+            "revision": serde_json::from_slice::<serde_json::Value>(&replacement.stdout)
+                .expect("replacement receipt")["revision"],
+            "config": {
+                "apiFormat": "openai-chat-completions",
+                "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
+                "model": "replacement-model",
+                "credentialReference": null
+            },
+            "credentialStatus": "notConfigured"
         })
     );
 }

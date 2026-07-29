@@ -201,6 +201,7 @@ type MutableTurn = {
 type ConversationControllerOptions = Readonly<{
   getRpc: () => ConversationRpc | null;
   onProtocolFailure: () => void;
+  getActionBlocked?: () => boolean;
 }>;
 
 const accepted = (): ConversationActionResult => ({
@@ -215,6 +216,7 @@ const rejected = (
 export class ConversationController {
   private readonly getRpc: ConversationControllerOptions['getRpc'];
   private readonly onProtocolFailure: ConversationControllerOptions['onProtocolFailure'];
+  private readonly getActionBlocked: () => boolean;
   private readonly listeners = new Set<ConversationStateListener>();
   private revision = 0;
   private phase: ConversationStateSnapshot['phase'] = 'unavailable';
@@ -235,6 +237,7 @@ export class ConversationController {
   constructor(options: ConversationControllerOptions) {
     this.getRpc = options.getRpc;
     this.onProtocolFailure = options.onProtocolFailure;
+    this.getActionBlocked = options.getActionBlocked ?? (() => false);
   }
 
   getSnapshot = (): ConversationStateSnapshot => this.createSnapshot();
@@ -353,6 +356,9 @@ export class ConversationController {
     if (!isValidThreadSearchInput(query)) {
       return rejected('invalidSearch');
     }
+    if (this.getActionBlocked()) {
+      return rejected('unavailable');
+    }
     const rpc = this.getRpc();
     if (!rpc?.searchThreads || this.phase === 'unavailable') {
       return rejected('unavailable');
@@ -436,6 +442,9 @@ export class ConversationController {
     ) {
       return rejected('unknownThread');
     }
+    if (this.getActionBlocked()) {
+      return rejected('unavailable');
+    }
     if (
       this.phase === 'starting' ||
       this.phase === 'inProgress' ||
@@ -499,6 +508,9 @@ export class ConversationController {
   startTurn = async (input: unknown): Promise<ConversationActionResult> => {
     if (!isValidConversationInput(input)) {
       return rejected('invalidInput');
+    }
+    if (this.getActionBlocked()) {
+      return rejected('unavailable');
     }
     if (
       this.phase === 'starting' ||

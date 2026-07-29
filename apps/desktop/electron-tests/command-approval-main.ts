@@ -16,6 +16,8 @@ import type { ConversationRpc } from '@/main/app-server/conversation/rpc-client'
 import { McpApprovalController } from '@/main/app-server/mcp/approval-controller';
 import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
 import { McpSessionController } from '@/main/app-server/mcp/session-controller';
+import type { ModelConfigController } from '@/main/app-server/model-config/controller';
+import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
 import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
@@ -32,6 +34,7 @@ const mcpRestarts: string[][] = [];
 const lifecycleFailures: string[] = [];
 const conversationInputs: string[] = [];
 const interruptRequests: string[] = [];
+let modelCredentialObserved = false;
 const fileChangeBeforeSha256 = 'a'.repeat(64);
 const fileChangeAfterSha256 = 'b'.repeat(64);
 const fileChangeDiff =
@@ -589,6 +592,50 @@ const run = async (): Promise<void> => {
     getMainWindow: () => window,
     isAllowedUrl: (url) => url === rendererUrl,
   });
+  const modelInspection = {
+    contractVersion: 1 as const,
+    revision: 'e'.repeat(64),
+    config: {
+      apiFormat: 'openai-chat-completions' as const,
+      endpoint: 'http://127.0.0.1:18080/v1/chat/completions',
+      model: 'electron-fixture-model',
+      credentialReference: 'model-api-token',
+    },
+    credentialStatus: 'present' as const,
+  };
+  const modelConfigController = {
+    inspect: async () => modelInspection,
+    save: async (request: unknown) => {
+      const candidate = request as {
+        credential?: string;
+      };
+      modelCredentialObserved =
+        candidate.credential === 'electron-secret-sentinel';
+      return {
+        accepted: true,
+        state: 'active',
+        inspection: modelInspection,
+      };
+    },
+    deleteCredential: async () => ({
+      accepted: true,
+      state: 'active',
+      inspection: {
+        ...modelInspection,
+        credentialStatus: 'missing',
+      },
+    }),
+    retryConnection: async () => ({
+      accepted: true,
+      state: 'active',
+      inspection: modelInspection,
+    }),
+  } as unknown as ModelConfigController;
+  const disposeModelConfigIpc = registerModelConfigIpc({
+    controller: modelConfigController,
+    getMainWindow: () => window,
+    isAllowedUrl: (url) => url === rendererUrl,
+  });
   const waitForDurableItemIdentity = async (
     itemId: string,
     label: string,
@@ -605,6 +652,61 @@ const run = async (): Promise<void> => {
 
   await window.loadFile(rendererPath);
   window.show();
+  await evaluate(`document.querySelector(
+    'button[aria-label="Open model settings"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[role="dialog"] #model-endpoint')?.value ===
+          'http://127.0.0.1:18080/v1/chat/completions'`,
+      ),
+    'model configuration dialog',
+  );
+  await evaluate(`(() => {
+    const password = document.querySelector('#model-credential');
+    if (!(password instanceof HTMLInputElement) ||
+        password.type !== 'password' ||
+        password.autocomplete !== 'new-password') {
+      throw new Error('Secure model credential field is unavailable.');
+    }
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set;
+    setter?.call(password, 'electron-secret-sentinel');
+    document.querySelector(
+      '[role="dialog"] button[type="submit"]',
+    )?.click();
+    if (password.value !== '') {
+      throw new Error('Credential field was not cleared on submit.');
+    }
+  })()`);
+  await waitFor(
+    () =>
+      modelCredentialObserved &&
+      evaluate<boolean>(
+        `document.body.textContent?.includes(
+          'Saved and active.',
+        ) === true && !document.body.textContent?.includes(
+          'electron-secret-sentinel',
+        )`,
+      ),
+    'model configuration save and redaction',
+  );
+  window.setSize(360, 600);
+  await waitForAnimationFrame();
+  if (
+    await evaluate<boolean>(
+      'document.documentElement.scrollWidth > window.innerWidth',
+    )
+  ) {
+    throw new Error('Electron model configuration overflowed at 360 px.');
+  }
+  await evaluate(`document.querySelector(
+    'button[aria-label="Close model settings"]',
+  )?.click()`);
+  window.setSize(800, 600);
   await evaluate('window.sugarcode.getCommandApprovalState()');
   await waitFor(
     () =>
@@ -2145,6 +2247,7 @@ const run = async (): Promise<void> => {
   disposeApprovalIpc();
   disposeConversationIpc();
   disposeMcpIpc();
+  disposeModelConfigIpc();
   ipcMain.removeHandler(CONNECTION_STATE_GET_CHANNEL);
   controller.shutdown();
   mcpApprovals.shutdown();

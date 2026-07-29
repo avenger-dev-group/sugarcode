@@ -70,6 +70,13 @@ type ConnectionSupervisorOptions = Readonly<{
   ) => Promise<readonly McpConfiguredServer[]>;
 }>;
 
+export type ModelConfigRestartBlock =
+  | 'turnActive'
+  | 'approvalPending'
+  | 'navigationPending'
+  | 'reconnectPending'
+  | 'unavailable';
+
 const DIAGNOSTIC_SUMMARIES: Record<ConnectionDiagnosticCode, string> = {
   'development-cli-missing':
     'The development CLI is unavailable. Build it before starting SugarCode.',
@@ -134,6 +141,8 @@ export class ConnectionSupervisor {
   private terminalHandled = false;
   private resolvedCli: ResolvedCli | null = null;
   private restarting = false;
+  private connectionGeneration = 0;
+  private modelConfigTransaction = false;
 
   constructor(options: ConnectionSupervisorOptions) {
     this.options = {
@@ -160,6 +169,7 @@ export class ConnectionSupervisor {
     this.conversation = new ConversationController({
       getRpc: () => this.conversationRpc,
       onProtocolFailure: () => this.failAndTerminate('protocol-invalid'),
+      getActionBlocked: () => this.modelConfigTransaction,
     });
     this.mcpSession = new McpSessionController({
       getRestartBlock: this.getMcpRestartBlock,
@@ -181,6 +191,55 @@ export class ConnectionSupervisor {
   }
 
   getSnapshot = (): ConnectionStateSnapshot => this.snapshot;
+
+  getResolvedCli = (): ResolvedCli | null => this.resolvedCli;
+
+  getCliEnvironment = (): NodeJS.ProcessEnv =>
+    createCliEnvironment(
+      this.options.environment,
+      this.options.platform,
+    );
+
+  beginModelConfigTransaction = ():
+    | Readonly<{ release: () => void }>
+    | ModelConfigRestartBlock => {
+    const block = this.getModelConfigRestartBlock();
+    if (block) {
+      return block;
+    }
+    this.modelConfigTransaction = true;
+    let released = false;
+    return {
+      release: () => {
+        if (!released) {
+          released = true;
+          this.modelConfigTransaction = false;
+        }
+      },
+    };
+  };
+
+  activateSavedModelConfiguration = async (): Promise<boolean> => {
+    const target = getCliTarget(this.options.platform, this.options.arch);
+    if (
+      !this.modelConfigTransaction ||
+      !target ||
+      !this.resolvedCli ||
+      this.shuttingDown
+    ) {
+      return false;
+    }
+    const preferredThreadId = this.conversation.getSnapshot().threadId;
+    if (!(await this.closeForRestart())) {
+      return false;
+    }
+    if (this.shuttingDown) {
+      return false;
+    }
+    this.mcpSession.initialize(this.mcpSession.getSnapshot().servers);
+    this.transition('connecting');
+    return this.connect([], preferredThreadId, target.expectedPlatform);
+  };
 
   subscribe = (listener: ConnectionStateListener): (() => void) => {
     this.listeners.add(listener);
@@ -204,6 +263,7 @@ export class ConnectionSupervisor {
       return;
     }
     this.shuttingDown = true;
+    this.connectionGeneration += 1;
     this.commandApprovals.shutdown();
     this.mcpApprovals.shutdown();
     this.conversation.transportClosed();
@@ -283,6 +343,7 @@ export class ConnectionSupervisor {
       return false;
     }
     this.resetProcessState();
+    const generation = ++this.connectionGeneration;
     try {
       const spawnProcess = this.options.spawnProcess ?? spawn;
       this.child = spawnProcess(
@@ -313,12 +374,15 @@ export class ConnectionSupervisor {
     }
 
     const child = this.child;
-    this.attachChild(child);
+    this.attachChild(child, generation);
     this.initializeAbortController = new AbortController();
     this.client = new JsonlClient({
       stdin: child.stdin,
       stdout: child.stdout,
       onServerRequest: (request) => {
+        if (generation !== this.connectionGeneration) {
+          return;
+        }
         if (request.method === 'item/commandExecution/requestApproval') {
           this.commandApprovals.handleServerRequest(request);
           return;
@@ -332,15 +396,21 @@ export class ConnectionSupervisor {
         }
       },
       onNotification: (notification) => {
+        if (generation !== this.connectionGeneration) {
+          return;
+        }
         this.commandApprovals.handleNotification(notification);
         this.mcpApprovals.handleNotification(notification);
         this.conversation.handleNotification(notification);
       },
       onFatalError: () => {
-        this.failAndTerminate('protocol-invalid');
+        if (generation === this.connectionGeneration) {
+          this.failAndTerminate('protocol-invalid');
+        }
       },
       onTransportEnd: () => {
         if (
+          generation === this.connectionGeneration &&
           !this.shuttingDown &&
           this.child === child &&
           child.exitCode === null &&
@@ -372,6 +442,9 @@ export class ConnectionSupervisor {
         initializeParams,
         this.initializeAbortController.signal,
       );
+      if (generation !== this.connectionGeneration) {
+        return false;
+      }
       const mismatch = this.validateInitializeResponse(
         response,
         expectedPlatform,
@@ -382,6 +455,9 @@ export class ConnectionSupervisor {
         return false;
       }
       await this.client.initialized();
+      if (generation !== this.connectionGeneration) {
+        return false;
+      }
       if (!this.shuttingDown && this.snapshot.status === 'connecting') {
         const restored = await this.conversation.restoreForConnection(
           preferredThreadId,
@@ -401,6 +477,7 @@ export class ConnectionSupervisor {
       return false;
     } catch (error) {
       if (
+        generation !== this.connectionGeneration ||
         this.shuttingDown ||
         this.snapshot.status === 'failed' ||
         this.snapshot.status === 'closed'
@@ -453,28 +530,43 @@ export class ConnectionSupervisor {
     return null;
   };
 
-  private attachChild = (child: ChildProcessWithoutNullStreams): void => {
+  private attachChild = (
+    child: ChildProcessWithoutNullStreams,
+    generation: number,
+  ): void => {
     child.stderr.on('data', this.stderr.append);
     child.once('error', (error: Error) => {
+      if (generation !== this.connectionGeneration) {
+        return;
+      }
       this.spawnError ??= error;
       if (!this.shuttingDown) {
         this.fail('spawn-failed');
       }
     });
     child.once('exit', (code, signal) => {
+      if (generation !== this.connectionGeneration) {
+        return;
+      }
       this.exitCode = code;
       this.exitSignal = signal;
     });
     child.once('close', (code, signal) => {
-      this.handleChildClose(code, signal);
+      this.handleChildClose(child, generation, code, signal);
     });
   };
 
   private handleChildClose = (
+    child: ChildProcessWithoutNullStreams,
+    generation: number,
     code: number | null,
     signal: NodeJS.Signals | null,
   ): void => {
-    if (this.terminalHandled) {
+    if (
+      generation !== this.connectionGeneration ||
+      this.child !== child ||
+      this.terminalHandled
+    ) {
       return;
     }
     this.terminalHandled = true;
@@ -528,6 +620,9 @@ export class ConnectionSupervisor {
     | 'busy'
     | 'unavailable'
     | null => {
+    if (this.modelConfigTransaction) {
+      return 'busy';
+    }
     if (this.snapshot.status !== 'ready' || !this.resolvedCli) {
       return 'unavailable';
     }
@@ -579,11 +674,49 @@ export class ConnectionSupervisor {
     );
   };
 
+  private getModelConfigRestartBlock = (): ModelConfigRestartBlock | null => {
+    if (
+      this.modelConfigTransaction ||
+      this.restarting ||
+      this.snapshot.status === 'connecting'
+    ) {
+      return 'reconnectPending';
+    }
+    if (!this.resolvedCli || this.shuttingDown) {
+      return 'unavailable';
+    }
+    const conversation = this.conversation.getSnapshot();
+    if (
+      conversation.phase === 'starting' ||
+      conversation.phase === 'inProgress' ||
+      conversation.phase === 'stopping'
+    ) {
+      return 'turnActive';
+    }
+    if (
+      conversation.navigator.pendingThreadId ||
+      conversation.navigator.search.status === 'loading'
+    ) {
+      return 'navigationPending';
+    }
+    if (
+      this.commandApprovals.getSnapshot().status === 'pending' ||
+      this.mcpApprovals.getSnapshot().status === 'pending'
+    ) {
+      return 'approvalPending';
+    }
+    return null;
+  };
+
   private closeForRestart = async (): Promise<boolean> => {
     const child = this.child;
     this.restarting = true;
+    this.connectionGeneration += 1;
     this.initializeAbortController?.abort();
     this.client?.close();
+    this.commandApprovals.transportClosed();
+    this.mcpApprovals.transportClosed();
+    this.conversation.transportClosed();
     if (!child) {
       this.restarting = false;
       return true;

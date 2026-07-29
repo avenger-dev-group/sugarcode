@@ -8,6 +8,8 @@ import { registerConnectionIpc } from '@/main/app-server/connection/ipc';
 import { ConnectionSupervisor } from '@/main/app-server/connection/supervisor';
 import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
 import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
+import { ModelConfigController } from '@/main/app-server/model-config/controller';
+import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
@@ -15,6 +17,7 @@ let disposeConnectionIpc: (() => void) | null = null;
 let disposeCommandApprovalIpc: (() => void) | null = null;
 let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
+let disposeModelConfigIpc: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -114,6 +117,11 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
+  disposeModelConfigIpc = registerModelConfigIpc({
+    controller: new ModelConfigController({ supervisor }),
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
   createWindow();
   void supervisor.start();
 };
@@ -149,5 +157,7 @@ if (started) {
     disposeConversationIpc = null;
     disposeMcpIpc?.();
     disposeMcpIpc = null;
+    disposeModelConfigIpc?.();
+    disposeModelConfigIpc = null;
   });
 }

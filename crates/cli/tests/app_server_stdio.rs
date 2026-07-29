@@ -1402,10 +1402,20 @@ fn read_provider_request(stream: &mut TcpStream) {
 }
 
 fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
+    let inspection = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home)
+        .args(["config", "model", "inspect", "--json"])
+        .output()
+        .expect("inspect model config");
+    assert!(inspection.status.success());
+    let revision =
+        serde_json::from_slice::<Value>(&inspection.stdout).expect("model inspection")["revision"]
+            .clone();
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home)
-        .args(["config", "model", "set", "--stdin"])
+        .args(["config", "model", "set", "--stdin", "--json"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1415,9 +1425,14 @@ fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
         child.stdin.take().expect("config stdin"),
         "{}",
         json!({
-            "apiFormat": "openai-chat-completions",
-            "endpoint": format!("http://{address}/v1/chat/completions"),
-            "model": "fixture-model"
+            "contractVersion": 1,
+            "expectedRevision": revision,
+            "config": {
+                "apiFormat": "openai-chat-completions",
+                "endpoint": format!("http://{address}/v1/chat/completions"),
+                "model": "fixture-model",
+                "credentialReference": null
+            }
         })
     )
     .expect("write model config");

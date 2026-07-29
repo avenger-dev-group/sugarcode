@@ -90,6 +90,10 @@ export class McpSessionController {
     if (this.status === 'unavailable') {
       return result('unavailable');
     }
+    const block = this.options.getRestartBlock();
+    if (block) {
+      return result(block);
+    }
     const server = this.servers.find((candidate) => candidate.id === serverId);
     if (!server) {
       return result('invalid');

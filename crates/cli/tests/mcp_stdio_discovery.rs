@@ -1406,8 +1406,16 @@ impl CallProvider {
 }
 
 fn configure_model(home: &Path, address: std::net::SocketAddr) {
+    let inspection = sugarcode(home)
+        .args(["config", "model", "inspect", "--json"])
+        .output()
+        .expect("inspect model config");
+    assert!(inspection.status.success());
+    let revision =
+        serde_json::from_slice::<Value>(&inspection.stdout).expect("model inspection")["revision"]
+            .clone();
     let mut child = sugarcode(home)
-        .args(["config", "model", "set", "--stdin"])
+        .args(["config", "model", "set", "--stdin", "--json"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1416,9 +1424,14 @@ fn configure_model(home: &Path, address: std::net::SocketAddr) {
     send_json(
         &mut child.stdin.take().expect("config stdin"),
         json!({
-            "apiFormat": "openai-chat-completions",
-            "endpoint": format!("http://{address}/v1/chat/completions"),
-            "model": "fixture-model"
+            "contractVersion": 1,
+            "expectedRevision": revision,
+            "config": {
+                "apiFormat": "openai-chat-completions",
+                "endpoint": format!("http://{address}/v1/chat/completions"),
+                "model": "fixture-model",
+                "credentialReference": null
+            }
         }),
     );
     let output = child.wait_with_output().expect("model config");

@@ -2285,6 +2285,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "sha2",
  "sugarcode-app-server",
  "sugarcode-app-server-protocol",
  "sugarcode-credential-store",
