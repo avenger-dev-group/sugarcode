@@ -928,10 +928,7 @@ describe('real Desktop text Agent Turn', () => {
     'omits shell/exec from the real Windows CLI tool inventory',
     async () => {
       const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
-      const workspace = await mkdtemp(
-        path.join(tmpdir(), 'sugarcode-workspace-test-'),
-      );
-      temporaryHomes.push(home, workspace);
+      temporaryHomes.push(home);
       const provider = await startProvider();
       providers.push(provider.server);
       await writeFile(
@@ -957,11 +954,6 @@ describe('real Desktop text Agent Turn', () => {
           SYSTEMROOT: process.env.SYSTEMROOT,
           WINDIR: process.env.WINDIR,
         },
-        spawnProcess: (command, arguments_, options) =>
-          spawn(command, [...arguments_, '--workspace', workspace], {
-            ...options,
-            stdio: ['pipe', 'pipe', 'pipe'],
-          }),
       });
       try {
         await supervisor.start();
