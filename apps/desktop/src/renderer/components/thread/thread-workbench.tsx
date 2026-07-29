@@ -14,56 +14,64 @@ import { useStore, useTranscriptFollow } from './use-store';
 
 const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
   <section
-    className={`space-y-7 ${
+    className={
       turn.status === 'inProgress'
         ? ''
         : '[contain-intrinsic-size:auto_240px] [content-visibility:auto]'
-    }`}
-    aria-label={`Turn ${turn.id}`}
+    }
+    aria-label={`Durable Turn ${turn.id}`}
   >
-    {turn.messages.map((entry) =>
-      entry.role === 'agent' ? (
-        <AgentMessage key={entry.message.id} message={entry.message} />
-      ) : (
-        <article
-          key={entry.message.id}
-          className="ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-surface px-4 py-3"
-          aria-label="Your message"
+    <p
+      className="min-w-0 break-all font-mono text-[10px] tracking-[0.08em] text-tertiary"
+      aria-hidden="true"
+    >
+      Turn {turn.id}
+    </p>
+    <div className="mt-3 space-y-7">
+      {turn.messages.map((entry) =>
+        entry.role === 'agent' ? (
+          <AgentMessage key={entry.message.id} message={entry.message} />
+        ) : (
+          <article
+            key={entry.message.id}
+            className="ml-auto max-w-[82%] rounded-2xl rounded-br-md bg-surface px-4 py-3"
+            aria-label="Your message"
+          >
+            <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
+              {entry.message.text}
+            </p>
+          </article>
+        ),
+      )}
+      {turn.failure ? (
+        <div
+          className="ml-10 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3"
+          role="alert"
+          aria-label="Turn failure details"
         >
-          <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
-            {entry.message.text}
+          <p className="text-sm font-medium text-destructive">
+            {turn.failure.summary}
           </p>
-        </article>
-      ),
-    )}
-    {turn.failure ? (
-      <div
-        className="ml-10 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3"
-        role="alert"
-        aria-label="Turn failure details"
-      >
-        <p className="text-sm font-medium text-destructive">
-          {turn.failure.summary}
+          <p className="mt-1 text-sm font-normal leading-normal text-secondary">
+            {turn.failure.guidance}
+          </p>
+          <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
+            {turn.failure.retryable
+              ? 'Retryable failure'
+              : 'Not automatically retryable'}
+          </p>
+        </div>
+      ) : turn.terminalLabel ? (
+        <p
+          className={`pl-10 font-mono text-[10px] uppercase tracking-[0.14em] ${
+            turn.isError ? 'text-destructive' : 'text-tertiary'
+          }`}
+          role={turn.isError ? 'alert' : 'status'}
+        >
+          {turn.terminalLabel}
         </p>
-        <p className="mt-1 text-sm font-normal leading-normal text-secondary">
-          {turn.failure.guidance}
-        </p>
-        <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
-          {turn.failure.retryable
-            ? 'Retryable failure'
-            : 'Not automatically retryable'}
-        </p>
-      </div>
-    ) : turn.terminalLabel ? (
-      <p
-        className={`pl-10 font-mono text-[10px] uppercase tracking-[0.14em] ${
-          turn.isError ? 'text-destructive' : 'text-tertiary'
-        }`}
-        role={turn.isError ? 'alert' : 'status'}
-      >
-        {turn.terminalLabel}
-      </p>
-    ) : null}
+      ) : null}
+    </div>
   </section>
 );
 

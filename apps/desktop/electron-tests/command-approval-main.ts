@@ -280,6 +280,20 @@ const run = async (): Promise<void> => {
       ),
     'recovered durable Thread identity',
   );
+  for (const turnId of [
+    'turn_0000000000000099',
+    'turn_0000000000000100',
+  ]) {
+    await waitFor(
+      () =>
+        evaluate<boolean>(
+          `document.querySelector(
+            '[aria-label="Durable Turn ${turnId}"]',
+          )?.textContent?.includes('Turn ${turnId}') === true`,
+        ),
+      `recovered durable Turn identity ${turnId}`,
+    );
+  }
   await waitFor(
     () =>
       evaluate<boolean>(
@@ -415,6 +429,17 @@ const run = async (): Promise<void> => {
       await waitFor(
         () =>
           evaluate<boolean>(
+            `document.querySelector(
+              '[aria-label="Durable Turn turn_0000000000000101"]',
+            )?.textContent?.includes(
+              'Turn turn_0000000000000101',
+            ) === true`,
+          ),
+        'live durable Turn identity',
+      );
+      await waitFor(
+        () =>
+          evaluate<boolean>(
             `(() => {
               const response = document.querySelector(
                 '[aria-label="Agent is responding"]',
@@ -464,6 +489,17 @@ const run = async (): Promise<void> => {
         )?.textContent === 'Thread thr_0000000000000100'`,
       ),
     'durable Thread identity after Renderer reload',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Durable Turn turn_0000000000000101"]',
+        )?.textContent?.includes(
+          'Turn turn_0000000000000101',
+        ) === true`,
+      ),
+    'durable Turn identity after Renderer reload',
   );
   await waitFor(
     () =>
@@ -546,6 +582,17 @@ const run = async (): Promise<void> => {
     () => conversation.getSnapshot().phase === 'stopping',
     'conversation stopping state',
   );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Durable Turn turn_0000000000000102"]',
+        )?.textContent?.includes(
+          'Turn turn_0000000000000102',
+        ) === true`,
+      ),
+    'stopping durable Turn identity',
+  );
   conversation.handleNotification({
     kind: 'notification',
     method: 'item/completed',
@@ -574,6 +621,17 @@ const run = async (): Promise<void> => {
         `document.body.textContent?.includes('Turn stopped') === true`,
       ),
     'interrupted Turn presentation',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Durable Turn turn_0000000000000102"]',
+        )?.textContent?.includes(
+          'Turn turn_0000000000000102',
+        ) === true`,
+      ),
+    'interrupted durable Turn identity',
   );
 
   await sendConversationInput('Preserve an uncertain partial response.');
@@ -627,6 +685,17 @@ const run = async (): Promise<void> => {
       ),
     'uncertain Agent response',
   );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Durable Turn turn_0000000000000103"]',
+        )?.textContent?.includes(
+          'Turn turn_0000000000000103',
+        ) === true`,
+      ),
+    'transport-uncertain durable Turn identity',
+  );
   if (
     await evaluate<boolean>(
       `Boolean(document.querySelector(
@@ -647,6 +716,17 @@ const run = async (): Promise<void> => {
         )?.textContent?.includes('Final status unavailable') === true`,
       ),
     'uncertain response after Renderer reload',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Durable Turn turn_0000000000000103"]',
+        )?.textContent?.includes(
+          'Turn turn_0000000000000103',
+        ) === true`,
+      ),
+    'transport-uncertain durable Turn identity after reload',
   );
 
   controller.handleServerRequest(request('approval/electron-approve'));

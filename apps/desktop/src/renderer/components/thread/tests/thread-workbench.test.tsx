@@ -158,6 +158,24 @@ describe('ThreadWorkbenchView', () => {
     );
     expect(document.body.textContent).toContain('Turn complete');
     expect(document.body.textContent).toContain(
+      'Turn turn_0000000000000001',
+    );
+    const durableTurn = document.querySelector(
+      '[aria-label="Durable Turn turn_0000000000000001"]',
+    );
+    expect(durableTurn).not.toBeNull();
+    const turnIdentity = Array.from(
+      durableTurn?.querySelectorAll('p') ?? [],
+    ).find(
+      (element) =>
+        element.textContent === 'Turn turn_0000000000000001',
+    );
+    expect(turnIdentity?.className).toContain('break-all');
+    expect(turnIdentity?.className).toContain('font-mono');
+    expect(turnIdentity?.className).toContain('text-tertiary');
+    expect(turnIdentity?.className).not.toContain('uppercase');
+    expect(durableTurn?.querySelector('a, button')).toBeNull();
+    expect(document.body.textContent).toContain(
       'Thread thr_0000000000000001',
     );
     expect(
@@ -195,6 +213,9 @@ describe('ThreadWorkbenchView', () => {
     expect(
       document.querySelector('[aria-label="No durable Thread yet"]'),
     ).not.toBeNull();
+    expect(
+      document.querySelector('[aria-label^="Durable Turn "]'),
+    ).toBeNull();
     const textarea = document.querySelector('textarea');
     expect(textarea?.value).toBe('Exact input\n雪');
 
@@ -258,6 +279,11 @@ describe('ThreadWorkbenchView', () => {
     expect(
       document.querySelector('[aria-label="Agent is responding"]'),
     ).not.toBeNull();
+    expect(
+      document.querySelector(
+        '[aria-label="Durable Turn turn_0000000000000002"]',
+      )?.textContent,
+    ).toContain('Turn turn_0000000000000002');
     expect(document.body.textContent).toContain(
       'Thinking through the turn',
     );
@@ -386,6 +412,11 @@ describe('ThreadWorkbenchView', () => {
         '[aria-label="Agent response status is unavailable"]',
       ),
     ).not.toBeNull();
+    expect(
+      document.querySelector(
+        '[aria-label="Durable Turn turn_0000000000000002"]',
+      )?.textContent,
+    ).toContain('Turn turn_0000000000000002');
     expect(document.body.textContent).toContain(
       'Keep this exact partial response.',
     );
