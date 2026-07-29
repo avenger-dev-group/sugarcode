@@ -619,6 +619,43 @@ describe('real Desktop text Agent Turn', () => {
           },
         ],
       });
+      await expect(
+        second.conversation.forkThread(durableThreadId),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      const forkedThreadId = second.conversation.getSnapshot().threadId;
+      expect(forkedThreadId).toMatch(/^thr_[0-9a-f]{16}$/);
+      expect(forkedThreadId).not.toBe(durableThreadId);
+      expect(second.conversation.getSnapshot().turns).toHaveLength(2);
+
+      await expect(
+        second.conversation.archiveThread(forkedThreadId),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      expect(second.conversation.getSnapshot()).toMatchObject({
+        threadId: durableThreadId,
+        navigator: {
+          archivedUndoThreadId: forkedThreadId,
+          activeThreadIds: [durableThreadId],
+        },
+      });
+      await expect(
+        second.conversation.unarchiveThread(forkedThreadId),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      expect(second.conversation.getSnapshot().threadId).toBe(
+        forkedThreadId,
+      );
+
+      await expect(
+        second.conversation.deleteThread(forkedThreadId),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      expect(second.conversation.getSnapshot()).toMatchObject({
+        threadId: durableThreadId,
+        navigator: {
+          activeThreadIds: [durableThreadId],
+        },
+      });
+      expect(
+        second.conversation.getSnapshot().navigator.archivedUndoThreadId,
+      ).toBeUndefined();
       expect(provider.errors).toEqual([]);
     } finally {
       first.shutdown();

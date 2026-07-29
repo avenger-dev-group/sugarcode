@@ -11,6 +11,7 @@ import type { ConversationRpc } from '../rpc-client';
 
 const THREAD_A = 'thr_0000000000000002';
 const THREAD_B = 'thr_0000000000000001';
+const THREAD_FORK = 'thr_0000000000000003';
 
 const resume = (
   threadId: string,
@@ -233,5 +234,205 @@ describe('Desktop Thread Navigator', () => {
     ).resolves.toEqual({ accepted: false, reason: 'unknownThread' });
     expect(rpc.searchThreads).not.toHaveBeenCalled();
     expect(rpc.resumeThread).not.toHaveBeenCalled();
+  });
+
+  it('validates a complete fork snapshot before atomically selecting the new Thread', async () => {
+    let resolveFork!: (value: ResumeSnapshot) => void;
+    const forked = new Promise<ResumeSnapshot>((resolve) => {
+      resolveFork = resolve;
+    });
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => THREAD_A),
+      listActiveThreads: vi.fn(async () => ({
+        data: [{ id: THREAD_A }, { id: THREAD_B }],
+        nextCursor: null,
+      })),
+      searchThreads: vi.fn(async () => ({
+        data: [{ id: THREAD_B }],
+        nextCursor: null,
+      })),
+      resumeThread: vi.fn(async () => resume(THREAD_A, 'Source answer.')),
+      forkThread: vi.fn(() => forked),
+      archiveThread: vi.fn(),
+      unarchiveThread: vi.fn(),
+      deleteThread: vi.fn(),
+      startThread: vi.fn(),
+      startTurn: vi.fn(),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createController(rpc);
+    await controller.restoreLatestActiveThread();
+    controller.connectionReady();
+    await controller.searchThreads('source');
+
+    const action = controller.forkThread(THREAD_A);
+    expect(controller.getSnapshot().navigator.pendingMutation).toEqual({
+      kind: 'fork',
+      threadId: THREAD_A,
+    });
+    resolveFork(resume(THREAD_FORK, 'Forked answer.'));
+    await expect(action).resolves.toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
+
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      threadId: THREAD_FORK,
+      turns: [{ messages: [{ text: 'Forked answer.' }] }],
+      navigator: {
+        activeThreadIds: [THREAD_FORK, THREAD_A, THREAD_B],
+        search: { query: '', status: 'idle', threadIds: [] },
+        mutationNotice: `Forked and selected Thread ${THREAD_FORK}.`,
+      },
+    });
+    expect(
+      controller.getSnapshot().navigator.pendingMutation,
+    ).toBeUndefined();
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+  });
+
+  it('archives the selected Thread, chooses a deterministic fallback, and supports one-level undo', async () => {
+    const listActiveThreads = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [{ id: THREAD_A }, { id: THREAD_B }],
+        nextCursor: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: THREAD_B }],
+        nextCursor: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: THREAD_A }, { id: THREAD_B }],
+        nextCursor: null,
+      });
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => THREAD_A),
+      listActiveThreads,
+      searchThreads: vi.fn(),
+      resumeThread: vi.fn(async (threadId: string) =>
+        resume(threadId, `${threadId} answer.`),
+      ),
+      forkThread: vi.fn(),
+      archiveThread: vi.fn(async () => undefined),
+      unarchiveThread: vi.fn(async () => undefined),
+      deleteThread: vi.fn(),
+      startThread: vi.fn(),
+      startTurn: vi.fn(),
+      interruptTurn: vi.fn(),
+    };
+    const { controller } = createController(rpc);
+    await controller.restoreLatestActiveThread();
+    controller.connectionReady();
+
+    await expect(controller.archiveThread(THREAD_A)).resolves.toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
+    expect(controller.getSnapshot()).toMatchObject({
+      threadId: THREAD_B,
+      navigator: {
+        activeThreadIds: [THREAD_B],
+        archivedUndoThreadId: THREAD_A,
+      },
+    });
+    expect(rpc.archiveThread).toHaveBeenCalledWith(
+      THREAD_A,
+      expect.any(AbortSignal),
+    );
+
+    await expect(controller.unarchiveThread(THREAD_A)).resolves.toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
+    expect(controller.getSnapshot()).toMatchObject({
+      threadId: THREAD_A,
+      navigator: {
+        activeThreadIds: [THREAD_A, THREAD_B],
+        mutationNotice: `Restored and selected Thread ${THREAD_A}.`,
+      },
+    });
+    expect(
+      controller.getSnapshot().navigator.archivedUndoThreadId,
+    ).toBeUndefined();
+    await expect(controller.unarchiveThread(THREAD_A)).resolves.toEqual({
+      accepted: false,
+      reason: 'unknownThread',
+    });
+  });
+
+  it('deletes only known idle Threads and never exposes a stale selected transcript', async () => {
+    const listActiveThreads = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: [{ id: THREAD_A }, { id: THREAD_B }],
+        nextCursor: null,
+      })
+      .mockResolvedValueOnce({
+        data: [{ id: THREAD_B }],
+        nextCursor: null,
+      });
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => THREAD_A),
+      listActiveThreads,
+      searchThreads: vi.fn(),
+      resumeThread: vi.fn(async (threadId: string) =>
+        resume(threadId, `${threadId} answer.`),
+      ),
+      forkThread: vi.fn(),
+      archiveThread: vi.fn(),
+      unarchiveThread: vi.fn(),
+      deleteThread: vi.fn(async () => undefined),
+      startThread: vi.fn(),
+      startTurn: vi.fn(
+        async (): Promise<TurnStartResponse> => ({
+          turn: {
+            id: 'turn_0000000000000099',
+            status: 'inProgress',
+          },
+        }),
+      ),
+      interruptTurn: vi.fn(),
+    };
+    const { controller } = createController(rpc);
+    await controller.restoreLatestActiveThread();
+    controller.connectionReady();
+    await controller.startTurn('Keep this Turn active.');
+    await expect(controller.deleteThread(THREAD_A)).resolves.toEqual({
+      accepted: false,
+      reason: 'turnActive',
+    });
+    expect(rpc.deleteThread).not.toHaveBeenCalled();
+
+    const idleRpc: ConversationRpc = {
+      ...rpc,
+      listActiveThreads: vi
+        .fn()
+        .mockResolvedValueOnce({
+          data: [{ id: THREAD_A }, { id: THREAD_B }],
+          nextCursor: null,
+        })
+        .mockResolvedValueOnce({
+          data: [{ id: THREAD_B }],
+          nextCursor: null,
+        }),
+      deleteThread: vi.fn(async () => undefined),
+    };
+    const idleController = createController(idleRpc).controller;
+    await idleController.restoreLatestActiveThread();
+    idleController.connectionReady();
+    await expect(idleController.deleteThread(THREAD_A)).resolves.toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
+    expect(idleController.getSnapshot()).toMatchObject({
+      threadId: THREAD_B,
+      turns: [{ messages: [{ text: `${THREAD_B} answer.` }] }],
+      navigator: {
+        activeThreadIds: [THREAD_B],
+        mutationNotice: `Deleted Thread ${THREAD_A}.`,
+      },
+    });
   });
 });

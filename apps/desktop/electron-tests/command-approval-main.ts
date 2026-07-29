@@ -216,13 +216,15 @@ const run = async (): Promise<void> => {
   });
   let turnSequence = 0;
   let resolveInterrupt: (() => void) | null = null;
+  const forkedThreadId = 'thr_0000000000000110';
+  let activeThreadIds = [
+    'thr_0000000000000100',
+    'thr_0000000000000090',
+  ];
   const conversationRpc: ConversationRpc = {
     findLatestActiveThread: async () => 'thr_0000000000000100',
     listActiveThreads: async () => ({
-      data: [
-        { id: 'thr_0000000000000100' },
-        { id: 'thr_0000000000000090' },
-      ],
+      data: activeThreadIds.map((id) => ({ id })),
       nextCursor: null,
     }),
     searchThreads: async () => ({
@@ -249,7 +251,7 @@ const run = async (): Promise<void> => {
         };
       }
       return {
-      threadId: 'thr_0000000000000100',
+      threadId,
       turns: [
         {
           id: 'turn_0000000000000099',
@@ -507,6 +509,28 @@ const run = async (): Promise<void> => {
         },
       ],
       };
+    },
+    forkThread: async () => {
+      activeThreadIds = [
+        forkedThreadId,
+        ...activeThreadIds.filter((id) => id !== forkedThreadId),
+      ];
+      return {
+        threadId: forkedThreadId,
+        turns: [],
+      };
+    },
+    archiveThread: async (threadId) => {
+      activeThreadIds = activeThreadIds.filter((id) => id !== threadId);
+    },
+    unarchiveThread: async (threadId) => {
+      activeThreadIds = [
+        threadId,
+        ...activeThreadIds.filter((id) => id !== threadId),
+      ];
+    },
+    deleteThread: async (threadId) => {
+      activeThreadIds = activeThreadIds.filter((id) => id !== threadId);
     },
     startThread: async () => ({
       thread: { id: 'thr_0000000000000100' },
@@ -780,6 +804,73 @@ const run = async (): Promise<void> => {
         )?.textContent === 'Recovered Electron answer'`,
       ),
     'return to latest Thread',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Fork Thread thr_0000000000000100"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Current durable Thread thr_0000000000000110"]',
+        ) !== null`,
+      ),
+    'forked Thread selection',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Archive Thread thr_0000000000000110"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Current durable Thread thr_0000000000000100"]',
+        ) !== null &&
+        Array.from(document.querySelectorAll('button')).some(
+          (button) => button.textContent?.includes('Undo') === true,
+        )`,
+      ),
+    'archive fallback and undo affordance',
+  );
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(
+    (button) => button.textContent?.includes('Undo') === true,
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Current durable Thread thr_0000000000000110"]',
+        ) !== null`,
+      ),
+    'archive undo restoration',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Delete Thread thr_0000000000000110"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.body.textContent?.includes(
+          'Delete durable Thread?',
+        ) === true &&
+        document.activeElement?.textContent?.trim() === 'Cancel'`,
+      ),
+    'safe Thread delete confirmation',
+  );
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(
+    (button) => button.textContent?.trim() === 'Delete permanently',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Current durable Thread thr_0000000000000100"]',
+        ) !== null &&
+        document.querySelector(
+          'button[aria-label="Thread thr_0000000000000110"]',
+        ) === null`,
+      ),
+    'permanent Thread delete fallback',
   );
   await waitFor(
     () =>

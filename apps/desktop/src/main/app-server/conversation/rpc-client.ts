@@ -15,6 +15,8 @@ import {
   parseTurnStartResponse,
 } from './protocol';
 import {
+  parseThreadEmptyResponse,
+  parseThreadForkResponse,
   parseThreadListResponse,
   parseThreadSearchResponse,
 } from './thread-protocol';
@@ -34,6 +36,22 @@ export type ConversationRpc = Readonly<{
     threadId: string,
     signal?: AbortSignal,
   ) => Promise<ResumeSnapshot>;
+  forkThread?: (
+    threadId: string,
+    signal?: AbortSignal,
+  ) => Promise<ResumeSnapshot>;
+  archiveThread?: (
+    threadId: string,
+    signal?: AbortSignal,
+  ) => Promise<void>;
+  unarchiveThread?: (
+    threadId: string,
+    signal?: AbortSignal,
+  ) => Promise<void>;
+  deleteThread?: (
+    threadId: string,
+    signal?: AbortSignal,
+  ) => Promise<void>;
   startThread: (signal?: AbortSignal) => Promise<ThreadStartResponse>;
   startTurn: (
     threadId: string,
@@ -91,6 +109,60 @@ export class ConversationRpcClient implements ConversationRpc {
         signal,
       ),
     );
+
+  forkThread = async (
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<ResumeSnapshot> =>
+    parseThreadForkResponse(
+      await this.client.requestReady(
+        'thread/fork',
+        { threadId },
+        signal,
+      ),
+    );
+
+  archiveThread = async (
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    parseThreadEmptyResponse(
+      await this.client.requestReady(
+        'thread/archive',
+        { threadId },
+        signal,
+      ),
+      'thread/archive',
+    );
+  };
+
+  unarchiveThread = async (
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    parseThreadEmptyResponse(
+      await this.client.requestReady(
+        'thread/unarchive',
+        { threadId },
+        signal,
+      ),
+      'thread/unarchive',
+    );
+  };
+
+  deleteThread = async (
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    parseThreadEmptyResponse(
+      await this.client.requestReady(
+        'thread/delete',
+        { threadId },
+        signal,
+      ),
+      'thread/delete',
+    );
+  };
 
   startThread = async (
     signal?: AbortSignal,

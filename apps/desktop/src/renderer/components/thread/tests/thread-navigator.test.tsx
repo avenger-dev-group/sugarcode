@@ -41,6 +41,8 @@ const createStore = (
     ],
     selectedThreadId: 'thr_0000000000000002',
     pendingThreadId: null,
+    pendingMutation: null,
+    archivedUndoThreadId: null,
     truncated: false,
     statusLabel: '2 active Threads',
   },
@@ -57,6 +59,10 @@ const createStore = (
   setNavigatorOpen: vi.fn(),
   searchThreads: vi.fn(async () => undefined),
   selectThread: vi.fn(async () => undefined),
+  forkThread: vi.fn(async () => undefined),
+  archiveThread: vi.fn(async () => undefined),
+  unarchiveThread: vi.fn(async () => undefined),
+  deleteThread: vi.fn(async () => undefined),
   send: vi.fn(async () => undefined),
   stop: vi.fn(async () => undefined),
   ...overrides,
@@ -143,6 +149,8 @@ describe('ThreadNavigator', () => {
         threadIds: ['thr_0000000000000001'],
         selectedThreadId: 'thr_0000000000000002',
         pendingThreadId: null,
+        pendingMutation: null,
+        archivedUndoThreadId: null,
         truncated: true,
         statusLabel: '1 matching Thread',
       },
@@ -154,6 +162,112 @@ describe('ThreadNavigator', () => {
     expect(
       document.querySelectorAll('[data-thread-button]'),
     ).toHaveLength(2);
+    await act(async () => root.unmount());
+  });
+
+  it('forks and archives from the row while delete requires confirmation', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const forkThread = vi.fn(async () => undefined);
+    const archiveThread = vi.fn(async () => undefined);
+    const deleteThread = vi.fn(async () => undefined);
+    const store = createStore({
+      forkThread,
+      archiveThread,
+      deleteThread,
+    });
+    const threadId = 'thr_0000000000000002';
+
+    await act(async () => root.render(<ThreadNavigator store={store} />));
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `button[aria-label="Fork Thread ${threadId}"]`,
+        )
+        ?.click();
+      document
+        .querySelector<HTMLButtonElement>(
+          `button[aria-label="Archive Thread ${threadId}"]`,
+        )
+        ?.click();
+    });
+    expect(forkThread).toHaveBeenCalledWith(threadId);
+    expect(archiveThread).toHaveBeenCalledWith(threadId);
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          `button[aria-label="Delete Thread ${threadId}"]`,
+        )
+        ?.click();
+    });
+    expect(deleteThread).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      'Delete durable Thread?',
+    );
+    await act(async () => {
+      Array.from(document.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Delete permanently')
+        ?.click();
+    });
+    expect(deleteThread).toHaveBeenCalledWith(threadId);
+    await act(async () => root.unmount());
+  });
+
+  it('offers one-level archive undo and blocks lifecycle actions while pending', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const unarchiveThread = vi.fn(async () => undefined);
+    const base = createStore();
+    const archivedThreadId = 'thr_0000000000000001';
+    const store = createStore({
+      navigator: {
+        ...base.navigator,
+        archivedUndoThreadId: archivedThreadId,
+        pendingMutation: {
+          kind: 'archive',
+          threadId: 'thr_0000000000000002',
+        },
+      },
+      unarchiveThread,
+    });
+
+    await act(async () => root.render(<ThreadNavigator store={store} />));
+    expect(
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          'button[aria-label^="Fork Thread"]',
+        ),
+      ).every((button) => button.disabled),
+    ).toBe(true);
+    const undo = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('Undo'),
+    ) as HTMLButtonElement;
+    expect(undo.disabled).toBe(true);
+
+    await act(async () =>
+      root.render(
+        <ThreadNavigator
+          store={{
+            ...store,
+            navigator: {
+              ...store.navigator,
+              pendingMutation: null,
+            },
+          }}
+        />,
+      ),
+    );
+    await act(async () => {
+      (
+        Array.from(document.querySelectorAll('button')).find(
+          (button) => button.textContent?.includes('Undo'),
+        ) as HTMLButtonElement
+      ).click();
+    });
+    expect(unarchiveThread).toHaveBeenCalledWith(archivedThreadId);
     await act(async () => root.unmount());
   });
 });

@@ -1,3 +1,5 @@
+import type { ThreadListResponse } from '@sugarcode/app-server-protocol';
+
 import type {
   ConversationActionResult,
   ConversationCommandApprovalDecision,
@@ -10,6 +12,7 @@ import type {
   ConversationMcpResultReceipt,
   ConversationStateListener,
   ConversationStateSnapshot,
+  ConversationThreadNavigatorSnapshot,
   ConversationTurn,
   ConversationTurnError,
   ConversationTurnStatus,
@@ -43,6 +46,7 @@ import {
   isKnownThread,
   type MutableThreadNavigator,
   recordActiveThread,
+  resetThreadSearch,
   snapshotThreadNavigator,
 } from './thread-navigator';
 import {
@@ -229,6 +233,7 @@ export class ConversationController {
   private actionAbortController: AbortController | null = null;
   private searchAbortController: AbortController | null = null;
   private selectionAbortController: AbortController | null = null;
+  private mutationAbortController: AbortController | null = null;
   private searchGeneration = 0;
   private selectionGeneration = 0;
   private readonly navigator: MutableThreadNavigator =
@@ -333,10 +338,15 @@ export class ConversationController {
     this.searchAbortController = null;
     this.selectionAbortController?.abort();
     this.selectionAbortController = null;
+    this.mutationAbortController?.abort();
+    this.mutationAbortController = null;
     this.searchGeneration += 1;
     this.selectionGeneration += 1;
     this.navigator.status = 'unavailable';
     this.navigator.pendingThreadId = undefined;
+    this.navigator.pendingMutation = undefined;
+    this.navigator.archivedUndoThreadId = undefined;
+    this.navigator.mutationNotice = undefined;
     this.awaitingTurnResponse = false;
     this.bufferedLifecycle = [];
     if (this.phase === 'unavailable') {
@@ -357,6 +367,9 @@ export class ConversationController {
       return rejected('invalidSearch');
     }
     if (this.getActionBlocked()) {
+      return rejected('unavailable');
+    }
+    if (this.navigator.pendingMutation) {
       return rejected('unavailable');
     }
     const rpc = this.getRpc();
@@ -446,6 +459,12 @@ export class ConversationController {
       return rejected('unavailable');
     }
     if (
+      this.navigator.pendingMutation ||
+      this.navigator.search.status === 'loading'
+    ) {
+      return rejected('unavailable');
+    }
+    if (
       this.phase === 'starting' ||
       this.phase === 'inProgress' ||
       this.phase === 'stopping'
@@ -505,6 +524,186 @@ export class ConversationController {
     }
   };
 
+  forkThread = async (
+    threadId: unknown,
+  ): Promise<ConversationActionResult> => {
+    const blocked = this.getThreadMutationBlock(threadId);
+    if (blocked) {
+      return rejected(blocked);
+    }
+    const rpc = this.getRpc();
+    if (!rpc?.forkThread) {
+      return rejected('unavailable');
+    }
+    const abortController = this.beginThreadMutation(
+      'fork',
+      threadId as string,
+    );
+    try {
+      const snapshot = await rpc.forkThread(
+        threadId as string,
+        abortController.signal,
+      );
+      if (
+        snapshot.threadId === threadId ||
+        isKnownThread(this.navigator, this.threadId, snapshot.threadId)
+      ) {
+        throw new Error(
+          'thread/fork did not return a new durable Thread identity.',
+        );
+      }
+      const recovered = recoverConversation(snapshot.threadId, snapshot);
+      this.replaceRecoveredConversation(recovered);
+      this.phase = 'ready';
+      recordActiveThread(this.navigator, recovered.threadId);
+      resetThreadSearch(this.navigator);
+      this.navigator.archivedUndoThreadId = undefined;
+      this.navigator.mutationNotice =
+        `Forked and selected Thread ${recovered.threadId}.`;
+      return accepted();
+    } catch (error) {
+      return this.handleThreadMutationFailure(error, false);
+    } finally {
+      this.finishThreadMutation(abortController);
+    }
+  };
+
+  archiveThread = async (
+    threadId: unknown,
+  ): Promise<ConversationActionResult> => {
+    const blocked = this.getThreadMutationBlock(threadId);
+    if (blocked) {
+      return rejected(blocked);
+    }
+    const rpc = this.getRpc();
+    if (!rpc?.archiveThread) {
+      return rejected('unavailable');
+    }
+    const exactThreadId = threadId as string;
+    const abortController = this.beginThreadMutation(
+      'archive',
+      exactThreadId,
+    );
+    let committed = false;
+    try {
+      await rpc.archiveThread(exactThreadId, abortController.signal);
+      committed = true;
+      const removedCurrent = this.threadId === exactThreadId;
+      if (removedCurrent) {
+        this.clearSelectedThread();
+      }
+      this.navigator.archivedUndoThreadId = exactThreadId;
+      await this.reconcileRemovedThread(
+        rpc,
+        abortController.signal,
+        exactThreadId,
+        removedCurrent,
+      );
+      this.navigator.mutationNotice =
+        `Archived Thread ${exactThreadId}. Undo is available until another lifecycle action or reconnect.`;
+      return accepted();
+    } catch (error) {
+      return this.handleThreadMutationFailure(error, committed);
+    } finally {
+      this.finishThreadMutation(abortController);
+    }
+  };
+
+  unarchiveThread = async (
+    threadId: unknown,
+  ): Promise<ConversationActionResult> => {
+    if (
+      typeof threadId !== 'string' ||
+      this.navigator.archivedUndoThreadId !== threadId
+    ) {
+      return rejected('unknownThread');
+    }
+    const blocked = this.getThreadMutationBlock(threadId, true);
+    if (blocked) {
+      return rejected(blocked);
+    }
+    const rpc = this.getRpc();
+    if (!rpc?.unarchiveThread) {
+      return rejected('unavailable');
+    }
+    const abortController = this.beginThreadMutation(
+      'unarchive',
+      threadId,
+    );
+    let committed = false;
+    try {
+      await rpc.unarchiveThread(threadId, abortController.signal);
+      committed = true;
+      this.navigator.archivedUndoThreadId = undefined;
+      const listed = await this.listActiveThreads(
+        rpc,
+        abortController.signal,
+      );
+      if (!listed.data.some((thread) => thread.id === threadId)) {
+        throw new Error(
+          'thread/unarchive did not restore the Thread to the active index.',
+        );
+      }
+      const snapshot = await rpc.resumeThread(
+        threadId,
+        abortController.signal,
+      );
+      const recovered = recoverConversation(threadId, snapshot);
+      this.applyActiveThreadList(listed);
+      this.replaceRecoveredConversation(recovered);
+      this.phase = 'ready';
+      recordActiveThread(this.navigator, threadId);
+      this.navigator.mutationNotice =
+        `Restored and selected Thread ${threadId}.`;
+      return accepted();
+    } catch (error) {
+      return this.handleThreadMutationFailure(error, committed);
+    } finally {
+      this.finishThreadMutation(abortController);
+    }
+  };
+
+  deleteThread = async (
+    threadId: unknown,
+  ): Promise<ConversationActionResult> => {
+    const blocked = this.getThreadMutationBlock(threadId);
+    if (blocked) {
+      return rejected(blocked);
+    }
+    const rpc = this.getRpc();
+    if (!rpc?.deleteThread) {
+      return rejected('unavailable');
+    }
+    const exactThreadId = threadId as string;
+    const abortController = this.beginThreadMutation(
+      'delete',
+      exactThreadId,
+    );
+    let committed = false;
+    try {
+      await rpc.deleteThread(exactThreadId, abortController.signal);
+      committed = true;
+      const removedCurrent = this.threadId === exactThreadId;
+      if (removedCurrent) {
+        this.clearSelectedThread();
+      }
+      this.navigator.archivedUndoThreadId = undefined;
+      await this.reconcileRemovedThread(
+        rpc,
+        abortController.signal,
+        exactThreadId,
+        removedCurrent,
+      );
+      this.navigator.mutationNotice =
+        `Deleted Thread ${exactThreadId}.`;
+      return accepted();
+    } catch (error) {
+      return this.handleThreadMutationFailure(error, committed);
+    } finally {
+      this.finishThreadMutation(abortController);
+    }
+  };
+
   startTurn = async (input: unknown): Promise<ConversationActionResult> => {
     if (!isValidConversationInput(input)) {
       return rejected('invalidInput');
@@ -516,7 +715,8 @@ export class ConversationController {
       this.phase === 'starting' ||
       this.phase === 'inProgress' ||
       this.phase === 'stopping' ||
-      this.navigator.pendingThreadId
+      this.navigator.pendingThreadId ||
+      this.navigator.pendingMutation
     ) {
       return rejected('turnActive');
     }
@@ -1766,6 +1966,148 @@ export class ConversationController {
             activity.result?.id === itemId,
         ),
     );
+
+  private getThreadMutationBlock = (
+    threadId: unknown,
+    archivedUndo = false,
+  ): Exclude<ConversationActionResult['reason'], 'accepted'> | null => {
+    if (
+      typeof threadId !== 'string' ||
+      (!archivedUndo &&
+        !isKnownThread(this.navigator, this.threadId, threadId))
+    ) {
+      return 'unknownThread';
+    }
+    if (
+      this.phase === 'starting' ||
+      this.phase === 'inProgress' ||
+      this.phase === 'stopping'
+    ) {
+      return 'turnActive';
+    }
+    if (
+      this.getActionBlocked() ||
+      this.phase === 'unavailable' ||
+      this.navigator.pendingThreadId ||
+      this.navigator.pendingMutation ||
+      this.navigator.search.status === 'loading'
+    ) {
+      return 'unavailable';
+    }
+    return null;
+  };
+
+  private beginThreadMutation = (
+    kind: NonNullable<
+      ConversationThreadNavigatorSnapshot['pendingMutation']
+    >['kind'],
+    threadId: string,
+  ): AbortController => {
+    const abortController = new AbortController();
+    this.mutationAbortController = abortController;
+    this.navigator.pendingMutation = { kind, threadId };
+    this.navigator.mutationNotice = undefined;
+    this.publish();
+    return abortController;
+  };
+
+  private finishThreadMutation = (
+    abortController: AbortController,
+  ): void => {
+    if (this.mutationAbortController !== abortController) {
+      return;
+    }
+    this.mutationAbortController = null;
+    this.navigator.pendingMutation = undefined;
+    this.publish();
+  };
+
+  private listActiveThreads = async (
+    rpc: ConversationRpc,
+    signal: AbortSignal,
+  ): Promise<ThreadListResponse> => {
+    if (!rpc.listActiveThreads) {
+      throw new Error('Thread mutation requires active Thread discovery.');
+    }
+    return rpc.listActiveThreads(signal);
+  };
+
+  private applyActiveThreadList = (
+    listed: ThreadListResponse,
+  ): void => {
+    this.navigator.activeThreadIds = listed.data.map(
+      (thread) => thread.id,
+    );
+    this.navigator.activeTruncated = listed.nextCursor !== null;
+    this.navigator.status = 'ready';
+    this.navigator.selectionNotice = undefined;
+    resetThreadSearch(this.navigator);
+  };
+
+  private reconcileRemovedThread = async (
+    rpc: ConversationRpc,
+    signal: AbortSignal,
+    removedThreadId: string,
+    selectFallback: boolean,
+  ): Promise<void> => {
+    const listed = await this.listActiveThreads(rpc, signal);
+    if (listed.data.some((thread) => thread.id === removedThreadId)) {
+      throw new Error(
+        'A removed Thread remained present in the active index.',
+      );
+    }
+    if (
+      !selectFallback &&
+      this.threadId &&
+      !listed.data.some((thread) => thread.id === this.threadId)
+    ) {
+      throw new Error(
+        'Thread lifecycle refresh omitted the unchanged selected Thread.',
+      );
+    }
+    this.applyActiveThreadList(listed);
+    if (!selectFallback) {
+      return;
+    }
+    const fallbackThreadId = listed.data[0]?.id;
+    if (!fallbackThreadId) {
+      return;
+    }
+    const snapshot = await rpc.resumeThread(
+      fallbackThreadId,
+      signal,
+    );
+    const recovered = recoverConversation(fallbackThreadId, snapshot);
+    this.replaceRecoveredConversation(recovered);
+    this.phase = 'ready';
+    this.notice = undefined;
+  };
+
+  private clearSelectedThread = (): void => {
+    this.threadId = null;
+    this.activeTurnId = null;
+    this.turns = [];
+    this.phase = 'idle';
+    this.notice = undefined;
+  };
+
+  private handleThreadMutationFailure = (
+    error: unknown,
+    committed: boolean,
+  ): ConversationActionResult => {
+    if (error instanceof ConnectionClosedError || isAbortError(error)) {
+      this.transportClosed();
+      return committed ? accepted() : rejected('unavailable');
+    }
+    if (error instanceof RpcResponseError) {
+      this.navigator.mutationNotice = committed
+        ? 'The Thread lifecycle change was saved, but Desktop could not refresh the durable index.'
+        : 'The Thread lifecycle change was rejected.';
+      return committed ? accepted() : rejected('unavailable');
+    }
+    this.onProtocolFailure();
+    return committed ? accepted() : rejected('unavailable');
+  };
 
   private replaceRecoveredConversation = (
     recovered: RecoveredConversation,

@@ -22,8 +22,12 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
+  CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+  CONVERSATION_THREAD_DELETE_CHANNEL,
+  CONVERSATION_THREAD_FORK_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
+  CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
   isConversationActionResult,
   isConversationStateSnapshot,
   type ConversationActionResult,
@@ -94,6 +98,21 @@ export type IpcRendererBoundary = Readonly<{
   on: (channel: string, listener: StateChangedHandler) => void;
   removeListener: (channel: string, listener: StateChangedHandler) => void;
 }>;
+
+const invokeConversationThreadAction = async (
+  ipcRenderer: IpcRendererBoundary,
+  channel: string,
+  threadId: string,
+  action: string,
+): Promise<ConversationActionResult> => {
+  const result: unknown = await ipcRenderer.invoke(channel, threadId);
+  if (!isConversationActionResult(result)) {
+    throw new Error(
+      `Main returned an invalid Thread ${action} result.`,
+    );
+  }
+  return result;
+};
 
 export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
@@ -276,6 +295,42 @@ export const createDesktopApi = (
     }
     return result;
   },
+  forkConversationThread: async (
+    threadId: string,
+  ): Promise<ConversationActionResult> =>
+    invokeConversationThreadAction(
+      ipcRenderer,
+      CONVERSATION_THREAD_FORK_CHANNEL,
+      threadId,
+      'fork',
+    ),
+  archiveConversationThread: async (
+    threadId: string,
+  ): Promise<ConversationActionResult> =>
+    invokeConversationThreadAction(
+      ipcRenderer,
+      CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+      threadId,
+      'archive',
+    ),
+  unarchiveConversationThread: async (
+    threadId: string,
+  ): Promise<ConversationActionResult> =>
+    invokeConversationThreadAction(
+      ipcRenderer,
+      CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
+      threadId,
+      'unarchive',
+    ),
+  deleteConversationThread: async (
+    threadId: string,
+  ): Promise<ConversationActionResult> =>
+    invokeConversationThreadAction(
+      ipcRenderer,
+      CONVERSATION_THREAD_DELETE_CHANNEL,
+      threadId,
+      'delete',
+    ),
   getMcpSessionState: async (): Promise<McpSessionStateSnapshot> => {
     const snapshot: unknown = await ipcRenderer.invoke(
       MCP_SESSION_STATE_GET_CHANNEL,

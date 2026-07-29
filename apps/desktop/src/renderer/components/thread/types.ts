@@ -69,9 +69,15 @@ export type ThreadNavigatorViewModel = Readonly<{
   threadIds: readonly string[];
   selectedThreadId: string | null;
   pendingThreadId: string | null;
+  pendingMutation: Readonly<{
+    kind: 'fork' | 'archive' | 'unarchive' | 'delete';
+    threadId: string;
+  }> | null;
+  archivedUndoThreadId: string | null;
   truncated: boolean;
   statusLabel: string;
   selectionNotice?: string;
+  mutationNotice?: string;
 }>;
 
 export type ThreadStore = Readonly<{
@@ -90,6 +96,10 @@ export type ThreadStore = Readonly<{
   setNavigatorOpen: (open: boolean) => void;
   searchThreads: (query: string) => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
+  forkThread: (threadId: string) => Promise<void>;
+  archiveThread: (threadId: string) => Promise<void>;
+  unarchiveThread: (threadId: string) => Promise<void>;
+  deleteThread: (threadId: string) => Promise<void>;
   send: () => Promise<void>;
   stop: () => Promise<void>;
 }>;

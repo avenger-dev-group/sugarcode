@@ -9,6 +9,10 @@ import {
   CONVERSATION_STOP_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
+  CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+  CONVERSATION_THREAD_DELETE_CHANNEL,
+  CONVERSATION_THREAD_FORK_CHANNEL,
+  CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
   type ConversationStateSnapshot,
 } from '@/shared/conversation';
 
@@ -67,6 +71,22 @@ describe('registerConversationIpc', () => {
         accepted: true,
         reason: 'accepted',
       })),
+      forkThread: vi.fn(async () => ({
+        accepted: true,
+        reason: 'accepted',
+      })),
+      archiveThread: vi.fn(async () => ({
+        accepted: true,
+        reason: 'accepted',
+      })),
+      unarchiveThread: vi.fn(async () => ({
+        accepted: true,
+        reason: 'accepted',
+      })),
+      deleteThread: vi.fn(async () => ({
+        accepted: true,
+        reason: 'accepted',
+      })),
       subscribe: vi.fn(
         (next: (value: ConversationStateSnapshot) => void) => {
           listener = next;
@@ -113,6 +133,16 @@ describe('registerConversationIpc', () => {
         'thr_0000000000000001',
       ),
     ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    for (const channel of [
+      CONVERSATION_THREAD_FORK_CHANNEL,
+      CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+      CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
+      CONVERSATION_THREAD_DELETE_CHANNEL,
+    ]) {
+      await expect(
+        handler(channel)(event, 'thr_0000000000000001'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    }
     expect(controller.startTurn).toHaveBeenCalledWith('Exact input');
 
     listener?.({ ...snapshot, revision: 2, phase: 'ready' });
@@ -136,6 +166,10 @@ describe('registerConversationIpc', () => {
       CONVERSATION_STOP_CHANNEL,
       CONVERSATION_THREAD_SEARCH_CHANNEL,
       CONVERSATION_THREAD_SELECT_CHANNEL,
+      CONVERSATION_THREAD_FORK_CHANNEL,
+      CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+      CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
+      CONVERSATION_THREAD_DELETE_CHANNEL,
     ]) {
       expect(electron.removeHandler).toHaveBeenCalledWith(channel);
     }

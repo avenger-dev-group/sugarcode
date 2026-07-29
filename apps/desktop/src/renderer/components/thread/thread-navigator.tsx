@@ -1,18 +1,33 @@
 import {
+  Archive,
+  GitFork,
   LoaderCircle,
   MessageSquareText,
+  RotateCcw,
   Search,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
   useEffect,
   useRef,
   useState,
 } from 'react';
 
 import { Button } from '@/renderer/components/ui/button';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/renderer/components/ui/alert-dialog';
 import { Input } from '@/renderer/components/ui/input';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { McpSessionPanel } from '@/renderer/components/mcp/session-panel';
@@ -36,12 +51,18 @@ const focusThreadAt = (
 
 export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
   const [query, setQuery] = useState(store.navigator.query);
+  const [deleteThreadId, setDeleteThreadId] = useState<string | null>(
+    null,
+  );
   const listRef = useRef<HTMLDivElement | null>(null);
+  const cancelDeleteRef = useRef<HTMLButtonElement | null>(null);
   const searchDisabled =
     store.navigator.status === 'unavailable' ||
-    store.navigator.status === 'loading';
+    store.navigator.status === 'loading' ||
+    Boolean(store.navigator.pendingMutation);
   const selectionDisabled =
     searchDisabled ||
+    store.navigator.searchStatus === 'loading' ||
     store.thread.phase === 'starting' ||
     store.thread.phase === 'inProgress' ||
     store.thread.phase === 'stopping';
@@ -92,7 +113,8 @@ export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
     !store.navigator.threadIds.includes(store.navigator.selectedThreadId);
 
   return (
-    <nav
+    <>
+      <nav
       id={id}
       aria-label="Threads"
       className="flex h-full min-h-0 w-full flex-col border-r bg-surface/45"
@@ -180,6 +202,10 @@ export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
       >
         {store.navigator.statusLabel}
         {store.navigator.truncated ? ' · First 50 shown' : ''}
+        {!store.navigator.archivedUndoThreadId &&
+        store.navigator.mutationNotice
+          ? ` · ${store.navigator.mutationNotice}`
+          : ''}
       </p>
 
       <ScrollArea className="min-h-0 flex-1">
@@ -199,6 +225,10 @@ export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
                 pending={false}
                 disabled={selectionDisabled}
                 onSelect={store.selectThread}
+                onFork={store.forkThread}
+                onArchive={store.archiveThread}
+                onRequestDelete={setDeleteThreadId}
+                pendingMutation={store.navigator.pendingMutation}
               />
               <p className="px-2 pb-1 pt-4 font-mono text-[9px] uppercase tracking-[0.15em] text-tertiary">
                 {store.navigator.searchStatus === 'idle'
@@ -215,6 +245,10 @@ export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
               pending={threadId === store.navigator.pendingThreadId}
               disabled={selectionDisabled}
               onSelect={store.selectThread}
+              onFork={store.forkThread}
+              onArchive={store.archiveThread}
+              onRequestDelete={setDeleteThreadId}
+              pendingMutation={store.navigator.pendingMutation}
             />
           ))}
           {store.navigator.threadIds.length === 0 &&
@@ -239,14 +273,95 @@ export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
           {store.navigator.selectionNotice}
         </p>
       ) : null}
-      <McpSessionPanel
-        turnBusy={
-          store.thread.phase === 'starting' ||
-          store.thread.phase === 'inProgress' ||
-          store.thread.phase === 'stopping'
-        }
-      />
-    </nav>
+      {store.navigator.archivedUndoThreadId ? (
+        <div
+          className="flex items-center gap-2 border-t px-4 py-3"
+          role="status"
+          aria-live="polite"
+        >
+          <p className="min-w-0 flex-1 text-xs leading-5 text-secondary">
+            Thread archived. Undo remains available until the next
+            lifecycle action or reconnect.
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={Boolean(store.navigator.pendingMutation)}
+            onClick={() =>
+              void store.unarchiveThread(
+                store.navigator.archivedUndoThreadId as string,
+              )
+            }
+          >
+            <RotateCcw aria-hidden="true" />
+            Undo
+          </Button>
+        </div>
+      ) : null}
+      <div className="max-h-[45%] shrink-0 overflow-y-auto">
+        <McpSessionPanel
+          turnBusy={
+            store.thread.phase === 'starting' ||
+            store.thread.phase === 'inProgress' ||
+            store.thread.phase === 'stopping'
+          }
+        />
+      </div>
+      </nav>
+
+      <AlertDialog
+        open={deleteThreadId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteThreadId(null);
+          }
+        }}
+      >
+        <AlertDialogContent
+          className="max-w-md p-5"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            cancelDeleteRef.current?.focus();
+          }}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete durable Thread?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes the Thread from the local Agent.
+              Archive it instead if you may need it later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="mt-4 break-all rounded-md border bg-surface/60 p-3 font-mono text-[10px] leading-4 text-secondary">
+            {deleteThreadId}
+          </p>
+          <AlertDialogFooter className="mt-5">
+            <AlertDialogCancel asChild>
+              <Button
+                ref={cancelDeleteRef}
+                type="button"
+                variant="outline"
+              >
+                Cancel
+              </Button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => {
+                  if (deleteThreadId) {
+                    void store.deleteThread(deleteThreadId);
+                  }
+                }}
+              >
+                Delete permanently
+              </Button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 };
 
@@ -255,7 +370,11 @@ type ThreadButtonProps = Readonly<{
   current: boolean;
   pending: boolean;
   disabled: boolean;
+  pendingMutation: ThreadStore['navigator']['pendingMutation'];
   onSelect: (threadId: string) => Promise<void>;
+  onFork: (threadId: string) => Promise<void>;
+  onArchive: (threadId: string) => Promise<void>;
+  onRequestDelete: (threadId: string) => void;
 }>;
 
 const ThreadButton = ({
@@ -263,36 +382,120 @@ const ThreadButton = ({
   current,
   pending,
   disabled,
+  pendingMutation,
   onSelect,
+  onFork,
+  onArchive,
+  onRequestDelete,
 }: ThreadButtonProps) => (
-  <button
-    type="button"
-    data-thread-button
-    aria-current={current ? 'page' : undefined}
-    aria-label={`${current ? 'Current ' : ''}Thread ${threadId}`}
-    disabled={disabled}
-    onClick={() => void onSelect(threadId)}
-    className={`group flex w-full min-w-0 items-start gap-2 rounded-lg border px-2.5 py-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+  <div
+    className={`group flex min-w-0 items-stretch rounded-lg border transition-colors ${
       current
         ? 'border-primary/25 bg-primary/10 text-foreground'
         : 'border-transparent text-secondary hover:border-border hover:bg-background hover:text-foreground'
-    } disabled:cursor-not-allowed disabled:opacity-60`}
+    }`}
   >
-    {pending ? (
+    <button
+      type="button"
+      data-thread-button
+      aria-current={current ? 'page' : undefined}
+      aria-label={`${current ? 'Current ' : ''}Thread ${threadId}`}
+      disabled={disabled}
+      onClick={() => void onSelect(threadId)}
+      className="flex min-w-0 flex-1 items-start gap-2 rounded-l-lg px-2.5 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      {pending ? (
+        <LoaderCircle
+          className="mt-0.5 size-3.5 shrink-0 animate-spin"
+          aria-hidden="true"
+        />
+      ) : (
+        <span
+          className={`mt-1.5 size-1.5 shrink-0 rounded-full ${
+            current ? 'bg-primary' : 'bg-tertiary'
+          }`}
+          aria-hidden="true"
+        />
+      )}
+      <span className="min-w-0 break-all font-mono text-[10px] leading-4 tracking-[0.04em]">
+        {threadId}
+      </span>
+    </button>
+    <div className="flex shrink-0 items-center pr-1">
+      <ThreadActionButton
+        label={`Fork Thread ${threadId}`}
+        active={
+          pendingMutation?.kind === 'fork' &&
+          pendingMutation.threadId === threadId
+        }
+        disabled={disabled}
+        onClick={() => void onFork(threadId)}
+      >
+        <GitFork aria-hidden="true" />
+      </ThreadActionButton>
+      <ThreadActionButton
+        label={`Archive Thread ${threadId}`}
+        active={
+          pendingMutation?.kind === 'archive' &&
+          pendingMutation.threadId === threadId
+        }
+        disabled={disabled}
+        onClick={() => void onArchive(threadId)}
+      >
+        <Archive aria-hidden="true" />
+      </ThreadActionButton>
+      <ThreadActionButton
+        label={`Delete Thread ${threadId}`}
+        active={
+          pendingMutation?.kind === 'delete' &&
+          pendingMutation.threadId === threadId
+        }
+        disabled={disabled}
+        destructive
+        onClick={() => onRequestDelete(threadId)}
+      >
+        <Trash2 aria-hidden="true" />
+      </ThreadActionButton>
+    </div>
+  </div>
+);
+
+type ThreadActionButtonProps = Readonly<{
+  label: string;
+  active: boolean;
+  disabled: boolean;
+  destructive?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}>;
+
+const ThreadActionButton = ({
+  label,
+  active,
+  disabled,
+  destructive = false,
+  onClick,
+  children,
+}: ThreadActionButtonProps) => (
+  <button
+    type="button"
+    aria-label={label}
+    title={label}
+    disabled={disabled}
+    onClick={onClick}
+    className={`rounded p-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${
+      destructive
+        ? 'text-tertiary hover:bg-destructive/10 hover:text-destructive'
+        : 'text-tertiary hover:bg-surface hover:text-foreground'
+    }`}
+  >
+    {active ? (
       <LoaderCircle
-        className="mt-0.5 size-3.5 shrink-0 animate-spin"
+        className="size-3.5 animate-spin"
         aria-hidden="true"
       />
     ) : (
-      <span
-        className={`mt-1.5 size-1.5 shrink-0 rounded-full ${
-          current ? 'bg-primary' : 'bg-tertiary'
-        }`}
-        aria-hidden="true"
-      />
+      <span className="[&>svg]:size-3.5">{children}</span>
     )}
-    <span className="min-w-0 break-all font-mono text-[10px] leading-4 tracking-[0.04em]">
-      {threadId}
-    </span>
   </button>
 );

@@ -7,15 +7,20 @@ import {
 } from 'react';
 
 import {
+  archiveConversationThread,
+  deleteConversationThread,
+  forkConversationThread,
   getConversationState,
   onConversationStateChanged,
   searchConversationThreads,
   selectConversationThread,
   sendConversationMessage,
   stopConversationTurn,
+  unarchiveConversationThread,
 } from '@/renderer/services/conversation';
 import {
   MAX_CONVERSATION_INPUT_BYTES,
+  type ConversationActionResult,
   type ConversationMessageStatus,
   type ConversationCommandApprovalActivity,
   type ConversationMcpActivity,
@@ -664,12 +669,18 @@ export const toThreadNavigatorViewModel = (
     threadIds,
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
+    pendingMutation: snapshot.navigator.pendingMutation ?? null,
+    archivedUndoThreadId:
+      snapshot.navigator.archivedUndoThreadId ?? null,
     truncated: searchActive
       ? snapshot.navigator.search.truncated
       : snapshot.navigator.activeTruncated,
     statusLabel,
     ...(snapshot.navigator.selectionNotice
       ? { selectionNotice: snapshot.navigator.selectionNotice }
+      : {}),
+    ...(snapshot.navigator.mutationNotice
+      ? { mutationNotice: snapshot.navigator.mutationNotice }
       : {}),
   };
 };
@@ -740,6 +751,7 @@ export const useStore = (): ThreadStore => {
   const canSend =
     phaseAllowsSend &&
     !snapshot.navigator.pendingThreadId &&
+    !snapshot.navigator.pendingMutation &&
     !isSending &&
     draft.trim().length > 0 &&
     bytes <= MAX_CONVERSATION_INPUT_BYTES;
@@ -819,6 +831,56 @@ export const useStore = (): ThreadStore => {
     }
   };
 
+  const runThreadMutation = async (
+    action: (
+      threadId: string,
+    ) => Promise<ConversationActionResult>,
+    threadId: string,
+    failure: string,
+  ): Promise<void> => {
+    setActionError(null);
+    try {
+      const result = await action(threadId);
+      if (!result.accepted) {
+        setActionError(
+          result.reason === 'turnActive'
+            ? 'Stop the active Turn before changing Thread lifecycle.'
+            : failure,
+        );
+      }
+    } catch {
+      setActionError(failure);
+    }
+  };
+
+  const forkThread = (threadId: string): Promise<void> =>
+    runThreadMutation(
+      forkConversationThread,
+      threadId,
+      'That durable Thread could not be forked safely.',
+    );
+
+  const archiveThread = (threadId: string): Promise<void> =>
+    runThreadMutation(
+      archiveConversationThread,
+      threadId,
+      'That durable Thread could not be archived safely.',
+    );
+
+  const unarchiveThread = (threadId: string): Promise<void> =>
+    runThreadMutation(
+      unarchiveConversationThread,
+      threadId,
+      'That archived Thread could not be restored safely.',
+    );
+
+  const deleteThread = (threadId: string): Promise<void> =>
+    runThreadMutation(
+      deleteConversationThread,
+      threadId,
+      'That durable Thread could not be deleted safely.',
+    );
+
   const thread = useMemo<ThreadViewModel>(() => {
     const next = toThreadViewModel(snapshot, previousThread.current);
     previousThread.current = next;
@@ -849,6 +911,10 @@ export const useStore = (): ThreadStore => {
     setNavigatorOpen,
     searchThreads,
     selectThread,
+    forkThread,
+    archiveThread,
+    unarchiveThread,
+    deleteThread,
     send,
     stop,
   };

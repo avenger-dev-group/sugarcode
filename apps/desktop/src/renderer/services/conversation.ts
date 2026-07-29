@@ -32,3 +32,23 @@ export const selectConversationThread = (
   threadId: string,
 ): Promise<ConversationActionResult> =>
   desktopApi().selectConversationThread(threadId);
+
+export const forkConversationThread = (
+  threadId: string,
+): Promise<ConversationActionResult> =>
+  desktopApi().forkConversationThread(threadId);
+
+export const archiveConversationThread = (
+  threadId: string,
+): Promise<ConversationActionResult> =>
+  desktopApi().archiveConversationThread(threadId);
+
+export const unarchiveConversationThread = (
+  threadId: string,
+): Promise<ConversationActionResult> =>
+  desktopApi().unarchiveConversationThread(threadId);
+
+export const deleteConversationThread = (
+  threadId: string,
+): Promise<ConversationActionResult> =>
+  desktopApi().deleteConversationThread(threadId);

@@ -14,7 +14,13 @@ export type MutableThreadNavigator = {
     summary?: string;
   };
   pendingThreadId?: string;
+  pendingMutation?: {
+    kind: 'fork' | 'archive' | 'unarchive' | 'delete';
+    threadId: string;
+  };
+  archivedUndoThreadId?: string;
   selectionNotice?: string;
+  mutationNotice?: string;
 };
 
 export const createThreadNavigator = (): MutableThreadNavigator => ({
@@ -47,8 +53,17 @@ export const snapshotThreadNavigator = (
   ...(navigator.pendingThreadId
     ? { pendingThreadId: navigator.pendingThreadId }
     : {}),
+  ...(navigator.pendingMutation
+    ? { pendingMutation: { ...navigator.pendingMutation } }
+    : {}),
+  ...(navigator.archivedUndoThreadId
+    ? { archivedUndoThreadId: navigator.archivedUndoThreadId }
+    : {}),
   ...(navigator.selectionNotice
     ? { selectionNotice: navigator.selectionNotice }
+    : {}),
+  ...(navigator.mutationNotice
+    ? { mutationNotice: navigator.mutationNotice }
     : {}),
 });
 
@@ -69,4 +84,15 @@ export const recordActiveThread = (
     threadId,
     ...navigator.activeThreadIds.filter((id) => id !== threadId),
   ].slice(0, 50);
+};
+
+export const resetThreadSearch = (
+  navigator: MutableThreadNavigator,
+): void => {
+  navigator.search = {
+    query: '',
+    status: 'idle',
+    threadIds: [],
+    truncated: false,
+  };
 };

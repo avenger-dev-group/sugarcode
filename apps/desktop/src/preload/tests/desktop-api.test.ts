@@ -19,6 +19,10 @@ import {
   CONVERSATION_STOP_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
+  CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+  CONVERSATION_THREAD_DELETE_CHANNEL,
+  CONVERSATION_THREAD_FORK_CHANNEL,
+  CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
   type ConversationStateSnapshot,
 } from '@/shared/conversation';
 import {
@@ -330,7 +334,11 @@ describe('createDesktopApi', () => {
         }
         if (
           channel === CONVERSATION_THREAD_SEARCH_CHANNEL ||
-          channel === CONVERSATION_THREAD_SELECT_CHANNEL
+          channel === CONVERSATION_THREAD_SELECT_CHANNEL ||
+          channel === CONVERSATION_THREAD_FORK_CHANNEL ||
+          channel === CONVERSATION_THREAD_ARCHIVE_CHANNEL ||
+          channel === CONVERSATION_THREAD_UNARCHIVE_CHANNEL ||
+          channel === CONVERSATION_THREAD_DELETE_CHANNEL
         ) {
           return { accepted: true, reason: 'accepted' };
         }
@@ -352,6 +360,18 @@ describe('createDesktopApi', () => {
     await expect(
       api.selectConversationThread('thr_0000000000000001'),
     ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(
+      api.forkConversationThread('thr_0000000000000001'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(
+      api.archiveConversationThread('thr_0000000000000001'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(
+      api.unarchiveConversationThread('thr_0000000000000001'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(
+      api.deleteConversationThread('thr_0000000000000001'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
     expect(boundary.invoke).toHaveBeenCalledWith(
       CONVERSATION_SEND_CHANNEL,
       'Exact input',
@@ -365,6 +385,17 @@ describe('createDesktopApi', () => {
       CONVERSATION_THREAD_SELECT_CHANNEL,
       'thr_0000000000000001',
     );
+    for (const channel of [
+      CONVERSATION_THREAD_FORK_CHANNEL,
+      CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+      CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
+      CONVERSATION_THREAD_DELETE_CHANNEL,
+    ]) {
+      expect(boundary.invoke).toHaveBeenCalledWith(
+        channel,
+        'thr_0000000000000001',
+      );
+    }
 
     const listener = vi.fn();
     const unsubscribe = api.onConversationStateChanged(listener);

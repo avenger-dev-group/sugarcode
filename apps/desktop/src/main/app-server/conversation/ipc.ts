@@ -5,8 +5,12 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
+  CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+  CONVERSATION_THREAD_DELETE_CHANNEL,
+  CONVERSATION_THREAD_FORK_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
+  CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
 } from '@/shared/conversation';
 
 import type { ConversationController } from './controller';
@@ -70,6 +74,23 @@ export const registerConversationIpc = (
     },
   );
 
+  for (const [channel, action] of [
+    [CONVERSATION_THREAD_FORK_CHANNEL, options.controller.forkThread],
+    [CONVERSATION_THREAD_ARCHIVE_CHANNEL, options.controller.archiveThread],
+    [
+      CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
+      options.controller.unarchiveThread,
+    ],
+    [CONVERSATION_THREAD_DELETE_CHANNEL, options.controller.deleteThread],
+  ] as const) {
+    ipcMain.handle(channel, async (event, threadId: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error('Thread mutation came from an untrusted frame.');
+      }
+      return action(threadId);
+    });
+  }
+
   const unsubscribe = options.controller.subscribe((snapshot) => {
     const window = getTrustedMainWindow(options);
     window?.webContents.send(CONVERSATION_STATE_CHANGED_CHANNEL, snapshot);
@@ -82,5 +103,9 @@ export const registerConversationIpc = (
     ipcMain.removeHandler(CONVERSATION_STOP_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SEARCH_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SELECT_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_THREAD_FORK_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_THREAD_ARCHIVE_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_THREAD_UNARCHIVE_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_THREAD_DELETE_CHANNEL);
   };
 };

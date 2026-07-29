@@ -6,6 +6,14 @@ export const CONVERSATION_THREAD_SEARCH_CHANNEL =
   'conversation-thread:search';
 export const CONVERSATION_THREAD_SELECT_CHANNEL =
   'conversation-thread:select';
+export const CONVERSATION_THREAD_FORK_CHANNEL =
+  'conversation-thread:fork';
+export const CONVERSATION_THREAD_ARCHIVE_CHANNEL =
+  'conversation-thread:archive';
+export const CONVERSATION_THREAD_UNARCHIVE_CHANNEL =
+  'conversation-thread:unarchive';
+export const CONVERSATION_THREAD_DELETE_CHANNEL =
+  'conversation-thread:delete';
 
 export const MAX_CONVERSATION_INPUT_BYTES = 64 * 1024;
 export const MAX_THREAD_SEARCH_BYTES = 256;
@@ -285,7 +293,13 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
     summary?: string;
   }>;
   pendingThreadId?: string;
+  pendingMutation?: Readonly<{
+    kind: 'fork' | 'archive' | 'unarchive' | 'delete';
+    threadId: string;
+  }>;
+  archivedUndoThreadId?: string;
   selectionNotice?: string;
+  mutationNotice?: string;
 }>;
 
 export type ConversationStateSnapshot = Readonly<{
@@ -327,6 +341,18 @@ export type ConversationApi = Readonly<{
     query: string,
   ) => Promise<ConversationActionResult>;
   selectConversationThread: (
+    threadId: string,
+  ) => Promise<ConversationActionResult>;
+  forkConversationThread: (
+    threadId: string,
+  ) => Promise<ConversationActionResult>;
+  archiveConversationThread: (
+    threadId: string,
+  ) => Promise<ConversationActionResult>;
+  unarchiveConversationThread: (
+    threadId: string,
+  ) => Promise<ConversationActionResult>;
+  deleteConversationThread: (
     threadId: string,
   ) => Promise<ConversationActionResult>;
 }>;
@@ -1148,6 +1174,9 @@ const isNotice = (value: unknown): value is ConversationNotice =>
 const isThreadNavigator = (
   value: unknown,
 ): value is ConversationThreadNavigatorSnapshot => {
+  const pendingMutation = value && typeof value === 'object'
+    ? (value as Record<string, unknown>).pendingMutation
+    : undefined;
   if (
     !isRecord(value) ||
     !['loading', 'ready', 'error', 'unavailable'].includes(
@@ -1173,9 +1202,22 @@ const isThreadNavigator = (
         value.search.summary.length === 0)) ||
     (Object.hasOwn(value, 'pendingThreadId') &&
       !isId(value.pendingThreadId)) ||
+    (Object.hasOwn(value, 'pendingMutation') &&
+      (!isRecord(pendingMutation) ||
+        !['fork', 'archive', 'unarchive', 'delete'].includes(
+          pendingMutation.kind as string,
+        ) ||
+        !isId(pendingMutation.threadId))) ||
+    (Object.hasOwn(value, 'pendingThreadId') &&
+      Object.hasOwn(value, 'pendingMutation')) ||
+    (Object.hasOwn(value, 'archivedUndoThreadId') &&
+      !isId(value.archivedUndoThreadId)) ||
     (Object.hasOwn(value, 'selectionNotice') &&
       (typeof value.selectionNotice !== 'string' ||
-        value.selectionNotice.length === 0))
+        value.selectionNotice.length === 0)) ||
+    (Object.hasOwn(value, 'mutationNotice') &&
+      (typeof value.mutationNotice !== 'string' ||
+        value.mutationNotice.length === 0))
   ) {
     return false;
   }
