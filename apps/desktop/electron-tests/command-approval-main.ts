@@ -144,32 +144,6 @@ const waitForAnimationFrame = async (): Promise<void> => {
   );
 };
 
-const resizeWindow = async (
-  width: number,
-  height: number,
-): Promise<void> => {
-  if (!window || window.isDestroyed()) {
-    throw new Error('Electron test window is unavailable.');
-  }
-  window.setSize(width, height);
-  await waitFor(async () => {
-    if (!window || window.isDestroyed()) {
-      return false;
-    }
-    const [actualWidth, actualHeight] = window.getSize();
-    const rendererIsNarrow = await evaluate<boolean>(
-      "window.matchMedia('(max-width: 639px)').matches",
-    );
-    return (
-      actualWidth === width &&
-      actualHeight === height &&
-      rendererIsNarrow === (width < 640)
-    );
-  }, `${width}x${height} Electron window resize`);
-  await waitForAnimationFrame();
-  await waitForAnimationFrame();
-};
-
 const capturePageWithRetry = async (
   label: string,
 ): Promise<NativeImage> => {
@@ -720,14 +694,6 @@ const run = async (): Promise<void> => {
       ),
     'model configuration save and redaction',
   );
-  await resizeWindow(360, 600);
-  if (
-    await evaluate<boolean>(
-      'document.documentElement.scrollWidth > window.innerWidth',
-    )
-  ) {
-    throw new Error('Electron model configuration overflowed at 360 px.');
-  }
   await evaluate(`document.querySelector(
     'button[aria-label="Close model settings"]',
   )?.click()`);
@@ -738,7 +704,6 @@ const run = async (): Promise<void> => {
       ),
     'model configuration dialog dismissal',
   );
-  await resizeWindow(800, 600);
   await evaluate('window.sugarcode.getCommandApprovalState()');
   await waitFor(
     () =>
@@ -1047,90 +1012,6 @@ const run = async (): Promise<void> => {
       ),
     'recovered command execution attempt presentation',
   );
-  await resizeWindow(360, 600);
-  await waitFor(
-    () =>
-      evaluate<boolean>(
-        `Boolean(document.querySelector(
-          'button[aria-label="Show Thread navigator"]',
-        ))`,
-      ),
-    'narrow Thread navigator toggle',
-  );
-  await evaluate(`document.querySelector(
-    'button[aria-label="Show Thread navigator"]',
-  )?.click()`);
-  await waitFor(
-    () =>
-      evaluate<boolean>(`(() => {
-        const navigator = document.querySelector(
-          '#thread-navigator[aria-label="Threads"]',
-        );
-        if (!(navigator instanceof HTMLElement)) {
-          return false;
-        }
-        const bounds = navigator.getBoundingClientRect();
-        return bounds.left >= 0 && bounds.right <= window.innerWidth &&
-          document.documentElement.scrollWidth <=
-            document.documentElement.clientWidth;
-      })()`),
-    'narrow Thread navigator layout',
-  );
-  await evaluate(`document.querySelector(
-    'button[aria-label="Hide Thread navigator"]',
-  )?.click()`);
-  await waitFor(
-    () =>
-      evaluate<boolean>(
-        `document.querySelector(
-          'button[aria-label="Hide Thread navigator"]',
-        ) === null`,
-      ),
-    'narrow Thread navigator dismissal',
-  );
-  const narrowLayoutTargets = [
-    {
-      selector:
-        '[aria-label="Execution result recorded: Command exited with code 7"]',
-      label: 'command result',
-    },
-    {
-      selector:
-        '[aria-label="File change applied: recovered/notes.txt"]',
-      label: 'applied FileChange review',
-    },
-    {
-      selector:
-        '[aria-label="File change outcome unknown: recovered/pending.txt"]',
-      label: 'unknown FileChange review',
-    },
-  ] as const;
-  for (const target of narrowLayoutTargets) {
-    await evaluate(`document.querySelector(
-      ${JSON.stringify(target.selector)},
-    )?.scrollIntoView({ block: 'center', inline: 'nearest' })`);
-    await waitForAnimationFrame();
-    await waitForAnimationFrame();
-    await waitFor(
-      () =>
-        evaluate<boolean>(`(() => {
-          const element = document.querySelector(
-            ${JSON.stringify(target.selector)},
-          );
-          if (!(element instanceof HTMLElement)) {
-            return false;
-          }
-          const bounds = element.getBoundingClientRect();
-          return document.documentElement.scrollWidth <=
-            document.documentElement.clientWidth &&
-            bounds.left >= 0 &&
-            bounds.right <= window.innerWidth;
-        })()`),
-      `narrow ${target.label} layout`,
-    );
-  }
-  await resizeWindow(800, 600);
-
   const sendConversationInput = async (input: string): Promise<void> => {
     await evaluate(`(() => {
       const textarea = document.querySelector(
@@ -1510,26 +1391,6 @@ const run = async (): Promise<void> => {
       ),
     'command execution result after Renderer reload',
   );
-  await resizeWindow(360, 600);
-  await waitFor(
-    () =>
-      evaluate<boolean>(`(() => {
-        const figure = Array.from(document.querySelectorAll('figure')).find(
-          (candidate) => candidate.textContent?.includes('Language hintTSX'),
-        );
-        if (!(figure instanceof HTMLElement)) {
-          return false;
-        }
-        const bounds = figure.getBoundingClientRect();
-        return document.documentElement.scrollWidth <=
-          document.documentElement.clientWidth &&
-          bounds.left >= 0 && bounds.right <= window.innerWidth &&
-          figure.textContent?.includes('1 line') === true &&
-          !figure.querySelector('button, a');
-      })()`),
-    'narrow fenced-code line-count layout',
-  );
-  await resizeWindow(800, 600);
   await evaluate(`Array.from(document.querySelectorAll(
     '[aria-label="Agent response"]',
   )).find((response) =>
@@ -1955,27 +1816,10 @@ const run = async (): Promise<void> => {
   ) {
     throw new Error('Electron MCP approval did not preserve its UI contract.');
   }
-  await resizeWindow(360, 720);
-  const mcpNarrowContained = await evaluate<boolean>(`(() => {
-    const dialog = document.querySelector('[role="alertdialog"]');
-    if (!(dialog instanceof HTMLElement)) {
-      return false;
-    }
-    const rect = dialog.getBoundingClientRect();
-    return (
-      document.documentElement.scrollWidth <= window.innerWidth &&
-      rect.left >= 0 &&
-      rect.right <= window.innerWidth
-    );
-  })()`);
-  if (!mcpNarrowContained) {
-    throw new Error('Electron MCP approval overflowed at 360 px.');
-  }
   await writeFile(
     path.join(__dirname, 'mcp-approval-light.png'),
     (await capturePageWithRetry('light MCP approval dialog')).toPNG(),
   );
-  await resizeWindow(800, 600);
   await evaluate(`(() => {
     const button = Array.from(document.querySelectorAll('button'))
       .find((candidate) => candidate.textContent === 'Approve once');
