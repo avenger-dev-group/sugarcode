@@ -20,6 +20,7 @@ pub use config::ModelApiFormat;
 pub use config::ModelConfig;
 pub use config::load_effective_config;
 pub use config::load_effective_config_for_home;
+pub use config::save_mcp_config;
 pub use config::save_model_config;
 pub use context_compaction::MAX_CONTEXT_COMPACTION_MESSAGE_BYTES;
 pub use context_compaction::build_context_compaction;

@@ -22,6 +22,11 @@ import {
   type ConversationStateSnapshot,
 } from '@/shared/conversation';
 import {
+  MCP_CONFIG_GET_CHANNEL,
+  MCP_CONFIG_SAVE_CHANNEL,
+  type McpConfigInspection,
+} from '@/shared/mcp';
+import {
   MODEL_CONFIG_DELETE_CREDENTIAL_CHANNEL,
   MODEL_CONFIG_GET_CHANNEL,
   MODEL_CONFIG_RETRY_CONNECTION_CHANNEL,
@@ -142,6 +147,49 @@ describe('createDesktopApi', () => {
     });
     await expect(api.getModelConfig()).rejects.toThrow(
       'invalid model configuration',
+    );
+  });
+
+  it('validates MCP registry receipts across the preload boundary', async () => {
+    const boundary = createIpcBoundary();
+    const api = createDesktopApi(boundary.ipc);
+    const inspection: McpConfigInspection = {
+      contractVersion: 1,
+      revision: 'c'.repeat(64),
+      servers: [
+        {
+          id: 'local-tools',
+          transport: 'stdio',
+          executable: '/usr/bin/local-tools',
+          argv: ['serve'],
+          cwd: '/tmp',
+        },
+      ],
+    };
+    boundary.invoke.mockImplementation(async (channel: string) =>
+      channel === MCP_CONFIG_GET_CHANNEL
+        ? inspection
+        : { accepted: true, reason: 'accepted', inspection },
+    );
+
+    await expect(api.getMcpConfig()).resolves.toEqual(inspection);
+    await expect(
+      api.saveMcpConfig({
+        expectedRevision: inspection.revision,
+        servers: inspection.servers,
+      }),
+    ).resolves.toMatchObject({ accepted: true, reason: 'accepted' });
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      MCP_CONFIG_SAVE_CHANNEL,
+      expect.any(Object),
+    );
+
+    boundary.invoke.mockResolvedValue({
+      ...inspection,
+      servers: [{ ...inspection.servers[0], endpoint: 'https://remote.test' }],
+    });
+    await expect(api.getMcpConfig()).rejects.toThrow(
+      'invalid MCP configuration',
     );
   });
 

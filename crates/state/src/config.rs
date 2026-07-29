@@ -185,6 +185,50 @@ impl McpServerConfig {
             Self::LoopbackStreamableHttp(server) => Some(server),
         }
     }
+
+    pub fn stdio(
+        id: String,
+        executable: PathBuf,
+        argv: Vec<String>,
+        cwd: PathBuf,
+    ) -> Result<Self, &'static str> {
+        if !valid_mcp_server_id(&id) {
+            return Err("invalidServerId");
+        }
+        validate_mcp_path(&executable)?;
+        validate_mcp_path(&cwd)?;
+        if argv.len() > MAX_MCP_ARG_COUNT {
+            return Err("tooManyArguments");
+        }
+        let mut total = 0_usize;
+        for argument in &argv {
+            if argument.len() > MAX_MCP_ARG_BYTES || argument.chars().any(char::is_control) {
+                return Err("invalidArgument");
+            }
+            total = total.saturating_add(argument.len());
+        }
+        if total > MAX_MCP_ARGV_BYTES {
+            return Err("argumentsTooLarge");
+        }
+        Ok(Self::Stdio(McpStdioServerConfig {
+            id,
+            executable,
+            argv,
+            cwd,
+        }))
+    }
+
+    pub fn loopback_streamable_http(id: String, endpoint: &str) -> Result<Self, &'static str> {
+        if !valid_mcp_server_id(&id) {
+            return Err("invalidServerId");
+        }
+        Ok(Self::LoopbackStreamableHttp(
+            McpStreamableHttpServerConfig {
+                id,
+                endpoint: validate_loopback_streamable_http_endpoint(endpoint)?,
+            },
+        ))
+    }
 }
 
 impl fmt::Debug for McpServerConfig {
@@ -528,10 +572,39 @@ pub fn save_model_config(
     model: &ModelConfig,
 ) -> Result<EffectiveConfig, ConfigError> {
     let existing = load_effective_config_for_home(home.clone())?;
+    save_config(home, Some(model), existing.mcp_servers())
+}
+
+pub fn save_mcp_config(
+    home: &SugarCodeHome,
+    mcp_servers: &[McpServerConfig],
+) -> Result<EffectiveConfig, ConfigError> {
+    if mcp_servers.len() > MAX_MCP_SERVERS {
+        return Err(ConfigError::WriteFailed {
+            path: home.path().join(CONFIG_FILE_NAME),
+            kind: io::ErrorKind::InvalidInput,
+        });
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    if mcp_servers.iter().any(|server| !ids.insert(server.id())) {
+        return Err(ConfigError::WriteFailed {
+            path: home.path().join(CONFIG_FILE_NAME),
+            kind: io::ErrorKind::InvalidInput,
+        });
+    }
+    let existing = load_effective_config_for_home(home.clone())?;
+    save_config(home, existing.model(), mcp_servers)
+}
+
+fn save_config(
+    home: &SugarCodeHome,
+    model: Option<&ModelConfig>,
+    mcp_servers: &[McpServerConfig],
+) -> Result<EffectiveConfig, ConfigError> {
     ensure_config_home(home)?;
     let config_path = home.path().join(CONFIG_FILE_NAME);
     reject_unsafe_config_target(&config_path)?;
-    let encoded = encode_config(Some(model), existing.mcp_servers())?;
+    let encoded = encode_config(model, mcp_servers)?;
     if encoded.len() as u64 > MAX_CONFIG_BYTES {
         return Err(ConfigError::WriteFailed {
             path: config_path,
@@ -1018,7 +1091,7 @@ fn required_mcp_path(
         ));
     }
     let value = PathBuf::from(value);
-    if !value.is_absolute() || has_forbidden_windows_path_prefix(&value) {
+    if validate_mcp_path(&value).is_err() {
         return Err(invalid_mcp_field(
             path,
             contents,
@@ -1027,6 +1100,17 @@ fn required_mcp_path(
         ));
     }
     Ok(value)
+}
+
+fn validate_mcp_path(path: &Path) -> Result<(), &'static str> {
+    let value = path.to_str().ok_or("invalidPath")?;
+    if value.is_empty() || value.len() > MAX_MCP_PATH_BYTES || value.chars().any(char::is_control) {
+        return Err("invalidPath");
+    }
+    if !path.is_absolute() || has_forbidden_windows_path_prefix(path) {
+        return Err("pathMustBeExplicitAbsolute");
+    }
+    Ok(())
 }
 
 fn valid_mcp_server_id(id: &str) -> bool {

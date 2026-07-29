@@ -5,6 +5,8 @@ import {
   MCP_APPROVAL_DENY_CHANNEL,
   MCP_APPROVAL_STATE_CHANGED_CHANNEL,
   MCP_APPROVAL_STATE_GET_CHANNEL,
+  MCP_CONFIG_GET_CHANNEL,
+  MCP_CONFIG_SAVE_CHANNEL,
   MCP_SESSION_DISABLE_CHANNEL,
   MCP_SESSION_ENABLE_CHANNEL,
   MCP_SESSION_STATE_CHANGED_CHANNEL,
@@ -13,6 +15,7 @@ import {
 } from '@/shared/mcp';
 
 import type { McpApprovalController } from './approval-controller';
+import type { McpConfigController } from './config-controller';
 import type { McpSessionController } from './session-controller';
 import {
   getTrustedMainWindow,
@@ -24,6 +27,7 @@ type McpIpcOptions = IpcSenderValidationOptions &
   Readonly<{
     session: McpSessionController;
     approvals: McpApprovalController;
+    config?: McpConfigController;
   }>;
 
 export const registerMcpIpc = (options: McpIpcOptions): (() => void) => {
@@ -36,6 +40,16 @@ export const registerMcpIpc = (options: McpIpcOptions): (() => void) => {
     trusted(event);
     return options.session.getSnapshot();
   });
+  if (options.config) {
+    ipcMain.handle(MCP_CONFIG_GET_CHANNEL, (event) => {
+      trusted(event);
+      return options.config?.inspect();
+    });
+    ipcMain.handle(MCP_CONFIG_SAVE_CHANNEL, (event, request: unknown) => {
+      trusted(event);
+      return options.config?.save(request);
+    });
+  }
   ipcMain.handle(MCP_SESSION_TOGGLE_CHANNEL, (event, serverId: unknown) => {
     trusted(event);
     return options.session.toggle(serverId);
@@ -90,6 +104,9 @@ export const registerMcpIpc = (options: McpIpcOptions): (() => void) => {
       MCP_APPROVAL_STATE_GET_CHANNEL,
       MCP_APPROVAL_APPROVE_CHANNEL,
       MCP_APPROVAL_DENY_CHANNEL,
+      ...(options.config
+        ? [MCP_CONFIG_GET_CHANNEL, MCP_CONFIG_SAVE_CHANNEL]
+        : []),
     ]) {
       ipcMain.removeHandler(channel);
     }

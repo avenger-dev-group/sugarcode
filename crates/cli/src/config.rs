@@ -6,6 +6,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::Read;
 use std::io::Write;
+use std::path::PathBuf;
 use sugarcode_credential_store::CredentialReference;
 use sugarcode_credential_store::CredentialStore;
 use sugarcode_credential_store::CredentialStoreErrorKind;
@@ -21,6 +22,7 @@ use url::Url;
 use zeroize::Zeroizing;
 
 const MODEL_CONFIG_CONTRACT_VERSION: u32 = 1;
+const MCP_CONFIG_CONTRACT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelConfigCommandError {
@@ -50,6 +52,33 @@ impl fmt::Display for ModelConfigCommandError {
 }
 
 impl Error for ModelConfigCommandError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpConfigCommandError {
+    StdinRequired,
+    InputTooLarge,
+    InvalidInput,
+    InvalidConfiguration,
+    RevisionMismatch,
+    WriteFailed,
+}
+
+impl fmt::Display for McpConfigCommandError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::StdinRequired => {
+                "MCP configuration input must be provided on standard input with --json"
+            }
+            Self::InputTooLarge => "MCP configuration input exceeds the size limit",
+            Self::InvalidInput => "MCP configuration input is invalid",
+            Self::InvalidConfiguration => "MCP configuration is invalid",
+            Self::RevisionMismatch => "MCP configuration changed before it could be saved",
+            Self::WriteFailed => "MCP configuration could not be saved",
+        })
+    }
+}
+
+impl Error for McpConfigCommandError {}
 
 pub fn validate_model_config(
     input: &mut dyn Read,
@@ -183,6 +212,171 @@ pub fn list_mcp_servers(
         .collect::<Vec<_>>();
     servers.sort_by(|left, right| left.id.as_bytes().cmp(right.id.as_bytes()));
     write_json(output, &McpServerInventoryView { servers })
+}
+
+pub fn inspect_mcp_config(
+    home: &SugarCodeHome,
+    output: &mut dyn Write,
+) -> Result<(), McpConfigCommandError> {
+    let config = sugarcode_state::load_effective_config_for_home(home.clone())
+        .map_err(|_| McpConfigCommandError::InvalidConfiguration)?;
+    write_mcp_receipt(output, config.mcp_servers())
+}
+
+pub fn validate_mcp_config(
+    input: &mut dyn Read,
+    output: &mut dyn Write,
+) -> Result<(), McpConfigCommandError> {
+    let input = read_mcp_json::<McpConfigValidationInput>(input)?;
+    if input.contract_version != MCP_CONFIG_CONTRACT_VERSION {
+        return Err(McpConfigCommandError::InvalidInput);
+    }
+    let servers = parse_mcp_servers(input.servers)?;
+    write_mcp_json(
+        output,
+        &McpConfigValidationReceipt {
+            contract_version: MCP_CONFIG_CONTRACT_VERSION,
+            valid: true,
+            revision: mcp_config_revision(&servers),
+            servers: mcp_server_views(&servers),
+        },
+    )
+}
+
+pub fn set_mcp_config(
+    home: &SugarCodeHome,
+    input: &mut dyn Read,
+    output: &mut dyn Write,
+) -> Result<(), McpConfigCommandError> {
+    let input = read_mcp_json::<McpConfigSetInput>(input)?;
+    if input.contract_version != MCP_CONFIG_CONTRACT_VERSION {
+        return Err(McpConfigCommandError::InvalidInput);
+    }
+    let servers = parse_mcp_servers(input.servers)?;
+    let existing = sugarcode_state::load_effective_config_for_home(home.clone())
+        .map_err(|_| McpConfigCommandError::InvalidConfiguration)?;
+    if mcp_config_revision(existing.mcp_servers()) != input.expected_revision {
+        return Err(McpConfigCommandError::RevisionMismatch);
+    }
+    sugarcode_state::save_mcp_config(home, &servers)
+        .map_err(|_| McpConfigCommandError::WriteFailed)?;
+    inspect_mcp_config(home, output)
+}
+
+fn parse_mcp_servers(
+    inputs: Vec<McpServerInput>,
+) -> Result<Vec<McpServerConfig>, McpConfigCommandError> {
+    if inputs.len() > sugarcode_state::MAX_MCP_SERVERS {
+        return Err(McpConfigCommandError::InvalidConfiguration);
+    }
+    let mut servers = inputs
+        .into_iter()
+        .map(|input| match input {
+            McpServerInput::Stdio {
+                id,
+                executable,
+                argv,
+                cwd,
+            } => McpServerConfig::stdio(id, PathBuf::from(executable), argv, PathBuf::from(cwd)),
+            McpServerInput::LoopbackStreamableHttp { id, endpoint } => {
+                McpServerConfig::loopback_streamable_http(id, &endpoint)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| McpConfigCommandError::InvalidConfiguration)?;
+    servers.sort_by(|left, right| left.id().as_bytes().cmp(right.id().as_bytes()));
+    if servers.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
+        return Err(McpConfigCommandError::InvalidConfiguration);
+    }
+    Ok(servers)
+}
+
+fn write_mcp_receipt(
+    output: &mut dyn Write,
+    servers: &[McpServerConfig],
+) -> Result<(), McpConfigCommandError> {
+    let mut servers = servers.to_vec();
+    servers.sort_by(|left, right| left.id().as_bytes().cmp(right.id().as_bytes()));
+    write_mcp_json(
+        output,
+        &McpConfigInspectionReceipt {
+            contract_version: MCP_CONFIG_CONTRACT_VERSION,
+            revision: mcp_config_revision(&servers),
+            servers: mcp_server_views(&servers),
+        },
+    )
+}
+
+fn mcp_config_revision(servers: &[McpServerConfig]) -> String {
+    let mut servers = servers.iter().collect::<Vec<_>>();
+    servers.sort_by(|left, right| left.id().as_bytes().cmp(right.id().as_bytes()));
+    let mut hasher = Sha256::new();
+    hasher.update(b"mcp-config-v1\0");
+    for server in servers {
+        hasher.update(server.id().as_bytes());
+        hasher.update(b"\0");
+        match server {
+            McpServerConfig::Stdio(server) => {
+                hasher.update(b"stdio\0");
+                hasher.update(server.executable().as_os_str().as_encoded_bytes());
+                hasher.update(b"\0");
+                for argument in server.argv() {
+                    hasher.update(argument.as_bytes());
+                    hasher.update(b"\0");
+                }
+                hasher.update(b"\0");
+                hasher.update(server.cwd().as_os_str().as_encoded_bytes());
+            }
+            McpServerConfig::LoopbackStreamableHttp(server) => {
+                hasher.update(b"loopbackStreamableHttp\0");
+                hasher.update(server.endpoint().as_str().as_bytes());
+            }
+        }
+        hasher.update(b"\0");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn mcp_server_views(servers: &[McpServerConfig]) -> Vec<McpServerConfigView<'_>> {
+    servers
+        .iter()
+        .map(|server| match server {
+            McpServerConfig::Stdio(server) => McpServerConfigView::Stdio {
+                id: server.id(),
+                executable: server.executable().to_string_lossy(),
+                argv: server.argv(),
+                cwd: server.cwd().to_string_lossy(),
+            },
+            McpServerConfig::LoopbackStreamableHttp(server) => {
+                McpServerConfigView::LoopbackStreamableHttp {
+                    id: server.id(),
+                    endpoint: server.endpoint().as_str(),
+                }
+            }
+        })
+        .collect()
+}
+
+fn read_mcp_json<T: for<'de> Deserialize<'de>>(
+    input: &mut dyn Read,
+) -> Result<T, McpConfigCommandError> {
+    let mut bounded = input.take(MAX_CONFIG_BYTES + 1);
+    let mut bytes = Zeroizing::new(Vec::new());
+    bounded
+        .read_to_end(&mut bytes)
+        .map_err(|_| McpConfigCommandError::InvalidInput)?;
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(McpConfigCommandError::InputTooLarge);
+    }
+    serde_json::from_slice(bytes.as_slice()).map_err(|_| McpConfigCommandError::InvalidInput)
+}
+
+fn write_mcp_json(
+    output: &mut dyn Write,
+    value: &impl Serialize,
+) -> Result<(), McpConfigCommandError> {
+    serde_json::to_writer(&mut *output, value).map_err(|_| McpConfigCommandError::WriteFailed)?;
+    writeln!(output).map_err(|_| McpConfigCommandError::WriteFailed)
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(
@@ -375,6 +569,68 @@ struct McpServerInventoryView<'a> {
 struct McpServerView<'a> {
     id: &'a str,
     transport: &'static str,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct McpConfigValidationInput {
+    contract_version: u32,
+    servers: Vec<McpServerInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct McpConfigSetInput {
+    contract_version: u32,
+    expected_revision: String,
+    servers: Vec<McpServerInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "transport", deny_unknown_fields, rename_all = "camelCase")]
+enum McpServerInput {
+    Stdio {
+        id: String,
+        executable: String,
+        argv: Vec<String>,
+        cwd: String,
+    },
+    LoopbackStreamableHttp {
+        id: String,
+        endpoint: String,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpConfigInspectionReceipt<'a> {
+    contract_version: u32,
+    revision: String,
+    servers: Vec<McpServerConfigView<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpConfigValidationReceipt<'a> {
+    contract_version: u32,
+    valid: bool,
+    revision: String,
+    servers: Vec<McpServerConfigView<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "transport", rename_all = "camelCase")]
+enum McpServerConfigView<'a> {
+    Stdio {
+        id: &'a str,
+        executable: std::borrow::Cow<'a, str>,
+        argv: &'a [String],
+        cwd: std::borrow::Cow<'a, str>,
+    },
+    LoopbackStreamableHttp {
+        id: &'a str,
+        endpoint: &'a str,
+    },
 }
 
 #[cfg(test)]

@@ -84,6 +84,68 @@ fn lists_only_the_redacted_mcp_inventory() {
 }
 
 #[test]
+fn manages_mcp_registry_through_the_real_cli_with_revision_guard() {
+    let home = tempdir().expect("SugarCode home");
+    let executable = std::env::current_exe().expect("test executable");
+    let inspect = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .arg("--home")
+        .arg(home.path())
+        .args(["config", "mcp", "inspect", "--json"])
+        .output()
+        .expect("inspect empty MCP registry");
+    assert!(inspect.status.success(), "{inspect:?}");
+    let initial =
+        serde_json::from_slice::<serde_json::Value>(&inspect.stdout).expect("inspect JSON");
+
+    let request = serde_json::json!({
+        "contractVersion": 1,
+        "expectedRevision": initial["revision"],
+        "servers": [{
+            "id": "local-tools",
+            "transport": "stdio",
+            "executable": executable,
+            "argv": ["serve"],
+            "cwd": home.path()
+        }]
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .arg("--home")
+        .arg(home.path())
+        .args(["config", "mcp", "set", "--stdin", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("set MCP registry");
+    write!(child.stdin.take().expect("stdin"), "{request}").expect("write request");
+    let set = child.wait_with_output().expect("wait for MCP set");
+    assert!(set.status.success(), "{set:?}");
+    assert!(set.stderr.is_empty());
+    let receipt = serde_json::from_slice::<serde_json::Value>(&set.stdout).expect("set JSON");
+    assert_eq!(receipt["contractVersion"], 1);
+    assert_ne!(receipt["revision"], initial["revision"]);
+    assert_eq!(receipt["servers"][0]["id"], "local-tools");
+
+    let stored = fs::read_to_string(home.path().join("config.toml")).expect("stored config");
+    assert!(stored.contains("[[mcp.servers]]"));
+    assert!(stored.contains("id = \"local-tools\""));
+
+    let mut stale = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .arg("--home")
+        .arg(home.path())
+        .args(["config", "mcp", "set", "--stdin", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run stale MCP set");
+    write!(stale.stdin.take().expect("stdin"), "{request}").expect("write stale request");
+    let stale = stale.wait_with_output().expect("wait for stale MCP set");
+    assert!(!stale.status.success());
+    assert!(stale.stdout.is_empty());
+}
+
+#[test]
 fn invalid_configuration_has_no_stdout_and_redacts_values() {
     let home = tempdir().expect("SugarCode home");
     let sentinel = "do-not-leak-this-secret";

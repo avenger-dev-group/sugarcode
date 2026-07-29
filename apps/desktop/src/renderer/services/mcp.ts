@@ -1,9 +1,19 @@
 import type {
   McpApprovalActionResult,
   McpApprovalStateSnapshot,
+  McpConfigActionResult,
+  McpConfigInspection,
+  McpConfigSaveRequest,
   McpSessionActionResult,
   McpSessionStateSnapshot,
 } from '@/shared/mcp';
+
+export const getMcpConfig = (): Promise<McpConfigInspection> =>
+  window.sugarcode.getMcpConfig();
+export const saveMcpConfig = (
+  request: McpConfigSaveRequest,
+): Promise<McpConfigActionResult> =>
+  window.sugarcode.saveMcpConfig(request);
 
 export const getMcpSessionState = (): Promise<McpSessionStateSnapshot> =>
   window.sugarcode.getMcpSessionState();

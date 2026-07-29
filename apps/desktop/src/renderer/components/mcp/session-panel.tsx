@@ -10,6 +10,7 @@ import { Button } from '@/renderer/components/ui/button';
 
 import type { McpSessionPanelProps } from './types';
 import { useStore } from './use-store';
+import { McpServerManagementWorkbench } from './server-management-workbench';
 
 const STATUS_LABELS = {
   loading: 'Reading configuration',
@@ -93,6 +94,13 @@ const McpSessionPanelContent = ({ turnBusy }: McpSessionPanelProps) => {
       )}
 
       <div className="mt-3 flex gap-2">
+        <McpServerManagementWorkbench
+          sessionDisabled={
+            session.status === 'disabled' &&
+            session.activeServerIds.length === 0
+          }
+          turnBusy={turnBusy}
+        />
         {session.activeServerIds.length > 0 ? (
           <Button
             type="button"

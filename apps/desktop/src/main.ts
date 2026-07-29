@@ -8,6 +8,7 @@ import { registerConnectionIpc } from '@/main/app-server/connection/ipc';
 import { ConnectionSupervisor } from '@/main/app-server/connection/supervisor';
 import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
 import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
+import { McpConfigController } from '@/main/app-server/mcp/config-controller';
 import { ModelConfigController } from '@/main/app-server/model-config/controller';
 import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
 import { WorkspaceController } from '@/main/app-server/workspace/controller';
@@ -124,6 +125,7 @@ const startApplication = async (): Promise<void> => {
   disposeMcpIpc = registerMcpIpc({
     session: supervisor.mcpSession,
     approvals: supervisor.mcpApprovals,
+    config: new McpConfigController({ supervisor }),
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });

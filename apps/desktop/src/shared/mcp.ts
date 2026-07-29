@@ -7,12 +7,59 @@ export const MCP_APPROVAL_STATE_GET_CHANNEL = 'mcp-approval-state:get';
 export const MCP_APPROVAL_STATE_CHANGED_CHANNEL = 'mcp-approval-state:changed';
 export const MCP_APPROVAL_APPROVE_CHANNEL = 'mcp-approval:approve';
 export const MCP_APPROVAL_DENY_CHANNEL = 'mcp-approval:deny';
+export const MCP_CONFIG_GET_CHANNEL = 'mcp-config:get';
+export const MCP_CONFIG_SAVE_CHANNEL = 'mcp-config:save';
 
 export type McpServerTransport = 'stdio' | 'loopbackStreamableHttp';
 
 export type McpConfiguredServer = Readonly<{
   id: string;
   transport: McpServerTransport;
+}>;
+
+export type McpStdioServerConfig = Readonly<{
+  id: string;
+  transport: 'stdio';
+  executable: string;
+  argv: readonly string[];
+  cwd: string;
+}>;
+
+export type McpHttpServerConfig = Readonly<{
+  id: string;
+  transport: 'loopbackStreamableHttp';
+  endpoint: string;
+}>;
+
+export type McpServerConfig =
+  | McpStdioServerConfig
+  | McpHttpServerConfig;
+
+export type McpConfigInspection = Readonly<{
+  contractVersion: 1;
+  revision: string;
+  servers: readonly McpServerConfig[];
+}>;
+
+export type McpConfigSaveRequest = Readonly<{
+  expectedRevision: string;
+  servers: readonly McpServerConfig[];
+}>;
+
+export type McpConfigActionResult = Readonly<{
+  accepted: boolean;
+  reason:
+    | 'accepted'
+    | 'invalid'
+    | 'stale'
+    | 'sessionActive'
+    | 'turnActive'
+    | 'approvalPending'
+    | 'navigationPending'
+    | 'reconnectPending'
+    | 'busy'
+    | 'unavailable';
+  inspection?: McpConfigInspection;
 }>;
 
 export type McpSessionStatus =
@@ -83,6 +130,10 @@ export type McpApprovalActionResult = Readonly<{
 }>;
 
 export type McpApi = Readonly<{
+  getMcpConfig: () => Promise<McpConfigInspection>;
+  saveMcpConfig: (
+    request: McpConfigSaveRequest,
+  ) => Promise<McpConfigActionResult>;
   getMcpSessionState: () => Promise<McpSessionStateSnapshot>;
   onMcpSessionStateChanged: (
     listener: (snapshot: McpSessionStateSnapshot) => void,
@@ -144,6 +195,18 @@ const APPROVAL_REASONS = new Set<McpApprovalActionResult['reason']>([
   'unavailable',
   'invalid',
 ]);
+const CONFIG_REASONS = new Set<McpConfigActionResult['reason']>([
+  'accepted',
+  'invalid',
+  'stale',
+  'sessionActive',
+  'turnActive',
+  'approvalPending',
+  'navigationPending',
+  'reconnectPending',
+  'busy',
+  'unavailable',
+]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -170,6 +233,121 @@ const isSha256 = (value: unknown): value is string =>
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+const byteLength = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+
+const hasControlCharacter = (value: string): boolean =>
+  [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 31 || code === 127;
+  });
+
+const isBoundedPath = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  byteLength(value) > 0 &&
+  byteLength(value) <= 1_024 &&
+  !hasControlCharacter(value) &&
+  (value.startsWith('/') ||
+    /^[A-Za-z]:[\\/]/u.test(value) ||
+    (/^\\\\[^?\\.]/u.test(value) && !value.startsWith('\\\\?\\')));
+
+const isLoopbackEndpoint = (value: unknown): value is string => {
+  if (
+    typeof value !== 'string' ||
+    byteLength(value) > 1_024 ||
+    hasControlCharacter(value) ||
+    /[\\?#]/u.test(value)
+  ) {
+    return false;
+  }
+  const match =
+    /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([0-9]{1,5})\/(.+)$/u.exec(
+      value,
+    );
+  const port = Number(match?.[1]);
+  return Boolean(match?.[2]) && port >= 1 && port <= 65_535;
+};
+
+const isMcpServerConfig = (value: unknown): value is McpServerConfig => {
+  if (
+    !isRecord(value) ||
+    !isId(value.id) ||
+    typeof value.transport !== 'string'
+  ) {
+    return false;
+  }
+  if (value.transport === 'stdio') {
+    return (
+      hasOnlyKeys(value, ['id', 'transport', 'executable', 'argv', 'cwd']) &&
+      isBoundedPath(value.executable) &&
+      isStringArray(value.argv) &&
+      value.argv.length <= 32 &&
+      value.argv.every(
+        (argument) =>
+          byteLength(argument) <= 8_192 &&
+          !hasControlCharacter(argument),
+      ) &&
+      value.argv.reduce(
+        (total, argument) => total + byteLength(argument),
+        0,
+      ) <= 32_768 &&
+      isBoundedPath(value.cwd)
+    );
+  }
+  return (
+    value.transport === 'loopbackStreamableHttp' &&
+    hasOnlyKeys(value, ['id', 'transport', 'endpoint']) &&
+    isLoopbackEndpoint(value.endpoint)
+  );
+};
+
+export const isMcpConfigInspection = (
+  value: unknown,
+): value is McpConfigInspection => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['contractVersion', 'revision', 'servers']) ||
+    value.contractVersion !== 1 ||
+    !isSha256(value.revision) ||
+    !Array.isArray(value.servers) ||
+    value.servers.length > 2
+  ) {
+    return false;
+  }
+  const ids = new Set<string>();
+  return value.servers.every((server) => {
+    if (!isMcpServerConfig(server) || ids.has(server.id)) {
+      return false;
+    }
+    ids.add(server.id);
+    return true;
+  });
+};
+
+export const isMcpConfigSaveRequest = (
+  value: unknown,
+): value is McpConfigSaveRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['expectedRevision', 'servers']) &&
+  isSha256(value.expectedRevision) &&
+  Array.isArray(value.servers) &&
+  value.servers.length <= 2 &&
+  value.servers.every(isMcpServerConfig) &&
+  new Set(value.servers.map((server) => server.id)).size ===
+    value.servers.length;
+
+export const isMcpConfigActionResult = (
+  value: unknown,
+): value is McpConfigActionResult =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['accepted', 'reason'], ['inspection']) &&
+  typeof value.accepted === 'boolean' &&
+  typeof value.reason === 'string' &&
+  CONFIG_REASONS.has(value.reason as McpConfigActionResult['reason']) &&
+  value.accepted === (value.reason === 'accepted') &&
+  (value.inspection === undefined ||
+    isMcpConfigInspection(value.inspection));
 
 export const isMcpSessionStateSnapshot = (
   value: unknown,

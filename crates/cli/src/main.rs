@@ -146,6 +146,30 @@ enum McpConfigCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Inspect the complete non-secret MCP server configuration.
+    Inspect {
+        /// Emit one versioned JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate a complete MCP server configuration from standard input.
+    Validate {
+        /// Require JSON configuration input on standard input.
+        #[arg(long)]
+        stdin: bool,
+        /// Emit one versioned JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Replace the complete MCP server configuration from standard input.
+    Set {
+        /// Require JSON configuration input on standard input.
+        #[arg(long)]
+        stdin: bool,
+        /// Emit one versioned JSON object.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -380,6 +404,48 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             let effective_config = sugarcode_state::load_effective_config(home)?;
             config::list_mcp_servers(&effective_config, &mut std::io::stdout().lock())?;
+        }
+        Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Mcp(McpConfigArgs {
+                    command: McpConfigCommand::Inspect { json },
+                }),
+        }) => {
+            if !json {
+                return Err("config mcp inspect requires --json".into());
+            }
+            let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
+            config::inspect_mcp_config(&resolved_home, &mut std::io::stdout().lock())?;
+        }
+        Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Mcp(McpConfigArgs {
+                    command: McpConfigCommand::Validate { stdin, json },
+                }),
+        }) => {
+            if !stdin || !json || std::io::stdin().is_terminal() {
+                return Err(Box::new(config::McpConfigCommandError::StdinRequired));
+            }
+            config::validate_mcp_config(
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout().lock(),
+            )?;
+        }
+        Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Mcp(McpConfigArgs {
+                    command: McpConfigCommand::Set { stdin, json },
+                }),
+        }) => {
+            if !stdin || !json || std::io::stdin().is_terminal() {
+                return Err(Box::new(config::McpConfigCommandError::StdinRequired));
+            }
+            let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
+            config::set_mcp_config(
+                &resolved_home,
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout().lock(),
+            )?;
         }
         Command::Credential(args) => {
             let config = sugarcode_state::load_effective_config(home)?;

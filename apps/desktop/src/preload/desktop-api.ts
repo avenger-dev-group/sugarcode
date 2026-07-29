@@ -32,12 +32,16 @@ import {
 import {
   isMcpApprovalActionResult,
   isMcpApprovalStateSnapshot,
+  isMcpConfigActionResult,
+  isMcpConfigInspection,
   isMcpSessionActionResult,
   isMcpSessionStateSnapshot,
   MCP_APPROVAL_APPROVE_CHANNEL,
   MCP_APPROVAL_DENY_CHANNEL,
   MCP_APPROVAL_STATE_CHANGED_CHANNEL,
   MCP_APPROVAL_STATE_GET_CHANNEL,
+  MCP_CONFIG_GET_CHANNEL,
+  MCP_CONFIG_SAVE_CHANNEL,
   MCP_SESSION_DISABLE_CHANNEL,
   MCP_SESSION_ENABLE_CHANNEL,
   MCP_SESSION_STATE_CHANGED_CHANNEL,
@@ -45,6 +49,9 @@ import {
   MCP_SESSION_TOGGLE_CHANNEL,
   type McpApprovalActionResult,
   type McpApprovalStateSnapshot,
+  type McpConfigActionResult,
+  type McpConfigInspection,
+  type McpConfigSaveRequest,
   type McpSessionActionResult,
   type McpSessionStateSnapshot,
 } from '@/shared/mcp';
@@ -91,6 +98,27 @@ export type IpcRendererBoundary = Readonly<{
 export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
 ): DesktopApi => ({
+  getMcpConfig: async (): Promise<McpConfigInspection> => {
+    const inspection: unknown = await ipcRenderer.invoke(
+      MCP_CONFIG_GET_CHANNEL,
+    );
+    if (!isMcpConfigInspection(inspection)) {
+      throw new Error('Main returned an invalid MCP configuration.');
+    }
+    return inspection;
+  },
+  saveMcpConfig: async (
+    request: McpConfigSaveRequest,
+  ): Promise<McpConfigActionResult> => {
+    const action: unknown = await ipcRenderer.invoke(
+      MCP_CONFIG_SAVE_CHANNEL,
+      request,
+    );
+    if (!isMcpConfigActionResult(action)) {
+      throw new Error('Main returned an invalid MCP configuration action.');
+    }
+    return action;
+  },
   getConnectionState: async (): Promise<ConnectionStateSnapshot> => {
     const snapshot: unknown = await ipcRenderer.invoke(
       CONNECTION_STATE_GET_CHANNEL,
