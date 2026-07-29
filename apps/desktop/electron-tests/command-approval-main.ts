@@ -157,6 +157,18 @@ const run = async (): Promise<void> => {
               text: 'Recovered Electron input.',
             },
             {
+              type: 'workspaceReadCall',
+              id: 'item_0000000000000098-read',
+              callId: 'call_recovered_read',
+              path: 'recovered/context.txt',
+            },
+            {
+              type: 'workspaceReadResult',
+              id: 'item_0000000000000098-read-result',
+              callId: 'call_recovered_read',
+              outcome: { type: 'success', bytes: 25 },
+            },
+            {
               type: 'agentMessage',
               id: 'item_0000000000000099',
               text: '## Recovered Electron answer\n\n- Durable restart item',
@@ -342,6 +354,22 @@ const run = async (): Promise<void> => {
       'Recovered terminal AgentMessage displayed an active placeholder.',
     );
   }
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const activity = document.querySelector(
+            '[aria-label="Workspace read complete: recovered/context.txt"]',
+          );
+          return activity?.getAttribute('data-state') === 'succeeded' &&
+            activity.textContent?.includes('25 bytes read') === true &&
+            !activity.textContent?.includes('private recovered content') &&
+            !activity.textContent?.includes('call_recovered_read') &&
+            !activity.querySelector('button, a');
+        })()`,
+      ),
+    'recovered workspace read presentation',
+  );
 
   const sendConversationInput = async (input: string): Promise<void> => {
     await evaluate(`(() => {
@@ -372,6 +400,7 @@ const run = async (): Promise<void> => {
     output: string,
     terminal: 'completed' | 'interrupted',
     afterDelta?: () => Promise<void>,
+    workspaceRead?: Readonly<{ path: string; bytes: number }>,
   ): Promise<void> => {
     conversation.handleNotification({
       kind: 'notification',
@@ -390,10 +419,6 @@ const run = async (): Promise<void> => {
         'item/completed',
         { type: 'userMessage', id: `${turnId}/user`, text: input },
       ],
-      [
-        'item/started',
-        { type: 'agentMessage', id: `${turnId}/agent`, text: '' },
-      ],
     ] as const) {
       conversation.handleNotification({
         kind: 'notification',
@@ -405,6 +430,51 @@ const run = async (): Promise<void> => {
         },
       });
     }
+    if (workspaceRead) {
+      const call = {
+        type: 'toolCall',
+        id: `${turnId}/read`,
+        callId: `${turnId}/read-call`,
+        name: 'workspace/read',
+        path: workspaceRead.path,
+      } as const;
+      const result = {
+        type: 'toolResult',
+        id: `${turnId}/read-result`,
+        callId: call.callId,
+        name: 'workspace/read',
+        result: {
+          type: 'success',
+          content: 'private live content',
+          bytes: workspaceRead.bytes,
+        },
+      } as const;
+      for (const [method, item] of [
+        ['item/started', call],
+        ['item/completed', call],
+        ['item/started', result],
+        ['item/completed', result],
+      ] as const) {
+        conversation.handleNotification({
+          kind: 'notification',
+          method,
+          params: {
+            threadId: 'thr_0000000000000100',
+            turnId,
+            item,
+          },
+        });
+      }
+    }
+    conversation.handleNotification({
+      kind: 'notification',
+      method: 'item/started',
+      params: {
+        threadId: 'thr_0000000000000100',
+        turnId,
+        item: { type: 'agentMessage', id: `${turnId}/agent`, text: '' },
+      },
+    });
     if (output) {
       conversation.handleNotification({
         kind: 'notification',
@@ -487,6 +557,7 @@ const run = async (): Promise<void> => {
         'incremental streaming Markdown projection',
       );
     },
+    { path: 'live/notes.txt', bytes: 48 },
   );
   await waitFor(
     () =>
@@ -500,6 +571,21 @@ const run = async (): Promise<void> => {
         )`,
       ),
     'rendered completed Markdown answer',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const activity = document.querySelector(
+            '[aria-label="Workspace read complete: live/notes.txt"]',
+          );
+          return activity?.getAttribute('data-state') === 'succeeded' &&
+            activity.textContent?.includes('48 bytes read') === true &&
+            !activity.textContent?.includes('private live content') &&
+            !activity.querySelector('button, a');
+        })()`,
+      ),
+    'live workspace read presentation',
   );
   await evaluate('location.reload()');
   await waitFor(
@@ -555,6 +641,17 @@ const run = async (): Promise<void> => {
     ),
     'Turn failure after Renderer reload',
   );
+  for (const path of ['recovered/context.txt', 'live/notes.txt']) {
+    await waitFor(
+      () =>
+        evaluate<boolean>(
+          `document.querySelector(
+            '[aria-label="Workspace read complete: ${path}"]',
+          )?.getAttribute('data-state') === 'succeeded'`,
+        ),
+      `workspace read ${path} after Renderer reload`,
+    );
+  }
   await evaluate(`Array.from(document.querySelectorAll(
     '[aria-label="Agent response"]',
   )).find((response) =>
@@ -611,6 +708,24 @@ const run = async (): Promise<void> => {
       },
     });
   }
+  const stoppingReadCall = {
+    type: 'toolCall',
+    id: `${secondTurnId}/read`,
+    callId: `${secondTurnId}/read-call`,
+    name: 'workspace/read',
+    path: 'stopping/pending.txt',
+  } as const;
+  for (const method of ['item/started', 'item/completed'] as const) {
+    conversation.handleNotification({
+      kind: 'notification',
+      method,
+      params: {
+        threadId: 'thr_0000000000000100',
+        turnId: secondTurnId,
+        item: stoppingReadCall,
+      },
+    });
+  }
   await waitFor(
     () =>
       evaluate<boolean>(
@@ -626,6 +741,15 @@ const run = async (): Promise<void> => {
   await waitFor(
     () => conversation.getSnapshot().phase === 'stopping',
     'conversation stopping state',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Stopping workspace read: stopping/pending.txt"]',
+        )?.getAttribute('data-state') === 'stopping'`,
+      ),
+    'stopping workspace read presentation',
   );
   await waitFor(
     () =>
@@ -679,6 +803,15 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
+          '[aria-label="Workspace read stopped: stopping/pending.txt"]',
+        )?.getAttribute('data-state') === 'interrupted'`,
+      ),
+    'interrupted workspace read presentation',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
           '[aria-label="Durable Turn turn_0000000000000102"]',
         )?.textContent?.includes(
           'Turn turn_0000000000000102',
@@ -718,6 +851,24 @@ const run = async (): Promise<void> => {
       },
     },
   });
+  const uncertainReadCall = {
+    type: 'toolCall',
+    id: `${thirdTurnId}/read`,
+    callId: `${thirdTurnId}/read-call`,
+    name: 'workspace/read',
+    path: 'uncertain/pending.txt',
+  } as const;
+  for (const method of ['item/started', 'item/completed'] as const) {
+    conversation.handleNotification({
+      kind: 'notification',
+      method,
+      params: {
+        threadId: 'thr_0000000000000100',
+        turnId: thirdTurnId,
+        item: uncertainReadCall,
+      },
+    });
+  }
   conversation.handleNotification({
     kind: 'notification',
     method: 'item/agentMessage/delta',
@@ -741,6 +892,15 @@ const run = async (): Promise<void> => {
         )`,
       ),
     'uncertain Agent response',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Workspace read status unavailable: uncertain/pending.txt"]',
+        )?.getAttribute('data-state') === 'uncertain'`,
+      ),
+    'uncertain workspace read presentation',
   );
   await waitFor(
     () =>
@@ -777,6 +937,15 @@ const run = async (): Promise<void> => {
         )?.textContent?.includes('Final status unavailable') === true`,
       ),
     'uncertain response after Renderer reload',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Workspace read status unavailable: uncertain/pending.txt"]',
+        )?.getAttribute('data-state') === 'uncertain'`,
+      ),
+    'uncertain workspace read after Renderer reload',
   );
   await waitFor(
     () =>

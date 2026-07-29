@@ -28,6 +28,28 @@ export type ConversationMessage = Readonly<{
   status: ConversationMessageStatus;
 }>;
 
+export type ConversationWorkspaceReadOutcome =
+  | Readonly<{
+      type: 'success';
+      bytes: number;
+    }>
+  | Readonly<{
+      type: 'error';
+      kind: string;
+    }>;
+
+export type ConversationWorkspaceReadActivity = Readonly<{
+  id: string;
+  callId: string;
+  path: string;
+  callStatus: ConversationMessageStatus;
+  result?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    outcome: ConversationWorkspaceReadOutcome;
+  }>;
+}>;
+
 export type ConversationTurnError = Readonly<{
   kind:
     | 'authentication'
@@ -50,6 +72,7 @@ export type ConversationTurn = Readonly<{
   id: string;
   status: ConversationTurnStatus;
   messages: readonly ConversationMessage[];
+  workspaceRead?: ConversationWorkspaceReadActivity;
   error?: ConversationTurnError;
 }>;
 
@@ -157,6 +180,56 @@ const isMessage = (value: unknown): value is ConversationMessage =>
   typeof value.status === 'string' &&
   MESSAGE_STATUSES.has(value.status as ConversationMessageStatus);
 
+const isWorkspaceReadOutcome = (
+  value: unknown,
+): value is ConversationWorkspaceReadOutcome => {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    return false;
+  }
+  if (value.type === 'success') {
+    return (
+      typeof value.bytes === 'number' &&
+      Number.isSafeInteger(value.bytes) &&
+      value.bytes >= 0
+    );
+  }
+  return (
+    value.type === 'error' &&
+    typeof value.kind === 'string' &&
+    value.kind.length > 0
+  );
+};
+
+const isWorkspaceReadActivity = (
+  value: unknown,
+): value is ConversationWorkspaceReadActivity => {
+  if (
+    !isRecord(value) ||
+    !isId(value.id) ||
+    !isId(value.callId) ||
+    typeof value.path !== 'string' ||
+    value.path.length === 0 ||
+    typeof value.callStatus !== 'string' ||
+    !MESSAGE_STATUSES.has(value.callStatus as ConversationMessageStatus)
+  ) {
+    return false;
+  }
+  if (!Object.hasOwn(value, 'result')) {
+    return true;
+  }
+  return (
+    value.callStatus === 'completed' &&
+    isRecord(value.result) &&
+    isId(value.result.id) &&
+    value.result.id !== value.id &&
+    typeof value.result.status === 'string' &&
+    MESSAGE_STATUSES.has(
+      value.result.status as ConversationMessageStatus,
+    ) &&
+    isWorkspaceReadOutcome(value.result.outcome)
+  );
+};
+
 const isTurn = (value: unknown): value is ConversationTurn => {
   if (
     !isRecord(value) ||
@@ -164,7 +237,9 @@ const isTurn = (value: unknown): value is ConversationTurn => {
     typeof value.status !== 'string' ||
     !TURN_STATUSES.has(value.status as ConversationTurnStatus) ||
     !Array.isArray(value.messages) ||
-    !value.messages.every(isMessage)
+    !value.messages.every(isMessage) ||
+    (Object.hasOwn(value, 'workspaceRead') &&
+      !isWorkspaceReadActivity(value.workspaceRead))
   ) {
     return false;
   }
@@ -172,6 +247,21 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   if (
     value.status !== 'inProgress' &&
     value.messages.some((message) => message.status !== 'completed')
+  ) {
+    return false;
+  }
+
+  const workspaceRead = value.workspaceRead as
+    | ConversationWorkspaceReadActivity
+    | undefined;
+  if (
+    value.status !== 'inProgress' &&
+    workspaceRead &&
+    (workspaceRead.callStatus !== 'completed' ||
+      (workspaceRead.result &&
+        workspaceRead.result.status !== 'completed') ||
+      (value.status !== 'interrupted' &&
+        workspaceRead.result?.status !== 'completed'))
   ) {
     return false;
   }

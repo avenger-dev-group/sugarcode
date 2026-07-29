@@ -524,4 +524,149 @@ describe('ThreadWorkbenchView', () => {
 
     await act(async () => root.unmount());
   });
+
+  it('presents a durable workspace read without exposing file content or controls', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const longPath = `${'nested/'.repeat(20)}notes.txt`;
+    const store = createStore({
+      thread: toThreadViewModel({
+        revision: 9,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000004',
+            status: 'completed',
+            messages: [
+              {
+                id: 'item_0000000000000005',
+                role: 'user',
+                text: 'Read the notes.',
+                status: 'completed',
+              },
+              {
+                id: 'item_0000000000000008',
+                role: 'agent',
+                text: 'The notes were read.',
+                status: 'completed',
+              },
+            ],
+            workspaceRead: {
+              id: 'item_0000000000000006',
+              callId: 'call_read',
+              path: longPath,
+              callStatus: 'completed',
+              result: {
+                id: 'item_0000000000000007',
+                status: 'completed',
+                outcome: { type: 'success', bytes: 4_096 },
+              },
+            },
+          },
+        ],
+      }),
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+
+    const activity = document.querySelector(
+      `[aria-label="Workspace read complete: ${longPath}"]`,
+    );
+    expect(activity?.getAttribute('role')).toBe('status');
+    expect(activity?.getAttribute('data-state')).toBe('succeeded');
+    expect(activity?.textContent).toContain('workspace/read');
+    expect(activity?.textContent).toContain(longPath);
+    expect(activity?.textContent).toContain('4,096 bytes read');
+    expect(activity?.querySelector('code')?.className).toContain('break-all');
+    expect(activity?.querySelector('button, a')).toBeNull();
+    expect(activity?.textContent).not.toContain('call_read');
+    expect(activity?.textContent).not.toContain('item_0000000000000006');
+    const transcript = document.body.textContent ?? '';
+    expect(transcript.indexOf('Read the notes.')).toBeLessThan(
+      transcript.indexOf('Workspace read complete'),
+    );
+    expect(transcript.indexOf('Workspace read complete')).toBeLessThan(
+      transcript.indexOf('The notes were read.'),
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it('derives honest workspace read states from lifecycle truth', () => {
+    const activeSnapshot = {
+      revision: 10,
+      threadId: 'thr_0000000000000001',
+      activeTurnId: 'turn_0000000000000005',
+      turns: [
+        {
+          id: 'turn_0000000000000005',
+          status: 'inProgress' as const,
+          messages: [] as const,
+          workspaceRead: {
+            id: 'item_0000000000000009',
+            callId: 'call_pending',
+            path: 'pending.txt',
+            callStatus: 'completed' as const,
+          },
+        },
+      ],
+    };
+
+    expect(
+      toThreadViewModel({ ...activeSnapshot, phase: 'inProgress' })
+        .turns[0]?.workspaceRead?.state,
+    ).toBe('running');
+    expect(
+      toThreadViewModel({ ...activeSnapshot, phase: 'stopping' })
+        .turns[0]?.workspaceRead?.state,
+    ).toBe('stopping');
+    expect(
+      toThreadViewModel({ ...activeSnapshot, phase: 'unavailable' })
+        .turns[0]?.workspaceRead?.state,
+    ).toBe('uncertain');
+    expect(
+      toThreadViewModel({
+        revision: 11,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            ...activeSnapshot.turns[0],
+            status: 'interrupted',
+          },
+        ],
+      }).turns[0]?.workspaceRead?.state,
+    ).toBe('interrupted');
+    const failed = toThreadViewModel({
+      revision: 12,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000006',
+          status: 'completed',
+          messages: [],
+          workspaceRead: {
+            id: 'item_0000000000000010',
+            callId: 'call_failed',
+            path: 'missing.txt',
+            callStatus: 'completed',
+            result: {
+              id: 'item_0000000000000011',
+              status: 'completed',
+              outcome: { type: 'error', kind: 'notFound' },
+            },
+          },
+        },
+      ],
+    }).turns[0]?.workspaceRead;
+    expect(failed).toMatchObject({
+      state: 'failed',
+      errorKind: 'notFound',
+    });
+  });
 });

@@ -14,6 +14,26 @@ export type AgentMessageProps = Readonly<{
   message: AgentMessageViewModel;
 }>;
 
+export type WorkspaceReadPresentationState =
+  | 'running'
+  | 'stopping'
+  | 'uncertain'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted';
+
+export type WorkspaceReadActivityViewModel = Readonly<{
+  id: string;
+  path: string;
+  state: WorkspaceReadPresentationState;
+  bytes?: number;
+  errorKind?: string;
+}>;
+
+export type WorkspaceReadActivityProps = Readonly<{
+  activity: WorkspaceReadActivityViewModel;
+}>;
+
 export type AgentMarkdownProps = Readonly<{
   source: string;
   isStreaming: boolean;

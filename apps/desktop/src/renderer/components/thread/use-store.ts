@@ -18,10 +18,13 @@ import {
   type ConversationPhase,
   type ConversationStateSnapshot,
   type ConversationTurnStatus,
+  type ConversationWorkspaceReadActivity,
 } from '@/shared/conversation';
 
 import type {
   AgentMessagePresentationState,
+  WorkspaceReadActivityViewModel,
+  WorkspaceReadPresentationState,
 } from '../agent/types';
 import type {
   ThreadStore,
@@ -66,6 +69,34 @@ const toAgentMessagePresentationState = (
       throw new Error(
         'An active AgentMessage did not match the conversation phase.',
       );
+  }
+};
+
+const toWorkspaceReadPresentationState = (
+  phase: ConversationPhase,
+  turnStatus: ConversationTurnStatus,
+  activity: ConversationWorkspaceReadActivity,
+): WorkspaceReadPresentationState => {
+  if (activity.result?.status === 'completed') {
+    return activity.result.outcome.type === 'success'
+      ? 'succeeded'
+      : 'failed';
+  }
+  if (turnStatus === 'interrupted') {
+    return 'interrupted';
+  }
+  if (turnStatus !== 'inProgress') {
+    throw new Error('A terminal workspace read has no durable result.');
+  }
+  switch (phase) {
+    case 'inProgress':
+      return 'running';
+    case 'stopping':
+      return 'stopping';
+    case 'unavailable':
+      return 'uncertain';
+    default:
+      throw new Error('Workspace read activity did not match its Turn phase.');
   }
 };
 
@@ -125,6 +156,36 @@ export const toThreadViewModel = (
         )
           ? previousTurn.messages
           : messages;
+      const nextWorkspaceRead = turn.workspaceRead
+        ? (() => {
+            const state = toWorkspaceReadPresentationState(
+              snapshot.phase,
+              turn.status,
+              turn.workspaceRead,
+            );
+            const outcome = turn.workspaceRead.result?.outcome;
+            return {
+              id: turn.workspaceRead.id,
+              path: turn.workspaceRead.path,
+              state,
+              ...(outcome?.type === 'success'
+                ? { bytes: outcome.bytes }
+                : {}),
+              ...(outcome?.type === 'error'
+                ? { errorKind: outcome.kind }
+                : {}),
+            } satisfies WorkspaceReadActivityViewModel;
+          })()
+        : undefined;
+      const workspaceRead =
+        nextWorkspaceRead &&
+        previousTurn?.workspaceRead?.id === nextWorkspaceRead.id &&
+        previousTurn.workspaceRead.path === nextWorkspaceRead.path &&
+        previousTurn.workspaceRead.state === nextWorkspaceRead.state &&
+        previousTurn.workspaceRead.bytes === nextWorkspaceRead.bytes &&
+        previousTurn.workspaceRead.errorKind === nextWorkspaceRead.errorKind
+          ? previousTurn.workspaceRead
+          : nextWorkspaceRead;
       const nextFailure = turn.error
         ? toTurnFailureViewModel(turn.error)
         : undefined;
@@ -141,6 +202,7 @@ export const toThreadViewModel = (
       if (
         previousTurn?.status === turn.status &&
         previousTurn.messages === stableMessages &&
+        previousTurn.workspaceRead === workspaceRead &&
         previousTurn.terminalLabel === terminalLabel &&
         previousTurn.failure === failure &&
         previousTurn.isError === isError
@@ -151,6 +213,7 @@ export const toThreadViewModel = (
         id: turn.id,
         status: turn.status,
         messages: stableMessages,
+        ...(workspaceRead ? { workspaceRead } : {}),
         ...(terminalLabel ? { terminalLabel } : {}),
         ...(failure ? { failure } : {}),
         isError,

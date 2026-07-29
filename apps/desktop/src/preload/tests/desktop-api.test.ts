@@ -298,6 +298,33 @@ describe('createDesktopApi', () => {
 
     boundary.invoke.mockResolvedValue({
       revision: 6,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000002',
+          status: 'interrupted',
+          messages: [],
+          workspaceRead: {
+            id: 'item_0000000000000002',
+            callId: 'call_read',
+            path: 'pending.txt',
+            callStatus: 'completed',
+            result: {
+              id: 'item_0000000000000003',
+              status: 'inProgress',
+              outcome: { type: 'success', bytes: 12 },
+            },
+          },
+        },
+      ],
+    });
+    await expect(api.getConversationState()).rejects.toThrow(
+      'invalid conversation state snapshot',
+    );
+
+    boundary.invoke.mockResolvedValue({
+      revision: 7,
       phase: 'unavailable',
       threadId: 'thr_0000000000000001',
       activeTurnId: 'turn_0000000000000002',

@@ -6,6 +6,8 @@ import type {
   ConversationTurn,
   ConversationTurnError,
   ConversationTurnStatus,
+  ConversationWorkspaceReadActivity,
+  ConversationWorkspaceReadOutcome,
 } from '@/shared/conversation';
 import { isValidConversationInput } from '@/shared/conversation';
 
@@ -30,10 +32,23 @@ type MutableMessage = {
   status: ConversationMessage['status'];
 };
 
+type MutableWorkspaceReadActivity = {
+  id: string;
+  callId: string;
+  path: string;
+  callStatus: ConversationWorkspaceReadActivity['callStatus'];
+  result?: {
+    id: string;
+    status: ConversationWorkspaceReadActivity['callStatus'];
+    outcome: ConversationWorkspaceReadOutcome;
+  };
+};
+
 type MutableTurn = {
   id: string;
   status: ConversationTurnStatus;
   messages: MutableMessage[];
+  workspaceRead?: MutableWorkspaceReadActivity;
   error?: ConversationTurnError;
 };
 
@@ -107,6 +122,21 @@ export class ConversationController {
         id: turn.id,
         status: turn.status,
         messages: turn.messages.map((message) => ({ ...message })),
+        ...(turn.workspaceRead
+          ? {
+              workspaceRead: {
+                ...turn.workspaceRead,
+                ...(turn.workspaceRead.result
+                  ? {
+                      result: {
+                        ...turn.workspaceRead.result,
+                        outcome: { ...turn.workspaceRead.result.outcome },
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
         ...(turn.error ? { error: { ...turn.error } } : {}),
       }));
       return true;
@@ -340,20 +370,47 @@ export class ConversationController {
           lifecycle.params.threadId,
           lifecycle.params.turnId,
         );
-        if (
-          turn.messages.some(
-            (message) => message.id === lifecycle.params.item.id,
-          )
-        ) {
+        if (this.hasItemId(turn, lifecycle.params.item.id)) {
           throw new Error('Duplicate conversation Item ID.');
         }
-        turn.messages.push({
-          id: lifecycle.params.item.id,
-          role:
-            lifecycle.params.item.type === 'userMessage' ? 'user' : 'agent',
-          text: lifecycle.params.item.text,
-          status: 'inProgress',
-        });
+        if (
+          lifecycle.params.item.type === 'userMessage' ||
+          lifecycle.params.item.type === 'agentMessage'
+        ) {
+          turn.messages.push({
+            id: lifecycle.params.item.id,
+            role:
+              lifecycle.params.item.type === 'userMessage' ? 'user' : 'agent',
+            text: lifecycle.params.item.text,
+            status: 'inProgress',
+          });
+        } else if (lifecycle.params.item.type === 'workspaceReadCall') {
+          if (turn.workspaceRead) {
+            throw new Error('Duplicate workspace/read activity.');
+          }
+          turn.workspaceRead = {
+            id: lifecycle.params.item.id,
+            callId: lifecycle.params.item.callId,
+            path: lifecycle.params.item.path,
+            callStatus: 'inProgress',
+          };
+        } else {
+          const workspaceRead = this.requireWorkspaceRead(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            workspaceRead.callStatus !== 'completed' ||
+            workspaceRead.result
+          ) {
+            throw new Error('Workspace read result started out of order.');
+          }
+          workspaceRead.result = {
+            id: lifecycle.params.item.id,
+            status: 'inProgress',
+            outcome: { ...lifecycle.params.item.outcome },
+          };
+        }
         this.publish();
         return;
       }
@@ -375,14 +432,51 @@ export class ConversationController {
           lifecycle.params.threadId,
           lifecycle.params.turnId,
         );
-        const message = this.requireMessage(turn, lifecycle.params.item.id);
-        const role =
-          lifecycle.params.item.type === 'userMessage' ? 'user' : 'agent';
-        if (message.role !== role || message.status !== 'inProgress') {
-          throw new Error('Completed Item did not match its started Item.');
+        if (
+          lifecycle.params.item.type === 'userMessage' ||
+          lifecycle.params.item.type === 'agentMessage'
+        ) {
+          const message = this.requireMessage(turn, lifecycle.params.item.id);
+          const role =
+            lifecycle.params.item.type === 'userMessage' ? 'user' : 'agent';
+          if (message.role !== role || message.status !== 'inProgress') {
+            throw new Error('Completed Item did not match its started Item.');
+          }
+          message.text = lifecycle.params.item.text;
+          message.status = 'completed';
+        } else if (lifecycle.params.item.type === 'workspaceReadCall') {
+          const workspaceRead = this.requireWorkspaceRead(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            workspaceRead.id !== lifecycle.params.item.id ||
+            workspaceRead.path !== lifecycle.params.item.path ||
+            workspaceRead.callStatus !== 'inProgress'
+          ) {
+            throw new Error(
+              'Completed workspace/read call did not match its started Item.',
+            );
+          }
+          workspaceRead.callStatus = 'completed';
+        } else {
+          const workspaceRead = this.requireWorkspaceRead(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          const result = workspaceRead.result;
+          if (
+            !result ||
+            result.id !== lifecycle.params.item.id ||
+            result.status !== 'inProgress' ||
+            !outcomesEqual(result.outcome, lifecycle.params.item.outcome)
+          ) {
+            throw new Error(
+              'Completed workspace/read result did not match its started Item.',
+            );
+          }
+          result.status = 'completed';
         }
-        message.text = lifecycle.params.item.text;
-        message.status = 'completed';
         this.publish();
         return;
       }
@@ -393,6 +487,18 @@ export class ConversationController {
         );
         if (turn.messages.some((message) => message.status !== 'completed')) {
           throw new Error('Turn completed before all text Items completed.');
+        }
+        if (
+          turn.workspaceRead &&
+          (turn.workspaceRead.callStatus !== 'completed' ||
+            (lifecycle.params.turn.status !== 'interrupted' &&
+              turn.workspaceRead.result?.status !== 'completed') ||
+            (turn.workspaceRead.result &&
+              turn.workspaceRead.result.status !== 'completed'))
+        ) {
+          throw new Error(
+            'Turn completed before workspace/read activity completed.',
+          );
         }
         turn.status = lifecycle.params.turn.status;
         turn.error = lifecycle.params.turn.error;
@@ -440,6 +546,23 @@ export class ConversationController {
     return message;
   };
 
+  private requireWorkspaceRead = (
+    turn: MutableTurn,
+    callId: string,
+  ): MutableWorkspaceReadActivity => {
+    if (!turn.workspaceRead || turn.workspaceRead.callId !== callId) {
+      throw new Error('Workspace read lifecycle referenced another call.');
+    }
+    return turn.workspaceRead;
+  };
+
+  private hasItemId = (turn: MutableTurn, itemId: string): boolean =>
+    Boolean(
+      turn.messages.some((message) => message.id === itemId) ||
+        turn.workspaceRead?.id === itemId ||
+        turn.workspaceRead?.result?.id === itemId,
+    );
+
   private createSnapshot = (): ConversationStateSnapshot => ({
     revision: this.revision,
     phase: this.phase,
@@ -450,6 +573,21 @@ export class ConversationController {
         id: turn.id,
         status: turn.status,
         messages: turn.messages.map((message) => ({ ...message })),
+        ...(turn.workspaceRead
+          ? {
+              workspaceRead: {
+                ...turn.workspaceRead,
+                ...(turn.workspaceRead.result
+                  ? {
+                      result: {
+                        ...turn.workspaceRead.result,
+                        outcome: { ...turn.workspaceRead.result.outcome },
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
         ...(turn.error ? { error: { ...turn.error } } : {}),
       }),
     ),
@@ -467,3 +605,14 @@ export class ConversationController {
 
 const isAbortError = (error: unknown): boolean =>
   error instanceof Error && error.name === 'AbortError';
+
+const outcomesEqual = (
+  left: ConversationWorkspaceReadOutcome,
+  right: ConversationWorkspaceReadOutcome,
+): boolean =>
+  left.type === right.type &&
+  (left.type === 'success' && right.type === 'success'
+    ? left.bytes === right.bytes
+    : left.type === 'error' &&
+      right.type === 'error' &&
+      left.kind === right.kind);

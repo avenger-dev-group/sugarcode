@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +19,18 @@ const RESPONSE_BODY = [
   'data: [DONE]\n\n',
 ].join('');
 
+const WORKSPACE_READ_CALL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_desktop_read","type":"function","function":{"name":"workspace/read","arguments":"{\\"path\\":\\"context.txt\\"}"}}]},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
+const WORKSPACE_READ_FINAL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"content":"Workspace read complete."},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
 const REAL_CLI_TEST_TIMEOUT_MS = 30_000;
 
 type ProviderCapture = Readonly<{
@@ -27,7 +40,7 @@ type ProviderCapture = Readonly<{
   errors: Error[];
 }>;
 
-type ProviderMode = 'success' | 'hang' | 'rateLimited';
+type ProviderMode = 'success' | 'hang' | 'rateLimited' | 'workspaceRead';
 
 const startProvider = async (
   mode: ProviderMode = 'success',
@@ -81,8 +94,14 @@ const startProvider = async (
         );
         return;
       }
+      const responseBody =
+        mode === 'workspaceRead'
+          ? requests.length === 1
+            ? WORKSPACE_READ_CALL_BODY
+            : WORKSPACE_READ_FINAL_BODY
+          : RESPONSE_BODY;
       socket.end(
-        `HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: ${Buffer.byteLength(RESPONSE_BODY)}\r\nConnection: close\r\n\r\n${RESPONSE_BODY}`,
+        `HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: ${Buffer.byteLength(responseBody)}\r\nConnection: close\r\n\r\n${responseBody}`,
       );
     });
   });
@@ -272,6 +291,95 @@ describe('real Desktop text Agent Turn', () => {
           },
         ],
       });
+      expect(provider.errors).toEqual([]);
+    } finally {
+      first.shutdown();
+      second?.shutdown();
+    }
+  }, REAL_CLI_TEST_TIMEOUT_MS);
+
+  it('restores one durable workspace read without replaying tool or provider work', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), 'sugarcode-workspace-test-'),
+    );
+    temporaryHomes.push(home, workspace);
+    await writeFile(path.join(workspace, 'context.txt'), 'fixture context');
+    const provider = await startProvider('workspaceRead');
+    providers.push(provider.server);
+    await writeFile(
+      path.join(home, 'config.toml'),
+      [
+        'schema_version = 1',
+        '[model]',
+        'api_format = "openai-chat-completions"',
+        `endpoint = "http://127.0.0.1:${provider.port}/v1/chat/completions"`,
+        'model = "desktop-fixture-model"',
+        '',
+      ].join('\n'),
+    );
+    const createSupervisor = (): ConnectionSupervisor =>
+      new ConnectionSupervisor({
+        clientVersion: '1.0.0',
+        desktopAppPath: process.cwd(),
+        environment: {
+          SUGARCODE_HOME: home,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          SYSTEMROOT: process.env.SYSTEMROOT,
+          WINDIR: process.env.WINDIR,
+        },
+        spawnProcess: (command, arguments_, options) =>
+          spawn(
+            command,
+            [...arguments_, '--workspace', workspace],
+            { ...options, stdio: ['pipe', 'pipe', 'pipe'] },
+          ),
+      });
+    const first = createSupervisor();
+    let second: ConnectionSupervisor | null = null;
+
+    try {
+      await first.start();
+      expect(first.getSnapshot().status).toBe('ready');
+      await expect(
+        first.conversation.startTurn('Read context.txt.'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      await vi.waitFor(
+        () => {
+          expect(first.conversation.getSnapshot()).toMatchObject({
+            phase: 'ready',
+            turns: [
+              {
+                status: 'completed',
+                workspaceRead: {
+                  path: 'context.txt',
+                  callStatus: 'completed',
+                  result: {
+                    status: 'completed',
+                    outcome: { type: 'success', bytes: 15 },
+                  },
+                },
+              },
+            ],
+          });
+          expect(provider.requests).toHaveLength(2);
+        },
+        { timeout: 10_000 },
+      );
+      const firstSnapshot = first.conversation.getSnapshot();
+      expect(JSON.stringify(firstSnapshot)).not.toContain('fixture context');
+      const durableActivity = firstSnapshot.turns[0]?.workspaceRead;
+
+      first.shutdown();
+      second = createSupervisor();
+      await second.start();
+      expect(second.getSnapshot().status).toBe('ready');
+      expect(second.conversation.getSnapshot().turns[0]?.workspaceRead)
+        .toEqual(durableActivity);
+      expect(provider.requests).toHaveLength(2);
       expect(provider.errors).toEqual([]);
     } finally {
       first.shutdown();

@@ -486,6 +486,165 @@ describe('ConversationController', () => {
     });
   });
 
+  it('projects one durable workspace read without exposing result content', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(
+        async (): Promise<TurnStartResponse> => ({
+          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+        }),
+      ),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await controller.startTurn('Read notes.txt.');
+
+    const call = {
+      type: 'toolCall',
+      id: 'item_0000000000000001',
+      callId: 'call_read',
+      name: 'workspace/read',
+      path: 'notes.txt',
+    };
+    controller.handleNotification(
+      notification('item/started', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: call,
+      }),
+    );
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'inProgress',
+      turns: [
+        {
+          workspaceRead: {
+            path: 'notes.txt',
+            callStatus: 'inProgress',
+          },
+        },
+      ],
+    });
+    controller.handleNotification(
+      notification('item/completed', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: call,
+      }),
+    );
+
+    const result = {
+      type: 'toolResult',
+      id: 'item_0000000000000002',
+      callId: 'call_read',
+      name: 'workspace/read',
+      result: {
+        type: 'success',
+        content: 'private file contents',
+        bytes: 21,
+      },
+    };
+    controller.handleNotification(
+      notification('item/started', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: result,
+      }),
+    );
+    controller.handleNotification(
+      notification('item/completed', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: result,
+      }),
+    );
+    controller.handleNotification(
+      notification('turn/completed', {
+        threadId: 'thr_0000000000000001',
+        turn: { id: 'turn_0000000000000001', status: 'completed' },
+      }),
+    );
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot).toMatchObject({
+      phase: 'ready',
+      turns: [
+        {
+          status: 'completed',
+          workspaceRead: {
+            path: 'notes.txt',
+            callStatus: 'completed',
+            result: {
+              status: 'completed',
+              outcome: { type: 'success', bytes: 21 },
+            },
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('private file contents');
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+  });
+
+  it('keeps a workspace read uncertain on transport loss and rejects mismatched results', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(
+        async (): Promise<TurnStartResponse> => ({
+          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+        }),
+      ),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await controller.startTurn('Read pending.txt.');
+    controller.handleNotification(
+      notification('item/started', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: {
+          type: 'toolCall',
+          id: 'item_0000000000000001',
+          callId: 'call_pending',
+          name: 'workspace/read',
+          path: 'pending.txt',
+        },
+      }),
+    );
+    controller.handleNotification(
+      notification('item/started', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: {
+          type: 'toolResult',
+          id: 'item_0000000000000002',
+          callId: 'another_call',
+          name: 'workspace/read',
+          result: { type: 'error', kind: 'notFound' },
+        },
+      }),
+    );
+    expect(onProtocolFailure).toHaveBeenCalledOnce();
+
+    controller.transportClosed();
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'unavailable',
+      turns: [
+        {
+          status: 'inProgress',
+          workspaceRead: { path: 'pending.txt' },
+        },
+      ],
+    });
+  });
+
   it('rejects invalid actions and fails closed on cross-Turn lifecycle', async () => {
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),

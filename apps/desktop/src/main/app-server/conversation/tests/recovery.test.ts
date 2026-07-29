@@ -7,7 +7,7 @@ import {
 import { recoverConversation } from '../recovery';
 
 describe('conversation recovery', () => {
-  it('parses one latest active Thread and projects terminal text only', () => {
+  it('parses one latest active Thread and projects text plus workspace read activity', () => {
     const listed = parseThreadListResponse({
       data: [{ id: 'thr_0000000000000002' }],
       nextCursor: 'thr_0000000000000001',
@@ -34,8 +34,19 @@ describe('conversation recovery', () => {
               path: 'notes.txt',
             },
             {
-              type: 'agentMessage',
+              type: 'toolResult',
               id: 'item_0000000000000006',
+              callId: 'call_1',
+              name: 'workspace/read',
+              result: {
+                type: 'success',
+                content: 'Recovered content.',
+                bytes: 18,
+              },
+            },
+            {
+              type: 'agentMessage',
+              id: 'item_0000000000000007',
               text: 'Recovered answer.',
             },
           ],
@@ -70,12 +81,23 @@ describe('conversation recovery', () => {
               status: 'completed',
             },
             {
-              id: 'item_0000000000000006',
+              id: 'item_0000000000000007',
               role: 'agent',
               text: 'Recovered answer.',
               status: 'completed',
             },
           ],
+          workspaceRead: {
+            id: 'item_0000000000000005',
+            callId: 'call_1',
+            path: 'notes.txt',
+            callStatus: 'completed',
+            result: {
+              id: 'item_0000000000000006',
+              status: 'completed',
+              outcome: { type: 'success', bytes: 18 },
+            },
+          },
         },
         {
           id: 'turn_0000000000000007',
@@ -96,6 +118,45 @@ describe('conversation recovery', () => {
     expect(
       parseThreadListResponse({ data: [], nextCursor: null }),
     ).toEqual({ data: [], nextCursor: null });
+  });
+
+  it('recovers an interrupted workspace read without fabricating a result', () => {
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'interrupted',
+          items: [
+            {
+              type: 'toolCall',
+              id: 'item_0000000000000001',
+              callId: 'call_interrupted',
+              name: 'workspace/read',
+              path: 'pending.txt',
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(
+      recoverConversation('thr_0000000000000001', resumed),
+    ).toMatchObject({
+      turns: [
+        {
+          status: 'interrupted',
+          workspaceRead: {
+            path: 'pending.txt',
+            callStatus: 'completed',
+          },
+        },
+      ],
+    });
+    expect(
+      recoverConversation('thr_0000000000000001', resumed).turns[0]
+        ?.workspaceRead?.result,
+    ).toBeUndefined();
   });
 
   it.each([

@@ -6,7 +6,10 @@ import type {
   ConversationTurnStatus,
 } from '@/shared/conversation';
 
-import type { AgentMessageViewModel } from '../agent/types';
+import type {
+  AgentMessageViewModel,
+  WorkspaceReadActivityViewModel,
+} from '../agent/types';
 
 export type UserMessageViewModel = Readonly<{
   id: string;
@@ -34,6 +37,7 @@ export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
   messages: readonly TranscriptMessageViewModel[];
+  workspaceRead?: WorkspaceReadActivityViewModel;
   terminalLabel?: string;
   failure?: TurnFailureViewModel;
   isError: boolean;

@@ -2,15 +2,49 @@ import { ArrowUp, Square } from 'lucide-react';
 import { memo } from 'react';
 
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
+import { WorkspaceReadActivity } from '@/renderer/components/agent/workspace-read-activity';
 import { Button } from '@/renderer/components/ui/button';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { Textarea } from '@/renderer/components/ui/textarea';
 
 import type {
   ThreadWorkbenchViewProps,
+  TranscriptMessageViewModel,
   TranscriptTurnProps,
 } from './types';
 import { useStore, useTranscriptFollow } from './use-store';
+
+const TranscriptMessage = ({
+  entry,
+}: Readonly<{ entry: TranscriptMessageViewModel }>) =>
+  entry.role === 'agent' ? (
+    <div>
+      <p
+        className="mb-2 min-w-0 break-all pl-10 font-mono text-[10px] tracking-[0.08em] text-tertiary"
+        aria-label={`Durable Item ${entry.message.id}`}
+      >
+        Item {entry.message.id}
+      </p>
+      <AgentMessage message={entry.message} />
+    </div>
+  ) : (
+    <div className="ml-auto max-w-[82%]">
+      <p
+        className="mb-2 min-w-0 break-all text-right font-mono text-[10px] tracking-[0.08em] text-tertiary"
+        aria-label={`Durable Item ${entry.message.id}`}
+      >
+        Item {entry.message.id}
+      </p>
+      <article
+        className="rounded-2xl rounded-br-md bg-surface px-4 py-3"
+        aria-label="Your message"
+      >
+        <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
+          {entry.message.text}
+        </p>
+      </article>
+    </div>
+  );
 
 const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
   <section
@@ -28,36 +62,19 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
       Turn {turn.id}
     </p>
     <div className="mt-3 space-y-7">
-      {turn.messages.map((entry) =>
-        entry.role === 'agent' ? (
-          <div key={entry.message.id}>
-            <p
-              className="mb-2 min-w-0 break-all pl-10 font-mono text-[10px] tracking-[0.08em] text-tertiary"
-              aria-label={`Durable Item ${entry.message.id}`}
-            >
-              Item {entry.message.id}
-            </p>
-            <AgentMessage message={entry.message} />
-          </div>
-        ) : (
-          <div key={entry.message.id} className="ml-auto max-w-[82%]">
-            <p
-              className="mb-2 min-w-0 break-all text-right font-mono text-[10px] tracking-[0.08em] text-tertiary"
-              aria-label={`Durable Item ${entry.message.id}`}
-            >
-              Item {entry.message.id}
-            </p>
-            <article
-              className="rounded-2xl rounded-br-md bg-surface px-4 py-3"
-              aria-label="Your message"
-            >
-              <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
-                {entry.message.text}
-              </p>
-            </article>
-          </div>
-        ),
-      )}
+      {turn.messages
+        .filter((entry) => entry.role === 'user')
+        .map((entry) => (
+          <TranscriptMessage key={entry.message.id} entry={entry} />
+        ))}
+      {turn.workspaceRead ? (
+        <WorkspaceReadActivity activity={turn.workspaceRead} />
+      ) : null}
+      {turn.messages
+        .filter((entry) => entry.role === 'agent')
+        .map((entry) => (
+          <TranscriptMessage key={entry.message.id} entry={entry} />
+        ))}
       {turn.failure ? (
         <div
           className="ml-10 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3"

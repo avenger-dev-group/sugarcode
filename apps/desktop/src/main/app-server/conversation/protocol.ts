@@ -20,8 +20,29 @@ type TextItem = Extract<
   { type: 'userMessage' | 'agentMessage' }
 >;
 
-export type ResumeItem =
+export type WorkspaceReadCallItem = Readonly<{
+  type: 'workspaceReadCall';
+  id: string;
+  callId: string;
+  path: string;
+}>;
+
+export type WorkspaceReadResultItem = Readonly<{
+  type: 'workspaceReadResult';
+  id: string;
+  callId: string;
+  outcome:
+    | Readonly<{ type: 'success'; bytes: number }>
+    | Readonly<{ type: 'error'; kind: string }>;
+}>;
+
+type ConversationItem =
   | TextItem
+  | WorkspaceReadCallItem
+  | WorkspaceReadResultItem;
+
+export type ResumeItem =
+  | ConversationItem
   | Readonly<{
       type: 'other';
       id: string;
@@ -50,7 +71,9 @@ export type ConversationLifecycle =
     }>
   | Readonly<{
       type: 'itemStarted';
-      params: Omit<ItemStartedNotification, 'item'> & { item: TextItem };
+      params: Omit<ItemStartedNotification, 'item'> & {
+        item: ConversationItem;
+      };
     }>
   | Readonly<{
       type: 'agentDelta';
@@ -58,7 +81,9 @@ export type ConversationLifecycle =
     }>
   | Readonly<{
       type: 'itemCompleted';
-      params: Omit<ItemCompletedNotification, 'item'> & { item: TextItem };
+      params: Omit<ItemCompletedNotification, 'item'> & {
+        item: ConversationItem;
+      };
     }>
   | Readonly<{
       type: 'turnCompleted';
@@ -184,17 +209,7 @@ const parseResumeItem = (value: unknown): ResumeItem => {
   if (!isRecord(value) || !isId(value.id) || typeof value.type !== 'string') {
     throw new Error('Invalid Item in thread/resume response.');
   }
-  if (value.type !== 'userMessage' && value.type !== 'agentMessage') {
-    return { type: 'other', id: value.id };
-  }
-  if (typeof value.text !== 'string') {
-    throw new Error('Invalid text Item in thread/resume response.');
-  }
-  return {
-    type: value.type,
-    id: value.id,
-    text: value.text,
-  };
+  return parseConversationItem(value) ?? { type: 'other', id: value.id };
 };
 
 export const parseThreadResumeResponse = (
@@ -248,21 +263,71 @@ export const parseTurnInterruptResponse = (
   return {};
 };
 
-const parseTextItem = (value: unknown): TextItem | null => {
+const parseConversationItem = (value: unknown): ConversationItem | null => {
   if (!isRecord(value) || !isId(value.id) || typeof value.type !== 'string') {
     throw new Error('Invalid Item.');
   }
-  if (value.type !== 'userMessage' && value.type !== 'agentMessage') {
-    return null;
+  if (value.type === 'userMessage' || value.type === 'agentMessage') {
+    if (typeof value.text !== 'string') {
+      throw new Error('Invalid text Item.');
+    }
+    return {
+      type: value.type,
+      id: value.id,
+      text: value.text,
+    };
   }
-  if (typeof value.text !== 'string') {
-    throw new Error('Invalid text Item.');
+  if (value.type === 'toolCall' && value.name === 'workspace/read') {
+    if (
+      !isId(value.callId) ||
+      typeof value.path !== 'string' ||
+      value.path.length === 0 ||
+      Object.hasOwn(value, 'query') ||
+      Object.hasOwn(value, 'command') ||
+      Object.hasOwn(value, 'arguments')
+    ) {
+      throw new Error('Invalid workspace/read ToolCall Item.');
+    }
+    return {
+      type: 'workspaceReadCall',
+      id: value.id,
+      callId: value.callId,
+      path: value.path,
+    };
   }
-  return {
-    type: value.type,
-    id: value.id,
-    text: value.text,
-  };
+  if (value.type === 'toolResult' && value.name === 'workspace/read') {
+    if (!isId(value.callId) || !isRecord(value.result)) {
+      throw new Error('Invalid workspace/read ToolResult Item.');
+    }
+    if (
+      value.result.type === 'success' &&
+      typeof value.result.content === 'string' &&
+      typeof value.result.bytes === 'number' &&
+      Number.isSafeInteger(value.result.bytes) &&
+      value.result.bytes >= 0
+    ) {
+      return {
+        type: 'workspaceReadResult',
+        id: value.id,
+        callId: value.callId,
+        outcome: { type: 'success', bytes: value.result.bytes },
+      };
+    }
+    if (
+      value.result.type === 'error' &&
+      typeof value.result.kind === 'string' &&
+      value.result.kind.length > 0
+    ) {
+      return {
+        type: 'workspaceReadResult',
+        id: value.id,
+        callId: value.callId,
+        outcome: { type: 'error', kind: value.result.kind },
+      };
+    }
+    throw new Error('Invalid workspace/read ToolResult outcome.');
+  }
+  return null;
 };
 
 const parseThreadAndTurn = (
@@ -308,7 +373,9 @@ export const parseConversationLifecycle = (
     case 'item/started':
     case 'item/completed': {
       const correlation = parseThreadAndTurn(params);
-      const item = parseTextItem((params as Record<string, unknown>).item);
+      const item = parseConversationItem(
+        (params as Record<string, unknown>).item,
+      );
       if (!item) {
         return null;
       }
