@@ -186,7 +186,12 @@ afterEach(async () => {
   await Promise.all(providers.splice(0).map(closeServer));
   await Promise.all(
     temporaryHomes.splice(0).map((home) =>
-      rm(home, { force: true, recursive: true }),
+      rm(home, {
+        force: true,
+        recursive: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      }),
     ),
   );
 });
