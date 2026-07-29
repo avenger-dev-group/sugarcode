@@ -600,10 +600,9 @@ describe('conversation recovery', () => {
 
   it.each([
     {
-      data: [
-        { id: 'thr_0000000000000002' },
-        { id: 'thr_0000000000000001' },
-      ],
+      data: Array.from({ length: 51 }, (_value, index) => ({
+        id: `thr_${String(index).padStart(16, '0')}`,
+      })),
       nextCursor: null,
     },
     { data: [{ id: '' }], nextCursor: null },

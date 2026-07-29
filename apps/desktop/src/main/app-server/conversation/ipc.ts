@@ -5,6 +5,8 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
+  CONVERSATION_THREAD_SEARCH_CHANNEL,
+  CONVERSATION_THREAD_SELECT_CHANNEL,
 } from '@/shared/conversation';
 
 import type { ConversationController } from './controller';
@@ -48,6 +50,26 @@ export const registerConversationIpc = (
     return options.controller.stopTurn();
   });
 
+  ipcMain.handle(
+    CONVERSATION_THREAD_SEARCH_CHANNEL,
+    async (event, query: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error('Thread search came from an untrusted frame.');
+      }
+      return options.controller.searchThreads(query);
+    },
+  );
+
+  ipcMain.handle(
+    CONVERSATION_THREAD_SELECT_CHANNEL,
+    async (event, threadId: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error('Thread selection came from an untrusted frame.');
+      }
+      return options.controller.selectThread(threadId);
+    },
+  );
+
   const unsubscribe = options.controller.subscribe((snapshot) => {
     const window = getTrustedMainWindow(options);
     window?.webContents.send(CONVERSATION_STATE_CHANGED_CHANNEL, snapshot);
@@ -58,5 +80,7 @@ export const registerConversationIpc = (
     ipcMain.removeHandler(CONVERSATION_STATE_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_SEND_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_STOP_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_THREAD_SEARCH_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_THREAD_SELECT_CHANNEL);
   };
 };

@@ -7,6 +7,8 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
+  CONVERSATION_THREAD_SEARCH_CHANNEL,
+  CONVERSATION_THREAD_SELECT_CHANNEL,
   type ConversationStateSnapshot,
 } from '@/shared/conversation';
 
@@ -35,6 +37,17 @@ describe('registerConversationIpc', () => {
       revision: 1,
       phase: 'idle',
       turns: [],
+      navigator: {
+        status: 'ready',
+        activeThreadIds: [],
+        activeTruncated: false,
+        search: {
+          query: '',
+          status: 'idle',
+          threadIds: [],
+          truncated: false,
+        },
+      },
     };
     const controller = {
       getSnapshot: vi.fn(() => snapshot),
@@ -45,6 +58,14 @@ describe('registerConversationIpc', () => {
       stopTurn: vi.fn(async () => ({
         accepted: false,
         reason: 'noActiveTurn',
+      })),
+      searchThreads: vi.fn(async () => ({
+        accepted: true,
+        reason: 'accepted',
+      })),
+      selectThread: vi.fn(async () => ({
+        accepted: true,
+        reason: 'accepted',
       })),
       subscribe: vi.fn(
         (next: (value: ConversationStateSnapshot) => void) => {
@@ -83,12 +104,21 @@ describe('registerConversationIpc', () => {
       accepted: false,
       reason: 'noActiveTurn',
     });
+    await expect(
+      handler(CONVERSATION_THREAD_SEARCH_CHANNEL)(event, 'durable truth'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(
+      handler(CONVERSATION_THREAD_SELECT_CHANNEL)(
+        event,
+        'thr_0000000000000001',
+      ),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
     expect(controller.startTurn).toHaveBeenCalledWith('Exact input');
 
-    listener?.({ revision: 2, phase: 'ready', turns: [] });
+    listener?.({ ...snapshot, revision: 2, phase: 'ready' });
     expect(webContents.send).toHaveBeenCalledWith(
       CONVERSATION_STATE_CHANGED_CHANNEL,
-      { revision: 2, phase: 'ready', turns: [] },
+      { ...snapshot, revision: 2, phase: 'ready' },
     );
 
     expect(() =>
@@ -104,6 +134,8 @@ describe('registerConversationIpc', () => {
       CONVERSATION_STATE_GET_CHANNEL,
       CONVERSATION_SEND_CHANNEL,
       CONVERSATION_STOP_CHANNEL,
+      CONVERSATION_THREAD_SEARCH_CHANNEL,
+      CONVERSATION_THREAD_SELECT_CHANNEL,
     ]) {
       expect(electron.removeHandler).toHaveBeenCalledWith(channel);
     }

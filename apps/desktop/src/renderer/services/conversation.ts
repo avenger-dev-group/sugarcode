@@ -22,3 +22,13 @@ export const sendConversationMessage = (
 export const stopConversationTurn =
   (): Promise<ConversationActionResult> =>
     desktopApi().stopConversationTurn();
+
+export const searchConversationThreads = (
+  query: string,
+): Promise<ConversationActionResult> =>
+  desktopApi().searchConversationThreads(query);
+
+export const selectConversationThread = (
+  threadId: string,
+): Promise<ConversationActionResult> =>
+  desktopApi().selectConversationThread(threadId);

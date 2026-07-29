@@ -144,7 +144,37 @@ const run = async (): Promise<void> => {
   let resolveInterrupt: (() => void) | null = null;
   const conversationRpc: ConversationRpc = {
     findLatestActiveThread: async () => 'thr_0000000000000100',
-    resumeThread: async () => ({
+    listActiveThreads: async () => ({
+      data: [
+        { id: 'thr_0000000000000100' },
+        { id: 'thr_0000000000000090' },
+      ],
+      nextCursor: null,
+    }),
+    searchThreads: async () => ({
+      data: [{ id: 'thr_0000000000000090' }],
+      nextCursor: null,
+    }),
+    resumeThread: async (threadId) => {
+      if (threadId === 'thr_0000000000000090') {
+        return {
+          threadId,
+          turns: [
+            {
+              id: 'turn_0000000000000090',
+              status: 'completed',
+              items: [
+                {
+                  type: 'agentMessage',
+                  id: 'item_0000000000000090',
+                  text: 'Historical Electron answer.',
+                },
+              ],
+            },
+          ],
+        };
+      }
+      return {
       threadId: 'thr_0000000000000100',
       turns: [
         {
@@ -332,7 +362,8 @@ const run = async (): Promise<void> => {
           error: { kind: 'server', retryable: false },
         },
       ],
-    }),
+      };
+    },
     startThread: async () => ({
       thread: { id: 'thr_0000000000000100' },
     }),
@@ -434,6 +465,67 @@ const run = async (): Promise<void> => {
         )?.textContent === 'Recovered Electron answer'`,
       ),
     'recovered Electron conversation',
+  );
+  await evaluate(`(() => {
+    const input = document.querySelector('#thread-search');
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error('Thread search input not found.');
+    }
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set;
+    setter?.call(input, 'historical electron');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector(
+      'button[aria-label="Search Threads"]',
+    )?.click();
+  })()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.body.textContent?.includes('1 matching Threads') === true`,
+      ),
+    'bounded Thread search result',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Thread thr_0000000000000090"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Agent response"]',
+        )?.textContent?.includes('Historical Electron answer.') === true &&
+        document.querySelector(
+          '[aria-label="Current durable Thread thr_0000000000000090"]',
+        ) !== null`,
+      ),
+    'historical Thread transcript replacement',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Clear Thread search"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          'button[aria-label="Thread thr_0000000000000100"]',
+        ) !== null`,
+      ),
+    'active Thread list after clearing search',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Thread thr_0000000000000100"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Agent response"] h2',
+        )?.textContent === 'Recovered Electron answer'`,
+      ),
+    'return to latest Thread',
   );
   await waitFor(
     () =>
@@ -633,6 +725,37 @@ const run = async (): Promise<void> => {
     'recovered command execution attempt presentation',
   );
   window.setSize(360, 600);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `Boolean(document.querySelector(
+          'button[aria-label="Show Thread navigator"]',
+        ))`,
+      ),
+    'narrow Thread navigator toggle',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Show Thread navigator"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(`(() => {
+        const navigator = document.querySelector(
+          '#thread-navigator[aria-label="Threads"]',
+        );
+        if (!(navigator instanceof HTMLElement)) {
+          return false;
+        }
+        const bounds = navigator.getBoundingClientRect();
+        return bounds.left >= 0 && bounds.right <= window.innerWidth &&
+          document.documentElement.scrollWidth <=
+            document.documentElement.clientWidth;
+      })()`),
+    'narrow Thread navigator layout',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Hide Thread navigator"]',
+  )?.click()`);
   await waitFor(
     () =>
       evaluate<boolean>(`(() => {

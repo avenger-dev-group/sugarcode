@@ -17,6 +17,8 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
+  CONVERSATION_THREAD_SEARCH_CHANNEL,
+  CONVERSATION_THREAD_SELECT_CHANNEL,
   type ConversationStateSnapshot,
 } from '@/shared/conversation';
 
@@ -186,6 +188,17 @@ describe('createDesktopApi', () => {
       phase: 'ready',
       threadId: 'thr_0000000000000001',
       turns: [],
+      navigator: {
+        status: 'ready',
+        activeThreadIds: ['thr_0000000000000001'],
+        activeTruncated: false,
+        search: {
+          query: '',
+          status: 'idle',
+          threadIds: [],
+          truncated: false,
+        },
+      },
     };
     boundary.invoke.mockImplementation(
       async (channel: string, input?: string) => {
@@ -201,6 +214,12 @@ describe('createDesktopApi', () => {
         if (channel === CONVERSATION_STOP_CHANNEL) {
           return { accepted: false, reason: 'noActiveTurn' };
         }
+        if (
+          channel === CONVERSATION_THREAD_SEARCH_CHANNEL ||
+          channel === CONVERSATION_THREAD_SELECT_CHANNEL
+        ) {
+          return { accepted: true, reason: 'accepted' };
+        }
         return null;
       },
     );
@@ -213,11 +232,25 @@ describe('createDesktopApi', () => {
       accepted: false,
       reason: 'noActiveTurn',
     });
+    await expect(
+      api.searchConversationThreads('durable truth'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(
+      api.selectConversationThread('thr_0000000000000001'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
     expect(boundary.invoke).toHaveBeenCalledWith(
       CONVERSATION_SEND_CHANNEL,
       'Exact input',
     );
     expect(boundary.invoke).toHaveBeenCalledWith(CONVERSATION_STOP_CHANNEL);
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      CONVERSATION_THREAD_SEARCH_CHANNEL,
+      'durable truth',
+    );
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      CONVERSATION_THREAD_SELECT_CHANNEL,
+      'thr_0000000000000001',
+    );
 
     const listener = vi.fn();
     const unsubscribe = api.onConversationStateChanged(listener);
@@ -327,6 +360,7 @@ describe('createDesktopApi', () => {
       revision: 7,
       phase: 'ready',
       threadId: 'thr_0000000000000001',
+      navigator: snapshot.navigator,
       turns: [
         {
           id: 'turn_0000000000000003',
@@ -361,6 +395,10 @@ describe('createDesktopApi', () => {
       phase: 'unavailable',
       threadId: 'thr_0000000000000001',
       activeTurnId: 'turn_0000000000000002',
+      navigator: {
+        ...snapshot.navigator,
+        status: 'unavailable',
+      },
       turns: [
         {
           id: 'turn_0000000000000002',

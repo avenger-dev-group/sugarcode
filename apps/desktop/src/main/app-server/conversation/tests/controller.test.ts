@@ -92,6 +92,17 @@ describe('ConversationController', () => {
     expect(controller.getSnapshot()).toMatchObject({
       phase: 'ready',
       threadId: 'thr_0000000000000001',
+      navigator: {
+        status: 'ready',
+        activeThreadIds: ['thr_0000000000000001'],
+        activeTruncated: false,
+        search: {
+          query: '',
+          status: 'idle',
+          threadIds: [],
+          truncated: false,
+        },
+      },
       turns: [
         {
           id: 'turn_0000000000000001',
@@ -272,6 +283,17 @@ describe('ConversationController', () => {
       revision: expect.any(Number),
       phase: 'ready',
       threadId: 'thr_0000000000000001',
+      navigator: {
+        status: 'ready',
+        activeThreadIds: ['thr_0000000000000001'],
+        activeTruncated: false,
+        search: {
+          query: '',
+          status: 'idle',
+          threadIds: [],
+          truncated: false,
+        },
+      },
       turns: [
         {
           id: 'turn_0000000000000001',

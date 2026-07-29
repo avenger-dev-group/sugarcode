@@ -1,4 +1,6 @@
 import type {
+  ThreadListResponse,
+  ThreadSearchResponse,
   ThreadStartResponse,
   TurnInterruptResponse,
   TurnStartResponse,
@@ -7,17 +9,27 @@ import type {
 import type { JsonlClient } from '../transport/jsonl-client';
 import {
   type ResumeSnapshot,
-  parseThreadListResponse,
   parseThreadResumeResponse,
   parseThreadStartResponse,
   parseTurnInterruptResponse,
   parseTurnStartResponse,
 } from './protocol';
+import {
+  parseThreadListResponse,
+  parseThreadSearchResponse,
+} from './thread-protocol';
 
 export type ConversationRpc = Readonly<{
   findLatestActiveThread: (
     signal?: AbortSignal,
   ) => Promise<string | null>;
+  listActiveThreads?: (
+    signal?: AbortSignal,
+  ) => Promise<ThreadListResponse>;
+  searchThreads?: (
+    query: string,
+    signal?: AbortSignal,
+  ) => Promise<ThreadSearchResponse>;
   resumeThread: (
     threadId: string,
     signal?: AbortSignal,
@@ -38,18 +50,35 @@ export type ConversationRpc = Readonly<{
 export class ConversationRpcClient implements ConversationRpc {
   constructor(private readonly client: JsonlClient) {}
 
-  findLatestActiveThread = async (
+  listActiveThreads = async (
     signal?: AbortSignal,
-  ): Promise<string | null> => {
-    const response = parseThreadListResponse(
+  ): Promise<ThreadListResponse> =>
+    parseThreadListResponse(
       await this.client.requestReady(
         'thread/list',
-        { limit: 1 },
+        { limit: 50 },
         signal,
       ),
     );
+
+  findLatestActiveThread = async (
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
+    const response = await this.listActiveThreads(signal);
     return response.data[0]?.id ?? null;
   };
+
+  searchThreads = async (
+    query: string,
+    signal?: AbortSignal,
+  ): Promise<ThreadSearchResponse> =>
+    parseThreadSearchResponse(
+      await this.client.requestReady(
+        'thread/search',
+        { query, limit: 50 },
+        signal,
+      ),
+    );
 
   resumeThread = async (
     threadId: string,

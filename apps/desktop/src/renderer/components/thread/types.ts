@@ -58,8 +58,22 @@ export type ThreadViewModel = Readonly<{
   notice?: string;
 }>;
 
+export type ThreadNavigatorViewModel = Readonly<{
+  status: 'loading' | 'ready' | 'error' | 'unavailable';
+  query: string;
+  searchStatus: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
+  threadIds: readonly string[];
+  selectedThreadId: string | null;
+  pendingThreadId: string | null;
+  truncated: boolean;
+  statusLabel: string;
+  selectionNotice?: string;
+}>;
+
 export type ThreadStore = Readonly<{
   thread: ThreadViewModel;
+  navigator: ThreadNavigatorViewModel;
+  navigatorOpen: boolean;
   draft: string;
   inputBytes: number;
   inputLimitBytes: number;
@@ -69,6 +83,9 @@ export type ThreadStore = Readonly<{
   isSending: boolean;
   actionError: string | null;
   setDraft: (value: string) => void;
+  setNavigatorOpen: (open: boolean) => void;
+  searchThreads: (query: string) => Promise<void>;
+  selectThread: (threadId: string) => Promise<void>;
   send: () => Promise<void>;
   stop: () => Promise<void>;
 }>;

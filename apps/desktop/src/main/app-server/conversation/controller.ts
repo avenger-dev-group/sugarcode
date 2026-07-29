@@ -15,14 +15,27 @@ import type {
   ConversationWorkspaceSearchActivity,
   ConversationWorkspaceSearchOutcome,
 } from '@/shared/conversation';
-import { isValidConversationInput } from '@/shared/conversation';
+import {
+  isValidConversationInput,
+  isValidThreadSearchInput,
+} from '@/shared/conversation';
 
 import {
   type ConversationLifecycle,
   parseConversationLifecycle,
 } from './protocol';
-import { recoverConversation } from './recovery';
+import {
+  recoverConversation,
+  type RecoveredConversation,
+} from './recovery';
 import type { ConversationRpc } from './rpc-client';
+import {
+  createThreadNavigator,
+  isKnownThread,
+  type MutableThreadNavigator,
+  recordActiveThread,
+  snapshotThreadNavigator,
+} from './thread-navigator';
 import {
   ConnectionClosedError,
   RpcResponseError,
@@ -147,6 +160,12 @@ export class ConversationController {
   private bufferedLifecycle: ConversationLifecycle[] = [];
   private awaitingTurnResponse = false;
   private actionAbortController: AbortController | null = null;
+  private searchAbortController: AbortController | null = null;
+  private selectionAbortController: AbortController | null = null;
+  private searchGeneration = 0;
+  private selectionGeneration = 0;
+  private readonly navigator: MutableThreadNavigator =
+    createThreadNavigator();
 
   constructor(options: ConversationControllerOptions) {
     this.getRpc = options.getRpc;
@@ -174,9 +193,22 @@ export class ConversationController {
     const abortController = new AbortController();
     this.actionAbortController = abortController;
     try {
-      const threadId = await rpc.findLatestActiveThread(
-        abortController.signal,
-      );
+      const listed = rpc.listActiveThreads
+        ? await rpc.listActiveThreads(abortController.signal)
+        : null;
+      const fallbackThreadId = listed
+        ? null
+        : await rpc.findLatestActiveThread(abortController.signal);
+      this.navigator.activeThreadIds = listed
+        ? listed.data.map((thread) => thread.id)
+        : fallbackThreadId
+          ? [fallbackThreadId]
+          : [];
+      this.navigator.activeTruncated = listed
+        ? listed.nextCursor !== null
+        : false;
+      this.navigator.status = 'ready';
+      const threadId = listed?.data[0]?.id ?? fallbackThreadId ?? undefined;
       if (!threadId) {
         return true;
       }
@@ -185,92 +217,14 @@ export class ConversationController {
         abortController.signal,
       );
       const recovered = recoverConversation(threadId, snapshot);
-      this.threadId = recovered.threadId;
-      this.turns = recovered.turns.map((turn) => ({
-        id: turn.id,
-        status: turn.status,
-        messages: turn.messages.map((message) => ({ ...message })),
-        ...(turn.workspaceRead
-          ? {
-              workspaceRead: {
-                ...turn.workspaceRead,
-                ...(turn.workspaceRead.result
-                  ? {
-                      result: {
-                        ...turn.workspaceRead.result,
-                        outcome: { ...turn.workspaceRead.result.outcome },
-                      },
-                    }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(turn.workspaceList
-          ? {
-              workspaceList: {
-                ...turn.workspaceList,
-                ...(turn.workspaceList.result
-                  ? {
-                      result: {
-                        ...turn.workspaceList.result,
-                        outcome: { ...turn.workspaceList.result.outcome },
-                      },
-                    }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(turn.workspaceSearch
-          ? {
-              workspaceSearch: {
-                ...turn.workspaceSearch,
-                ...(turn.workspaceSearch.result
-                  ? {
-                      result: {
-                        ...turn.workspaceSearch.result,
-                        outcome: { ...turn.workspaceSearch.result.outcome },
-                      },
-                    }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(turn.commandApproval
-          ? {
-              commandApproval: {
-                ...turn.commandApproval,
-                ...(turn.commandApproval.decision
-                  ? { decision: { ...turn.commandApproval.decision } }
-                  : {}),
-                ...(turn.commandApproval.executionAttempt
-                  ? {
-                      executionAttempt: {
-                        ...turn.commandApproval.executionAttempt,
-                      },
-                    }
-                  : {}),
-                ...(turn.commandApproval.executionResult
-                  ? {
-                      executionResult: {
-                        ...turn.commandApproval.executionResult,
-                        outcome: {
-                          ...turn.commandApproval.executionResult.outcome,
-                        },
-                      },
-                    }
-                  : {}),
-                argumentSignature: '',
-              },
-            }
-          : {}),
-        ...(turn.error ? { error: { ...turn.error } } : {}),
-      }));
+      this.replaceRecoveredConversation(recovered);
       return true;
     } catch (error) {
       if (error instanceof ConnectionClosedError || isAbortError(error)) {
         throw error;
       }
       if (error instanceof RpcResponseError) {
+        this.navigator.status = 'error';
         this.notice = {
           kind: 'requestFailed',
           summary: 'The durable conversation could not be restored safely.',
@@ -292,6 +246,9 @@ export class ConversationController {
       return;
     }
     this.phase = this.threadId ? 'ready' : 'idle';
+    if (this.navigator.status === 'loading') {
+      this.navigator.status = 'ready';
+    }
     this.notice = undefined;
     this.publish();
   };
@@ -299,6 +256,14 @@ export class ConversationController {
   transportClosed = (): void => {
     this.actionAbortController?.abort();
     this.actionAbortController = null;
+    this.searchAbortController?.abort();
+    this.searchAbortController = null;
+    this.selectionAbortController?.abort();
+    this.selectionAbortController = null;
+    this.searchGeneration += 1;
+    this.selectionGeneration += 1;
+    this.navigator.status = 'unavailable';
+    this.navigator.pendingThreadId = undefined;
     this.awaitingTurnResponse = false;
     this.bufferedLifecycle = [];
     if (this.phase === 'unavailable') {
@@ -312,6 +277,155 @@ export class ConversationController {
     this.publish();
   };
 
+  searchThreads = async (
+    query: unknown,
+  ): Promise<ConversationActionResult> => {
+    if (!isValidThreadSearchInput(query)) {
+      return rejected('invalidSearch');
+    }
+    const rpc = this.getRpc();
+    if (!rpc?.searchThreads || this.phase === 'unavailable') {
+      return rejected('unavailable');
+    }
+
+    const normalized = query.trim();
+    this.searchAbortController?.abort();
+    const generation = ++this.searchGeneration;
+    if (normalized.length === 0) {
+      this.searchAbortController = null;
+      this.navigator.search = {
+        query: '',
+        status: 'idle',
+        threadIds: [],
+        truncated: false,
+      };
+      this.publish();
+      return accepted();
+    }
+
+    const abortController = new AbortController();
+    this.searchAbortController = abortController;
+    this.navigator.search = {
+      query: normalized,
+      status: 'loading',
+      threadIds: [],
+      truncated: false,
+    };
+    this.publish();
+    try {
+      const response = await rpc.searchThreads(
+        normalized,
+        abortController.signal,
+      );
+      if (generation !== this.searchGeneration) {
+        return accepted();
+      }
+      const threadIds = response.data.map((thread) => thread.id);
+      this.navigator.search = {
+        query: normalized,
+        status: threadIds.length === 0 ? 'empty' : 'ready',
+        threadIds,
+        truncated: response.nextCursor !== null,
+      };
+      this.publish();
+      return accepted();
+    } catch (error) {
+      if (generation !== this.searchGeneration || isAbortError(error)) {
+        return accepted();
+      }
+      if (error instanceof ConnectionClosedError) {
+        this.transportClosed();
+        return rejected('unavailable');
+      }
+      if (error instanceof RpcResponseError) {
+        this.navigator.search = {
+          query: normalized,
+          status: 'error',
+          threadIds: [],
+          truncated: false,
+          summary: 'Thread search is temporarily unavailable.',
+        };
+        this.publish();
+        return rejected('unavailable');
+      }
+      this.onProtocolFailure();
+      return rejected('unavailable');
+    } finally {
+      if (this.searchAbortController === abortController) {
+        this.searchAbortController = null;
+      }
+    }
+  };
+
+  selectThread = async (
+    threadId: unknown,
+  ): Promise<ConversationActionResult> => {
+    if (
+      typeof threadId !== 'string' ||
+      !isKnownThread(this.navigator, this.threadId, threadId)
+    ) {
+      return rejected('unknownThread');
+    }
+    if (
+      this.phase === 'starting' ||
+      this.phase === 'inProgress' ||
+      this.phase === 'stopping'
+    ) {
+      return rejected('turnActive');
+    }
+    const rpc = this.getRpc();
+    if (!rpc || this.phase === 'unavailable') {
+      return rejected('unavailable');
+    }
+    if (threadId === this.threadId && !this.navigator.pendingThreadId) {
+      return accepted();
+    }
+
+    this.selectionAbortController?.abort();
+    const abortController = new AbortController();
+    const generation = ++this.selectionGeneration;
+    this.selectionAbortController = abortController;
+    this.navigator.pendingThreadId = threadId;
+    this.navigator.selectionNotice = undefined;
+    this.publish();
+    try {
+      const snapshot = await rpc.resumeThread(
+        threadId,
+        abortController.signal,
+      );
+      const recovered = recoverConversation(threadId, snapshot);
+      if (generation !== this.selectionGeneration) {
+        return accepted();
+      }
+      this.replaceRecoveredConversation(recovered);
+      this.navigator.pendingThreadId = undefined;
+      this.notice = undefined;
+      this.publish();
+      return accepted();
+    } catch (error) {
+      if (generation !== this.selectionGeneration || isAbortError(error)) {
+        return accepted();
+      }
+      this.navigator.pendingThreadId = undefined;
+      if (error instanceof ConnectionClosedError) {
+        this.transportClosed();
+        return rejected('unavailable');
+      }
+      if (error instanceof RpcResponseError) {
+        this.navigator.selectionNotice =
+          'That Thread could not be restored safely.';
+        this.publish();
+        return rejected('unavailable');
+      }
+      this.onProtocolFailure();
+      return rejected('unavailable');
+    } finally {
+      if (this.selectionAbortController === abortController) {
+        this.selectionAbortController = null;
+      }
+    }
+  };
+
   startTurn = async (input: unknown): Promise<ConversationActionResult> => {
     if (!isValidConversationInput(input)) {
       return rejected('invalidInput');
@@ -319,7 +433,8 @@ export class ConversationController {
     if (
       this.phase === 'starting' ||
       this.phase === 'inProgress' ||
-      this.phase === 'stopping'
+      this.phase === 'stopping' ||
+      this.navigator.pendingThreadId
     ) {
       return rejected('turnActive');
     }
@@ -340,6 +455,7 @@ export class ConversationController {
           this.actionAbortController.signal,
         );
         this.threadId = response.thread.id;
+        recordActiveThread(this.navigator, response.thread.id);
         this.drainBufferedThreadLifecycle();
       }
 
@@ -1156,8 +1272,94 @@ export class ConversationController {
         turn.commandApproval?.id === itemId ||
         turn.commandApproval?.decision?.id === itemId ||
         turn.commandApproval?.executionAttempt?.id === itemId ||
-        turn.commandApproval?.executionResult?.id === itemId,
+      turn.commandApproval?.executionResult?.id === itemId,
     );
+
+  private replaceRecoveredConversation = (
+    recovered: RecoveredConversation,
+  ): void => {
+    this.threadId = recovered.threadId;
+    this.activeTurnId = null;
+    this.turns = recovered.turns.map((turn) => ({
+      id: turn.id,
+      status: turn.status,
+      messages: turn.messages.map((message) => ({ ...message })),
+      ...(turn.workspaceRead
+        ? {
+            workspaceRead: {
+              ...turn.workspaceRead,
+              ...(turn.workspaceRead.result
+                ? {
+                    result: {
+                      ...turn.workspaceRead.result,
+                      outcome: { ...turn.workspaceRead.result.outcome },
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(turn.workspaceList
+        ? {
+            workspaceList: {
+              ...turn.workspaceList,
+              ...(turn.workspaceList.result
+                ? {
+                    result: {
+                      ...turn.workspaceList.result,
+                      outcome: { ...turn.workspaceList.result.outcome },
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(turn.workspaceSearch
+        ? {
+            workspaceSearch: {
+              ...turn.workspaceSearch,
+              ...(turn.workspaceSearch.result
+                ? {
+                    result: {
+                      ...turn.workspaceSearch.result,
+                      outcome: { ...turn.workspaceSearch.result.outcome },
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(turn.commandApproval
+        ? {
+            commandApproval: {
+              ...turn.commandApproval,
+              ...(turn.commandApproval.decision
+                ? { decision: { ...turn.commandApproval.decision } }
+                : {}),
+              ...(turn.commandApproval.executionAttempt
+                ? {
+                    executionAttempt: {
+                      ...turn.commandApproval.executionAttempt,
+                    },
+                  }
+                : {}),
+              ...(turn.commandApproval.executionResult
+                ? {
+                    executionResult: {
+                      ...turn.commandApproval.executionResult,
+                      outcome: {
+                        ...turn.commandApproval.executionResult.outcome,
+                      },
+                    },
+                  }
+                : {}),
+              argumentSignature: '',
+            },
+          }
+        : {}),
+      ...(turn.error ? { error: { ...turn.error } } : {}),
+    }));
+  };
 
   private createSnapshot = (): ConversationStateSnapshot => ({
     revision: this.revision,
@@ -1250,6 +1452,7 @@ export class ConversationController {
         ...(turn.error ? { error: { ...turn.error } } : {}),
       }),
     ),
+    navigator: snapshotThreadNavigator(this.navigator),
     ...(this.notice ? { notice: { ...this.notice } } : {}),
   });
 

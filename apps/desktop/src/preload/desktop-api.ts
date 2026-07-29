@@ -22,6 +22,8 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
+  CONVERSATION_THREAD_SEARCH_CHANNEL,
+  CONVERSATION_THREAD_SELECT_CHANNEL,
   isConversationActionResult,
   isConversationStateSnapshot,
   type ConversationActionResult,
@@ -175,4 +177,28 @@ export const createDesktopApi = (
       }
       return result;
     },
+  searchConversationThreads: async (
+    query: string,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_THREAD_SEARCH_CHANNEL,
+      query,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid Thread search result.');
+    }
+    return result;
+  },
+  selectConversationThread: async (
+    threadId: string,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_THREAD_SELECT_CHANNEL,
+      threadId,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid Thread selection result.');
+    }
+    return result;
+  },
 });

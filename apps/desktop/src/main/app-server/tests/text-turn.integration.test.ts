@@ -273,6 +273,17 @@ describe('real Desktop text Agent Turn', () => {
       expect(durableTurnId).toMatch(/^turn_[0-9a-f]{16}$/);
       expect(durableUserItemId).toMatch(/^item_[0-9a-f]{16}$/);
       expect(durableAgentItemId).toMatch(/^item_[0-9a-f]{16}$/);
+      await expect(
+        first.conversation.searchThreads('durable response'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      expect(first.conversation.getSnapshot().navigator.search).toMatchObject({
+        query: 'durable response',
+        status: 'ready',
+        threadIds: [durableThreadId],
+      });
+      await expect(
+        first.conversation.selectThread(durableThreadId),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
       expect(provider.requests).toHaveLength(1);
       expect(provider.requests[0]?.headers).toMatch(
         /^POST \/v1\/chat\/completions HTTP\/1\.1\r\n/,
@@ -297,6 +308,10 @@ describe('real Desktop text Agent Turn', () => {
       expect(second.conversation.getSnapshot()).toMatchObject({
         phase: 'ready',
         threadId: durableThreadId,
+        navigator: {
+          status: 'ready',
+          activeThreadIds: [durableThreadId],
+        },
         turns: [
           {
             id: durableTurnId,

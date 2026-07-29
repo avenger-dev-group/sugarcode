@@ -1,4 +1,4 @@
-import { ArrowUp, Square } from 'lucide-react';
+import { ArrowUp, PanelLeft, Square } from 'lucide-react';
 import { memo } from 'react';
 
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
@@ -15,6 +15,7 @@ import type {
   TranscriptMessageViewModel,
   TranscriptTurnProps,
 } from './types';
+import { ThreadNavigator } from './thread-navigator';
 import { useStore, useTranscriptFollow } from './use-store';
 
 const TranscriptMessage = ({
@@ -139,8 +140,33 @@ export const ThreadWorkbenchView = ({
   );
 
   return (
-    <section className="relative flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+      <aside className="hidden min-h-0 w-60 shrink-0 md:block">
+        <ThreadNavigator store={store} />
+      </aside>
+      {store.navigatorOpen ? (
+        <div className="h-[45vh] min-h-56 shrink-0 border-b md:hidden">
+          <ThreadNavigator id="thread-navigator" store={store} />
+        </div>
+      ) : null}
+      <section className="relative flex min-h-0 flex-1 flex-col">
       <div className="pointer-events-none absolute inset-0 workbench-grid" />
+      <Button
+        type="button"
+        size="icon"
+        variant="outline"
+        className="absolute left-3 top-3 z-10 bg-background/90 shadow-sm md:hidden"
+        aria-label={
+          store.navigatorOpen
+            ? 'Hide Thread navigator'
+            : 'Show Thread navigator'
+        }
+        aria-controls="thread-navigator"
+        aria-expanded={store.navigatorOpen}
+        onClick={() => store.setNavigatorOpen(!store.navigatorOpen)}
+      >
+        <PanelLeft aria-hidden="true" />
+      </Button>
       <ScrollArea
         className="relative min-h-0 flex-1"
         viewportProps={{
@@ -149,7 +175,7 @@ export const ThreadWorkbenchView = ({
           onScroll: recordScrollPosition,
         }}
       >
-        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-44 pt-10 sm:px-10">
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-44 pt-16 sm:px-10 md:pt-10">
           {store.thread.isEmpty ? (
             <div className="my-auto max-w-xl py-16">
               <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-tertiary">
@@ -205,7 +231,8 @@ export const ThreadWorkbenchView = ({
                 store.thread.phase === 'inProgress' ||
                 store.thread.phase === 'stopping' ||
                 store.thread.phase === 'starting' ||
-                store.thread.phase === 'unavailable'
+                store.thread.phase === 'unavailable' ||
+                store.navigator.pendingThreadId !== null
               }
               aria-label="Message SugarCode"
               aria-describedby="conversation-input-hint"
@@ -274,7 +301,8 @@ export const ThreadWorkbenchView = ({
           </p>
         </div>
       </div>
-    </section>
+      </section>
+    </div>
   );
 };
 

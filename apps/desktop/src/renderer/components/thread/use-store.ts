@@ -9,6 +9,8 @@ import {
 import {
   getConversationState,
   onConversationStateChanged,
+  searchConversationThreads,
+  selectConversationThread,
   sendConversationMessage,
   stopConversationTurn,
 } from '@/renderer/services/conversation';
@@ -18,6 +20,7 @@ import {
   type ConversationCommandApprovalActivity,
   type ConversationPhase,
   type ConversationStateSnapshot,
+  type ConversationThreadNavigatorSnapshot,
   type ConversationTurnStatus,
   type ConversationWorkspaceListActivity,
   type ConversationWorkspaceReadActivity,
@@ -39,6 +42,7 @@ import type {
 } from '../agent/types';
 import type {
   ThreadStore,
+  ThreadNavigatorViewModel,
   ThreadViewModel,
   TranscriptFollow,
   TranscriptMessageViewModel,
@@ -50,7 +54,24 @@ const INITIAL_SNAPSHOT: ConversationStateSnapshot = {
   revision: 0,
   phase: 'unavailable',
   turns: [],
+  navigator: {
+    status: 'unavailable',
+    activeThreadIds: [],
+    activeTruncated: false,
+    search: {
+      query: '',
+      status: 'idle',
+      threadIds: [],
+      truncated: false,
+    },
+  },
 };
+
+type ConversationProjectionSnapshot = Omit<
+  ConversationStateSnapshot,
+  'navigator'
+> &
+  Readonly<{ navigator?: ConversationThreadNavigatorSnapshot }>;
 
 const TERMINAL_LABELS: Record<
   ConversationTurnStatus,
@@ -236,7 +257,7 @@ const toCommandExecutionResultPresentationState = (
 };
 
 export const toThreadViewModel = (
-  snapshot: ConversationStateSnapshot,
+  snapshot: ConversationProjectionSnapshot,
   previous?: ThreadViewModel,
 ): ThreadViewModel => {
   const previousTurns = new Map(
@@ -520,6 +541,59 @@ export const toThreadViewModel = (
   };
 };
 
+export const toThreadNavigatorViewModel = (
+  snapshot: ConversationStateSnapshot,
+): ThreadNavigatorViewModel => {
+  const searchActive = snapshot.navigator.search.status !== 'idle';
+  const threadIds = searchActive
+    ? snapshot.navigator.search.threadIds
+    : snapshot.navigator.activeThreadIds;
+  const statusLabel = (() => {
+    if (snapshot.navigator.pendingThreadId) {
+      return `Loading Thread ${snapshot.navigator.pendingThreadId}`;
+    }
+    switch (snapshot.navigator.search.status) {
+      case 'loading':
+        return 'Searching durable Threads';
+      case 'empty':
+        return `No Threads match ${snapshot.navigator.search.query}`;
+      case 'error':
+        return (
+          snapshot.navigator.search.summary ??
+          'Thread search is unavailable'
+        );
+      case 'ready':
+        return `${threadIds.length} matching Threads`;
+      default:
+        if (snapshot.navigator.status === 'loading') {
+          return 'Loading active Threads';
+        }
+        if (snapshot.navigator.status === 'unavailable') {
+          return 'Thread navigation unavailable';
+        }
+        if (snapshot.navigator.status === 'error') {
+          return 'Active Threads could not be loaded';
+        }
+        return `${threadIds.length} active Threads`;
+    }
+  })();
+  return {
+    status: snapshot.navigator.status,
+    query: snapshot.navigator.search.query,
+    searchStatus: snapshot.navigator.search.status,
+    threadIds,
+    selectedThreadId: snapshot.threadId ?? null,
+    pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
+    truncated: searchActive
+      ? snapshot.navigator.search.truncated
+      : snapshot.navigator.activeTruncated,
+    statusLabel,
+    ...(snapshot.navigator.selectionNotice
+      ? { selectionNotice: snapshot.navigator.selectionNotice }
+      : {}),
+  };
+};
+
 const inputBytes = (value: string): number =>
   new TextEncoder().encode(value).byteLength;
 
@@ -554,6 +628,7 @@ export const useStore = (): ThreadStore => {
   const [snapshot, setSnapshot] =
     useState<ConversationStateSnapshot>(INITIAL_SNAPSHOT);
   const [draft, setDraft] = useState<string>('');
+  const [navigatorOpen, setNavigatorOpen] = useState<boolean>(false);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const revision = useRef<number>(-1);
@@ -584,6 +659,7 @@ export const useStore = (): ThreadStore => {
     snapshot.phase === 'idle' || snapshot.phase === 'ready';
   const canSend =
     phaseAllowsSend &&
+    !snapshot.navigator.pendingThreadId &&
     !isSending &&
     draft.trim().length > 0 &&
     bytes <= MAX_CONVERSATION_INPUT_BYTES;
@@ -629,6 +705,40 @@ export const useStore = (): ThreadStore => {
     }
   };
 
+  const searchThreads = async (query: string): Promise<void> => {
+    setActionError(null);
+    try {
+      const result = await searchConversationThreads(query);
+      if (!result.accepted && result.reason === 'invalidSearch') {
+        setActionError(
+          'Search is limited to 16 terms and 256 UTF-8 bytes.',
+        );
+      } else if (!result.accepted) {
+        setActionError('Thread search is not available right now.');
+      }
+    } catch {
+      setActionError('Desktop could not search durable Threads safely.');
+    }
+  };
+
+  const selectThread = async (threadId: string): Promise<void> => {
+    setActionError(null);
+    try {
+      const result = await selectConversationThread(threadId);
+      if (result.accepted) {
+        setNavigatorOpen(false);
+      } else if (result.reason === 'turnActive') {
+        setActionError(
+          'Stop the active Turn before switching Threads.',
+        );
+      } else {
+        setActionError('That durable Thread could not be selected.');
+      }
+    } catch {
+      setActionError('Desktop could not switch Threads safely.');
+    }
+  };
+
   const thread = useMemo<ThreadViewModel>(() => {
     const next = toThreadViewModel(snapshot, previousThread.current);
     previousThread.current = next;
@@ -638,9 +748,15 @@ export const useStore = (): ThreadStore => {
     bytes > MAX_CONVERSATION_INPUT_BYTES
       ? 'Message exceeds the 64 KiB limit'
       : `${Math.ceil(bytes / 1024)} / 64 KiB`;
+  const navigator = useMemo(
+    () => toThreadNavigatorViewModel(snapshot),
+    [snapshot],
+  );
 
   return {
     thread,
+    navigator,
+    navigatorOpen,
     draft,
     inputBytes: bytes,
     inputLimitBytes: MAX_CONVERSATION_INPUT_BYTES,
@@ -650,6 +766,9 @@ export const useStore = (): ThreadStore => {
     isSending,
     actionError,
     setDraft,
+    setNavigatorOpen,
+    searchThreads,
+    selectThread,
     send,
     stop,
   };

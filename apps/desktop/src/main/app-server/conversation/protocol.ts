@@ -2,7 +2,6 @@ import type {
   AgentMessageDeltaNotification,
   ItemCompletedNotification,
   ItemStartedNotification,
-  ThreadListResponse,
   ThreadStartResponse,
   ThreadStartedNotification,
   TurnSnapshotStatus,
@@ -15,6 +14,8 @@ import type {
 import path from 'node:path';
 
 import type { ServerMessage } from '../transport/server-message';
+
+export { parseThreadListResponse } from './thread-protocol';
 
 type TextItem = Extract<
   ItemStartedNotification['item'],
@@ -442,36 +443,6 @@ export const parseThreadStartResponse = (
     throw new Error('Invalid thread/start response.');
   }
   return { thread: { id: value.thread.id } };
-};
-
-export const parseThreadListResponse = (
-  value: unknown,
-): ThreadListResponse => {
-  if (!isRecord(value) || !Array.isArray(value.data)) {
-    throw new Error('Invalid thread/list response.');
-  }
-  if (value.data.length > 1) {
-    throw new Error('Invalid thread/list response.');
-  }
-  const nextCursor = value.nextCursor;
-  let parsedNextCursor: string | null;
-  if (nextCursor === null) {
-    parsedNextCursor = null;
-  } else if (isId(nextCursor)) {
-    parsedNextCursor = nextCursor;
-  } else {
-    throw new Error('Invalid thread/list response.');
-  }
-  const data = value.data.map((thread) => {
-    if (!isRecord(thread) || !isId(thread.id)) {
-      throw new Error('Invalid Thread in thread/list response.');
-    }
-    return { id: thread.id };
-  });
-  return {
-    data,
-    nextCursor: parsedNextCursor,
-  };
 };
 
 const parseResumeItem = (value: unknown): ResumeItem => {

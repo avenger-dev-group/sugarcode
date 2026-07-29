@@ -2,8 +2,13 @@ export const CONVERSATION_STATE_GET_CHANNEL = 'conversation-state:get';
 export const CONVERSATION_STATE_CHANGED_CHANNEL = 'conversation-state:changed';
 export const CONVERSATION_SEND_CHANNEL = 'conversation:send';
 export const CONVERSATION_STOP_CHANNEL = 'conversation:stop';
+export const CONVERSATION_THREAD_SEARCH_CHANNEL =
+  'conversation-thread:search';
+export const CONVERSATION_THREAD_SELECT_CHANNEL =
+  'conversation-thread:select';
 
 export const MAX_CONVERSATION_INPUT_BYTES = 64 * 1024;
+export const MAX_THREAD_SEARCH_BYTES = 256;
 
 export type ConversationPhase =
   | 'idle'
@@ -180,12 +185,28 @@ export type ConversationNotice = Readonly<{
   summary: string;
 }>;
 
+export type ConversationThreadNavigatorSnapshot = Readonly<{
+  status: 'loading' | 'ready' | 'error' | 'unavailable';
+  activeThreadIds: readonly string[];
+  activeTruncated: boolean;
+  search: Readonly<{
+    query: string;
+    status: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
+    threadIds: readonly string[];
+    truncated: boolean;
+    summary?: string;
+  }>;
+  pendingThreadId?: string;
+  selectionNotice?: string;
+}>;
+
 export type ConversationStateSnapshot = Readonly<{
   revision: number;
   phase: ConversationPhase;
   threadId?: string;
   activeTurnId?: string;
   turns: readonly ConversationTurn[];
+  navigator: ConversationThreadNavigatorSnapshot;
   notice?: ConversationNotice;
 }>;
 
@@ -194,6 +215,8 @@ export type ConversationActionResult = Readonly<{
   reason:
     | 'accepted'
     | 'invalidInput'
+    | 'invalidSearch'
+    | 'unknownThread'
     | 'turnActive'
     | 'unavailable'
     | 'noActiveTurn';
@@ -212,6 +235,12 @@ export type ConversationApi = Readonly<{
     input: string,
   ) => Promise<ConversationActionResult>;
   stopConversationTurn: () => Promise<ConversationActionResult>;
+  searchConversationThreads: (
+    query: string,
+  ) => Promise<ConversationActionResult>;
+  selectConversationThread: (
+    threadId: string,
+  ) => Promise<ConversationActionResult>;
 }>;
 
 const PHASES = new Set<ConversationPhase>([
@@ -263,6 +292,8 @@ const COMMAND_APPROVAL_DECISIONS = new Set<ConversationCommandApprovalDecision>(
 const ACTION_REASONS = new Set<ConversationActionResult['reason']>([
   'accepted',
   'invalidInput',
+  'invalidSearch',
+  'unknownThread',
   'turnActive',
   'unavailable',
   'noActiveTurn',
@@ -691,6 +722,52 @@ const isNotice = (value: unknown): value is ConversationNotice =>
   typeof value.summary === 'string' &&
   value.summary.length > 0;
 
+const isThreadNavigator = (
+  value: unknown,
+): value is ConversationThreadNavigatorSnapshot => {
+  if (
+    !isRecord(value) ||
+    !['loading', 'ready', 'error', 'unavailable'].includes(
+      value.status as string,
+    ) ||
+    !Array.isArray(value.activeThreadIds) ||
+    !value.activeThreadIds.every(isId) ||
+    new Set(value.activeThreadIds).size !== value.activeThreadIds.length ||
+    typeof value.activeTruncated !== 'boolean' ||
+    !isRecord(value.search) ||
+    typeof value.search.query !== 'string' ||
+    new TextEncoder().encode(value.search.query).byteLength >
+      MAX_THREAD_SEARCH_BYTES ||
+    !['idle', 'loading', 'ready', 'empty', 'error'].includes(
+      value.search.status as string,
+    ) ||
+    !Array.isArray(value.search.threadIds) ||
+    !value.search.threadIds.every(isId) ||
+    new Set(value.search.threadIds).size !== value.search.threadIds.length ||
+    typeof value.search.truncated !== 'boolean' ||
+    (Object.hasOwn(value.search, 'summary') &&
+      (typeof value.search.summary !== 'string' ||
+        value.search.summary.length === 0)) ||
+    (Object.hasOwn(value, 'pendingThreadId') &&
+      !isId(value.pendingThreadId)) ||
+    (Object.hasOwn(value, 'selectionNotice') &&
+      (typeof value.selectionNotice !== 'string' ||
+        value.selectionNotice.length === 0))
+  ) {
+    return false;
+  }
+  return (
+    (value.search.status === 'idle'
+      ? value.search.query.length === 0 &&
+        value.search.threadIds.length === 0 &&
+        !value.search.truncated
+      : value.search.query.trim().length > 0) &&
+    (value.search.status === 'empty'
+      ? value.search.threadIds.length === 0
+      : true)
+  );
+};
+
 export const isConversationStateSnapshot = (
   value: unknown,
 ): value is ConversationStateSnapshot => {
@@ -703,6 +780,7 @@ export const isConversationStateSnapshot = (
     !PHASES.has(value.phase as ConversationPhase) ||
     !Array.isArray(value.turns) ||
     !value.turns.every(isTurn) ||
+    !isThreadNavigator(value.navigator) ||
     (Object.hasOwn(value, 'threadId') && !isId(value.threadId)) ||
     (Object.hasOwn(value, 'activeTurnId') && !isId(value.activeTurnId)) ||
     (Object.hasOwn(value, 'notice') && !isNotice(value.notice))
@@ -745,3 +823,17 @@ export const isValidConversationInput = (value: unknown): value is string =>
   typeof value === 'string' &&
   value.trim().length > 0 &&
   new TextEncoder().encode(value).byteLength <= MAX_CONVERSATION_INPUT_BYTES;
+
+export const isValidThreadSearchInput = (
+  value: unknown,
+): value is string => {
+  if (
+    typeof value !== 'string' ||
+    new TextEncoder().encode(value).byteLength > MAX_THREAD_SEARCH_BYTES ||
+    Array.from(value).some((character) => /\p{Cc}/u.test(character))
+  ) {
+    return false;
+  }
+  const query = value.trim();
+  return query.length === 0 || query.split(/\s+/u).length <= 16;
+};
