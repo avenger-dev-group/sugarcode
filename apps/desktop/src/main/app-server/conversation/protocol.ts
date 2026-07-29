@@ -111,6 +111,31 @@ export type CommandExecutionAttemptItem = Readonly<{
   callId: string;
 }>;
 
+export type CommandExecutionResultOutcome =
+  | Readonly<{ type: 'error'; kind: string }>
+  | Readonly<{
+      type: 'process';
+      stdoutBytes: number;
+      stderrBytes: number;
+      stdoutTruncated: boolean;
+      stderrTruncated: boolean;
+      encoding: 'utf8Lossy';
+      durationMs: number;
+      outcome:
+        | Readonly<{ type: 'exitCode'; code: number }>
+        | Readonly<{ type: 'signal'; signal: number }>
+        | Readonly<{ type: 'timedOut' }>;
+      sandboxPolicy: 'filesystemReadOnlyV1';
+      networkPolicy: 'networkDeniedV1';
+    }>;
+
+export type CommandExecutionResultItem = Readonly<{
+  type: 'commandExecutionResult';
+  id: string;
+  callId: string;
+  outcome: CommandExecutionResultOutcome;
+}>;
+
 type ConversationItem =
   | TextItem
   | WorkspaceReadCallItem
@@ -122,7 +147,8 @@ type ConversationItem =
   | CommandCallItem
   | CommandApprovalRequestItem
   | CommandApprovalDecisionItem
-  | CommandExecutionAttemptItem;
+  | CommandExecutionAttemptItem
+  | CommandExecutionResultItem;
 
 export type ResumeItem =
   | ConversationItem
@@ -588,6 +614,96 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       id: value.id,
       approvalId: value.approvalId,
       callId: value.callId,
+    };
+  }
+  if (value.type === 'toolResult' && value.name === 'shell/exec') {
+    if (!isId(value.callId) || !isRecord(value.result)) {
+      throw new Error('Invalid shell/exec ToolResult Item.');
+    }
+    if (
+      value.result.type === 'error' &&
+      Object.keys(value.result).length === 2 &&
+      typeof value.result.kind === 'string' &&
+      value.result.kind.length > 0
+    ) {
+      return {
+        type: 'commandExecutionResult',
+        id: value.id,
+        callId: value.callId,
+        outcome: { type: 'error', kind: value.result.kind },
+      };
+    }
+    if (
+      value.result.type !== 'process' ||
+      Object.keys(value.result).length !== 12 ||
+      typeof value.result.stdout !== 'string' ||
+      typeof value.result.stderr !== 'string' ||
+      typeof value.result.stdoutBytes !== 'number' ||
+      !Number.isSafeInteger(value.result.stdoutBytes) ||
+      value.result.stdoutBytes < 0 ||
+      typeof value.result.stderrBytes !== 'number' ||
+      !Number.isSafeInteger(value.result.stderrBytes) ||
+      value.result.stderrBytes < 0 ||
+      typeof value.result.stdoutTruncated !== 'boolean' ||
+      typeof value.result.stderrTruncated !== 'boolean' ||
+      value.result.encoding !== 'utf8Lossy' ||
+      typeof value.result.durationMs !== 'number' ||
+      !Number.isSafeInteger(value.result.durationMs) ||
+      value.result.durationMs < 0 ||
+      value.result.sandboxPolicy !== 'filesystemReadOnlyV1' ||
+      value.result.networkPolicy !== 'networkDeniedV1' ||
+      Object.hasOwn(value.result, 'workspaceWritePolicy') ||
+      !isRecord(value.result.outcome)
+    ) {
+      throw new Error('Invalid shell/exec ToolResult outcome.');
+    }
+    const processOutcome = (() => {
+      if (
+        value.result.outcome.type === 'exitCode' &&
+        Object.keys(value.result.outcome).length === 2 &&
+        typeof value.result.outcome.code === 'number' &&
+        Number.isSafeInteger(value.result.outcome.code)
+      ) {
+        return {
+          type: 'exitCode',
+          code: value.result.outcome.code,
+        } as const;
+      }
+      if (
+        value.result.outcome.type === 'signal' &&
+        Object.keys(value.result.outcome).length === 2 &&
+        typeof value.result.outcome.signal === 'number' &&
+        Number.isSafeInteger(value.result.outcome.signal)
+      ) {
+        return {
+          type: 'signal',
+          signal: value.result.outcome.signal,
+        } as const;
+      }
+      if (
+        value.result.outcome.type === 'timedOut' &&
+        Object.keys(value.result.outcome).length === 1
+      ) {
+        return { type: 'timedOut' } as const;
+      }
+      throw new Error('Invalid shell/exec process outcome.');
+    })();
+    return {
+      type: 'commandExecutionResult',
+      id: value.id,
+      callId: value.callId,
+      outcome: {
+        type: 'process',
+        stdoutBytes: value.result.stdoutBytes,
+        stderrBytes: value.result.stderrBytes,
+        stdoutTruncated: value.result.stdoutTruncated,
+        stderrTruncated: value.result.stderrTruncated,
+        encoding: 'utf8Lossy',
+        durationMs: value.result.durationMs,
+        outcome: processOutcome,
+        sandboxPolicy: 'filesystemReadOnlyV1',
+        networkPolicy: 'networkDeniedV1',
+      },
     };
   }
   if (value.type === 'toolCall' && value.name === 'workspace/read') {

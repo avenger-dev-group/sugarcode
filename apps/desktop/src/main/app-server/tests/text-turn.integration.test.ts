@@ -832,7 +832,7 @@ describe('real Desktop text Agent Turn', () => {
   }, REAL_CLI_TEST_TIMEOUT_MS);
 
   it.skipIf(process.platform === 'win32')(
-    'restores a real CLI command execution attempt audit without replaying arguments or results',
+    'restores a real CLI command result summary without replaying arguments or output',
     async () => {
       const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
       const workspace = await mkdtemp(
@@ -900,6 +900,20 @@ describe('real Desktop text Agent Turn', () => {
                     argumentCount: 1,
                     decision: { value: 'approved', status: 'completed' },
                     executionAttempt: { status: 'completed' },
+                    executionResult: {
+                      status: 'completed',
+                      outcome: {
+                        type: 'process',
+                        stdoutBytes: 24,
+                        stderrBytes: 0,
+                        stdoutTruncated: false,
+                        stderrTruncated: false,
+                        encoding: 'utf8Lossy',
+                        outcome: { type: 'exitCode', code: 0 },
+                        sandboxPolicy: 'filesystemReadOnlyV1',
+                        networkPolicy: 'networkDeniedV1',
+                      },
+                    },
                   },
                 },
               ],
@@ -911,8 +925,12 @@ describe('real Desktop text Agent Turn', () => {
         expect(JSON.stringify(durableActivity)).not.toContain(
           'private-command-argument',
         );
-        expect(JSON.stringify(durableActivity)).not.toContain('stdout');
-        expect(JSON.stringify(durableActivity)).not.toContain('exitCode');
+        expect(JSON.stringify(durableActivity)).not.toContain('"stdout":');
+        expect(JSON.stringify(durableActivity)).not.toContain('"stderr":');
+        expect(
+          durableActivity?.executionResult?.outcome.type === 'process' &&
+            durableActivity.executionResult.outcome.durationMs,
+        ).toBeGreaterThanOrEqual(0);
 
         first.shutdown();
         second = createSupervisor();

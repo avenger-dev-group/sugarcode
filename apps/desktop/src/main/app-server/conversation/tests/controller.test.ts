@@ -933,7 +933,7 @@ describe('ConversationController', () => {
     expect(onProtocolFailure).toHaveBeenCalledOnce();
   });
 
-  it('projects a live command execution attempt audit without sharing arguments or results', async () => {
+  it('projects a live command result summary without sharing arguments or output', async () => {
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),
       resumeThread: vi.fn(),
@@ -1009,6 +1009,53 @@ describe('ConversationController', () => {
     controller.handleNotification(
       notification('item/completed', { ...correlate, item: attempt }),
     );
+    const result = {
+      type: 'toolResult',
+      id: 'item_result',
+      callId: 'call_command',
+      name: 'shell/exec',
+      result: {
+        type: 'process',
+        stdout: 'private-command-output',
+        stderr: 'private-command-error',
+        stdoutBytes: 22,
+        stderrBytes: 21,
+        stdoutTruncated: false,
+        stderrTruncated: true,
+        encoding: 'utf8Lossy',
+        durationMs: 7,
+        outcome: { type: 'signal', signal: 15 },
+        sandboxPolicy: 'filesystemReadOnlyV1',
+        networkPolicy: 'networkDeniedV1',
+      },
+    };
+    controller.handleNotification(
+      notification('item/started', { ...correlate, item: result }),
+    );
+    expect(
+      controller.getSnapshot().turns[0]?.commandApproval?.executionResult,
+    ).toMatchObject({
+      id: 'item_result',
+      status: 'inProgress',
+      outcome: {
+        type: 'process',
+        stdoutBytes: 22,
+        stderrBytes: 21,
+        stderrTruncated: true,
+        durationMs: 7,
+        outcome: { type: 'signal', signal: 15 },
+      },
+    });
+    controller.handleNotification(
+      notification('turn/completed', {
+        threadId: correlate.threadId,
+        turn: { id: correlate.turnId, status: 'completed' },
+      }),
+    );
+    expect(onProtocolFailure).toHaveBeenCalledTimes(2);
+    controller.handleNotification(
+      notification('item/completed', { ...correlate, item: result }),
+    );
     controller.handleNotification(
       notification('turn/completed', {
         threadId: correlate.threadId,
@@ -1026,9 +1073,26 @@ describe('ConversationController', () => {
       argumentCount: 1,
       decision: { value: 'approved', status: 'completed' },
       executionAttempt: { id: 'item_attempt', status: 'completed' },
+      executionResult: {
+        id: 'item_result',
+        status: 'completed',
+        outcome: {
+          type: 'process',
+          stdoutBytes: 22,
+          stderrBytes: 21,
+          stdoutTruncated: false,
+          stderrTruncated: true,
+          encoding: 'utf8Lossy',
+          durationMs: 7,
+          outcome: { type: 'signal', signal: 15 },
+          sandboxPolicy: 'filesystemReadOnlyV1',
+          networkPolicy: 'networkDeniedV1',
+        },
+      },
     });
     expect(JSON.stringify(snapshot)).not.toContain('private-value');
-    expect(JSON.stringify(snapshot)).not.toContain('stdout');
-    expect(onProtocolFailure).toHaveBeenCalledOnce();
+    expect(JSON.stringify(snapshot)).not.toContain('private-command-output');
+    expect(JSON.stringify(snapshot)).not.toContain('private-command-error');
+    expect(onProtocolFailure).toHaveBeenCalledTimes(2);
   });
 });

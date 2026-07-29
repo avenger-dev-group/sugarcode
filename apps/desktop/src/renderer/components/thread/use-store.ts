@@ -29,6 +29,7 @@ import type {
   CommandApprovalActivityViewModel,
   CommandApprovalPresentationState,
   CommandExecutionAttemptPresentationState,
+  CommandExecutionResultPresentationState,
   WorkspaceListActivityViewModel,
   WorkspaceListPresentationState,
   WorkspaceReadActivityViewModel,
@@ -213,6 +214,27 @@ const toCommandExecutionAttemptPresentationState = (
   }
 };
 
+const toCommandExecutionResultPresentationState = (
+  phase: ConversationPhase,
+  status: ConversationMessageStatus,
+): CommandExecutionResultPresentationState => {
+  if (status === 'completed') {
+    return 'recorded';
+  }
+  switch (phase) {
+    case 'inProgress':
+      return 'observed';
+    case 'stopping':
+      return 'stopping';
+    case 'unavailable':
+      return 'uncertain';
+    default:
+      throw new Error(
+        'Command execution result did not match its Turn phase.',
+      );
+  }
+};
+
 export const toThreadViewModel = (
   snapshot: ConversationStateSnapshot,
   previous?: ThreadViewModel,
@@ -388,6 +410,20 @@ export const toThreadViewModel = (
                   },
                 }
               : {}),
+            ...(turn.commandApproval.executionResult
+              ? {
+                  executionResult: {
+                    id: turn.commandApproval.executionResult.id,
+                    state: toCommandExecutionResultPresentationState(
+                      snapshot.phase,
+                      turn.commandApproval.executionResult.status,
+                    ),
+                    outcome: {
+                      ...turn.commandApproval.executionResult.outcome,
+                    },
+                  },
+                }
+              : {}),
           } satisfies CommandApprovalActivityViewModel
         : undefined;
       const commandApproval =
@@ -400,7 +436,14 @@ export const toThreadViewModel = (
         previousTurn.commandApproval.executionAttempt?.id ===
           nextCommandApproval.executionAttempt?.id &&
         previousTurn.commandApproval.executionAttempt?.state ===
-          nextCommandApproval.executionAttempt?.state
+          nextCommandApproval.executionAttempt?.state &&
+        previousTurn.commandApproval.executionResult?.id ===
+          nextCommandApproval.executionResult?.id &&
+        previousTurn.commandApproval.executionResult?.state ===
+          nextCommandApproval.executionResult?.state &&
+        JSON.stringify(
+          previousTurn.commandApproval.executionResult?.outcome,
+        ) === JSON.stringify(nextCommandApproval.executionResult?.outcome)
           ? previousTurn.commandApproval
           : nextCommandApproval;
       const nextFailure = turn.error

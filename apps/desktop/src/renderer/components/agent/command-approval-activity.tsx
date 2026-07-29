@@ -16,6 +16,7 @@ import type {
   CommandApprovalPresentationState,
   CommandExecutionAttemptPresentationState,
 } from './types';
+import { CommandExecutionResult } from './command-execution-result';
 
 const ATTEMPT_COPY: Record<
   CommandExecutionAttemptPresentationState,
@@ -35,7 +36,7 @@ const ATTEMPT_COPY: Record<
   },
   recorded: {
     label: 'Execution attempt recorded',
-    detail: 'Executor may have been called; no result or output is shown',
+    detail: 'Executor invocation is durably recorded',
   },
 };
 
@@ -61,7 +62,7 @@ const STATE_COPY: Record<
   },
   approved: {
     label: 'Command approved',
-    detail: 'Approval recorded; execution is not shown',
+    detail: 'Approval recorded; execution audit follows when available',
   },
   denied: {
     label: 'Command denied',
@@ -200,6 +201,9 @@ export const CommandApprovalActivity = ({
             <p className="mt-1 break-words font-mono text-[10px] tracking-[0.08em] text-tertiary">
               {ATTEMPT_COPY[activity.executionAttempt.state].detail}
             </p>
+            {activity.executionResult ? (
+              <CommandExecutionResult result={activity.executionResult} />
+            ) : null}
           </div>
         ) : null}
       </div>

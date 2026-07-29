@@ -104,6 +104,24 @@ export type ConversationCommandApprovalDecision =
   | 'cancelled'
   | 'clientDisconnected';
 
+export type ConversationCommandExecutionResultOutcome =
+  | Readonly<{ type: 'error'; kind: string }>
+  | Readonly<{
+      type: 'process';
+      stdoutBytes: number;
+      stderrBytes: number;
+      stdoutTruncated: boolean;
+      stderrTruncated: boolean;
+      encoding: 'utf8Lossy';
+      durationMs: number;
+      outcome:
+        | Readonly<{ type: 'exitCode'; code: number }>
+        | Readonly<{ type: 'signal'; signal: number }>
+        | Readonly<{ type: 'timedOut' }>;
+      sandboxPolicy: 'filesystemReadOnlyV1';
+      networkPolicy: 'networkDeniedV1';
+    }>;
+
 export type ConversationCommandApprovalActivity = Readonly<{
   callItemId: string;
   id: string;
@@ -120,6 +138,11 @@ export type ConversationCommandApprovalActivity = Readonly<{
   executionAttempt?: Readonly<{
     id: string;
     status: ConversationMessageStatus;
+  }>;
+  executionResult?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    outcome: ConversationCommandExecutionResultOutcome;
   }>;
 }>;
 
@@ -422,6 +445,58 @@ const isWorkspaceSearchActivity = (
   );
 };
 
+const isCommandExecutionResultOutcome = (
+  value: unknown,
+): value is ConversationCommandExecutionResultOutcome => {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    return false;
+  }
+  if (value.type === 'error') {
+    return (
+      Object.keys(value).length === 2 &&
+      typeof value.kind === 'string' &&
+      value.kind.length > 0
+    );
+  }
+  if (
+    value.type !== 'process' ||
+    Object.keys(value).length !== 10 ||
+    typeof value.stdoutBytes !== 'number' ||
+    !Number.isSafeInteger(value.stdoutBytes) ||
+    value.stdoutBytes < 0 ||
+    typeof value.stderrBytes !== 'number' ||
+    !Number.isSafeInteger(value.stderrBytes) ||
+    value.stderrBytes < 0 ||
+    typeof value.stdoutTruncated !== 'boolean' ||
+    typeof value.stderrTruncated !== 'boolean' ||
+    value.encoding !== 'utf8Lossy' ||
+    typeof value.durationMs !== 'number' ||
+    !Number.isSafeInteger(value.durationMs) ||
+    value.durationMs < 0 ||
+    value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
+    value.networkPolicy !== 'networkDeniedV1' ||
+    !isRecord(value.outcome)
+  ) {
+    return false;
+  }
+  if (value.outcome.type === 'timedOut') {
+    return Object.keys(value.outcome).length === 1;
+  }
+  if (value.outcome.type === 'exitCode') {
+    return (
+      Object.keys(value.outcome).length === 2 &&
+      typeof value.outcome.code === 'number' &&
+      Number.isSafeInteger(value.outcome.code)
+    );
+  }
+  return (
+    value.outcome.type === 'signal' &&
+    Object.keys(value.outcome).length === 2 &&
+    typeof value.outcome.signal === 'number' &&
+    Number.isSafeInteger(value.outcome.signal)
+  );
+};
+
 const isCommandApprovalActivity = (
   value: unknown,
 ): value is ConversationCommandApprovalActivity => {
@@ -446,7 +521,10 @@ const isCommandApprovalActivity = (
     return false;
   }
   if (!Object.hasOwn(value, 'decision')) {
-    return !Object.hasOwn(value, 'executionAttempt');
+    return (
+      !Object.hasOwn(value, 'executionAttempt') &&
+      !Object.hasOwn(value, 'executionResult')
+    );
   }
   if (!(
     value.requestStatus === 'completed' &&
@@ -466,9 +544,9 @@ const isCommandApprovalActivity = (
     return false;
   }
   if (!Object.hasOwn(value, 'executionAttempt')) {
-    return true;
+    return !Object.hasOwn(value, 'executionResult');
   }
-  return (
+  if (!(
     value.decision.value === 'approved' &&
     value.decision.status === 'completed' &&
     isRecord(value.executionAttempt) &&
@@ -480,6 +558,25 @@ const isCommandApprovalActivity = (
     MESSAGE_STATUSES.has(
       value.executionAttempt.status as ConversationMessageStatus,
     )
+  )) {
+    return false;
+  }
+  if (!Object.hasOwn(value, 'executionResult')) {
+    return true;
+  }
+  return (
+    value.executionAttempt.status === 'completed' &&
+    isRecord(value.executionResult) &&
+    isId(value.executionResult.id) &&
+    value.executionResult.id !== value.id &&
+    value.executionResult.id !== value.callItemId &&
+    value.executionResult.id !== value.decision.id &&
+    value.executionResult.id !== value.executionAttempt.id &&
+    typeof value.executionResult.status === 'string' &&
+    MESSAGE_STATUSES.has(
+      value.executionResult.status as ConversationMessageStatus,
+    ) &&
+    isCommandExecutionResultOutcome(value.executionResult.outcome)
   );
 };
 
@@ -572,8 +669,12 @@ const isTurn = (value: unknown): value is ConversationTurn => {
         commandApproval.decision.status !== 'completed') ||
       (commandApproval.executionAttempt &&
         commandApproval.executionAttempt.status !== 'completed') ||
+      (commandApproval.executionResult &&
+        commandApproval.executionResult.status !== 'completed') ||
       (value.status !== 'interrupted' &&
-        commandApproval.decision?.status !== 'completed'))
+        (commandApproval.decision?.status !== 'completed' ||
+          (commandApproval.executionAttempt &&
+            commandApproval.executionResult?.status !== 'completed'))))
   ) {
     return false;
   }

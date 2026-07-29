@@ -914,7 +914,7 @@ describe('ThreadWorkbenchView', () => {
     ).toMatchObject({ state: 'failed', errorKind: 'notFound' });
   });
 
-  it('presents a durable command execution attempt audit without controls, arguments, or results', async () => {
+  it('presents a durable command result summary without controls, arguments, or output', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -945,6 +945,22 @@ describe('ThreadWorkbenchView', () => {
                 id: 'item_attempt',
                 status: 'completed',
               },
+              executionResult: {
+                id: 'item_result',
+                status: 'completed',
+                outcome: {
+                  type: 'process',
+                  stdoutBytes: 22,
+                  stderrBytes: 21,
+                  stdoutTruncated: false,
+                  stderrTruncated: true,
+                  encoding: 'utf8Lossy',
+                  durationMs: 7,
+                  outcome: { type: 'exitCode', code: 0 },
+                  sandboxPolicy: 'filesystemReadOnlyV1',
+                  networkPolicy: 'networkDeniedV1',
+                },
+              },
             },
           },
         ],
@@ -960,7 +976,7 @@ describe('ThreadWorkbenchView', () => {
     expect(activity?.textContent).toContain('/usr/bin/printf');
     expect(activity?.textContent).toContain('2 arguments');
     expect(activity?.textContent).toContain(
-      'Approval recorded; execution is not shown',
+      'Approval recorded; execution audit follows when available',
     );
     const attempt = activity?.querySelector(
       '[aria-label="Execution attempt recorded"]',
@@ -969,14 +985,122 @@ describe('ThreadWorkbenchView', () => {
       'recorded',
     );
     expect(attempt?.textContent).toContain(
-      'Executor may have been called; no result or output is shown',
+      'Executor invocation is durably recorded',
     );
+    const result = activity?.querySelector(
+      '[aria-label="Execution result recorded: Command exited successfully"]',
+    );
+    expect(result?.getAttribute('role')).toBe('status');
+    expect(result?.getAttribute('data-execution-result-state')).toBe(
+      'recorded',
+    );
+    expect(result?.getAttribute('data-execution-outcome')).toBe('exitCode');
+    expect(result?.textContent).toContain('7 ms');
+    expect(result?.textContent).toContain('22 B');
+    expect(result?.textContent).toContain('21 B · truncated');
+    expect(result?.textContent).toContain('utf8Lossy');
+    expect(result?.textContent).toContain('filesystemReadOnlyV1');
+    expect(result?.textContent).toContain('networkDeniedV1');
     expect(activity?.querySelector('button, a')).toBeNull();
     expect(activity?.textContent).not.toContain('approval_command');
     expect(activity?.textContent).not.toContain('private-value');
     expect(activity?.textContent).not.toContain('item_attempt');
+    expect(activity?.textContent).not.toContain('private-command-output');
 
     await act(async () => root.unmount());
+  });
+
+  it.each([
+    ['inProgress', 'observed'],
+    ['stopping', 'stopping'],
+    ['unavailable', 'uncertain'],
+  ] as const)('derives command execution result %s state', (phase, expected) => {
+    expect(
+      toThreadViewModel({
+        revision: 26,
+        phase,
+        threadId: 'thr_0000000000000001',
+        activeTurnId: 'turn_0000000000000018',
+        turns: [
+          {
+            id: 'turn_0000000000000018',
+            status: 'inProgress',
+            messages: [],
+            commandApproval: {
+              callItemId: 'item_command',
+              id: 'item_request',
+              callId: 'call_command',
+              approvalId: 'approval_command',
+              command: '/usr/bin/true',
+              argumentCount: 0,
+              requestStatus: 'completed',
+              decision: {
+                id: 'item_decision',
+                status: 'completed',
+                value: 'approved',
+              },
+              executionAttempt: {
+                id: 'item_attempt',
+                status: 'completed',
+              },
+              executionResult: {
+                id: 'item_result',
+                status: 'inProgress',
+                outcome: { type: 'error', kind: 'spawnFailed' },
+              },
+            },
+          },
+        ],
+      }).turns[0]?.commandApproval?.executionResult?.state,
+    ).toBe(expected);
+  });
+
+  it('keeps a completed execution result recorded across a failed Turn', () => {
+    const result = toThreadViewModel({
+      revision: 27,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000019',
+          status: 'failed',
+          messages: [],
+          commandApproval: {
+            callItemId: 'item_command',
+            id: 'item_request',
+            callId: 'call_command',
+            approvalId: 'approval_command',
+            command: '/usr/bin/false',
+            argumentCount: 0,
+            requestStatus: 'completed',
+            decision: {
+              id: 'item_decision',
+              status: 'completed',
+              value: 'approved',
+            },
+            executionAttempt: { id: 'item_attempt', status: 'completed' },
+            executionResult: {
+              id: 'item_result',
+              status: 'completed',
+              outcome: {
+                type: 'process',
+                stdoutBytes: 0,
+                stderrBytes: 0,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                encoding: 'utf8Lossy',
+                durationMs: 3,
+                outcome: { type: 'exitCode', code: 1 },
+                sandboxPolicy: 'filesystemReadOnlyV1',
+                networkPolicy: 'networkDeniedV1',
+              },
+            },
+          },
+          error: { kind: 'server', retryable: false },
+        },
+      ],
+    }).turns[0]?.commandApproval?.executionResult;
+    expect(result).toMatchObject({ state: 'recorded' });
   });
 
   it.each([

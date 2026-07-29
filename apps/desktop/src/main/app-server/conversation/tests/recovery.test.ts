@@ -290,7 +290,7 @@ describe('conversation recovery', () => {
     expect(JSON.stringify(recovered)).not.toContain('"line"');
   });
 
-  it('recovers a read-only command execution attempt audit and discards arguments', () => {
+  it('recovers a read-only command result summary and discards arguments and output', () => {
     const resumed = parseThreadResumeResponse({
       thread: { id: 'thr_0000000000000001' },
       turns: [
@@ -375,10 +375,112 @@ describe('conversation recovery', () => {
         id: 'item_attempt',
         status: 'completed',
       },
+      executionResult: {
+        id: 'item_result',
+        status: 'completed',
+        outcome: {
+          type: 'process',
+          stdoutBytes: 22,
+          stderrBytes: 21,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          encoding: 'utf8Lossy',
+          durationMs: 1,
+          outcome: { type: 'exitCode', code: 0 },
+          sandboxPolicy: 'filesystemReadOnlyV1',
+          networkPolicy: 'networkDeniedV1',
+        },
+      },
     });
     expect(JSON.stringify(recovered)).not.toContain('private-value');
     expect(JSON.stringify(recovered)).not.toContain('private-command-output');
     expect(JSON.stringify(recovered)).not.toContain('private-command-error');
+  });
+
+  it('rejects a terminal command execution attempt without a result', () => {
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            ...approvedReadOnlyCommandItems(),
+            {
+              type: 'commandExecutionAttempt',
+              id: 'item_attempt',
+              approvalId: 'approval_command',
+              callId: 'call_command',
+            },
+          ],
+        },
+      ],
+    });
+    expect(() =>
+      recoverConversation('thr_0000000000000001', resumed),
+    ).toThrow('without a result');
+  });
+
+  it('rejects a command execution result before its attempt', () => {
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            ...approvedReadOnlyCommandItems(),
+            {
+              type: 'toolResult',
+              id: 'item_result',
+              callId: 'call_command',
+              name: 'shell/exec',
+              result: { type: 'error', kind: 'spawnFailed' },
+            },
+          ],
+        },
+      ],
+    });
+    expect(() =>
+      recoverConversation('thr_0000000000000001', resumed),
+    ).toThrow('command execution result');
+  });
+
+  it('rejects a shell result that claims workspace-write policy', () => {
+    expect(() =>
+      parseThreadResumeResponse({
+        thread: { id: 'thr_0000000000000001' },
+        turns: [
+          {
+            id: 'turn_0000000000000001',
+            status: 'completed',
+            items: [
+              {
+                type: 'toolResult',
+                id: 'item_result',
+                callId: 'call_command',
+                name: 'shell/exec',
+                result: {
+                  type: 'process',
+                  stdout: '',
+                  stderr: '',
+                  stdoutBytes: 0,
+                  stderrBytes: 0,
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  encoding: 'utf8Lossy',
+                  durationMs: 1,
+                  outcome: { type: 'exitCode', code: 0 },
+                  sandboxPolicy: 'filesystemReadOnlyV1',
+                  workspaceWritePolicy: 'workspaceFilesV1',
+                  networkPolicy: 'networkDeniedV1',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow('shell/exec ToolResult outcome');
   });
 
   it.each([

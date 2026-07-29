@@ -297,6 +297,23 @@ const run = async (): Promise<void> => {
               approvalId: 'approval_recovered_command',
               callId: 'call_recovered_command',
             },
+            {
+              type: 'commandExecutionResult',
+              id: 'item_recovered_command_result',
+              callId: 'call_recovered_command',
+              outcome: {
+                type: 'process',
+                stdoutBytes: 24,
+                stderrBytes: 9,
+                stdoutTruncated: false,
+                stderrTruncated: true,
+                encoding: 'utf8Lossy',
+                durationMs: 12,
+                outcome: { type: 'exitCode', code: 7 },
+                sandboxPolicy: 'filesystemReadOnlyV1',
+                networkPolicy: 'networkDeniedV1',
+              },
+            },
           ],
           error: { kind: 'server', retryable: false },
         },
@@ -552,12 +569,22 @@ const run = async (): Promise<void> => {
           const attempt = activity?.querySelector(
             '[aria-label="Execution attempt recorded"]',
           );
+          const result = activity?.querySelector(
+            '[aria-label="Execution result recorded: Command exited with code 7"]',
+          );
           return activity?.getAttribute('role') === 'status' &&
             activity.getAttribute('data-state') === 'approved' &&
             attempt?.getAttribute('data-execution-attempt-state') === 'recorded' &&
+            result?.getAttribute('role') === 'alert' &&
+            result.getAttribute('data-execution-result-state') === 'recorded' &&
+            result.getAttribute('data-execution-outcome') === 'exitCode' &&
             activity.textContent?.includes('1 argument') === true &&
-            activity.textContent?.includes('Executor may have been called') === true &&
-            activity.textContent?.includes('result or output is shown') === true &&
+            activity.textContent?.includes('Executor invocation is durably recorded') === true &&
+            activity.textContent?.includes('12 ms') === true &&
+            activity.textContent?.includes('24 B') === true &&
+            activity.textContent?.includes('9 B · truncated') === true &&
+            activity.textContent?.includes('filesystemReadOnlyV1') === true &&
+            activity.textContent?.includes('networkDeniedV1') === true &&
             !activity.textContent?.includes('private-electron-argument') &&
             !activity.querySelector('button, a');
         })()`,
@@ -568,18 +595,18 @@ const run = async (): Promise<void> => {
   await waitFor(
     () =>
       evaluate<boolean>(`(() => {
-        const attempt = document.querySelector(
-          '[aria-label="Execution attempt recorded"]',
+        const result = document.querySelector(
+          '[aria-label="Execution result recorded: Command exited with code 7"]',
         );
-        if (!(attempt instanceof HTMLElement)) {
+        if (!(result instanceof HTMLElement)) {
           return false;
         }
-        const bounds = attempt.getBoundingClientRect();
+        const bounds = result.getBoundingClientRect();
         return document.documentElement.scrollWidth <=
           document.documentElement.clientWidth &&
           bounds.left >= 0 && bounds.right <= window.innerWidth;
       })()`),
-    'narrow command execution attempt layout',
+    'narrow command execution result layout',
   );
   window.setSize(800, 600);
 
@@ -931,10 +958,10 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
-          '[aria-label="Execution attempt recorded"]',
-        )?.getAttribute('data-execution-attempt-state') === 'recorded'`,
+          '[aria-label="Execution result recorded: Command exited with code 7"]',
+        )?.getAttribute('data-execution-result-state') === 'recorded'`,
       ),
-    'command execution attempt after Renderer reload',
+    'command execution result after Renderer reload',
   );
   await evaluate(`Array.from(document.querySelectorAll(
     '[aria-label="Agent response"]',

@@ -254,6 +254,40 @@ export const recoverConversation = (
             status: 'completed',
           },
         };
+        continue;
+      }
+      if (item.type === 'commandExecutionResult') {
+        if (!commandApproval && commandCall?.callId === item.callId) {
+          continue;
+        }
+        if (
+          commandApproval?.callId === item.callId &&
+          commandApproval.decision?.status === 'completed' &&
+          commandApproval.decision.value !== 'approved' &&
+          !commandApproval.executionAttempt
+        ) {
+          continue;
+        }
+        if (
+          !commandApproval ||
+          commandApproval.callId !== item.callId ||
+          commandApproval.decision?.status !== 'completed' ||
+          commandApproval.decision.value !== 'approved' ||
+          commandApproval.executionAttempt?.status !== 'completed' ||
+          commandApproval.executionResult
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched command execution result.',
+          );
+        }
+        commandApproval = {
+          ...commandApproval,
+          executionResult: {
+            id: item.id,
+            status: 'completed',
+            outcome: { ...item.outcome },
+          },
+        };
       }
     }
 
@@ -291,6 +325,15 @@ export const recoverConversation = (
     ) {
       throw new Error(
         'thread/resume returned terminal command approval activity without a decision.',
+      );
+    }
+    if (
+      commandApproval?.executionAttempt &&
+      turn.status !== 'interrupted' &&
+      !commandApproval.executionResult
+    ) {
+      throw new Error(
+        'thread/resume returned terminal command execution attempt without a result.',
       );
     }
 
