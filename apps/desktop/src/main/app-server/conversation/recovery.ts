@@ -1,5 +1,6 @@
 import type {
   ConversationMessage,
+  ConversationMcpActivity,
   ConversationCommandApprovalActivity,
   ConversationFileChangeActivity,
   ConversationTurn,
@@ -48,6 +49,18 @@ export const recoverConversation = (
         }>
       | undefined;
     let commandApproval: ConversationCommandApprovalActivity | undefined;
+    let mcpCall:
+      | Readonly<{
+          id: string;
+          callId: string;
+          name: string;
+          argumentsBytes: number;
+          argumentsSha256: string;
+          inventorySha256: string;
+          argumentSignature: string;
+        }>
+      | undefined;
+    const mcpActivities: ConversationMcpActivity[] = [];
     for (const item of turn.items) {
       if (itemIds.has(item.id)) {
         throw new Error('thread/resume returned a duplicate Item ID.');
@@ -69,7 +82,9 @@ export const recoverConversation = (
           workspaceSearch ||
           fileChange ||
           commandCall ||
-          commandApproval
+          commandApproval ||
+          mcpCall ||
+          mcpActivities.length > 0
         ) {
           throw new Error(
             'thread/resume returned duplicate workspace/read activity.',
@@ -110,7 +125,9 @@ export const recoverConversation = (
           workspaceSearch ||
           fileChange ||
           commandCall ||
-          commandApproval
+          commandApproval ||
+          mcpCall ||
+          mcpActivities.length > 0
         ) {
           throw new Error(
             'thread/resume returned duplicate workspace/list activity.',
@@ -151,7 +168,9 @@ export const recoverConversation = (
           workspaceList ||
           fileChange ||
           commandCall ||
-          commandApproval
+          commandApproval ||
+          mcpCall ||
+          mcpActivities.length > 0
         ) {
           throw new Error(
             'thread/resume returned duplicate workspace/search activity.',
@@ -193,7 +212,9 @@ export const recoverConversation = (
           workspaceSearch ||
           fileChange ||
           commandCall ||
-          commandApproval
+          commandApproval ||
+          mcpCall ||
+          mcpActivities.length > 0
         ) {
           throw new Error(
             'thread/resume returned duplicate workspace/apply-patch activity.',
@@ -265,6 +286,136 @@ export const recoverConversation = (
         };
         continue;
       }
+      if (item.type === 'mcpCall') {
+        if (
+          workspaceRead ||
+          workspaceList ||
+          workspaceSearch ||
+          fileChange ||
+          commandCall ||
+          commandApproval ||
+          mcpCall ||
+          mcpActivities.length >= 4 ||
+          mcpActivities.some((activity) => !activity.result)
+        ) {
+          throw new Error(
+            'thread/resume returned a non-sequential MCP call.',
+          );
+        }
+        mcpCall = {
+          id: item.id,
+          callId: item.callId,
+          name: item.name,
+          argumentsBytes: item.argumentsBytes,
+          argumentsSha256: item.argumentsSha256,
+          inventorySha256: item.inventorySha256,
+          argumentSignature: item.argumentSignature,
+        };
+        continue;
+      }
+      if (item.type === 'mcpApprovalRequest') {
+        const server = /^mcp__([a-z][a-z0-9]*(?:-[a-z0-9]+)*)__.+$/u.exec(
+          item.name,
+        )?.[1];
+        if (
+          !mcpCall ||
+          !server ||
+          mcpCall.callId !== item.callId ||
+          mcpCall.name !== item.name ||
+          mcpCall.argumentsBytes !== item.argumentsBytes ||
+          mcpCall.argumentsSha256 !== item.argumentsSha256 ||
+          mcpCall.inventorySha256 !== item.inventorySha256 ||
+          mcpCall.argumentSignature !== item.argumentSignature
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched MCP approval request.',
+          );
+        }
+        mcpActivities.push({
+          callItemId: mcpCall.id,
+          id: item.id,
+          callId: item.callId,
+          approvalId: item.approvalId,
+          serverId: server,
+          name: item.name,
+          argumentsBytes: item.argumentsBytes,
+          argumentsSha256: item.argumentsSha256,
+          inventorySha256: item.inventorySha256,
+          callStatus: 'completed',
+          requestStatus: 'completed',
+        });
+        mcpCall = undefined;
+        continue;
+      }
+      if (item.type === 'mcpApprovalDecision') {
+        const index = mcpActivities.findIndex(
+          (activity) => activity.approvalId === item.approvalId,
+        );
+        const activity = mcpActivities[index];
+        if (!activity || activity.decision) {
+          throw new Error(
+            'thread/resume returned an unmatched MCP approval decision.',
+          );
+        }
+        mcpActivities[index] = {
+          ...activity,
+          decision: {
+            id: item.id,
+            status: 'completed',
+            value: item.decision,
+          },
+        };
+        continue;
+      }
+      if (item.type === 'mcpExecutionAttempt') {
+        const index = mcpActivities.findIndex(
+          (activity) => activity.approvalId === item.approvalId,
+        );
+        const activity = mcpActivities[index];
+        if (
+          !activity ||
+          activity.callId !== item.callId ||
+          activity.inventorySha256 !== item.inventorySha256 ||
+          activity.decision?.value !== 'approved' ||
+          activity.executionAttempt
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched MCP execution attempt.',
+          );
+        }
+        mcpActivities[index] = {
+          ...activity,
+          executionAttempt: { id: item.id, status: 'completed' },
+        };
+        continue;
+      }
+      if (item.type === 'mcpResult') {
+        const index = mcpActivities.findIndex(
+          (activity) => activity.callId === item.callId,
+        );
+        const activity = mcpActivities[index];
+        const approved = activity?.decision?.value === 'approved';
+        if (
+          !activity ||
+          activity.name !== item.name ||
+          !activity.decision ||
+          activity.result ||
+          (approved
+            ? !activity.executionAttempt
+            : Boolean(activity.executionAttempt))
+        ) {
+          throw new Error('thread/resume returned an unmatched MCP result.');
+        }
+        mcpActivities[index] = {
+          ...activity,
+          result: {
+            id: item.id,
+            status: 'completed',
+            receipt: { ...item.receipt },
+          },
+        };
+        continue;
+      }
       if (item.type === 'commandCall') {
         if (
           workspaceRead ||
@@ -272,7 +423,9 @@ export const recoverConversation = (
           workspaceSearch ||
           fileChange ||
           commandCall ||
-          commandApproval
+          commandApproval ||
+          mcpCall ||
+          mcpActivities.length > 0
         ) {
           throw new Error(
             'thread/resume returned duplicate command approval activity.',
@@ -448,6 +601,18 @@ export const recoverConversation = (
         'thread/resume returned terminal command execution attempt without a result.',
       );
     }
+    if (
+      mcpCall ||
+      mcpActivities.some(
+        (activity) =>
+          !activity.decision ||
+          (turn.status !== 'interrupted' && !activity.result),
+      )
+    ) {
+      throw new Error(
+        'thread/resume returned terminal MCP activity without durable closure.',
+      );
+    }
 
     return {
       id: turn.id,
@@ -458,6 +623,7 @@ export const recoverConversation = (
       ...(workspaceSearch ? { workspaceSearch } : {}),
       ...(fileChange ? { fileChange } : {}),
       ...(commandApproval ? { commandApproval } : {}),
+      ...(mcpActivities.length > 0 ? { mcpActivities } : {}),
       ...(turn.error ? { error: { ...turn.error } } : {}),
     };
   });

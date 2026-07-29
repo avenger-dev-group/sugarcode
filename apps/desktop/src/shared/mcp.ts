@@ -1,0 +1,289 @@
+export const MCP_SESSION_STATE_GET_CHANNEL = 'mcp-session-state:get';
+export const MCP_SESSION_STATE_CHANGED_CHANNEL = 'mcp-session-state:changed';
+export const MCP_SESSION_TOGGLE_CHANNEL = 'mcp-session:toggle';
+export const MCP_SESSION_ENABLE_CHANNEL = 'mcp-session:enable';
+export const MCP_SESSION_DISABLE_CHANNEL = 'mcp-session:disable';
+export const MCP_APPROVAL_STATE_GET_CHANNEL = 'mcp-approval-state:get';
+export const MCP_APPROVAL_STATE_CHANGED_CHANNEL = 'mcp-approval-state:changed';
+export const MCP_APPROVAL_APPROVE_CHANNEL = 'mcp-approval:approve';
+export const MCP_APPROVAL_DENY_CHANNEL = 'mcp-approval:deny';
+
+export type McpServerTransport = 'stdio' | 'loopbackStreamableHttp';
+
+export type McpConfiguredServer = Readonly<{
+  id: string;
+  transport: McpServerTransport;
+}>;
+
+export type McpSessionStatus =
+  | 'loading'
+  | 'disabled'
+  | 'enabling'
+  | 'enabled'
+  | 'disabling'
+  | 'rollingBack'
+  | 'unavailable';
+
+export type McpSessionStateSnapshot = Readonly<{
+  revision: number;
+  status: McpSessionStatus;
+  servers: readonly McpConfiguredServer[];
+  selectedServerIds: readonly string[];
+  activeServerIds: readonly string[];
+  actionNotice?: string;
+}>;
+
+export type McpSessionActionResult = Readonly<{
+  accepted: boolean;
+  reason:
+    | 'accepted'
+    | 'invalid'
+    | 'incompatibleSelection'
+    | 'turnActive'
+    | 'approvalPending'
+    | 'busy'
+    | 'unavailable';
+}>;
+
+export type McpApprovalStatus =
+  | 'idle'
+  | 'pending'
+  | 'approved'
+  | 'denied'
+  | 'expired'
+  | 'cancelled';
+
+export type McpApprovalActionState =
+  | 'awaitingUser'
+  | 'submittingApproval'
+  | 'submittingDenial'
+  | 'localWindowElapsed';
+
+export type McpApprovalViewModel = Readonly<{
+  presentationId: string;
+  serverId: string;
+  name: string;
+  argumentsJson: string;
+  argumentsBytes: number;
+  argumentsSha256: string;
+  inventorySha256: string;
+  localExpiresAtMs: number;
+  actionState: McpApprovalActionState;
+}>;
+
+export type McpApprovalStateSnapshot = Readonly<{
+  revision: number;
+  status: McpApprovalStatus;
+  request?: McpApprovalViewModel;
+}>;
+
+export type McpApprovalActionResult = Readonly<{
+  accepted: boolean;
+  reason: 'accepted' | 'stale' | 'unavailable' | 'invalid';
+}>;
+
+export type McpApi = Readonly<{
+  getMcpSessionState: () => Promise<McpSessionStateSnapshot>;
+  onMcpSessionStateChanged: (
+    listener: (snapshot: McpSessionStateSnapshot) => void,
+  ) => () => void;
+  toggleMcpServer: (serverId: string) => Promise<McpSessionActionResult>;
+  enableMcpSession: () => Promise<McpSessionActionResult>;
+  disableMcpSession: () => Promise<McpSessionActionResult>;
+  getMcpApprovalState: () => Promise<McpApprovalStateSnapshot>;
+  onMcpApprovalStateChanged: (
+    listener: (snapshot: McpApprovalStateSnapshot) => void,
+  ) => () => void;
+  approveMcpCall: (
+    presentationId: string,
+  ) => Promise<McpApprovalActionResult>;
+  denyMcpCall: (
+    presentationId: string,
+  ) => Promise<McpApprovalActionResult>;
+}>;
+
+const SESSION_STATUSES = new Set<McpSessionStatus>([
+  'loading',
+  'disabled',
+  'enabling',
+  'enabled',
+  'disabling',
+  'rollingBack',
+  'unavailable',
+]);
+const TRANSPORTS = new Set<McpServerTransport>([
+  'stdio',
+  'loopbackStreamableHttp',
+]);
+const SESSION_REASONS = new Set<McpSessionActionResult['reason']>([
+  'accepted',
+  'invalid',
+  'incompatibleSelection',
+  'turnActive',
+  'approvalPending',
+  'busy',
+  'unavailable',
+]);
+const APPROVAL_STATUSES = new Set<McpApprovalStatus>([
+  'idle',
+  'pending',
+  'approved',
+  'denied',
+  'expired',
+  'cancelled',
+]);
+const APPROVAL_ACTION_STATES = new Set<McpApprovalActionState>([
+  'awaitingUser',
+  'submittingApproval',
+  'submittingDenial',
+  'localWindowElapsed',
+]);
+const APPROVAL_REASONS = new Set<McpApprovalActionResult['reason']>([
+  'accepted',
+  'stale',
+  'unavailable',
+  'invalid',
+]);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const hasOnlyKeys = (
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean => {
+  const allowed = new Set([...required, ...optional]);
+  return (
+    required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key))
+  );
+};
+
+const isId = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(value) &&
+  new TextEncoder().encode(value).byteLength <= 32;
+
+const isSha256 = (value: unknown): value is string =>
+  typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value);
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+export const isMcpSessionStateSnapshot = (
+  value: unknown,
+): value is McpSessionStateSnapshot => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(
+      value,
+      [
+        'revision',
+        'status',
+        'servers',
+        'selectedServerIds',
+        'activeServerIds',
+      ],
+      ['actionNotice'],
+    ) ||
+    !Number.isSafeInteger(value.revision) ||
+    (value.revision as number) < 0 ||
+    typeof value.status !== 'string' ||
+    !SESSION_STATUSES.has(value.status as McpSessionStatus) ||
+    !Array.isArray(value.servers) ||
+    !isStringArray(value.selectedServerIds) ||
+    !isStringArray(value.activeServerIds) ||
+    (value.actionNotice !== undefined &&
+      typeof value.actionNotice !== 'string')
+  ) {
+    return false;
+  }
+  const ids = new Set<string>();
+  for (const server of value.servers) {
+    if (
+      !isRecord(server) ||
+      !hasOnlyKeys(server, ['id', 'transport']) ||
+      !isId(server.id) ||
+      typeof server.transport !== 'string' ||
+      !TRANSPORTS.has(server.transport as McpServerTransport) ||
+      ids.has(server.id)
+    ) {
+      return false;
+    }
+    ids.add(server.id);
+  }
+  return (
+    value.selectedServerIds.every((id) => ids.has(id)) &&
+    value.activeServerIds.every((id) => ids.has(id))
+  );
+};
+
+export const isMcpSessionActionResult = (
+  value: unknown,
+): value is McpSessionActionResult =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['accepted', 'reason']) &&
+  typeof value.accepted === 'boolean' &&
+  typeof value.reason === 'string' &&
+  SESSION_REASONS.has(value.reason as McpSessionActionResult['reason']) &&
+  value.accepted === (value.reason === 'accepted');
+
+export const isMcpApprovalStateSnapshot = (
+  value: unknown,
+): value is McpApprovalStateSnapshot => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['revision', 'status'], ['request']) ||
+    !Number.isSafeInteger(value.revision) ||
+    (value.revision as number) < 0 ||
+    typeof value.status !== 'string' ||
+    !APPROVAL_STATUSES.has(value.status as McpApprovalStatus)
+  ) {
+    return false;
+  }
+  if (value.status !== 'pending') {
+    return value.request === undefined;
+  }
+  const request = value.request;
+  return (
+    isRecord(request) &&
+    hasOnlyKeys(request, [
+      'presentationId',
+      'serverId',
+      'name',
+      'argumentsJson',
+      'argumentsBytes',
+      'argumentsSha256',
+      'inventorySha256',
+      'localExpiresAtMs',
+      'actionState',
+    ]) &&
+    typeof request.presentationId === 'string' &&
+    request.presentationId.length > 0 &&
+    isId(request.serverId) &&
+    typeof request.name === 'string' &&
+    request.name.startsWith(`mcp__${request.serverId}__`) &&
+    typeof request.argumentsJson === 'string' &&
+    Number.isSafeInteger(request.argumentsBytes) &&
+    (request.argumentsBytes as number) >= 0 &&
+    isSha256(request.argumentsSha256) &&
+    isSha256(request.inventorySha256) &&
+    Number.isSafeInteger(request.localExpiresAtMs) &&
+    (request.localExpiresAtMs as number) >= 0 &&
+    typeof request.actionState === 'string' &&
+    APPROVAL_ACTION_STATES.has(
+      request.actionState as McpApprovalActionState,
+    )
+  );
+};
+
+export const isMcpApprovalActionResult = (
+  value: unknown,
+): value is McpApprovalActionResult =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['accepted', 'reason']) &&
+  typeof value.accepted === 'boolean' &&
+  typeof value.reason === 'string' &&
+  APPROVAL_REASONS.has(value.reason as McpApprovalActionResult['reason']) &&
+  value.accepted === (value.reason === 'accepted');

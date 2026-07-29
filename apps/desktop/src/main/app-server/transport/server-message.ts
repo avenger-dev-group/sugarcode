@@ -194,7 +194,9 @@ export const parseInitializeResponse = (
     !isRecord(value.capabilities) ||
     typeof value.capabilities.commandApprovals !== 'boolean' ||
     typeof value.capabilities.commandWorkspaceWriteApprovals !==
-      'boolean'
+      'boolean' ||
+    (value.capabilities.mcpToolCallApprovals !== undefined &&
+      typeof value.capabilities.mcpToolCallApprovals !== 'boolean')
   ) {
     throw new Error('Invalid initialize response.');
   }
@@ -214,6 +216,12 @@ export const parseInitializeResponse = (
       commandApprovals: value.capabilities.commandApprovals,
       commandWorkspaceWriteApprovals:
         value.capabilities.commandWorkspaceWriteApprovals,
+      ...(value.capabilities.mcpToolCallApprovals !== undefined
+        ? {
+            mcpToolCallApprovals:
+              value.capabilities.mcpToolCallApprovals as boolean,
+          }
+        : {}),
     },
   };
 };

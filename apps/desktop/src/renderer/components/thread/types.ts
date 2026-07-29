@@ -14,6 +14,7 @@ import type {
   WorkspaceSearchActivityViewModel,
 } from '../agent/types';
 import type { FileChangeReviewViewModel } from '../workspace/types';
+import type { McpActivityViewModel } from '../mcp/types';
 
 export type UserMessageViewModel = Readonly<{
   id: string;
@@ -46,6 +47,7 @@ export type TurnViewModel = Readonly<{
   workspaceSearch?: WorkspaceSearchActivityViewModel;
   fileChange?: FileChangeReviewViewModel;
   commandApproval?: CommandApprovalActivityViewModel;
+  mcpActivities?: readonly McpActivityViewModel[];
   terminalLabel?: string;
   failure?: TurnFailureViewModel;
   isError: boolean;

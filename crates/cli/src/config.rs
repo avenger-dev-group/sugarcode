@@ -12,6 +12,7 @@ use sugarcode_credential_store::MODEL_TOKEN_CREDENTIAL_REFERENCE;
 use sugarcode_credential_store::SecretValue;
 use sugarcode_state::EffectiveConfig;
 use sugarcode_state::MAX_CONFIG_BYTES;
+use sugarcode_state::McpServerConfig;
 use sugarcode_state::ModelApiFormat;
 use sugarcode_state::ModelConfig;
 use sugarcode_state::SugarCodeHome;
@@ -127,6 +128,27 @@ pub fn show_model_config(
     writeln!(output).map_err(|_| ModelConfigCommandError::WriteFailed)
 }
 
+pub fn list_mcp_servers(
+    config: &EffectiveConfig,
+    output: &mut dyn Write,
+) -> Result<(), ModelConfigCommandError> {
+    let mut servers = config
+        .mcp_servers()
+        .iter()
+        .map(|server| McpServerView {
+            id: server.id(),
+            transport: match server {
+                McpServerConfig::Stdio(_) => "stdio",
+                McpServerConfig::LoopbackStreamableHttp(_) => "loopbackStreamableHttp",
+            },
+        })
+        .collect::<Vec<_>>();
+    servers.sort_by(|left, right| left.id.as_bytes().cmp(right.id.as_bytes()));
+    serde_json::to_writer(&mut *output, &McpServerInventoryView { servers })
+        .map_err(|_| ModelConfigCommandError::WriteFailed)?;
+    writeln!(output).map_err(|_| ModelConfigCommandError::WriteFailed)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ModelConfigInput {
@@ -143,6 +165,19 @@ struct ModelConfigView<'a> {
     endpoint: &'a str,
     model: &'a str,
     has_token: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerInventoryView<'a> {
+    servers: Vec<McpServerView<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerView<'a> {
+    id: &'a str,
+    transport: &'static str,
 }
 
 #[cfg(test)]

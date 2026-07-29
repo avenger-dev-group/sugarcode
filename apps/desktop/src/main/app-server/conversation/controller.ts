@@ -6,6 +6,8 @@ import type {
   ConversationFileChangeProposal,
   ConversationFileChangeResultOutcome,
   ConversationMessage,
+  ConversationMcpActivity,
+  ConversationMcpResultReceipt,
   ConversationStateListener,
   ConversationStateSnapshot,
   ConversationTurn,
@@ -141,6 +143,46 @@ type MutableCommandApprovalActivity = {
   argumentSignature: string;
 };
 
+type MutableMcpCall = {
+  id: string;
+  callId: string;
+  name: string;
+  argumentsBytes: number;
+  argumentsSha256: string;
+  inventorySha256: string;
+  argumentSignature: string;
+  status: ConversationMessage['status'];
+};
+
+type MutableMcpActivity = {
+  callItemId: string;
+  id: string;
+  callId: string;
+  approvalId: string;
+  serverId: string;
+  name: string;
+  argumentsBytes: number;
+  argumentsSha256: string;
+  inventorySha256: string;
+  argumentSignature: string;
+  callStatus: ConversationMessage['status'];
+  requestStatus: ConversationMessage['status'];
+  decision?: {
+    id: string;
+    status: ConversationMessage['status'];
+    value: ConversationCommandApprovalDecision;
+  };
+  executionAttempt?: {
+    id: string;
+    status: ConversationMessage['status'];
+  };
+  result?: {
+    id: string;
+    status: ConversationMessage['status'];
+    receipt: ConversationMcpResultReceipt;
+  };
+};
+
 type MutableTurn = {
   id: string;
   status: ConversationTurnStatus;
@@ -151,6 +193,8 @@ type MutableTurn = {
   fileChange?: MutableFileChangeActivity;
   pendingCommandCall?: MutableCommandCall;
   commandApproval?: MutableCommandApprovalActivity;
+  pendingMcpCall?: MutableMcpCall;
+  mcpActivities?: MutableMcpActivity[];
   error?: ConversationTurnError;
 };
 
@@ -201,13 +245,14 @@ export class ConversationController {
   };
 
   restoreLatestActiveThread = async (): Promise<boolean> => {
+    return this.restoreForConnection();
+  };
+
+  restoreForConnection = async (
+    preferredThreadId?: string,
+  ): Promise<boolean> => {
     const rpc = this.getRpc();
-    if (
-      !rpc ||
-      this.phase !== 'unavailable' ||
-      this.threadId ||
-      this.turns.length > 0
-    ) {
+    if (!rpc || this.phase !== 'unavailable') {
       return false;
     }
 
@@ -229,7 +274,11 @@ export class ConversationController {
         ? listed.nextCursor !== null
         : false;
       this.navigator.status = 'ready';
-      const threadId = listed?.data[0]?.id ?? fallbackThreadId ?? undefined;
+      const threadId =
+        preferredThreadId ??
+        listed?.data[0]?.id ??
+        fallbackThreadId ??
+        undefined;
       if (!threadId) {
         return true;
       }
@@ -654,7 +703,9 @@ export class ConversationController {
             turn.workspaceSearch ||
             turn.fileChange ||
             turn.pendingCommandCall ||
-            turn.commandApproval
+            turn.commandApproval ||
+            turn.pendingMcpCall ||
+            turn.mcpActivities?.length
           ) {
             throw new Error('Duplicate workspace/read activity.');
           }
@@ -689,7 +740,9 @@ export class ConversationController {
             turn.workspaceSearch ||
             turn.fileChange ||
             turn.pendingCommandCall ||
-            turn.commandApproval
+            turn.commandApproval ||
+            turn.pendingMcpCall ||
+            turn.mcpActivities?.length
           ) {
             throw new Error('Duplicate workspace/list activity.');
           }
@@ -722,7 +775,9 @@ export class ConversationController {
             turn.workspaceList ||
             turn.fileChange ||
             turn.pendingCommandCall ||
-            turn.commandApproval
+            turn.commandApproval ||
+            turn.pendingMcpCall ||
+            turn.mcpActivities?.length
           ) {
             throw new Error('Duplicate workspace/search activity.');
           }
@@ -756,7 +811,9 @@ export class ConversationController {
             turn.workspaceSearch ||
             turn.fileChange ||
             turn.pendingCommandCall ||
-            turn.commandApproval
+            turn.commandApproval ||
+            turn.pendingMcpCall ||
+            turn.mcpActivities?.length
           ) {
             throw new Error('Duplicate workspace/apply-patch activity.');
           }
@@ -802,6 +859,118 @@ export class ConversationController {
             status: 'inProgress',
             outcome: { ...lifecycle.params.item.outcome },
           };
+        } else if (lifecycle.params.item.type === 'mcpCall') {
+          if (
+            turn.workspaceRead ||
+            turn.workspaceList ||
+            turn.workspaceSearch ||
+            turn.fileChange ||
+            turn.pendingCommandCall ||
+            turn.commandApproval ||
+            turn.pendingMcpCall ||
+            (turn.mcpActivities?.length ?? 0) >= 4 ||
+            turn.mcpActivities?.some((activity) => !activity.result)
+          ) {
+            throw new Error('MCP call started outside the sequential boundary.');
+          }
+          turn.pendingMcpCall = {
+            id: lifecycle.params.item.id,
+            callId: lifecycle.params.item.callId,
+            name: lifecycle.params.item.name,
+            argumentsBytes: lifecycle.params.item.argumentsBytes,
+            argumentsSha256: lifecycle.params.item.argumentsSha256,
+            inventorySha256: lifecycle.params.item.inventorySha256,
+            argumentSignature: lifecycle.params.item.argumentSignature,
+            status: 'inProgress',
+          };
+        } else if (lifecycle.params.item.type === 'mcpApprovalRequest') {
+          const call = turn.pendingMcpCall;
+          const server = /^mcp__([a-z][a-z0-9]*(?:-[a-z0-9]+)*)__.+$/u.exec(
+            lifecycle.params.item.name,
+          )?.[1];
+          if (
+            !call ||
+            call.status !== 'completed' ||
+            !server ||
+            call.callId !== lifecycle.params.item.callId ||
+            call.name !== lifecycle.params.item.name ||
+            call.argumentsBytes !== lifecycle.params.item.argumentsBytes ||
+            call.argumentsSha256 !== lifecycle.params.item.argumentsSha256 ||
+            call.inventorySha256 !== lifecycle.params.item.inventorySha256 ||
+            call.argumentSignature !== lifecycle.params.item.argumentSignature
+          ) {
+            throw new Error('MCP approval request did not match its call.');
+          }
+          const activity: MutableMcpActivity = {
+            callItemId: call.id,
+            id: lifecycle.params.item.id,
+            callId: call.callId,
+            approvalId: lifecycle.params.item.approvalId,
+            serverId: server,
+            name: call.name,
+            argumentsBytes: call.argumentsBytes,
+            argumentsSha256: call.argumentsSha256,
+            inventorySha256: call.inventorySha256,
+            argumentSignature: call.argumentSignature,
+            callStatus: call.status,
+            requestStatus: 'inProgress',
+          };
+          turn.mcpActivities ??= [];
+          turn.mcpActivities.push(activity);
+          turn.pendingMcpCall = undefined;
+        } else if (lifecycle.params.item.type === 'mcpApprovalDecision') {
+          const activity = this.requireMcpActivityByApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
+          if (activity.requestStatus !== 'completed' || activity.decision) {
+            throw new Error('MCP approval decision started out of order.');
+          }
+          activity.decision = {
+            id: lifecycle.params.item.id,
+            status: 'inProgress',
+            value: lifecycle.params.item.decision,
+          };
+        } else if (lifecycle.params.item.type === 'mcpExecutionAttempt') {
+          const activity = this.requireMcpActivityByApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
+          if (
+            activity.callId !== lifecycle.params.item.callId ||
+            activity.inventorySha256 !==
+              lifecycle.params.item.inventorySha256 ||
+            activity.decision?.status !== 'completed' ||
+            activity.decision.value !== 'approved' ||
+            activity.executionAttempt
+          ) {
+            throw new Error('MCP execution attempt started out of order.');
+          }
+          activity.executionAttempt = {
+            id: lifecycle.params.item.id,
+            status: 'inProgress',
+          };
+        } else if (lifecycle.params.item.type === 'mcpResult') {
+          const activity = this.requireMcpActivityByCall(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          const approved = activity.decision?.value === 'approved';
+          if (
+            activity.name !== lifecycle.params.item.name ||
+            activity.decision?.status !== 'completed' ||
+            activity.result ||
+            (approved
+              ? activity.executionAttempt?.status !== 'completed'
+              : Boolean(activity.executionAttempt))
+          ) {
+            throw new Error('MCP result started out of order.');
+          }
+          activity.result = {
+            id: lifecycle.params.item.id,
+            status: 'inProgress',
+            receipt: { ...lifecycle.params.item.receipt },
+          };
         } else if (lifecycle.params.item.type === 'commandCall') {
           if (
             turn.workspaceRead ||
@@ -809,7 +978,9 @@ export class ConversationController {
             turn.workspaceSearch ||
             turn.fileChange ||
             turn.pendingCommandCall ||
-            turn.commandApproval
+            turn.commandApproval ||
+            turn.pendingMcpCall ||
+            turn.mcpActivities?.length
           ) {
             throw new Error('Duplicate command approval activity.');
           }
@@ -1122,6 +1293,100 @@ export class ConversationController {
             );
           }
           result.status = 'completed';
+        } else if (lifecycle.params.item.type === 'mcpCall') {
+          const call = turn.pendingMcpCall;
+          if (
+            !call ||
+            call.id !== lifecycle.params.item.id ||
+            call.callId !== lifecycle.params.item.callId ||
+            call.name !== lifecycle.params.item.name ||
+            call.argumentsBytes !== lifecycle.params.item.argumentsBytes ||
+            call.argumentsSha256 !== lifecycle.params.item.argumentsSha256 ||
+            call.inventorySha256 !== lifecycle.params.item.inventorySha256 ||
+            call.argumentSignature !== lifecycle.params.item.argumentSignature ||
+            call.status !== 'inProgress'
+          ) {
+            throw new Error('Completed MCP call did not match its started Item.');
+          }
+          call.status = 'completed';
+        } else if (lifecycle.params.item.type === 'mcpApprovalRequest') {
+          const activity = this.requireMcpActivityByApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
+          if (
+            activity.id !== lifecycle.params.item.id ||
+            activity.callId !== lifecycle.params.item.callId ||
+            activity.name !== lifecycle.params.item.name ||
+            activity.argumentsBytes !== lifecycle.params.item.argumentsBytes ||
+            activity.argumentsSha256 !==
+              lifecycle.params.item.argumentsSha256 ||
+            activity.inventorySha256 !==
+              lifecycle.params.item.inventorySha256 ||
+            activity.argumentSignature !==
+              lifecycle.params.item.argumentSignature ||
+            activity.requestStatus !== 'inProgress'
+          ) {
+            throw new Error(
+              'Completed MCP approval request did not match its started Item.',
+            );
+          }
+          activity.requestStatus = 'completed';
+        } else if (lifecycle.params.item.type === 'mcpApprovalDecision') {
+          const activity = this.requireMcpActivityByApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
+          const decision = activity.decision;
+          if (
+            !decision ||
+            decision.id !== lifecycle.params.item.id ||
+            decision.status !== 'inProgress' ||
+            decision.value !== lifecycle.params.item.decision
+          ) {
+            throw new Error(
+              'Completed MCP approval decision did not match its started Item.',
+            );
+          }
+          decision.status = 'completed';
+        } else if (lifecycle.params.item.type === 'mcpExecutionAttempt') {
+          const activity = this.requireMcpActivityByApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
+          const attempt = activity.executionAttempt;
+          if (
+            activity.callId !== lifecycle.params.item.callId ||
+            activity.inventorySha256 !==
+              lifecycle.params.item.inventorySha256 ||
+            !attempt ||
+            attempt.id !== lifecycle.params.item.id ||
+            attempt.status !== 'inProgress'
+          ) {
+            throw new Error(
+              'Completed MCP execution attempt did not match its started Item.',
+            );
+          }
+          attempt.status = 'completed';
+        } else if (lifecycle.params.item.type === 'mcpResult') {
+          const activity = this.requireMcpActivityByCall(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          const result = activity.result;
+          if (
+            activity.name !== lifecycle.params.item.name ||
+            !result ||
+            result.id !== lifecycle.params.item.id ||
+            result.status !== 'inProgress' ||
+            JSON.stringify(result.receipt) !==
+              JSON.stringify(lifecycle.params.item.receipt)
+          ) {
+            throw new Error(
+              'Completed MCP result did not match its started Item.',
+            );
+          }
+          result.status = 'completed';
         } else if (lifecycle.params.item.type === 'commandCall') {
           const call = turn.pendingCommandCall;
           if (
@@ -1317,6 +1582,23 @@ export class ConversationController {
             'Turn completed before command approval activity completed.',
           );
         }
+        if (
+          turn.pendingMcpCall ||
+          turn.mcpActivities?.some(
+            (activity) =>
+              activity.callStatus !== 'completed' ||
+              activity.requestStatus !== 'completed' ||
+              (activity.decision &&
+                activity.decision.status !== 'completed') ||
+              (activity.executionAttempt &&
+                activity.executionAttempt.status !== 'completed') ||
+              (activity.result && activity.result.status !== 'completed') ||
+              (lifecycle.params.turn.status !== 'interrupted' &&
+                (!activity.decision || !activity.result)),
+          )
+        ) {
+          throw new Error('Turn completed before MCP activity completed.');
+        }
         turn.status = lifecycle.params.turn.status;
         turn.error = lifecycle.params.turn.error;
         this.activeTurnId = null;
@@ -1418,6 +1700,32 @@ export class ConversationController {
     return turn.commandApproval;
   };
 
+  private requireMcpActivityByApproval = (
+    turn: MutableTurn,
+    approvalId: string,
+  ): MutableMcpActivity => {
+    const activity = turn.mcpActivities?.find(
+      (candidate) => candidate.approvalId === approvalId,
+    );
+    if (!activity) {
+      throw new Error('MCP lifecycle referenced another approval.');
+    }
+    return activity;
+  };
+
+  private requireMcpActivityByCall = (
+    turn: MutableTurn,
+    callId: string,
+  ): MutableMcpActivity => {
+    const activity = turn.mcpActivities?.find(
+      (candidate) => candidate.callId === callId,
+    );
+    if (!activity) {
+      throw new Error('MCP lifecycle referenced another call.');
+    }
+    return activity;
+  };
+
   private hasItemId = (turn: MutableTurn, itemId: string): boolean =>
     Boolean(
       turn.messages.some((message) => message.id === itemId) ||
@@ -1435,7 +1743,16 @@ export class ConversationController {
         turn.commandApproval?.id === itemId ||
         turn.commandApproval?.decision?.id === itemId ||
         turn.commandApproval?.executionAttempt?.id === itemId ||
-      turn.commandApproval?.executionResult?.id === itemId,
+        turn.commandApproval?.executionResult?.id === itemId ||
+        turn.pendingMcpCall?.id === itemId ||
+        turn.mcpActivities?.some(
+          (activity) =>
+            activity.callItemId === itemId ||
+            activity.id === itemId ||
+            activity.decision?.id === itemId ||
+            activity.executionAttempt?.id === itemId ||
+            activity.result?.id === itemId,
+        ),
     );
 
   private replaceRecoveredConversation = (
@@ -1523,6 +1840,30 @@ export class ConversationController {
                 : {}),
               argumentSignature: '',
             },
+          }
+        : {}),
+      ...(turn.mcpActivities
+        ? {
+            mcpActivities: turn.mcpActivities.map(
+              (activity): MutableMcpActivity => ({
+                ...activity,
+                argumentSignature: '',
+                ...(activity.decision
+                  ? { decision: { ...activity.decision } }
+                  : {}),
+                ...(activity.executionAttempt
+                  ? { executionAttempt: { ...activity.executionAttempt } }
+                  : {}),
+                ...(activity.result
+                  ? {
+                      result: {
+                        ...activity.result,
+                        receipt: { ...activity.result.receipt },
+                      },
+                    }
+                  : {}),
+              }),
+            ),
           }
         : {}),
       ...(turn.error ? { error: { ...turn.error } } : {}),
@@ -1620,6 +1961,43 @@ export class ConversationController {
                     }
                   : {}),
               },
+            }
+          : {}),
+        ...(turn.mcpActivities
+          ? {
+              mcpActivities: turn.mcpActivities.map(
+                (activity): ConversationMcpActivity => ({
+                  callItemId: activity.callItemId,
+                  id: activity.id,
+                  callId: activity.callId,
+                  approvalId: activity.approvalId,
+                  serverId: activity.serverId,
+                  name: activity.name,
+                  argumentsBytes: activity.argumentsBytes,
+                  argumentsSha256: activity.argumentsSha256,
+                  inventorySha256: activity.inventorySha256,
+                  callStatus: activity.callStatus,
+                  requestStatus: activity.requestStatus,
+                  ...(activity.decision
+                    ? { decision: { ...activity.decision } }
+                    : {}),
+                  ...(activity.executionAttempt
+                    ? {
+                        executionAttempt: {
+                          ...activity.executionAttempt,
+                        },
+                      }
+                    : {}),
+                  ...(activity.result
+                    ? {
+                        result: {
+                          ...activity.result,
+                          receipt: { ...activity.result.receipt },
+                        },
+                      }
+                    : {}),
+                }),
+              ),
             }
           : {}),
         ...(turn.error ? { error: { ...turn.error } } : {}),

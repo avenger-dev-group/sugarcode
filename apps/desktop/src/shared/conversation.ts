@@ -191,6 +191,52 @@ export type ConversationCommandApprovalActivity = Readonly<{
   }>;
 }>;
 
+export type ConversationMcpResultReceipt =
+  | Readonly<{
+      type: 'completed';
+      isError: boolean;
+      observedBytes: number;
+      canonicalBytes: number;
+      retainedBytes: number;
+      truncated: boolean;
+      sha256: string;
+      contentBlocks: number;
+      structuredContent: boolean;
+    }>
+  | Readonly<{
+      type: 'error';
+      kind: string;
+      requestState: string;
+    }>;
+
+export type ConversationMcpActivity = Readonly<{
+  callItemId: string;
+  id: string;
+  callId: string;
+  approvalId: string;
+  serverId: string;
+  name: string;
+  argumentsBytes: number;
+  argumentsSha256: string;
+  inventorySha256: string;
+  callStatus: ConversationMessageStatus;
+  requestStatus: ConversationMessageStatus;
+  decision?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    value: ConversationCommandApprovalDecision;
+  }>;
+  executionAttempt?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+  }>;
+  result?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    receipt: ConversationMcpResultReceipt;
+  }>;
+}>;
+
 export type ConversationTurnError = Readonly<{
   kind:
     | 'authentication'
@@ -218,6 +264,7 @@ export type ConversationTurn = Readonly<{
   workspaceSearch?: ConversationWorkspaceSearchActivity;
   fileChange?: ConversationFileChangeActivity;
   commandApproval?: ConversationCommandApprovalActivity;
+  mcpActivities?: readonly ConversationMcpActivity[];
   error?: ConversationTurnError;
 }>;
 
@@ -848,6 +895,101 @@ const isCommandApprovalActivity = (
   );
 };
 
+const isMcpResultReceipt = (
+  value: unknown,
+): value is ConversationMcpResultReceipt => {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    return false;
+  }
+  if (value.type === 'error') {
+    return (
+      typeof value.kind === 'string' &&
+      value.kind.length > 0 &&
+      typeof value.requestState === 'string' &&
+      value.requestState.length > 0
+    );
+  }
+  return (
+    value.type === 'completed' &&
+    typeof value.isError === 'boolean' &&
+    [value.observedBytes, value.canonicalBytes, value.retainedBytes].every(
+      (count) =>
+        typeof count === 'number' &&
+        Number.isSafeInteger(count) &&
+        count >= 0,
+    ) &&
+    typeof value.truncated === 'boolean' &&
+    isValidSha256(value.sha256) &&
+    typeof value.contentBlocks === 'number' &&
+    Number.isSafeInteger(value.contentBlocks) &&
+    value.contentBlocks >= 0 &&
+    value.contentBlocks <= 32 &&
+    typeof value.structuredContent === 'boolean'
+  );
+};
+
+const isMcpActivity = (value: unknown): value is ConversationMcpActivity => {
+  if (
+    !isRecord(value) ||
+    !isId(value.callItemId) ||
+    !isId(value.id) ||
+    !isId(value.callId) ||
+    !isId(value.approvalId) ||
+    typeof value.serverId !== 'string' ||
+    !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(value.serverId) ||
+    typeof value.name !== 'string' ||
+    !value.name.startsWith(`mcp__${value.serverId}__`) ||
+    typeof value.argumentsBytes !== 'number' ||
+    !Number.isSafeInteger(value.argumentsBytes) ||
+    value.argumentsBytes < 0 ||
+    value.argumentsBytes > 32 * 1024 ||
+    !isValidSha256(value.argumentsSha256) ||
+    !isValidSha256(value.inventorySha256) ||
+    typeof value.callStatus !== 'string' ||
+    !MESSAGE_STATUSES.has(value.callStatus as ConversationMessageStatus) ||
+    typeof value.requestStatus !== 'string' ||
+    !MESSAGE_STATUSES.has(value.requestStatus as ConversationMessageStatus)
+  ) {
+    return false;
+  }
+  if (
+    Object.hasOwn(value, 'decision') &&
+    (!isRecord(value.decision) ||
+      !isId(value.decision.id) ||
+      typeof value.decision.status !== 'string' ||
+      !MESSAGE_STATUSES.has(
+        value.decision.status as ConversationMessageStatus,
+      ) ||
+      typeof value.decision.value !== 'string' ||
+      !COMMAND_APPROVAL_DECISIONS.has(
+        value.decision.value as ConversationCommandApprovalDecision,
+      ))
+  ) {
+    return false;
+  }
+  if (
+    Object.hasOwn(value, 'executionAttempt') &&
+    (!isRecord(value.executionAttempt) ||
+      !isId(value.executionAttempt.id) ||
+      typeof value.executionAttempt.status !== 'string' ||
+      !MESSAGE_STATUSES.has(
+        value.executionAttempt.status as ConversationMessageStatus,
+      ))
+  ) {
+    return false;
+  }
+  return (
+    !Object.hasOwn(value, 'result') ||
+    (isRecord(value.result) &&
+      isId(value.result.id) &&
+      typeof value.result.status === 'string' &&
+      MESSAGE_STATUSES.has(
+        value.result.status as ConversationMessageStatus,
+      ) &&
+      isMcpResultReceipt(value.result.receipt))
+  );
+};
+
 const isTurn = (value: unknown): value is ConversationTurn => {
   if (
     !isRecord(value) ||
@@ -866,12 +1008,17 @@ const isTurn = (value: unknown): value is ConversationTurn => {
       !isFileChangeActivity(value.fileChange)) ||
     (Object.hasOwn(value, 'commandApproval') &&
       !isCommandApprovalActivity(value.commandApproval)) ||
+    (Object.hasOwn(value, 'mcpActivities') &&
+      (!Array.isArray(value.mcpActivities) ||
+        value.mcpActivities.length > 4 ||
+        !value.mcpActivities.every(isMcpActivity))) ||
     [
       Object.hasOwn(value, 'workspaceRead'),
       Object.hasOwn(value, 'workspaceList'),
       Object.hasOwn(value, 'workspaceSearch'),
       Object.hasOwn(value, 'fileChange'),
       Object.hasOwn(value, 'commandApproval'),
+      Object.hasOwn(value, 'mcpActivities'),
     ].filter(Boolean).length > 1
   ) {
     return false;
@@ -961,6 +1108,27 @@ const isTurn = (value: unknown): value is ConversationTurn => {
         (commandApproval.decision?.status !== 'completed' ||
           (commandApproval.executionAttempt &&
             commandApproval.executionResult?.status !== 'completed'))))
+  ) {
+    return false;
+  }
+
+  const mcpActivities = value.mcpActivities as
+    | readonly ConversationMcpActivity[]
+    | undefined;
+  if (
+    value.status !== 'inProgress' &&
+    mcpActivities?.some(
+      (activity) =>
+        activity.callStatus !== 'completed' ||
+        activity.requestStatus !== 'completed' ||
+        (activity.decision &&
+          activity.decision.status !== 'completed') ||
+        (activity.executionAttempt &&
+          activity.executionAttempt.status !== 'completed') ||
+        (activity.result && activity.result.status !== 'completed') ||
+        (value.status !== 'interrupted' &&
+          (!activity.decision || !activity.result)),
+    )
   ) {
     return false;
   }

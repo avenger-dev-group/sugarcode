@@ -55,6 +55,8 @@ enum ConfigCommand {
     Validate,
     /// Manage the active text-model configuration.
     Model(ModelConfigArgs),
+    /// Inspect configured MCP servers without exposing launch details.
+    Mcp(McpConfigArgs),
 }
 
 #[derive(Debug, Args)]
@@ -73,6 +75,22 @@ enum ModelConfigCommand {
     },
     /// Print the active model configuration without its token.
     Show {
+        /// Emit one JSON object.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+struct McpConfigArgs {
+    #[command(subcommand)]
+    command: McpConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum McpConfigCommand {
+    /// Print the configured MCP server inventory without sensitive fields.
+    List {
         /// Emit one JSON object.
         #[arg(long)]
         json: bool,
@@ -238,6 +256,18 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             let effective_config = sugarcode_state::load_effective_config(home)?;
             config::show_model_config(&effective_config, &mut std::io::stdout().lock())?;
+        }
+        Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Mcp(McpConfigArgs {
+                    command: McpConfigCommand::List { json },
+                }),
+        }) => {
+            if !json {
+                return Err("config mcp list requires --json".into());
+            }
+            let effective_config = sugarcode_state::load_effective_config(home)?;
+            config::list_mcp_servers(&effective_config, &mut std::io::stdout().lock())?;
         }
         Command::Credential(args) => {
             let config = sugarcode_state::load_effective_config(home)?;

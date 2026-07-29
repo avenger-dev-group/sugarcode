@@ -18,6 +18,10 @@ import {
   parseWorkspacePatchItem,
   type WorkspacePatchItem,
 } from './file-change-protocol';
+import {
+  parseMcpConversationItem,
+  type McpConversationItem,
+} from './mcp-protocol';
 
 export { parseThreadListResponse } from './thread-protocol';
 
@@ -154,7 +158,8 @@ type ConversationItem =
   | CommandApprovalRequestItem
   | CommandApprovalDecisionItem
   | CommandExecutionAttemptItem
-  | CommandExecutionResultItem;
+  | CommandExecutionResultItem
+  | McpConversationItem;
 
 export type ResumeItem =
   | ConversationItem
@@ -525,6 +530,10 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
   const workspacePatch = parseWorkspacePatchItem(value);
   if (workspacePatch) {
     return workspacePatch;
+  }
+  const mcpItem = parseMcpConversationItem(value);
+  if (mcpItem) {
+    return mcpItem;
   }
   if (value.type === 'toolCall' && value.name === 'shell/exec') {
     if (

@@ -51,6 +51,39 @@ fn cli_home_wins_over_environment_home() {
 }
 
 #[test]
+fn lists_only_the_redacted_mcp_inventory() {
+    let home = tempdir().expect("SugarCode home");
+    let executable = std::env::current_exe().expect("test executable");
+    fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "schema_version = 1\n\n[[mcp.servers]]\nid = \"local-tools\"\ntransport = \"stdio\"\nexecutable = {executable:?}\ncwd = {cwd:?}\nargv = [\"sensitive-value\"]\n",
+            cwd = home.path()
+        ),
+    )
+    .expect("write config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["config", "mcp", "list", "--json"])
+        .env("SUGARCODE_HOME", home.path())
+        .output()
+        .expect("run config mcp list");
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("JSON"),
+        serde_json::json!({
+            "servers": [{"id": "local-tools", "transport": "stdio"}]
+        })
+    );
+    assert!(
+        !String::from_utf8(output.stdout)
+            .expect("UTF-8")
+            .contains("sensitive-value")
+    );
+}
+
+#[test]
 fn invalid_configuration_has_no_stdout_and_redacts_values() {
     let home = tempdir().expect("SugarCode home");
     let sentinel = "do-not-leak-this-secret";

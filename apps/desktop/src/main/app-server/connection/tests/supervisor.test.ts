@@ -52,6 +52,7 @@ type InitializeOverrides = Readonly<{
   family?: string;
   os?: string;
   arch?: string;
+  mcpToolCallApprovals?: boolean;
   latestThread?: Readonly<{
     id: string;
     turns: readonly unknown[];
@@ -82,6 +83,12 @@ const attachInitializeServer = (
               capabilities: {
                 commandApprovals: true,
                 commandWorkspaceWriteApprovals: true,
+                ...(overrides.mcpToolCallApprovals !== undefined
+                  ? {
+                      mcpToolCallApprovals:
+                        overrides.mcpToolCallApprovals,
+                    }
+                  : {}),
               },
               platform: {
                 family: overrides.family ?? 'unix',
@@ -348,6 +355,87 @@ describe('ConnectionSupervisor', () => {
         supervisor.commandApprovals.getSnapshot().status,
       ).toBe('approved'),
     );
+    supervisor.shutdown();
+  });
+
+  it('restarts with an explicit MCP selection and restores the current Thread', async () => {
+    const initialChild = new FakeChild();
+    const mcpChild = new FakeChild();
+    const thread = {
+      id: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            {
+              type: 'userMessage',
+              id: 'item_0000000000000001',
+              text: 'Keep this Thread.',
+            },
+            {
+              type: 'agentMessage',
+              id: 'item_0000000000000002',
+              text: 'Restored without replay.',
+            },
+          ],
+        },
+      ],
+    };
+    attachInitializeServer(initialChild, { latestThread: thread });
+    attachInitializeServer(mcpChild, {
+      latestThread: thread,
+      mcpToolCallApprovals: true,
+    });
+    const spawnProcess = vi
+      .fn()
+      .mockReturnValueOnce(initialChild.asChildProcess())
+      .mockReturnValueOnce(mcpChild.asChildProcess());
+    const supervisor = new ConnectionSupervisor({
+      arch: 'arm64',
+      clientVersion: '1.0.0',
+      desktopAppPath: '/workspace/apps/desktop',
+      environment: {},
+      platform: 'darwin',
+      resolveCli: async () => ({
+        executablePath: '/workspace/target/debug/sugarcode',
+        workingDirectory: '/workspace',
+      }),
+      discoverMcpServers: async () => [
+        { id: 'alpha', transport: 'stdio' },
+      ],
+      spawnProcess,
+    });
+
+    await supervisor.start();
+    supervisor.mcpApprovals.markSurfaceReady();
+    expect(supervisor.mcpSession.toggle('alpha').accepted).toBe(true);
+    await expect(supervisor.mcpSession.enable()).resolves.toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
+    expect(spawnProcess).toHaveBeenNthCalledWith(
+      2,
+      '/workspace/target/debug/sugarcode',
+      ['app-server', '--stdio', '--mcp-server', 'alpha'],
+      expect.objectContaining({ env: {}, shell: false }),
+    );
+    expect(supervisor.mcpSession.getSnapshot()).toMatchObject({
+      status: 'enabled',
+      activeServerIds: ['alpha'],
+    });
+    expect(supervisor.conversation.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      threadId: thread.id,
+      turns: [
+        {
+          messages: [
+            { text: 'Keep this Thread.' },
+            { text: 'Restored without replay.' },
+          ],
+        },
+      ],
+    });
     supervisor.shutdown();
   });
 

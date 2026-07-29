@@ -29,6 +29,25 @@ import {
   type ConversationActionResult,
   type ConversationStateSnapshot,
 } from '@/shared/conversation';
+import {
+  isMcpApprovalActionResult,
+  isMcpApprovalStateSnapshot,
+  isMcpSessionActionResult,
+  isMcpSessionStateSnapshot,
+  MCP_APPROVAL_APPROVE_CHANNEL,
+  MCP_APPROVAL_DENY_CHANNEL,
+  MCP_APPROVAL_STATE_CHANGED_CHANNEL,
+  MCP_APPROVAL_STATE_GET_CHANNEL,
+  MCP_SESSION_DISABLE_CHANNEL,
+  MCP_SESSION_ENABLE_CHANNEL,
+  MCP_SESSION_STATE_CHANGED_CHANNEL,
+  MCP_SESSION_STATE_GET_CHANNEL,
+  MCP_SESSION_TOGGLE_CHANNEL,
+  type McpApprovalActionResult,
+  type McpApprovalStateSnapshot,
+  type McpSessionActionResult,
+  type McpSessionStateSnapshot,
+} from '@/shared/mcp';
 
 type StateChangedHandler = (
   event: IpcRendererEvent,
@@ -200,5 +219,106 @@ export const createDesktopApi = (
       throw new Error('Main returned an invalid Thread selection result.');
     }
     return result;
+  },
+  getMcpSessionState: async (): Promise<McpSessionStateSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      MCP_SESSION_STATE_GET_CHANNEL,
+    );
+    if (!isMcpSessionStateSnapshot(snapshot)) {
+      throw new Error('Main returned an invalid MCP session snapshot.');
+    }
+    return snapshot;
+  },
+  onMcpSessionStateChanged: (listener) => {
+    const handler = (
+      _event: IpcRendererEvent,
+      snapshot: unknown,
+    ): void => {
+      if (isMcpSessionStateSnapshot(snapshot)) {
+        listener(snapshot);
+      }
+    };
+    ipcRenderer.on(MCP_SESSION_STATE_CHANGED_CHANNEL, handler);
+    return () =>
+      ipcRenderer.removeListener(MCP_SESSION_STATE_CHANGED_CHANNEL, handler);
+  },
+  toggleMcpServer: async (
+    serverId: string,
+  ): Promise<McpSessionActionResult> => {
+    const action: unknown = await ipcRenderer.invoke(
+      MCP_SESSION_TOGGLE_CHANNEL,
+      serverId,
+    );
+    if (!isMcpSessionActionResult(action)) {
+      throw new Error('Main returned an invalid MCP session action.');
+    }
+    return action;
+  },
+  enableMcpSession: async (): Promise<McpSessionActionResult> => {
+    const action: unknown = await ipcRenderer.invoke(
+      MCP_SESSION_ENABLE_CHANNEL,
+    );
+    if (!isMcpSessionActionResult(action)) {
+      throw new Error('Main returned an invalid MCP session action.');
+    }
+    return action;
+  },
+  disableMcpSession: async (): Promise<McpSessionActionResult> => {
+    const action: unknown = await ipcRenderer.invoke(
+      MCP_SESSION_DISABLE_CHANNEL,
+    );
+    if (!isMcpSessionActionResult(action)) {
+      throw new Error('Main returned an invalid MCP session action.');
+    }
+    return action;
+  },
+  getMcpApprovalState: async (): Promise<McpApprovalStateSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      MCP_APPROVAL_STATE_GET_CHANNEL,
+    );
+    if (!isMcpApprovalStateSnapshot(snapshot)) {
+      throw new Error('Main returned an invalid MCP approval snapshot.');
+    }
+    return snapshot;
+  },
+  onMcpApprovalStateChanged: (listener) => {
+    const handler = (
+      _event: IpcRendererEvent,
+      snapshot: unknown,
+    ): void => {
+      if (isMcpApprovalStateSnapshot(snapshot)) {
+        listener(snapshot);
+      }
+    };
+    ipcRenderer.on(MCP_APPROVAL_STATE_CHANGED_CHANNEL, handler);
+    return () =>
+      ipcRenderer.removeListener(
+        MCP_APPROVAL_STATE_CHANGED_CHANNEL,
+        handler,
+      );
+  },
+  approveMcpCall: async (
+    presentationId: string,
+  ): Promise<McpApprovalActionResult> => {
+    const action: unknown = await ipcRenderer.invoke(
+      MCP_APPROVAL_APPROVE_CHANNEL,
+      presentationId,
+    );
+    if (!isMcpApprovalActionResult(action)) {
+      throw new Error('Main returned an invalid MCP approval action.');
+    }
+    return action;
+  },
+  denyMcpCall: async (
+    presentationId: string,
+  ): Promise<McpApprovalActionResult> => {
+    const action: unknown = await ipcRenderer.invoke(
+      MCP_APPROVAL_DENY_CHANNEL,
+      presentationId,
+    );
+    if (!isMcpApprovalActionResult(action)) {
+      throw new Error('Main returned an invalid MCP approval action.');
+    }
+    return action;
   },
 });

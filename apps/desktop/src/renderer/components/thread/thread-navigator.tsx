@@ -15,6 +15,7 @@ import {
 import { Button } from '@/renderer/components/ui/button';
 import { Input } from '@/renderer/components/ui/input';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
+import { McpSessionPanel } from '@/renderer/components/mcp/session-panel';
 
 import type { ThreadStore } from './types';
 
@@ -238,6 +239,13 @@ export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
           {store.navigator.selectionNotice}
         </p>
       ) : null}
+      <McpSessionPanel
+        turnBusy={
+          store.thread.phase === 'starting' ||
+          store.thread.phase === 'inProgress' ||
+          store.thread.phase === 'stopping'
+        }
+      />
     </nav>
   );
 };

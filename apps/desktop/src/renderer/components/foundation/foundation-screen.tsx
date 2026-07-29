@@ -4,6 +4,7 @@ import { ConnectionStatus } from '@/renderer/components/connection/connection-st
 import { CommandApprovalSurface } from '@/renderer/components/command-approval/command-approval-surface';
 import { ThreadWorkbench } from '@/renderer/components/thread/thread-workbench';
 import { Button } from '@/renderer/components/ui/button';
+import { McpApprovalSurface } from '@/renderer/components/mcp/approval-surface';
 
 import { useStore } from './use-store';
 
@@ -53,6 +54,7 @@ export const FoundationScreen = () => {
         <ThreadWorkbench />
       </main>
       <CommandApprovalSurface />
+      <McpApprovalSurface />
     </div>
   );
 };

@@ -10,6 +10,7 @@ import { Button } from '@/renderer/components/ui/button';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { Textarea } from '@/renderer/components/ui/textarea';
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
+import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline';
 
 import type {
   ThreadWorkbenchViewProps,
@@ -86,6 +87,12 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
       ) : null}
       {turn.commandApproval ? (
         <CommandApprovalActivity activity={turn.commandApproval} />
+      ) : null}
+      {turn.mcpActivities ? (
+        <McpActivityTimeline
+          activities={turn.mcpActivities}
+          turnStatus={turn.status}
+        />
       ) : null}
       {turn.messages
         .filter((entry) => entry.role === 'agent')

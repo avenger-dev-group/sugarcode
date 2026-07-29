@@ -1,6 +1,10 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:net';
+import {
+  createServer as createHttpServer,
+  type Server as HttpServer,
+} from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -80,6 +84,18 @@ const SHELL_COMMAND_FINAL_BODY = [
   'data: [DONE]\n\n',
 ].join('');
 
+const MCP_CALL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_desktop_mcp","type":"function","function":{"name":"mcp__http-fixture__inspect","arguments":"{\\"value\\":7}"}}]},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
+const MCP_FINAL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"content":"MCP call complete."},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
 const REAL_CLI_TEST_TIMEOUT_MS = 30_000;
 
 type ProviderCapture = Readonly<{
@@ -97,7 +113,8 @@ type ProviderMode =
   | 'workspaceList'
   | 'workspaceSearch'
   | 'workspacePatch'
-  | 'shellApproval';
+  | 'shellApproval'
+  | 'mcp';
 
 const startProvider = async (
   mode: ProviderMode = 'success',
@@ -177,6 +194,9 @@ const startProvider = async (
             ? SHELL_COMMAND_CALL_BODY
             : SHELL_COMMAND_FINAL_BODY;
         }
+        if (mode === 'mcp') {
+          return requests.length === 1 ? MCP_CALL_BODY : MCP_FINAL_BODY;
+        }
         return RESPONSE_BODY;
       })();
       socket.end(
@@ -200,9 +220,16 @@ const closeServer = (server: Server): Promise<void> =>
 
 const temporaryHomes: string[] = [];
 const providers: Server[] = [];
+const mcpServers: HttpServer[] = [];
 
 afterEach(async () => {
   await Promise.all(providers.splice(0).map(closeServer));
+  await Promise.all(
+    mcpServers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve) => server.close(() => resolve())),
+    ),
+  );
   await Promise.all(
     temporaryHomes.splice(0).map((home) =>
       rm(home, {
@@ -216,6 +243,208 @@ afterEach(async () => {
 });
 
 describe('real Desktop text Agent Turn', () => {
+  it('enables, approves and recovers one real loopback MCP call without replay', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-mcp-test-'));
+    temporaryHomes.push(home);
+    const provider = await startProvider('mcp');
+    providers.push(provider.server);
+    const capturedMcpMethods: string[] = [];
+    let session = 0;
+    const mcpServer = createHttpServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        if (request.method === 'DELETE') {
+          capturedMcpMethods.push('DELETE');
+          response.writeHead(200).end();
+          return;
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          id?: number;
+          method: string;
+        };
+        capturedMcpMethods.push(body.method);
+        if (body.method === 'notifications/initialized') {
+          response.writeHead(202).end();
+          return;
+        }
+        const result =
+          body.method === 'initialize'
+            ? {
+                protocolVersion: '2025-11-25',
+                capabilities: { tools: {} },
+                serverInfo: { name: 'desktop-http-fixture', version: '1.0.0' },
+              }
+            : body.method === 'tools/list'
+              ? {
+                  tools: [
+                    {
+                      name: 'inspect',
+                      description: 'Inspect one integer',
+                      inputSchema: {
+                        type: 'object',
+                        properties: { value: { type: 'integer' } },
+                        required: ['value'],
+                        additionalProperties: false,
+                      },
+                    },
+                  ],
+                }
+              : {
+                  content: [{ type: 'text', text: 'private MCP result' }],
+                  isError: false,
+                };
+        const encoded = JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result,
+        });
+        const headers: Record<string, string | number> = {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(encoded),
+        };
+        if (body.method === 'initialize') {
+          session += 1;
+          headers['Mcp-Session-Id'] = `desktop-session-${session}`;
+        }
+        response.writeHead(200, headers).end(encoded);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      mcpServer.once('error', reject);
+      mcpServer.listen(0, '127.0.0.1', () => resolve());
+    });
+    mcpServers.push(mcpServer);
+    const mcpAddress = mcpServer.address();
+    if (!mcpAddress || typeof mcpAddress === 'string') {
+      throw new Error('MCP fixture did not expose a port.');
+    }
+    await writeFile(
+      path.join(home, 'config.toml'),
+      [
+        'schema_version = 1',
+        '[model]',
+        'api_format = "openai-chat-completions"',
+        `endpoint = "http://127.0.0.1:${provider.port}/v1/chat/completions"`,
+        'model = "desktop-fixture-model"',
+        '[[mcp.servers]]',
+        'id = "http-fixture"',
+        'transport = "streamable-http"',
+        `endpoint = "http://127.0.0.1:${mcpAddress.port}/mcp"`,
+        '',
+      ].join('\n'),
+    );
+    const createSupervisor = (): ConnectionSupervisor =>
+      new ConnectionSupervisor({
+        clientVersion: '1.0.0',
+        desktopAppPath: process.cwd(),
+        environment: {
+          SUGARCODE_HOME: home,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          SYSTEMROOT: process.env.SYSTEMROOT,
+          WINDIR: process.env.WINDIR,
+        },
+      });
+    const first = createSupervisor();
+    let second: ConnectionSupervisor | null = null;
+    try {
+      await first.start();
+      expect(first.mcpSession.getSnapshot()).toMatchObject({
+        status: 'disabled',
+        servers: [
+          {
+            id: 'http-fixture',
+            transport: 'loopbackStreamableHttp',
+          },
+        ],
+      });
+      first.mcpApprovals.markSurfaceReady();
+      expect(first.mcpSession.toggle('http-fixture').accepted).toBe(true);
+      await expect(first.mcpSession.enable()).resolves.toEqual({
+        accepted: true,
+        reason: 'accepted',
+      });
+      await expect(
+        first.conversation.startTurn('Use the configured MCP tool.'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      await vi.waitFor(
+        () => expect(first.mcpApprovals.getSnapshot().status).toBe('pending'),
+        { timeout: 10_000 },
+      );
+      const presentationId =
+        first.mcpApprovals.getSnapshot().request?.presentationId;
+      await expect(first.mcpApprovals.approve(presentationId)).resolves.toEqual({
+        accepted: true,
+        reason: 'accepted',
+      });
+      await vi.waitFor(
+        () => {
+          expect(first.conversation.getSnapshot()).toMatchObject({
+            phase: 'ready',
+            turns: [
+              {
+                status: 'completed',
+                mcpActivities: [
+                  {
+                    serverId: 'http-fixture',
+                    name: 'mcp__http-fixture__inspect',
+                    decision: { value: 'approved' },
+                    executionAttempt: { status: 'completed' },
+                    result: {
+                      status: 'completed',
+                      receipt: { type: 'completed', isError: false },
+                    },
+                  },
+                ],
+              },
+            ],
+          });
+        },
+        { timeout: 10_000 },
+      );
+      const durableThreadId = first.conversation.getSnapshot().threadId;
+      const durableActivity =
+        first.conversation.getSnapshot().turns[0]?.mcpActivities;
+      expect(JSON.stringify(first.conversation.getSnapshot())).not.toContain(
+        'private MCP result',
+      );
+      expect(provider.requests).toHaveLength(2);
+      expect(capturedMcpMethods).toEqual([
+        'initialize',
+        'notifications/initialized',
+        'tools/list',
+        'DELETE',
+        'initialize',
+        'notifications/initialized',
+        'tools/list',
+        'tools/call',
+        'DELETE',
+      ]);
+
+      first.shutdown();
+      second = createSupervisor();
+      await second.start();
+      expect(second.mcpSession.getSnapshot()).toMatchObject({
+        status: 'disabled',
+        activeServerIds: [],
+      });
+      expect(second.conversation.getSnapshot()).toMatchObject({
+        threadId: durableThreadId,
+      });
+      expect(second.conversation.getSnapshot().turns[0]?.mcpActivities).toEqual(
+        durableActivity,
+      );
+      expect(provider.requests).toHaveLength(2);
+      expect(capturedMcpMethods).toHaveLength(9);
+    } finally {
+      first.shutdown();
+      second?.shutdown();
+    }
+  }, REAL_CLI_TEST_TIMEOUT_MS);
+
   it('restores and continues one durable Thread across Desktop CLI processes', async () => {
     const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
     temporaryHomes.push(home);

@@ -110,3 +110,35 @@ fn model_token_validation_happens_before_store_mutation() {
     }
     assert!(store.values.lock().expect("credential lock").is_empty());
 }
+
+#[test]
+fn mcp_inventory_is_sorted_and_redacted() {
+    let directory = tempfile::tempdir().expect("home");
+    std::fs::write(
+        directory.path().join("config.toml"),
+        format!(
+            "schema_version = 1\n\n[[mcp.servers]]\nid = \"zeta\"\ntransport = \"streamable-http\"\nendpoint = \"http://127.0.0.1:8080/private\"\n\n[[mcp.servers]]\nid = \"alpha\"\ntransport = \"stdio\"\nexecutable = {:?}\ncwd = {:?}\nargv = [\"secret-argument\"]\n",
+            std::env::current_exe().expect("executable"),
+            directory.path()
+        ),
+    )
+    .expect("config");
+    let config = sugarcode_state::load_effective_config(Some(directory.path().to_path_buf()))
+        .expect("effective config");
+    let mut output = Vec::new();
+    list_mcp_servers(&config, &mut output).expect("inventory");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output).expect("JSON"),
+        serde_json::json!({
+            "servers": [
+                {"id": "alpha", "transport": "stdio"},
+                {"id": "zeta", "transport": "loopbackStreamableHttp"}
+            ]
+        })
+    );
+    let output = String::from_utf8(output).expect("UTF-8");
+    assert!(!output.contains("secret-argument"));
+    assert!(!output.contains("private"));
+    assert!(!output.contains("executable"));
+    assert!(!output.contains("endpoint"));
+}

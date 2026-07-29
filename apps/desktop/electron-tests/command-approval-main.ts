@@ -13,6 +13,9 @@ import { registerCommandApprovalIpc } from '@/main/app-server/command-approval/i
 import { ConversationController } from '@/main/app-server/conversation/controller';
 import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
 import type { ConversationRpc } from '@/main/app-server/conversation/rpc-client';
+import { McpApprovalController } from '@/main/app-server/mcp/approval-controller';
+import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
+import { McpSessionController } from '@/main/app-server/mcp/session-controller';
 import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
@@ -24,6 +27,8 @@ type WrittenDecision = Readonly<{
 
 const resultPrefix = 'SUGARCODE_ELECTRON_RESULT:';
 const writtenDecisions: WrittenDecision[] = [];
+const mcpWrittenDecisions: WrittenDecision[] = [];
+const mcpRestarts: string[][] = [];
 const lifecycleFailures: string[] = [];
 const conversationInputs: string[] = [];
 const interruptRequests: string[] = [];
@@ -65,6 +70,41 @@ const completion = (approvalId: string, decision: string) => ({
     turnId: 'turn_0000000000000001',
     item: {
       type: 'commandApprovalDecision',
+      id: `item_${approvalId}`,
+      approvalId,
+      decision,
+    },
+  },
+});
+
+const mcpRequest = (approvalId: string) => ({
+  kind: 'request' as const,
+  id: approvalId,
+  method: 'item/mcpToolCall/requestApproval',
+  params: {
+    approvalId,
+    threadId: 'thr_0000000000000001',
+    turnId: 'turn_0000000000000001',
+    callId: `call_${approvalId}`,
+    name: 'mcp__alpha__lookup',
+    arguments: {
+      nested: { exact: '雪' },
+      query: 'sugar',
+    },
+    argumentsBytes: 42,
+    argumentsSha256: 'c'.repeat(64),
+    inventorySha256: 'd'.repeat(64),
+  },
+});
+
+const mcpCompletion = (approvalId: string, decision: string) => ({
+  kind: 'notification' as const,
+  method: 'item/completed',
+  params: {
+    threadId: 'thr_0000000000000001',
+    turnId: 'turn_0000000000000001',
+    item: {
+      type: 'mcpToolCallApprovalDecision',
       id: `item_${approvalId}`,
       approvalId,
       decision,
@@ -147,6 +187,28 @@ const run = async (): Promise<void> => {
     onProtocolFailure: () => lifecycleFailures.push('protocol'),
     onWriteFailure: () => lifecycleFailures.push('write'),
     onSurfaceFailure: () => lifecycleFailures.push('surface'),
+  });
+  const mcpSession = new McpSessionController({
+    getRestartBlock: () => null,
+    restart: async (serverIds) => {
+      mcpRestarts.push([...serverIds]);
+      return true;
+    },
+  });
+  mcpSession.initialize([
+    { id: 'alpha', transport: 'stdio' },
+    { id: 'beta', transport: 'stdio' },
+  ]);
+  const mcpApprovals = new McpApprovalController({
+    getActiveServerIds: () => mcpSession.getActiveServerIds(),
+    createPresentationId: () =>
+      `mcp-presentation/${mcpWrittenDecisions.length + 1}`,
+    writeDecision: async (id, decision) => {
+      mcpWrittenDecisions.push({ id, decision });
+    },
+    onProtocolFailure: () => lifecycleFailures.push('mcp-protocol'),
+    onWriteFailure: () => lifecycleFailures.push('mcp-write'),
+    onSurfaceFailure: () => lifecycleFailures.push('mcp-surface'),
   });
   let turnSequence = 0;
   let resolveInterrupt: (() => void) | null = null;
@@ -494,14 +556,17 @@ const run = async (): Promise<void> => {
     (_event, _url, _isInPlace, isMainFrame) => {
       if (isMainFrame) {
         controller.surfaceUnavailable();
+        mcpApprovals.surfaceUnavailable();
       }
     },
   );
   window.webContents.on('render-process-gone', () => {
     controller.surfaceUnavailable();
+    mcpApprovals.surfaceUnavailable();
   });
   window.once('closed', () => {
     controller.surfaceUnavailable();
+    mcpApprovals.surfaceUnavailable();
     window = null;
   });
   ipcMain.handle(CONNECTION_STATE_GET_CHANNEL, () => ({
@@ -515,6 +580,12 @@ const run = async (): Promise<void> => {
   });
   const disposeConversationIpc = registerConversationIpc({
     controller: conversation,
+    getMainWindow: () => window,
+    isAllowedUrl: (url) => url === rendererUrl,
+  });
+  const disposeMcpIpc = registerMcpIpc({
+    session: mcpSession,
+    approvals: mcpApprovals,
     getMainWindow: () => window,
     isAllowedUrl: (url) => url === rendererUrl,
   });
@@ -1637,6 +1708,210 @@ const run = async (): Promise<void> => {
     'transport-uncertain durable AgentMessage Item identity after reload',
   );
 
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `Array.from(document.querySelectorAll('[role="status"]')).some(
+          (element) => element.textContent === 'Disabled for this session',
+        )`,
+      ),
+    'MCP disabled session',
+  );
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) =>
+        candidate.textContent?.includes('alpha') === true &&
+        candidate.getClientRects().length > 0
+      );
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('MCP alpha selection was not visible.');
+    }
+    button.click();
+  })()`);
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) =>
+        candidate.textContent?.trim() === 'Enable' &&
+        candidate.getClientRects().length > 0
+      );
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      throw new Error('MCP Enable action was not available.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      mcpRestarts.some(
+        (serverIds) =>
+          serverIds.length === 1 && serverIds[0] === 'alpha',
+      ),
+    'MCP session enable',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `Array.from(document.querySelectorAll('[role="status"]')).some(
+          (element) => element.textContent === 'Enabled for this session',
+        )`,
+      ),
+    'MCP enabled presentation',
+  );
+
+  mcpApprovals.handleServerRequest(
+    mcpRequest('approval/mcp-electron-approve'),
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[role="alertdialog"]')
+          ?.textContent?.includes('Allow this MCP call once?') === true`,
+      ),
+    'MCP approval dialog',
+  );
+  const lightMcpDialogBackground = await evaluate<string>(
+    `getComputedStyle(
+      document.querySelector('[role="alertdialog"]'),
+    ).backgroundColor`,
+  );
+  const mcpRendered = await evaluate<{
+    text: string;
+    focused: string;
+    detailsFocusable: boolean;
+  }>(`(() => {
+    const dialog = document.querySelector('[role="alertdialog"]');
+    const details = document.querySelector(
+      '[aria-label="MCP approval details"]',
+    );
+    return {
+      text: dialog?.textContent ?? '',
+      focused: document.activeElement?.textContent ?? '',
+      detailsFocusable:
+        details instanceof HTMLElement && details.tabIndex === 0,
+    };
+  })()`);
+  if (
+    !mcpRendered.text.includes(
+      '{"nested":{"exact":"雪"},"query":"sugar"}',
+    ) ||
+    !mcpRendered.text.includes('mcp__alpha__lookup') ||
+    !mcpRendered.text.includes('42 bytes') ||
+    !mcpRendered.text.includes('c'.repeat(64)) ||
+    !mcpRendered.text.includes('d'.repeat(64)) ||
+    mcpRendered.focused !== 'Deny' ||
+    !mcpRendered.detailsFocusable
+  ) {
+    throw new Error('Electron MCP approval did not preserve its UI contract.');
+  }
+  window.setSize(360, 720);
+  await waitForAnimationFrame();
+  const mcpNarrowContained = await evaluate<boolean>(`(() => {
+    const dialog = document.querySelector('[role="alertdialog"]');
+    if (!(dialog instanceof HTMLElement)) {
+      return false;
+    }
+    const rect = dialog.getBoundingClientRect();
+    return (
+      document.documentElement.scrollWidth <= window.innerWidth &&
+      rect.left >= 0 &&
+      rect.right <= window.innerWidth
+    );
+  })()`);
+  if (!mcpNarrowContained) {
+    throw new Error('Electron MCP approval overflowed at 360 px.');
+  }
+  await writeFile(
+    path.join(__dirname, 'mcp-approval-light.png'),
+    (await capturePageWithRetry('light MCP approval dialog')).toPNG(),
+  );
+  window.setSize(800, 600);
+  await waitForAnimationFrame();
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent === 'Approve once');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('MCP approve button not found.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      mcpWrittenDecisions.some(
+        (entry) =>
+          entry.id === 'approval/mcp-electron-approve' &&
+          entry.decision === 'approved',
+      ),
+    'MCP approved response',
+  );
+  mcpApprovals.handleNotification(
+    mcpCompletion('approval/mcp-electron-approve', 'approved'),
+  );
+
+  mcpApprovals.handleServerRequest(
+    mcpRequest('approval/mcp-electron-escape'),
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[role="alertdialog"]')
+          ?.textContent?.includes('Allow this MCP call once?') === true`,
+      ),
+    'MCP Escape denial dialog',
+  );
+  window.webContents.sendInputEvent({
+    type: 'keyDown',
+    keyCode: 'Escape',
+  });
+  window.webContents.sendInputEvent({
+    type: 'keyUp',
+    keyCode: 'Escape',
+  });
+  await waitFor(
+    () =>
+      mcpWrittenDecisions.some(
+        (entry) =>
+          entry.id === 'approval/mcp-electron-escape' &&
+          entry.decision === 'denied',
+      ),
+    'MCP Escape denial',
+  );
+  mcpApprovals.handleNotification(
+    mcpCompletion('approval/mcp-electron-escape', 'denied'),
+  );
+
+  mcpApprovals.handleServerRequest(
+    mcpRequest('approval/mcp-electron-reload'),
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[role="alertdialog"]')
+          ?.textContent?.includes('Allow this MCP call once?') === true`,
+      ),
+    'MCP reload denial dialog',
+  );
+  await evaluate('location.reload()');
+  await waitFor(
+    () =>
+      mcpWrittenDecisions.some(
+        (entry) =>
+          entry.id === 'approval/mcp-electron-reload' &&
+          entry.decision === 'denied',
+      ),
+    'MCP reload default denial',
+  );
+  mcpApprovals.handleNotification(
+    mcpCompletion('approval/mcp-electron-reload', 'denied'),
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `Array.from(document.querySelectorAll('[role="status"]')).some(
+          (element) => element.textContent === 'Enabled for this session',
+        )`,
+      ),
+    'MCP session retained after Renderer reload',
+  );
+
   controller.handleServerRequest(request('approval/electron-approve'));
   await waitFor(
     () =>
@@ -1756,6 +2031,50 @@ const run = async (): Promise<void> => {
     (await capturePageWithRetry('dark conversation')).toPNG(),
   );
 
+  mcpApprovals.handleServerRequest(
+    mcpRequest('approval/mcp-electron-dark'),
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[role="alertdialog"]')
+          ?.textContent?.includes('Allow this MCP call once?') === true`,
+      ),
+    'dark MCP approval dialog',
+  );
+  const darkMcpDialogBackground = await evaluate<string>(
+    `getComputedStyle(
+      document.querySelector('[role="alertdialog"]'),
+    ).backgroundColor`,
+  );
+  if (darkMcpDialogBackground === lightMcpDialogBackground) {
+    throw new Error('Electron MCP approval did not apply dark tokens.');
+  }
+  await writeFile(
+    path.join(__dirname, 'mcp-approval-dark.png'),
+    (await capturePageWithRetry('dark MCP approval dialog')).toPNG(),
+  );
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent === 'Deny');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('MCP deny button not found.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      mcpWrittenDecisions.some(
+        (entry) =>
+          entry.id === 'approval/mcp-electron-dark' &&
+          entry.decision === 'denied',
+      ),
+    'dark MCP denial',
+  );
+  mcpApprovals.handleNotification(
+    mcpCompletion('approval/mcp-electron-dark', 'denied'),
+  );
+
   controller.handleServerRequest(request('approval/electron-reload'));
   await waitFor(
     () =>
@@ -1824,8 +2143,10 @@ const run = async (): Promise<void> => {
 
   disposeApprovalIpc();
   disposeConversationIpc();
+  disposeMcpIpc();
   ipcMain.removeHandler(CONNECTION_STATE_GET_CHANNEL);
   controller.shutdown();
+  mcpApprovals.shutdown();
   if (lifecycleFailures.length > 0) {
     throw new Error(
       `Unexpected lifecycle failures: ${lifecycleFailures.join(', ')}`,
@@ -1835,6 +2156,8 @@ const run = async (): Promise<void> => {
     `${resultPrefix}${JSON.stringify({
       rendered,
       writtenDecisions,
+      mcpWrittenDecisions,
+      mcpRestarts,
       conversationInputs,
       interruptRequests,
     })}\n`,

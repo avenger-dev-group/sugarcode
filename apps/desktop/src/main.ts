@@ -7,12 +7,14 @@ import { registerCommandApprovalIpc } from '@/main/app-server/command-approval/i
 import { registerConnectionIpc } from '@/main/app-server/connection/ipc';
 import { ConnectionSupervisor } from '@/main/app-server/connection/supervisor';
 import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
+import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
 let disposeConnectionIpc: (() => void) | null = null;
 let disposeCommandApprovalIpc: (() => void) | null = null;
 let disposeConversationIpc: (() => void) | null = null;
+let disposeMcpIpc: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -59,14 +61,17 @@ const createWindow = (): void => {
     (_event, _url, _isInPlace, isMainFrame) => {
       if (isMainFrame) {
         supervisor?.commandApprovals.surfaceUnavailable();
+        supervisor?.mcpApprovals.surfaceUnavailable();
       }
     },
   );
   window.webContents.on('render-process-gone', () => {
     supervisor?.commandApprovals.surfaceUnavailable();
+    supervisor?.mcpApprovals.surfaceUnavailable();
   });
   window.once('closed', () => {
     supervisor?.commandApprovals.surfaceUnavailable();
+    supervisor?.mcpApprovals.surfaceUnavailable();
     if (mainWindow === window) {
       mainWindow = null;
     }
@@ -103,6 +108,12 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
+  disposeMcpIpc = registerMcpIpc({
+    session: supervisor.mcpSession,
+    approvals: supervisor.mcpApprovals,
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
   createWindow();
   void supervisor.start();
 };
@@ -136,5 +147,7 @@ if (started) {
     disposeCommandApprovalIpc = null;
     disposeConversationIpc?.();
     disposeConversationIpc = null;
+    disposeMcpIpc?.();
+    disposeMcpIpc = null;
   });
 }

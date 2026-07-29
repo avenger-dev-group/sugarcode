@@ -18,6 +18,7 @@ import {
   MAX_CONVERSATION_INPUT_BYTES,
   type ConversationMessageStatus,
   type ConversationCommandApprovalActivity,
+  type ConversationMcpActivity,
   type ConversationPhase,
   type ConversationStateSnapshot,
   type ConversationThreadNavigatorSnapshot,
@@ -41,6 +42,10 @@ import type {
   WorkspaceSearchPresentationState,
 } from '../agent/types';
 import { toFileChangeReviewViewModel } from '../workspace/use-store';
+import type {
+  McpActivityState,
+  McpActivityViewModel,
+} from '../mcp/types';
 import type {
   ThreadStore,
   ThreadNavigatorViewModel,
@@ -213,6 +218,30 @@ const toCommandApprovalPresentationState = (
     default:
       throw new Error('Command approval activity did not match its Turn phase.');
   }
+};
+
+const toMcpActivityState = (
+  phase: ConversationPhase,
+  turnStatus: ConversationTurnStatus,
+  activity: ConversationMcpActivity,
+): McpActivityState => {
+  if (activity.result?.status === 'completed') {
+    return activity.result.receipt.type === 'error'
+      ? 'failed'
+      : activity.result.receipt.isError
+        ? 'toolError'
+        : 'succeeded';
+  }
+  if (turnStatus === 'interrupted') {
+    return activity.executionAttempt ? 'uncertain' : 'stopped';
+  }
+  if (activity.executionAttempt?.status === 'completed') {
+    return phase === 'unavailable' ? 'uncertain' : 'attempted';
+  }
+  if (activity.decision?.status === 'completed') {
+    return activity.decision.value === 'approved' ? 'approved' : 'denied';
+  }
+  return phase === 'unavailable' ? 'uncertain' : 'awaiting';
 };
 
 const toCommandExecutionAttemptPresentationState = (
@@ -485,6 +514,35 @@ export const toThreadViewModel = (
         ) === JSON.stringify(nextCommandApproval.executionResult?.outcome)
           ? previousTurn.commandApproval
           : nextCommandApproval;
+      const nextMcpActivities = turn.mcpActivities?.map(
+        (activity): McpActivityViewModel => ({
+          id: activity.id,
+          serverId: activity.serverId,
+          name: activity.name,
+          argumentsBytes: activity.argumentsBytes,
+          argumentsSha256: activity.argumentsSha256,
+          inventorySha256: activity.inventorySha256,
+          state: toMcpActivityState(snapshot.phase, turn.status, activity),
+          ...(activity.decision
+            ? { decision: activity.decision.value }
+            : {}),
+          ...(activity.executionAttempt
+            ? { attemptId: activity.executionAttempt.id }
+            : {}),
+          ...(activity.result
+            ? {
+                resultId: activity.result.id,
+                receipt: { ...activity.result.receipt },
+              }
+            : {}),
+        }),
+      );
+      const mcpActivities =
+        nextMcpActivities &&
+        JSON.stringify(previousTurn?.mcpActivities) ===
+          JSON.stringify(nextMcpActivities)
+          ? previousTurn?.mcpActivities
+          : nextMcpActivities;
       const nextFailure = turn.error
         ? toTurnFailureViewModel(turn.error)
         : undefined;
@@ -506,6 +564,7 @@ export const toThreadViewModel = (
         previousTurn.workspaceSearch === workspaceSearch &&
         previousTurn.fileChange === fileChange &&
         previousTurn.commandApproval === commandApproval &&
+        previousTurn.mcpActivities === mcpActivities &&
         previousTurn.terminalLabel === terminalLabel &&
         previousTurn.failure === failure &&
         previousTurn.isError === isError
@@ -521,6 +580,7 @@ export const toThreadViewModel = (
         ...(workspaceSearch ? { workspaceSearch } : {}),
         ...(fileChange ? { fileChange } : {}),
         ...(commandApproval ? { commandApproval } : {}),
+        ...(mcpActivities ? { mcpActivities } : {}),
         ...(terminalLabel ? { terminalLabel } : {}),
         ...(failure ? { failure } : {}),
         isError,
