@@ -226,6 +226,34 @@ export const recoverConversation = (
             value: item.decision,
           },
         };
+        continue;
+      }
+      if (item.type === 'commandExecutionAttempt') {
+        if (
+          !commandApproval &&
+          commandCall?.callId === item.callId
+        ) {
+          continue;
+        }
+        if (
+          !commandApproval ||
+          commandApproval.callId !== item.callId ||
+          commandApproval.approvalId !== item.approvalId ||
+          commandApproval.decision?.status !== 'completed' ||
+          commandApproval.decision.value !== 'approved' ||
+          commandApproval.executionAttempt
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched command execution attempt.',
+          );
+        }
+        commandApproval = {
+          ...commandApproval,
+          executionAttempt: {
+            id: item.id,
+            status: 'completed',
+          },
+        };
       }
     }
 

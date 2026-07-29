@@ -6,6 +6,37 @@ import {
 } from '../protocol';
 import { recoverConversation } from '../recovery';
 
+const approvedReadOnlyCommandItems = () => [
+  {
+    type: 'toolCall',
+    id: 'item_command',
+    callId: 'call_command',
+    name: 'shell/exec',
+    path: '.',
+    command: '/usr/bin/true',
+    arguments: [] as string[],
+  },
+  {
+    type: 'commandApprovalRequest',
+    id: 'item_request',
+    approvalId: 'approval_command',
+    callId: 'call_command',
+    command: '/usr/bin/true',
+    arguments: [] as string[],
+    cwd: '.',
+    environmentPolicy: 'minimalV1',
+    sandboxed: true,
+    sandboxPolicy: 'filesystemReadOnlyV1',
+    networkPolicy: 'networkDeniedV1',
+  },
+  {
+    type: 'commandApprovalDecision',
+    id: 'item_decision',
+    approvalId: 'approval_command',
+    decision: 'approved',
+  },
+];
+
 describe('conversation recovery', () => {
   it('parses one latest active Thread and projects text plus workspace read activity', () => {
     const listed = parseThreadListResponse({
@@ -259,7 +290,7 @@ describe('conversation recovery', () => {
     expect(JSON.stringify(recovered)).not.toContain('"line"');
   });
 
-  it('recovers a read-only command approval receipt and discards arguments', () => {
+  it('recovers a read-only command execution attempt audit and discards arguments', () => {
     const resumed = parseThreadResumeResponse({
       thread: { id: 'thr_0000000000000001' },
       turns: [
@@ -293,7 +324,33 @@ describe('conversation recovery', () => {
               type: 'commandApprovalDecision',
               id: 'item_decision',
               approvalId: 'approval_command',
-              decision: 'denied',
+              decision: 'approved',
+            },
+            {
+              type: 'commandExecutionAttempt',
+              id: 'item_attempt',
+              approvalId: 'approval_command',
+              callId: 'call_command',
+            },
+            {
+              type: 'toolResult',
+              id: 'item_result',
+              callId: 'call_command',
+              name: 'shell/exec',
+              result: {
+                type: 'process',
+                stdout: 'private-command-output',
+                stderr: 'private-command-error',
+                stdoutBytes: 22,
+                stderrBytes: 21,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                encoding: 'utf8Lossy',
+                durationMs: 1,
+                outcome: { type: 'exitCode', code: 0 },
+                sandboxPolicy: 'filesystemReadOnlyV1',
+                networkPolicy: 'networkDeniedV1',
+              },
             },
           ],
         },
@@ -312,10 +369,74 @@ describe('conversation recovery', () => {
       decision: {
         id: 'item_decision',
         status: 'completed',
-        value: 'denied',
+        value: 'approved',
+      },
+      executionAttempt: {
+        id: 'item_attempt',
+        status: 'completed',
       },
     });
     expect(JSON.stringify(recovered)).not.toContain('private-value');
+    expect(JSON.stringify(recovered)).not.toContain('private-command-output');
+    expect(JSON.stringify(recovered)).not.toContain('private-command-error');
+  });
+
+  it.each([
+    {
+      label: 'orphan',
+      items: [
+        {
+          type: 'commandExecutionAttempt',
+          id: 'item_attempt',
+          approvalId: 'approval_command',
+          callId: 'call_command',
+        },
+      ],
+    },
+    {
+      label: 'mismatched',
+      items: [
+        ...approvedReadOnlyCommandItems(),
+        {
+          type: 'commandExecutionAttempt',
+          id: 'item_attempt',
+          approvalId: 'approval_other',
+          callId: 'call_command',
+        },
+      ],
+    },
+    {
+      label: 'duplicate',
+      items: [
+        ...approvedReadOnlyCommandItems(),
+        {
+          type: 'commandExecutionAttempt',
+          id: 'item_attempt',
+          approvalId: 'approval_command',
+          callId: 'call_command',
+        },
+        {
+          type: 'commandExecutionAttempt',
+          id: 'item_attempt_2',
+          approvalId: 'approval_command',
+          callId: 'call_command',
+        },
+      ],
+    },
+  ])('rejects an $label command execution attempt audit', ({ items }) => {
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items,
+        },
+      ],
+    });
+    expect(() =>
+      recoverConversation('thr_0000000000000001', resumed),
+    ).toThrow('command execution attempt');
   });
 
   it('leaves workspace-write command approvals outside the projection', () => {
@@ -354,7 +475,15 @@ describe('conversation recovery', () => {
               type: 'commandApprovalDecision',
               id: 'item_decision',
               approvalId: 'approval_command',
-              decision: 'denied',
+              decision: 'approved',
+              workspaceWriteRiskAcknowledgement:
+                'nonTransactionalWorkspaceTreeV1',
+            },
+            {
+              type: 'commandExecutionAttempt',
+              id: 'item_attempt',
+              approvalId: 'approval_command',
+              callId: 'call_command',
             },
           ],
         },

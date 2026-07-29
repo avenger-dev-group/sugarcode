@@ -268,7 +268,7 @@ const run = async (): Promise<void> => {
         },
         {
           id: 'turn_0000000000000094',
-          status: 'completed',
+          status: 'failed',
           items: [
             {
               type: 'commandCall',
@@ -289,9 +289,16 @@ const run = async (): Promise<void> => {
               type: 'commandApprovalDecision',
               id: 'item_recovered_command_decision',
               approvalId: 'approval_recovered_command',
-              decision: 'denied',
+              decision: 'approved',
+            },
+            {
+              type: 'commandExecutionAttempt',
+              id: 'item_recovered_command_attempt',
+              approvalId: 'approval_recovered_command',
+              callId: 'call_recovered_command',
             },
           ],
+          error: { kind: 'server', retryable: false },
         },
       ],
     }),
@@ -540,18 +547,41 @@ const run = async (): Promise<void> => {
       evaluate<boolean>(
         `(() => {
           const activity = document.querySelector(
-            '[aria-label="Command denied: /usr/bin/printf"]',
+            '[aria-label="Command approved: /usr/bin/printf"]',
           );
-          return activity?.getAttribute('role') === 'alert' &&
-            activity.getAttribute('data-state') === 'denied' &&
+          const attempt = activity?.querySelector(
+            '[aria-label="Execution attempt recorded"]',
+          );
+          return activity?.getAttribute('role') === 'status' &&
+            activity.getAttribute('data-state') === 'approved' &&
+            attempt?.getAttribute('data-execution-attempt-state') === 'recorded' &&
             activity.textContent?.includes('1 argument') === true &&
-            activity.textContent?.includes('execution is not shown') === false &&
+            activity.textContent?.includes('Executor may have been called') === true &&
+            activity.textContent?.includes('result or output is shown') === true &&
             !activity.textContent?.includes('private-electron-argument') &&
             !activity.querySelector('button, a');
         })()`,
       ),
-    'recovered command approval presentation',
+    'recovered command execution attempt presentation',
   );
+  window.setSize(360, 600);
+  await waitFor(
+    () =>
+      evaluate<boolean>(`(() => {
+        const attempt = document.querySelector(
+          '[aria-label="Execution attempt recorded"]',
+        );
+        if (!(attempt instanceof HTMLElement)) {
+          return false;
+        }
+        const bounds = attempt.getBoundingClientRect();
+        return document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth &&
+          bounds.left >= 0 && bounds.right <= window.innerWidth;
+      })()`),
+    'narrow command execution attempt layout',
+  );
+  window.setSize(800, 600);
 
   const sendConversationInput = async (input: string): Promise<void> => {
     await evaluate(`(() => {
@@ -901,10 +931,10 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
-          '[aria-label="Command denied: /usr/bin/printf"]',
-        )?.getAttribute('data-state') === 'denied'`,
+          '[aria-label="Execution attempt recorded"]',
+        )?.getAttribute('data-execution-attempt-state') === 'recorded'`,
       ),
-    'command approval after Renderer reload',
+    'command execution attempt after Renderer reload',
   );
   await evaluate(`Array.from(document.querySelectorAll(
     '[aria-label="Agent response"]',

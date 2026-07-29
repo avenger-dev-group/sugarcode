@@ -933,7 +933,7 @@ describe('ConversationController', () => {
     expect(onProtocolFailure).toHaveBeenCalledOnce();
   });
 
-  it('projects a live command approval receipt without sharing arguments', async () => {
+  it('projects a live command execution attempt audit without sharing arguments or results', async () => {
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),
       resumeThread: vi.fn(),
@@ -987,10 +987,36 @@ describe('ConversationController', () => {
         notification('item/completed', { ...correlate, item }),
       );
     }
+    const attempt = {
+      type: 'commandExecutionAttempt',
+      id: 'item_attempt',
+      approvalId: 'approval_command',
+      callId: 'call_command',
+    };
+    controller.handleNotification(
+      notification('item/started', { ...correlate, item: attempt }),
+    );
+    expect(
+      controller.getSnapshot().turns[0]?.commandApproval?.executionAttempt,
+    ).toEqual({ id: 'item_attempt', status: 'inProgress' });
     controller.handleNotification(
       notification('turn/completed', {
         threadId: correlate.threadId,
         turn: { id: correlate.turnId, status: 'completed' },
+      }),
+    );
+    expect(onProtocolFailure).toHaveBeenCalledOnce();
+    controller.handleNotification(
+      notification('item/completed', { ...correlate, item: attempt }),
+    );
+    controller.handleNotification(
+      notification('turn/completed', {
+        threadId: correlate.threadId,
+        turn: {
+          id: correlate.turnId,
+          status: 'failed',
+          error: { kind: 'server', retryable: false },
+        },
       }),
     );
 
@@ -999,8 +1025,10 @@ describe('ConversationController', () => {
       command: '/usr/bin/printf',
       argumentCount: 1,
       decision: { value: 'approved', status: 'completed' },
+      executionAttempt: { id: 'item_attempt', status: 'completed' },
     });
     expect(JSON.stringify(snapshot)).not.toContain('private-value');
-    expect(onProtocolFailure).not.toHaveBeenCalled();
+    expect(JSON.stringify(snapshot)).not.toContain('stdout');
+    expect(onProtocolFailure).toHaveBeenCalledOnce();
   });
 });

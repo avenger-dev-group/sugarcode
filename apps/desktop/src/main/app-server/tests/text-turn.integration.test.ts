@@ -827,7 +827,7 @@ describe('real Desktop text Agent Turn', () => {
   }, REAL_CLI_TEST_TIMEOUT_MS);
 
   it.skipIf(process.platform === 'win32')(
-    'restores a real CLI command approval receipt without replaying arguments',
+    'restores a real CLI command execution attempt audit without replaying arguments or results',
     async () => {
       const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
       const workspace = await mkdtemp(
@@ -881,7 +881,7 @@ describe('real Desktop text Agent Turn', () => {
           throw new Error('Real CLI approval did not expose a presentation.');
         }
         await expect(
-          first.commandApprovals.deny(presentationId),
+          first.commandApprovals.approve(presentationId),
         ).resolves.toEqual({ accepted: true, reason: 'accepted' });
         await vi.waitFor(
           () =>
@@ -893,7 +893,8 @@ describe('real Desktop text Agent Turn', () => {
                   commandApproval: {
                     command: '/usr/bin/printf',
                     argumentCount: 1,
-                    decision: { value: 'denied', status: 'completed' },
+                    decision: { value: 'approved', status: 'completed' },
+                    executionAttempt: { status: 'completed' },
                   },
                 },
               ],
@@ -905,6 +906,8 @@ describe('real Desktop text Agent Turn', () => {
         expect(JSON.stringify(durableActivity)).not.toContain(
           'private-command-argument',
         );
+        expect(JSON.stringify(durableActivity)).not.toContain('stdout');
+        expect(JSON.stringify(durableActivity)).not.toContain('exitCode');
 
         first.shutdown();
         second = createSupervisor();

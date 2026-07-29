@@ -28,6 +28,7 @@ import type {
   AgentMessagePresentationState,
   CommandApprovalActivityViewModel,
   CommandApprovalPresentationState,
+  CommandExecutionAttemptPresentationState,
   WorkspaceListActivityViewModel,
   WorkspaceListPresentationState,
   WorkspaceReadActivityViewModel,
@@ -188,6 +189,27 @@ const toCommandApprovalPresentationState = (
       return 'uncertain';
     default:
       throw new Error('Command approval activity did not match its Turn phase.');
+  }
+};
+
+const toCommandExecutionAttemptPresentationState = (
+  phase: ConversationPhase,
+  status: ConversationMessageStatus,
+): CommandExecutionAttemptPresentationState => {
+  if (status === 'completed') {
+    return 'recorded';
+  }
+  switch (phase) {
+    case 'inProgress':
+      return 'observed';
+    case 'stopping':
+      return 'stopping';
+    case 'unavailable':
+      return 'uncertain';
+    default:
+      throw new Error(
+        'Command execution attempt did not match its Turn phase.',
+      );
   }
 };
 
@@ -355,6 +377,17 @@ export const toThreadViewModel = (
               turn.status,
               turn.commandApproval,
             ),
+            ...(turn.commandApproval.executionAttempt
+              ? {
+                  executionAttempt: {
+                    id: turn.commandApproval.executionAttempt.id,
+                    state: toCommandExecutionAttemptPresentationState(
+                      snapshot.phase,
+                      turn.commandApproval.executionAttempt.status,
+                    ),
+                  },
+                }
+              : {}),
           } satisfies CommandApprovalActivityViewModel
         : undefined;
       const commandApproval =
@@ -363,7 +396,11 @@ export const toThreadViewModel = (
         previousTurn.commandApproval.command === nextCommandApproval.command &&
         previousTurn.commandApproval.argumentCount ===
           nextCommandApproval.argumentCount &&
-        previousTurn.commandApproval.state === nextCommandApproval.state
+        previousTurn.commandApproval.state === nextCommandApproval.state &&
+        previousTurn.commandApproval.executionAttempt?.id ===
+          nextCommandApproval.executionAttempt?.id &&
+        previousTurn.commandApproval.executionAttempt?.state ===
+          nextCommandApproval.executionAttempt?.state
           ? previousTurn.commandApproval
           : nextCommandApproval;
       const nextFailure = turn.error

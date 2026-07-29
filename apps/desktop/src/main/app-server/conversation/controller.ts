@@ -95,6 +95,10 @@ type MutableCommandApprovalActivity = {
     status: ConversationMessage['status'];
     value: ConversationCommandApprovalDecision;
   };
+  executionAttempt?: {
+    id: string;
+    status: ConversationMessage['status'];
+  };
   argumentSignature: string;
 };
 
@@ -231,6 +235,13 @@ export class ConversationController {
                 ...turn.commandApproval,
                 ...(turn.commandApproval.decision
                   ? { decision: { ...turn.commandApproval.decision } }
+                  : {}),
+                ...(turn.commandApproval.executionAttempt
+                  ? {
+                      executionAttempt: {
+                        ...turn.commandApproval.executionAttempt,
+                      },
+                    }
                   : {}),
                 argumentSignature: '',
               },
@@ -624,7 +635,9 @@ export class ConversationController {
             argumentSignature: JSON.stringify(call.arguments),
           };
           turn.pendingCommandCall = undefined;
-        } else {
+        } else if (
+          lifecycle.params.item.type === 'commandApprovalDecision'
+        ) {
           const activity = turn.commandApproval;
           if (!activity) {
             return;
@@ -640,6 +653,33 @@ export class ConversationController {
             id: lifecycle.params.item.id,
             status: 'inProgress',
             value: lifecycle.params.item.decision,
+          };
+        } else {
+          if (!turn.commandApproval) {
+            const ignoredCall = turn.pendingCommandCall;
+            if (
+              ignoredCall?.status === 'completed' &&
+              ignoredCall.callId === lifecycle.params.item.callId
+            ) {
+              return;
+            }
+          }
+          const activity = this.requireCommandApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
+          if (
+            activity.callId !== lifecycle.params.item.callId ||
+            activity.requestStatus !== 'completed' ||
+            activity.decision?.status !== 'completed' ||
+            activity.decision.value !== 'approved' ||
+            activity.executionAttempt
+          ) {
+            throw new Error('Command execution attempt started out of order.');
+          }
+          activity.executionAttempt = {
+            id: lifecycle.params.item.id,
+            status: 'inProgress',
           };
         }
         this.publish();
@@ -812,7 +852,9 @@ export class ConversationController {
             throw new Error('Completed command approval request did not match its started Item.');
           }
           activity.requestStatus = 'completed';
-        } else {
+        } else if (
+          lifecycle.params.item.type === 'commandApprovalDecision'
+        ) {
           const activity = turn.commandApproval;
           if (!activity) {
             return;
@@ -828,6 +870,32 @@ export class ConversationController {
             throw new Error('Completed command approval decision did not match its started Item.');
           }
           decision.status = 'completed';
+        } else {
+          if (!turn.commandApproval) {
+            const ignoredCall = turn.pendingCommandCall;
+            if (
+              ignoredCall?.status === 'completed' &&
+              ignoredCall.callId === lifecycle.params.item.callId
+            ) {
+              return;
+            }
+          }
+          const activity = this.requireCommandApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
+          const executionAttempt = activity.executionAttempt;
+          if (
+            activity.callId !== lifecycle.params.item.callId ||
+            !executionAttempt ||
+            executionAttempt.id !== lifecycle.params.item.id ||
+            executionAttempt.status !== 'inProgress'
+          ) {
+            throw new Error(
+              'Completed command execution attempt did not match its started Item.',
+            );
+          }
+          executionAttempt.status = 'completed';
         }
         this.publish();
         return;
@@ -882,7 +950,9 @@ export class ConversationController {
             (lifecycle.params.turn.status !== 'interrupted' &&
               turn.commandApproval.decision?.status !== 'completed') ||
             (turn.commandApproval.decision &&
-              turn.commandApproval.decision.status !== 'completed'))
+              turn.commandApproval.decision.status !== 'completed') ||
+            (turn.commandApproval.executionAttempt &&
+              turn.commandApproval.executionAttempt.status !== 'completed'))
         ) {
           throw new Error(
             'Turn completed before command approval activity completed.',
@@ -989,7 +1059,8 @@ export class ConversationController {
         turn.pendingCommandCall?.id === itemId ||
         turn.commandApproval?.callItemId === itemId ||
         turn.commandApproval?.id === itemId ||
-        turn.commandApproval?.decision?.id === itemId,
+        turn.commandApproval?.decision?.id === itemId ||
+        turn.commandApproval?.executionAttempt?.id === itemId,
     );
 
   private createSnapshot = (): ConversationStateSnapshot => ({
@@ -1059,6 +1130,13 @@ export class ConversationController {
                 requestStatus: turn.commandApproval.requestStatus,
                 ...(turn.commandApproval.decision
                   ? { decision: { ...turn.commandApproval.decision } }
+                  : {}),
+                ...(turn.commandApproval.executionAttempt
+                  ? {
+                      executionAttempt: {
+                        ...turn.commandApproval.executionAttempt,
+                      },
+                    }
                   : {}),
               },
             }

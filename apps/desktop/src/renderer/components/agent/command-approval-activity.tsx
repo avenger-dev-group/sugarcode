@@ -1,4 +1,5 @@
 import {
+  Activity,
   Ban,
   Check,
   CircleHelp,
@@ -13,7 +14,30 @@ import {
 import type {
   CommandApprovalActivityProps,
   CommandApprovalPresentationState,
+  CommandExecutionAttemptPresentationState,
 } from './types';
+
+const ATTEMPT_COPY: Record<
+  CommandExecutionAttemptPresentationState,
+  Readonly<{ label: string; detail: string }>
+> = {
+  observed: {
+    label: 'Execution attempt observed',
+    detail: 'Durable audit exists; its Item is still active',
+  },
+  stopping: {
+    label: 'Execution attempt stopping',
+    detail: 'Durable audit exists; waiting for Item completion',
+  },
+  uncertain: {
+    label: 'Execution attempt status unavailable',
+    detail: 'Durable audit exists; Item completion was not observed',
+  },
+  recorded: {
+    label: 'Execution attempt recorded',
+    detail: 'Executor may have been called; no result or output is shown',
+  },
+};
 
 const STATE_COPY: Record<
   CommandApprovalPresentationState,
@@ -159,6 +183,25 @@ export const CommandApprovalActivity = ({
           <StateIcon state={activity.state} />
           <span>{copy.detail}</span>
         </p>
+        {activity.executionAttempt ? (
+          <div
+            className="mt-3 min-w-0 border-t pt-2.5"
+            aria-label={
+              ATTEMPT_COPY[activity.executionAttempt.state].label
+            }
+            data-execution-attempt-state={activity.executionAttempt.state}
+          >
+            <p className="flex min-w-0 items-center gap-1.5 text-xs font-medium leading-normal">
+              <Activity className="size-3.5 shrink-0" aria-hidden="true" />
+              <span>
+                {ATTEMPT_COPY[activity.executionAttempt.state].label}
+              </span>
+            </p>
+            <p className="mt-1 break-words font-mono text-[10px] tracking-[0.08em] text-tertiary">
+              {ATTEMPT_COPY[activity.executionAttempt.state].detail}
+            </p>
+          </div>
+        ) : null}
       </div>
     </section>
   );

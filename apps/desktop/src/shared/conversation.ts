@@ -117,6 +117,10 @@ export type ConversationCommandApprovalActivity = Readonly<{
     status: ConversationMessageStatus;
     value: ConversationCommandApprovalDecision;
   }>;
+  executionAttempt?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+  }>;
 }>;
 
 export type ConversationTurnError = Readonly<{
@@ -442,9 +446,9 @@ const isCommandApprovalActivity = (
     return false;
   }
   if (!Object.hasOwn(value, 'decision')) {
-    return true;
+    return !Object.hasOwn(value, 'executionAttempt');
   }
-  return (
+  if (!(
     value.requestStatus === 'completed' &&
     isRecord(value.decision) &&
     isId(value.decision.id) &&
@@ -457,6 +461,24 @@ const isCommandApprovalActivity = (
     typeof value.decision.value === 'string' &&
     COMMAND_APPROVAL_DECISIONS.has(
       value.decision.value as ConversationCommandApprovalDecision,
+    )
+  )) {
+    return false;
+  }
+  if (!Object.hasOwn(value, 'executionAttempt')) {
+    return true;
+  }
+  return (
+    value.decision.value === 'approved' &&
+    value.decision.status === 'completed' &&
+    isRecord(value.executionAttempt) &&
+    isId(value.executionAttempt.id) &&
+    value.executionAttempt.id !== value.id &&
+    value.executionAttempt.id !== value.callItemId &&
+    value.executionAttempt.id !== value.decision.id &&
+    typeof value.executionAttempt.status === 'string' &&
+    MESSAGE_STATUSES.has(
+      value.executionAttempt.status as ConversationMessageStatus,
     )
   );
 };
@@ -548,6 +570,8 @@ const isTurn = (value: unknown): value is ConversationTurn => {
     (commandApproval.requestStatus !== 'completed' ||
       (commandApproval.decision &&
         commandApproval.decision.status !== 'completed') ||
+      (commandApproval.executionAttempt &&
+        commandApproval.executionAttempt.status !== 'completed') ||
       (value.status !== 'interrupted' &&
         commandApproval.decision?.status !== 'completed'))
   ) {

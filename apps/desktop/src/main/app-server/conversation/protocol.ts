@@ -104,6 +104,13 @@ export type CommandApprovalDecisionItem = Readonly<{
     | 'clientDisconnected';
 }>;
 
+export type CommandExecutionAttemptItem = Readonly<{
+  type: 'commandExecutionAttempt';
+  id: string;
+  approvalId: string;
+  callId: string;
+}>;
+
 type ConversationItem =
   | TextItem
   | WorkspaceReadCallItem
@@ -114,7 +121,8 @@ type ConversationItem =
   | WorkspaceSearchResultItem
   | CommandCallItem
   | CommandApprovalRequestItem
-  | CommandApprovalDecisionItem;
+  | CommandApprovalDecisionItem
+  | CommandExecutionAttemptItem;
 
 export type ResumeItem =
   | ConversationItem
@@ -569,6 +577,17 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       id: value.id,
       approvalId: value.approvalId,
       decision: value.decision as CommandApprovalDecisionItem['decision'],
+    };
+  }
+  if (value.type === 'commandExecutionAttempt') {
+    if (!isId(value.approvalId) || !isId(value.callId)) {
+      throw new Error('Invalid command execution attempt Item.');
+    }
+    return {
+      type: 'commandExecutionAttempt',
+      id: value.id,
+      approvalId: value.approvalId,
+      callId: value.callId,
     };
   }
   if (value.type === 'toolCall' && value.name === 'workspace/read') {

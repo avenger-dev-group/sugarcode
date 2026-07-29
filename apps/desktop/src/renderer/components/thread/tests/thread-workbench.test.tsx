@@ -914,7 +914,7 @@ describe('ThreadWorkbenchView', () => {
     ).toMatchObject({ state: 'failed', errorKind: 'notFound' });
   });
 
-  it('presents a durable command approval receipt without controls or arguments', async () => {
+  it('presents a durable command execution attempt audit without controls, arguments, or results', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -941,6 +941,10 @@ describe('ThreadWorkbenchView', () => {
                 status: 'completed',
                 value: 'approved',
               },
+              executionAttempt: {
+                id: 'item_attempt',
+                status: 'completed',
+              },
             },
           },
         ],
@@ -958,11 +962,61 @@ describe('ThreadWorkbenchView', () => {
     expect(activity?.textContent).toContain(
       'Approval recorded; execution is not shown',
     );
+    const attempt = activity?.querySelector(
+      '[aria-label="Execution attempt recorded"]',
+    );
+    expect(attempt?.getAttribute('data-execution-attempt-state')).toBe(
+      'recorded',
+    );
+    expect(attempt?.textContent).toContain(
+      'Executor may have been called; no result or output is shown',
+    );
     expect(activity?.querySelector('button, a')).toBeNull();
     expect(activity?.textContent).not.toContain('approval_command');
     expect(activity?.textContent).not.toContain('private-value');
+    expect(activity?.textContent).not.toContain('item_attempt');
 
     await act(async () => root.unmount());
+  });
+
+  it.each([
+    ['inProgress', 'observed'],
+    ['stopping', 'stopping'],
+    ['unavailable', 'uncertain'],
+  ] as const)('derives command execution attempt %s state', (phase, expected) => {
+    expect(
+      toThreadViewModel({
+        revision: 25,
+        phase,
+        threadId: 'thr_0000000000000001',
+        activeTurnId: 'turn_0000000000000017',
+        turns: [
+          {
+            id: 'turn_0000000000000017',
+            status: 'inProgress',
+            messages: [],
+            commandApproval: {
+              callItemId: 'item_command',
+              id: 'item_request',
+              callId: 'call_command',
+              approvalId: 'approval_command',
+              command: '/usr/bin/true',
+              argumentCount: 0,
+              requestStatus: 'completed',
+              decision: {
+                id: 'item_decision',
+                status: 'completed',
+                value: 'approved',
+              },
+              executionAttempt: {
+                id: 'item_attempt',
+                status: 'inProgress',
+              },
+            },
+          },
+        ],
+      }).turns[0]?.commandApproval?.executionAttempt?.state,
+    ).toBe(expected);
   });
 
   it.each([

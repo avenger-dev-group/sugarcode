@@ -88,11 +88,21 @@ export type CommandApprovalPresentationState =
   | 'cancelled'
   | 'clientDisconnected';
 
+export type CommandExecutionAttemptPresentationState =
+  | 'observed'
+  | 'stopping'
+  | 'uncertain'
+  | 'recorded';
+
 export type CommandApprovalActivityViewModel = Readonly<{
   id: string;
   command: string;
   argumentCount: number;
   state: CommandApprovalPresentationState;
+  executionAttempt?: Readonly<{
+    id: string;
+    state: CommandExecutionAttemptPresentationState;
+  }>;
 }>;
 
 export type CommandApprovalActivityProps = Readonly<{
