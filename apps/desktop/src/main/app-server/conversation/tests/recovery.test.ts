@@ -159,6 +159,55 @@ describe('conversation recovery', () => {
     ).toBeUndefined();
   });
 
+  it('recovers a workspace list count and discards durable entry names', () => {
+    const content = JSON.stringify({
+      entries: [
+        { name: 'private.txt', kind: 'file' },
+        { name: 'nested', kind: 'directory' },
+      ],
+    });
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            {
+              type: 'toolCall',
+              id: 'item_0000000000000001',
+              callId: 'call_list',
+              name: 'workspace/list',
+              path: '.',
+            },
+            {
+              type: 'toolResult',
+              id: 'item_0000000000000002',
+              callId: 'call_list',
+              name: 'workspace/list',
+              result: {
+                type: 'success',
+                content,
+                bytes: new TextEncoder().encode(content).byteLength,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const recovered = recoverConversation(
+      'thr_0000000000000001',
+      resumed,
+    );
+    expect(recovered.turns[0]?.workspaceList).toMatchObject({
+      path: '.',
+      result: { outcome: { type: 'success', entries: 2 } },
+    });
+    expect(JSON.stringify(recovered)).not.toContain('private.txt');
+    expect(JSON.stringify(recovered)).not.toContain('nested');
+  });
+
   it.each([
     {
       data: [

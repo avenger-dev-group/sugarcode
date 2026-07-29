@@ -589,6 +589,129 @@ describe('ConversationController', () => {
     expect(onProtocolFailure).not.toHaveBeenCalled();
   });
 
+  it('projects one durable workspace list count without exposing entry names', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(
+        async (): Promise<TurnStartResponse> => ({
+          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+        }),
+      ),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await controller.startTurn('List the workspace root.');
+
+    const call = {
+      type: 'toolCall',
+      id: 'item_0000000000000010',
+      callId: 'call_list',
+      name: 'workspace/list',
+      path: '.',
+    };
+    for (const method of ['item/started', 'item/completed']) {
+      controller.handleNotification(
+        notification(method, {
+          threadId: 'thr_0000000000000001',
+          turnId: 'turn_0000000000000001',
+          item: call,
+        }),
+      );
+    }
+    const content = JSON.stringify({
+      entries: [
+        { name: 'private-plan.txt', kind: 'file' },
+        { name: 'secret', kind: 'directory' },
+      ],
+    });
+    const result = {
+      type: 'toolResult',
+      id: 'item_0000000000000011',
+      callId: 'call_list',
+      name: 'workspace/list',
+      result: {
+        type: 'success',
+        content,
+        bytes: new TextEncoder().encode(content).byteLength,
+      },
+    };
+    for (const method of ['item/started', 'item/completed']) {
+      controller.handleNotification(
+        notification(method, {
+          threadId: 'thr_0000000000000001',
+          turnId: 'turn_0000000000000001',
+          item: result,
+        }),
+      );
+    }
+    controller.handleNotification(
+      notification('turn/completed', {
+        threadId: 'thr_0000000000000001',
+        turn: { id: 'turn_0000000000000001', status: 'completed' },
+      }),
+    );
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot).toMatchObject({
+      phase: 'ready',
+      turns: [
+        {
+          workspaceList: {
+            path: '.',
+            callStatus: 'completed',
+            result: {
+              status: 'completed',
+              outcome: { type: 'success', entries: 2 },
+            },
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('private-plan.txt');
+    expect(JSON.stringify(snapshot)).not.toContain('secret');
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on malformed workspace list content', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(
+        async (): Promise<TurnStartResponse> => ({
+          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+        }),
+      ),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await controller.startTurn('List safely.');
+    controller.handleNotification(
+      notification('item/started', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: {
+          type: 'toolResult',
+          id: 'item_bad',
+          callId: 'call_list',
+          name: 'workspace/list',
+          result: {
+            type: 'success',
+            content: '{"entries":"not-an-array"}',
+            bytes: 26,
+          },
+        },
+      }),
+    );
+    expect(onProtocolFailure).toHaveBeenCalledOnce();
+  });
+
   it('keeps a workspace read uncertain on transport loss and rejects mismatched results', async () => {
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),

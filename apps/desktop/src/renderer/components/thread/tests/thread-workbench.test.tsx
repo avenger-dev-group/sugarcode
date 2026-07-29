@@ -669,4 +669,121 @@ describe('ThreadWorkbenchView', () => {
       errorKind: 'notFound',
     });
   });
+
+  it('presents only a workspace list path and durable entry count', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const longPath = `${'nested/'.repeat(20)}directory`;
+    const store = createStore({
+      thread: toThreadViewModel({
+        revision: 13,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000007',
+            status: 'completed',
+            messages: [],
+            workspaceList: {
+              id: 'item_0000000000000012',
+              callId: 'call_list',
+              path: longPath,
+              callStatus: 'completed',
+              result: {
+                id: 'item_0000000000000013',
+                status: 'completed',
+                outcome: { type: 'success', entries: 0 },
+              },
+            },
+          },
+        ],
+      }),
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+
+    const activity = document.querySelector(
+      `[aria-label="Workspace list complete: ${longPath}"]`,
+    );
+    expect(activity?.getAttribute('role')).toBe('status');
+    expect(activity?.getAttribute('data-state')).toBe('succeeded');
+    expect(activity?.textContent).toContain('workspace/list');
+    expect(activity?.textContent).toContain(longPath);
+    expect(activity?.textContent).toContain('0 entries found');
+    expect(activity?.querySelector('code')?.className).toContain('break-all');
+    expect(activity?.querySelector('button, a')).toBeNull();
+    expect(activity?.textContent).not.toContain('call_list');
+
+    await act(async () => root.unmount());
+  });
+
+  it('derives honest workspace list states from lifecycle truth', () => {
+    const activeSnapshot = {
+      revision: 14,
+      threadId: 'thr_0000000000000001',
+      activeTurnId: 'turn_0000000000000008',
+      turns: [
+        {
+          id: 'turn_0000000000000008',
+          status: 'inProgress' as const,
+          messages: [] as const,
+          workspaceList: {
+            id: 'item_0000000000000014',
+            callId: 'call_pending_list',
+            path: '.',
+            callStatus: 'completed' as const,
+          },
+        },
+      ],
+    };
+
+    expect(
+      toThreadViewModel({ ...activeSnapshot, phase: 'inProgress' })
+        .turns[0]?.workspaceList?.state,
+    ).toBe('running');
+    expect(
+      toThreadViewModel({ ...activeSnapshot, phase: 'stopping' })
+        .turns[0]?.workspaceList?.state,
+    ).toBe('stopping');
+    expect(
+      toThreadViewModel({ ...activeSnapshot, phase: 'unavailable' })
+        .turns[0]?.workspaceList?.state,
+    ).toBe('uncertain');
+    expect(
+      toThreadViewModel({
+        revision: 15,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [{ ...activeSnapshot.turns[0], status: 'interrupted' }],
+      }).turns[0]?.workspaceList?.state,
+    ).toBe('interrupted');
+    expect(
+      toThreadViewModel({
+        revision: 16,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000009',
+            status: 'completed',
+            messages: [],
+            workspaceList: {
+              id: 'item_0000000000000015',
+              callId: 'call_failed_list',
+              path: 'missing',
+              callStatus: 'completed',
+              result: {
+                id: 'item_0000000000000016',
+                status: 'completed',
+                outcome: { type: 'error', kind: 'notFound' },
+              },
+            },
+          },
+        ],
+      }).turns[0]?.workspaceList,
+    ).toMatchObject({ state: 'failed', errorKind: 'notFound' });
+  });
 });

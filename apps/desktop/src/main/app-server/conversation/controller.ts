@@ -6,6 +6,8 @@ import type {
   ConversationTurn,
   ConversationTurnError,
   ConversationTurnStatus,
+  ConversationWorkspaceListActivity,
+  ConversationWorkspaceListOutcome,
   ConversationWorkspaceReadActivity,
   ConversationWorkspaceReadOutcome,
 } from '@/shared/conversation';
@@ -44,11 +46,24 @@ type MutableWorkspaceReadActivity = {
   };
 };
 
+type MutableWorkspaceListActivity = {
+  id: string;
+  callId: string;
+  path: string;
+  callStatus: ConversationWorkspaceListActivity['callStatus'];
+  result?: {
+    id: string;
+    status: ConversationWorkspaceListActivity['callStatus'];
+    outcome: ConversationWorkspaceListOutcome;
+  };
+};
+
 type MutableTurn = {
   id: string;
   status: ConversationTurnStatus;
   messages: MutableMessage[];
   workspaceRead?: MutableWorkspaceReadActivity;
+  workspaceList?: MutableWorkspaceListActivity;
   error?: ConversationTurnError;
 };
 
@@ -131,6 +146,21 @@ export class ConversationController {
                       result: {
                         ...turn.workspaceRead.result,
                         outcome: { ...turn.workspaceRead.result.outcome },
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(turn.workspaceList
+          ? {
+              workspaceList: {
+                ...turn.workspaceList,
+                ...(turn.workspaceList.result
+                  ? {
+                      result: {
+                        ...turn.workspaceList.result,
+                        outcome: { ...turn.workspaceList.result.outcome },
                       },
                     }
                   : {}),
@@ -385,7 +415,7 @@ export class ConversationController {
             status: 'inProgress',
           });
         } else if (lifecycle.params.item.type === 'workspaceReadCall') {
-          if (turn.workspaceRead) {
+          if (turn.workspaceRead || turn.workspaceList) {
             throw new Error('Duplicate workspace/read activity.');
           }
           turn.workspaceRead = {
@@ -394,7 +424,9 @@ export class ConversationController {
             path: lifecycle.params.item.path,
             callStatus: 'inProgress',
           };
-        } else {
+        } else if (
+          lifecycle.params.item.type === 'workspaceReadResult'
+        ) {
           const workspaceRead = this.requireWorkspaceRead(
             turn,
             lifecycle.params.item.callId,
@@ -406,6 +438,32 @@ export class ConversationController {
             throw new Error('Workspace read result started out of order.');
           }
           workspaceRead.result = {
+            id: lifecycle.params.item.id,
+            status: 'inProgress',
+            outcome: { ...lifecycle.params.item.outcome },
+          };
+        } else if (lifecycle.params.item.type === 'workspaceListCall') {
+          if (turn.workspaceList || turn.workspaceRead) {
+            throw new Error('Duplicate workspace/list activity.');
+          }
+          turn.workspaceList = {
+            id: lifecycle.params.item.id,
+            callId: lifecycle.params.item.callId,
+            path: lifecycle.params.item.path,
+            callStatus: 'inProgress',
+          };
+        } else {
+          const workspaceList = this.requireWorkspaceList(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            workspaceList.callStatus !== 'completed' ||
+            workspaceList.result
+          ) {
+            throw new Error('Workspace list result started out of order.');
+          }
+          workspaceList.result = {
             id: lifecycle.params.item.id,
             status: 'inProgress',
             outcome: { ...lifecycle.params.item.outcome },
@@ -459,7 +517,9 @@ export class ConversationController {
             );
           }
           workspaceRead.callStatus = 'completed';
-        } else {
+        } else if (
+          lifecycle.params.item.type === 'workspaceReadResult'
+        ) {
           const workspaceRead = this.requireWorkspaceRead(
             turn,
             lifecycle.params.item.callId,
@@ -473,6 +533,41 @@ export class ConversationController {
           ) {
             throw new Error(
               'Completed workspace/read result did not match its started Item.',
+            );
+          }
+          result.status = 'completed';
+        } else if (lifecycle.params.item.type === 'workspaceListCall') {
+          const workspaceList = this.requireWorkspaceList(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            workspaceList.id !== lifecycle.params.item.id ||
+            workspaceList.path !== lifecycle.params.item.path ||
+            workspaceList.callStatus !== 'inProgress'
+          ) {
+            throw new Error(
+              'Completed workspace/list call did not match its started Item.',
+            );
+          }
+          workspaceList.callStatus = 'completed';
+        } else {
+          const workspaceList = this.requireWorkspaceList(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          const result = workspaceList.result;
+          if (
+            !result ||
+            result.id !== lifecycle.params.item.id ||
+            result.status !== 'inProgress' ||
+            !listOutcomesEqual(
+              result.outcome,
+              lifecycle.params.item.outcome,
+            )
+          ) {
+            throw new Error(
+              'Completed workspace/list result did not match its started Item.',
             );
           }
           result.status = 'completed';
@@ -498,6 +593,18 @@ export class ConversationController {
         ) {
           throw new Error(
             'Turn completed before workspace/read activity completed.',
+          );
+        }
+        if (
+          turn.workspaceList &&
+          (turn.workspaceList.callStatus !== 'completed' ||
+            (lifecycle.params.turn.status !== 'interrupted' &&
+              turn.workspaceList.result?.status !== 'completed') ||
+            (turn.workspaceList.result &&
+              turn.workspaceList.result.status !== 'completed'))
+        ) {
+          throw new Error(
+            'Turn completed before workspace/list activity completed.',
           );
         }
         turn.status = lifecycle.params.turn.status;
@@ -556,11 +663,23 @@ export class ConversationController {
     return turn.workspaceRead;
   };
 
+  private requireWorkspaceList = (
+    turn: MutableTurn,
+    callId: string,
+  ): MutableWorkspaceListActivity => {
+    if (!turn.workspaceList || turn.workspaceList.callId !== callId) {
+      throw new Error('Workspace list lifecycle referenced another call.');
+    }
+    return turn.workspaceList;
+  };
+
   private hasItemId = (turn: MutableTurn, itemId: string): boolean =>
     Boolean(
       turn.messages.some((message) => message.id === itemId) ||
         turn.workspaceRead?.id === itemId ||
-        turn.workspaceRead?.result?.id === itemId,
+        turn.workspaceRead?.result?.id === itemId ||
+        turn.workspaceList?.id === itemId ||
+        turn.workspaceList?.result?.id === itemId,
     );
 
   private createSnapshot = (): ConversationStateSnapshot => ({
@@ -582,6 +701,21 @@ export class ConversationController {
                       result: {
                         ...turn.workspaceRead.result,
                         outcome: { ...turn.workspaceRead.result.outcome },
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(turn.workspaceList
+          ? {
+              workspaceList: {
+                ...turn.workspaceList,
+                ...(turn.workspaceList.result
+                  ? {
+                      result: {
+                        ...turn.workspaceList.result,
+                        outcome: { ...turn.workspaceList.result.outcome },
                       },
                     }
                   : {}),
@@ -613,6 +747,17 @@ const outcomesEqual = (
   left.type === right.type &&
   (left.type === 'success' && right.type === 'success'
     ? left.bytes === right.bytes
+    : left.type === 'error' &&
+      right.type === 'error' &&
+      left.kind === right.kind);
+
+const listOutcomesEqual = (
+  left: ConversationWorkspaceListOutcome,
+  right: ConversationWorkspaceListOutcome,
+): boolean =>
+  left.type === right.type &&
+  (left.type === 'success' && right.type === 'success'
+    ? left.entries === right.entries
     : left.type === 'error' &&
       right.type === 'error' &&
       left.kind === right.kind);

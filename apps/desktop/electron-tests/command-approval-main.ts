@@ -192,6 +192,42 @@ const run = async (): Promise<void> => {
           ],
           error: { kind: 'rateLimited', retryable: true },
         },
+        {
+          id: 'turn_0000000000000098',
+          status: 'completed',
+          items: [
+            {
+              type: 'workspaceListCall',
+              id: 'item_0000000000000097-list',
+              callId: 'call_recovered_list',
+              path: 'recovered/directory',
+            },
+            {
+              type: 'workspaceListResult',
+              id: 'item_0000000000000097-list-result',
+              callId: 'call_recovered_list',
+              outcome: { type: 'success', entries: 0 },
+            },
+          ],
+        },
+        {
+          id: 'turn_0000000000000097',
+          status: 'completed',
+          items: [
+            {
+              type: 'workspaceListCall',
+              id: 'item_0000000000000096-list',
+              callId: 'call_recovered_list_failure',
+              path: 'recovered/missing-directory',
+            },
+            {
+              type: 'workspaceListResult',
+              id: 'item_0000000000000096-list-result',
+              callId: 'call_recovered_list_failure',
+              outcome: { type: 'error', kind: 'notFound' },
+            },
+          ],
+        },
       ],
     }),
     startThread: async () => ({
@@ -370,6 +406,37 @@ const run = async (): Promise<void> => {
       ),
     'recovered workspace read presentation',
   );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const activity = document.querySelector(
+            '[aria-label="Workspace list complete: recovered/directory"]',
+          );
+          return activity?.getAttribute('data-state') === 'succeeded' &&
+            activity.textContent?.includes('0 entries found') === true &&
+            !activity.textContent?.includes('private-entry.txt') &&
+            !activity.textContent?.includes('call_recovered_list') &&
+            !activity.querySelector('button, a');
+        })()`,
+      ),
+    'recovered workspace list presentation',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const activity = document.querySelector(
+            '[aria-label="Workspace list failed: recovered/missing-directory"]',
+          );
+          return activity?.getAttribute('role') === 'alert' &&
+            activity.getAttribute('data-state') === 'failed' &&
+            activity.textContent?.includes('Failure kind notFound') === true &&
+            !activity.querySelector('button, a');
+        })()`,
+      ),
+    'recovered failed workspace list presentation',
+  );
 
   const sendConversationInput = async (input: string): Promise<void> => {
     await evaluate(`(() => {
@@ -400,7 +467,7 @@ const run = async (): Promise<void> => {
     output: string,
     terminal: 'completed' | 'interrupted',
     afterDelta?: () => Promise<void>,
-    workspaceRead?: Readonly<{ path: string; bytes: number }>,
+    workspaceList?: Readonly<{ path: string; entries: number }>,
   ): Promise<void> => {
     conversation.handleNotification({
       kind: 'notification',
@@ -430,23 +497,31 @@ const run = async (): Promise<void> => {
         },
       });
     }
-    if (workspaceRead) {
+    if (workspaceList) {
       const call = {
         type: 'toolCall',
-        id: `${turnId}/read`,
-        callId: `${turnId}/read-call`,
-        name: 'workspace/read',
-        path: workspaceRead.path,
+        id: `${turnId}/list`,
+        callId: `${turnId}/list-call`,
+        name: 'workspace/list',
+        path: workspaceList.path,
       } as const;
+      const entries = Array.from(
+        { length: workspaceList.entries },
+        (_value, index) => ({
+          name: `private-live-${index}.txt`,
+          kind: 'file',
+        }),
+      );
+      const content = JSON.stringify({ entries });
       const result = {
         type: 'toolResult',
-        id: `${turnId}/read-result`,
+        id: `${turnId}/list-result`,
         callId: call.callId,
-        name: 'workspace/read',
+        name: 'workspace/list',
         result: {
           type: 'success',
-          content: 'private live content',
-          bytes: workspaceRead.bytes,
+          content,
+          bytes: new TextEncoder().encode(content).byteLength,
         },
       } as const;
       for (const [method, item] of [
@@ -557,7 +632,7 @@ const run = async (): Promise<void> => {
         'incremental streaming Markdown projection',
       );
     },
-    { path: 'live/notes.txt', bytes: 48 },
+    { path: 'live/directory', entries: 48 },
   );
   await waitFor(
     () =>
@@ -577,15 +652,15 @@ const run = async (): Promise<void> => {
       evaluate<boolean>(
         `(() => {
           const activity = document.querySelector(
-            '[aria-label="Workspace read complete: live/notes.txt"]',
+            '[aria-label="Workspace list complete: live/directory"]',
           );
           return activity?.getAttribute('data-state') === 'succeeded' &&
-            activity.textContent?.includes('48 bytes read') === true &&
-            !activity.textContent?.includes('private live content') &&
+            activity.textContent?.includes('48 entries found') === true &&
+            !activity.textContent?.includes('private-live-0.txt') &&
             !activity.querySelector('button, a');
         })()`,
       ),
-    'live workspace read presentation',
+    'live workspace list presentation',
   );
   await evaluate('location.reload()');
   await waitFor(
@@ -641,7 +716,7 @@ const run = async (): Promise<void> => {
     ),
     'Turn failure after Renderer reload',
   );
-  for (const path of ['recovered/context.txt', 'live/notes.txt']) {
+  for (const path of ['recovered/context.txt']) {
     await waitFor(
       () =>
         evaluate<boolean>(
@@ -652,6 +727,26 @@ const run = async (): Promise<void> => {
       `workspace read ${path} after Renderer reload`,
     );
   }
+  for (const path of ['recovered/directory', 'live/directory']) {
+    await waitFor(
+      () =>
+        evaluate<boolean>(
+          `document.querySelector(
+            '[aria-label="Workspace list complete: ${path}"]',
+          )?.getAttribute('data-state') === 'succeeded'`,
+        ),
+      `workspace list ${path} after Renderer reload`,
+    );
+  }
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Workspace list failed: recovered/missing-directory"]',
+        )?.textContent?.includes('Failure kind notFound') === true`,
+      ),
+    'failed workspace list after Renderer reload',
+  );
   await evaluate(`Array.from(document.querySelectorAll(
     '[aria-label="Agent response"]',
   )).find((response) =>
@@ -708,12 +803,12 @@ const run = async (): Promise<void> => {
       },
     });
   }
-  const stoppingReadCall = {
+  const stoppingListCall = {
     type: 'toolCall',
-    id: `${secondTurnId}/read`,
-    callId: `${secondTurnId}/read-call`,
-    name: 'workspace/read',
-    path: 'stopping/pending.txt',
+    id: `${secondTurnId}/list`,
+    callId: `${secondTurnId}/list-call`,
+    name: 'workspace/list',
+    path: 'stopping/pending-directory',
   } as const;
   for (const method of ['item/started', 'item/completed'] as const) {
     conversation.handleNotification({
@@ -722,7 +817,7 @@ const run = async (): Promise<void> => {
       params: {
         threadId: 'thr_0000000000000100',
         turnId: secondTurnId,
-        item: stoppingReadCall,
+        item: stoppingListCall,
       },
     });
   }
@@ -746,10 +841,10 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
-          '[aria-label="Stopping workspace read: stopping/pending.txt"]',
+          '[aria-label="Stopping workspace list: stopping/pending-directory"]',
         )?.getAttribute('data-state') === 'stopping'`,
       ),
-    'stopping workspace read presentation',
+    'stopping workspace list presentation',
   );
   await waitFor(
     () =>
@@ -803,10 +898,10 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
-          '[aria-label="Workspace read stopped: stopping/pending.txt"]',
+          '[aria-label="Workspace list stopped: stopping/pending-directory"]',
         )?.getAttribute('data-state') === 'interrupted'`,
       ),
-    'interrupted workspace read presentation',
+    'interrupted workspace list presentation',
   );
   await waitFor(
     () =>
@@ -851,12 +946,12 @@ const run = async (): Promise<void> => {
       },
     },
   });
-  const uncertainReadCall = {
+  const uncertainListCall = {
     type: 'toolCall',
-    id: `${thirdTurnId}/read`,
-    callId: `${thirdTurnId}/read-call`,
-    name: 'workspace/read',
-    path: 'uncertain/pending.txt',
+    id: `${thirdTurnId}/list`,
+    callId: `${thirdTurnId}/list-call`,
+    name: 'workspace/list',
+    path: 'uncertain/pending-directory',
   } as const;
   for (const method of ['item/started', 'item/completed'] as const) {
     conversation.handleNotification({
@@ -865,7 +960,7 @@ const run = async (): Promise<void> => {
       params: {
         threadId: 'thr_0000000000000100',
         turnId: thirdTurnId,
-        item: uncertainReadCall,
+        item: uncertainListCall,
       },
     });
   }
@@ -897,10 +992,10 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
-          '[aria-label="Workspace read status unavailable: uncertain/pending.txt"]',
+          '[aria-label="Workspace list status unavailable: uncertain/pending-directory"]',
         )?.getAttribute('data-state') === 'uncertain'`,
       ),
-    'uncertain workspace read presentation',
+    'uncertain workspace list presentation',
   );
   await waitFor(
     () =>
@@ -942,10 +1037,10 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
-          '[aria-label="Workspace read status unavailable: uncertain/pending.txt"]',
+          '[aria-label="Workspace list status unavailable: uncertain/pending-directory"]',
         )?.getAttribute('data-state') === 'uncertain'`,
       ),
-    'uncertain workspace read after Renderer reload',
+    'uncertain workspace list after Renderer reload',
   );
   await waitFor(
     () =>

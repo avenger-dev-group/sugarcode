@@ -31,6 +31,18 @@ const WORKSPACE_READ_FINAL_BODY = [
   'data: [DONE]\n\n',
 ].join('');
 
+const WORKSPACE_LIST_CALL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_desktop_list","type":"function","function":{"name":"workspace/list","arguments":"{\\"path\\":\\".\\"}"}}]},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
+const WORKSPACE_LIST_FINAL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"content":"Workspace list complete."},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
 const REAL_CLI_TEST_TIMEOUT_MS = 30_000;
 
 type ProviderCapture = Readonly<{
@@ -40,7 +52,12 @@ type ProviderCapture = Readonly<{
   errors: Error[];
 }>;
 
-type ProviderMode = 'success' | 'hang' | 'rateLimited' | 'workspaceRead';
+type ProviderMode =
+  | 'success'
+  | 'hang'
+  | 'rateLimited'
+  | 'workspaceRead'
+  | 'workspaceList';
 
 const startProvider = async (
   mode: ProviderMode = 'success',
@@ -94,12 +111,19 @@ const startProvider = async (
         );
         return;
       }
-      const responseBody =
-        mode === 'workspaceRead'
-          ? requests.length === 1
+      const responseBody = (() => {
+        if (mode === 'workspaceRead') {
+          return requests.length === 1
             ? WORKSPACE_READ_CALL_BODY
-            : WORKSPACE_READ_FINAL_BODY
-          : RESPONSE_BODY;
+            : WORKSPACE_READ_FINAL_BODY;
+        }
+        if (mode === 'workspaceList') {
+          return requests.length === 1
+            ? WORKSPACE_LIST_CALL_BODY
+            : WORKSPACE_LIST_FINAL_BODY;
+        }
+        return RESPONSE_BODY;
+      })();
       socket.end(
         `HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: ${Buffer.byteLength(responseBody)}\r\nConnection: close\r\n\r\n${responseBody}`,
       );
@@ -378,6 +402,95 @@ describe('real Desktop text Agent Turn', () => {
       await second.start();
       expect(second.getSnapshot().status).toBe('ready');
       expect(second.conversation.getSnapshot().turns[0]?.workspaceRead)
+        .toEqual(durableActivity);
+      expect(provider.requests).toHaveLength(2);
+      expect(provider.errors).toEqual([]);
+    } finally {
+      first.shutdown();
+      second?.shutdown();
+    }
+  }, REAL_CLI_TEST_TIMEOUT_MS);
+
+  it('restores one durable workspace list count without exposing entry names', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), 'sugarcode-workspace-test-'),
+    );
+    temporaryHomes.push(home, workspace);
+    await writeFile(path.join(workspace, 'private-plan.txt'), 'private');
+    await writeFile(path.join(workspace, 'secret-notes.txt'), 'secret');
+    const provider = await startProvider('workspaceList');
+    providers.push(provider.server);
+    await writeFile(
+      path.join(home, 'config.toml'),
+      [
+        'schema_version = 1',
+        '[model]',
+        'api_format = "openai-chat-completions"',
+        `endpoint = "http://127.0.0.1:${provider.port}/v1/chat/completions"`,
+        'model = "desktop-fixture-model"',
+        '',
+      ].join('\n'),
+    );
+    const createSupervisor = (): ConnectionSupervisor =>
+      new ConnectionSupervisor({
+        clientVersion: '1.0.0',
+        desktopAppPath: process.cwd(),
+        environment: {
+          SUGARCODE_HOME: home,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          SYSTEMROOT: process.env.SYSTEMROOT,
+          WINDIR: process.env.WINDIR,
+        },
+        spawnProcess: (command, arguments_, options) =>
+          spawn(
+            command,
+            [...arguments_, '--workspace', workspace],
+            { ...options, stdio: ['pipe', 'pipe', 'pipe'] },
+          ),
+      });
+    const first = createSupervisor();
+    let second: ConnectionSupervisor | null = null;
+
+    try {
+      await first.start();
+      await expect(
+        first.conversation.startTurn('List the workspace root.'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      await vi.waitFor(
+        () => {
+          expect(first.conversation.getSnapshot()).toMatchObject({
+            phase: 'ready',
+            turns: [
+              {
+                status: 'completed',
+                workspaceList: {
+                  path: '.',
+                  callStatus: 'completed',
+                  result: {
+                    status: 'completed',
+                    outcome: { type: 'success', entries: 2 },
+                  },
+                },
+              },
+            ],
+          });
+          expect(provider.requests).toHaveLength(2);
+        },
+        { timeout: 10_000 },
+      );
+      const firstSnapshot = first.conversation.getSnapshot();
+      expect(JSON.stringify(firstSnapshot)).not.toContain('private-plan.txt');
+      expect(JSON.stringify(firstSnapshot)).not.toContain('secret-notes.txt');
+      const durableActivity = firstSnapshot.turns[0]?.workspaceList;
+
+      first.shutdown();
+      second = createSupervisor();
+      await second.start();
+      expect(second.conversation.getSnapshot().turns[0]?.workspaceList)
         .toEqual(durableActivity);
       expect(provider.requests).toHaveLength(2);
       expect(provider.errors).toEqual([]);

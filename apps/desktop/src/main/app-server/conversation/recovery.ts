@@ -1,6 +1,7 @@
 import type {
   ConversationMessage,
   ConversationTurn,
+  ConversationWorkspaceListActivity,
   ConversationWorkspaceReadActivity,
 } from '@/shared/conversation';
 
@@ -32,6 +33,7 @@ export const recoverConversation = (
 
     const messages: ConversationMessage[] = [];
     let workspaceRead: ConversationWorkspaceReadActivity | undefined;
+    let workspaceList: ConversationWorkspaceListActivity | undefined;
     for (const item of turn.items) {
       if (itemIds.has(item.id)) {
         throw new Error('thread/resume returned a duplicate Item ID.');
@@ -47,7 +49,7 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceReadCall') {
-        if (workspaceRead) {
+        if (workspaceRead || workspaceList) {
           throw new Error(
             'thread/resume returned duplicate workspace/read activity.',
           );
@@ -78,6 +80,40 @@ export const recoverConversation = (
             outcome: { ...item.outcome },
           },
         };
+        continue;
+      }
+      if (item.type === 'workspaceListCall') {
+        if (workspaceList || workspaceRead) {
+          throw new Error(
+            'thread/resume returned duplicate workspace/list activity.',
+          );
+        }
+        workspaceList = {
+          id: item.id,
+          callId: item.callId,
+          path: item.path,
+          callStatus: 'completed',
+        };
+        continue;
+      }
+      if (item.type === 'workspaceListResult') {
+        if (
+          !workspaceList ||
+          workspaceList.callId !== item.callId ||
+          workspaceList.result
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched workspace/list result.',
+          );
+        }
+        workspaceList = {
+          ...workspaceList,
+          result: {
+            id: item.id,
+            status: 'completed',
+            outcome: { ...item.outcome },
+          },
+        };
       }
     }
 
@@ -90,12 +126,22 @@ export const recoverConversation = (
         'thread/resume returned terminal workspace/read activity without a result.',
       );
     }
+    if (
+      workspaceList &&
+      turn.status !== 'interrupted' &&
+      !workspaceList.result
+    ) {
+      throw new Error(
+        'thread/resume returned terminal workspace/list activity without a result.',
+      );
+    }
 
     return {
       id: turn.id,
       status: turn.status,
       messages,
       ...(workspaceRead ? { workspaceRead } : {}),
+      ...(workspaceList ? { workspaceList } : {}),
       ...(turn.error ? { error: { ...turn.error } } : {}),
     };
   });

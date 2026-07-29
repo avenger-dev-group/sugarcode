@@ -50,6 +50,28 @@ export type ConversationWorkspaceReadActivity = Readonly<{
   }>;
 }>;
 
+export type ConversationWorkspaceListOutcome =
+  | Readonly<{
+      type: 'success';
+      entries: number;
+    }>
+  | Readonly<{
+      type: 'error';
+      kind: string;
+    }>;
+
+export type ConversationWorkspaceListActivity = Readonly<{
+  id: string;
+  callId: string;
+  path: string;
+  callStatus: ConversationMessageStatus;
+  result?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    outcome: ConversationWorkspaceListOutcome;
+  }>;
+}>;
+
 export type ConversationTurnError = Readonly<{
   kind:
     | 'authentication'
@@ -73,6 +95,7 @@ export type ConversationTurn = Readonly<{
   status: ConversationTurnStatus;
   messages: readonly ConversationMessage[];
   workspaceRead?: ConversationWorkspaceReadActivity;
+  workspaceList?: ConversationWorkspaceListActivity;
   error?: ConversationTurnError;
 }>;
 
@@ -230,6 +253,57 @@ const isWorkspaceReadActivity = (
   );
 };
 
+const isWorkspaceListOutcome = (
+  value: unknown,
+): value is ConversationWorkspaceListOutcome => {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    return false;
+  }
+  if (value.type === 'success') {
+    return (
+      typeof value.entries === 'number' &&
+      Number.isSafeInteger(value.entries) &&
+      value.entries >= 0 &&
+      value.entries <= 1_000
+    );
+  }
+  return (
+    value.type === 'error' &&
+    typeof value.kind === 'string' &&
+    value.kind.length > 0
+  );
+};
+
+const isWorkspaceListActivity = (
+  value: unknown,
+): value is ConversationWorkspaceListActivity => {
+  if (
+    !isRecord(value) ||
+    !isId(value.id) ||
+    !isId(value.callId) ||
+    typeof value.path !== 'string' ||
+    value.path.length === 0 ||
+    typeof value.callStatus !== 'string' ||
+    !MESSAGE_STATUSES.has(value.callStatus as ConversationMessageStatus)
+  ) {
+    return false;
+  }
+  if (!Object.hasOwn(value, 'result')) {
+    return true;
+  }
+  return (
+    value.callStatus === 'completed' &&
+    isRecord(value.result) &&
+    isId(value.result.id) &&
+    value.result.id !== value.id &&
+    typeof value.result.status === 'string' &&
+    MESSAGE_STATUSES.has(
+      value.result.status as ConversationMessageStatus,
+    ) &&
+    isWorkspaceListOutcome(value.result.outcome)
+  );
+};
+
 const isTurn = (value: unknown): value is ConversationTurn => {
   if (
     !isRecord(value) ||
@@ -239,7 +313,11 @@ const isTurn = (value: unknown): value is ConversationTurn => {
     !Array.isArray(value.messages) ||
     !value.messages.every(isMessage) ||
     (Object.hasOwn(value, 'workspaceRead') &&
-      !isWorkspaceReadActivity(value.workspaceRead))
+      !isWorkspaceReadActivity(value.workspaceRead)) ||
+    (Object.hasOwn(value, 'workspaceList') &&
+      !isWorkspaceListActivity(value.workspaceList)) ||
+    (Object.hasOwn(value, 'workspaceRead') &&
+      Object.hasOwn(value, 'workspaceList'))
   ) {
     return false;
   }
@@ -262,6 +340,21 @@ const isTurn = (value: unknown): value is ConversationTurn => {
         workspaceRead.result.status !== 'completed') ||
       (value.status !== 'interrupted' &&
         workspaceRead.result?.status !== 'completed'))
+  ) {
+    return false;
+  }
+
+  const workspaceList = value.workspaceList as
+    | ConversationWorkspaceListActivity
+    | undefined;
+  if (
+    value.status !== 'inProgress' &&
+    workspaceList &&
+    (workspaceList.callStatus !== 'completed' ||
+      (workspaceList.result &&
+        workspaceList.result.status !== 'completed') ||
+      (value.status !== 'interrupted' &&
+        workspaceList.result?.status !== 'completed'))
   ) {
     return false;
   }

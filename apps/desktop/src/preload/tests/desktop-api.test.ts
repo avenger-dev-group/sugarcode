@@ -325,6 +325,39 @@ describe('createDesktopApi', () => {
 
     boundary.invoke.mockResolvedValue({
       revision: 7,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000003',
+          status: 'completed',
+          messages: [],
+          workspaceList: {
+            id: 'item_0000000000000004',
+            callId: 'call_list',
+            path: '.',
+            callStatus: 'completed',
+            result: {
+              id: 'item_0000000000000005',
+              status: 'completed',
+              outcome: { type: 'success', entries: 0 },
+            },
+          },
+        },
+      ],
+    });
+    await expect(api.getConversationState()).resolves.toMatchObject({
+      turns: [
+        {
+          workspaceList: {
+            result: { outcome: { entries: 0 } },
+          },
+        },
+      ],
+    });
+
+    boundary.invoke.mockResolvedValue({
+      revision: 8,
       phase: 'unavailable',
       threadId: 'thr_0000000000000001',
       activeTurnId: 'turn_0000000000000002',

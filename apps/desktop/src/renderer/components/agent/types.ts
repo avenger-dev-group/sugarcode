@@ -34,6 +34,26 @@ export type WorkspaceReadActivityProps = Readonly<{
   activity: WorkspaceReadActivityViewModel;
 }>;
 
+export type WorkspaceListPresentationState =
+  | 'running'
+  | 'stopping'
+  | 'uncertain'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted';
+
+export type WorkspaceListActivityViewModel = Readonly<{
+  id: string;
+  path: string;
+  state: WorkspaceListPresentationState;
+  entries?: number;
+  errorKind?: string;
+}>;
+
+export type WorkspaceListActivityProps = Readonly<{
+  activity: WorkspaceListActivityViewModel;
+}>;
+
 export type AgentMarkdownProps = Readonly<{
   source: string;
   isStreaming: boolean;

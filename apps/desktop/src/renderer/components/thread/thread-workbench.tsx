@@ -3,6 +3,7 @@ import { memo } from 'react';
 
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
 import { WorkspaceReadActivity } from '@/renderer/components/agent/workspace-read-activity';
+import { WorkspaceListActivity } from '@/renderer/components/agent/workspace-list-activity';
 import { Button } from '@/renderer/components/ui/button';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { Textarea } from '@/renderer/components/ui/textarea';
@@ -69,6 +70,9 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
         ))}
       {turn.workspaceRead ? (
         <WorkspaceReadActivity activity={turn.workspaceRead} />
+      ) : null}
+      {turn.workspaceList ? (
+        <WorkspaceListActivity activity={turn.workspaceList} />
       ) : null}
       {turn.messages
         .filter((entry) => entry.role === 'agent')

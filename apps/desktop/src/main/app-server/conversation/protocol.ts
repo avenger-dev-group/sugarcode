@@ -36,10 +36,28 @@ export type WorkspaceReadResultItem = Readonly<{
     | Readonly<{ type: 'error'; kind: string }>;
 }>;
 
+export type WorkspaceListCallItem = Readonly<{
+  type: 'workspaceListCall';
+  id: string;
+  callId: string;
+  path: string;
+}>;
+
+export type WorkspaceListResultItem = Readonly<{
+  type: 'workspaceListResult';
+  id: string;
+  callId: string;
+  outcome:
+    | Readonly<{ type: 'success'; entries: number }>
+    | Readonly<{ type: 'error'; kind: string }>;
+}>;
+
 type ConversationItem =
   | TextItem
   | WorkspaceReadCallItem
-  | WorkspaceReadResultItem;
+  | WorkspaceReadResultItem
+  | WorkspaceListCallItem
+  | WorkspaceListResultItem;
 
 export type ResumeItem =
   | ConversationItem
@@ -95,6 +113,58 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isId = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
+
+const MAX_WORKSPACE_LIST_ENTRIES = 1_000;
+const MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES = 1_024;
+const MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES = 256 * 1_024;
+const WORKSPACE_LIST_ENTRY_KINDS = new Set([
+  'file',
+  'directory',
+  'link',
+  'other',
+]);
+
+const utf8Bytes = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+
+const parseWorkspaceListEntryCount = (content: string): number => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error('Invalid workspace/list success content.');
+  }
+  if (
+    !isRecord(parsed) ||
+    Object.keys(parsed).length !== 1 ||
+    !Array.isArray(parsed.entries) ||
+    parsed.entries.length > MAX_WORKSPACE_LIST_ENTRIES
+  ) {
+    throw new Error('Invalid workspace/list success content.');
+  }
+  let totalNameBytes = 0;
+  for (const entry of parsed.entries) {
+    if (
+      !isRecord(entry) ||
+      Object.keys(entry).length !== 2 ||
+      typeof entry.name !== 'string' ||
+      entry.name.length === 0 ||
+      typeof entry.kind !== 'string' ||
+      !WORKSPACE_LIST_ENTRY_KINDS.has(entry.kind)
+    ) {
+      throw new Error('Invalid workspace/list entry.');
+    }
+    const nameBytes = utf8Bytes(entry.name);
+    if (nameBytes > MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES) {
+      throw new Error('Invalid workspace/list entry.');
+    }
+    totalNameBytes += nameBytes;
+    if (totalNameBytes > MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES) {
+      throw new Error('Invalid workspace/list success content.');
+    }
+  }
+  return parsed.entries.length;
+};
 
 const TURN_STATUSES = new Set([
   'inProgress',
@@ -326,6 +396,60 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       };
     }
     throw new Error('Invalid workspace/read ToolResult outcome.');
+  }
+  if (value.type === 'toolCall' && value.name === 'workspace/list') {
+    if (
+      !isId(value.callId) ||
+      typeof value.path !== 'string' ||
+      value.path.length === 0 ||
+      Object.hasOwn(value, 'query') ||
+      Object.hasOwn(value, 'command') ||
+      Object.hasOwn(value, 'arguments')
+    ) {
+      throw new Error('Invalid workspace/list ToolCall Item.');
+    }
+    return {
+      type: 'workspaceListCall',
+      id: value.id,
+      callId: value.callId,
+      path: value.path,
+    };
+  }
+  if (value.type === 'toolResult' && value.name === 'workspace/list') {
+    if (!isId(value.callId) || !isRecord(value.result)) {
+      throw new Error('Invalid workspace/list ToolResult Item.');
+    }
+    if (
+      value.result.type === 'success' &&
+      typeof value.result.content === 'string' &&
+      typeof value.result.bytes === 'number' &&
+      Number.isSafeInteger(value.result.bytes) &&
+      value.result.bytes >= 0 &&
+      utf8Bytes(value.result.content) === value.result.bytes
+    ) {
+      return {
+        type: 'workspaceListResult',
+        id: value.id,
+        callId: value.callId,
+        outcome: {
+          type: 'success',
+          entries: parseWorkspaceListEntryCount(value.result.content),
+        },
+      };
+    }
+    if (
+      value.result.type === 'error' &&
+      typeof value.result.kind === 'string' &&
+      value.result.kind.length > 0
+    ) {
+      return {
+        type: 'workspaceListResult',
+        id: value.id,
+        callId: value.callId,
+        outcome: { type: 'error', kind: value.result.kind },
+      };
+    }
+    throw new Error('Invalid workspace/list ToolResult outcome.');
   }
   return null;
 };
