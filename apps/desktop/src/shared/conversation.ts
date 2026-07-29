@@ -72,6 +72,30 @@ export type ConversationWorkspaceListActivity = Readonly<{
   }>;
 }>;
 
+export type ConversationWorkspaceSearchOutcome =
+  | Readonly<{
+      type: 'success';
+      matches: number;
+      truncated: boolean;
+    }>
+  | Readonly<{
+      type: 'error';
+      kind: string;
+    }>;
+
+export type ConversationWorkspaceSearchActivity = Readonly<{
+  id: string;
+  callId: string;
+  path: string;
+  query: string;
+  callStatus: ConversationMessageStatus;
+  result?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    outcome: ConversationWorkspaceSearchOutcome;
+  }>;
+}>;
+
 export type ConversationTurnError = Readonly<{
   kind:
     | 'authentication'
@@ -96,6 +120,7 @@ export type ConversationTurn = Readonly<{
   messages: readonly ConversationMessage[];
   workspaceRead?: ConversationWorkspaceReadActivity;
   workspaceList?: ConversationWorkspaceListActivity;
+  workspaceSearch?: ConversationWorkspaceSearchActivity;
   error?: ConversationTurnError;
 }>;
 
@@ -304,6 +329,62 @@ const isWorkspaceListActivity = (
   );
 };
 
+const isWorkspaceSearchOutcome = (
+  value: unknown,
+): value is ConversationWorkspaceSearchOutcome => {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    return false;
+  }
+  if (value.type === 'success') {
+    return (
+      typeof value.matches === 'number' &&
+      Number.isSafeInteger(value.matches) &&
+      value.matches >= 0 &&
+      value.matches <= 200 &&
+      typeof value.truncated === 'boolean' &&
+      (!value.truncated || value.matches === 200)
+    );
+  }
+  return (
+    value.type === 'error' &&
+    typeof value.kind === 'string' &&
+    value.kind.length > 0
+  );
+};
+
+const isWorkspaceSearchActivity = (
+  value: unknown,
+): value is ConversationWorkspaceSearchActivity => {
+  if (
+    !isRecord(value) ||
+    !isId(value.id) ||
+    !isId(value.callId) ||
+    typeof value.path !== 'string' ||
+    value.path.length === 0 ||
+    typeof value.query !== 'string' ||
+    value.query.length === 0 ||
+    new TextEncoder().encode(value.query).byteLength > 256 ||
+    typeof value.callStatus !== 'string' ||
+    !MESSAGE_STATUSES.has(value.callStatus as ConversationMessageStatus)
+  ) {
+    return false;
+  }
+  if (!Object.hasOwn(value, 'result')) {
+    return true;
+  }
+  return (
+    value.callStatus === 'completed' &&
+    isRecord(value.result) &&
+    isId(value.result.id) &&
+    value.result.id !== value.id &&
+    typeof value.result.status === 'string' &&
+    MESSAGE_STATUSES.has(
+      value.result.status as ConversationMessageStatus,
+    ) &&
+    isWorkspaceSearchOutcome(value.result.outcome)
+  );
+};
+
 const isTurn = (value: unknown): value is ConversationTurn => {
   if (
     !isRecord(value) ||
@@ -316,8 +397,13 @@ const isTurn = (value: unknown): value is ConversationTurn => {
       !isWorkspaceReadActivity(value.workspaceRead)) ||
     (Object.hasOwn(value, 'workspaceList') &&
       !isWorkspaceListActivity(value.workspaceList)) ||
-    (Object.hasOwn(value, 'workspaceRead') &&
-      Object.hasOwn(value, 'workspaceList'))
+    (Object.hasOwn(value, 'workspaceSearch') &&
+      !isWorkspaceSearchActivity(value.workspaceSearch)) ||
+    [
+      Object.hasOwn(value, 'workspaceRead'),
+      Object.hasOwn(value, 'workspaceList'),
+      Object.hasOwn(value, 'workspaceSearch'),
+    ].filter(Boolean).length > 1
   ) {
     return false;
   }
@@ -355,6 +441,21 @@ const isTurn = (value: unknown): value is ConversationTurn => {
         workspaceList.result.status !== 'completed') ||
       (value.status !== 'interrupted' &&
         workspaceList.result?.status !== 'completed'))
+  ) {
+    return false;
+  }
+
+  const workspaceSearch = value.workspaceSearch as
+    | ConversationWorkspaceSearchActivity
+    | undefined;
+  if (
+    value.status !== 'inProgress' &&
+    workspaceSearch &&
+    (workspaceSearch.callStatus !== 'completed' ||
+      (workspaceSearch.result &&
+        workspaceSearch.result.status !== 'completed') ||
+      (value.status !== 'interrupted' &&
+        workspaceSearch.result?.status !== 'completed'))
   ) {
     return false;
   }

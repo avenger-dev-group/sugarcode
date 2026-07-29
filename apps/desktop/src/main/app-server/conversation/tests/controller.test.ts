@@ -676,6 +676,100 @@ describe('ConversationController', () => {
     expect(onProtocolFailure).not.toHaveBeenCalled();
   });
 
+  it('projects one durable workspace search summary without exposing matches', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(
+        async (): Promise<TurnStartResponse> => ({
+          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+        }),
+      ),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await controller.startTurn('Search the workspace.');
+
+    const call = {
+      type: 'toolCall',
+      id: 'item_0000000000000020',
+      callId: 'call_search',
+      name: 'workspace/search',
+      path: 'src',
+      query: 'private marker',
+    };
+    for (const method of ['item/started', 'item/completed']) {
+      controller.handleNotification(
+        notification(method, {
+          threadId: 'thr_0000000000000001',
+          turnId: 'turn_0000000000000001',
+          item: call,
+        }),
+      );
+    }
+    const content = JSON.stringify({
+      matches: Array.from({ length: 200 }, (_, index) => ({
+        path: `src/private-${index}.txt`,
+        line: index + 1,
+      })),
+      truncated: true,
+    });
+    const result = {
+      type: 'toolResult',
+      id: 'item_0000000000000021',
+      callId: 'call_search',
+      name: 'workspace/search',
+      result: {
+        type: 'success',
+        content,
+        bytes: new TextEncoder().encode(content).byteLength,
+      },
+    };
+    for (const method of ['item/started', 'item/completed']) {
+      controller.handleNotification(
+        notification(method, {
+          threadId: 'thr_0000000000000001',
+          turnId: 'turn_0000000000000001',
+          item: result,
+        }),
+      );
+    }
+    controller.handleNotification(
+      notification('turn/completed', {
+        threadId: 'thr_0000000000000001',
+        turn: { id: 'turn_0000000000000001', status: 'completed' },
+      }),
+    );
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot).toMatchObject({
+      phase: 'ready',
+      turns: [
+        {
+          workspaceSearch: {
+            path: 'src',
+            query: 'private marker',
+            callStatus: 'completed',
+            result: {
+              status: 'completed',
+              outcome: {
+                type: 'success',
+                matches: 200,
+                truncated: true,
+              },
+            },
+          },
+        },
+      ],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('private-0.txt');
+    expect(JSON.stringify(snapshot)).not.toContain('"line"');
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+  });
+
   it('fails closed on malformed workspace list content', async () => {
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),
@@ -705,6 +799,43 @@ describe('ConversationController', () => {
             type: 'success',
             content: '{"entries":"not-an-array"}',
             bytes: 26,
+          },
+        },
+      }),
+    );
+    expect(onProtocolFailure).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed on malformed workspace search content', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(
+        async (): Promise<TurnStartResponse> => ({
+          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+        }),
+      ),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await controller.startTurn('Search safely.');
+    const content = JSON.stringify({ matches: [], truncated: true });
+    controller.handleNotification(
+      notification('item/started', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: {
+          type: 'toolResult',
+          id: 'item_bad_search',
+          callId: 'call_search',
+          name: 'workspace/search',
+          result: {
+            type: 'success',
+            content,
+            bytes: new TextEncoder().encode(content).byteLength,
           },
         },
       }),

@@ -3,6 +3,7 @@ import type {
   ConversationTurn,
   ConversationWorkspaceListActivity,
   ConversationWorkspaceReadActivity,
+  ConversationWorkspaceSearchActivity,
 } from '@/shared/conversation';
 
 import type { ResumeSnapshot } from './protocol';
@@ -34,6 +35,7 @@ export const recoverConversation = (
     const messages: ConversationMessage[] = [];
     let workspaceRead: ConversationWorkspaceReadActivity | undefined;
     let workspaceList: ConversationWorkspaceListActivity | undefined;
+    let workspaceSearch: ConversationWorkspaceSearchActivity | undefined;
     for (const item of turn.items) {
       if (itemIds.has(item.id)) {
         throw new Error('thread/resume returned a duplicate Item ID.');
@@ -49,7 +51,7 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceReadCall') {
-        if (workspaceRead || workspaceList) {
+        if (workspaceRead || workspaceList || workspaceSearch) {
           throw new Error(
             'thread/resume returned duplicate workspace/read activity.',
           );
@@ -83,7 +85,7 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceListCall') {
-        if (workspaceList || workspaceRead) {
+        if (workspaceList || workspaceRead || workspaceSearch) {
           throw new Error(
             'thread/resume returned duplicate workspace/list activity.',
           );
@@ -114,6 +116,41 @@ export const recoverConversation = (
             outcome: { ...item.outcome },
           },
         };
+        continue;
+      }
+      if (item.type === 'workspaceSearchCall') {
+        if (workspaceSearch || workspaceRead || workspaceList) {
+          throw new Error(
+            'thread/resume returned duplicate workspace/search activity.',
+          );
+        }
+        workspaceSearch = {
+          id: item.id,
+          callId: item.callId,
+          path: item.path,
+          query: item.query,
+          callStatus: 'completed',
+        };
+        continue;
+      }
+      if (item.type === 'workspaceSearchResult') {
+        if (
+          !workspaceSearch ||
+          workspaceSearch.callId !== item.callId ||
+          workspaceSearch.result
+        ) {
+          throw new Error(
+            'thread/resume returned an unmatched workspace/search result.',
+          );
+        }
+        workspaceSearch = {
+          ...workspaceSearch,
+          result: {
+            id: item.id,
+            status: 'completed',
+            outcome: { ...item.outcome },
+          },
+        };
       }
     }
 
@@ -135,6 +172,15 @@ export const recoverConversation = (
         'thread/resume returned terminal workspace/list activity without a result.',
       );
     }
+    if (
+      workspaceSearch &&
+      turn.status !== 'interrupted' &&
+      !workspaceSearch.result
+    ) {
+      throw new Error(
+        'thread/resume returned terminal workspace/search activity without a result.',
+      );
+    }
 
     return {
       id: turn.id,
@@ -142,6 +188,7 @@ export const recoverConversation = (
       messages,
       ...(workspaceRead ? { workspaceRead } : {}),
       ...(workspaceList ? { workspaceList } : {}),
+      ...(workspaceSearch ? { workspaceSearch } : {}),
       ...(turn.error ? { error: { ...turn.error } } : {}),
     };
   });

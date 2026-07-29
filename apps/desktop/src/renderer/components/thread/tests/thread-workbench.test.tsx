@@ -786,4 +786,131 @@ describe('ThreadWorkbenchView', () => {
       }).turns[0]?.workspaceList,
     ).toMatchObject({ state: 'failed', errorKind: 'notFound' });
   });
+
+  it('presents a bounded workspace search summary without match locations', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const longPath = `${'nested/'.repeat(20)}source`;
+    const longQuery = 'bounded-search-query-'.repeat(8);
+    const store = createStore({
+      thread: toThreadViewModel({
+        revision: 17,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000010',
+            status: 'completed',
+            messages: [],
+            workspaceSearch: {
+              id: 'item_0000000000000017',
+              callId: 'call_search',
+              path: longPath,
+              query: longQuery,
+              callStatus: 'completed',
+              result: {
+                id: 'item_0000000000000018',
+                status: 'completed',
+                outcome: {
+                  type: 'success',
+                  matches: 200,
+                  truncated: true,
+                },
+              },
+            },
+          },
+        ],
+      }),
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+
+    const activity = document.querySelector(
+      `[aria-label="Workspace search complete: ${longPath}"]`,
+    );
+    expect(activity?.getAttribute('role')).toBe('status');
+    expect(activity?.getAttribute('data-state')).toBe('succeeded');
+    expect(activity?.textContent).toContain('workspace/search');
+    expect(activity?.textContent).toContain(longPath);
+    expect(activity?.textContent).toContain(longQuery);
+    expect(activity?.textContent).toContain('More than 200 matches found');
+    expect(activity?.querySelectorAll('code')).toHaveLength(2);
+    expect(activity?.querySelector('button, a')).toBeNull();
+    expect(activity?.textContent).not.toContain('call_search');
+    expect(activity?.textContent).not.toContain('private.txt');
+
+    await act(async () => root.unmount());
+  });
+
+  it('derives honest workspace search states from lifecycle truth', () => {
+    const activeSnapshot = {
+      revision: 18,
+      threadId: 'thr_0000000000000001',
+      activeTurnId: 'turn_0000000000000011',
+      turns: [
+        {
+          id: 'turn_0000000000000011',
+          status: 'inProgress' as const,
+          messages: [] as const,
+          workspaceSearch: {
+            id: 'item_0000000000000019',
+            callId: 'call_pending_search',
+            path: 'src',
+            query: 'needle',
+            callStatus: 'completed' as const,
+          },
+        },
+      ],
+    };
+
+    expect(
+      toThreadViewModel({ ...activeSnapshot, phase: 'inProgress' })
+        .turns[0]?.workspaceSearch?.state,
+    ).toBe('running');
+    expect(
+      toThreadViewModel({ ...activeSnapshot, phase: 'stopping' })
+        .turns[0]?.workspaceSearch?.state,
+    ).toBe('stopping');
+    expect(
+      toThreadViewModel({ ...activeSnapshot, phase: 'unavailable' })
+        .turns[0]?.workspaceSearch?.state,
+    ).toBe('uncertain');
+    expect(
+      toThreadViewModel({
+        revision: 19,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [{ ...activeSnapshot.turns[0], status: 'interrupted' }],
+      }).turns[0]?.workspaceSearch?.state,
+    ).toBe('interrupted');
+    expect(
+      toThreadViewModel({
+        revision: 20,
+        phase: 'ready',
+        threadId: 'thr_0000000000000001',
+        turns: [
+          {
+            id: 'turn_0000000000000012',
+            status: 'completed',
+            messages: [],
+            workspaceSearch: {
+              id: 'item_0000000000000020',
+              callId: 'call_failed_search',
+              path: 'src',
+              query: 'missing',
+              callStatus: 'completed',
+              result: {
+                id: 'item_0000000000000021',
+                status: 'completed',
+                outcome: { type: 'error', kind: 'notFound' },
+              },
+            },
+          },
+        ],
+      }).turns[0]?.workspaceSearch,
+    ).toMatchObject({ state: 'failed', errorKind: 'notFound' });
+  });
 });

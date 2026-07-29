@@ -43,6 +43,18 @@ const WORKSPACE_LIST_FINAL_BODY = [
   'data: [DONE]\n\n',
 ].join('');
 
+const WORKSPACE_SEARCH_CALL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_desktop_search","type":"function","function":{"name":"workspace/search","arguments":"{\\"path\\":\\".\\",\\"query\\":\\"needle\\"}"}}]},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
+const WORKSPACE_SEARCH_FINAL_BODY = [
+  'data: {"choices":[{"index":0,"delta":{"content":"Workspace search complete."},"finish_reason":null}]}\n\n',
+  'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+  'data: [DONE]\n\n',
+].join('');
+
 const REAL_CLI_TEST_TIMEOUT_MS = 30_000;
 
 type ProviderCapture = Readonly<{
@@ -57,7 +69,8 @@ type ProviderMode =
   | 'hang'
   | 'rateLimited'
   | 'workspaceRead'
-  | 'workspaceList';
+  | 'workspaceList'
+  | 'workspaceSearch';
 
 const startProvider = async (
   mode: ProviderMode = 'success',
@@ -121,6 +134,11 @@ const startProvider = async (
           return requests.length === 1
             ? WORKSPACE_LIST_CALL_BODY
             : WORKSPACE_LIST_FINAL_BODY;
+        }
+        if (mode === 'workspaceSearch') {
+          return requests.length === 1
+            ? WORKSPACE_SEARCH_CALL_BODY
+            : WORKSPACE_SEARCH_FINAL_BODY;
         }
         return RESPONSE_BODY;
       })();
@@ -491,6 +509,106 @@ describe('real Desktop text Agent Turn', () => {
       second = createSupervisor();
       await second.start();
       expect(second.conversation.getSnapshot().turns[0]?.workspaceList)
+        .toEqual(durableActivity);
+      expect(provider.requests).toHaveLength(2);
+      expect(provider.errors).toEqual([]);
+    } finally {
+      first.shutdown();
+      second?.shutdown();
+    }
+  }, REAL_CLI_TEST_TIMEOUT_MS);
+
+  it('restores one durable workspace search summary without replaying matches', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'sugarcode-turn-test-'));
+    const workspace = await mkdtemp(
+      path.join(tmpdir(), 'sugarcode-workspace-test-'),
+    );
+    temporaryHomes.push(home, workspace);
+    const privateMatchPath = path.join(workspace, 'private-search-marker.txt');
+    await writeFile(
+      privateMatchPath,
+      `${Array.from({ length: 201 }, (_, index) => `needle ${index}`).join('\n')}\n`,
+    );
+    const provider = await startProvider('workspaceSearch');
+    providers.push(provider.server);
+    await writeFile(
+      path.join(home, 'config.toml'),
+      [
+        'schema_version = 1',
+        '[model]',
+        'api_format = "openai-chat-completions"',
+        `endpoint = "http://127.0.0.1:${provider.port}/v1/chat/completions"`,
+        'model = "desktop-fixture-model"',
+        '',
+      ].join('\n'),
+    );
+    const createSupervisor = (): ConnectionSupervisor =>
+      new ConnectionSupervisor({
+        clientVersion: '1.0.0',
+        desktopAppPath: process.cwd(),
+        environment: {
+          SUGARCODE_HOME: home,
+          HOME: process.env.HOME,
+          TMPDIR: process.env.TMPDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          SYSTEMROOT: process.env.SYSTEMROOT,
+          WINDIR: process.env.WINDIR,
+        },
+        spawnProcess: (command, arguments_, options) =>
+          spawn(
+            command,
+            [...arguments_, '--workspace', workspace],
+            { ...options, stdio: ['pipe', 'pipe', 'pipe'] },
+          ),
+      });
+    const first = createSupervisor();
+    let second: ConnectionSupervisor | null = null;
+
+    try {
+      await first.start();
+      await expect(
+        first.conversation.startTurn('Search for the marker.'),
+      ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+      await vi.waitFor(
+        () => {
+          expect(first.conversation.getSnapshot()).toMatchObject({
+            phase: 'ready',
+            turns: [
+              {
+                status: 'completed',
+                workspaceSearch: {
+                  path: '.',
+                  query: 'needle',
+                  callStatus: 'completed',
+                  result: {
+                    status: 'completed',
+                    outcome: {
+                      type: 'success',
+                      matches: 200,
+                      truncated: true,
+                    },
+                  },
+                },
+              },
+            ],
+          });
+          expect(provider.requests).toHaveLength(2);
+        },
+        { timeout: 10_000 },
+      );
+      const firstSnapshot = first.conversation.getSnapshot();
+      expect(JSON.stringify(firstSnapshot)).not.toContain(
+        'private-search-marker.txt',
+      );
+      expect(JSON.stringify(firstSnapshot)).not.toContain('"line"');
+      const durableActivity = firstSnapshot.turns[0]?.workspaceSearch;
+
+      first.shutdown();
+      await writeFile(privateMatchPath, 'replacement without the query\n');
+      second = createSupervisor();
+      await second.start();
+      expect(second.conversation.getSnapshot().turns[0]?.workspaceSearch)
         .toEqual(durableActivity);
       expect(provider.requests).toHaveLength(2);
       expect(provider.errors).toEqual([]);

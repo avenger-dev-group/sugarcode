@@ -10,6 +10,8 @@ import type {
   ConversationWorkspaceListOutcome,
   ConversationWorkspaceReadActivity,
   ConversationWorkspaceReadOutcome,
+  ConversationWorkspaceSearchActivity,
+  ConversationWorkspaceSearchOutcome,
 } from '@/shared/conversation';
 import { isValidConversationInput } from '@/shared/conversation';
 
@@ -58,12 +60,26 @@ type MutableWorkspaceListActivity = {
   };
 };
 
+type MutableWorkspaceSearchActivity = {
+  id: string;
+  callId: string;
+  path: string;
+  query: string;
+  callStatus: ConversationWorkspaceSearchActivity['callStatus'];
+  result?: {
+    id: string;
+    status: ConversationWorkspaceSearchActivity['callStatus'];
+    outcome: ConversationWorkspaceSearchOutcome;
+  };
+};
+
 type MutableTurn = {
   id: string;
   status: ConversationTurnStatus;
   messages: MutableMessage[];
   workspaceRead?: MutableWorkspaceReadActivity;
   workspaceList?: MutableWorkspaceListActivity;
+  workspaceSearch?: MutableWorkspaceSearchActivity;
   error?: ConversationTurnError;
 };
 
@@ -161,6 +177,21 @@ export class ConversationController {
                       result: {
                         ...turn.workspaceList.result,
                         outcome: { ...turn.workspaceList.result.outcome },
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(turn.workspaceSearch
+          ? {
+              workspaceSearch: {
+                ...turn.workspaceSearch,
+                ...(turn.workspaceSearch.result
+                  ? {
+                      result: {
+                        ...turn.workspaceSearch.result,
+                        outcome: { ...turn.workspaceSearch.result.outcome },
                       },
                     }
                   : {}),
@@ -415,7 +446,11 @@ export class ConversationController {
             status: 'inProgress',
           });
         } else if (lifecycle.params.item.type === 'workspaceReadCall') {
-          if (turn.workspaceRead || turn.workspaceList) {
+          if (
+            turn.workspaceRead ||
+            turn.workspaceList ||
+            turn.workspaceSearch
+          ) {
             throw new Error('Duplicate workspace/read activity.');
           }
           turn.workspaceRead = {
@@ -443,7 +478,11 @@ export class ConversationController {
             outcome: { ...lifecycle.params.item.outcome },
           };
         } else if (lifecycle.params.item.type === 'workspaceListCall') {
-          if (turn.workspaceList || turn.workspaceRead) {
+          if (
+            turn.workspaceList ||
+            turn.workspaceRead ||
+            turn.workspaceSearch
+          ) {
             throw new Error('Duplicate workspace/list activity.');
           }
           turn.workspaceList = {
@@ -452,7 +491,7 @@ export class ConversationController {
             path: lifecycle.params.item.path,
             callStatus: 'inProgress',
           };
-        } else {
+        } else if (lifecycle.params.item.type === 'workspaceListResult') {
           const workspaceList = this.requireWorkspaceList(
             turn,
             lifecycle.params.item.callId,
@@ -464,6 +503,37 @@ export class ConversationController {
             throw new Error('Workspace list result started out of order.');
           }
           workspaceList.result = {
+            id: lifecycle.params.item.id,
+            status: 'inProgress',
+            outcome: { ...lifecycle.params.item.outcome },
+          };
+        } else if (lifecycle.params.item.type === 'workspaceSearchCall') {
+          if (
+            turn.workspaceSearch ||
+            turn.workspaceRead ||
+            turn.workspaceList
+          ) {
+            throw new Error('Duplicate workspace/search activity.');
+          }
+          turn.workspaceSearch = {
+            id: lifecycle.params.item.id,
+            callId: lifecycle.params.item.callId,
+            path: lifecycle.params.item.path,
+            query: lifecycle.params.item.query,
+            callStatus: 'inProgress',
+          };
+        } else {
+          const workspaceSearch = this.requireWorkspaceSearch(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            workspaceSearch.callStatus !== 'completed' ||
+            workspaceSearch.result
+          ) {
+            throw new Error('Workspace search result started out of order.');
+          }
+          workspaceSearch.result = {
             id: lifecycle.params.item.id,
             status: 'inProgress',
             outcome: { ...lifecycle.params.item.outcome },
@@ -551,7 +621,7 @@ export class ConversationController {
             );
           }
           workspaceList.callStatus = 'completed';
-        } else {
+        } else if (lifecycle.params.item.type === 'workspaceListResult') {
           const workspaceList = this.requireWorkspaceList(
             turn,
             lifecycle.params.item.callId,
@@ -568,6 +638,42 @@ export class ConversationController {
           ) {
             throw new Error(
               'Completed workspace/list result did not match its started Item.',
+            );
+          }
+          result.status = 'completed';
+        } else if (lifecycle.params.item.type === 'workspaceSearchCall') {
+          const workspaceSearch = this.requireWorkspaceSearch(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          if (
+            workspaceSearch.id !== lifecycle.params.item.id ||
+            workspaceSearch.path !== lifecycle.params.item.path ||
+            workspaceSearch.query !== lifecycle.params.item.query ||
+            workspaceSearch.callStatus !== 'inProgress'
+          ) {
+            throw new Error(
+              'Completed workspace/search call did not match its started Item.',
+            );
+          }
+          workspaceSearch.callStatus = 'completed';
+        } else {
+          const workspaceSearch = this.requireWorkspaceSearch(
+            turn,
+            lifecycle.params.item.callId,
+          );
+          const result = workspaceSearch.result;
+          if (
+            !result ||
+            result.id !== lifecycle.params.item.id ||
+            result.status !== 'inProgress' ||
+            !searchOutcomesEqual(
+              result.outcome,
+              lifecycle.params.item.outcome,
+            )
+          ) {
+            throw new Error(
+              'Completed workspace/search result did not match its started Item.',
             );
           }
           result.status = 'completed';
@@ -605,6 +711,18 @@ export class ConversationController {
         ) {
           throw new Error(
             'Turn completed before workspace/list activity completed.',
+          );
+        }
+        if (
+          turn.workspaceSearch &&
+          (turn.workspaceSearch.callStatus !== 'completed' ||
+            (lifecycle.params.turn.status !== 'interrupted' &&
+              turn.workspaceSearch.result?.status !== 'completed') ||
+            (turn.workspaceSearch.result &&
+              turn.workspaceSearch.result.status !== 'completed'))
+        ) {
+          throw new Error(
+            'Turn completed before workspace/search activity completed.',
           );
         }
         turn.status = lifecycle.params.turn.status;
@@ -673,13 +791,25 @@ export class ConversationController {
     return turn.workspaceList;
   };
 
+  private requireWorkspaceSearch = (
+    turn: MutableTurn,
+    callId: string,
+  ): MutableWorkspaceSearchActivity => {
+    if (!turn.workspaceSearch || turn.workspaceSearch.callId !== callId) {
+      throw new Error('Workspace search lifecycle referenced another call.');
+    }
+    return turn.workspaceSearch;
+  };
+
   private hasItemId = (turn: MutableTurn, itemId: string): boolean =>
     Boolean(
       turn.messages.some((message) => message.id === itemId) ||
         turn.workspaceRead?.id === itemId ||
         turn.workspaceRead?.result?.id === itemId ||
         turn.workspaceList?.id === itemId ||
-        turn.workspaceList?.result?.id === itemId,
+        turn.workspaceList?.result?.id === itemId ||
+        turn.workspaceSearch?.id === itemId ||
+        turn.workspaceSearch?.result?.id === itemId,
     );
 
   private createSnapshot = (): ConversationStateSnapshot => ({
@@ -722,6 +852,21 @@ export class ConversationController {
               },
             }
           : {}),
+        ...(turn.workspaceSearch
+          ? {
+              workspaceSearch: {
+                ...turn.workspaceSearch,
+                ...(turn.workspaceSearch.result
+                  ? {
+                      result: {
+                        ...turn.workspaceSearch.result,
+                        outcome: { ...turn.workspaceSearch.result.outcome },
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
         ...(turn.error ? { error: { ...turn.error } } : {}),
       }),
     ),
@@ -758,6 +903,17 @@ const listOutcomesEqual = (
   left.type === right.type &&
   (left.type === 'success' && right.type === 'success'
     ? left.entries === right.entries
+    : left.type === 'error' &&
+      right.type === 'error' &&
+      left.kind === right.kind);
+
+const searchOutcomesEqual = (
+  left: ConversationWorkspaceSearchOutcome,
+  right: ConversationWorkspaceSearchOutcome,
+): boolean =>
+  left.type === right.type &&
+  (left.type === 'success' && right.type === 'success'
+    ? left.matches === right.matches && left.truncated === right.truncated
     : left.type === 'error' &&
       right.type === 'error' &&
       left.kind === right.kind);

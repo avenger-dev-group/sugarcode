@@ -52,12 +52,35 @@ export type WorkspaceListResultItem = Readonly<{
     | Readonly<{ type: 'error'; kind: string }>;
 }>;
 
+export type WorkspaceSearchCallItem = Readonly<{
+  type: 'workspaceSearchCall';
+  id: string;
+  callId: string;
+  path: string;
+  query: string;
+}>;
+
+export type WorkspaceSearchResultItem = Readonly<{
+  type: 'workspaceSearchResult';
+  id: string;
+  callId: string;
+  outcome:
+    | Readonly<{
+        type: 'success';
+        matches: number;
+        truncated: boolean;
+      }>
+    | Readonly<{ type: 'error'; kind: string }>;
+}>;
+
 type ConversationItem =
   | TextItem
   | WorkspaceReadCallItem
   | WorkspaceReadResultItem
   | WorkspaceListCallItem
-  | WorkspaceListResultItem;
+  | WorkspaceListResultItem
+  | WorkspaceSearchCallItem
+  | WorkspaceSearchResultItem;
 
 export type ResumeItem =
   | ConversationItem
@@ -117,6 +140,10 @@ const isId = (value: unknown): value is string =>
 const MAX_WORKSPACE_LIST_ENTRIES = 1_000;
 const MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES = 1_024;
 const MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES = 256 * 1_024;
+const MAX_WORKSPACE_SEARCH_QUERY_BYTES = 256;
+const MAX_WORKSPACE_SEARCH_MATCHES = 200;
+const MAX_WORKSPACE_SEARCH_PATH_BYTES = 1_024;
+const MAX_WORKSPACE_SEARCH_TOTAL_PATH_BYTES = 256 * 1_024;
 const WORKSPACE_LIST_ENTRY_KINDS = new Set([
   'file',
   'directory',
@@ -164,6 +191,55 @@ const parseWorkspaceListEntryCount = (content: string): number => {
     }
   }
   return parsed.entries.length;
+};
+
+const parseWorkspaceSearchResult = (
+  content: string,
+): Readonly<{ matches: number; truncated: boolean }> => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error('Invalid workspace/search success content.');
+  }
+  if (
+    !isRecord(parsed) ||
+    Object.keys(parsed).length !== 2 ||
+    !Array.isArray(parsed.matches) ||
+    parsed.matches.length > MAX_WORKSPACE_SEARCH_MATCHES ||
+    typeof parsed.truncated !== 'boolean' ||
+    (parsed.truncated &&
+      parsed.matches.length !== MAX_WORKSPACE_SEARCH_MATCHES)
+  ) {
+    throw new Error('Invalid workspace/search success content.');
+  }
+  let totalPathBytes = 0;
+  for (const match of parsed.matches) {
+    if (
+      !isRecord(match) ||
+      Object.keys(match).length !== 2 ||
+      typeof match.path !== 'string' ||
+      match.path.length === 0 ||
+      Array.from(match.path).some((character) => /\p{Cc}/u.test(character)) ||
+      typeof match.line !== 'number' ||
+      !Number.isSafeInteger(match.line) ||
+      match.line < 1
+    ) {
+      throw new Error('Invalid workspace/search match.');
+    }
+    const pathBytes = utf8Bytes(match.path);
+    if (pathBytes > MAX_WORKSPACE_SEARCH_PATH_BYTES) {
+      throw new Error('Invalid workspace/search match.');
+    }
+    totalPathBytes += pathBytes;
+    if (totalPathBytes > MAX_WORKSPACE_SEARCH_TOTAL_PATH_BYTES) {
+      throw new Error('Invalid workspace/search success content.');
+    }
+  }
+  return {
+    matches: parsed.matches.length,
+    truncated: parsed.truncated,
+  };
 };
 
 const TURN_STATUSES = new Set([
@@ -450,6 +526,65 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       };
     }
     throw new Error('Invalid workspace/list ToolResult outcome.');
+  }
+  if (value.type === 'toolCall' && value.name === 'workspace/search') {
+    if (
+      !isId(value.callId) ||
+      typeof value.path !== 'string' ||
+      value.path.length === 0 ||
+      typeof value.query !== 'string' ||
+      value.query.length === 0 ||
+      utf8Bytes(value.query) > MAX_WORKSPACE_SEARCH_QUERY_BYTES ||
+      Array.from(value.query).some((character) => /\p{Cc}/u.test(character)) ||
+      Array.from(value.query).every((character) => /\s/u.test(character)) ||
+      Object.hasOwn(value, 'command') ||
+      Object.hasOwn(value, 'arguments')
+    ) {
+      throw new Error('Invalid workspace/search ToolCall Item.');
+    }
+    return {
+      type: 'workspaceSearchCall',
+      id: value.id,
+      callId: value.callId,
+      path: value.path,
+      query: value.query,
+    };
+  }
+  if (value.type === 'toolResult' && value.name === 'workspace/search') {
+    if (!isId(value.callId) || !isRecord(value.result)) {
+      throw new Error('Invalid workspace/search ToolResult Item.');
+    }
+    if (
+      value.result.type === 'success' &&
+      typeof value.result.content === 'string' &&
+      typeof value.result.bytes === 'number' &&
+      Number.isSafeInteger(value.result.bytes) &&
+      value.result.bytes >= 0 &&
+      utf8Bytes(value.result.content) === value.result.bytes
+    ) {
+      return {
+        type: 'workspaceSearchResult',
+        id: value.id,
+        callId: value.callId,
+        outcome: {
+          type: 'success',
+          ...parseWorkspaceSearchResult(value.result.content),
+        },
+      };
+    }
+    if (
+      value.result.type === 'error' &&
+      typeof value.result.kind === 'string' &&
+      value.result.kind.length > 0
+    ) {
+      return {
+        type: 'workspaceSearchResult',
+        id: value.id,
+        callId: value.callId,
+        outcome: { type: 'error', kind: value.result.kind },
+      };
+    }
+    throw new Error('Invalid workspace/search ToolResult outcome.');
   }
   return null;
 };

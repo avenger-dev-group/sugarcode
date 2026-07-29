@@ -20,6 +20,7 @@ import {
   type ConversationTurnStatus,
   type ConversationWorkspaceListActivity,
   type ConversationWorkspaceReadActivity,
+  type ConversationWorkspaceSearchActivity,
 } from '@/shared/conversation';
 
 import type {
@@ -28,6 +29,8 @@ import type {
   WorkspaceListPresentationState,
   WorkspaceReadActivityViewModel,
   WorkspaceReadPresentationState,
+  WorkspaceSearchActivityViewModel,
+  WorkspaceSearchPresentationState,
 } from '../agent/types';
 import type {
   ThreadStore,
@@ -128,6 +131,34 @@ const toWorkspaceListPresentationState = (
       return 'uncertain';
     default:
       throw new Error('Workspace list activity did not match its Turn phase.');
+  }
+};
+
+const toWorkspaceSearchPresentationState = (
+  phase: ConversationPhase,
+  turnStatus: ConversationTurnStatus,
+  activity: ConversationWorkspaceSearchActivity,
+): WorkspaceSearchPresentationState => {
+  if (activity.result?.status === 'completed') {
+    return activity.result.outcome.type === 'success'
+      ? 'succeeded'
+      : 'failed';
+  }
+  if (turnStatus === 'interrupted') {
+    return 'interrupted';
+  }
+  if (turnStatus !== 'inProgress') {
+    throw new Error('A terminal workspace search has no durable result.');
+  }
+  switch (phase) {
+    case 'inProgress':
+      return 'running';
+    case 'stopping':
+      return 'stopping';
+    case 'unavailable':
+      return 'uncertain';
+    default:
+      throw new Error('Workspace search activity did not match its Turn phase.');
   }
 };
 
@@ -247,6 +278,44 @@ export const toThreadViewModel = (
         previousTurn.workspaceList.errorKind === nextWorkspaceList.errorKind
           ? previousTurn.workspaceList
           : nextWorkspaceList;
+      const nextWorkspaceSearch = turn.workspaceSearch
+        ? (() => {
+            const state = toWorkspaceSearchPresentationState(
+              snapshot.phase,
+              turn.status,
+              turn.workspaceSearch,
+            );
+            const outcome = turn.workspaceSearch.result?.outcome;
+            return {
+              id: turn.workspaceSearch.id,
+              path: turn.workspaceSearch.path,
+              query: turn.workspaceSearch.query,
+              state,
+              ...(outcome?.type === 'success'
+                ? {
+                    matches: outcome.matches,
+                    truncated: outcome.truncated,
+                  }
+                : {}),
+              ...(outcome?.type === 'error'
+                ? { errorKind: outcome.kind }
+                : {}),
+            } satisfies WorkspaceSearchActivityViewModel;
+          })()
+        : undefined;
+      const workspaceSearch =
+        nextWorkspaceSearch &&
+        previousTurn?.workspaceSearch?.id === nextWorkspaceSearch.id &&
+        previousTurn.workspaceSearch.path === nextWorkspaceSearch.path &&
+        previousTurn.workspaceSearch.query === nextWorkspaceSearch.query &&
+        previousTurn.workspaceSearch.state === nextWorkspaceSearch.state &&
+        previousTurn.workspaceSearch.matches === nextWorkspaceSearch.matches &&
+        previousTurn.workspaceSearch.truncated ===
+          nextWorkspaceSearch.truncated &&
+        previousTurn.workspaceSearch.errorKind ===
+          nextWorkspaceSearch.errorKind
+          ? previousTurn.workspaceSearch
+          : nextWorkspaceSearch;
       const nextFailure = turn.error
         ? toTurnFailureViewModel(turn.error)
         : undefined;
@@ -265,6 +334,7 @@ export const toThreadViewModel = (
         previousTurn.messages === stableMessages &&
         previousTurn.workspaceRead === workspaceRead &&
         previousTurn.workspaceList === workspaceList &&
+        previousTurn.workspaceSearch === workspaceSearch &&
         previousTurn.terminalLabel === terminalLabel &&
         previousTurn.failure === failure &&
         previousTurn.isError === isError
@@ -277,6 +347,7 @@ export const toThreadViewModel = (
         messages: stableMessages,
         ...(workspaceRead ? { workspaceRead } : {}),
         ...(workspaceList ? { workspaceList } : {}),
+        ...(workspaceSearch ? { workspaceSearch } : {}),
         ...(terminalLabel ? { terminalLabel } : {}),
         ...(failure ? { failure } : {}),
         isError,

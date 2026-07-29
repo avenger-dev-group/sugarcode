@@ -228,6 +228,44 @@ const run = async (): Promise<void> => {
             },
           ],
         },
+        {
+          id: 'turn_0000000000000096',
+          status: 'completed',
+          items: [
+            {
+              type: 'workspaceSearchCall',
+              id: 'item_0000000000000095-search',
+              callId: 'call_recovered_search',
+              path: 'recovered/search-root',
+              query: 'durable needle',
+            },
+            {
+              type: 'workspaceSearchResult',
+              id: 'item_0000000000000095-search-result',
+              callId: 'call_recovered_search',
+              outcome: { type: 'success', matches: 200, truncated: true },
+            },
+          ],
+        },
+        {
+          id: 'turn_0000000000000095',
+          status: 'completed',
+          items: [
+            {
+              type: 'workspaceSearchCall',
+              id: 'item_0000000000000094-search',
+              callId: 'call_recovered_search_failure',
+              path: 'recovered/unreadable-root',
+              query: 'permission needle',
+            },
+            {
+              type: 'workspaceSearchResult',
+              id: 'item_0000000000000094-search-result',
+              callId: 'call_recovered_search_failure',
+              outcome: { type: 'error', kind: 'accessDenied' },
+            },
+          ],
+        },
       ],
     }),
     startThread: async () => ({
@@ -437,6 +475,39 @@ const run = async (): Promise<void> => {
       ),
     'recovered failed workspace list presentation',
   );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const activity = document.querySelector(
+            '[aria-label="Workspace search complete: recovered/search-root"]',
+          );
+          return activity?.getAttribute('data-state') === 'succeeded' &&
+            activity.textContent?.includes('More than 200 matches found') === true &&
+            activity.textContent?.includes('durable needle') === true &&
+            !activity.textContent?.includes('private-recovered-match.txt') &&
+            !activity.textContent?.includes('call_recovered_search') &&
+            !activity.querySelector('button, a');
+        })()`,
+      ),
+    'recovered workspace search presentation',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const activity = document.querySelector(
+            '[aria-label="Workspace search failed: recovered/unreadable-root"]',
+          );
+          return activity?.getAttribute('role') === 'alert' &&
+            activity.getAttribute('data-state') === 'failed' &&
+            activity.textContent?.includes('Failure kind accessDenied') === true &&
+            activity.textContent?.includes('permission needle') === true &&
+            !activity.querySelector('button, a');
+        })()`,
+      ),
+    'recovered failed workspace search presentation',
+  );
 
   const sendConversationInput = async (input: string): Promise<void> => {
     await evaluate(`(() => {
@@ -467,7 +538,12 @@ const run = async (): Promise<void> => {
     output: string,
     terminal: 'completed' | 'interrupted',
     afterDelta?: () => Promise<void>,
-    workspaceList?: Readonly<{ path: string; entries: number }>,
+    workspaceSearch?: Readonly<{
+      path: string;
+      query: string;
+      matches: number;
+      truncated: boolean;
+    }>,
   ): Promise<void> => {
     conversation.handleNotification({
       kind: 'notification',
@@ -497,27 +573,31 @@ const run = async (): Promise<void> => {
         },
       });
     }
-    if (workspaceList) {
+    if (workspaceSearch) {
       const call = {
         type: 'toolCall',
-        id: `${turnId}/list`,
-        callId: `${turnId}/list-call`,
-        name: 'workspace/list',
-        path: workspaceList.path,
+        id: `${turnId}/search`,
+        callId: `${turnId}/search-call`,
+        name: 'workspace/search',
+        path: workspaceSearch.path,
+        query: workspaceSearch.query,
       } as const;
-      const entries = Array.from(
-        { length: workspaceList.entries },
+      const matches = Array.from(
+        { length: workspaceSearch.matches },
         (_value, index) => ({
-          name: `private-live-${index}.txt`,
-          kind: 'file',
+          path: `private-live-match-${index}.txt`,
+          line: index + 1,
         }),
       );
-      const content = JSON.stringify({ entries });
+      const content = JSON.stringify({
+        matches,
+        truncated: workspaceSearch.truncated,
+      });
       const result = {
         type: 'toolResult',
-        id: `${turnId}/list-result`,
+        id: `${turnId}/search-result`,
         callId: call.callId,
-        name: 'workspace/list',
+        name: 'workspace/search',
         result: {
           type: 'success',
           content,
@@ -632,7 +712,12 @@ const run = async (): Promise<void> => {
         'incremental streaming Markdown projection',
       );
     },
-    { path: 'live/directory', entries: 48 },
+    {
+      path: 'live/search-root',
+      query: 'streamed needle',
+      matches: 200,
+      truncated: true,
+    },
   );
   await waitFor(
     () =>
@@ -652,15 +737,16 @@ const run = async (): Promise<void> => {
       evaluate<boolean>(
         `(() => {
           const activity = document.querySelector(
-            '[aria-label="Workspace list complete: live/directory"]',
+            '[aria-label="Workspace search complete: live/search-root"]',
           );
           return activity?.getAttribute('data-state') === 'succeeded' &&
-            activity.textContent?.includes('48 entries found') === true &&
-            !activity.textContent?.includes('private-live-0.txt') &&
+            activity.textContent?.includes('More than 200 matches found') === true &&
+            activity.textContent?.includes('streamed needle') === true &&
+            !activity.textContent?.includes('private-live-match-0.txt') &&
             !activity.querySelector('button, a');
         })()`,
       ),
-    'live workspace list presentation',
+    'live workspace search presentation',
   );
   await evaluate('location.reload()');
   await waitFor(
@@ -727,7 +813,7 @@ const run = async (): Promise<void> => {
       `workspace read ${path} after Renderer reload`,
     );
   }
-  for (const path of ['recovered/directory', 'live/directory']) {
+  for (const path of ['recovered/directory']) {
     await waitFor(
       () =>
         evaluate<boolean>(
@@ -746,6 +832,26 @@ const run = async (): Promise<void> => {
         )?.textContent?.includes('Failure kind notFound') === true`,
       ),
     'failed workspace list after Renderer reload',
+  );
+  for (const path of ['recovered/search-root', 'live/search-root']) {
+    await waitFor(
+      () =>
+        evaluate<boolean>(
+          `document.querySelector(
+            '[aria-label="Workspace search complete: ${path}"]',
+          )?.getAttribute('data-state') === 'succeeded'`,
+        ),
+      `workspace search ${path} after Renderer reload`,
+    );
+  }
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Workspace search failed: recovered/unreadable-root"]',
+        )?.textContent?.includes('Failure kind accessDenied') === true`,
+      ),
+    'failed workspace search after Renderer reload',
   );
   await evaluate(`Array.from(document.querySelectorAll(
     '[aria-label="Agent response"]',
@@ -946,12 +1052,13 @@ const run = async (): Promise<void> => {
       },
     },
   });
-  const uncertainListCall = {
+  const uncertainSearchCall = {
     type: 'toolCall',
-    id: `${thirdTurnId}/list`,
-    callId: `${thirdTurnId}/list-call`,
-    name: 'workspace/list',
-    path: 'uncertain/pending-directory',
+    id: `${thirdTurnId}/search`,
+    callId: `${thirdTurnId}/search-call`,
+    name: 'workspace/search',
+    path: 'uncertain/search-root',
+    query: 'partial needle',
   } as const;
   for (const method of ['item/started', 'item/completed'] as const) {
     conversation.handleNotification({
@@ -960,7 +1067,7 @@ const run = async (): Promise<void> => {
       params: {
         threadId: 'thr_0000000000000100',
         turnId: thirdTurnId,
-        item: uncertainListCall,
+        item: uncertainSearchCall,
       },
     });
   }
@@ -992,10 +1099,10 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
-          '[aria-label="Workspace list status unavailable: uncertain/pending-directory"]',
+          '[aria-label="Workspace search status unavailable: uncertain/search-root"]',
         )?.getAttribute('data-state') === 'uncertain'`,
       ),
-    'uncertain workspace list presentation',
+    'uncertain workspace search presentation',
   );
   await waitFor(
     () =>
@@ -1037,10 +1144,10 @@ const run = async (): Promise<void> => {
     () =>
       evaluate<boolean>(
         `document.querySelector(
-          '[aria-label="Workspace list status unavailable: uncertain/pending-directory"]',
+          '[aria-label="Workspace search status unavailable: uncertain/search-root"]',
         )?.getAttribute('data-state') === 'uncertain'`,
       ),
-    'uncertain workspace list after Renderer reload',
+    'uncertain workspace search after Renderer reload',
   );
   await waitFor(
     () =>

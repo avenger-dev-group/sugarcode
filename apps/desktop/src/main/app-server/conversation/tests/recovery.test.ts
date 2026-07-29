@@ -208,6 +208,57 @@ describe('conversation recovery', () => {
     expect(JSON.stringify(recovered)).not.toContain('nested');
   });
 
+  it('recovers a workspace search summary and discards durable matches', () => {
+    const content = JSON.stringify({
+      matches: [{ path: 'src/private.txt', line: 7 }],
+      truncated: false,
+    });
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            {
+              type: 'toolCall',
+              id: 'item_0000000000000010',
+              callId: 'call_search',
+              name: 'workspace/search',
+              path: 'src',
+              query: 'needle',
+            },
+            {
+              type: 'toolResult',
+              id: 'item_0000000000000011',
+              callId: 'call_search',
+              name: 'workspace/search',
+              result: {
+                type: 'success',
+                content,
+                bytes: new TextEncoder().encode(content).byteLength,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const recovered = recoverConversation(
+      'thr_0000000000000001',
+      resumed,
+    );
+    expect(recovered.turns[0]?.workspaceSearch).toMatchObject({
+      path: 'src',
+      query: 'needle',
+      result: {
+        outcome: { type: 'success', matches: 1, truncated: false },
+      },
+    });
+    expect(JSON.stringify(recovered)).not.toContain('private.txt');
+    expect(JSON.stringify(recovered)).not.toContain('"line"');
+  });
+
   it.each([
     {
       data: [
