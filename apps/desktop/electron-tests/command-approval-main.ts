@@ -171,7 +171,15 @@ const run = async (): Promise<void> => {
             {
               type: 'agentMessage',
               id: 'item_0000000000000099',
-              text: '## Recovered Electron answer\n\n- Durable restart item',
+              text: [
+                '## Recovered Electron answer',
+                '',
+                '- Durable restart item',
+                '',
+                '```Rust title="restart-proof"',
+                'fn recovered() {}',
+                '```',
+              ].join('\n'),
             },
           ],
         },
@@ -187,7 +195,11 @@ const run = async (): Promise<void> => {
             {
               type: 'agentMessage',
               id: 'item_0000000000000101',
-              text: '',
+              text: [
+                '```TypeScript',
+                'throw new Error("rate limited");',
+                '```',
+              ].join('\n'),
             },
           ],
           error: { kind: 'rateLimited', retryable: true },
@@ -424,6 +436,17 @@ const run = async (): Promise<void> => {
   await waitFor(
     () =>
       evaluate<boolean>(
+        `Array.from(document.querySelectorAll('figure')).some((figure) =>
+          figure.textContent?.includes('Language hintRust') === true &&
+          figure.querySelector('pre code')?.textContent ===
+            'fn recovered() {}'
+        )`,
+      ),
+    'recovered fenced-code language hint',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
         `document.querySelector(
           '[aria-label="Current durable Thread thr_0000000000000100"]',
         )?.textContent === 'Thread thr_0000000000000100'`,
@@ -467,6 +490,20 @@ const run = async (): Promise<void> => {
         )?.textContent === 'rateLimited'`,
       ),
     'recovered Electron Turn failure',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `Array.from(document.querySelectorAll(
+          '[aria-label="Agent response"] figure',
+        )).some((figure) =>
+          figure.textContent?.includes('Language hintTypeScript') === true &&
+          figure.querySelector('pre code')?.textContent?.includes(
+            'throw new Error',
+          ) === true
+        )`,
+      ),
+    'failed Turn fenced-code language hint',
   );
   if (
     await evaluate<boolean>(
@@ -775,7 +812,15 @@ const run = async (): Promise<void> => {
   await emitTextTurn(
     'turn_0000000000000101',
     'Desktop exact input 雪',
-    '## Streamed desktop answer\n\nUse **durable truth**.',
+    [
+      '## Streamed desktop answer',
+      '',
+      'Use **durable truth**.',
+      '',
+      '```TSX title="live"',
+      'const answer = <Result />;',
+      '```',
+    ].join('\n'),
     'completed',
     async () => {
       await waitFor(
@@ -807,7 +852,10 @@ const run = async (): Promise<void> => {
               return response?.querySelector('h2')?.textContent ===
                 'Streamed desktop answer' &&
                 response.querySelector('strong')?.textContent ===
-                  'durable truth';
+                  'durable truth' &&
+                response.querySelector('figure')?.textContent?.includes(
+                  'Language hintTSX',
+                ) === true;
             })()`,
           ),
         'incremental streaming Markdown projection',
@@ -828,7 +876,10 @@ const run = async (): Promise<void> => {
         )).some((response) =>
           response.querySelector('h2')?.textContent ===
             'Streamed desktop answer' &&
-          response.querySelector('strong')?.textContent === 'durable truth'
+          response.querySelector('strong')?.textContent === 'durable truth' &&
+          response.querySelector('figure')?.textContent?.includes(
+            'Language hintTSX',
+          ) === true
         )`,
       ),
     'rendered completed Markdown answer',
@@ -858,7 +909,10 @@ const run = async (): Promise<void> => {
         )).some((response) =>
           response.querySelector('h2')?.textContent ===
             'Streamed desktop answer' &&
-          response.querySelector('strong')?.textContent === 'durable truth'
+          response.querySelector('strong')?.textContent === 'durable truth' &&
+          response.querySelector('figure')?.textContent?.includes(
+            'Language hintTSX',
+          ) === true
         )`,
       ),
     'completed Markdown snapshot after reload',
@@ -963,6 +1017,25 @@ const run = async (): Promise<void> => {
       ),
     'command execution result after Renderer reload',
   );
+  window.setSize(360, 600);
+  await waitFor(
+    () =>
+      evaluate<boolean>(`(() => {
+        const figure = Array.from(document.querySelectorAll('figure')).find(
+          (candidate) => candidate.textContent?.includes('Language hintTSX'),
+        );
+        if (!(figure instanceof HTMLElement)) {
+          return false;
+        }
+        const bounds = figure.getBoundingClientRect();
+        return document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth &&
+          bounds.left >= 0 && bounds.right <= window.innerWidth &&
+          !figure.querySelector('button, a');
+      })()`),
+    'narrow fenced-code language hint layout',
+  );
+  window.setSize(800, 600);
   await evaluate(`Array.from(document.querySelectorAll(
     '[aria-label="Agent response"]',
   )).find((response) =>
@@ -1188,7 +1261,12 @@ const run = async (): Promise<void> => {
       threadId: 'thr_0000000000000100',
       turnId: thirdTurnId,
       itemId: `${thirdTurnId}/agent`,
-      delta: 'Exact **partial** output before transport loss.',
+      delta: [
+        'Exact **partial** output before transport loss.',
+        '',
+        '```Rust',
+        'fn uncertain() {',
+      ].join('\n'),
     },
   });
   conversation.transportClosed();
@@ -1201,6 +1279,10 @@ const run = async (): Promise<void> => {
           'Exact **partial** output before transport loss.',
         ) === true && !document.querySelector(
           '[aria-label="Agent response status is unavailable"] strong',
+        ) && !document.querySelector(
+          '[aria-label="Agent response status is unavailable"] figure',
+        ) && !document.querySelector(
+          '[aria-label="Agent response status is unavailable"] pre',
         )`,
       ),
     'uncertain Agent response',
@@ -1228,6 +1310,15 @@ const run = async (): Promise<void> => {
   await waitForDurableItemIdentity(
     `${thirdTurnId}/agent`,
     'transport-uncertain durable AgentMessage Item identity',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `Array.from(document.querySelectorAll('figure')).some((figure) =>
+          figure.textContent?.includes('Language hintTSX') === true
+        )`,
+      ),
+    'completed fenced-code hint after transport loss',
   );
   if (
     await evaluate<boolean>(

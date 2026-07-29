@@ -15,6 +15,13 @@ import {
 import type { AgentMarkdownProps } from './types';
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+const CODE_LANGUAGE_HINT_PATTERN =
+  /^[A-Za-z0-9][A-Za-z0-9_+.#-]{0,63}$/u;
+
+const codeLanguageHint = (language: string | undefined): string | null => {
+  const hint = language?.trimStart().split(/\s+/u, 1)[0];
+  return hint && CODE_LANGUAGE_HINT_PATTERN.test(hint) ? hint : null;
+};
 
 const renderText = (
   text: string,
@@ -149,15 +156,42 @@ const renderTokens = (
               </ul>,
             ];
       }
-      case 'code':
+      case 'code': {
+        const languageHint = codeLanguageHint(token.lang);
+        if (!languageHint) {
+          return [
+            <pre
+              key={key}
+              className="mt-3 max-w-full overflow-x-auto rounded-xl border bg-surface p-3 font-mono text-xs font-normal leading-normal first:mt-0"
+            >
+              <code>{token.text}</code>
+            </pre>,
+          ];
+        }
+        const captionId = `${key}:language-hint`;
         return [
-          <pre
+          <figure
             key={key}
-            className="mt-3 max-w-full overflow-x-auto rounded-xl border bg-surface p-3 font-mono text-xs font-normal leading-normal first:mt-0"
+            aria-labelledby={captionId}
+            className="mt-3 min-w-0 max-w-full overflow-hidden rounded-xl border bg-surface first:mt-0"
           >
-            <code>{token.text}</code>
-          </pre>,
+            <figcaption
+              id={captionId}
+              className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 border-b px-3 py-2 font-mono text-[10px] text-tertiary"
+            >
+              <span className="uppercase tracking-[0.14em]">
+                Language hint
+              </span>
+              <span className="min-w-0 break-all tracking-[0.08em]">
+                {languageHint}
+              </span>
+            </figcaption>
+            <pre className="max-w-full overflow-x-auto p-3 font-mono text-xs font-normal leading-normal">
+              <code>{token.text}</code>
+            </pre>
+          </figure>,
         ];
+      }
       case 'hr':
         return [<hr key={key} className="my-5 border-border" />];
       case 'strong':

@@ -66,6 +66,46 @@ describe('AgentMarkdown', () => {
     expect(document.querySelector('pre code')?.textContent).toContain(
       'exact fenced output',
     );
+    const codeFigure = document.querySelector(
+      '[aria-labelledby$="language-hint"]',
+    );
+    expect(codeFigure?.querySelector('figcaption')?.textContent).toContain(
+      'Language hinttext',
+    );
+    expect(codeFigure?.getAttribute('aria-labelledby')).toBe(
+      codeFigure?.querySelector('figcaption')?.id,
+    );
+    expect(codeFigure?.querySelector('button, a')).toBeNull();
+
+    await unmount();
+  });
+
+  it('bounds and case-preserves fenced-code language hints', async () => {
+    const unmount = await render(
+      <AgentMarkdown
+        source={[
+          '```Rust title="durable"',
+          'fn main() {}',
+          '```',
+          '',
+          `\`\`\`${'x'.repeat(65)}`,
+          'oversized hint remains code',
+          '```',
+          '',
+          '```<script>',
+          'invalid hint remains code',
+          '```',
+        ].join('\n')}
+        isStreaming={false}
+      />,
+    );
+
+    const captions = Array.from(document.querySelectorAll('figcaption'));
+    expect(captions).toHaveLength(1);
+    expect(captions[0]?.textContent).toContain('Language hintRust');
+    expect(document.querySelectorAll('pre code')).toHaveLength(3);
+    expect(document.querySelector('script')).toBeNull();
+    expect(document.querySelector('[class*="language-"]')).toBeNull();
 
     await unmount();
   });
@@ -127,6 +167,9 @@ describe('AgentMarkdown', () => {
     expect(document.querySelector('pre code')?.textContent).toBe(
       'partial code',
     );
+    expect(document.querySelector('figcaption')?.textContent).toContain(
+      'Language hinttext',
+    );
     expect(document.body.textContent).not.toContain('```');
     expect(
       document.querySelectorAll('.agent-markdown-segment').length,
@@ -179,6 +222,8 @@ describe('AgentMarkdown', () => {
       'Partial **Markdown is not complete**.',
     );
     expect(response?.querySelector('strong')).toBeNull();
+    expect(response?.querySelector('figcaption')).toBeNull();
+    expect(response?.querySelector('pre')).toBeNull();
 
     await unmount();
   });
