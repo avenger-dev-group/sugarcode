@@ -2,6 +2,7 @@ import type { RefObject, UIEvent } from 'react';
 
 import type {
   ConversationPhase,
+  ConversationTurnError,
   ConversationTurnStatus,
 } from '@/shared/conversation';
 
@@ -23,6 +24,7 @@ export type TranscriptMessageViewModel =
     }>;
 
 export type TurnFailureViewModel = Readonly<{
+  kind: ConversationTurnError['kind'];
   summary: string;
   guidance: string;
   retryable: boolean;

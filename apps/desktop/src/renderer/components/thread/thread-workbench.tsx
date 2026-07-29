@@ -70,11 +70,21 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
           <p className="mt-1 text-sm font-normal leading-normal text-secondary">
             {turn.failure.guidance}
           </p>
-          <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
-            {turn.failure.retryable
-              ? 'Retryable failure'
-              : 'Not automatically retryable'}
-          </p>
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-[10px] text-tertiary">
+            <span className="uppercase tracking-[0.14em]">Failure kind</span>
+            <span
+              aria-label={`Exact Turn failure kind ${turn.failure.kind}`}
+              className="min-w-0 break-all tracking-[0.08em]"
+            >
+              {turn.failure.kind}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span className="uppercase tracking-[0.14em]">
+              {turn.failure.retryable
+                ? 'Retryable failure'
+                : 'Not automatically retryable'}
+            </span>
+          </div>
         </div>
       ) : turn.terminalLabel ? (
         <p

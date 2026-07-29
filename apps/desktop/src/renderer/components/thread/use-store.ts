@@ -130,6 +130,7 @@ export const toThreadViewModel = (
         : undefined;
       const failure =
         nextFailure &&
+        previousTurn?.failure?.kind === nextFailure.kind &&
         previousTurn?.failure?.summary === nextFailure.summary &&
         previousTurn.failure.guidance === nextFailure.guidance &&
         previousTurn.failure.retryable === nextFailure.retryable

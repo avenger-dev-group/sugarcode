@@ -21,6 +21,7 @@ const FAILURE_SUMMARIES: Record<ConversationTurnError['kind'], string> = {
 export const toTurnFailureViewModel = (
   error: ConversationTurnError,
 ): TurnFailureViewModel => ({
+  kind: error.kind,
   summary: FAILURE_SUMMARIES[error.kind],
   guidance: error.retryable
     ? 'You can send another message to retry.'

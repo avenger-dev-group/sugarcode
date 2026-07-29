@@ -462,7 +462,7 @@ describe('ThreadWorkbenchView', () => {
     await act(async () => root.unmount());
   });
 
-  it('presents durable retryable failure details without exposing raw diagnostics', async () => {
+  it('presents the exact durable retryable failure kind without exposing raw diagnostics', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -503,7 +503,13 @@ describe('ThreadWorkbenchView', () => {
       'You can send another message to retry.',
     );
     expect(failure?.textContent).toContain('Retryable failure');
-    expect(failure?.textContent).not.toContain('rateLimited');
+    const exactKind = failure?.querySelector(
+      '[aria-label="Exact Turn failure kind rateLimited"]',
+    );
+    expect(exactKind?.textContent).toBe('rateLimited');
+    expect(exactKind?.className).toContain('break-all');
+    expect(exactKind?.className).not.toContain('uppercase');
+    expect(failure?.querySelector('button, a')).toBeNull();
     expect(
       document.querySelector(
         '[aria-label="Durable Item item_0000000000000004"]',

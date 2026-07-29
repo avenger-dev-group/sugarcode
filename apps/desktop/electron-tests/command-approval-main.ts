@@ -325,7 +325,9 @@ const run = async (): Promise<void> => {
           '[aria-label="Turn failure details"]',
         )?.textContent?.includes(
           'You can send another message to retry.',
-        ) === true`,
+        ) === true && document.querySelector(
+          '[aria-label="Exact Turn failure kind rateLimited"]',
+        )?.textContent === 'rateLimited'`,
       ),
     'recovered Electron Turn failure',
   );
@@ -546,7 +548,10 @@ const run = async (): Promise<void> => {
       evaluate<boolean>(
         `document.querySelector(
           '[aria-label="Turn failure details"]',
-        )?.textContent?.includes('The model is rate limited') === true`,
+        )?.textContent?.includes('The model is rate limited') === true &&
+        document.querySelector(
+          '[aria-label="Exact Turn failure kind rateLimited"]',
+        )?.textContent === 'rateLimited'`,
     ),
     'Turn failure after Renderer reload',
   );
