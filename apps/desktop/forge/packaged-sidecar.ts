@@ -412,7 +412,7 @@ const verifyTerminalBridge = async (
               : `'${verificationHome.replaceAll("'", "'\\''")}'`;
           const input =
             process.platform === 'win32'
-              ? `echo SUGARCODE_PACKAGED_PTY\r\n${quotedExecutable} --home ${quotedHome}\r\n`
+              ? `echo SUGARCODE_PACKAGED_PTY\r${quotedExecutable} --home ${quotedHome}\r`
               : `printf 'SUGARCODE_PACKAGED_PTY\\n'\n${quotedExecutable} --home ${quotedHome}\n`;
           child.stdin.write(
             `${JSON.stringify({
@@ -456,7 +456,7 @@ const verifyTerminalBridge = async (
               `${JSON.stringify({
                 type: 'input',
                 sequence: 5,
-                data: process.platform === 'win32' ? 'exit\r\n' : 'exit\n',
+                data: process.platform === 'win32' ? 'exit\r' : 'exit\n',
               })}\n`,
             );
           }

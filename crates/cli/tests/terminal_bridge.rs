@@ -37,7 +37,7 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         }
     });
 
-    let ready = receive_json(&lines_rx, Duration::from_secs(20));
+    let ready = receive_json(&lines_rx, Duration::from_secs(20), "bridge ready");
     assert_eq!(ready["type"], "ready");
     assert_eq!(ready["version"], 1);
     assert_eq!(ready["encoding"], "utf-8-replacement");
@@ -54,7 +54,7 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
     )
     .expect("resize terminal");
     let marker_input = if cfg!(windows) {
-        "echo SUGARCODE_PTY_ACCEPTANCE\r\n"
+        "echo SUGARCODE_PTY_ACCEPTANCE\r"
     } else {
         "printf 'SUGARCODE_PTY_ACCEPTANCE\\n'\n"
     };
@@ -76,6 +76,7 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         let event = receive_json(
             &lines_rx,
             deadline.saturating_duration_since(Instant::now()),
+            "shell marker output",
         );
         match event["type"].as_str() {
             Some("output") => {
@@ -87,7 +88,7 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         }
     }
 
-    let exit_input = if cfg!(windows) { "exit\r\n" } else { "exit\n" };
+    let exit_input = if cfg!(windows) { "exit\r" } else { "exit\n" };
     writeln!(
         input,
         "{}",
@@ -106,6 +107,7 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         let event = receive_json(
             &lines_rx,
             deadline.saturating_duration_since(Instant::now()),
+            "natural shell exit",
         );
         match event["type"].as_str() {
             Some("output") => {
@@ -133,10 +135,11 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
 fn receive_json(
     receiver: &std::sync::mpsc::Receiver<Result<String, std::io::Error>>,
     timeout: Duration,
+    phase: &str,
 ) -> Value {
     let line = receiver
         .recv_timeout(timeout)
-        .expect("timed out waiting for bridge event")
+        .unwrap_or_else(|error| panic!("timed out waiting for {phase}: {error:?}"))
         .expect("read bridge event");
     serde_json::from_str(&line).expect("valid bridge JSON event")
 }
