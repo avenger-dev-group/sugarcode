@@ -1,6 +1,5 @@
 import {
   Archive,
-  Code2,
   GitFork,
   LoaderCircle,
   MessageSquareText,
@@ -31,6 +30,8 @@ import {
 } from '@/renderer/components/ui/alert-dialog';
 import { Input } from '@/renderer/components/ui/input';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
+
+import appIcon from '../../../../assets/icon.png';
 
 import type { ThreadStore } from './types';
 
@@ -136,17 +137,15 @@ export const ThreadNavigator = ({
     >
       <div className="border-b px-3 pb-4 pt-4">
         <div className="mb-5 flex items-center gap-2.5 px-1">
-          <span className="grid size-7 place-items-center rounded-lg border bg-background shadow-sm">
-            <Code2 className="size-4" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold tracking-[-0.02em]">
-              SugarCode
-            </p>
-            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-tertiary">
-              Local coding agent
-            </p>
-          </div>
+          <img
+            src={appIcon}
+            alt=""
+            className="size-7 shrink-0"
+            aria-hidden="true"
+          />
+          <p className="min-w-0 truncate text-sm font-semibold tracking-[-0.02em]">
+            SugarCode
+          </p>
         </div>
         <div className="flex items-baseline justify-between gap-3">
           <div>
