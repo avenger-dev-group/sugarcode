@@ -380,7 +380,7 @@ fn unarchived_threads_restore_search_with_exact_turn_record_sequences() {
                 |row| row.get(0),
             )
             .expect("second turn sequence");
-        assert_eq!(sequence, 5);
+        assert_eq!(sequence, 11);
     }
 
     fs::remove_file(&database).expect("remove projection");
@@ -401,7 +401,7 @@ fn unarchived_threads_restore_search_with_exact_turn_record_sequences() {
             |row| row.get(0),
         )
         .expect("rebuilt second turn sequence");
-    assert_eq!(sequence, 5);
+    assert_eq!(sequence, 11);
 }
 
 #[test]

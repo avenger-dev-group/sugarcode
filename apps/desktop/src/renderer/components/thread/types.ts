@@ -13,6 +13,7 @@ import type {
   WorkspaceReadActivityViewModel,
   WorkspaceSearchActivityViewModel,
 } from '../agent/types';
+import type { ContextCompactionActivityViewModel } from '../agent/context-compaction-activity';
 import type { FileChangeReviewViewModel } from '../workspace/types';
 import type { McpActivityViewModel } from '../mcp/types';
 
@@ -38,10 +39,30 @@ export type TurnFailureViewModel = Readonly<{
   retryable: boolean;
 }>;
 
+export type TurnActivityViewModel =
+  | Readonly<{
+      type: 'contextCompaction';
+      activity: ContextCompactionActivityViewModel;
+    }>
+  | Readonly<{ type: 'workspaceRead'; activity: WorkspaceReadActivityViewModel }>
+  | Readonly<{ type: 'workspaceList'; activity: WorkspaceListActivityViewModel }>
+  | Readonly<{
+      type: 'workspaceSearch';
+      activity: WorkspaceSearchActivityViewModel;
+    }>
+  | Readonly<{ type: 'fileChange'; activity: FileChangeReviewViewModel }>
+  | Readonly<{
+      type: 'commandApproval';
+      activity: CommandApprovalActivityViewModel;
+    }>
+  | Readonly<{ type: 'mcp'; activity: McpActivityViewModel }>;
+
 export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
   messages: readonly TranscriptMessageViewModel[];
+  activities?: readonly TurnActivityViewModel[];
+  contextCompactions?: readonly ContextCompactionActivityViewModel[];
   workspaceRead?: WorkspaceReadActivityViewModel;
   workspaceList?: WorkspaceListActivityViewModel;
   workspaceSearch?: WorkspaceSearchActivityViewModel;

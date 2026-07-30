@@ -30,6 +30,26 @@ type TextItem = Extract<
   { type: 'userMessage' | 'agentMessage' }
 >;
 
+export type ContextCompactionItem = Readonly<{
+  type: 'contextCompaction';
+  id: string;
+  strategy: 'modelGeneratedActiveTurnV1';
+  ordinal: number;
+  preContextBytes: number;
+  sourceMessages: number;
+  sourceBytes: number;
+  sourceSha256: string;
+  outcome?:
+    | Readonly<{
+        type: 'completed';
+        postContextBytes: number;
+        summaryBytes: number;
+        summarySha256: string;
+      }>
+    | Readonly<{ type: 'failed'; kind: string }>
+    | Readonly<{ type: 'interrupted' }>;
+}>;
+
 export type WorkspaceReadCallItem = Readonly<{
   type: 'workspaceReadCall';
   id: string;
@@ -147,6 +167,7 @@ export type CommandExecutionResultItem = Readonly<{
 
 type ConversationItem =
   | TextItem
+  | ContextCompactionItem
   | WorkspaceReadCallItem
   | WorkspaceReadResultItem
   | WorkspaceListCallItem
@@ -525,6 +546,77 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       type: value.type,
       id: value.id,
       text: value.text,
+    };
+  }
+  if (value.type === 'contextCompaction') {
+    const integerFields = [
+      value.ordinal,
+      value.preContextBytes,
+      value.sourceMessages,
+      value.sourceBytes,
+    ];
+    if (
+      value.strategy !== 'modelGeneratedActiveTurnV1' ||
+      integerFields.some(
+        (field) =>
+          typeof field !== 'number' ||
+          !Number.isSafeInteger(field) ||
+          field < 0,
+      ) ||
+      typeof value.sourceSha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(value.sourceSha256)
+    ) {
+      throw new Error('Invalid contextCompaction Item.');
+    }
+    let outcome: ContextCompactionItem['outcome'];
+    if (value.outcome !== undefined) {
+      if (!isRecord(value.outcome) || typeof value.outcome.type !== 'string') {
+        throw new Error('Invalid contextCompaction outcome.');
+      }
+      if (value.outcome.type === 'completed') {
+        if (
+          typeof value.outcome.postContextBytes !== 'number' ||
+          !Number.isSafeInteger(value.outcome.postContextBytes) ||
+          value.outcome.postContextBytes < 0 ||
+          typeof value.outcome.summaryBytes !== 'number' ||
+          !Number.isSafeInteger(value.outcome.summaryBytes) ||
+          value.outcome.summaryBytes < 0 ||
+          typeof value.outcome.summarySha256 !== 'string' ||
+          !/^[0-9a-f]{64}$/.test(value.outcome.summarySha256)
+        ) {
+          throw new Error('Invalid completed contextCompaction outcome.');
+        }
+        outcome = {
+          type: 'completed',
+          postContextBytes: value.outcome.postContextBytes,
+          summaryBytes: value.outcome.summaryBytes,
+          summarySha256: value.outcome.summarySha256,
+        };
+      } else if (
+        value.outcome.type === 'failed' &&
+        typeof value.outcome.kind === 'string' &&
+        value.outcome.kind.length > 0
+      ) {
+        outcome = { type: 'failed', kind: value.outcome.kind };
+      } else if (
+        value.outcome.type === 'interrupted' &&
+        Object.keys(value.outcome).length === 1
+      ) {
+        outcome = { type: 'interrupted' };
+      } else {
+        throw new Error('Invalid contextCompaction outcome.');
+      }
+    }
+    return {
+      type: 'contextCompaction',
+      id: value.id,
+      strategy: 'modelGeneratedActiveTurnV1',
+      ordinal: value.ordinal as number,
+      preContextBytes: value.preContextBytes as number,
+      sourceMessages: value.sourceMessages as number,
+      sourceBytes: value.sourceBytes as number,
+      sourceSha256: value.sourceSha256,
+      ...(outcome ? { outcome } : {}),
     };
   }
   const workspacePatch = parseWorkspacePatchItem(value);

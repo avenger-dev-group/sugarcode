@@ -3,6 +3,7 @@ import { memo } from 'react';
 
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
 import { CommandApprovalActivity } from '@/renderer/components/agent/command-approval-activity';
+import { ContextCompactionActivity } from '@/renderer/components/agent/context-compaction-activity';
 import { WorkspaceReadActivity } from '@/renderer/components/agent/workspace-read-activity';
 import { WorkspaceListActivity } from '@/renderer/components/agent/workspace-list-activity';
 import { WorkspaceSearchActivity } from '@/renderer/components/agent/workspace-search-activity';
@@ -14,6 +15,7 @@ import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline
 
 import type {
   ThreadWorkbenchViewProps,
+  TurnActivityViewModel,
   TranscriptMessageViewModel,
   TranscriptTurnProps,
 } from './types';
@@ -52,6 +54,103 @@ const TranscriptMessage = ({
     </div>
   );
 
+const TurnActivity = ({
+  entry,
+  turnStatus,
+}: Readonly<{
+  entry: TurnActivityViewModel;
+  turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
+}>) => {
+  switch (entry.type) {
+    case 'contextCompaction':
+      return <ContextCompactionActivity activity={entry.activity} />;
+    case 'workspaceRead':
+      return <WorkspaceReadActivity activity={entry.activity} />;
+    case 'workspaceList':
+      return <WorkspaceListActivity activity={entry.activity} />;
+    case 'workspaceSearch':
+      return <WorkspaceSearchActivity activity={entry.activity} />;
+    case 'fileChange':
+      return <FileChangeReview review={entry.activity} />;
+    case 'commandApproval':
+      return <CommandApprovalActivity activity={entry.activity} />;
+    case 'mcp':
+      return (
+        <McpActivityTimeline
+          activities={[entry.activity]}
+          turnStatus={turnStatus}
+        />
+      );
+  }
+};
+
+const TurnActivityTimeline = ({
+  activities,
+  turnStatus,
+}: Readonly<{
+  activities: readonly TurnActivityViewModel[];
+  turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
+}>) => (
+  <>
+    {activities.map((entry, index) => {
+      if (entry.type !== 'fileChange') {
+        return (
+          <TurnActivity
+            key={`${entry.type}:${entry.activity.id}`}
+            entry={entry}
+            turnStatus={turnStatus}
+          />
+        );
+      }
+      if (activities[index - 1]?.type === 'fileChange') {
+        return null;
+      }
+      const changes: Extract<
+        TurnActivityViewModel,
+        { type: 'fileChange' }
+      >[] = [];
+      for (
+        let cursor = index;
+        activities[cursor]?.type === 'fileChange';
+        cursor += 1
+      ) {
+        changes.push(
+          activities[cursor] as Extract<
+            TurnActivityViewModel,
+            { type: 'fileChange' }
+          >,
+        );
+      }
+      if (changes.length === 1) {
+        return (
+          <FileChangeReview
+            key={changes[0].activity.id}
+            review={changes[0].activity}
+          />
+        );
+      }
+      return (
+        <details
+          key={`fileChanges:${changes[0].activity.id}`}
+          className="ml-10 rounded-xl border border-border/70 bg-surface/60 px-3 py-2"
+        >
+          <summary className="cursor-pointer text-sm text-secondary">
+            Edited {changes.length} files
+          </summary>
+          <div className="mt-3 space-y-4 border-t border-border/60 pt-3">
+            {changes.map((change) => (
+              <FileChangeReview
+                key={change.activity.id}
+                review={change.activity}
+              />
+            ))}
+          </div>
+        </details>
+      );
+    })}
+  </>
+);
+
 const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
   <section
     className={
@@ -73,22 +172,31 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
         .map((entry) => (
           <TranscriptMessage key={entry.message.id} entry={entry} />
         ))}
-      {turn.workspaceRead ? (
+      {turn.activities ? (
+        <TurnActivityTimeline
+          activities={turn.activities}
+          turnStatus={turn.status}
+        />
+      ) : null}
+      {!turn.activities && turn.contextCompactions?.map((activity) => (
+        <ContextCompactionActivity key={activity.id} activity={activity} />
+      ))}
+      {!turn.activities && turn.workspaceRead ? (
         <WorkspaceReadActivity activity={turn.workspaceRead} />
       ) : null}
-      {turn.workspaceList ? (
+      {!turn.activities && turn.workspaceList ? (
         <WorkspaceListActivity activity={turn.workspaceList} />
       ) : null}
-      {turn.workspaceSearch ? (
+      {!turn.activities && turn.workspaceSearch ? (
         <WorkspaceSearchActivity activity={turn.workspaceSearch} />
       ) : null}
-      {turn.fileChange ? (
+      {!turn.activities && turn.fileChange ? (
         <FileChangeReview review={turn.fileChange} />
       ) : null}
-      {turn.commandApproval ? (
+      {!turn.activities && turn.commandApproval ? (
         <CommandApprovalActivity activity={turn.commandApproval} />
       ) : null}
-      {turn.mcpActivities ? (
+      {!turn.activities && turn.mcpActivities ? (
         <McpActivityTimeline
           activities={turn.mcpActivities}
           turnStatus={turn.status}

@@ -617,6 +617,34 @@ fn durable_item(item: &DurableItemSnapshot) -> (ItemId, String, String, Option<(
         DurableItemSnapshot::AgentMessage { id, text } => {
             (id.clone(), "Agent".to_string(), text.clone(), None)
         }
+        DurableItemSnapshot::ContextCompaction {
+            id,
+            ordinal,
+            pre_context_bytes,
+            outcome,
+            ..
+        } => {
+            let (label, detail) = match outcome {
+                None => (
+                    "Compacting context…",
+                    format!("pass {ordinal} · {pre_context_bytes} bytes"),
+                ),
+                Some(sugarcode_state::DurableActiveTurnCompactionOutcome::Completed {
+                    post_context_bytes,
+                    ..
+                }) => (
+                    "Context compacted",
+                    format!("{pre_context_bytes} → {post_context_bytes} bytes"),
+                ),
+                Some(sugarcode_state::DurableActiveTurnCompactionOutcome::Failed { kind }) => {
+                    ("Context compaction failed", kind.clone())
+                }
+                Some(sugarcode_state::DurableActiveTurnCompactionOutcome::Interrupted) => {
+                    ("Context compaction interrupted", format!("pass {ordinal}"))
+                }
+            };
+            (id.clone(), label.to_string(), detail, None)
+        }
         DurableItemSnapshot::ToolCall {
             id,
             name,
@@ -688,6 +716,7 @@ fn durable_item_id(item: &DurableItemSnapshot) -> ItemId {
     match item {
         DurableItemSnapshot::UserMessage { id, .. }
         | DurableItemSnapshot::AgentMessage { id, .. }
+        | DurableItemSnapshot::ContextCompaction { id, .. }
         | DurableItemSnapshot::ToolCall { id, .. }
         | DurableItemSnapshot::FileChange { id, .. }
         | DurableItemSnapshot::CommandApprovalRequest { id, .. }
@@ -706,6 +735,33 @@ fn live_item(kind: CoreItemKind) -> (String, String, Option<(String, String)>) {
     match kind {
         CoreItemKind::UserMessage { text } => ("You".to_string(), text, None),
         CoreItemKind::AgentMessage { text } => ("Agent".to_string(), text, None),
+        CoreItemKind::ContextCompaction {
+            ordinal,
+            pre_context_bytes,
+            outcome,
+            ..
+        } => {
+            let (label, detail) = match outcome {
+                None => (
+                    "Compacting context…",
+                    format!("pass {ordinal} · {pre_context_bytes} bytes"),
+                ),
+                Some(sugarcode_protocol::CoreContextCompactionOutcome::Completed {
+                    post_context_bytes,
+                    ..
+                }) => (
+                    "Context compacted",
+                    format!("{pre_context_bytes} → {post_context_bytes} bytes"),
+                ),
+                Some(sugarcode_protocol::CoreContextCompactionOutcome::Failed { kind }) => {
+                    ("Context compaction failed", kind)
+                }
+                Some(sugarcode_protocol::CoreContextCompactionOutcome::Interrupted) => {
+                    ("Context compaction interrupted", format!("pass {ordinal}"))
+                }
+            };
+            (label.to_string(), detail, None)
+        }
         CoreItemKind::ToolCall {
             name,
             path,

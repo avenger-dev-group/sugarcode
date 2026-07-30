@@ -146,7 +146,12 @@ async fn workspace_search_persists_query_and_runs_one_bounded_tool_round() {
             .collect::<Vec<_>>(),
         vec!["workspace/read", "workspace/list", "workspace/search"]
     );
-    assert!(requests[1].tools.is_empty());
+    assert!(
+        requests[1]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "workspace/search")
+    );
     assert!(matches!(
         requests[1].messages.as_slice(),
         [

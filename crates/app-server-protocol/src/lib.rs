@@ -20,6 +20,8 @@ pub use initialize::ServerCapabilities;
 pub use initialize::ServerInfo;
 pub use initialize::WorkspaceBinding;
 pub use item::AgentMessageDeltaNotification;
+pub use item::ContextCompactionOutcome;
+pub use item::ContextCompactionStrategy;
 pub use item::FileChangeKind;
 pub use item::FileChangeNewlineStyle;
 pub use item::Item;

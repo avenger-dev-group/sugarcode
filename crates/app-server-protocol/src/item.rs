@@ -20,6 +20,26 @@ pub enum Item {
         id: String,
         text: String,
     },
+    ContextCompaction {
+        id: String,
+        strategy: ContextCompactionStrategy,
+        ordinal: u64,
+        #[serde(rename = "preContextBytes")]
+        #[ts(rename = "preContextBytes")]
+        pre_context_bytes: u64,
+        #[serde(rename = "sourceMessages")]
+        #[ts(rename = "sourceMessages")]
+        source_messages: u64,
+        #[serde(rename = "sourceBytes")]
+        #[ts(rename = "sourceBytes")]
+        source_bytes: u64,
+        #[serde(rename = "sourceSha256")]
+        #[ts(rename = "sourceSha256")]
+        source_sha256: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        outcome: Option<ContextCompactionOutcome>,
+    },
     ToolCall {
         id: String,
         #[serde(rename = "callId")]
@@ -195,6 +215,34 @@ pub enum Item {
         name: String,
         result: ToolResult,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum ContextCompactionStrategy {
+    ModelGeneratedActiveTurnV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase")]
+pub enum ContextCompactionOutcome {
+    Completed {
+        #[serde(rename = "postContextBytes")]
+        #[ts(rename = "postContextBytes")]
+        post_context_bytes: u64,
+        #[serde(rename = "summaryBytes")]
+        #[ts(rename = "summaryBytes")]
+        summary_bytes: u64,
+        #[serde(rename = "summarySha256")]
+        #[ts(rename = "summarySha256")]
+        summary_sha256: String,
+    },
+    Failed {
+        kind: String,
+    },
+    Interrupted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

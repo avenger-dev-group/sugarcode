@@ -2,8 +2,10 @@ import type { ThreadListResponse } from '@sugarcode/app-server-protocol';
 
 import type {
   ConversationActionResult,
+  ConversationActivity,
   ConversationCommandApprovalDecision,
   ConversationCommandExecutionResultOutcome,
+  ConversationContextCompactionActivity,
   ConversationFileChangeActivity,
   ConversationFileChangeProposal,
   ConversationFileChangeResultOutcome,
@@ -63,6 +65,20 @@ type MutableMessage = {
   text: string;
   status: ConversationMessage['status'];
 };
+
+type MutableContextCompactionActivity = {
+  -readonly [Key in keyof ConversationContextCompactionActivity]:
+    ConversationContextCompactionActivity[Key];
+};
+
+type MutableConversationActivity =
+  | { type: 'contextCompaction'; activity: MutableContextCompactionActivity }
+  | { type: 'workspaceRead'; activity: MutableWorkspaceReadActivity }
+  | { type: 'workspaceList'; activity: MutableWorkspaceListActivity }
+  | { type: 'workspaceSearch'; activity: MutableWorkspaceSearchActivity }
+  | { type: 'fileChange'; activity: MutableFileChangeActivity }
+  | { type: 'commandApproval'; activity: MutableCommandApprovalActivity }
+  | { type: 'mcp'; activity: MutableMcpActivity };
 
 type MutableWorkspaceReadActivity = {
   id: string;
@@ -191,6 +207,8 @@ type MutableTurn = {
   id: string;
   status: ConversationTurnStatus;
   messages: MutableMessage[];
+  activities: MutableConversationActivity[];
+  contextCompactions?: MutableContextCompactionActivity[];
   workspaceRead?: MutableWorkspaceReadActivity;
   workspaceList?: MutableWorkspaceListActivity;
   workspaceSearch?: MutableWorkspaceSearchActivity;
@@ -751,6 +769,7 @@ export class ConversationController {
         id: response.turn.id,
         status: 'inProgress',
         messages: [],
+        activities: [],
       };
       this.turns.push(turn);
       this.activeTurnId = turn.id;
@@ -908,25 +927,44 @@ export class ConversationController {
             text: lifecycle.params.item.text,
             status: 'inProgress',
           });
+        } else if (lifecycle.params.item.type === 'contextCompaction') {
+          const item = lifecycle.params.item;
+          turn.contextCompactions ??= [];
+          if (
+            item.outcome ||
+            turn.contextCompactions.some(
+              (activity) => activity.ordinal === item.ordinal,
+            )
+          ) {
+            throw new Error('Invalid started context compaction.');
+          }
+          const activity: MutableContextCompactionActivity = {
+            id: item.id,
+            strategy: item.strategy,
+            ordinal: item.ordinal,
+            preContextBytes: item.preContextBytes,
+            sourceMessages: item.sourceMessages,
+            sourceBytes: item.sourceBytes,
+            sourceSha256: item.sourceSha256,
+            status: 'inProgress',
+          };
+          turn.contextCompactions.push(activity);
+          turn.activities.push({ type: 'contextCompaction', activity });
         } else if (lifecycle.params.item.type === 'workspaceReadCall') {
           if (
-            turn.workspaceRead ||
-            turn.workspaceList ||
-            turn.workspaceSearch ||
-            turn.fileChange ||
-            turn.pendingCommandCall ||
-            turn.commandApproval ||
-            turn.pendingMcpCall ||
-            turn.mcpActivities?.length
+            turn.workspaceRead &&
+            !turn.workspaceRead.result
           ) {
             throw new Error('Duplicate workspace/read activity.');
           }
-          turn.workspaceRead = {
+          const activity: MutableWorkspaceReadActivity = {
             id: lifecycle.params.item.id,
             callId: lifecycle.params.item.callId,
             path: lifecycle.params.item.path,
             callStatus: 'inProgress',
           };
+          turn.workspaceRead = activity;
+          turn.activities.push({ type: 'workspaceRead', activity });
         } else if (
           lifecycle.params.item.type === 'workspaceReadResult'
         ) {
@@ -947,23 +985,19 @@ export class ConversationController {
           };
         } else if (lifecycle.params.item.type === 'workspaceListCall') {
           if (
-            turn.workspaceList ||
-            turn.workspaceRead ||
-            turn.workspaceSearch ||
-            turn.fileChange ||
-            turn.pendingCommandCall ||
-            turn.commandApproval ||
-            turn.pendingMcpCall ||
-            turn.mcpActivities?.length
+            turn.workspaceList &&
+            !turn.workspaceList.result
           ) {
             throw new Error('Duplicate workspace/list activity.');
           }
-          turn.workspaceList = {
+          const activity: MutableWorkspaceListActivity = {
             id: lifecycle.params.item.id,
             callId: lifecycle.params.item.callId,
             path: lifecycle.params.item.path,
             callStatus: 'inProgress',
           };
+          turn.workspaceList = activity;
+          turn.activities.push({ type: 'workspaceList', activity });
         } else if (lifecycle.params.item.type === 'workspaceListResult') {
           const workspaceList = this.requireWorkspaceList(
             turn,
@@ -982,24 +1016,20 @@ export class ConversationController {
           };
         } else if (lifecycle.params.item.type === 'workspaceSearchCall') {
           if (
-            turn.workspaceSearch ||
-            turn.workspaceRead ||
-            turn.workspaceList ||
-            turn.fileChange ||
-            turn.pendingCommandCall ||
-            turn.commandApproval ||
-            turn.pendingMcpCall ||
-            turn.mcpActivities?.length
+            turn.workspaceSearch &&
+            !turn.workspaceSearch.result
           ) {
             throw new Error('Duplicate workspace/search activity.');
           }
-          turn.workspaceSearch = {
+          const activity: MutableWorkspaceSearchActivity = {
             id: lifecycle.params.item.id,
             callId: lifecycle.params.item.callId,
             path: lifecycle.params.item.path,
             query: lifecycle.params.item.query,
             callStatus: 'inProgress',
           };
+          turn.workspaceSearch = activity;
+          turn.activities.push({ type: 'workspaceSearch', activity });
         } else if (lifecycle.params.item.type === 'workspaceSearchResult') {
           const workspaceSearch = this.requireWorkspaceSearch(
             turn,
@@ -1018,23 +1048,19 @@ export class ConversationController {
           };
         } else if (lifecycle.params.item.type === 'workspacePatchCall') {
           if (
-            turn.workspaceRead ||
-            turn.workspaceList ||
-            turn.workspaceSearch ||
-            turn.fileChange ||
-            turn.pendingCommandCall ||
-            turn.commandApproval ||
-            turn.pendingMcpCall ||
-            turn.mcpActivities?.length
+            turn.fileChange &&
+            !turn.fileChange.result
           ) {
             throw new Error('Duplicate workspace/apply-patch activity.');
           }
-          turn.fileChange = {
+          const activity: MutableFileChangeActivity = {
             id: lifecycle.params.item.id,
             callId: lifecycle.params.item.callId,
             path: lifecycle.params.item.path,
             callStatus: 'inProgress',
           };
+          turn.fileChange = activity;
+          turn.activities.push({ type: 'fileChange', activity });
         } else if (lifecycle.params.item.type === 'workspacePatchChange') {
           const activity = this.requireFileChange(
             turn,
@@ -1073,12 +1099,6 @@ export class ConversationController {
           };
         } else if (lifecycle.params.item.type === 'mcpCall') {
           if (
-            turn.workspaceRead ||
-            turn.workspaceList ||
-            turn.workspaceSearch ||
-            turn.fileChange ||
-            turn.pendingCommandCall ||
-            turn.commandApproval ||
             turn.pendingMcpCall ||
             (turn.mcpActivities?.length ?? 0) >= 4 ||
             turn.mcpActivities?.some((activity) => !activity.result)
@@ -1129,6 +1149,7 @@ export class ConversationController {
           };
           turn.mcpActivities ??= [];
           turn.mcpActivities.push(activity);
+          turn.activities.push({ type: 'mcp', activity });
           turn.pendingMcpCall = undefined;
         } else if (lifecycle.params.item.type === 'mcpApprovalDecision') {
           const activity = this.requireMcpActivityByApproval(
@@ -1185,14 +1206,8 @@ export class ConversationController {
           };
         } else if (lifecycle.params.item.type === 'commandCall') {
           if (
-            turn.workspaceRead ||
-            turn.workspaceList ||
-            turn.workspaceSearch ||
-            turn.fileChange ||
             turn.pendingCommandCall ||
-            turn.commandApproval ||
-            turn.pendingMcpCall ||
-            turn.mcpActivities?.length
+            turn.pendingMcpCall
           ) {
             throw new Error('Duplicate command approval activity.');
           }
@@ -1217,7 +1232,7 @@ export class ConversationController {
           ) {
             throw new Error('Command approval request did not match its call.');
           }
-          turn.commandApproval = {
+          const activity: MutableCommandApprovalActivity = {
             callItemId: call.id,
             id: lifecycle.params.item.id,
             callId: call.callId,
@@ -1227,6 +1242,8 @@ export class ConversationController {
             requestStatus: 'inProgress',
             argumentSignature: JSON.stringify(call.arguments),
           };
+          turn.commandApproval = activity;
+          turn.activities.push({ type: 'commandApproval', activity });
           turn.pendingCommandCall = undefined;
         } else if (
           lifecycle.params.item.type === 'commandApprovalDecision'
@@ -1344,6 +1361,27 @@ export class ConversationController {
           }
           message.text = lifecycle.params.item.text;
           message.status = 'completed';
+        } else if (lifecycle.params.item.type === 'contextCompaction') {
+          const activity = turn.contextCompactions?.find(
+            (candidate) => candidate.id === lifecycle.params.item.id,
+          );
+          if (
+            !activity ||
+            activity.status !== 'inProgress' ||
+            !lifecycle.params.item.outcome ||
+            activity.ordinal !== lifecycle.params.item.ordinal ||
+            activity.preContextBytes !==
+              lifecycle.params.item.preContextBytes ||
+            activity.sourceMessages !== lifecycle.params.item.sourceMessages ||
+            activity.sourceBytes !== lifecycle.params.item.sourceBytes ||
+            activity.sourceSha256 !== lifecycle.params.item.sourceSha256
+          ) {
+            throw new Error(
+              'Completed context compaction did not match its started Item.',
+            );
+          }
+          activity.status = 'completed';
+          activity.outcome = lifecycle.params.item.outcome;
         } else if (lifecycle.params.item.type === 'workspaceReadCall') {
           const workspaceRead = this.requireWorkspaceRead(
             turn,
@@ -1726,6 +1764,16 @@ export class ConversationController {
           throw new Error('Turn completed before all text Items completed.');
         }
         if (
+          turn.contextCompactions?.some(
+            (activity) =>
+              activity.status !== 'completed' || !activity.outcome,
+          )
+        ) {
+          throw new Error(
+            'Turn completed before context compaction activity completed.',
+          );
+        }
+        if (
           turn.workspaceRead &&
           (turn.workspaceRead.callStatus !== 'completed' ||
             (lifecycle.params.turn.status !== 'interrupted' &&
@@ -1941,6 +1989,7 @@ export class ConversationController {
   private hasItemId = (turn: MutableTurn, itemId: string): boolean =>
     Boolean(
       turn.messages.some((message) => message.id === itemId) ||
+        turn.contextCompactions?.some((activity) => activity.id === itemId) ||
         turn.workspaceRead?.id === itemId ||
         turn.workspaceRead?.result?.id === itemId ||
         turn.workspaceList?.id === itemId ||
@@ -2118,6 +2167,17 @@ export class ConversationController {
       id: turn.id,
       status: turn.status,
       messages: turn.messages.map((message) => ({ ...message })),
+      activities: (turn.activities ?? []).map(toMutableConversationActivity),
+      ...(turn.contextCompactions
+        ? {
+            contextCompactions: turn.contextCompactions.map((activity) => ({
+              ...activity,
+              ...(activity.outcome
+                ? { outcome: { ...activity.outcome } }
+                : {}),
+            })),
+          }
+        : {}),
       ...(turn.workspaceRead
         ? {
             workspaceRead: {
@@ -2234,6 +2294,26 @@ export class ConversationController {
         id: turn.id,
         status: turn.status,
         messages: turn.messages.map((message) => ({ ...message })),
+        ...(turn.activities.length > 0
+          ? {
+              activities: turn.activities.map(
+                (activity): ConversationActivity =>
+                  toConversationActivity(activity),
+              ),
+            }
+          : {}),
+        ...(turn.contextCompactions
+          ? {
+              contextCompactions: turn.contextCompactions.map(
+                (activity): ConversationContextCompactionActivity => ({
+                  ...activity,
+                  ...(activity.outcome
+                    ? { outcome: { ...activity.outcome } }
+                    : {}),
+                }),
+              ),
+            }
+          : {}),
         ...(turn.workspaceRead
           ? {
               workspaceRead: {
@@ -2434,6 +2514,176 @@ const cloneFileChangeActivity = (
       }
     : {}),
 });
+
+const toConversationActivity = (
+  entry: MutableConversationActivity,
+): ConversationActivity => {
+  switch (entry.type) {
+    case 'contextCompaction':
+      return {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          ...(entry.activity.outcome
+            ? { outcome: { ...entry.activity.outcome } }
+            : {}),
+        },
+      };
+    case 'workspaceRead':
+    case 'workspaceList':
+    case 'workspaceSearch':
+      return {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          ...(entry.activity.result
+            ? {
+                result: {
+                  ...entry.activity.result,
+                  outcome: { ...entry.activity.result.outcome },
+                },
+              }
+            : {}),
+        },
+      } as ConversationActivity;
+    case 'fileChange':
+      return {
+        type: entry.type,
+        activity: cloneFileChangeActivity(entry.activity),
+      };
+    case 'commandApproval': {
+      const { argumentSignature, ...activity } = entry.activity;
+      void argumentSignature;
+      return {
+        type: entry.type,
+        activity: {
+          ...activity,
+          ...(activity.decision
+            ? { decision: { ...activity.decision } }
+            : {}),
+          ...(activity.executionAttempt
+            ? { executionAttempt: { ...activity.executionAttempt } }
+            : {}),
+          ...(activity.executionResult
+            ? {
+                executionResult: {
+                  ...activity.executionResult,
+                  outcome: { ...activity.executionResult.outcome },
+                },
+              }
+            : {}),
+        },
+      };
+    }
+    case 'mcp': {
+      const { argumentSignature, ...activity } = entry.activity;
+      void argumentSignature;
+      return {
+        type: entry.type,
+        activity: {
+          ...activity,
+          ...(activity.decision
+            ? { decision: { ...activity.decision } }
+            : {}),
+          ...(activity.executionAttempt
+            ? { executionAttempt: { ...activity.executionAttempt } }
+            : {}),
+          ...(activity.result
+            ? {
+                result: {
+                  ...activity.result,
+                  receipt: { ...activity.result.receipt },
+                },
+              }
+            : {}),
+        },
+      };
+    }
+  }
+};
+
+const toMutableConversationActivity = (
+  entry: ConversationActivity,
+): MutableConversationActivity => {
+  switch (entry.type) {
+    case 'contextCompaction':
+      return {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          ...(entry.activity.outcome
+            ? { outcome: { ...entry.activity.outcome } }
+            : {}),
+        },
+      };
+    case 'workspaceRead':
+      return {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          ...(entry.activity.result
+            ? {
+                result: {
+                  ...entry.activity.result,
+                  outcome: { ...entry.activity.result.outcome },
+                },
+              }
+            : {}),
+        },
+      };
+    case 'workspaceList':
+      return {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          ...(entry.activity.result
+            ? {
+                result: {
+                  ...entry.activity.result,
+                  outcome: { ...entry.activity.result.outcome },
+                },
+              }
+            : {}),
+        },
+      };
+    case 'workspaceSearch':
+      return {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          ...(entry.activity.result
+            ? {
+                result: {
+                  ...entry.activity.result,
+                  outcome: { ...entry.activity.result.outcome },
+                },
+              }
+            : {}),
+        },
+      };
+    case 'fileChange':
+      return {
+        type: entry.type,
+        activity: cloneFileChangeActivity(entry.activity) as MutableFileChangeActivity,
+      };
+    case 'commandApproval':
+      return {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          argumentSignature: '',
+        },
+      };
+    case 'mcp':
+      return {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          argumentSignature: '',
+        },
+      };
+  }
+};
 
 const outcomesEqual = (
   left: ConversationWorkspaceReadOutcome,

@@ -10,6 +10,29 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             id: item.id.clone(),
             text: text.clone(),
         },
+        CoreItemKind::ContextCompaction {
+            strategy,
+            ordinal,
+            pre_context_bytes,
+            source_messages,
+            source_bytes,
+            source_sha256,
+            outcome,
+        } => DurableItemSnapshot::ContextCompaction {
+            id: item.id.clone(),
+            strategy: match strategy {
+                sugarcode_protocol::CoreContextCompactionStrategy::ModelGeneratedActiveTurnV1 => {
+                    "modelGeneratedActiveTurnV1".to_string()
+                }
+            },
+            ordinal: *ordinal,
+            pre_context_bytes: *pre_context_bytes,
+            source_messages: *source_messages,
+            source_bytes: *source_bytes,
+            source_sha256: source_sha256.clone(),
+            outcome: outcome.as_ref().map(durable_context_compaction_outcome),
+            summary: None,
+        },
         CoreItemKind::ToolCall {
             call_id,
             name,
@@ -181,6 +204,24 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
     let kind = match &snapshot.kind {
         CoreItemKind::UserMessage { text } => ItemKind::UserMessage { text: text.clone() },
         CoreItemKind::AgentMessage { text } => ItemKind::AgentMessage { text: text.clone() },
+        CoreItemKind::ContextCompaction {
+            strategy,
+            ordinal,
+            pre_context_bytes,
+            source_messages,
+            source_bytes,
+            source_sha256,
+            outcome,
+        } => ItemKind::ContextCompaction {
+            strategy: *strategy,
+            ordinal: *ordinal,
+            pre_context_bytes: *pre_context_bytes,
+            source_messages: *source_messages,
+            source_bytes: *source_bytes,
+            source_sha256: source_sha256.clone(),
+            outcome: outcome.clone(),
+            summary: None,
+        },
         CoreItemKind::ToolCall {
             call_id,
             name,
@@ -333,6 +374,28 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
         id: snapshot.id.clone(),
         state,
         kind,
+    }
+}
+
+fn durable_context_compaction_outcome(
+    outcome: &sugarcode_protocol::CoreContextCompactionOutcome,
+) -> sugarcode_state::DurableActiveTurnCompactionOutcome {
+    match outcome {
+        sugarcode_protocol::CoreContextCompactionOutcome::Completed {
+            post_context_bytes,
+            summary_bytes,
+            summary_sha256,
+        } => sugarcode_state::DurableActiveTurnCompactionOutcome::Completed {
+            post_context_bytes: *post_context_bytes,
+            summary_bytes: *summary_bytes,
+            summary_sha256: summary_sha256.clone(),
+        },
+        sugarcode_protocol::CoreContextCompactionOutcome::Failed { kind } => {
+            sugarcode_state::DurableActiveTurnCompactionOutcome::Failed { kind: kind.clone() }
+        }
+        sugarcode_protocol::CoreContextCompactionOutcome::Interrupted => {
+            sugarcode_state::DurableActiveTurnCompactionOutcome::Interrupted
+        }
     }
 }
 
@@ -556,11 +619,7 @@ pub(super) fn durable_thread_snapshot(thread: &Thread) -> DurableThreadSnapshot 
                     TurnState::Completed => DurableTurnStatus::Completed,
                     TurnState::Failed => DurableTurnStatus::Failed,
                 },
-                items: turn
-                    .items
-                    .values()
-                    .map(|item| durable_item_snapshot(&item.snapshot()))
-                    .collect(),
+                items: turn.items.values().map(durable_item_from_item).collect(),
                 context_compaction: turn.context_compaction.clone(),
                 workspace_instructions: turn.workspace_instructions.clone(),
                 workspace_skills: turn.workspace_skills.clone(),

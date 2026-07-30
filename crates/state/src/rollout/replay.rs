@@ -14,6 +14,7 @@ use super::format::DecodedRecord;
 use super::format::decode_record;
 use super::format::empty_thread;
 use super::format::encode_turn_completed;
+use super::format::encode_turn_item_completed;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
@@ -257,13 +258,11 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     if let Err(kind) = super::valid_incremental_item(pending_items, &item) {
                         return Err(corrupt(&path, offset as u64, kind));
                     }
-                    if matches!(item, super::DurableItemSnapshot::UserMessage { .. })
-                        || matches!(
-                            item,
-                            super::DurableItemSnapshot::AgentMessage { ref text, .. }
-                                if !text.is_empty()
-                        )
-                    {
+                    if matches!(
+                        item,
+                        super::DurableItemSnapshot::AgentMessage { ref text, .. }
+                            if !text.is_empty()
+                    ) {
                         return Err(corrupt(&path, offset as u64, "invalidIncrementalItem"));
                     }
                     let item_sequence = parse_canonical_id(item.id().as_str(), "item_", "item")
@@ -278,6 +277,42 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                         .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))?
                         .items
                         .push(item);
+                }
+                DecodedRecord::TurnItemCompleted {
+                    thread_id,
+                    turn_id,
+                    item,
+                    sequence: _,
+                } => {
+                    let thread = snapshot
+                        .as_mut()
+                        .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
+                    if thread_id != expected_thread_id {
+                        return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
+                    }
+                    if pending_turn_id.as_ref() != Some(&turn_id) {
+                        return Err(corrupt(
+                            &path,
+                            offset as u64,
+                            "turnItemCompletedWhileInactive",
+                        ));
+                    }
+                    let stored = thread
+                        .turns
+                        .last_mut()
+                        .and_then(|turn| {
+                            turn.items
+                                .iter_mut()
+                                .find(|stored| stored.id() == item.id())
+                        })
+                        .ok_or_else(|| corrupt(&path, offset as u64, "itemNotStarted"))?;
+                    if !terminal_items_match(
+                        std::slice::from_ref(stored),
+                        std::slice::from_ref(&item),
+                    ) {
+                        return Err(corrupt(&path, offset as u64, "turnItemMismatch"));
+                    }
+                    *stored = item;
                 }
                 DecodedRecord::TurnCompleted {
                     thread_id,
@@ -304,14 +339,16 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                             .turns
                             .last_mut()
                             .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))?;
-                        if pending.workspace_instructions != turn.workspace_instructions
-                            || pending.workspace_skills != turn.workspace_skills
-                            || pending.context_compaction != turn.context_compaction
-                            || !terminal_items_match(&pending.items, &turn.items)
+                        if !turn.items.is_empty()
+                            || turn.workspace_instructions.is_some()
+                            || turn.workspace_skills.is_some()
+                            || turn.context_compaction.is_some()
                         {
                             return Err(corrupt(&path, offset as u64, "turnItemMismatch"));
                         }
-                        *pending = turn;
+                        pending.status = turn.status;
+                        pending.error = turn.error;
+                        pending.usage = turn.usage;
                         *turn_record_sequences
                             .last_mut()
                             .ok_or_else(|| corrupt(&path, offset as u64, "missingStartedTurn"))? =
@@ -435,7 +472,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
             offset = end + 1;
         }
 
-        let snapshot = snapshot.ok_or_else(|| corrupt(&path, 0, "missingThreadCreated"))?;
+        let mut snapshot = snapshot.ok_or_else(|| corrupt(&path, 0, "missingThreadCreated"))?;
         if let Some(verified_len) = truncated_tail_offset {
             let file = fs::OpenOptions::new()
                 .write(true)
@@ -451,28 +488,76 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
             });
         }
         let recovery_bytes = if pending_turn_id.is_some() {
+            let mut interrupted_compactions = Vec::new();
+            if let Some(turn) = snapshot.turns.last_mut() {
+                for item in &mut turn.items {
+                    if let super::DurableItemSnapshot::ContextCompaction {
+                        outcome, summary, ..
+                    } = item
+                        && outcome.is_none()
+                    {
+                        *outcome = Some(super::DurableActiveTurnCompactionOutcome::Interrupted);
+                        *summary = None;
+                        interrupted_compactions.push(item.clone());
+                    }
+                }
+            }
             let interrupted = snapshot
                 .turns
                 .last()
                 .ok_or_else(|| corrupt(&path, 0, "missingStartedTurn"))?;
-            let encoded = encode_turn_completed(expected_sequence, &snapshot.id, interrupted)?;
-            if encoded.len() > MAX_ROLLOUT_RECORD_BYTES {
-                return Err(RolloutError::LimitExceeded {
-                    path,
-                    kind: "rolloutRecordBytes",
-                });
+            let mut recovery_records = Vec::with_capacity(interrupted_compactions.len() + 1);
+            for item in interrupted_compactions {
+                recovery_records.push(encode_turn_item_completed(
+                    expected_sequence,
+                    &snapshot.id,
+                    &interrupted.id,
+                    &item,
+                )?);
+                expected_sequence = expected_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| corrupt(&path, 0, "invalidSequence"))?;
             }
-            let added_bytes =
-                u64::try_from(encoded.len() + 1).map_err(|_| RolloutError::LimitExceeded {
-                    path: path.clone(),
-                    kind: "rolloutFileBytes",
-                })?;
+            let terminal_sequence = expected_sequence;
+            recovery_records.push(encode_turn_completed(
+                terminal_sequence,
+                &snapshot.id,
+                interrupted,
+            )?);
+            expected_sequence = expected_sequence
+                .checked_add(1)
+                .ok_or_else(|| corrupt(&path, 0, "invalidSequence"))?;
+            let mut added_bytes = 0u64;
+            for encoded in &recovery_records {
+                if encoded.len() > MAX_ROLLOUT_RECORD_BYTES {
+                    return Err(RolloutError::LimitExceeded {
+                        path,
+                        kind: "rolloutRecordBytes",
+                    });
+                }
+                added_bytes = added_bytes
+                    .checked_add(u64::try_from(encoded.len() + 1).map_err(|_| {
+                        RolloutError::LimitExceeded {
+                            path: path.clone(),
+                            kind: "rolloutFileBytes",
+                        }
+                    })?)
+                    .ok_or_else(|| RolloutError::LimitExceeded {
+                        path: path.clone(),
+                        kind: "rolloutFileBytes",
+                    })?;
+            }
+            let added_records = recovery_records.len();
             let retained_file_bytes = u64::try_from(bytes.len())
                 .ok()
                 .and_then(|length| length.checked_add(added_bytes));
             if retained_file_bytes.is_none_or(|length| length > MAX_ROLLOUT_FILE_BYTES)
-                || record_count >= MAX_ROLLOUT_RECORDS_PER_FILE
-                || total_records >= MAX_TOTAL_REPLAY_RECORDS
+                || record_count
+                    .checked_add(added_records)
+                    .is_none_or(|count| count > MAX_ROLLOUT_RECORDS_PER_FILE)
+                || total_records
+                    .checked_add(added_records)
+                    .is_none_or(|count| count > MAX_TOTAL_REPLAY_RECORDS)
             {
                 return Err(RolloutError::LimitExceeded {
                     path: path.clone(),
@@ -483,18 +568,18 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                 .append(true)
                 .open(&path)
                 .map_err(|error| unavailable(&path, error))?;
-            file.write_all(&encoded)
-                .and_then(|()| file.write_all(b"\n"))
-                .and_then(|()| file.flush())
+            for encoded in recovery_records {
+                file.write_all(&encoded)
+                    .and_then(|()| file.write_all(b"\n"))
+                    .map_err(|error| unavailable(&path, error))?;
+            }
+            file.flush()
                 .and_then(|()| file.sync_all())
                 .map_err(|error| unavailable(&path, error))?;
             *turn_record_sequences
                 .last_mut()
-                .ok_or_else(|| corrupt(&path, 0, "missingStartedTurn"))? = expected_sequence;
-            expected_sequence = expected_sequence
-                .checked_add(1)
-                .ok_or_else(|| corrupt(&path, 0, "invalidSequence"))?;
-            total_records += 1;
+                .ok_or_else(|| corrupt(&path, 0, "missingStartedTurn"))? = terminal_sequence;
+            total_records += added_records;
             diagnostics.push(RolloutDiagnostic {
                 path: path.clone(),
                 offset: bytes.len() as u64,
@@ -564,6 +649,12 @@ fn terminal_items_match(
                     },
                 ) => started_id == terminal_id,
                 (
+                    super::DurableItemSnapshot::ContextCompaction { id: started_id, .. },
+                    super::DurableItemSnapshot::ContextCompaction {
+                        id: terminal_id, ..
+                    },
+                ) => started_id == terminal_id,
+                (
                     super::DurableItemSnapshot::ToolCall { .. },
                     super::DurableItemSnapshot::ToolCall { .. },
                 )
@@ -628,13 +719,14 @@ fn validate_terminal_turn(
     path: &Path,
     offset: u64,
 ) -> Result<(), RolloutError> {
-    let valid = super::valid_turn_items(&turn.items)
-        && super::valid_workspace_instructions_audit(turn.workspace_instructions.as_ref())
-        && super::valid_workspace_skills_audit(turn.workspace_skills.as_ref())
+    let valid = turn.items.is_empty()
+        && turn.context_compaction.is_none()
+        && turn.workspace_instructions.is_none()
+        && turn.workspace_skills.is_none()
         && match turn.status {
             super::DurableTurnStatus::InProgress => false,
-            super::DurableTurnStatus::Completed => !turn.items.is_empty() && turn.error.is_none(),
-            super::DurableTurnStatus::Failed => !turn.items.is_empty() && turn.error.is_some(),
+            super::DurableTurnStatus::Completed => turn.error.is_none(),
+            super::DurableTurnStatus::Failed => turn.error.is_some(),
             super::DurableTurnStatus::Interrupted => turn.error.is_none(),
         };
     if valid {

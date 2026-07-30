@@ -171,6 +171,19 @@ pub(super) enum StoredItemRef<'a> {
         id: &'a str,
         text: &'a str,
     },
+    ContextCompaction {
+        id: &'a str,
+        strategy: &'a str,
+        ordinal: u64,
+        pre_context_bytes: u64,
+        source_messages: u64,
+        source_bytes: u64,
+        source_sha256: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        outcome: Option<StoredActiveTurnCompactionOutcomeRef<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        summary: Option<&'a str>,
+    },
     ToolCall {
         id: &'a str,
         call_id: &'a str,
@@ -274,6 +287,20 @@ pub(super) enum StoredItemRef<'a> {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
+pub(super) enum StoredActiveTurnCompactionOutcomeRef<'a> {
+    Completed {
+        post_context_bytes: u64,
+        summary_bytes: u64,
+        summary_sha256: &'a str,
+    },
+    Failed {
+        kind: &'a str,
+    },
+    Interrupted,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub(super) enum StoredMcpToolResultRef<'a> {
     Completed {
         content: &'a str,
@@ -339,6 +366,43 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
             DurableItemSnapshot::AgentMessage { id, text } => Self::AgentMessage {
                 id: id.as_str(),
                 text,
+            },
+            DurableItemSnapshot::ContextCompaction {
+                id,
+                strategy,
+                ordinal,
+                pre_context_bytes,
+                source_messages,
+                source_bytes,
+                source_sha256,
+                outcome,
+                summary,
+            } => Self::ContextCompaction {
+                id: id.as_str(),
+                strategy,
+                ordinal: *ordinal,
+                pre_context_bytes: *pre_context_bytes,
+                source_messages: *source_messages,
+                source_bytes: *source_bytes,
+                source_sha256,
+                outcome: outcome.as_ref().map(|outcome| match outcome {
+                    super::DurableActiveTurnCompactionOutcome::Completed {
+                        post_context_bytes,
+                        summary_bytes,
+                        summary_sha256,
+                    } => StoredActiveTurnCompactionOutcomeRef::Completed {
+                        post_context_bytes: *post_context_bytes,
+                        summary_bytes: *summary_bytes,
+                        summary_sha256,
+                    },
+                    super::DurableActiveTurnCompactionOutcome::Failed { kind } => {
+                        StoredActiveTurnCompactionOutcomeRef::Failed { kind }
+                    }
+                    super::DurableActiveTurnCompactionOutcome::Interrupted => {
+                        StoredActiveTurnCompactionOutcomeRef::Interrupted
+                    }
+                }),
+                summary: summary.as_deref(),
             },
             DurableItemSnapshot::ToolCall {
                 id,
@@ -749,6 +813,18 @@ struct StoredTurnItemAdded {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredTurnItemCompleted {
+    schema_version: u32,
+    sequence: u64,
+    #[serde(rename = "type")]
+    record_type: TurnItemCompletedType,
+    thread_id: String,
+    turn_id: String,
+    item: StoredItem,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredThreadArchived {
     schema_version: u32,
     sequence: u64,
@@ -791,8 +867,14 @@ enum TurnStartedType {
 
 #[derive(Debug, Deserialize)]
 enum TurnItemAddedType {
-    #[serde(rename = "turnItemAdded")]
+    #[serde(rename = "turnItemStarted")]
     TurnItemAdded,
+}
+
+#[derive(Debug, Deserialize)]
+enum TurnItemCompletedType {
+    #[serde(rename = "turnItemCompleted")]
+    TurnItemCompleted,
 }
 
 #[derive(Debug, Deserialize)]
@@ -927,6 +1009,19 @@ enum StoredItem {
         id: String,
         text: String,
     },
+    ContextCompaction {
+        id: String,
+        strategy: String,
+        ordinal: u64,
+        pre_context_bytes: u64,
+        source_messages: u64,
+        source_bytes: u64,
+        source_sha256: String,
+        #[serde(default)]
+        outcome: Option<StoredActiveTurnCompactionOutcome>,
+        #[serde(default)]
+        summary: Option<String>,
+    },
     ToolCall {
         id: String,
         call_id: String,
@@ -1026,6 +1121,20 @@ enum StoredItem {
         name: String,
         result: StoredToolResult,
     },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+enum StoredActiveTurnCompactionOutcome {
+    Completed {
+        post_context_bytes: u64,
+        summary_bytes: u64,
+        summary_sha256: String,
+    },
+    Failed {
+        kind: String,
+    },
+    Interrupted,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1142,6 +1251,12 @@ pub(super) enum DecodedRecord {
         turn_id: TurnId,
         item: DurableItemSnapshot,
     },
+    TurnItemCompleted {
+        sequence: u64,
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        item: DurableItemSnapshot,
+    },
     TurnCompleted {
         sequence: u64,
         thread_id: ThreadId,
@@ -1167,6 +1282,7 @@ impl DecodedRecord {
             Self::ThreadCreated { sequence, .. }
             | Self::TurnStarted { sequence, .. }
             | Self::TurnItemAdded { sequence, .. }
+            | Self::TurnItemCompleted { sequence, .. }
             | Self::TurnCompleted { sequence, .. }
             | Self::ThreadArchived { sequence, .. }
             | Self::ThreadUnarchived { sequence, .. }
@@ -1220,7 +1336,8 @@ pub(super) fn decode_record(
         record_type,
         "threadCreated"
             | "turnStarted"
-            | "turnItemAdded"
+            | "turnItemStarted"
+            | "turnItemCompleted"
             | "turnCompleted"
             | "threadArchived"
             | "threadUnarchived"
@@ -1359,7 +1476,7 @@ pub(super) fn decode_record(
                 },
             })
         }
-        "turnItemAdded" => {
+        "turnItemStarted" => {
             let record = serde_json::from_value::<StoredTurnItemAdded>(value).map_err(|_| {
                 RolloutError::Corrupt(RolloutDiagnostic {
                     path: path.to_path_buf(),
@@ -1377,6 +1494,31 @@ pub(super) fn decode_record(
             } = record;
             debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
             Ok(DecodedRecord::TurnItemAdded {
+                sequence,
+                thread_id: ThreadId::new(thread_id),
+                turn_id: TurnId::new(turn_id),
+                item: decode_item(item),
+            })
+        }
+        "turnItemCompleted" => {
+            let record =
+                serde_json::from_value::<StoredTurnItemCompleted>(value).map_err(|_| {
+                    RolloutError::Corrupt(RolloutDiagnostic {
+                        path: path.to_path_buf(),
+                        offset,
+                        kind: "invalidRecordShape",
+                    })
+                })?;
+            let StoredTurnItemCompleted {
+                schema_version,
+                sequence,
+                thread_id,
+                turn_id,
+                item,
+                record_type: TurnItemCompletedType::TurnItemCompleted,
+            } = record;
+            debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
+            Ok(DecodedRecord::TurnItemCompleted {
                 sequence,
                 thread_id: ThreadId::new(thread_id),
                 turn_id: TurnId::new(turn_id),
@@ -1460,6 +1602,43 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
         StoredItem::AgentMessage { id, text } => DurableItemSnapshot::AgentMessage {
             id: ItemId::new(id),
             text,
+        },
+        StoredItem::ContextCompaction {
+            id,
+            strategy,
+            ordinal,
+            pre_context_bytes,
+            source_messages,
+            source_bytes,
+            source_sha256,
+            outcome,
+            summary,
+        } => DurableItemSnapshot::ContextCompaction {
+            id: ItemId::new(id),
+            strategy,
+            ordinal,
+            pre_context_bytes,
+            source_messages,
+            source_bytes,
+            source_sha256,
+            outcome: outcome.map(|outcome| match outcome {
+                StoredActiveTurnCompactionOutcome::Completed {
+                    post_context_bytes,
+                    summary_bytes,
+                    summary_sha256,
+                } => super::DurableActiveTurnCompactionOutcome::Completed {
+                    post_context_bytes,
+                    summary_bytes,
+                    summary_sha256,
+                },
+                StoredActiveTurnCompactionOutcome::Failed { kind } => {
+                    super::DurableActiveTurnCompactionOutcome::Failed { kind }
+                }
+                StoredActiveTurnCompactionOutcome::Interrupted => {
+                    super::DurableActiveTurnCompactionOutcome::Interrupted
+                }
+            }),
+            summary: summary.map(Into::into),
         },
         StoredItem::ToolCall {
             id,
@@ -1822,6 +2001,7 @@ pub(super) fn encode_turn_started(
     stored.status = "inProgress";
     stored.error = None;
     stored.usage = None;
+    stored.items.clear();
     serde_json::to_vec(&TurnStartedRecord {
         schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
         sequence,
@@ -1837,12 +2017,17 @@ pub(super) fn encode_turn_completed(
     thread_id: &ThreadId,
     turn: &DurableTurnSnapshot,
 ) -> Result<Vec<u8>, RolloutError> {
+    let mut stored = StoredTurnRef::from(turn);
+    stored.items.clear();
+    stored.context_compaction = None;
+    stored.workspace_instructions = None;
+    stored.workspace_skills = None;
     serde_json::to_vec(&TurnCompletedRecord {
         schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
         sequence,
         record_type: "turnCompleted",
         thread_id: thread_id.as_str(),
-        turn: turn.into(),
+        turn: stored,
     })
     .map_err(|_| RolloutError::Poisoned)
 }
@@ -1856,7 +2041,24 @@ pub(super) fn encode_turn_item_added(
     serde_json::to_vec(&TurnItemAddedRecord {
         schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
         sequence,
-        record_type: "turnItemAdded",
+        record_type: "turnItemStarted",
+        thread_id: thread_id.as_str(),
+        turn_id: turn_id.as_str(),
+        item: item.into(),
+    })
+    .map_err(|_| RolloutError::Poisoned)
+}
+
+pub(super) fn encode_turn_item_completed(
+    sequence: u64,
+    thread_id: &ThreadId,
+    turn_id: &TurnId,
+    item: &DurableItemSnapshot,
+) -> Result<Vec<u8>, RolloutError> {
+    serde_json::to_vec(&TurnItemAddedRecord {
+        schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
+        sequence,
+        record_type: "turnItemCompleted",
         thread_id: thread_id.as_str(),
         turn_id: turn_id.as_str(),
         item: item.into(),

@@ -65,7 +65,16 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
             .collect::<Vec<_>>(),
         expected_workspace_tools()
     );
-    assert!(first_requests[1].get("tools").is_none());
+    assert_eq!(
+        first_requests[1]["tools"]
+            .as_array()
+            .expect("second-round tools")
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>(),
+        expected_workspace_tools(),
+        "local tools remain available after a successful search"
+    );
     let second_round_messages = provider_messages_after_base_agent(&first_requests[1]);
     let original_result = second_round_messages[2]["content"]
         .as_str()

@@ -280,7 +280,10 @@ fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() 
         first_requests[0]["tools"][0]["function"]["name"],
         "workspace/read"
     );
-    assert!(first_requests[1].get("tools").is_none());
+    assert_eq!(
+        first_requests[1]["tools"][0]["function"]["name"], "workspace/read",
+        "local tools remain available after a successful tool result"
+    );
     first.finish();
 
     let mut second =

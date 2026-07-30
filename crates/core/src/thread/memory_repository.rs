@@ -164,6 +164,31 @@ impl ThreadRepository for MemoryThreadRepository {
         Ok(())
     }
 
+    fn complete_turn_item(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &TurnId,
+        item: &DurableItemSnapshot,
+    ) -> Result<(), RolloutError> {
+        let turn = self
+            .threads
+            .get_mut(thread_id)
+            .and_then(|thread| thread.turns.last_mut())
+            .filter(|turn| &turn.id == turn_id && turn.status == DurableTurnStatus::InProgress)
+            .ok_or(RolloutError::InvalidRecord {
+                kind: "turnNotActive",
+            })?;
+        let stored = turn
+            .items
+            .iter_mut()
+            .find(|stored| stored.id() == item.id())
+            .ok_or(RolloutError::InvalidRecord {
+                kind: "itemNotStarted",
+            })?;
+        *stored = item.clone();
+        Ok(())
+    }
+
     fn load_thread(
         &self,
         thread_id: &ThreadId,
@@ -284,7 +309,8 @@ impl ThreadRepository for MemoryThreadRepository {
                             terms.iter().all(|term| text.contains(term))
                         }
                         DurableItemSnapshot::UserMessage { .. } => false,
-                        DurableItemSnapshot::ToolCall { .. }
+                        DurableItemSnapshot::ContextCompaction { .. }
+                        | DurableItemSnapshot::ToolCall { .. }
                         | DurableItemSnapshot::FileChange { .. }
                         | DurableItemSnapshot::CommandApprovalRequest { .. }
                         | DurableItemSnapshot::CommandApprovalDecision { .. }

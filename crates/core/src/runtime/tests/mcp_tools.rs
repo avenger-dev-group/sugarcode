@@ -87,6 +87,115 @@ impl McpToolApprovalRequester for RecordedMcpApproval {
 }
 
 #[tokio::test]
+async fn local_mcp_local_tools_alternate_in_one_turn() {
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("first.txt"), "first").expect("first fixture");
+    std::fs::write(directory.path().join("second.txt"), "second").expect("second fixture");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![
+                Ok(ModelEvent::ToolCall(ModelToolCall {
+                    id: "call_local_1".to_string(),
+                    name: "workspace/read".to_string(),
+                    arguments: serde_json::json!({"path": "first.txt"}),
+                })),
+                Ok(ModelEvent::Completed),
+            ],
+            vec![
+                Ok(ModelEvent::ToolCall(ModelToolCall {
+                    id: "call_mcp_between".to_string(),
+                    name: "mcp__fixture__inspect".to_string(),
+                    arguments: serde_json::json!({"value": "between"}),
+                })),
+                Ok(ModelEvent::Completed),
+            ],
+            vec![
+                Ok(ModelEvent::ToolCall(ModelToolCall {
+                    id: "call_local_2".to_string(),
+                    name: "workspace/read".to_string(),
+                    arguments: serde_json::json!({"path": "second.txt"}),
+                })),
+                Ok(ModelEvent::Completed),
+            ],
+            vec![
+                Ok(ModelEvent::TextDelta(
+                    "Alternating tools completed.".to_string(),
+                )),
+                Ok(ModelEvent::Completed),
+            ],
+        ])),
+        requests: requests.clone(),
+    };
+    let mut core = Core::new();
+    let started = core.start_thread(CoreRequestId::new(1)).expect("thread");
+    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+        panic!("thread event");
+    };
+    let executions = Arc::new(AtomicUsize::new(0));
+    let capability = McpToolCapability::default();
+    capability.set_enabled(true);
+    let workspace = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let (runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(workspace),
+        None,
+    );
+    let mut runtime = runtime.with_mcp(
+        Arc::new(RecordedMcpExecutor {
+            executions: executions.clone(),
+        }),
+        Arc::new(RecordedMcpApproval {
+            outcome: McpToolApprovalOutcome::Approved,
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }),
+        capability,
+    );
+    runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Read, inspect remotely, then read again".to_string()),
+        )
+        .expect("turn");
+    while !matches!(
+        events.recv().await.expect("event").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    assert_eq!(executions.load(Ordering::Acquire), 1);
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 4);
+    assert!(requests.iter().all(|request| {
+        request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "workspace/read")
+            && request
+                .tools
+                .iter()
+                .any(|tool| tool.name == "mcp__fixture__inspect")
+    }));
+    drop(requests);
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    let calls = snapshot.turns[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            sugarcode_state::DurableItemSnapshot::ToolCall { name, .. }
+            | sugarcode_state::DurableItemSnapshot::McpToolCall { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        calls,
+        ["workspace/read", "mcp__fixture__inspect", "workspace/read"]
+    );
+}
+
+#[tokio::test]
 async fn approved_mcp_call_crosses_attempt_before_one_execution_and_second_round() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let provider = SequencedProvider {
@@ -458,7 +567,7 @@ async fn denied_mcp_call_never_crosses_attempt_or_executes() {
     assert_eq!(executions.load(Ordering::Acquire), 0);
     let provider_requests = provider_requests.lock().expect("provider requests");
     assert_eq!(provider_requests.len(), 2);
-    assert!(provider_requests[1].tools.is_empty());
+    assert!(!provider_requests[1].tools.is_empty());
     drop(provider_requests);
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
     let turn = snapshot.turns.last().expect("turn");

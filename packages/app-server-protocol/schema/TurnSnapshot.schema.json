@@ -56,6 +56,72 @@
         "nonTransactionalWorkspaceTreeV1"
       ]
     },
+    "ContextCompactionOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "postContextBytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "summaryBytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "summarySha256": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "completed"
+            }
+          },
+          "required": [
+            "type",
+            "postContextBytes",
+            "summaryBytes",
+            "summarySha256"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "failed"
+            }
+          },
+          "required": [
+            "type",
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "interrupted"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "ContextCompactionStrategy": {
+      "type": "string",
+      "enum": [
+        "modelGeneratedActiveTurnV1"
+      ]
+    },
     "FileChangeKind": {
       "type": "string",
       "enum": [
@@ -109,6 +175,64 @@
             "type",
             "id",
             "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "ordinal": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "outcome": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ContextCompactionOutcome"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "preContextBytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "sourceBytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "sourceMessages": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "sourceSha256": {
+              "type": "string"
+            },
+            "strategy": {
+              "$ref": "#/$defs/ContextCompactionStrategy"
+            },
+            "type": {
+              "type": "string",
+              "const": "contextCompaction"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "strategy",
+            "ordinal",
+            "preContextBytes",
+            "sourceMessages",
+            "sourceBytes",
+            "sourceSha256"
           ]
         },
         {

@@ -33,6 +33,80 @@ fn persists_and_replays_completed_thread_history() {
 }
 
 #[test]
+fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let mut items = vec![DurableItemSnapshot::UserMessage {
+        id: ItemId::new("item_0000000000000001"),
+        text: "Read several large bounded results.".to_string(),
+    }];
+    let content = "x".repeat(300 * 1024);
+    for ordinal in 1..=4u64 {
+        let item_sequence = ordinal * 2;
+        let call_id = format!("call_{ordinal}");
+        items.push(DurableItemSnapshot::ToolCall {
+            id: ItemId::new(format!("item_{item_sequence:016}")),
+            call_id: call_id.clone(),
+            name: "workspace/read".to_string(),
+            path: format!("file-{ordinal}.txt"),
+            query: None,
+            patch: None,
+            command: None,
+            arguments: None,
+        });
+        items.push(DurableItemSnapshot::ToolResult {
+            id: ItemId::new(format!("item_{:016}", item_sequence + 1)),
+            call_id,
+            name: "workspace/read".to_string(),
+            result: DurableToolResult::Success {
+                content: content.clone(),
+                bytes: content.len() as u64,
+            },
+        });
+    }
+    items.push(DurableItemSnapshot::AgentMessage {
+        id: ItemId::new("item_0000000000000010"),
+        text: "Done.".to_string(),
+    });
+    let turn = DurableTurnSnapshot {
+        id: TurnId::new("turn_0000000000000001"),
+        status: DurableTurnStatus::Completed,
+        items,
+        context_compaction: None,
+        workspace_instructions: None,
+        workspace_skills: None,
+        error: None,
+        usage: None,
+    };
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .append_completed_turn(&thread_id, &turn)
+            .expect("large incremental turn");
+    }
+    let path = directory
+        .path()
+        .join("rollouts/v1/thr_0000000000000001.jsonl");
+    let records = fs::read_to_string(path).expect("rollout");
+    assert!(records.len() > 1024 * 1024);
+    let terminal = records.lines().last().expect("terminal record");
+    assert!(terminal.contains("\"type\":\"turnCompleted\""));
+    assert!(terminal.contains("\"items\":[]"));
+
+    let repository = RolloutRepository::open(&home).expect("replay");
+    assert_eq!(
+        repository
+            .load_thread(&thread_id)
+            .expect("load")
+            .expect("thread")
+            .turns,
+        vec![turn]
+    );
+}
+
+#[test]
 fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
@@ -65,13 +139,10 @@ fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
     let rollout = directory
         .path()
         .join("rollouts/v1/thr_0000000000000001.jsonl");
-    assert_eq!(
-        fs::read_to_string(&rollout)
-            .expect("read recovered rollout")
-            .lines()
-            .count(),
-        3
-    );
+    let records = fs::read_to_string(&rollout).expect("read recovered rollout");
+    assert_eq!(records.lines().count(), 7);
+    assert!(records.contains("\"type\":\"turnItemStarted\""));
+    assert!(records.contains("\"type\":\"turnItemCompleted\""));
     let reopened = RolloutRepository::open(&home).expect("reopen recovered repository");
     assert!(
         !reopened
@@ -177,6 +248,89 @@ fn workspace_instruction_audit_survives_recovery_without_persisting_content() {
     assert!(rollout.contains(&"a".repeat(64)));
     assert!(!rollout.contains("private workspace instruction"));
     assert!(!rollout.contains("\"content\""));
+}
+
+#[test]
+fn an_unfinished_active_compaction_is_completed_as_interrupted_before_recovery_terminal() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let compaction = DurableItemSnapshot::ContextCompaction {
+        id: ItemId::new("item_0000000000000002"),
+        strategy: "modelGeneratedActiveTurnV1".to_string(),
+        ordinal: 1,
+        pre_context_bytes: 3_200_000,
+        source_messages: 1,
+        source_bytes: 64,
+        source_sha256: "a".repeat(64),
+        outcome: None,
+        summary: None,
+    };
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(
+                &thread_id,
+                &DurableTurnSnapshot {
+                    id: turn_id.clone(),
+                    status: DurableTurnStatus::InProgress,
+                    items: vec![DurableItemSnapshot::UserMessage {
+                        id: ItemId::new("item_0000000000000001"),
+                        text: "Continue after compaction.".to_string(),
+                    }],
+                    context_compaction: None,
+                    workspace_instructions: None,
+                    workspace_skills: None,
+                    error: None,
+                    usage: None,
+                },
+            )
+            .expect("turn start");
+        repository
+            .append_turn_item(&thread_id, &turn_id, &compaction)
+            .expect("compaction start");
+    }
+
+    let repository = RolloutRepository::open(&home).expect("recovery");
+    let recovered = repository
+        .load_thread(&thread_id)
+        .expect("load")
+        .expect("thread");
+    assert!(matches!(
+        &recovered.turns[0].items[1],
+        DurableItemSnapshot::ContextCompaction {
+            outcome: Some(sugarcode_state::DurableActiveTurnCompactionOutcome::Interrupted),
+            summary: None,
+            ..
+        }
+    ));
+    drop(repository);
+
+    let records = fs::read_to_string(
+        directory
+            .path()
+            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+    )
+    .expect("rollout")
+    .lines()
+    .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("record"))
+    .collect::<Vec<_>>();
+    assert_eq!(records[records.len() - 2]["type"], "turnItemCompleted");
+    assert_eq!(
+        records[records.len() - 2]["item"]["outcome"]["type"],
+        "interrupted"
+    );
+    assert_eq!(records.last().expect("terminal")["type"], "turnCompleted");
+
+    let reopened = RolloutRepository::open(&home).expect("stable replay");
+    assert!(
+        !reopened
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "danglingTurnRecovered")
+    );
 }
 
 #[test]
@@ -885,6 +1039,9 @@ fn a_started_turn_is_replaced_by_its_single_terminal_record() {
     };
     *text = "Hello from the model".to_string();
     repository
+        .complete_turn_item(&thread_id, &completed.id, &completed.items[1])
+        .expect("durable item completion");
+    repository
         .finish_turn(&thread_id, &completed)
         .expect("durable terminal");
     drop(repository);
@@ -969,7 +1126,7 @@ fn replay_rejects_lifecycle_record_while_turn_is_pending() {
         "{}",
         serde_json::json!({
             "schemaVersion": 1,
-            "sequence": 3,
+            "sequence": 7,
             "type": "threadArchived",
             "threadId": thread_id.as_str()
         })

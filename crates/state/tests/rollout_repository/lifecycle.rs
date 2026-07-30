@@ -60,7 +60,7 @@ fn archives_with_one_v1_record_and_rebuilds_active_only_views() {
         fs::read_to_string(&rollout)
             .expect("read rollout")
             .ends_with(
-                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+                "{\"schemaVersion\":1,\"sequence\":6,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
             )
     );
     for database in ["thread-discovery.sqlite3", "thread-search.sqlite3"] {
@@ -135,17 +135,40 @@ fn unarchives_in_rollout_v1_with_monotonic_sequences_and_rebuildable_views() {
         repository.archive_thread(&thread_id).expect("rearchive");
     }
 
+    let records = fs::read_to_string(&rollout)
+        .expect("read rollout")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("record"))
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 12);
     assert_eq!(
-        fs::read_to_string(&rollout).expect("read rollout"),
-        concat!(
-            "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
-            "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"turnCompleted\",\"threadId\":\"thr_0000000000000001\",\"turn\":{\"id\":\"turn_0000000000000001\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"item_0000000000000001\",\"text\":\"SugarCode deterministic response.\"}]}}\n",
-            "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n",
-            "{\"schemaVersion\":1,\"sequence\":4,\"type\":\"threadUnarchived\",\"threadId\":\"thr_0000000000000001\"}\n",
-            "{\"schemaVersion\":1,\"sequence\":5,\"type\":\"turnCompleted\",\"threadId\":\"thr_0000000000000001\",\"turn\":{\"id\":\"turn_0000000000000002\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"item_0000000000000002\",\"text\":\"SugarCode deterministic response.\"}]}}\n",
-            "{\"schemaVersion\":1,\"sequence\":6,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
-        )
+        records
+            .iter()
+            .map(|record| record["type"].as_str().expect("record type"))
+            .collect::<Vec<_>>(),
+        [
+            "threadCreated",
+            "turnStarted",
+            "turnItemStarted",
+            "turnItemCompleted",
+            "turnCompleted",
+            "threadArchived",
+            "threadUnarchived",
+            "turnStarted",
+            "turnItemStarted",
+            "turnItemCompleted",
+            "turnCompleted",
+            "threadArchived",
+        ]
     );
+    assert!(
+        records
+            .iter()
+            .enumerate()
+            .all(|(index, record)| record["sequence"] == (index + 1) as u64)
+    );
+    assert_eq!(records[4]["turn"]["items"], serde_json::json!([]));
+    assert_eq!(records[10]["turn"]["items"], serde_json::json!([]));
 
     for database in ["thread-discovery.sqlite3", "thread-search.sqlite3"] {
         fs::remove_file(directory.path().join("projections/v1").join(database))
@@ -282,7 +305,7 @@ fn deletes_active_or_archived_threads_with_terminal_v1_tombstones() {
         )
         .expect("read rollout")
         .ends_with(
-            "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n"
+            "{\"schemaVersion\":1,\"sequence\":6,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n"
         )
     );
     assert!(
@@ -293,7 +316,7 @@ fn deletes_active_or_archived_threads_with_terminal_v1_tombstones() {
         )
         .expect("read rollout")
         .ends_with(
-            "{\"schemaVersion\":1,\"sequence\":4,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000002\"}\n"
+            "{\"schemaVersion\":1,\"sequence\":7,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000002\"}\n"
         )
     );
 

@@ -347,6 +347,43 @@ export const toThreadViewModel = (
         )
           ? previousTurn.messages
           : messages;
+      const nextContextCompactions = turn.contextCompactions?.map(
+        (activity) => {
+          const outcome = activity.outcome;
+          return {
+            id: activity.id,
+            ordinal: activity.ordinal,
+            state:
+              activity.status === 'inProgress'
+                ? ('compacting' as const)
+                : outcome?.type === 'completed'
+                  ? ('completed' as const)
+                  : outcome?.type === 'failed'
+                    ? ('failed' as const)
+                    : ('interrupted' as const),
+            preContextBytes: activity.preContextBytes,
+            sourceMessages: activity.sourceMessages,
+            sourceBytes: activity.sourceBytes,
+            sourceSha256: activity.sourceSha256,
+            ...(outcome?.type === 'completed'
+              ? {
+                  postContextBytes: outcome.postContextBytes,
+                  summaryBytes: outcome.summaryBytes,
+                  summarySha256: outcome.summarySha256,
+                }
+              : {}),
+            ...(outcome?.type === 'failed'
+              ? { errorKind: outcome.kind }
+              : {}),
+          };
+        },
+      );
+      const contextCompactions =
+        nextContextCompactions &&
+        JSON.stringify(previousTurn?.contextCompactions) ===
+          JSON.stringify(nextContextCompactions)
+          ? previousTurn?.contextCompactions
+          : nextContextCompactions;
       const nextWorkspaceRead = turn.workspaceRead
         ? (() => {
             const state = toWorkspaceReadPresentationState(
@@ -548,6 +585,192 @@ export const toThreadViewModel = (
           JSON.stringify(nextMcpActivities)
           ? previousTurn?.mcpActivities
           : nextMcpActivities;
+      const nextActivities = turn.activities?.map((entry) => {
+        switch (entry.type) {
+          case 'contextCompaction': {
+            const outcome = entry.activity.outcome;
+            return {
+              type: entry.type,
+              activity: {
+                id: entry.activity.id,
+                ordinal: entry.activity.ordinal,
+                state:
+                  entry.activity.status === 'inProgress'
+                    ? ('compacting' as const)
+                    : outcome?.type === 'completed'
+                      ? ('completed' as const)
+                      : outcome?.type === 'failed'
+                        ? ('failed' as const)
+                        : ('interrupted' as const),
+                preContextBytes: entry.activity.preContextBytes,
+                sourceMessages: entry.activity.sourceMessages,
+                sourceBytes: entry.activity.sourceBytes,
+                sourceSha256: entry.activity.sourceSha256,
+                ...(outcome?.type === 'completed'
+                  ? {
+                      postContextBytes: outcome.postContextBytes,
+                      summaryBytes: outcome.summaryBytes,
+                      summarySha256: outcome.summarySha256,
+                    }
+                  : {}),
+                ...(outcome?.type === 'failed'
+                  ? { errorKind: outcome.kind }
+                  : {}),
+              },
+            } as const;
+          }
+          case 'workspaceRead': {
+            const outcome = entry.activity.result?.outcome;
+            return {
+              type: entry.type,
+              activity: {
+                id: entry.activity.id,
+                path: entry.activity.path,
+                state: toWorkspaceReadPresentationState(
+                  snapshot.phase,
+                  turn.status,
+                  entry.activity,
+                ),
+                ...(outcome?.type === 'success'
+                  ? { bytes: outcome.bytes }
+                  : {}),
+                ...(outcome?.type === 'error'
+                  ? { errorKind: outcome.kind }
+                  : {}),
+              },
+            } as const;
+          }
+          case 'workspaceList': {
+            const outcome = entry.activity.result?.outcome;
+            return {
+              type: entry.type,
+              activity: {
+                id: entry.activity.id,
+                path: entry.activity.path,
+                state: toWorkspaceListPresentationState(
+                  snapshot.phase,
+                  turn.status,
+                  entry.activity,
+                ),
+                ...(outcome?.type === 'success'
+                  ? { entries: outcome.entries }
+                  : {}),
+                ...(outcome?.type === 'error'
+                  ? { errorKind: outcome.kind }
+                  : {}),
+              },
+            } as const;
+          }
+          case 'workspaceSearch': {
+            const outcome = entry.activity.result?.outcome;
+            return {
+              type: entry.type,
+              activity: {
+                id: entry.activity.id,
+                path: entry.activity.path,
+                query: entry.activity.query,
+                state: toWorkspaceSearchPresentationState(
+                  snapshot.phase,
+                  turn.status,
+                  entry.activity,
+                ),
+                ...(outcome?.type === 'success'
+                  ? {
+                      matches: outcome.matches,
+                      truncated: outcome.truncated,
+                    }
+                  : {}),
+                ...(outcome?.type === 'error'
+                  ? { errorKind: outcome.kind }
+                  : {}),
+              },
+            } as const;
+          }
+          case 'fileChange':
+            return {
+              type: entry.type,
+              activity: toFileChangeReviewViewModel(
+                snapshot.phase,
+                turn.status,
+                entry.activity,
+              ),
+            } as const;
+          case 'commandApproval':
+            return {
+              type: entry.type,
+              activity: {
+                id: entry.activity.id,
+                command: entry.activity.command,
+                argumentCount: entry.activity.argumentCount,
+                state: toCommandApprovalPresentationState(
+                  snapshot.phase,
+                  turn.status,
+                  entry.activity,
+                ),
+                ...(entry.activity.executionAttempt
+                  ? {
+                      executionAttempt: {
+                        id: entry.activity.executionAttempt.id,
+                        state: toCommandExecutionAttemptPresentationState(
+                          snapshot.phase,
+                          entry.activity.executionAttempt.status,
+                        ),
+                      },
+                    }
+                  : {}),
+                ...(entry.activity.executionResult
+                  ? {
+                      executionResult: {
+                        id: entry.activity.executionResult.id,
+                        state: toCommandExecutionResultPresentationState(
+                          snapshot.phase,
+                          entry.activity.executionResult.status,
+                        ),
+                        outcome: {
+                          ...entry.activity.executionResult.outcome,
+                        },
+                      },
+                    }
+                  : {}),
+              },
+            } as const;
+          case 'mcp':
+            return {
+              type: entry.type,
+              activity: {
+                id: entry.activity.id,
+                serverId: entry.activity.serverId,
+                name: entry.activity.name,
+                argumentsBytes: entry.activity.argumentsBytes,
+                argumentsSha256: entry.activity.argumentsSha256,
+                inventorySha256: entry.activity.inventorySha256,
+                state: toMcpActivityState(
+                  snapshot.phase,
+                  turn.status,
+                  entry.activity,
+                ),
+                ...(entry.activity.decision
+                  ? { decision: entry.activity.decision.value }
+                  : {}),
+                ...(entry.activity.executionAttempt
+                  ? { attemptId: entry.activity.executionAttempt.id }
+                  : {}),
+                ...(entry.activity.result
+                  ? {
+                      resultId: entry.activity.result.id,
+                      receipt: { ...entry.activity.result.receipt },
+                    }
+                  : {}),
+              },
+            } as const;
+        }
+      });
+      const activities =
+        nextActivities &&
+        JSON.stringify(previousTurn?.activities) ===
+          JSON.stringify(nextActivities)
+          ? previousTurn?.activities
+          : nextActivities;
       const nextFailure = turn.error
         ? toTurnFailureViewModel(turn.error)
         : undefined;
@@ -564,6 +787,8 @@ export const toThreadViewModel = (
       if (
         previousTurn?.status === turn.status &&
         previousTurn.messages === stableMessages &&
+        previousTurn.contextCompactions === contextCompactions &&
+        previousTurn.activities === activities &&
         previousTurn.workspaceRead === workspaceRead &&
         previousTurn.workspaceList === workspaceList &&
         previousTurn.workspaceSearch === workspaceSearch &&
@@ -580,6 +805,8 @@ export const toThreadViewModel = (
         id: turn.id,
         status: turn.status,
         messages: stableMessages,
+        ...(contextCompactions ? { contextCompactions } : {}),
+        ...(activities ? { activities } : {}),
         ...(workspaceRead ? { workspaceRead } : {}),
         ...(workspaceList ? { workspaceList } : {}),
         ...(workspaceSearch ? { workspaceSearch } : {}),

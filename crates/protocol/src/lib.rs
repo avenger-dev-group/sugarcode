@@ -13,6 +13,8 @@ pub use item::CoreCommandNetworkPolicy;
 pub use item::CoreCommandSandboxPolicy;
 pub use item::CoreCommandWorkspaceWritePolicy;
 pub use item::CoreCommandWorkspaceWriteRisk;
+pub use item::CoreContextCompactionOutcome;
+pub use item::CoreContextCompactionStrategy;
 pub use item::CoreFileChangeKind;
 pub use item::CoreFileChangeNewlineStyle;
 pub use item::CoreItemKind;

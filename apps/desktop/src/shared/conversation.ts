@@ -43,6 +43,26 @@ export type ConversationMessage = Readonly<{
   status: ConversationMessageStatus;
 }>;
 
+export type ConversationContextCompactionActivity = Readonly<{
+  id: string;
+  strategy: 'modelGeneratedActiveTurnV1';
+  ordinal: number;
+  preContextBytes: number;
+  sourceMessages: number;
+  sourceBytes: number;
+  sourceSha256: string;
+  status: ConversationMessageStatus;
+  outcome?:
+    | Readonly<{
+        type: 'completed';
+        postContextBytes: number;
+        summaryBytes: number;
+        summarySha256: string;
+      }>
+    | Readonly<{ type: 'failed'; kind: string }>
+    | Readonly<{ type: 'interrupted' }>;
+}>;
+
 export type ConversationWorkspaceReadOutcome =
   | Readonly<{
       type: 'success';
@@ -245,6 +265,36 @@ export type ConversationMcpActivity = Readonly<{
   }>;
 }>;
 
+export type ConversationActivity =
+  | Readonly<{
+      type: 'contextCompaction';
+      activity: ConversationContextCompactionActivity;
+    }>
+  | Readonly<{
+      type: 'workspaceRead';
+      activity: ConversationWorkspaceReadActivity;
+    }>
+  | Readonly<{
+      type: 'workspaceList';
+      activity: ConversationWorkspaceListActivity;
+    }>
+  | Readonly<{
+      type: 'workspaceSearch';
+      activity: ConversationWorkspaceSearchActivity;
+    }>
+  | Readonly<{
+      type: 'fileChange';
+      activity: ConversationFileChangeActivity;
+    }>
+  | Readonly<{
+      type: 'commandApproval';
+      activity: ConversationCommandApprovalActivity;
+    }>
+  | Readonly<{
+      type: 'mcp';
+      activity: ConversationMcpActivity;
+    }>;
+
 export type ConversationTurnError = Readonly<{
   kind:
     | 'authentication'
@@ -267,6 +317,8 @@ export type ConversationTurn = Readonly<{
   id: string;
   status: ConversationTurnStatus;
   messages: readonly ConversationMessage[];
+  activities?: readonly ConversationActivity[];
+  contextCompactions?: readonly ConversationContextCompactionActivity[];
   workspaceRead?: ConversationWorkspaceReadActivity;
   workspaceList?: ConversationWorkspaceListActivity;
   workspaceSearch?: ConversationWorkspaceSearchActivity;

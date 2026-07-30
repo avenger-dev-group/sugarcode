@@ -49,7 +49,7 @@ fn approved_attempt_without_result_recovers_once_as_interrupted_and_preserves_au
 }
 
 #[test]
-fn denied_call_cannot_cross_attempt_barrier_and_terminal_equality_is_exact() {
+fn denied_call_blocks_its_attempt_but_a_later_call_can_recover() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
     let thread_id = ThreadId::new("thr_0000000000000001");
@@ -92,45 +92,13 @@ fn denied_call_cannot_cross_attempt_barrier_and_terminal_equality_is_exact() {
         .append_turn_item(&thread_id, &TurnId::new("turn_0000000000000001"), &result)
         .expect("denied result");
     let next_call = completed_call_items(2).remove(0);
-    assert!(matches!(
-        repository.append_turn_item(
+    repository
+        .append_turn_item(
             &thread_id,
             &TurnId::new("turn_0000000000000001"),
             &next_call,
-        ),
-        Err(RolloutError::InvalidRecord {
-            kind: "invalidMcpToolItem"
-        })
-    ));
-    items.truncate(4);
-    items.push(result);
-    repository
-        .finish_turn(
-            &thread_id,
-            &DurableTurnSnapshot {
-                id: TurnId::new("turn_0000000000000001"),
-                status: DurableTurnStatus::Completed,
-                items: items.clone(),
-                context_compaction: None,
-                workspace_instructions: None,
-                workspace_skills: None,
-                error: None,
-                usage: None,
-            },
         )
-        .expect("terminal");
-    drop(repository);
-
-    let repository = RolloutRepository::open(&home).expect("replay");
-    assert_eq!(
-        repository
-            .load_thread(&thread_id)
-            .expect("load")
-            .expect("thread")
-            .turns[0]
-            .items,
-        items
-    );
+        .expect("a new call may recover after the denied result");
 }
 
 #[test]

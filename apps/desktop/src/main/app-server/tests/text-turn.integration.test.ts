@@ -542,6 +542,12 @@ describe('real Desktop text Agent Turn', () => {
         model: 'desktop-fixture-model',
         messages: [
           {
+            role: 'developer',
+            content: expect.stringContaining(
+              'You are SugarCode, a coding agent',
+            ),
+          },
+          {
             role: 'user',
             content: 'Keep this input exact: 雪',
           },
@@ -605,6 +611,12 @@ describe('real Desktop text Agent Turn', () => {
       );
       expect(provider.requests[1]?.body).toMatchObject({
         messages: [
+          {
+            role: 'developer',
+            content: expect.stringContaining(
+              'You are SugarCode, a coding agent',
+            ),
+          },
           {
             role: 'user',
             content: 'Keep this input exact: 雪',

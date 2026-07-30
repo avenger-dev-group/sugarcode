@@ -129,6 +129,22 @@ describe('conversation recovery', () => {
               outcome: { type: 'success', bytes: 18 },
             },
           },
+          activities: [
+            {
+              type: 'workspaceRead',
+              activity: {
+                id: 'item_0000000000000005',
+                callId: 'call_1',
+                path: 'notes.txt',
+                callStatus: 'completed',
+                result: {
+                  id: 'item_0000000000000006',
+                  status: 'completed',
+                  outcome: { type: 'success', bytes: 18 },
+                },
+              },
+            },
+          ],
         },
         {
           id: 'turn_0000000000000007',
@@ -142,6 +158,85 @@ describe('conversation recovery', () => {
           messages: [],
         },
       ],
+    });
+  });
+
+  it('recovers repeated activities and compaction in durable item order', () => {
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            {
+              type: 'toolCall',
+              id: 'item_0000000000000001',
+              callId: 'call_read_1',
+              name: 'workspace/read',
+              path: 'first.txt',
+            },
+            {
+              type: 'toolResult',
+              id: 'item_0000000000000002',
+              callId: 'call_read_1',
+              name: 'workspace/read',
+              result: { type: 'success', content: 'first', bytes: 5 },
+            },
+            {
+              type: 'contextCompaction',
+              id: 'item_0000000000000003',
+              strategy: 'modelGeneratedActiveTurnV1',
+              ordinal: 1,
+              preContextBytes: 3_200_000,
+              sourceMessages: 2,
+              sourceBytes: 2_600_000,
+              sourceSha256: 'a'.repeat(64),
+              outcome: {
+                type: 'completed',
+                postContextBytes: 900_000,
+                summaryBytes: 128,
+                summarySha256: 'b'.repeat(64),
+              },
+            },
+            {
+              type: 'toolCall',
+              id: 'item_0000000000000004',
+              callId: 'call_read_2',
+              name: 'workspace/read',
+              path: 'second.txt',
+            },
+            {
+              type: 'toolResult',
+              id: 'item_0000000000000005',
+              callId: 'call_read_2',
+              name: 'workspace/read',
+              result: { type: 'error', kind: 'notFound' },
+            },
+            {
+              type: 'agentMessage',
+              id: 'item_0000000000000006',
+              text: 'Recovered.',
+            },
+          ],
+        },
+      ],
+    });
+
+    const recovered = recoverConversation(
+      'thr_0000000000000001',
+      resumed,
+    );
+    expect(recovered.turns[0].activities?.map((entry) => entry.type)).toEqual([
+      'workspaceRead',
+      'contextCompaction',
+      'workspaceRead',
+    ]);
+    expect(
+      recovered.turns[0].activities?.[2]?.activity,
+    ).toMatchObject({
+      callId: 'call_read_2',
+      result: { outcome: { type: 'error', kind: 'notFound' } },
     });
   });
 

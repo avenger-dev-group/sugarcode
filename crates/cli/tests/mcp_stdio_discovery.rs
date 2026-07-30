@@ -974,11 +974,16 @@ fn selected_server_failure_never_falls_back_to_another_server() {
         let requests = provider.finish();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0]["tools"].as_array().map(Vec::len), Some(2));
-        assert!(
-            requests[1]["tools"]
-                .as_array()
-                .is_none_or(|tools| tools.is_empty()),
-            "transport and drift failures must close the sequence without server fallback"
+        let second_round_names = requests[1]["tools"]
+            .as_array()
+            .expect("recoverable MCP failure keeps tools available")
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            second_round_names,
+            ["mcp__alpha__inspect", "mcp__beta__inspect"],
+            "a recoverable selected-server failure returns to the model without invoking another server"
         );
     }
 }

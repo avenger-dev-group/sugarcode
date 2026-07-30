@@ -187,6 +187,17 @@ pub enum DurableItemSnapshot {
         id: ItemId,
         text: String,
     },
+    ContextCompaction {
+        id: ItemId,
+        strategy: String,
+        ordinal: u64,
+        pre_context_bytes: u64,
+        source_messages: u64,
+        source_bytes: u64,
+        source_sha256: String,
+        outcome: Option<DurableActiveTurnCompactionOutcome>,
+        summary: Option<DurableCompactionSummary>,
+    },
     ToolCall {
         id: ItemId,
         call_id: String,
@@ -279,6 +290,51 @@ pub enum DurableItemSnapshot {
     },
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct DurableCompactionSummary(String);
+
+impl DurableCompactionSummary {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for DurableCompactionSummary {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl std::ops::Deref for DurableCompactionSummary {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl fmt::Debug for DurableCompactionSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DurableCompactionSummary")
+            .field("bytes", &self.0.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableActiveTurnCompactionOutcome {
+    Completed {
+        post_context_bytes: u64,
+        summary_bytes: u64,
+        summary_sha256: String,
+    },
+    Failed {
+        kind: String,
+    },
+    Interrupted,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DurableMcpToolResult {
     Completed {
@@ -338,6 +394,7 @@ impl DurableItemSnapshot {
         match self {
             Self::UserMessage { id, .. }
             | Self::AgentMessage { id, .. }
+            | Self::ContextCompaction { id, .. }
             | Self::ToolCall { id, .. }
             | Self::FileChange { id, .. }
             | Self::CommandApprovalRequest { id, .. }
@@ -566,19 +623,17 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            let prior_sequence_completed =
-                prior_calls.last().is_none_or(|(prior_call_id, _, _)| {
-                    existing.iter().any(|item| {
-                        matches!(
-                            item,
-                            DurableItemSnapshot::McpToolResult {
-                                call_id,
-                                result: DurableMcpToolResult::Completed { .. },
-                                ..
-                            } if call_id == *prior_call_id
-                        )
-                    })
-                });
+            let prior_sequence_closed = prior_calls.last().is_none_or(|(prior_call_id, _, _)| {
+                existing.iter().any(|item| {
+                    matches!(
+                        item,
+                        DurableItemSnapshot::McpToolResult {
+                            call_id,
+                            ..
+                        } if call_id == *prior_call_id
+                    )
+                })
+            });
             let Some(server_id) = mcp_server_id(name) else {
                 return false;
             };
@@ -598,7 +653,7 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                 && prior_calls
                     .iter()
                     .all(|(prior_call_id, _, _)| *prior_call_id != call_id)
-                && prior_sequence_completed
+                && prior_sequence_closed
         }
         DurableItemSnapshot::McpToolCallApprovalRequest {
             approval_id,
@@ -1000,6 +1055,16 @@ pub trait ThreadRepository: fmt::Debug + Send {
         self.append_completed_turn(thread_id, turn)
     }
     fn append_turn_item(
+        &mut self,
+        _thread_id: &ThreadId,
+        _turn_id: &TurnId,
+        _item: &DurableItemSnapshot,
+    ) -> Result<(), RolloutError> {
+        Err(RolloutError::InvalidRecord {
+            kind: "incrementalItemsUnsupported",
+        })
+    }
+    fn complete_turn_item(
         &mut self,
         _thread_id: &ThreadId,
         _turn_id: &TurnId,

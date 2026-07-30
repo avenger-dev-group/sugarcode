@@ -78,7 +78,13 @@ fn rejects_a_tampered_persisted_compaction_without_echoing_its_message() {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("record"))
         .collect::<Vec<_>>();
     let sentinel = "tampered-compaction-must-not-leak";
-    records[2]["turn"]["contextCompaction"]["message"] =
+    let started = records
+        .iter_mut()
+        .find(|record| {
+            record["type"] == "turnStarted" && record["turn"]["contextCompaction"].is_object()
+        })
+        .expect("checkpoint turn start");
+    started["turn"]["contextCompaction"]["message"] =
         serde_json::Value::String(sentinel.to_string());
     let rewritten = records
         .iter()

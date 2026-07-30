@@ -1,5 +1,7 @@
 use serde_json::to_value;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
+use sugarcode_app_server_protocol::ContextCompactionOutcome as PublicContextCompactionOutcome;
+use sugarcode_app_server_protocol::ContextCompactionStrategy as PublicContextCompactionStrategy;
 use sugarcode_app_server_protocol::Item as PublicItem;
 use sugarcode_app_server_protocol::ItemCompletedNotification;
 use sugarcode_app_server_protocol::ItemStartedNotification;
@@ -249,6 +251,25 @@ fn map_snapshot_parts(
                                 text,
                             }
                         }
+                        DurableItemSnapshot::ContextCompaction {
+                            id,
+                            ordinal,
+                            pre_context_bytes,
+                            source_messages,
+                            source_bytes,
+                            source_sha256,
+                            outcome,
+                            ..
+                        } => PublicItem::ContextCompaction {
+                            id: id.into_string(),
+                            strategy: PublicContextCompactionStrategy::ModelGeneratedActiveTurnV1,
+                            ordinal,
+                            pre_context_bytes,
+                            source_messages,
+                            source_bytes,
+                            source_sha256,
+                            outcome: outcome.map(map_durable_compaction_outcome),
+                        },
                         DurableItemSnapshot::ToolCall {
                             id,
                             call_id,
@@ -542,6 +563,24 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
         CoreItemKind::AgentMessage { text } => PublicItem::AgentMessage {
             id: item.id.into_string(),
             text,
+        },
+        CoreItemKind::ContextCompaction {
+            ordinal,
+            pre_context_bytes,
+            source_messages,
+            source_bytes,
+            source_sha256,
+            outcome,
+            ..
+        } => PublicItem::ContextCompaction {
+            id: item.id.into_string(),
+            strategy: PublicContextCompactionStrategy::ModelGeneratedActiveTurnV1,
+            ordinal,
+            pre_context_bytes,
+            source_messages,
+            source_bytes,
+            source_sha256,
+            outcome: outcome.map(map_core_compaction_outcome),
         },
         CoreItemKind::ToolCall {
             call_id,
@@ -841,6 +880,50 @@ fn map_core_mcp_tool_result(result: sugarcode_protocol::CoreMcpToolResult) -> Pu
             kind,
             request_state,
         },
+    }
+}
+
+fn map_core_compaction_outcome(
+    outcome: sugarcode_protocol::CoreContextCompactionOutcome,
+) -> PublicContextCompactionOutcome {
+    match outcome {
+        sugarcode_protocol::CoreContextCompactionOutcome::Completed {
+            post_context_bytes,
+            summary_bytes,
+            summary_sha256,
+        } => PublicContextCompactionOutcome::Completed {
+            post_context_bytes,
+            summary_bytes,
+            summary_sha256,
+        },
+        sugarcode_protocol::CoreContextCompactionOutcome::Failed { kind } => {
+            PublicContextCompactionOutcome::Failed { kind }
+        }
+        sugarcode_protocol::CoreContextCompactionOutcome::Interrupted => {
+            PublicContextCompactionOutcome::Interrupted
+        }
+    }
+}
+
+fn map_durable_compaction_outcome(
+    outcome: sugarcode_state::DurableActiveTurnCompactionOutcome,
+) -> PublicContextCompactionOutcome {
+    match outcome {
+        sugarcode_state::DurableActiveTurnCompactionOutcome::Completed {
+            post_context_bytes,
+            summary_bytes,
+            summary_sha256,
+        } => PublicContextCompactionOutcome::Completed {
+            post_context_bytes,
+            summary_bytes,
+            summary_sha256,
+        },
+        sugarcode_state::DurableActiveTurnCompactionOutcome::Failed { kind } => {
+            PublicContextCompactionOutcome::Failed { kind }
+        }
+        sugarcode_state::DurableActiveTurnCompactionOutcome::Interrupted => {
+            PublicContextCompactionOutcome::Interrupted
+        }
     }
 }
 

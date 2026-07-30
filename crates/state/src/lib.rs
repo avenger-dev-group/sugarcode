@@ -32,6 +32,8 @@ pub use home::SUGARCODE_HOME_ENV;
 pub use home::SugarCodeHome;
 pub use home::resolve_sugarcode_home;
 pub use home::resolve_sugarcode_home_from_process;
+pub use rollout::DurableActiveTurnCompactionOutcome;
+pub use rollout::DurableCompactionSummary;
 pub use rollout::DurableContextCompaction;
 pub use rollout::DurableContextCompactionStrategy;
 pub use rollout::DurableItemSnapshot;

@@ -83,17 +83,6 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
     definitions
 }
 
-pub(super) fn mcp_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelToolDefinition> {
-    if runtime.mcp_capability.is_enabled()
-        && runtime.mcp_approval_requester.is_some()
-        && let Some(executor) = runtime.mcp_executor.as_ref()
-    {
-        executor.definitions()
-    } else {
-        Vec::new()
-    }
-}
-
 fn workspace_path_parameters() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -448,52 +437,6 @@ pub(super) fn serialized_file_change_bytes(kind: &CoreItemKind) -> usize {
             sugarcode_protocol::CoreFileChangeNewlineStyle::CrLf => "crLf",
         },
         "finalNewline": final_newline,
-    }))
-    .map_or(usize::MAX, |bytes| bytes.len())
-}
-
-pub(super) fn serialized_tool_call_bytes(
-    call: &ModelToolCall,
-    arguments: &WorkspaceToolArguments,
-) -> usize {
-    let mut value = serde_json::json!({
-        "type": "toolCall",
-        "callId": call.id,
-        "name": call.name,
-        "path": arguments.path,
-    });
-    if let Some(query) = &arguments.query {
-        value
-            .as_object_mut()
-            .expect("tool call serialization value is an object")
-            .insert(
-                "query".to_string(),
-                serde_json::Value::String(query.clone()),
-            );
-    }
-    if let Some(patch) = &arguments.patch {
-        value
-            .as_object_mut()
-            .expect("tool call serialization value is an object")
-            .insert(
-                "patch".to_string(),
-                serde_json::Value::String(patch.clone()),
-            );
-    }
-    serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len())
-}
-
-pub(super) fn serialized_shell_tool_call_bytes(
-    call: &ModelToolCall,
-    arguments: &ShellToolArguments,
-) -> usize {
-    serde_json::to_vec(&serde_json::json!({
-        "type": "toolCall",
-        "callId": call.id,
-        "name": call.name,
-        "path": arguments.cwd,
-        "command": arguments.command,
-        "arguments": arguments.arguments,
     }))
     .map_or(usize::MAX, |bytes| bytes.len())
 }

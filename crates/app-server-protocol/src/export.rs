@@ -7,6 +7,8 @@ use crate::CommandNetworkPolicy;
 use crate::CommandSandboxPolicy;
 use crate::CommandWorkspaceWritePolicy;
 use crate::CommandWorkspaceWriteRisk;
+use crate::ContextCompactionOutcome;
+use crate::ContextCompactionStrategy;
 use crate::FileChangeKind;
 use crate::FileChangeNewlineStyle;
 use crate::InitializeCapabilities;
@@ -126,6 +128,8 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         ProcessOutcome::decl(),
         ToolResult::decl(),
         McpToolResult::decl(),
+        ContextCompactionStrategy::decl(),
+        ContextCompactionOutcome::decl(),
         Item::decl(),
         ItemStartedNotification::decl(),
         AgentMessageDeltaNotification::decl(),
@@ -304,6 +308,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("McpToolResult.schema.json"),
         &schema_for!(McpToolResult),
+    )?;
+    write_schema(
+        out_dir.join("ContextCompactionStrategy.schema.json"),
+        &schema_for!(ContextCompactionStrategy),
+    )?;
+    write_schema(
+        out_dir.join("ContextCompactionOutcome.schema.json"),
+        &schema_for!(ContextCompactionOutcome),
     )?;
     write_schema(out_dir.join("Item.schema.json"), &schema_for!(Item))?;
     write_schema(

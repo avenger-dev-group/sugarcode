@@ -227,6 +227,27 @@ impl CoreApi for Core {
                             text: text.clone(),
                         }
                     }
+                    DurableItemSnapshot::ContextCompaction {
+                        strategy,
+                        ordinal,
+                        pre_context_bytes,
+                        source_messages,
+                        source_bytes,
+                        source_sha256,
+                        outcome,
+                        summary,
+                        ..
+                    } => DurableItemSnapshot::ContextCompaction {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        strategy: strategy.clone(),
+                        ordinal: *ordinal,
+                        pre_context_bytes: *pre_context_bytes,
+                        source_messages: *source_messages,
+                        source_bytes: *source_bytes,
+                        source_sha256: source_sha256.clone(),
+                        outcome: outcome.clone(),
+                        summary: summary.clone(),
+                    },
                     DurableItemSnapshot::ToolCall {
                         call_id,
                         name,

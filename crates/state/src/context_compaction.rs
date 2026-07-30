@@ -38,6 +38,7 @@ pub fn build_context_compaction(
                     source_messages = source_messages.checked_add(1)?;
                 }
                 DurableItemSnapshot::AgentMessage { .. } => {}
+                DurableItemSnapshot::ContextCompaction { .. } => {}
                 call @ DurableItemSnapshot::ToolCall { call_id, .. } => {
                     let result_index = ((index + 1)..turn.items.len()).find(|candidate| {
                         matches!(

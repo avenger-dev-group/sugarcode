@@ -22,6 +22,7 @@ use super::format::encode_thread_deleted;
 use super::format::encode_thread_unarchived;
 use super::format::encode_turn_completed;
 use super::format::encode_turn_item_added;
+use super::format::encode_turn_item_completed;
 use super::format::encode_turn_started;
 use super::replay::parse_canonical_id;
 use super::replay::replay_all;
@@ -344,6 +345,12 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                 (
                     DurableItemSnapshot::AgentMessage { id: started_id, .. },
                     DurableItemSnapshot::AgentMessage {
+                        id: terminal_id, ..
+                    },
+                ) => started_id == terminal_id,
+                (
+                    DurableItemSnapshot::ContextCompaction { id: started_id, .. },
+                    DurableItemSnapshot::ContextCompaction {
                         id: terminal_id, ..
                     },
                 ) => started_id == terminal_id,

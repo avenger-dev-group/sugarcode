@@ -1,5 +1,7 @@
 import type {
+  ConversationActivity,
   ConversationMessage,
+  ConversationContextCompactionActivity,
   ConversationMcpActivity,
   ConversationCommandApprovalActivity,
   ConversationFileChangeActivity,
@@ -36,6 +38,8 @@ export const recoverConversation = (
     turnIds.add(turn.id);
 
     const messages: ConversationMessage[] = [];
+    const contextCompactions: ConversationContextCompactionActivity[] = [];
+    const activities: ConversationActivity[] = [];
     let workspaceRead: ConversationWorkspaceReadActivity | undefined;
     let workspaceList: ConversationWorkspaceListActivity | undefined;
     let workspaceSearch: ConversationWorkspaceSearchActivity | undefined;
@@ -66,7 +70,36 @@ export const recoverConversation = (
         throw new Error('thread/resume returned a duplicate Item ID.');
       }
       itemIds.add(item.id);
-      if (item.type === 'userMessage' || item.type === 'agentMessage') {
+      if (item.type === 'contextCompaction') {
+        const outcome =
+          item.outcome ??
+          (turn.status === 'interrupted'
+            ? ({ type: 'interrupted' } as const)
+            : undefined);
+        if (!outcome) {
+          throw new Error(
+            'thread/resume returned terminal context compaction without an outcome.',
+          );
+        }
+        contextCompactions.push({
+          id: item.id,
+          strategy: item.strategy,
+          ordinal: item.ordinal,
+          preContextBytes: item.preContextBytes,
+          sourceMessages: item.sourceMessages,
+          sourceBytes: item.sourceBytes,
+          sourceSha256: item.sourceSha256,
+          status: 'completed',
+          outcome,
+        });
+        activities.push({
+          type: 'contextCompaction',
+          activity: contextCompactions[contextCompactions.length - 1],
+        });
+      } else if (
+        item.type === 'userMessage' ||
+        item.type === 'agentMessage'
+      ) {
         messages.push({
           id: item.id,
           role: item.type === 'userMessage' ? 'user' : 'agent',
@@ -76,18 +109,9 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceReadCall') {
-        if (
-          workspaceRead ||
-          workspaceList ||
-          workspaceSearch ||
-          fileChange ||
-          commandCall ||
-          commandApproval ||
-          mcpCall ||
-          mcpActivities.length > 0
-        ) {
+        if (workspaceRead && !workspaceRead.result) {
           throw new Error(
-            'thread/resume returned duplicate workspace/read activity.',
+            'thread/resume returned overlapping workspace/read activity.',
           );
         }
         workspaceRead = {
@@ -96,6 +120,7 @@ export const recoverConversation = (
           path: item.path,
           callStatus: 'completed',
         };
+        activities.push({ type: 'workspaceRead', activity: workspaceRead });
         continue;
       }
       if (item.type === 'workspaceReadResult') {
@@ -116,21 +141,18 @@ export const recoverConversation = (
             outcome: { ...item.outcome },
           },
         };
+        const index = activities.findIndex(
+          (entry) =>
+            entry.type === 'workspaceRead' &&
+            entry.activity.callId === item.callId,
+        );
+        activities[index] = { type: 'workspaceRead', activity: workspaceRead };
         continue;
       }
       if (item.type === 'workspaceListCall') {
-        if (
-          workspaceList ||
-          workspaceRead ||
-          workspaceSearch ||
-          fileChange ||
-          commandCall ||
-          commandApproval ||
-          mcpCall ||
-          mcpActivities.length > 0
-        ) {
+        if (workspaceList && !workspaceList.result) {
           throw new Error(
-            'thread/resume returned duplicate workspace/list activity.',
+            'thread/resume returned overlapping workspace/list activity.',
           );
         }
         workspaceList = {
@@ -139,6 +161,7 @@ export const recoverConversation = (
           path: item.path,
           callStatus: 'completed',
         };
+        activities.push({ type: 'workspaceList', activity: workspaceList });
         continue;
       }
       if (item.type === 'workspaceListResult') {
@@ -159,21 +182,18 @@ export const recoverConversation = (
             outcome: { ...item.outcome },
           },
         };
+        const index = activities.findIndex(
+          (entry) =>
+            entry.type === 'workspaceList' &&
+            entry.activity.callId === item.callId,
+        );
+        activities[index] = { type: 'workspaceList', activity: workspaceList };
         continue;
       }
       if (item.type === 'workspaceSearchCall') {
-        if (
-          workspaceSearch ||
-          workspaceRead ||
-          workspaceList ||
-          fileChange ||
-          commandCall ||
-          commandApproval ||
-          mcpCall ||
-          mcpActivities.length > 0
-        ) {
+        if (workspaceSearch && !workspaceSearch.result) {
           throw new Error(
-            'thread/resume returned duplicate workspace/search activity.',
+            'thread/resume returned overlapping workspace/search activity.',
           );
         }
         workspaceSearch = {
@@ -183,6 +203,7 @@ export const recoverConversation = (
           query: item.query,
           callStatus: 'completed',
         };
+        activities.push({ type: 'workspaceSearch', activity: workspaceSearch });
         continue;
       }
       if (item.type === 'workspaceSearchResult') {
@@ -203,21 +224,21 @@ export const recoverConversation = (
             outcome: { ...item.outcome },
           },
         };
+        const index = activities.findIndex(
+          (entry) =>
+            entry.type === 'workspaceSearch' &&
+            entry.activity.callId === item.callId,
+        );
+        activities[index] = {
+          type: 'workspaceSearch',
+          activity: workspaceSearch,
+        };
         continue;
       }
       if (item.type === 'workspacePatchCall') {
-        if (
-          workspaceRead ||
-          workspaceList ||
-          workspaceSearch ||
-          fileChange ||
-          commandCall ||
-          commandApproval ||
-          mcpCall ||
-          mcpActivities.length > 0
-        ) {
+        if (fileChange && !fileChange.result) {
           throw new Error(
-            'thread/resume returned duplicate workspace/apply-patch activity.',
+            'thread/resume returned overlapping workspace/apply-patch activity.',
           );
         }
         fileChange = {
@@ -226,6 +247,7 @@ export const recoverConversation = (
           path: item.path,
           callStatus: 'completed',
         };
+        activities.push({ type: 'fileChange', activity: fileChange });
         continue;
       }
       if (item.type === 'workspacePatchChange') {
@@ -256,6 +278,12 @@ export const recoverConversation = (
             finalNewline: item.finalNewline,
           },
         };
+        const changeIndex = activities.findIndex(
+          (entry) =>
+            entry.type === 'fileChange' &&
+            entry.activity.callId === item.callId,
+        );
+        activities[changeIndex] = { type: 'fileChange', activity: fileChange };
         continue;
       }
       if (item.type === 'workspacePatchResult') {
@@ -284,16 +312,16 @@ export const recoverConversation = (
             outcome: { ...item.outcome },
           },
         };
+        const resultIndex = activities.findIndex(
+          (entry) =>
+            entry.type === 'fileChange' &&
+            entry.activity.callId === item.callId,
+        );
+        activities[resultIndex] = { type: 'fileChange', activity: fileChange };
         continue;
       }
       if (item.type === 'mcpCall') {
         if (
-          workspaceRead ||
-          workspaceList ||
-          workspaceSearch ||
-          fileChange ||
-          commandCall ||
-          commandApproval ||
           mcpCall ||
           mcpActivities.length >= 4 ||
           mcpActivities.some((activity) => !activity.result)
@@ -344,6 +372,10 @@ export const recoverConversation = (
           callStatus: 'completed',
           requestStatus: 'completed',
         });
+        activities.push({
+          type: 'mcp',
+          activity: mcpActivities[mcpActivities.length - 1],
+        });
         mcpCall = undefined;
         continue;
       }
@@ -364,6 +396,15 @@ export const recoverConversation = (
             status: 'completed',
             value: item.decision,
           },
+        };
+        const activityIndex = activities.findIndex(
+          (entry) =>
+            entry.type === 'mcp' &&
+            entry.activity.approvalId === item.approvalId,
+        );
+        activities[activityIndex] = {
+          type: 'mcp',
+          activity: mcpActivities[index],
         };
         continue;
       }
@@ -386,6 +427,15 @@ export const recoverConversation = (
         mcpActivities[index] = {
           ...activity,
           executionAttempt: { id: item.id, status: 'completed' },
+        };
+        const activityIndex = activities.findIndex(
+          (entry) =>
+            entry.type === 'mcp' &&
+            entry.activity.approvalId === item.approvalId,
+        );
+        activities[activityIndex] = {
+          type: 'mcp',
+          activity: mcpActivities[index],
         };
         continue;
       }
@@ -414,23 +464,28 @@ export const recoverConversation = (
             receipt: { ...item.receipt },
           },
         };
+        const activityIndex = activities.findIndex(
+          (entry) =>
+            entry.type === 'mcp' && entry.activity.callId === item.callId,
+        );
+        activities[activityIndex] = {
+          type: 'mcp',
+          activity: mcpActivities[index],
+        };
         continue;
       }
       if (item.type === 'commandCall') {
         if (
-          workspaceRead ||
-          workspaceList ||
-          workspaceSearch ||
-          fileChange ||
           commandCall ||
-          commandApproval ||
-          mcpCall ||
-          mcpActivities.length > 0
+          (commandApproval &&
+            !commandApproval.executionResult &&
+            commandApproval.decision?.value === 'approved')
         ) {
           throw new Error(
-            'thread/resume returned duplicate command approval activity.',
+            'thread/resume returned overlapping command approval activity.',
           );
         }
+        commandApproval = undefined;
         commandCall = {
           id: item.id,
           callId: item.callId,
@@ -460,6 +515,11 @@ export const recoverConversation = (
           argumentCount: item.arguments.length,
           requestStatus: 'completed',
         };
+        activities.push({
+          type: 'commandApproval',
+          activity: commandApproval,
+        });
+        commandCall = undefined;
         continue;
       }
       if (item.type === 'commandApprovalDecision') {
@@ -481,6 +541,15 @@ export const recoverConversation = (
             status: 'completed',
             value: item.decision,
           },
+        };
+        const index = activities.findIndex(
+          (entry) =>
+            entry.type === 'commandApproval' &&
+            entry.activity.approvalId === item.approvalId,
+        );
+        activities[index] = {
+          type: 'commandApproval',
+          activity: commandApproval,
         };
         continue;
       }
@@ -509,6 +578,15 @@ export const recoverConversation = (
             id: item.id,
             status: 'completed',
           },
+        };
+        const index = activities.findIndex(
+          (entry) =>
+            entry.type === 'commandApproval' &&
+            entry.activity.approvalId === item.approvalId,
+        );
+        activities[index] = {
+          type: 'commandApproval',
+          activity: commandApproval,
         };
         continue;
       }
@@ -543,6 +621,15 @@ export const recoverConversation = (
             status: 'completed',
             outcome: { ...item.outcome },
           },
+        };
+        const index = activities.findIndex(
+          (entry) =>
+            entry.type === 'commandApproval' &&
+            entry.activity.callId === item.callId,
+        );
+        activities[index] = {
+          type: 'commandApproval',
+          activity: commandApproval,
         };
       }
     }
@@ -618,6 +705,8 @@ export const recoverConversation = (
       id: turn.id,
       status: turn.status,
       messages,
+      ...(activities.length > 0 ? { activities } : {}),
+      ...(contextCompactions.length > 0 ? { contextCompactions } : {}),
       ...(workspaceRead ? { workspaceRead } : {}),
       ...(workspaceList ? { workspaceList } : {}),
       ...(workspaceSearch ? { workspaceSearch } : {}),

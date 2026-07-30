@@ -63,7 +63,7 @@ pub enum ExecRecordV1 {
         sequence: u64,
         thread_id: Option<String>,
         turn_id: Option<String>,
-        event: ExecEventV1,
+        event: Box<ExecEventV1>,
     },
     RunFinished {
         version: u32,
@@ -128,6 +128,24 @@ pub struct ExecItemV1 {
     pub decision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordinal: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pre_context_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post_context_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_messages: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_sha256: Option<String>,
 }
 
 pub(crate) struct MappedExecEvent {
@@ -192,7 +210,7 @@ where
                     sequence,
                     thread_id: mapped.thread_id,
                     turn_id: mapped.turn_id,
-                    event: mapped.event,
+                    event: Box::new(mapped.event),
                 })?;
             }
         }
@@ -275,7 +293,10 @@ where
             ExecEventV1::ItemCompleted { item } => {
                 if matches!(
                     item.kind,
-                    "fileChange" | "commandApprovalDecision" | "mcpApprovalDecision"
+                    "contextCompaction"
+                        | "fileChange"
+                        | "commandApprovalDecision"
+                        | "mcpApprovalDecision"
                 ) && let Some(label) = human_item_label(item)
                 {
                     self.ensure_human_line_break()?;
@@ -423,9 +444,57 @@ fn map_item(item: &CoreItemSnapshot) -> ExecItemV1 {
         diff: None,
         decision: None,
         result: None,
+        strategy: None,
+        ordinal: None,
+        pre_context_bytes: None,
+        post_context_bytes: None,
+        source_messages: None,
+        source_bytes: None,
+        source_sha256: None,
+        summary_bytes: None,
+        summary_sha256: None,
     };
     match &item.kind {
         CoreItemKind::UserMessage { .. } | CoreItemKind::AgentMessage { .. } => {}
+        CoreItemKind::ContextCompaction {
+            strategy,
+            ordinal,
+            pre_context_bytes,
+            source_messages,
+            source_bytes,
+            source_sha256,
+            outcome,
+        } => {
+            mapped.strategy = Some(match strategy {
+                sugarcode_protocol::CoreContextCompactionStrategy::ModelGeneratedActiveTurnV1 => {
+                    "modelGeneratedActiveTurnV1".to_string()
+                }
+            });
+            mapped.ordinal = Some(*ordinal);
+            mapped.pre_context_bytes = Some(*pre_context_bytes);
+            mapped.source_messages = Some(*source_messages);
+            mapped.source_bytes = Some(*source_bytes);
+            mapped.source_sha256 = Some(source_sha256.clone());
+            mapped.result = Some(match outcome {
+                None => "inProgress".to_string(),
+                Some(sugarcode_protocol::CoreContextCompactionOutcome::Completed {
+                    post_context_bytes,
+                    summary_bytes,
+                    summary_sha256,
+                }) => {
+                    mapped.post_context_bytes = Some(*post_context_bytes);
+                    mapped.summary_bytes = Some(*summary_bytes);
+                    mapped.summary_sha256 = Some(summary_sha256.clone());
+                    "completed".to_string()
+                }
+                Some(sugarcode_protocol::CoreContextCompactionOutcome::Failed { kind }) => {
+                    format!("failed:{kind}")
+                }
+                Some(sugarcode_protocol::CoreContextCompactionOutcome::Interrupted) => {
+                    "interrupted".to_string()
+                }
+            });
+        }
         CoreItemKind::ToolCall {
             call_id,
             name,
@@ -526,6 +595,7 @@ fn item_kind(kind: &CoreItemKind) -> &'static str {
     match kind {
         CoreItemKind::UserMessage { .. } => "userMessage",
         CoreItemKind::AgentMessage { .. } => "agentMessage",
+        CoreItemKind::ContextCompaction { .. } => "contextCompaction",
         CoreItemKind::ToolCall { .. } => "toolCall",
         CoreItemKind::FileChange { .. } => "fileChange",
         CoreItemKind::CommandApprovalRequest { .. } => "commandApprovalRequest",
@@ -583,6 +653,14 @@ fn turn_error_kind(kind: CoreTurnErrorKind) -> &'static str {
 
 fn human_item_label(item: &ExecItemV1) -> Option<String> {
     match item.kind {
+        "contextCompaction" => Some(match item.result.as_deref() {
+            Some("completed") => "context compacted".to_string(),
+            Some("interrupted") => "context compaction interrupted".to_string(),
+            Some(result) if result.starts_with("failed:") => {
+                format!("context compaction {result}")
+            }
+            _ => "compacting context…".to_string(),
+        }),
         "toolCall" => Some(format!(
             "tool: {} {}",
             item.name.as_deref().unwrap_or("unknown"),

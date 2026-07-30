@@ -168,6 +168,15 @@ impl sugarcode_state::ThreadRepository for FailOnAttemptRepository {
         self.inner.append_turn_item(thread_id, turn_id, item)
     }
 
+    fn complete_turn_item(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &TurnId,
+        item: &sugarcode_state::DurableItemSnapshot,
+    ) -> Result<(), sugarcode_state::RolloutError> {
+        self.inner.complete_turn_item(thread_id, turn_id, item)
+    }
+
     fn archive_thread(
         &mut self,
         thread_id: &ThreadId,
@@ -367,7 +376,12 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                 .contains("writes inside the active workspace scope")
             && tool.description.contains("network access is denied")
     }));
-    assert!(requests[1].tools.is_empty());
+    assert!(
+        requests[1]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "shell/exec")
+    );
 }
 
 #[tokio::test]
@@ -512,6 +526,77 @@ async fn denied_shell_command_persists_decision_without_running_process() {
         item,
         sugarcode_state::DurableItemSnapshot::CommandExecutionAttempt { .. }
     )));
+}
+
+#[tokio::test]
+async fn three_consecutive_explicit_denials_interrupt_the_turn() {
+    let command = test_absolute_command();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let rounds = (1..=3)
+        .map(|ordinal| {
+            vec![
+                Ok(ModelEvent::ToolCall(ModelToolCall {
+                    id: format!("call_shell_denied_{ordinal}"),
+                    name: "shell/exec".to_string(),
+                    arguments: serde_json::json!({
+                        "command": command,
+                        "arguments": [],
+                        "cwd": "."
+                    }),
+                })),
+                Ok(ModelEvent::Completed),
+            ]
+        })
+        .collect::<VecDeque<_>>();
+    let provider = SequencedProvider {
+        rounds: Mutex::new(rounds),
+        requests: requests.clone(),
+    };
+    let mut core = Core::new();
+    let started = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread");
+    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+        panic!("thread event");
+    };
+    let (mut runtime, mut events) = CoreRuntime::new_with_shell(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        None,
+        None,
+        None,
+        Arc::new(RecordedShell),
+        Arc::new(FixedApproval(CommandApprovalOutcome::Denied)),
+    );
+    runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Keep trying the denied command".to_string()),
+        )
+        .expect("start shell turn");
+    while !matches!(
+        events.recv().await.expect("core event").kind,
+        CoreEventKind::TurnInterrupted { .. }
+    ) {}
+
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    assert_eq!(
+        snapshot.turns[0]
+            .items
+            .iter()
+            .filter(|item| matches!(
+                item,
+                sugarcode_state::DurableItemSnapshot::CommandApprovalDecision {
+                    decision,
+                    ..
+                } if decision == "denied"
+            ))
+            .count(),
+        3
+    );
+    assert_eq!(requests.lock().expect("requests").len(), 3);
 }
 
 #[tokio::test]

@@ -17,6 +17,8 @@ use crate::TurnInterruptOutcome;
 use crate::TurnStartOutcome;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -35,6 +37,8 @@ use sugarcode_model_provider::ModelRole;
 use sugarcode_model_provider::ModelToolCall;
 use sugarcode_model_provider::ModelToolDefinition;
 use sugarcode_model_provider::ModelUsage;
+use sugarcode_protocol::CoreContextCompactionOutcome;
+use sugarcode_protocol::CoreContextCompactionStrategy;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreFileChangeKind;
@@ -89,13 +93,11 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-mod mcp_sequence;
+mod agent_loop;
 mod terminal;
 mod tool_dispatch;
 
-use mcp_sequence::MAX_PROVIDER_ROUNDS;
-use mcp_sequence::MCP_RESULT_RECEIPT_RESERVE_BYTES;
-use mcp_sequence::McpSequence;
+use agent_loop::AgentLoopState;
 use terminal::Terminal;
 use terminal::claim_terminal;
 use terminal::clear_active;
@@ -110,21 +112,18 @@ use tool_dispatch::map_workspace_list_outcome;
 use tool_dispatch::map_workspace_patch_error;
 use tool_dispatch::map_workspace_read_outcome;
 use tool_dispatch::map_workspace_search_outcome;
-use tool_dispatch::mcp_tool_definitions;
 use tool_dispatch::serialized_file_change_bytes;
-use tool_dispatch::serialized_shell_tool_call_bytes;
-use tool_dispatch::serialized_tool_call_bytes;
 use tool_dispatch::serialized_tool_result_bytes;
 use tool_dispatch::shell_tool_arguments;
 use tool_dispatch::workspace_tool_arguments;
 use tool_dispatch::workspace_tool_definitions;
 
+use crate::agent_instructions::sugarcode_active_turn_compaction_instruction_v1;
 use crate::agent_instructions::sugarcode_base_agent_instruction_v1;
 
-const MAX_TOOL_CALLS_PER_TURN: usize = 1;
-const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
-pub const MAX_TURN_TOOL_BYTES: usize = 400 * 1024;
+const MAX_ACTIVE_TURN_COMPACTION_BYTES: usize = 32 * 1024;
 
 const CORE_EVENT_CAPACITY: usize = 64;
 
@@ -660,25 +659,50 @@ async fn run_turn(
         .map(prepared_model_message)
         .collect::<Vec<_>>();
     let mut usage = None;
-    let mut round = 0u8;
     let mut agent_item: Option<CoreItemSnapshot> = None;
     let mut pending_tool_call = false;
     let mut patch_commit_interrupted = false;
     let mut non_whitespace_text_seen = false;
-    let mut tool_call_count = 0usize;
-    let mut turn_tool_bytes = 0usize;
-    let mut mcp_sequence = McpSequence::default();
+    let mut agent_loop = AgentLoopState::default();
+    let mut compaction_ordinal = 0u64;
     let mut terminal = 'rounds: loop {
-        if round >= MAX_PROVIDER_ROUNDS {
-            break Terminal::Failed(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
+        let tools = agent_loop.tools_for_round(&runtime);
+        let initial_request = ModelRequest {
+            model: model_gateway.model.to_string(),
+            instructions: prepared.instructions.clone(),
+            messages: messages.clone(),
+            tools: tools.clone(),
+        };
+        if initial_request.context_bytes() > crate::context::COMPACTION_TARGET_BYTES {
+            compaction_ordinal = match compaction_ordinal.checked_add(1) {
+                Some(value) => value,
+                None => {
+                    break Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false));
+                }
+            };
+            match compact_active_turn(
+                &runtime,
+                &prepared,
+                model_gateway,
+                &messages,
+                &tools,
+                compaction_ordinal,
+                &cancellation,
+                &mut usage,
+            )
+            .await
+            {
+                Ok(compacted) => messages = compacted,
+                Err(terminal) => break terminal,
+            }
         }
         let request = ModelRequest {
             model: model_gateway.model.to_string(),
             instructions: prepared.instructions.clone(),
             messages: messages.clone(),
-            tools: mcp_sequence.tools_for_round(&runtime, round),
+            tools,
         };
-        if request.context_bytes() > crate::context::MAX_PROVIDER_CONTEXT_BYTES {
+        if request.context_bytes() > crate::context::COMPACTION_TARGET_BYTES {
             break Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false));
         }
         let stream = tokio::select! {
@@ -758,15 +782,9 @@ async fn run_turn(
                 }
                 Some(Ok(ModelEvent::TextDelta(_))) => {}
                 Some(Ok(ModelEvent::ToolCall(call))) => {
-                    let call_allowed = if round == 0 {
-                        tool_call_count < MAX_TOOL_CALLS_PER_TURN
-                    } else {
-                        call.name.starts_with("mcp__")
-                    };
-                    if !call_allowed
-                        || agent_item.is_some()
+                    if agent_item.is_some()
                         || tool_call.is_some()
-                        || !mcp_sequence.observe_call(round, &call)
+                        || !agent_loop.observe_call(&call)
                     {
                         break 'rounds Terminal::Failed(ModelError::new(
                             ModelErrorKind::UnsupportedOutput,
@@ -774,7 +792,6 @@ async fn run_turn(
                         ));
                     }
                     tool_call = Some(call);
-                    tool_call_count += 1;
                 }
                 Some(Ok(ModelEvent::Usage(value))) => {
                     if !accumulate_usage(&mut usage, value) {
@@ -851,26 +868,6 @@ async fn run_turn(
                                 ));
                             }
                         };
-                        let call_bytes = serde_json::to_vec(&prepared_call.arguments)
-                            .ok()
-                            .and_then(|arguments| {
-                                call.id
-                                    .len()
-                                    .checked_add(call.name.len())
-                                    .and_then(|total| total.checked_add(arguments.len()))
-                            })
-                            .unwrap_or(usize::MAX);
-                        if turn_tool_bytes
-                            .checked_add(call_bytes)
-                            .and_then(|bytes| bytes.checked_add(MCP_RESULT_RECEIPT_RESERVE_BYTES))
-                            .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
-                        {
-                            break 'rounds Terminal::Failed(ModelError::new(
-                                ModelErrorKind::OutputTooLarge,
-                                false,
-                            ));
-                        }
-                        turn_tool_bytes += call_bytes;
                         if append_completed_tool_item(
                             &runtime,
                             &prepared,
@@ -964,6 +961,7 @@ async fn run_turn(
                         }
                         let (mut result, mut content, interrupted) = match approval {
                             Some(McpToolApprovalOutcome::Approved) => {
+                                agent_loop.reset_approval_denials();
                                 match runtime.mcp_execution_lease.clone().try_acquire_owned() {
                                     Ok(_lease) => {
                                         if append_completed_tool_item(
@@ -1012,22 +1010,15 @@ async fn run_turn(
                         fit_mcp_result_to_budget(
                             &mut result,
                             &mut content,
-                            MAX_TURN_TOOL_BYTES.saturating_sub(turn_tool_bytes),
+                            MAX_SERIALIZED_TOOL_RESULT_BYTES,
                         );
                         let result_bytes = serialized_mcp_result_bytes(&result);
-                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES
-                            || turn_tool_bytes
-                                .checked_add(result_bytes)
-                                .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
-                        {
+                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
                             break 'rounds Terminal::Failed(ModelError::new(
                                 ModelErrorKind::OutputTooLarge,
                                 false,
                             ));
                         }
-                        turn_tool_bytes += result_bytes;
-                        let completed_result =
-                            matches!(result, CoreMcpToolResult::Completed { .. });
                         if append_completed_tool_item(
                             &runtime,
                             &prepared,
@@ -1043,8 +1034,12 @@ async fn run_turn(
                             break 'rounds Terminal::StateUnavailable;
                         }
                         pending_tool_call = false;
-                        mcp_sequence.record_result(completed_result);
                         if interrupted {
+                            break 'rounds Terminal::Interrupted;
+                        }
+                        if matches!(approval, Some(McpToolApprovalOutcome::Denied))
+                            && agent_loop.record_approval_denied()
+                        {
                             break 'rounds Terminal::Interrupted;
                         }
                         messages.push(ModelMessage::ToolCall(call.clone()));
@@ -1052,7 +1047,6 @@ async fn run_turn(
                             call_id: call.id,
                             content,
                         });
-                        round = round.saturating_add(1);
                         continue 'rounds;
                     }
                     if call.name == "shell/exec" {
@@ -1060,17 +1054,6 @@ async fn run_turn(
                             Ok(arguments) => arguments,
                             Err(error) => break 'rounds Terminal::Failed(error),
                         };
-                        let call_bytes = serialized_shell_tool_call_bytes(&call, &arguments);
-                        if turn_tool_bytes
-                            .checked_add(call_bytes)
-                            .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
-                        {
-                            break 'rounds Terminal::Failed(ModelError::new(
-                                ModelErrorKind::OutputTooLarge,
-                                false,
-                            ));
-                        }
-                        turn_tool_bytes += call_bytes;
                         if append_completed_tool_item(
                             &runtime,
                             &prepared,
@@ -1216,6 +1199,7 @@ async fn run_turn(
                                 (result, content)
                             }
                             Some(CommandApprovalOutcome::Approved) => {
+                                agent_loop.reset_approval_denials();
                                 if append_completed_tool_item(
                                     &runtime,
                                     &prepared,
@@ -1248,18 +1232,14 @@ async fn run_turn(
                             }
                         };
                         let mut result_bytes = serialized_tool_result_bytes(&result);
-                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES
-                            || turn_tool_bytes
-                                .checked_add(result_bytes)
-                                .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
-                        {
+                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
                             result = CoreToolResult::Error {
                                 kind: CoreToolErrorKind::ResultTooLarge,
                             };
                             content = "shell/exec error: resultTooLarge".to_string();
                             result_bytes = serialized_tool_result_bytes(&result);
                         }
-                        turn_tool_bytes += result_bytes;
+                        debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
                         if append_completed_tool_item(
                             &runtime,
                             &prepared,
@@ -1275,29 +1255,23 @@ async fn run_turn(
                             break 'rounds Terminal::StateUnavailable;
                         }
                         pending_tool_call = false;
+                        if matches!(approval, Some(CommandApprovalOutcome::Denied))
+                            && agent_loop.record_approval_denied()
+                        {
+                            break 'rounds Terminal::Interrupted;
+                        }
                         messages.push(ModelMessage::ToolCall(call.clone()));
                         messages.push(ModelMessage::ToolResult {
                             call_id: call.id,
                             content,
                         });
-                        round = 1;
                         continue 'rounds;
                     }
                     let arguments = match workspace_tool_arguments(&call) {
                         Ok(arguments) => arguments,
                         Err(error) => break 'rounds Terminal::Failed(error),
                     };
-                    let call_bytes = serialized_tool_call_bytes(&call, &arguments);
-                    if turn_tool_bytes
-                        .checked_add(call_bytes)
-                        .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
-                    {
-                        break 'rounds Terminal::Failed(ModelError::new(
-                            ModelErrorKind::OutputTooLarge,
-                            false,
-                        ));
-                    }
-                    turn_tool_bytes += call_bytes;
+                    agent_loop.reset_approval_denials();
                     if append_completed_tool_item(
                         &runtime,
                         &prepared,
@@ -1367,20 +1341,7 @@ async fn run_turn(
                                         final_newline: proposal.final_newline(),
                                     };
                                     let change_bytes = serialized_file_change_bytes(&file_change);
-                                    if turn_tool_bytes
-                                        .checked_add(change_bytes)
-                                        .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
-                                    {
-                                        (
-                                            CoreToolResult::Error {
-                                                kind: CoreToolErrorKind::ResultTooLarge,
-                                            },
-                                            "workspace/apply-patch error: resultTooLarge"
-                                                .to_string(),
-                                            false,
-                                        )
-                                    } else {
-                                        turn_tool_bytes += change_bytes;
+                                    if change_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES {
                                         if append_completed_tool_item(
                                             &runtime,
                                             &prepared,
@@ -1441,22 +1402,27 @@ async fn run_turn(
                                                 )
                                             }
                                         }
+                                    } else {
+                                        (
+                                            CoreToolResult::Error {
+                                                kind: CoreToolErrorKind::ResultTooLarge,
+                                            },
+                                            "workspace/apply-patch error: resultTooLarge"
+                                                .to_string(),
+                                            false,
+                                        )
                                     }
                                 }
                             };
                         let mut result_bytes = serialized_tool_result_bytes(&result);
-                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES
-                            || turn_tool_bytes
-                                .checked_add(result_bytes)
-                                .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
-                        {
+                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
                             result = CoreToolResult::Error {
                                 kind: CoreToolErrorKind::ResultTooLarge,
                             };
                             content = "workspace/apply-patch error: resultTooLarge".to_string();
                             result_bytes = serialized_tool_result_bytes(&result);
                         }
-                        turn_tool_bytes += result_bytes;
+                        debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
                         if append_completed_tool_item(
                             &runtime,
                             &prepared,
@@ -1481,7 +1447,6 @@ async fn run_turn(
                             call_id: call.id,
                             content,
                         });
-                        round = 1;
                         continue 'rounds;
                     }
                     let (mut result, mut content) = match call.name.as_str() {
@@ -1558,18 +1523,14 @@ async fn run_turn(
                         _ => unreachable!("tool availability was validated"),
                     };
                     let mut result_bytes = serialized_tool_result_bytes(&result);
-                    if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES
-                        || turn_tool_bytes
-                            .checked_add(result_bytes)
-                            .is_none_or(|bytes| bytes > MAX_TURN_TOOL_BYTES)
-                    {
+                    if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
                         result = CoreToolResult::Error {
                             kind: CoreToolErrorKind::ResultTooLarge,
                         };
                         content = format!("{} error: resultTooLarge", call.name);
                         result_bytes = serialized_tool_result_bytes(&result);
                     }
-                    turn_tool_bytes += result_bytes;
+                    debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
                     if append_completed_tool_item(
                         &runtime,
                         &prepared,
@@ -1590,7 +1551,6 @@ async fn run_turn(
                         call_id: call.id,
                         content,
                     });
-                    round = 1;
                     continue 'rounds;
                 }
                 Some(Err(error)) => break 'rounds Terminal::Failed(error),
@@ -1640,6 +1600,425 @@ async fn run_turn(
         }
     }
     clear_active(&runtime, &thread_id, &turn_id);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compact_active_turn(
+    runtime: &CoreRuntime,
+    prepared: &crate::PreparedTextTurn,
+    model_gateway: &ModelGateway,
+    messages: &[ModelMessage],
+    tools: &[ModelToolDefinition],
+    ordinal: u64,
+    cancellation: &CancellationToken,
+    usage: &mut Option<ModelUsage>,
+) -> Result<Vec<ModelMessage>, Terminal> {
+    let instruction_bytes = prepared
+        .instructions
+        .iter()
+        .map(ModelInstruction::context_bytes)
+        .try_fold(0usize, usize::checked_add)
+        .ok_or_else(output_too_large)?;
+    let tool_bytes = tools
+        .iter()
+        .map(ModelToolDefinition::context_bytes)
+        .try_fold(0usize, usize::checked_add)
+        .ok_or_else(output_too_large)?;
+    let fixed_post_bytes = instruction_bytes
+        .checked_add(tool_bytes)
+        .and_then(|bytes| bytes.checked_add(MAX_ACTIVE_TURN_COMPACTION_BYTES))
+        .ok_or_else(output_too_large)?;
+    if fixed_post_bytes > crate::context::COMPACTION_TARGET_BYTES {
+        return Err(output_too_large());
+    }
+
+    let mut tail_start = recent_complete_tool_pair_start(messages, 2);
+    while tail_start < messages.len() {
+        let tail_bytes = messages[tail_start..]
+            .iter()
+            .map(ModelMessage::context_bytes)
+            .try_fold(0usize, usize::checked_add)
+            .ok_or_else(output_too_large)?;
+        if fixed_post_bytes
+            .checked_add(tail_bytes)
+            .is_some_and(|bytes| bytes <= crate::context::COMPACTION_TARGET_BYTES)
+        {
+            break;
+        }
+        tail_start = drop_oldest_complete_tool_pair(messages, tail_start);
+    }
+    if tail_start == 0 {
+        return Err(output_too_large());
+    }
+
+    let source = &messages[..tail_start];
+    let source_bytes = source
+        .iter()
+        .map(ModelMessage::context_bytes)
+        .try_fold(0usize, usize::checked_add)
+        .ok_or_else(output_too_large)?;
+    let source_sha256 = model_messages_sha256(source);
+    let pre_context_bytes = ModelRequest {
+        model: model_gateway.model.to_string(),
+        instructions: prepared.instructions.clone(),
+        messages: messages.to_vec(),
+        tools: tools.to_vec(),
+    }
+    .context_bytes();
+    let started = runtime
+        .lock_core()
+        .and_then(|mut core| {
+            core.append_completed_item(
+                &prepared.thread_id,
+                &prepared.turn_id,
+                CoreItemKind::ContextCompaction {
+                    strategy: CoreContextCompactionStrategy::ModelGeneratedActiveTurnV1,
+                    ordinal,
+                    pre_context_bytes: pre_context_bytes as u64,
+                    source_messages: source.len() as u64,
+                    source_bytes: source_bytes as u64,
+                    source_sha256: source_sha256.clone(),
+                    outcome: None,
+                },
+            )
+        })
+        .map_err(|_| Terminal::StateUnavailable)?;
+    if !send_event(
+        runtime,
+        &CancellationToken::new(),
+        prepared.request_id,
+        CoreEventKind::ItemStarted {
+            thread_id: prepared.thread_id.clone(),
+            turn_id: prepared.turn_id.clone(),
+            item: started.clone(),
+        },
+    )
+    .await
+    {
+        return Err(Terminal::StateUnavailable);
+    }
+
+    let mut compaction_instructions = prepared.instructions.clone();
+    compaction_instructions.push(sugarcode_active_turn_compaction_instruction_v1());
+    let compaction_request = ModelRequest {
+        model: model_gateway.model.to_string(),
+        instructions: compaction_instructions,
+        messages: source.to_vec(),
+        tools: Vec::new(),
+    };
+    if compaction_request.context_bytes() > crate::context::MAX_PROVIDER_CONTEXT_BYTES {
+        complete_compaction_item(
+            runtime,
+            prepared,
+            &started,
+            CoreContextCompactionOutcome::Failed {
+                kind: "outputTooLarge".to_string(),
+            },
+            None,
+        )
+        .await?;
+        return Err(output_too_large());
+    }
+
+    let stream = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            complete_compaction_item(
+                runtime,
+                prepared,
+                &started,
+                CoreContextCompactionOutcome::Interrupted,
+                None,
+            ).await?;
+            return Err(Terminal::Interrupted);
+        }
+        result = model_gateway.provider.stream(compaction_request) => result,
+    };
+    let mut stream = match stream {
+        Ok(stream) => stream,
+        Err(error) => {
+            complete_compaction_item(
+                runtime,
+                prepared,
+                &started,
+                CoreContextCompactionOutcome::Failed {
+                    kind: model_error_kind_name(error.kind()).to_string(),
+                },
+                None,
+            )
+            .await?;
+            return Err(Terminal::Failed(error));
+        }
+    };
+    let mut summary = String::new();
+    let mut completed = false;
+    loop {
+        let event = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                complete_compaction_item(
+                    runtime,
+                    prepared,
+                    &started,
+                    CoreContextCompactionOutcome::Interrupted,
+                    None,
+                ).await?;
+                return Err(Terminal::Interrupted);
+            }
+            event = stream.next() => event,
+        };
+        match event {
+            Some(Ok(ModelEvent::TextDelta(delta))) => {
+                if summary
+                    .len()
+                    .checked_add(delta.len())
+                    .is_none_or(|bytes| bytes > MAX_ACTIVE_TURN_COMPACTION_BYTES)
+                {
+                    complete_compaction_item(
+                        runtime,
+                        prepared,
+                        &started,
+                        CoreContextCompactionOutcome::Failed {
+                            kind: "outputTooLarge".to_string(),
+                        },
+                        None,
+                    )
+                    .await?;
+                    return Err(output_too_large());
+                }
+                summary.push_str(&delta);
+            }
+            Some(Ok(ModelEvent::Usage(value))) => {
+                if !accumulate_usage(usage, value) {
+                    complete_compaction_item(
+                        runtime,
+                        prepared,
+                        &started,
+                        CoreContextCompactionOutcome::Failed {
+                            kind: "outputTooLarge".to_string(),
+                        },
+                        None,
+                    )
+                    .await?;
+                    return Err(output_too_large());
+                }
+            }
+            Some(Ok(ModelEvent::Completed)) => {
+                completed = true;
+                break;
+            }
+            Some(Ok(ModelEvent::ToolCall(_))) => {
+                complete_compaction_item(
+                    runtime,
+                    prepared,
+                    &started,
+                    CoreContextCompactionOutcome::Failed {
+                        kind: "unsupportedOutput".to_string(),
+                    },
+                    None,
+                )
+                .await?;
+                return Err(Terminal::Failed(ModelError::new(
+                    ModelErrorKind::UnsupportedOutput,
+                    false,
+                )));
+            }
+            Some(Err(error)) => {
+                complete_compaction_item(
+                    runtime,
+                    prepared,
+                    &started,
+                    CoreContextCompactionOutcome::Failed {
+                        kind: model_error_kind_name(error.kind()).to_string(),
+                    },
+                    None,
+                )
+                .await?;
+                return Err(Terminal::Failed(error));
+            }
+            None => break,
+        }
+    }
+    if !completed || summary.trim().is_empty() {
+        complete_compaction_item(
+            runtime,
+            prepared,
+            &started,
+            CoreContextCompactionOutcome::Failed {
+                kind: "incomplete".to_string(),
+            },
+            None,
+        )
+        .await?;
+        return Err(Terminal::Failed(ModelError::new(
+            ModelErrorKind::Incomplete,
+            false,
+        )));
+    }
+
+    let summary_sha256 = sha256(summary.as_bytes());
+    let mut compacted = Vec::with_capacity(1 + messages.len() - tail_start);
+    compacted.push(ModelMessage::ContextCompaction {
+        content: summary.clone(),
+    });
+    compacted.extend_from_slice(&messages[tail_start..]);
+    let post_context_bytes = ModelRequest {
+        model: model_gateway.model.to_string(),
+        instructions: prepared.instructions.clone(),
+        messages: compacted.clone(),
+        tools: tools.to_vec(),
+    }
+    .context_bytes();
+    if post_context_bytes > crate::context::COMPACTION_TARGET_BYTES {
+        complete_compaction_item(
+            runtime,
+            prepared,
+            &started,
+            CoreContextCompactionOutcome::Failed {
+                kind: "outputTooLarge".to_string(),
+            },
+            None,
+        )
+        .await?;
+        return Err(output_too_large());
+    }
+    complete_compaction_item(
+        runtime,
+        prepared,
+        &started,
+        CoreContextCompactionOutcome::Completed {
+            post_context_bytes: post_context_bytes as u64,
+            summary_bytes: summary.len() as u64,
+            summary_sha256,
+        },
+        Some(summary),
+    )
+    .await?;
+    Ok(compacted)
+}
+
+async fn complete_compaction_item(
+    runtime: &CoreRuntime,
+    prepared: &crate::PreparedTextTurn,
+    started: &CoreItemSnapshot,
+    outcome: CoreContextCompactionOutcome,
+    summary: Option<String>,
+) -> Result<(), Terminal> {
+    let completed = runtime
+        .lock_core()
+        .and_then(|mut core| {
+            core.complete_context_compaction_item(
+                &prepared.thread_id,
+                &prepared.turn_id,
+                &started.id,
+                outcome,
+                summary,
+            )
+        })
+        .map_err(|_| Terminal::StateUnavailable)?;
+    if !send_event(
+        runtime,
+        &CancellationToken::new(),
+        prepared.request_id,
+        CoreEventKind::ItemCompleted {
+            thread_id: prepared.thread_id.clone(),
+            turn_id: prepared.turn_id.clone(),
+            item: completed,
+        },
+    )
+    .await
+    {
+        return Err(Terminal::StateUnavailable);
+    }
+    Ok(())
+}
+
+fn recent_complete_tool_pair_start(messages: &[ModelMessage], maximum_pairs: usize) -> usize {
+    let mut index = messages.len();
+    let mut pairs = 0usize;
+    while pairs < maximum_pairs && index >= 2 {
+        let (ModelMessage::ToolCall(call), ModelMessage::ToolResult { call_id, .. }) =
+            (&messages[index - 2], &messages[index - 1])
+        else {
+            break;
+        };
+        if &call.id != call_id {
+            break;
+        }
+        index -= 2;
+        pairs += 1;
+    }
+    index
+}
+
+fn drop_oldest_complete_tool_pair(messages: &[ModelMessage], tail_start: usize) -> usize {
+    if tail_start + 1 < messages.len()
+        && matches!(messages[tail_start], ModelMessage::ToolCall(_))
+        && matches!(messages[tail_start + 1], ModelMessage::ToolResult { .. })
+    {
+        tail_start + 2
+    } else {
+        messages.len()
+    }
+}
+
+fn model_messages_sha256(messages: &[ModelMessage]) -> String {
+    let mut hasher = Sha256::new();
+    for message in messages {
+        match message {
+            ModelMessage::Text { role, text } => {
+                hasher.update(match role {
+                    ModelRole::User => b"user".as_slice(),
+                    ModelRole::Assistant => b"assistant".as_slice(),
+                });
+                hasher.update(text.as_bytes());
+            }
+            ModelMessage::ContextCompaction { content } => {
+                hasher.update(b"contextCompaction");
+                hasher.update(content.as_bytes());
+            }
+            ModelMessage::ToolCall(call) => {
+                hasher.update(b"toolCall");
+                hasher.update(call.id.as_bytes());
+                hasher.update(call.name.as_bytes());
+                if let Ok(arguments) = serde_json::to_vec(&call.arguments) {
+                    hasher.update(arguments);
+                }
+            }
+            ModelMessage::ToolResult { call_id, content } => {
+                hasher.update(b"toolResult");
+                hasher.update(call_id.as_bytes());
+                hasher.update(content.as_bytes());
+            }
+        }
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn output_too_large() -> Terminal {
+    Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false))
+}
+
+fn model_error_kind_name(kind: ModelErrorKind) -> &'static str {
+    match kind {
+        ModelErrorKind::Authentication => "authentication",
+        ModelErrorKind::InvalidRequest => "invalidRequest",
+        ModelErrorKind::RateLimited => "rateLimited",
+        ModelErrorKind::Timeout => "timeout",
+        ModelErrorKind::Transport => "transport",
+        ModelErrorKind::Disconnected => "disconnected",
+        ModelErrorKind::Server => "server",
+        ModelErrorKind::Protocol => "protocol",
+        ModelErrorKind::Incomplete => "incomplete",
+        ModelErrorKind::Filtered => "filtered",
+        ModelErrorKind::UnsupportedOutput => "unsupportedOutput",
+        ModelErrorKind::OutputTooLarge => "outputTooLarge",
+    }
 }
 
 fn workspace_instructions_audit(

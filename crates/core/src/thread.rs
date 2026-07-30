@@ -216,6 +216,16 @@ enum ItemKind {
     AgentMessage {
         text: String,
     },
+    ContextCompaction {
+        strategy: sugarcode_protocol::CoreContextCompactionStrategy,
+        ordinal: u64,
+        pre_context_bytes: u64,
+        source_messages: u64,
+        source_bytes: u64,
+        source_sha256: String,
+        outcome: Option<sugarcode_protocol::CoreContextCompactionOutcome>,
+        summary: Option<PrivateCompactionSummary>,
+    },
     ToolCall {
         call_id: String,
         name: String,
@@ -298,6 +308,30 @@ enum ItemKind {
     },
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct PrivateCompactionSummary(String);
+
+impl PrivateCompactionSummary {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for PrivateCompactionSummary {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Debug for PrivateCompactionSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PrivateCompactionSummary")
+            .field("bytes", &self.0.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Item {
     fn new_agent_message(id: ItemId) -> Self {
         Self {
@@ -321,7 +355,8 @@ impl Item {
             ItemKind::UserMessage { .. } => Err(CoreError::Internal(
                 "cannot append an agent delta to a user message".to_string(),
             )),
-            ItemKind::ToolCall { .. }
+            ItemKind::ContextCompaction { .. }
+            | ItemKind::ToolCall { .. }
             | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
@@ -349,6 +384,24 @@ impl Item {
         let kind = match &self.kind {
             ItemKind::UserMessage { text } => CoreItemKind::UserMessage { text: text.clone() },
             ItemKind::AgentMessage { text } => CoreItemKind::AgentMessage { text: text.clone() },
+            ItemKind::ContextCompaction {
+                strategy,
+                ordinal,
+                pre_context_bytes,
+                source_messages,
+                source_bytes,
+                source_sha256,
+                outcome,
+                ..
+            } => CoreItemKind::ContextCompaction {
+                strategy: *strategy,
+                ordinal: *ordinal,
+                pre_context_bytes: *pre_context_bytes,
+                source_messages: *source_messages,
+                source_bytes: *source_bytes,
+                source_sha256: source_sha256.clone(),
+                outcome: outcome.clone(),
+            },
             ItemKind::ToolCall {
                 call_id,
                 name,
@@ -675,6 +728,35 @@ impl Core {
                         id: id.clone(),
                         state: ItemState::Completed,
                         kind: ItemKind::AgentMessage { text: text.clone() },
+                    },
+                    DurableItemSnapshot::ContextCompaction {
+                        id,
+                        strategy,
+                        ordinal,
+                        pre_context_bytes,
+                        source_messages,
+                        source_bytes,
+                        source_sha256,
+                        outcome,
+                        summary,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::ContextCompaction {
+                            strategy: match strategy.as_str() {
+                                "modelGeneratedActiveTurnV1" => sugarcode_protocol::CoreContextCompactionStrategy::ModelGeneratedActiveTurnV1,
+                                _ => continue,
+                            },
+                            ordinal: *ordinal,
+                            pre_context_bytes: *pre_context_bytes,
+                            source_messages: *source_messages,
+                            source_bytes: *source_bytes,
+                            source_sha256: source_sha256.clone(),
+                            outcome: outcome.as_ref().map(core_context_compaction_outcome),
+                            summary: summary
+                                .as_ref()
+                                .map(|summary| summary.as_str().to_string().into()),
+                        },
                     },
                     DurableItemSnapshot::ToolCall {
                         id,
@@ -1015,18 +1097,16 @@ impl Core {
             history.push(PreparedMessage::ContextCompaction {
                 content: compaction.message.clone(),
             });
-            history.extend(
-                completed_turns
-                    .iter()
-                    .filter(|turn| turn.id > compaction.through_turn_id)
-                    .flat_map(|turn| prepared_messages_for_turn(turn)),
-            );
+            for turn in completed_turns
+                .iter()
+                .filter(|turn| turn.id > compaction.through_turn_id)
+            {
+                append_prepared_turn(&mut history, turn);
+            }
         } else {
-            history.extend(
-                completed_turns
-                    .iter()
-                    .flat_map(|turn| prepared_messages_for_turn(turn)),
-            );
+            for turn in &completed_turns {
+                append_prepared_turn(&mut history, turn);
+            }
         }
         if let Some(input) = input.as_ref() {
             history.push(PreparedMessage::Text {
@@ -1223,7 +1303,8 @@ impl Core {
     ) -> Result<CoreItemSnapshot, CoreError> {
         if !matches!(
             kind,
-            CoreItemKind::ToolCall { .. }
+            CoreItemKind::ContextCompaction { .. }
+                | CoreItemKind::ToolCall { .. }
                 | CoreItemKind::FileChange { .. }
                 | CoreItemKind::CommandApprovalRequest { .. }
                 | CoreItemKind::CommandApprovalDecision { .. }
@@ -1258,6 +1339,14 @@ impl Core {
         self.repository
             .append_turn_item(thread_id, turn_id, &durable_item_snapshot(&snapshot))
             .map_err(map_repository_error)?;
+        if !matches!(
+            snapshot.kind,
+            CoreItemKind::ContextCompaction { outcome: None, .. }
+        ) {
+            self.repository
+                .complete_turn_item(thread_id, turn_id, &durable_item_snapshot(&snapshot))
+                .map_err(map_repository_error)?;
+        }
         let item = item_from_snapshot(&snapshot, ItemState::Completed);
         let turn = self
             .threads
@@ -1266,6 +1355,43 @@ impl Core {
             .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
         turn.items.insert(item.id.clone(), item);
         self.last_item_sequence = sequence;
+        Ok(snapshot)
+    }
+
+    pub fn complete_context_compaction_item(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &TurnId,
+        item_id: &ItemId,
+        outcome: sugarcode_protocol::CoreContextCompactionOutcome,
+        summary: Option<String>,
+    ) -> Result<CoreItemSnapshot, CoreError> {
+        let item = self
+            .threads
+            .get_mut(thread_id)
+            .and_then(|thread| thread.turns.get_mut(turn_id))
+            .and_then(|turn| turn.items.get_mut(item_id))
+            .ok_or_else(|| CoreError::ItemNotInProgress(item_id.clone()))?;
+        let ItemKind::ContextCompaction {
+            outcome: current,
+            summary: stored_summary,
+            ..
+        } = &mut item.kind
+        else {
+            return Err(CoreError::Internal(
+                "item is not a context compaction".to_string(),
+            ));
+        };
+        if current.is_some() {
+            return Err(CoreError::ItemNotInProgress(item_id.clone()));
+        }
+        *current = Some(outcome);
+        *stored_summary = summary.map(Into::into);
+        let snapshot = item.snapshot();
+        let durable = durable_item_from_item(item);
+        self.repository
+            .complete_turn_item(thread_id, turn_id, &durable)
+            .map_err(map_repository_error)?;
         Ok(snapshot)
     }
 
@@ -1299,6 +1425,7 @@ impl Core {
         let current_len = match &item.kind {
             ItemKind::AgentMessage { text } => text.len(),
             ItemKind::UserMessage { .. }
+            | ItemKind::ContextCompaction { .. }
             | ItemKind::ToolCall { .. }
             | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
@@ -1401,14 +1528,19 @@ impl Core {
                     .map(Item::snapshot)
             })
             .transpose()?;
+        if let Some(item_id) = item_id.as_ref() {
+            let item = turn
+                .items
+                .get(item_id)
+                .expect("validated active item exists");
+            self.repository
+                .complete_turn_item(thread_id, turn_id, &durable_item_from_item(item))
+                .map_err(map_repository_error)?;
+        }
         let durable_turn = DurableTurnSnapshot {
             id: turn_id.clone(),
             status,
-            items: turn
-                .items
-                .values()
-                .map(|item| durable_item_snapshot(&item.snapshot()))
-                .collect(),
+            items: turn.items.values().map(durable_item_from_item).collect(),
             context_compaction: turn.context_compaction.clone(),
             workspace_instructions: turn.workspace_instructions.clone(),
             workspace_skills: turn.workspace_skills.clone(),
@@ -1453,76 +1585,101 @@ impl Default for Core {
     }
 }
 
-fn prepared_messages_for_turn(turn: &Turn) -> Vec<PreparedMessage> {
-    turn.items
-        .values()
-        .filter_map(|item| match &item.kind {
-            ItemKind::UserMessage { text } => Some(PreparedMessage::Text {
-                role: PreparedMessageRole::User,
-                text: text.clone(),
-            }),
-            ItemKind::AgentMessage { text } if !text.is_empty() => Some(PreparedMessage::Text {
-                role: PreparedMessageRole::Assistant,
-                text: text.clone(),
-            }),
-            ItemKind::AgentMessage { .. } => None,
-            ItemKind::ToolCall {
-                call_id,
-                name,
-                path,
-                query,
-                patch,
-                command,
-                arguments,
-            } => Some(PreparedMessage::ToolCall {
-                call_id: call_id.clone(),
-                name: name.clone(),
-                path: path.clone(),
-                query: query.clone(),
-                patch: patch.clone(),
-                command: command.clone(),
-                arguments: arguments.clone(),
-            }),
-            ItemKind::CommandApprovalRequest { .. }
-            | ItemKind::CommandApprovalDecision { .. }
-            | ItemKind::CommandExecutionAttempt { .. }
-            | ItemKind::McpToolCallApprovalRequest { .. }
-            | ItemKind::McpToolCallApprovalDecision { .. }
-            | ItemKind::McpToolExecutionAttempt { .. }
-            | ItemKind::FileChange { .. } => None,
-            ItemKind::McpToolCall {
-                call_id,
-                name,
-                arguments,
-                ..
-            } => Some(PreparedMessage::McpToolCall {
-                call_id: call_id.clone(),
-                name: name.clone(),
-                arguments: arguments.clone(),
-            }),
-            ItemKind::McpToolResult {
-                call_id, result, ..
-            } => Some(PreparedMessage::McpToolResult {
-                call_id: call_id.clone(),
-                content: match result {
-                    sugarcode_protocol::CoreMcpToolResult::Completed { content, .. } => {
-                        content.clone()
-                    }
-                    sugarcode_protocol::CoreMcpToolResult::Error { kind, .. } => {
-                        format!("MCP tool error: {kind}")
-                    }
-                },
-            }),
-            ItemKind::ToolResult {
-                call_id,
-                name,
-                result,
-            } => Some(PreparedMessage::ToolResult {
-                call_id: call_id.clone(),
-                content: tool_result_content(name, result),
-            }),
-        })
-        .collect()
+fn append_prepared_turn(history: &mut Vec<PreparedMessage>, turn: &Turn) {
+    for item in turn.items.values() {
+        if let ItemKind::ContextCompaction {
+            source_messages,
+            outcome: Some(sugarcode_protocol::CoreContextCompactionOutcome::Completed { .. }),
+            summary: Some(summary),
+            ..
+        } = &item.kind
+        {
+            let Ok(source_messages) = usize::try_from(*source_messages) else {
+                continue;
+            };
+            if source_messages > history.len() {
+                continue;
+            }
+            let retained = history.split_off(source_messages);
+            history.clear();
+            history.push(PreparedMessage::ContextCompaction {
+                content: summary.as_str().to_string(),
+            });
+            history.extend(retained);
+            continue;
+        }
+        if let Some(message) = prepared_message_for_item(item) {
+            history.push(message);
+        }
+    }
+}
+
+fn prepared_message_for_item(item: &Item) -> Option<PreparedMessage> {
+    match &item.kind {
+        ItemKind::UserMessage { text } => Some(PreparedMessage::Text {
+            role: PreparedMessageRole::User,
+            text: text.clone(),
+        }),
+        ItemKind::AgentMessage { text } if !text.is_empty() => Some(PreparedMessage::Text {
+            role: PreparedMessageRole::Assistant,
+            text: text.clone(),
+        }),
+        ItemKind::AgentMessage { .. } => None,
+        ItemKind::ContextCompaction { .. } => None,
+        ItemKind::ToolCall {
+            call_id,
+            name,
+            path,
+            query,
+            patch,
+            command,
+            arguments,
+        } => Some(PreparedMessage::ToolCall {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            path: path.clone(),
+            query: query.clone(),
+            patch: patch.clone(),
+            command: command.clone(),
+            arguments: arguments.clone(),
+        }),
+        ItemKind::CommandApprovalRequest { .. }
+        | ItemKind::CommandApprovalDecision { .. }
+        | ItemKind::CommandExecutionAttempt { .. }
+        | ItemKind::McpToolCallApprovalRequest { .. }
+        | ItemKind::McpToolCallApprovalDecision { .. }
+        | ItemKind::McpToolExecutionAttempt { .. }
+        | ItemKind::FileChange { .. } => None,
+        ItemKind::McpToolCall {
+            call_id,
+            name,
+            arguments,
+            ..
+        } => Some(PreparedMessage::McpToolCall {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+        }),
+        ItemKind::McpToolResult {
+            call_id, result, ..
+        } => Some(PreparedMessage::McpToolResult {
+            call_id: call_id.clone(),
+            content: match result {
+                sugarcode_protocol::CoreMcpToolResult::Completed { content, .. } => content.clone(),
+                sugarcode_protocol::CoreMcpToolResult::Error { kind, .. } => {
+                    format!("MCP tool error: {kind}")
+                }
+            },
+        }),
+        ItemKind::ToolResult {
+            call_id,
+            name,
+            result,
+        } => Some(PreparedMessage::ToolResult {
+            call_id: call_id.clone(),
+            content: tool_result_content(name, result),
+        }),
+    }
 }
 
 fn durable_turn_snapshot(turn: &Turn) -> DurableTurnSnapshot {
@@ -1534,16 +1691,51 @@ fn durable_turn_snapshot(turn: &Turn) -> DurableTurnSnapshot {
             TurnState::Failed => DurableTurnStatus::Failed,
             TurnState::Interrupted => DurableTurnStatus::Interrupted,
         },
-        items: turn
-            .items
-            .values()
-            .map(|item| durable_item_snapshot(&item.snapshot()))
-            .collect(),
+        items: turn.items.values().map(durable_item_from_item).collect(),
         context_compaction: turn.context_compaction.clone(),
         workspace_instructions: turn.workspace_instructions.clone(),
         workspace_skills: turn.workspace_skills.clone(),
         error: turn.error.clone(),
         usage: turn.usage.clone(),
+    }
+}
+
+fn durable_item_from_item(item: &Item) -> DurableItemSnapshot {
+    let mut snapshot = durable_item_snapshot(&item.snapshot());
+    if let (
+        ItemKind::ContextCompaction { summary, .. },
+        DurableItemSnapshot::ContextCompaction {
+            summary: durable_summary,
+            ..
+        },
+    ) = (&item.kind, &mut snapshot)
+    {
+        *durable_summary = summary
+            .as_ref()
+            .map(|summary| summary.as_str().to_string().into());
+    }
+    snapshot
+}
+
+fn core_context_compaction_outcome(
+    outcome: &sugarcode_state::DurableActiveTurnCompactionOutcome,
+) -> sugarcode_protocol::CoreContextCompactionOutcome {
+    match outcome {
+        sugarcode_state::DurableActiveTurnCompactionOutcome::Completed {
+            post_context_bytes,
+            summary_bytes,
+            summary_sha256,
+        } => sugarcode_protocol::CoreContextCompactionOutcome::Completed {
+            post_context_bytes: *post_context_bytes,
+            summary_bytes: *summary_bytes,
+            summary_sha256: summary_sha256.clone(),
+        },
+        sugarcode_state::DurableActiveTurnCompactionOutcome::Failed { kind } => {
+            sugarcode_protocol::CoreContextCompactionOutcome::Failed { kind: kind.clone() }
+        }
+        sugarcode_state::DurableActiveTurnCompactionOutcome::Interrupted => {
+            sugarcode_protocol::CoreContextCompactionOutcome::Interrupted
+        }
     }
 }
 

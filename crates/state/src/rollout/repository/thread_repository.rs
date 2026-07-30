@@ -75,15 +75,15 @@ impl ThreadRepository for RolloutRepository {
             });
         }
 
-        let record_count =
-            snapshot
-                .turns
-                .len()
-                .checked_add(1)
+        let record_count = snapshot.turns.iter().try_fold(1usize, |count, turn| {
+            count
+                .checked_add(2)
+                .and_then(|count| count.checked_add(turn.items.len().checked_mul(2)?))
                 .ok_or_else(|| RolloutError::LimitExceeded {
                     path: self.root.clone(),
                     kind: "rolloutRecords",
-                })?;
+                })
+        })?;
         if record_count > MAX_ROLLOUT_RECORDS_PER_FILE {
             return Err(RolloutError::LimitExceeded {
                 path: self.root.clone(),
@@ -109,7 +109,9 @@ impl ThreadRepository for RolloutRepository {
         )?);
         let mut turn_sequence = self.sequences.turn;
         let mut item_sequence = self.sequences.item;
-        for (index, turn) in snapshot.turns.iter().enumerate() {
+        let mut record_sequence = 1u64;
+        let mut turn_record_sequences = Vec::with_capacity(snapshot.turns.len());
+        for turn in &snapshot.turns {
             if turn.items.is_empty() {
                 return Err(RolloutError::InvalidRecord {
                     kind: "completedTurnWithoutItems",
@@ -127,11 +129,64 @@ impl ThreadRepository for RolloutRepository {
                 }
                 item_sequence = sequence;
             }
-            let record_sequence =
-                u64::try_from(index + 2).map_err(|_| RolloutError::InvalidRecord {
-                    kind: "recordSequenceOverflow",
-                })?;
+            let mut started = turn.clone();
+            started.status = DurableTurnStatus::InProgress;
+            started.error = None;
+            started.usage = None;
+            record_sequence =
+                record_sequence
+                    .checked_add(1)
+                    .ok_or(RolloutError::InvalidRecord {
+                        kind: "recordSequenceOverflow",
+                    })?;
+            records.push(encode_turn_started(
+                record_sequence,
+                &snapshot.id,
+                &started,
+            )?);
+            for item in &turn.items {
+                let started_item = match item {
+                    DurableItemSnapshot::AgentMessage { id, .. } => {
+                        DurableItemSnapshot::AgentMessage {
+                            id: id.clone(),
+                            text: String::new(),
+                        }
+                    }
+                    _ => item.clone(),
+                };
+                record_sequence =
+                    record_sequence
+                        .checked_add(1)
+                        .ok_or(RolloutError::InvalidRecord {
+                            kind: "recordSequenceOverflow",
+                        })?;
+                records.push(encode_turn_item_added(
+                    record_sequence,
+                    &snapshot.id,
+                    &turn.id,
+                    &started_item,
+                )?);
+                record_sequence =
+                    record_sequence
+                        .checked_add(1)
+                        .ok_or(RolloutError::InvalidRecord {
+                            kind: "recordSequenceOverflow",
+                        })?;
+                records.push(encode_turn_item_completed(
+                    record_sequence,
+                    &snapshot.id,
+                    &turn.id,
+                    item,
+                )?);
+            }
+            record_sequence =
+                record_sequence
+                    .checked_add(1)
+                    .ok_or(RolloutError::InvalidRecord {
+                        kind: "recordSequenceOverflow",
+                    })?;
             records.push(encode_turn_completed(record_sequence, &snapshot.id, turn)?);
+            turn_record_sequences.push(record_sequence);
         }
 
         let mut added_bytes = 0u64;
@@ -183,7 +238,7 @@ impl ThreadRepository for RolloutRepository {
             snapshot: snapshot.clone(),
             workspace_binding_id: self.active_workspace_binding_id.clone(),
             last_record_sequence,
-            turn_record_sequences: (2..=last_record_sequence).collect(),
+            turn_record_sequences,
         };
         self.threads.insert(snapshot.id.clone(), state.clone());
         self.sequences.thread = thread_sequence;
@@ -202,6 +257,11 @@ impl ThreadRepository for RolloutRepository {
         if turn.status != DurableTurnStatus::Completed {
             return Err(RolloutError::InvalidRecord {
                 kind: "legacyTurnMustBeCompleted",
+            });
+        }
+        if turn.items.is_empty() {
+            return Err(RolloutError::InvalidRecord {
+                kind: "completedTurnWithoutItems",
             });
         }
         if !valid_workspace_instructions_audit(turn.workspace_instructions.as_ref()) {
@@ -229,12 +289,6 @@ impl ThreadRepository for RolloutRepository {
                 kind: "invalidContextCompaction",
             });
         }
-        self.ensure_available()?;
-        if turn.items.is_empty() {
-            return Err(RolloutError::InvalidRecord {
-                kind: "completedTurnWithoutItems",
-            });
-        }
         if let Some(thread) = self.threads.get(thread_id)
             && thread.snapshot.lifecycle != DurableThreadLifecycle::Active
         {
@@ -246,51 +300,17 @@ impl ThreadRepository for RolloutRepository {
                 },
             });
         }
-        let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")?;
-        if turn_sequence <= self.sequences.turn {
-            return Err(RolloutError::Collision { kind: "turn" });
+        if !super::super::valid_turn_items(&turn.items) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidTurnItems",
+            });
         }
-        let mut item_sequence = self.sequences.item;
-        for item in &turn.items {
-            let sequence = parse_canonical_id(item.id().as_str(), "item_", "item")?;
-            if sequence <= item_sequence {
-                return Err(RolloutError::Collision { kind: "item" });
-            }
-            item_sequence = sequence;
-        }
-        let record_sequence = self
-            .threads
-            .get(thread_id)
-            .ok_or(RolloutError::InvalidId { kind: "thread" })?
-            .last_record_sequence
-            .checked_add(1)
-            .ok_or(RolloutError::InvalidRecord {
-                kind: "recordSequenceOverflow",
-            })?;
-        let next_file_record_count =
-            usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
-                path: self.root.clone(),
-                kind: "rolloutRecords",
-            })?;
-        let path = self.thread_path(thread_id)?;
-        let bytes = encode_turn_completed(record_sequence, thread_id, turn)?;
-        self.append_record(&path, &bytes, false, next_file_record_count)?;
-        let thread = self
-            .threads
-            .get_mut(thread_id)
-            .expect("validated thread exists");
-        thread.snapshot.turns.push(turn.clone());
-        thread.turn_record_sequences.push(record_sequence);
-        thread.last_record_sequence = record_sequence;
-        self.sequences.turn = turn_sequence;
-        self.sequences.item = item_sequence;
-        let _ = self
-            .projection
-            .record_turn_completed(thread_id, record_sequence);
-        let _ = self
-            .search_projection
-            .record_turn_completed(thread_id, record_sequence, turn);
-        Ok(())
+        let mut started = turn.clone();
+        started.status = DurableTurnStatus::InProgress;
+        started.error = None;
+        started.usage = None;
+        self.begin_turn(thread_id, &started)?;
+        self.finish_turn(thread_id, turn)
     }
 
     fn begin_turn(
@@ -300,7 +320,6 @@ impl ThreadRepository for RolloutRepository {
     ) -> Result<(), RolloutError> {
         self.ensure_available()?;
         if turn.status != DurableTurnStatus::InProgress
-            || turn.items.len() > 2
             || turn.context_compaction.as_ref().is_some_and(|compaction| {
                 self.threads.get(thread_id).is_none_or(|thread| {
                     !crate::validate_context_compaction(&thread.snapshot.turns, compaction)
@@ -315,16 +334,7 @@ impl ThreadRepository for RolloutRepository {
                 kind: "invalidStartedTurn",
             });
         }
-        let valid_items = match turn.items.as_slice() {
-            [] | [DurableItemSnapshot::UserMessage { .. }] => true,
-            [DurableItemSnapshot::AgentMessage { text, .. }] => text.is_empty(),
-            [
-                DurableItemSnapshot::UserMessage { .. },
-                DurableItemSnapshot::AgentMessage { text, .. },
-            ] => text.is_empty(),
-            _ => false,
-        };
-        if !valid_items {
+        if !super::super::valid_turn_items(&turn.items) {
             return Err(RolloutError::InvalidRecord {
                 kind: "invalidStartedTurnItems",
             });
@@ -372,15 +382,29 @@ impl ThreadRepository for RolloutRepository {
             .get_mut(thread_id)
             .expect("validated thread exists")
             .last_record_sequence = record_sequence;
-        self.pending_turns.insert(thread_id.clone(), turn.clone());
+        let initial_items = turn.items.clone();
+        let mut pending = turn.clone();
+        pending.items.clear();
+        self.pending_turns.insert(thread_id.clone(), pending);
         self.sequences.turn = turn_sequence;
-        self.sequences.item = item_sequence;
         let _ = self
             .projection
             .record_turn_completed(thread_id, record_sequence);
         let _ = self
             .search_projection
             .record_turn_started(thread_id, record_sequence);
+        for item in initial_items {
+            let started = match &item {
+                DurableItemSnapshot::AgentMessage { id, .. } => DurableItemSnapshot::AgentMessage {
+                    id: id.clone(),
+                    text: String::new(),
+                },
+                _ => item.clone(),
+            };
+            self.append_turn_item(thread_id, &turn.id, &started)?;
+            self.complete_turn_item(thread_id, &turn.id, &item)?;
+        }
+        debug_assert_eq!(self.sequences.item, item_sequence);
         Ok(())
     }
 
@@ -411,11 +435,6 @@ impl ThreadRepository for RolloutRepository {
             .any(|existing| existing.id() == item.id())
         {
             return Err(RolloutError::Collision { kind: "item" });
-        }
-        if matches!(item, DurableItemSnapshot::UserMessage { .. }) {
-            return Err(RolloutError::InvalidRecord {
-                kind: "invalidIncrementalItem",
-            });
         }
         if matches!(item, DurableItemSnapshot::AgentMessage { text, .. } if !text.is_empty()) {
             return Err(RolloutError::InvalidRecord {
@@ -455,6 +474,79 @@ impl ThreadRepository for RolloutRepository {
             .expect("validated thread exists")
             .last_record_sequence = record_sequence;
         self.sequences.item = item_sequence;
+        let _ = self
+            .projection
+            .record_turn_completed(thread_id, record_sequence);
+        let _ = self
+            .search_projection
+            .record_turn_started(thread_id, record_sequence);
+        Ok(())
+    }
+
+    fn complete_turn_item(
+        &mut self,
+        thread_id: &ThreadId,
+        turn_id: &sugarcode_protocol::TurnId,
+        item: &DurableItemSnapshot,
+    ) -> Result<(), RolloutError> {
+        self.ensure_available()?;
+        let pending = self
+            .pending_turns
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidRecord {
+                kind: "turnNotActive",
+            })?;
+        if &pending.id != turn_id {
+            return Err(RolloutError::InvalidRecord {
+                kind: "turnIdMismatch",
+            });
+        }
+        let Some(started) = pending
+            .items
+            .iter()
+            .find(|started| started.id() == item.id())
+        else {
+            return Err(RolloutError::InvalidRecord {
+                kind: "itemNotStarted",
+            });
+        };
+        if !terminal_items_match(std::slice::from_ref(started), std::slice::from_ref(item)) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "turnItemMismatch",
+            });
+        }
+        let thread = self
+            .threads
+            .get(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        let record_sequence =
+            thread
+                .last_record_sequence
+                .checked_add(1)
+                .ok_or(RolloutError::InvalidRecord {
+                    kind: "recordSequenceOverflow",
+                })?;
+        let next_file_record_count =
+            usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutRecords",
+            })?;
+        let path = self.thread_path(thread_id)?;
+        let bytes = encode_turn_item_completed(record_sequence, thread_id, turn_id, item)?;
+        self.append_record(&path, &bytes, false, next_file_record_count)?;
+        let stored = self
+            .pending_turns
+            .get_mut(thread_id)
+            .expect("validated pending turn")
+            .items
+            .iter_mut()
+            .find(|stored| stored.id() == item.id())
+            .expect("validated started item");
+        *stored = item.clone();
+        self.threads
+            .get_mut(thread_id)
+            .expect("validated thread exists")
+            .last_record_sequence = record_sequence;
         let _ = self
             .projection
             .record_turn_completed(thread_id, record_sequence);

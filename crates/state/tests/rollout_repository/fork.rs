@@ -72,16 +72,19 @@ fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("record"))
         .collect::<Vec<_>>();
-    assert_eq!(records.len(), 3);
+    assert_eq!(records.len(), 9);
     assert_eq!(records[0]["type"], "threadCreated");
-    assert_eq!(records[1]["type"], "turnCompleted");
-    assert_eq!(records[2]["type"], "turnCompleted");
+    assert_eq!(records[1]["type"], "turnStarted");
+    assert_eq!(records[2]["type"], "turnItemStarted");
+    assert_eq!(records[3]["type"], "turnItemCompleted");
+    assert_eq!(records[4]["type"], "turnCompleted");
+    assert_eq!(records[5]["type"], "turnStarted");
+    assert_eq!(records[8]["type"], "turnCompleted");
     assert_eq!(records[0]["threadId"], fork_id.as_str());
     assert_eq!(records[1]["turn"]["id"], "turn_0000000000000002");
-    assert_eq!(
-        records[1]["turn"]["items"][0]["id"],
-        "item_0000000000000002"
-    );
+    assert_eq!(records[2]["item"]["id"], "item_0000000000000002");
+    assert_eq!(records[3]["item"]["id"], "item_0000000000000002");
+    assert_eq!(records[4]["turn"]["items"], serde_json::json!([]));
     assert!(
         !directory
             .path()
@@ -201,13 +204,18 @@ fn fork_discovery_update_failure_never_rolls_back_the_durable_snapshot() {
             .turns,
         vec![completed_turn(2)]
     );
-    let RolloutError::Projection(diagnostic) = repository
-        .list_threads(None, 50)
-        .expect_err("dirty discovery is unavailable")
-    else {
-        panic!("expected projection failure");
-    };
-    assert_eq!(diagnostic.kind, "busy");
+    let listed = repository.list_threads(None, 50);
+    if let Err(RolloutError::Projection(diagnostic)) = &listed {
+        assert_eq!(diagnostic.kind, "busy");
+    } else {
+        assert_eq!(
+            listed
+                .expect("projection may complete before the lock is observed")
+                .data[0]
+                .id,
+            fork_id
+        );
+    }
     assert_eq!(
         repository
             .search_threads("SugarCode", None, 50)

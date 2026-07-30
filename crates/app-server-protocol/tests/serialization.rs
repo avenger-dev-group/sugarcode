@@ -4,6 +4,8 @@ use sugarcode_app_server_protocol::CommandNetworkPolicy;
 use sugarcode_app_server_protocol::CommandSandboxPolicy;
 use sugarcode_app_server_protocol::CommandWorkspaceWritePolicy;
 use sugarcode_app_server_protocol::CommandWorkspaceWriteRisk;
+use sugarcode_app_server_protocol::ContextCompactionOutcome;
+use sugarcode_app_server_protocol::ContextCompactionStrategy;
 use sugarcode_app_server_protocol::ERROR_PARSE;
 use sugarcode_app_server_protocol::FileChangeKind;
 use sugarcode_app_server_protocol::FileChangeNewlineStyle;
@@ -242,6 +244,33 @@ fn file_change_item_serializes_a_bounded_update_review() {
     assert_eq!(value["kind"], "update");
     assert_eq!(value["newlineStyle"], "lf");
     assert_eq!(value["callId"], "call_patch");
+    assert_eq!(
+        serde_json::from_value::<Item>(value).expect("round trip"),
+        item
+    );
+}
+
+#[test]
+fn context_compaction_item_exposes_receipts_without_summary_text() {
+    let item = Item::ContextCompaction {
+        id: "item_0000000000000003".to_string(),
+        strategy: ContextCompactionStrategy::ModelGeneratedActiveTurnV1,
+        ordinal: 1,
+        pre_context_bytes: 3_200_000,
+        source_messages: 24,
+        source_bytes: 2_700_000,
+        source_sha256: "a".repeat(64),
+        outcome: Some(ContextCompactionOutcome::Completed {
+            post_context_bytes: 900_000,
+            summary_bytes: 512,
+            summary_sha256: "b".repeat(64),
+        }),
+    };
+    let value = serde_json::to_value(&item).expect("compaction serializes");
+    assert_eq!(value["type"], "contextCompaction");
+    assert_eq!(value["strategy"], "modelGeneratedActiveTurnV1");
+    assert_eq!(value["outcome"]["type"], "completed");
+    assert!(value.get("summary").is_none());
     assert_eq!(
         serde_json::from_value::<Item>(value).expect("round trip"),
         item

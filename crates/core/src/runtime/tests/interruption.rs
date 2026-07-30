@@ -1,5 +1,56 @@
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn active_turn_fails_after_the_thirty_minute_total_timeout() {
+    let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
+        events: Vec::new(),
+        stay_open: true,
+    });
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Wait for the provider".to_string()),
+        )
+        .expect("start text turn")
+    else {
+        panic!("asynchronous turn");
+    };
+
+    while !matches!(
+        events.recv().await.expect("opening event").kind,
+        CoreEventKind::ItemCompleted {
+            item: CoreItemSnapshot {
+                kind: CoreItemKind::UserMessage { .. },
+                ..
+            },
+            ..
+        }
+    ) {}
+    tokio::time::advance(TURN_TIMEOUT).await;
+
+    let error = loop {
+        if let CoreEventKind::TurnFailed { error, .. } =
+            events.recv().await.expect("timeout terminal").kind
+        {
+            break error;
+        }
+    };
+    assert_eq!(error.kind, CoreTurnErrorKind::Timeout);
+    assert!(!error.retryable);
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    let turn = snapshot
+        .turns
+        .iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("persisted turn");
+    assert_eq!(turn.status, DurableTurnStatus::Failed);
+    assert_eq!(
+        turn.error.as_ref().map(|error| error.kind),
+        Some(DurableTurnErrorKind::Timeout)
+    );
+}
+
 #[tokio::test]
 async fn output_limit_fails_once_without_committing_the_oversized_delta() {
     let oversized = "x".repeat(crate::thread::MAX_AGENT_MESSAGE_BYTES + 1);

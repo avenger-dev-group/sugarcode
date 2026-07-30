@@ -37,6 +37,15 @@ pub enum CoreItemKind {
     AgentMessage {
         text: String,
     },
+    ContextCompaction {
+        strategy: CoreContextCompactionStrategy,
+        ordinal: u64,
+        pre_context_bytes: u64,
+        source_messages: u64,
+        source_bytes: u64,
+        source_sha256: String,
+        outcome: Option<CoreContextCompactionOutcome>,
+    },
     ToolCall {
         call_id: String,
         name: String,
@@ -116,6 +125,24 @@ pub enum CoreItemKind {
         name: String,
         result: CoreToolResult,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreContextCompactionStrategy {
+    ModelGeneratedActiveTurnV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreContextCompactionOutcome {
+    Completed {
+        post_context_bytes: u64,
+        summary_bytes: u64,
+        summary_sha256: String,
+    },
+    Failed {
+        kind: String,
+    },
+    Interrupted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
