@@ -37,6 +37,34 @@ sugarcode
 `crates/app-server` maps that session to public JSON-RPC. It does not become the
 application boundary for exec or TUI.
 
+### Built-in Agent instructions
+
+`builtInSugarCodeAgentInstructionsV1` is fixed English product behavior compiled
+into Core and shared by app-server, headless exec and TUI. Every model-backed
+Turn places it first in the provider-neutral instruction list and reuses the
+same content on every provider round. The OpenAI-compatible Chat Completions
+adapter emits it as the first `developer` message.
+
+The built-in instruction owns SugarCode identity, truthful capability use,
+approval and safety boundaries, engineering workflow and final reporting. It
+also states the current runtime facts: a provider round contains either a tool
+call or assistant text, a tool call has no text preamble, and one Turn accepts
+at most one non-MCP tool call. MCP retains its separately bounded sequential
+contract.
+
+Root-to-scope `AGENTS.md`, Skill inventory and selected Skill bodies follow the
+built-in instruction. They may customize repository and task behavior but
+cannot redefine product identity, actual tool availability, approval
+requirements, security boundaries or permissions. Compaction, completed
+history and current input follow all developer instructions.
+
+The exact built-in prompt bytes participate in the existing 3 MiB compaction
+target and 4 MiB provider hard limit. The prompt is neither configurable nor
+durable: it does not enter rollout, projections, public DTOs, protocol fixtures
+or Desktop state. A future multi-step non-MCP Agent loop is a separate
+architecture slice and must update the versioned prompt when its runtime facts
+change.
+
 ## 2. Ownership
 
 | Component | Owns | Must not expose |
