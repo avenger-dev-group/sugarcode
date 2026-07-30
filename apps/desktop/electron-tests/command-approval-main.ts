@@ -4,7 +4,9 @@ import {
   ipcMain,
   type NativeImage,
 } from 'electron';
+import { createServer } from 'node:http';
 import { writeFile } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -18,6 +20,8 @@ import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
 import { McpSessionController } from '@/main/app-server/mcp/session-controller';
 import type { ModelConfigController } from '@/main/app-server/model-config/controller';
 import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
+import { PreviewController } from '@/main/preview/controller';
+import { registerPreviewIpc } from '@/main/preview/ipc';
 import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
@@ -580,6 +584,78 @@ const run = async (): Promise<void> => {
     'index.html',
   );
   const rendererUrl = pathToFileURL(rendererPath).toString();
+  const previewRequests: Array<Readonly<{ method: string; url: string }>> =
+    [];
+  const escapedPreviewRequests: string[] = [];
+  const escapedPreviewServer = createServer((request, response) => {
+    escapedPreviewRequests.push(request.url ?? '');
+    response.writeHead(200, { 'Content-Type': 'text/plain' });
+    response.end('request should have been blocked');
+  });
+  await new Promise<void>((resolve, reject) => {
+    escapedPreviewServer.once('error', reject);
+    escapedPreviewServer.listen(0, '127.0.0.1', resolve);
+  });
+  const escapedPreviewAddress =
+    escapedPreviewServer.address() as AddressInfo;
+  const previewServer = createServer((request, response) => {
+    const requestUrl = request.url ?? '/';
+    previewRequests.push({
+      method: request.method ?? '',
+      url: requestUrl,
+    });
+    if (requestUrl === '/api') {
+      response.writeHead(200, { 'Content-Type': 'text/plain' });
+      response.end('same-origin-ready');
+      return;
+    }
+    if (requestUrl === '/style.css') {
+      response.writeHead(200, { 'Content-Type': 'text/css' });
+      response.end('body { color: rgb(20, 40, 60); }');
+      return;
+    }
+    if (requestUrl === '/pixel.svg') {
+      response.writeHead(200, { 'Content-Type': 'image/svg+xml' });
+      response.end(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>',
+      );
+      return;
+    }
+    if (requestUrl === '/next') {
+      response.writeHead(200, { 'Content-Type': 'text/html' });
+      response.end('<h1 id="preview-next">Second preview page</h1>');
+      return;
+    }
+    response.writeHead(200, { 'Content-Type': 'text/html' });
+    response.end(`<!doctype html>
+      <html>
+        <head><link rel="stylesheet" href="/style.css"></head>
+        <body>
+          <h1 id="preview-title">Local preview fixture</h1>
+          <a id="preview-next-link" href="/next">Next page</a>
+          <img src="/pixel.svg" alt="">
+          <img src="http://127.0.0.1:${escapedPreviewAddress.port}/escape" alt="">
+          <iframe src="/frame"></iframe>
+          <script>
+            window.previewScriptRan = true;
+            fetch('/api').then((response) => response.text()).then((text) => {
+              document.body.dataset.api = text;
+            });
+            fetch('/write', { method: 'POST', body: 'blocked' }).catch(() => {});
+            fetch(
+              'http://127.0.0.1:${escapedPreviewAddress.port}/escape',
+            ).catch(() => {});
+            window.open('/popup');
+          </script>
+        </body>
+      </html>`);
+  });
+  await new Promise<void>((resolve, reject) => {
+    previewServer.once('error', reject);
+    previewServer.listen(0, '127.0.0.1', resolve);
+  });
+  const previewAddress = previewServer.address() as AddressInfo;
+  const previewUrl = `http://127.0.0.1:${previewAddress.port}/`;
   window = new BrowserWindow({
     show: false,
     width: 800,
@@ -614,12 +690,13 @@ const run = async (): Promise<void> => {
     revision: 1,
     status: 'ready',
   }));
-  ipcMain.handle(WORKSPACE_STATE_GET_CHANNEL, () => ({
+  const workspaceState = {
     revision: 1,
     generation: 1,
-    status: 'ready',
+    status: 'ready' as const,
     name: 'electron-fixture',
-  }));
+  };
+  ipcMain.handle(WORKSPACE_STATE_GET_CHANNEL, () => workspaceState);
   ipcMain.handle(
     WORKSPACE_LIST_CHANNEL,
     (_event, request: { path: string }) => ({
@@ -847,6 +924,39 @@ const run = async (): Promise<void> => {
     getMainWindow: () => window,
     isAllowedUrl: (url) => url === rendererUrl,
   });
+  const previewController = new PreviewController({
+    dialog: {
+      showMessageBox: async () => ({
+        response: 1,
+        checkboxChecked: false,
+      }),
+    },
+    getMainWindow: () => window,
+    getWorkspaceState: () => workspaceState,
+    isApprovalPending: () =>
+      controller.getSnapshot().status === 'pending' ||
+      mcpApprovals.getSnapshot().status === 'pending',
+  });
+  const disposePreviewIpc = registerPreviewIpc({
+    controller: previewController,
+    getMainWindow: () => window,
+    isAllowedUrl: (url) => url === rendererUrl,
+  });
+  const hidePreviewForApproval = (
+    snapshot: Readonly<{ status: string }>,
+  ): void => {
+    if (snapshot.status === 'pending') {
+      previewController.hideForApproval();
+      if (window && !window.isDestroyed()) {
+        window.show();
+        window.focus();
+      }
+    }
+  };
+  const unsubscribePreviewCommandApproval =
+    controller.subscribe(hidePreviewForApproval);
+  const unsubscribePreviewMcpApproval =
+    mcpApprovals.subscribe(hidePreviewForApproval);
   const waitForDurableItemIdentity = async (
     itemId: string,
     label: string,
@@ -863,6 +973,151 @@ const run = async (): Promise<void> => {
 
   await window.loadFile(rendererPath);
   window.show();
+  await evaluate(`document.querySelector(
+    'button[title="Static preview"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const button = Array.from(document.querySelectorAll('button'))
+            .find((candidate) => candidate.textContent?.trim() ===
+              'Open local preview');
+          return Boolean(
+            document.querySelector('#local-preview-url') &&
+            button instanceof HTMLButtonElement &&
+            !button.disabled
+          );
+        })()`,
+      ),
+    'local preview workbench',
+  );
+  const lightPreviewBackground = await evaluate<string>(
+    `getComputedStyle(
+      document.querySelector('[aria-label="Local preview workbench"]'),
+    ).backgroundColor`,
+  );
+  await writeFile(
+    path.join(__dirname, 'preview-workbench-light.png'),
+    (await capturePageWithRetry('local preview workbench')).toPNG(),
+  );
+  await evaluate(`(() => {
+    const input = document.querySelector('#local-preview-url');
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error('Local preview URL input was unavailable.');
+    }
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value',
+    )?.set?.call(input, ${JSON.stringify(previewUrl)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.trim() ===
+        'Open local preview');
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      throw new Error('Open local preview action was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      BrowserWindow.getAllWindows().some(
+        (candidate) =>
+          candidate !== window &&
+          candidate.getTitle() === 'SugarCode Static Preview',
+      ),
+    'local preview window',
+  );
+  const previewWindow = BrowserWindow.getAllWindows().find(
+    (candidate) =>
+      candidate !== window &&
+      candidate.getTitle() === 'SugarCode Static Preview',
+  );
+  if (!previewWindow) {
+    throw new Error('Local preview window was not retained.');
+  }
+  await waitFor(
+    () =>
+      previewRequests.some((entry) => entry.url === '/style.css') &&
+      previewRequests.some((entry) => entry.url === '/pixel.svg'),
+    'static preview same-origin style and image requests',
+  );
+  const previewJavaScriptDisabled =
+    await previewWindow.webContents
+      .executeJavaScript('window.previewScriptRan === true', true)
+      .then(
+        () => false,
+        () => true,
+      );
+  if (!previewJavaScriptDisabled) {
+    throw new Error('The static local preview admitted JavaScript execution.');
+  }
+  if (
+    previewRequests.some(
+      (entry) =>
+        entry.method === 'POST' ||
+        entry.url === '/frame' ||
+        entry.url === '/popup' ||
+        entry.url === '/api',
+    ) ||
+    escapedPreviewRequests.length > 0
+  ) {
+    throw new Error(
+      'The local preview crossed its method, frame, popup, or origin boundary.',
+    );
+  }
+  await previewWindow.loadURL(
+    new URL('/next', previewUrl).toString(),
+  );
+  await waitFor(
+    () => previewWindow.webContents.getURL().endsWith('/next'),
+    'same-origin preview navigation',
+  );
+  if (!previewWindow.webContents.navigationHistory.canGoBack()) {
+    throw new Error('Local preview navigation history was unavailable.');
+  }
+  controller.handleServerRequest(
+    request('approval/electron-preview-hide'),
+  );
+  await waitFor(
+    () => !previewWindow.isVisible(),
+    'preview hide before trusted approval',
+  );
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent === 'Deny');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('Preview-hide approval denial was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      writtenDecisions.some(
+        (entry) =>
+          entry.id === 'approval/electron-preview-hide' &&
+          entry.decision === 'denied',
+      ),
+    'preview-hide approval denial',
+  );
+  controller.handleNotification(
+    completion('approval/electron-preview-hide', 'denied'),
+  );
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.trim() === 'Stop preview');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('Stop preview action was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () => previewWindow.isDestroyed(),
+    'local preview deterministic close',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Close local preview workbench"]',
+  )?.click()`);
   await evaluate(`document.querySelector(
     'button[title="Git changes"]',
   )?.click()`);
@@ -2432,6 +2687,33 @@ const run = async (): Promise<void> => {
     path.join(__dirname, 'conversation-dark.png'),
     (await capturePageWithRetry('dark conversation')).toPNG(),
   );
+  await evaluate(`document.querySelector(
+    'button[title="Static preview"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `Boolean(document.querySelector(
+          '[aria-label="Local preview workbench"]',
+        ))`,
+      ),
+    'dark local preview workbench',
+  );
+  const darkPreviewBackground = await evaluate<string>(
+    `getComputedStyle(
+      document.querySelector('[aria-label="Local preview workbench"]'),
+    ).backgroundColor`,
+  );
+  if (darkPreviewBackground === lightPreviewBackground) {
+    throw new Error('Local preview workbench did not apply dark tokens.');
+  }
+  await writeFile(
+    path.join(__dirname, 'preview-workbench-dark.png'),
+    (await capturePageWithRetry('dark local preview workbench')).toPNG(),
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Close local preview workbench"]',
+  )?.click()`);
 
   mcpApprovals.handleServerRequest(
     mcpRequest('approval/mcp-electron-dark'),
@@ -2547,6 +2829,10 @@ const run = async (): Promise<void> => {
   disposeConversationIpc();
   disposeMcpIpc();
   disposeModelConfigIpc();
+  disposePreviewIpc();
+  unsubscribePreviewCommandApproval();
+  unsubscribePreviewMcpApproval();
+  previewController.shutdown();
   ipcMain.removeHandler(CONNECTION_STATE_GET_CHANNEL);
   ipcMain.removeHandler(WORKSPACE_STATE_GET_CHANNEL);
   ipcMain.removeHandler(WORKSPACE_LIST_CHANNEL);
@@ -2558,6 +2844,14 @@ const run = async (): Promise<void> => {
   ipcMain.removeHandler(GIT_COMMIT_CHANNEL);
   controller.shutdown();
   mcpApprovals.shutdown();
+  await new Promise<void>((resolve, reject) => {
+    previewServer.close((error) => (error ? reject(error) : resolve()));
+  });
+  await new Promise<void>((resolve, reject) => {
+    escapedPreviewServer.close((error) =>
+      error ? reject(error) : resolve(),
+    );
+  });
   if (lifecycleFailures.length > 0) {
     throw new Error(
       `Unexpected lifecycle failures: ${lifecycleFailures.join(', ')}`,

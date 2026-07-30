@@ -27,6 +27,7 @@ type WorkspaceControllerOptions = Readonly<{
   dialog: DialogBoundary;
   getMainWindow: () => BrowserWindow | null;
   sessionPath: string;
+  beforeWorkspaceSwitch?: () => Promise<void>;
 }>;
 
 type Listener = (snapshot: WorkspaceStateSnapshot) => void;
@@ -142,6 +143,7 @@ export class WorkspaceController {
       }
     }
 
+    await this.options.beforeWorkspaceSwitch?.();
     this.publish('selecting');
     const hadWorkspace = this.workspacePath !== null;
     if (!(await this.options.supervisor.switchWorkspace(selected))) {

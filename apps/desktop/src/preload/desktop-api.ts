@@ -110,6 +110,22 @@ import {
   type WorkspaceSelectResult,
   type WorkspaceStateSnapshot,
 } from '@/shared/workspace';
+import {
+  isPreviewActionResult,
+  isPreviewStateSnapshot,
+  PREVIEW_CLOSE_CHANNEL,
+  PREVIEW_GO_BACK_CHANNEL,
+  PREVIEW_GO_FORWARD_CHANNEL,
+  PREVIEW_OPEN_CHANNEL,
+  PREVIEW_RELOAD_CHANNEL,
+  PREVIEW_SHOW_CHANNEL,
+  PREVIEW_STATE_CHANGED_CHANNEL,
+  PREVIEW_STATE_GET_CHANNEL,
+  type PreviewActionResult,
+  type PreviewOpenRequest,
+  type PreviewSessionRequest,
+  type PreviewStateSnapshot,
+} from '@/shared/preview';
 
 type StateChangedHandler = (
   event: IpcRendererEvent,
@@ -140,6 +156,80 @@ const invokeConversationThreadAction = async (
 export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
 ): DesktopApi => ({
+  getPreviewState: async (): Promise<PreviewStateSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      PREVIEW_STATE_GET_CHANNEL,
+    );
+    if (!isPreviewStateSnapshot(snapshot)) {
+      throw new Error('Main returned an invalid preview state snapshot.');
+    }
+    return snapshot;
+  },
+  onPreviewStateChanged: (listener) => {
+    const handler = (
+      _event: IpcRendererEvent,
+      snapshot: unknown,
+    ): void => {
+      if (isPreviewStateSnapshot(snapshot)) {
+        listener(snapshot);
+      }
+    };
+    ipcRenderer.on(PREVIEW_STATE_CHANGED_CHANNEL, handler);
+    return () =>
+      ipcRenderer.removeListener(PREVIEW_STATE_CHANGED_CHANNEL, handler);
+  },
+  openPreview: async (
+    request: PreviewOpenRequest,
+  ): Promise<PreviewActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      PREVIEW_OPEN_CHANNEL,
+      request,
+    );
+    if (!isPreviewActionResult(result)) {
+      throw new Error('Main returned an invalid preview open result.');
+    }
+    return result;
+  },
+  showPreview: (
+    request: PreviewSessionRequest,
+  ): Promise<PreviewActionResult> =>
+    invokePreviewAction(ipcRenderer, PREVIEW_SHOW_CHANNEL, request, 'show'),
+  reloadPreview: (
+    request: PreviewSessionRequest,
+  ): Promise<PreviewActionResult> =>
+    invokePreviewAction(
+      ipcRenderer,
+      PREVIEW_RELOAD_CHANNEL,
+      request,
+      'reload',
+    ),
+  goBackPreview: (
+    request: PreviewSessionRequest,
+  ): Promise<PreviewActionResult> =>
+    invokePreviewAction(
+      ipcRenderer,
+      PREVIEW_GO_BACK_CHANNEL,
+      request,
+      'back',
+    ),
+  goForwardPreview: (
+    request: PreviewSessionRequest,
+  ): Promise<PreviewActionResult> =>
+    invokePreviewAction(
+      ipcRenderer,
+      PREVIEW_GO_FORWARD_CHANNEL,
+      request,
+      'forward',
+    ),
+  closePreview: (
+    request: PreviewSessionRequest,
+  ): Promise<PreviewActionResult> =>
+    invokePreviewAction(
+      ipcRenderer,
+      PREVIEW_CLOSE_CHANNEL,
+      request,
+      'close',
+    ),
   getGitState: async (): Promise<GitStateSnapshot> => {
     const snapshot: unknown = await ipcRenderer.invoke(
       GIT_STATE_GET_CHANNEL,
@@ -645,3 +735,16 @@ export const createDesktopApi = (
     return result;
   },
 });
+
+const invokePreviewAction = async (
+  ipcRenderer: IpcRendererBoundary,
+  channel: string,
+  request: PreviewSessionRequest,
+  action: string,
+): Promise<PreviewActionResult> => {
+  const result: unknown = await ipcRenderer.invoke(channel, request);
+  if (!isPreviewActionResult(result)) {
+    throw new Error(`Main returned an invalid preview ${action} result.`);
+  }
+  return result;
+};

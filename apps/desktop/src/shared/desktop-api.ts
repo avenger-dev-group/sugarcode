@@ -5,6 +5,7 @@ import type { McpApi } from './mcp';
 import type { ModelConfigApi } from './model-config';
 import type { WorkspaceApi } from './workspace';
 import type { GitApi } from './git';
+import type { PreviewApi } from './preview';
 
 export type DesktopApi = Readonly<
   ConnectionApi &
@@ -13,5 +14,6 @@ export type DesktopApi = Readonly<
     McpApi &
     ModelConfigApi &
     WorkspaceApi &
-    GitApi
+    GitApi &
+    PreviewApi
 >;

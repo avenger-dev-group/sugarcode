@@ -15,6 +15,8 @@ import { ModelConfigController } from '@/main/app-server/model-config/controller
 import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
 import { WorkspaceController } from '@/main/app-server/workspace/controller';
 import { registerWorkspaceIpc } from '@/main/app-server/workspace/ipc';
+import { PreviewController } from '@/main/preview/controller';
+import { registerPreviewIpc } from '@/main/preview/ipc';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
@@ -25,6 +27,9 @@ let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
 let disposeWorkspaceIpc: (() => void) | null = null;
 let disposeGitIpc: (() => void) | null = null;
+let previewController: PreviewController | null = null;
+let disposePreviewIpc: (() => void) | null = null;
+let disposePreviewApprovalSubscriptions: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -72,16 +77,19 @@ const createWindow = (): void => {
       if (isMainFrame) {
         supervisor?.commandApprovals.surfaceUnavailable();
         supervisor?.mcpApprovals.surfaceUnavailable();
+        previewController?.shutdown();
       }
     },
   );
   window.webContents.on('render-process-gone', () => {
     supervisor?.commandApprovals.surfaceUnavailable();
     supervisor?.mcpApprovals.surfaceUnavailable();
+    previewController?.shutdown();
   });
   window.once('closed', () => {
     supervisor?.commandApprovals.surfaceUnavailable();
     supervisor?.mcpApprovals.surfaceUnavailable();
+    previewController?.shutdown();
     if (mainWindow === window) {
       mainWindow = null;
     }
@@ -108,8 +116,19 @@ const startApplication = async (): Promise<void> => {
     dialog,
     getMainWindow: () => mainWindow,
     sessionPath: path.join(app.getPath('userData'), 'workspace-session-v1.json'),
+    beforeWorkspaceSwitch: async () => {
+      await previewController?.closeForWorkspaceChange();
+    },
   });
   await workspaceController.restore();
+  previewController = new PreviewController({
+    dialog,
+    getMainWindow: () => mainWindow,
+    getWorkspaceState: workspaceController.getSnapshot,
+    isApprovalPending: () =>
+      supervisor?.commandApprovals.getSnapshot().status === 'pending' ||
+      supervisor?.mcpApprovals.getSnapshot().status === 'pending',
+  });
   disposeConnectionIpc = registerConnectionIpc({
     supervisor,
     getMainWindow: () => mainWindow,
@@ -150,6 +169,34 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
+  disposePreviewIpc = registerPreviewIpc({
+    controller: previewController,
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  const hidePreviewForApproval = (
+    snapshot: Readonly<{ status: string }>,
+  ): void => {
+    if (snapshot.status !== 'pending') {
+      return;
+    }
+    previewController?.hideForApproval();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  };
+  const unsubscribeCommandApproval =
+    supervisor.commandApprovals.subscribe(hidePreviewForApproval);
+  const unsubscribeMcpApproval =
+    supervisor.mcpApprovals.subscribe(hidePreviewForApproval);
+  disposePreviewApprovalSubscriptions = () => {
+    unsubscribeCommandApproval();
+    unsubscribeMcpApproval();
+  };
   createWindow();
   void supervisor.start();
 };
@@ -172,6 +219,7 @@ if (started) {
   });
 
   app.on('before-quit', () => {
+    previewController?.shutdown();
     supervisor?.shutdown();
   });
 
@@ -191,5 +239,11 @@ if (started) {
     disposeWorkspaceIpc = null;
     disposeGitIpc?.();
     disposeGitIpc = null;
+    disposePreviewIpc?.();
+    disposePreviewIpc = null;
+    disposePreviewApprovalSubscriptions?.();
+    disposePreviewApprovalSubscriptions = null;
+    previewController?.shutdown();
+    previewController = null;
   });
 }

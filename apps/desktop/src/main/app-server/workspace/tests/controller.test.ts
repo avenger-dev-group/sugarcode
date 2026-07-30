@@ -76,13 +76,16 @@ const createFixture = async () => {
       checkboxChecked: false,
     })),
   } as unknown as Pick<Dialog, 'showOpenDialog' | 'showMessageBox'>;
+  const beforeWorkspaceSwitch = vi.fn(async () => undefined);
   const controller = new WorkspaceController({
     supervisor,
     dialog,
     getMainWindow: () => ({}) as BrowserWindow,
     sessionPath,
+    beforeWorkspaceSwitch,
   });
   return {
+    beforeWorkspaceSwitch,
     connectionListener: () => connectionListener,
     canonicalWorkspace,
     controller,
@@ -113,6 +116,13 @@ describe('WorkspaceController', () => {
 
     expect(fixture.supervisor.switchWorkspace).toHaveBeenCalledWith(
       fixture.canonicalWorkspace,
+    );
+    expect(fixture.beforeWorkspaceSwitch).toHaveBeenCalledOnce();
+    expect(
+      fixture.beforeWorkspaceSwitch.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      vi.mocked(fixture.supervisor.switchWorkspace).mock
+        .invocationCallOrder[0],
     );
     expect(fixture.controller.getSnapshot()).toMatchObject({
       generation: 1,

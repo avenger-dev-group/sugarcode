@@ -37,6 +37,12 @@ import {
   MODEL_CONFIG_SAVE_CHANNEL,
   type ModelConfigInspection,
 } from '@/shared/model-config';
+import {
+  PREVIEW_CLOSE_CHANNEL,
+  PREVIEW_OPEN_CHANNEL,
+  PREVIEW_STATE_CHANGED_CHANNEL,
+  PREVIEW_STATE_GET_CHANNEL,
+} from '@/shared/preview';
 
 import {
   createDesktopApi,
@@ -225,6 +231,81 @@ describe('createDesktopApi', () => {
     expect(
       boundary.listeners.has(CONNECTION_STATE_CHANGED_CHANNEL),
     ).toBe(false);
+  });
+
+  it('validates the fixed preview boundary and filters state events', async () => {
+    const boundary = createIpcBoundary();
+    const api = createDesktopApi(boundary.ipc);
+    const sessionId = '12345678-1234-4123-8123-123456789abc';
+    boundary.invoke.mockImplementation(async (channel: string) => {
+      if (channel === PREVIEW_STATE_GET_CHANNEL) {
+        return { revision: 0, status: 'closed' };
+      }
+      return { accepted: true, reason: 'accepted' };
+    });
+
+    await expect(api.getPreviewState()).resolves.toEqual({
+      revision: 0,
+      status: 'closed',
+    });
+    await expect(
+      api.openPreview({
+        generation: 3,
+        url: 'http://127.0.0.1:4173/',
+      }),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(
+      api.closePreview({ generation: 3, sessionId }),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    expect(boundary.invoke).toHaveBeenCalledWith(PREVIEW_OPEN_CHANNEL, {
+      generation: 3,
+      url: 'http://127.0.0.1:4173/',
+    });
+    expect(boundary.invoke).toHaveBeenCalledWith(PREVIEW_CLOSE_CHANNEL, {
+      generation: 3,
+      sessionId,
+    });
+
+    const listener = vi.fn();
+    const unsubscribe = api.onPreviewStateChanged(listener);
+    const handler = boundary.listeners.get(PREVIEW_STATE_CHANGED_CHANNEL);
+    handler?.(
+      {} as IpcRendererEvent,
+      {
+        revision: 1,
+        status: 'ready',
+        generation: 3,
+        sessionId,
+        url: 'http://127.0.0.1:4173/',
+        origin: 'http://127.0.0.1:4173',
+        visible: true,
+        canGoBack: false,
+        canGoForward: false,
+      },
+    );
+    handler?.(
+      {} as IpcRendererEvent,
+      {
+        revision: 2,
+        status: 'ready',
+        generation: 3,
+        sessionId,
+        url: 'https://remote.example/',
+      },
+    );
+    expect(listener).toHaveBeenCalledOnce();
+    unsubscribe();
+    expect(boundary.listeners.has(PREVIEW_STATE_CHANGED_CHANNEL)).toBe(
+      false,
+    );
+
+    boundary.invoke.mockResolvedValue({
+      accepted: true,
+      reason: 'failed',
+    });
+    await expect(
+      api.closePreview({ generation: 3, sessionId }),
+    ).rejects.toThrow('invalid preview close result');
   });
 
   it('validates the bounded command approval API and unsubscribe path', async () => {
