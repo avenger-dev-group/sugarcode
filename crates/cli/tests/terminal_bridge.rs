@@ -52,10 +52,10 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         })
     )
     .expect("resize terminal");
-    let terminal_input = if cfg!(windows) {
-        "echo SUGARCODE_PTY_ACCEPTANCE\r\nexit\r\n"
+    let marker_input = if cfg!(windows) {
+        "echo SUGARCODE_PTY_ACCEPTANCE\r\n"
     } else {
-        "printf 'SUGARCODE_PTY_ACCEPTANCE\\n'\nexit\n"
+        "printf 'SUGARCODE_PTY_ACCEPTANCE\\n'\n"
     };
     writeln!(
         input,
@@ -63,14 +63,43 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         serde_json::json!({
             "type": "input",
             "sequence": 2,
-            "data": terminal_input
+            "data": marker_input
         })
     )
     .expect("write terminal input");
-    input.flush().expect("flush commands");
+    input.flush().expect("flush marker command");
 
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut transcript = String::new();
+    while !transcript.contains("SUGARCODE_PTY_ACCEPTANCE") {
+        let event = receive_json(
+            &lines_rx,
+            deadline.saturating_duration_since(Instant::now()),
+        );
+        match event["type"].as_str() {
+            Some("output") => {
+                transcript.push_str(event["data"].as_str().expect("output data"));
+            }
+            Some("exit") => panic!("shell exited before processing the marker: {event}"),
+            Some("error") => panic!("terminal bridge error: {event}"),
+            _ => {}
+        }
+    }
+
+    let exit_input = if cfg!(windows) { "exit\r\n" } else { "exit\n" };
+    writeln!(
+        input,
+        "{}",
+        serde_json::json!({
+            "type": "input",
+            "sequence": 3,
+            "data": exit_input
+        })
+    )
+    .expect("write shell exit");
+    input.flush().expect("flush shell exit");
+
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut exited = false;
     while Instant::now() < deadline {
         let event = receive_json(
