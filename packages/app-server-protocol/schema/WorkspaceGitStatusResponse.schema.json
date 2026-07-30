@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceGitStatusResponse",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkspaceGitStatusEntry"
+          }
+        },
+        "head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mutationAllowed": {
+          "type": "boolean"
+        },
+        "repositoryState": {
+          "$ref": "#/$defs/WorkspaceGitRepositoryState"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "stagedCount": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string",
+          "const": "ready"
+        },
+        "unstagedCount": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unsupportedPaths": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "status",
+        "revision",
+        "repositoryState",
+        "mutationAllowed",
+        "entries",
+        "stagedCount",
+        "unstagedCount",
+        "unsupportedPaths"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WorkspaceGitErrorKind"
+        },
+        "status": {
+          "type": "string",
+          "const": "error"
+        }
+      },
+      "required": [
+        "status",
+        "kind"
+      ]
+    }
+  ],
+  "$defs": {
+    "WorkspaceGitChangeKind": {
+      "type": "string",
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed",
+        "typeChanged",
+        "conflicted",
+        "untracked"
+      ]
+    },
+    "WorkspaceGitErrorKind": {
+      "type": "string",
+      "enum": [
+        "notRepository",
+        "unsupportedRepository",
+        "invalidPath",
+        "stale",
+        "nothingToCommit",
+        "tooLarge",
+        "unsupportedPath",
+        "unborn",
+        "detached",
+        "repositoryState",
+        "indexLocked",
+        "changed",
+        "unavailable"
+      ]
+    },
+    "WorkspaceGitRepositoryState": {
+      "type": "string",
+      "enum": [
+        "clean",
+        "merge",
+        "revert",
+        "revertSequence",
+        "cherryPick",
+        "cherryPickSequence",
+        "bisect",
+        "rebase",
+        "rebaseInteractive",
+        "rebaseMerge",
+        "applyMailbox",
+        "applyMailboxOrRebase"
+      ]
+    },
+    "WorkspaceGitStatusEntry": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceGitChangeKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "stageable": {
+          "type": "boolean"
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceGitChangeKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "stageable"
+      ]
+    }
+  }
+}

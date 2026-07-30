@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceGitMutationParams",
+  "type": "object",
+  "properties": {
+    "expectedRevision": {
+      "type": "string"
+    },
+    "paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 100,
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "expectedRevision",
+    "paths"
+  ]
+}

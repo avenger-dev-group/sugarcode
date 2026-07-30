@@ -74,6 +74,12 @@
             "boolean",
             "null"
           ]
+        },
+        "workspaceGit": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [

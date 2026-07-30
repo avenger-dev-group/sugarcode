@@ -7,6 +7,7 @@ mod rpc;
 mod thread;
 mod turn;
 mod workspace;
+mod workspace_git;
 
 pub use export::generate_json_schema;
 pub use export::generate_typescript;
@@ -82,6 +83,19 @@ pub use workspace::WorkspaceInspectParams;
 pub use workspace::WorkspaceInspectResponse;
 pub use workspace::WorkspaceListParams;
 pub use workspace::WorkspaceListResponse;
+pub use workspace_git::WorkspaceGitChangeKind;
+pub use workspace_git::WorkspaceGitCommitParams;
+pub use workspace_git::WorkspaceGitCommitResponse;
+pub use workspace_git::WorkspaceGitDiffParams;
+pub use workspace_git::WorkspaceGitDiffResponse;
+pub use workspace_git::WorkspaceGitDiffSource;
+pub use workspace_git::WorkspaceGitErrorKind;
+pub use workspace_git::WorkspaceGitMutationParams;
+pub use workspace_git::WorkspaceGitMutationResponse;
+pub use workspace_git::WorkspaceGitRepositoryState;
+pub use workspace_git::WorkspaceGitStatusEntry;
+pub use workspace_git::WorkspaceGitStatusParams;
+pub use workspace_git::WorkspaceGitStatusResponse;
 
 pub const JSON_RPC_VERSION: &str = "2.0";
 pub const PROTOCOL_VERSION: u32 = 1;

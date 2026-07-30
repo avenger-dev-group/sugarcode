@@ -68,6 +68,9 @@ pub struct ServerCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub workspace_browser: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_git: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

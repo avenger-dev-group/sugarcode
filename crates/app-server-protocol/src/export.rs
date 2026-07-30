@@ -65,6 +65,19 @@ use crate::TurnStatus;
 use crate::WorkspaceBinding;
 use crate::WorkspaceEntry;
 use crate::WorkspaceEntryKind;
+use crate::WorkspaceGitChangeKind;
+use crate::WorkspaceGitCommitParams;
+use crate::WorkspaceGitCommitResponse;
+use crate::WorkspaceGitDiffParams;
+use crate::WorkspaceGitDiffResponse;
+use crate::WorkspaceGitDiffSource;
+use crate::WorkspaceGitErrorKind;
+use crate::WorkspaceGitMutationParams;
+use crate::WorkspaceGitMutationResponse;
+use crate::WorkspaceGitRepositoryState;
+use crate::WorkspaceGitStatusEntry;
+use crate::WorkspaceGitStatusParams;
+use crate::WorkspaceGitStatusResponse;
 use crate::WorkspaceInspectErrorKind;
 use crate::WorkspaceInspectParams;
 use crate::WorkspaceInspectResponse;
@@ -154,6 +167,19 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         WorkspaceInspectErrorKind::decl(),
         WorkspaceInspectParams::decl(),
         WorkspaceInspectResponse::decl(),
+        WorkspaceGitChangeKind::decl(),
+        WorkspaceGitRepositoryState::decl(),
+        WorkspaceGitErrorKind::decl(),
+        WorkspaceGitStatusEntry::decl(),
+        WorkspaceGitStatusParams::decl(),
+        WorkspaceGitStatusResponse::decl(),
+        WorkspaceGitDiffSource::decl(),
+        WorkspaceGitDiffParams::decl(),
+        WorkspaceGitDiffResponse::decl(),
+        WorkspaceGitMutationParams::decl(),
+        WorkspaceGitMutationResponse::decl(),
+        WorkspaceGitCommitParams::decl(),
+        WorkspaceGitCommitResponse::decl(),
     ];
 
     let mut protocol = String::from(GENERATED_HEADER);
@@ -214,6 +240,38 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("WorkspaceInspectResponse.schema.json"),
         &schema_for!(WorkspaceInspectResponse),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceGitStatusParams.schema.json"),
+        &schema_for!(WorkspaceGitStatusParams),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceGitStatusResponse.schema.json"),
+        &schema_for!(WorkspaceGitStatusResponse),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceGitDiffParams.schema.json"),
+        &schema_for!(WorkspaceGitDiffParams),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceGitDiffResponse.schema.json"),
+        &schema_for!(WorkspaceGitDiffResponse),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceGitMutationParams.schema.json"),
+        &schema_for!(WorkspaceGitMutationParams),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceGitMutationResponse.schema.json"),
+        &schema_for!(WorkspaceGitMutationResponse),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceGitCommitParams.schema.json"),
+        &schema_for!(WorkspaceGitCommitParams),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceGitCommitResponse.schema.json"),
+        &schema_for!(WorkspaceGitCommitResponse),
     )?;
     write_schema(
         out_dir.join("CommandApprovalParams.schema.json"),

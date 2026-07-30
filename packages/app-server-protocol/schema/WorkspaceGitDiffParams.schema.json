@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceGitDiffParams",
+  "type": "object",
+  "properties": {
+    "expectedRevision": {
+      "type": "string"
+    },
+    "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "minLength": 1
+    },
+    "source": {
+      "$ref": "#/$defs/WorkspaceGitDiffSource"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "expectedRevision",
+    "path",
+    "source"
+  ],
+  "$defs": {
+    "WorkspaceGitDiffSource": {
+      "type": "string",
+      "enum": [
+        "worktree",
+        "index"
+      ]
+    }
+  }
+}

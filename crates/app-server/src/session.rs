@@ -72,6 +72,14 @@ use sugarcode_app_server_protocol::TurnStartResponse;
 use sugarcode_app_server_protocol::WorkspaceBinding;
 use sugarcode_app_server_protocol::WorkspaceEntry;
 use sugarcode_app_server_protocol::WorkspaceEntryKind;
+use sugarcode_app_server_protocol::WorkspaceGitCommitParams;
+use sugarcode_app_server_protocol::WorkspaceGitCommitResponse;
+use sugarcode_app_server_protocol::WorkspaceGitDiffParams;
+use sugarcode_app_server_protocol::WorkspaceGitDiffResponse;
+use sugarcode_app_server_protocol::WorkspaceGitMutationParams;
+use sugarcode_app_server_protocol::WorkspaceGitMutationResponse;
+use sugarcode_app_server_protocol::WorkspaceGitStatusParams;
+use sugarcode_app_server_protocol::WorkspaceGitStatusResponse;
 use sugarcode_app_server_protocol::WorkspaceInspectErrorKind as PublicWorkspaceInspectErrorKind;
 use sugarcode_app_server_protocol::WorkspaceInspectParams;
 use sugarcode_app_server_protocol::WorkspaceInspectResponse;
@@ -89,6 +97,9 @@ use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
+use sugarcode_tools::GitCommitArguments;
+use sugarcode_tools::GitDiffArguments;
+use sugarcode_tools::GitMutationArguments;
 use sugarcode_tools::WorkspaceInspectArguments;
 use sugarcode_tools::WorkspaceInspectErrorKind;
 use sugarcode_tools::WorkspaceInspectOutcome;
@@ -554,6 +565,76 @@ where
                     )];
                 }
                 vec![self.inspect_workspace(id, object.get("params").cloned())]
+            }
+            "workspace/git/status" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                vec![self.git_status(id, object.get("params").cloned())]
+            }
+            "workspace/git/diff" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                vec![self.git_diff(id, object.get("params").cloned())]
+            }
+            "workspace/git/stage" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                vec![self.git_stage(id, object.get("params").cloned())]
+            }
+            "workspace/git/unstage" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                vec![self.git_unstage(id, object.get("params").cloned())]
+            }
+            "workspace/git/commit" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                vec![self.git_commit(id, object.get("params").cloned())]
             }
             _ if request_id.is_none() => Vec::new(),
             _ if self.state != SessionState::Ready => vec![error(

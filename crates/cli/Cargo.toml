@@ -24,6 +24,7 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+git2.workspace = true
 sugarcode-mcp = { path = "../mcp" }
 tempfile.workspace = true
 tokio-util.workspace = true

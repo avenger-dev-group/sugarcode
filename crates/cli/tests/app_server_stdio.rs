@@ -265,6 +265,202 @@ fn desktop_workspace_browser_matches_golden_trace() {
 }
 
 #[test]
+fn desktop_workspace_git_status_diff_stage_unstage_commit_uses_real_cli() {
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("create isolated Git workspace");
+    configure_model(
+        sugarcode_home.path(),
+        "127.0.0.1:1".parse().expect("fixture endpoint"),
+    );
+    let repository = git2::Repository::init(workspace.path()).expect("initialize repository");
+    fs::write(workspace.path().join("tracked.txt"), "before\n").expect("write tracked file");
+    let mut index = repository.index().expect("index");
+    index
+        .add_path(std::path::Path::new("tracked.txt"))
+        .expect("stage initial file");
+    index.write().expect("write index");
+    let tree_oid = index.write_tree().expect("tree");
+    let tree = repository.find_tree(tree_oid).expect("find tree");
+    let signature =
+        git2::Signature::now("SugarCode Test", "test@example.invalid").expect("signature");
+    repository
+        .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+        .expect("initial commit");
+    drop(tree);
+    drop(repository);
+    fs::write(workspace.path().join("tracked.txt"), "after\n").expect("modify tracked file");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(sugarcode_home.path())
+        .args(["app-server", "--stdio", "--workspace"])
+        .arg(workspace.path())
+        .env_remove("SUGARCODE_HOME")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn real CLI");
+    let mut stdin = child.stdin.take().expect("CLI stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("CLI stdout"));
+
+    let initialized = exchange(
+        &mut stdin,
+        &mut stdout,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {"name": "git-acceptance", "version": "1.0.0"}
+            }
+        }),
+    );
+    assert_eq!(initialized["result"]["capabilities"]["workspaceGit"], true);
+    writeln!(
+        stdin,
+        "{}",
+        json!({"jsonrpc": "2.0", "method": "initialized"})
+    )
+    .expect("write initialized");
+    stdin.flush().expect("flush initialized");
+
+    let status = exchange(
+        &mut stdin,
+        &mut stdout,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/git/status",
+            "params": {}
+        }),
+    );
+    assert_eq!(status["result"]["status"], "ready");
+    assert_eq!(status["result"]["unstagedCount"], 1);
+    let revision = status["result"]["revision"]
+        .as_str()
+        .expect("status revision")
+        .to_string();
+
+    let diff = exchange(
+        &mut stdin,
+        &mut stdout,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "workspace/git/diff",
+            "params": {
+                "expectedRevision": revision,
+                "path": "tracked.txt",
+                "source": "worktree"
+            }
+        }),
+    );
+    assert!(
+        diff["result"]["content"]
+            .as_str()
+            .expect("diff content")
+            .contains("+after")
+    );
+
+    let stage = exchange(
+        &mut stdin,
+        &mut stdout,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "workspace/git/stage",
+            "params": {
+                "expectedRevision": revision,
+                "paths": ["tracked.txt"]
+            }
+        }),
+    );
+    let staged_revision = stage["result"]["revision"]
+        .as_str()
+        .expect("stage revision")
+        .to_string();
+    let unstage = exchange(
+        &mut stdin,
+        &mut stdout,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "workspace/git/unstage",
+            "params": {
+                "expectedRevision": staged_revision,
+                "paths": ["tracked.txt"]
+            }
+        }),
+    );
+    let unstaged_revision = unstage["result"]["revision"]
+        .as_str()
+        .expect("unstage revision")
+        .to_string();
+    let restage = exchange(
+        &mut stdin,
+        &mut stdout,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "workspace/git/stage",
+            "params": {
+                "expectedRevision": unstaged_revision,
+                "paths": ["tracked.txt"]
+            }
+        }),
+    );
+    let commit = exchange(
+        &mut stdin,
+        &mut stdout,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "workspace/git/commit",
+            "params": {
+                "expectedRevision": restage["result"]["revision"],
+                "message": "update tracked file",
+                "authorName": "SugarCode Test",
+                "authorEmail": "test@example.invalid"
+            }
+        }),
+    );
+    assert_eq!(commit["result"]["status"], "committed");
+    let expected_head = commit["result"]["newHead"]
+        .as_str()
+        .expect("commit oid")
+        .to_string();
+
+    drop(stdin);
+    let output = child.wait_with_output().expect("wait for real CLI");
+    assert!(output.status.success(), "{output:?}");
+    let reopened = git2::Repository::open(workspace.path()).expect("reopen repository");
+    assert_eq!(
+        reopened
+            .head()
+            .expect("head")
+            .target()
+            .expect("head oid")
+            .to_string(),
+        expected_head
+    );
+}
+
+fn exchange(
+    stdin: &mut std::process::ChildStdin,
+    stdout: &mut BufReader<std::process::ChildStdout>,
+    request: Value,
+) -> Value {
+    writeln!(stdin, "{request}").expect("write JSON-RPC request");
+    stdin.flush().expect("flush JSON-RPC request");
+    let mut line = String::new();
+    stdout.read_line(&mut line).expect("read JSON-RPC response");
+    assert!(!line.is_empty(), "CLI closed before responding");
+    serde_json::from_str(&line).expect("parse JSON-RPC response")
+}
+
+#[test]
 fn workspace_search_tool_lifecycle_matches_golden_trace() {
     const TOOL_CALL: &str = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_search_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/search\",\"arguments\":\"{\\\"path\\\":\\\"src\\\",\\\"query\\\":\\\"needle\\\"}\"}}]},\"finish_reason\":null}]}\n\n",

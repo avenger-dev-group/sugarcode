@@ -34,7 +34,7 @@ export type ServerInfo = { name: string, version: string, };
 
 export type PlatformInfo = { family: string, os: string, arch: string, };
 
-export type ServerCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals: boolean, mcpToolCallApprovals?: boolean, workspaceBrowser?: boolean, };
+export type ServerCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals: boolean, mcpToolCallApprovals?: boolean, workspaceBrowser?: boolean, workspaceGit?: boolean, };
 
 export type WorkspaceBinding = { id: string, };
 
@@ -151,4 +151,30 @@ export type WorkspaceInspectErrorKind = "invalidPath" | "notFound" | "accessDeni
 export type WorkspaceInspectParams = { path: string, };
 
 export type WorkspaceInspectResponse = { "status": "complete", path: string, content: string, bytes: number, lines: number, hasUtf8Bom: boolean, } | { "status": "truncated", path: string, content: string, bytes: number, returnedBytes: number, lines: number, hasUtf8Bom: boolean, } | { "status": "error", path: string, kind: WorkspaceInspectErrorKind, };
+
+export type WorkspaceGitChangeKind = "added" | "modified" | "deleted" | "renamed" | "typeChanged" | "conflicted" | "untracked";
+
+export type WorkspaceGitRepositoryState = "clean" | "merge" | "revert" | "revertSequence" | "cherryPick" | "cherryPickSequence" | "bisect" | "rebase" | "rebaseInteractive" | "rebaseMerge" | "applyMailbox" | "applyMailboxOrRebase";
+
+export type WorkspaceGitErrorKind = "notRepository" | "unsupportedRepository" | "invalidPath" | "stale" | "nothingToCommit" | "tooLarge" | "unsupportedPath" | "unborn" | "detached" | "repositoryState" | "indexLocked" | "changed" | "unavailable";
+
+export type WorkspaceGitStatusEntry = { path: string, index?: WorkspaceGitChangeKind, worktree?: WorkspaceGitChangeKind, stageable: boolean, };
+
+export type WorkspaceGitStatusParams = Record<string, never>;
+
+export type WorkspaceGitStatusResponse = { "status": "ready", revision: string, branch?: string, head?: string, repositoryState: WorkspaceGitRepositoryState, mutationAllowed: boolean, entries: Array<WorkspaceGitStatusEntry>, stagedCount: number, unstagedCount: number, unsupportedPaths: number, } | { "status": "error", kind: WorkspaceGitErrorKind, };
+
+export type WorkspaceGitDiffSource = "worktree" | "index";
+
+export type WorkspaceGitDiffParams = { expectedRevision: string, path: string, source: WorkspaceGitDiffSource, };
+
+export type WorkspaceGitDiffResponse = { "status": "ready", revision: string, path: string, source: WorkspaceGitDiffSource, content: string, additions: number, deletions: number, } | { "status": "error", kind: WorkspaceGitErrorKind, };
+
+export type WorkspaceGitMutationParams = { expectedRevision: string, paths: Array<string>, };
+
+export type WorkspaceGitMutationResponse = { "status": "applied", revision: string, paths: Array<string>, } | { "status": "error", kind: WorkspaceGitErrorKind, };
+
+export type WorkspaceGitCommitParams = { expectedRevision: string, message: string, authorName: string, authorEmail: string, };
+
+export type WorkspaceGitCommitResponse = { "status": "committed", revision: string, oldHead: string, newHead: string, } | { "status": "error", kind: WorkspaceGitErrorKind, };
 

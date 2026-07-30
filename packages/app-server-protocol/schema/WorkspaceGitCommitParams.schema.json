@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceGitCommitParams",
+  "type": "object",
+  "properties": {
+    "authorEmail": {
+      "type": "string"
+    },
+    "authorName": {
+      "type": "string"
+    },
+    "expectedRevision": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "expectedRevision",
+    "message",
+    "authorName",
+    "authorEmail"
+  ]
+}

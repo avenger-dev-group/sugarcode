@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceGitDiffResponse",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "additions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "content": {
+          "type": "string"
+        },
+        "deletions": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "path": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/WorkspaceGitDiffSource"
+        },
+        "status": {
+          "type": "string",
+          "const": "ready"
+        }
+      },
+      "required": [
+        "status",
+        "revision",
+        "path",
+        "source",
+        "content",
+        "additions",
+        "deletions"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WorkspaceGitErrorKind"
+        },
+        "status": {
+          "type": "string",
+          "const": "error"
+        }
+      },
+      "required": [
+        "status",
+        "kind"
+      ]
+    }
+  ],
+  "$defs": {
+    "WorkspaceGitDiffSource": {
+      "type": "string",
+      "enum": [
+        "worktree",
+        "index"
+      ]
+    },
+    "WorkspaceGitErrorKind": {
+      "type": "string",
+      "enum": [
+        "notRepository",
+        "unsupportedRepository",
+        "invalidPath",
+        "stale",
+        "nothingToCommit",
+        "tooLarge",
+        "unsupportedPath",
+        "unborn",
+        "detached",
+        "repositoryState",
+        "indexLocked",
+        "changed",
+        "unavailable"
+      ]
+    }
+  }
+}

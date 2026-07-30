@@ -1,3 +1,3 @@
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"commandApprovals":true,"commandWorkspaceWriteApprovals":true,"workspaceBrowser":true},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"},"workspace":{"id":"<workspace-binding>"}}}
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"commandApprovals":true,"commandWorkspaceWriteApprovals":true,"workspaceBrowser":true,"workspaceGit":true},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"},"workspace":{"id":"<workspace-binding>"}}}
 {"jsonrpc":"2.0","id":"list-root","result":{"entries":[{"kind":"file","name":"README.md","path":"README.md"},{"kind":"directory","name":"src","path":"src"}],"path":""}}
 {"jsonrpc":"2.0","id":"inspect-readme","result":{"status":"complete","path":"README.md","content":"# Fixture\n","bytes":10,"lines":1,"hasUtf8Bom":false}}

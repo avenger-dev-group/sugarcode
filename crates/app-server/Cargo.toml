@@ -22,5 +22,6 @@ tokio-util.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+git2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
