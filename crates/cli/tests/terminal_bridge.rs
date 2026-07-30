@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[test]
+#[ignore = "native PTY acceptance is run by the dedicated cross-platform CI gate"]
 fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let workspace_path = workspace

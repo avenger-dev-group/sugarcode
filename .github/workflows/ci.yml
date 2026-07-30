@@ -123,7 +123,9 @@ jobs:
           cargo test -p sugarcode-cli --test tui --locked -- --nocapture
 
       - name: Test user-confirmed Desktop terminal bridge
-        run: cargo test -p sugarcode-terminal --locked -- --nocapture
+        run: |
+          cargo test -p sugarcode-terminal --locked -- --nocapture
+          cargo test -p sugarcode-cli --test terminal_bridge --locked -- --ignored --nocapture
 
       - name: Test Rust workspace
         run: cargo test --workspace --locked
