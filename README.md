@@ -1,7 +1,7 @@
 # SugarCode
 
-SugarCode is a monorepo for the Electron desktop application and the Rust
-coding-agent runtime that will power both Desktop and the standalone CLI.
+SugarCode is a monorepo for an Electron coding workbench and a native Rust
+coding-agent runtime shared by Desktop and the standalone CLI.
 
 ## Repository layout
 
@@ -11,13 +11,19 @@ apps/
 crates/             Rust CLI, Agent Core and app-server packages
 packages/           Generated/shared TypeScript packages
 protocol-fixtures/  Cross-language app-server fixtures
-docs/architecture/  Architecture decisions
+docs/architecture/  Current process and packaging contracts
 scripts/            Repository and release automation
 ```
 
-The first Rust vertical slice provides the `sugarcode` CLI, its local stdio app
-server initialization handshake, and generated public protocol artifacts. Agent
-Core and Desktop sidecar integration remain later slices.
+The native binary exposes:
+
+```text
+sugarcode                 interactive terminal TUI
+sugarcode exec            headless execution
+sugarcode app-server      local JSONL server for Desktop and IDE clients
+```
+
+Desktop builds and bundles the matching CLI from the same repository revision.
 
 ## Desktop development
 
@@ -48,10 +54,4 @@ Desktop/CLI boundary.
 
 Read [`docs/PLAN.md`](docs/PLAN.md) before starting a new planning or
 implementation session. It records accepted decisions, current baseline,
-phase-by-phase acceptance criteria and a reusable Plan-mode prompt.
-
-The Rust architecture uses [`openai/codex`](https://github.com/openai/codex)
-as its primary design reference. The
-[`Codex reference baseline`](docs/architecture/codex-reference.md) maps the
-relevant upstream components to each SugarCode phase and records which designs
-should not be copied.
+phase status, verification commands and the deferred release entry point.
