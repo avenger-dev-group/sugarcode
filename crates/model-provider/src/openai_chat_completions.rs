@@ -277,7 +277,7 @@ async fn process_stream(
             if let Some(tool_calls) = choice.delta.tool_calls
                 && !tool_calls.is_empty()
             {
-                if !allow_tools || text_seen || tool_calls.len() != 1 {
+                if !allow_tools || text_seen {
                     send_error(
                         &sender,
                         ModelError::new(ModelErrorKind::UnsupportedOutput, false),
@@ -286,10 +286,11 @@ async fn process_stream(
                     return;
                 }
                 let assembler = tool_assembler.get_or_insert_with(ToolCallAssembler::default);
-                if let Err(error) = assembler.push(tool_calls.into_iter().next().expect("one call"))
-                {
-                    send_error(&sender, error).await;
-                    return;
+                for tool_call in tool_calls {
+                    if let Err(error) = assembler.push(tool_call) {
+                        send_error(&sender, error).await;
+                        return;
+                    }
                 }
             }
             if let Some(content) = choice.delta.content
@@ -405,6 +406,8 @@ struct ChatRequest {
     stream_options: StreamOptions,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ChatToolDefinition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -420,6 +423,19 @@ impl From<ModelRequest> for ChatRequest {
             .map(ChatMessage::from)
             .chain(request.messages.into_iter().map(ChatMessage::from))
             .collect();
+        let tools = request
+            .tools
+            .into_iter()
+            .map(|tool| ChatToolDefinition {
+                kind: "function",
+                function: ChatFunctionDefinition {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.parameters,
+                },
+            })
+            .collect::<Vec<_>>();
+        let parallel_tool_calls = (!tools.is_empty()).then_some(false);
         Self {
             model: request.model,
             messages,
@@ -427,18 +443,8 @@ impl From<ModelRequest> for ChatRequest {
             stream_options: StreamOptions {
                 include_usage: true,
             },
-            tools: request
-                .tools
-                .into_iter()
-                .map(|tool| ChatToolDefinition {
-                    kind: "function",
-                    function: ChatFunctionDefinition {
-                        name: tool.name,
-                        description: tool.description,
-                        parameters: tool.parameters,
-                    },
-                })
-                .collect(),
+            tools,
+            parallel_tool_calls,
         }
     }
 }

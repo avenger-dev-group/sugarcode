@@ -255,8 +255,8 @@ async fn nested_workspace_instructions_have_explicit_deeper_precedence() {
 #[tokio::test]
 async fn fragmented_single_tool_call_is_assembled_into_one_typed_event() {
     let body = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/\",\"arguments\":\"{\\\"path\\\":\\\"READ\"}}]},\"finish_reason\":null}]}\n\n",
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"read\",\"arguments\":\"ME.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"\"}},{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\":\\\"READ\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ME.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n"
     );
@@ -1251,8 +1251,10 @@ async fn read_request(socket: &mut TcpStream, expect_auth: bool) -> serde_json::
         std::collections::BTreeSet::from(["messages", "model", "stream", "stream_options"]);
     if body.get("tools").is_some() {
         expected.insert("tools");
+        expected.insert("parallel_tool_calls");
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "workspace/read");
+        assert_eq!(body["parallel_tool_calls"], false);
     }
     assert_eq!(keys, expected);
     assert_eq!(body["stream_options"]["include_usage"], true);
