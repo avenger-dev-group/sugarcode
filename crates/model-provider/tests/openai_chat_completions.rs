@@ -283,6 +283,56 @@ async fn fragmented_single_tool_call_is_assembled_into_one_typed_event() {
 }
 
 #[tokio::test]
+async fn leading_whitespace_before_a_tool_call_is_ignored() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n  \"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/list\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+
+    assert_eq!(
+        events,
+        vec![
+            Ok(ModelEvent::ToolCall(ModelToolCall {
+                id: "call_1".to_string(),
+                name: "workspace/list".to_string(),
+                arguments: serde_json::json!({ "path": "." }),
+            })),
+            Ok(ModelEvent::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn whitespace_only_completed_response_is_non_retryable_incomplete() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n  \"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let error = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .next()
+        .await
+        .expect("terminal event")
+        .expect_err("whitespace-only response must fail");
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::Incomplete);
+    assert!(!error.retryable());
+}
+
+#[tokio::test]
 async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
     let cases = [
         (

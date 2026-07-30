@@ -292,6 +292,7 @@ async fn process_stream(
             }
             if let Some(content) = choice.delta.content
                 && !content.is_empty()
+                && (text_seen || content.chars().any(|character| !character.is_whitespace()))
             {
                 if tool_assembler.is_some() {
                     send_error(
