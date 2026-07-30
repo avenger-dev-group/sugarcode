@@ -29,15 +29,10 @@ where
             )];
         }
 
-        let Some(sequence) = self.last_core_request_sequence.checked_add(1) else {
-            return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
-        };
-        let core_request_id = CoreRequestId::new(sequence);
-        self.last_core_request_sequence = sequence;
         self.accepted_request_ids.insert(id.clone());
 
-        let event = match self.core.start_thread(core_request_id) {
-            Ok(event) if event.request_id == core_request_id => event,
+        let event = match self.agent.start_thread() {
+            Ok(event) => event,
             Err(CoreError::StateUnavailable) => {
                 return vec![error(
                     Some(id),
@@ -46,7 +41,7 @@ where
                     None,
                 )];
             }
-            Ok(_) | Err(_) => {
+            Err(_) => {
                 return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
             }
         };
@@ -112,7 +107,7 @@ where
         }
 
         let thread_id = ThreadId::new(params.thread_id.clone());
-        let snapshot = match self.core.resume_thread(&thread_id) {
+        let snapshot = match self.agent.resume_thread(&thread_id) {
             Ok(snapshot) => snapshot,
             Err(CoreError::ThreadNotFound(_)) => {
                 return vec![error(
@@ -172,7 +167,7 @@ where
         }
 
         let thread_id = ThreadId::new(params.thread_id.clone());
-        match self.core.archive_thread(&thread_id) {
+        match self.agent.archive_thread(&thread_id) {
             Ok(()) => {
                 self.accepted_request_ids.insert(id.clone());
                 let response = ThreadArchiveResponse {};
@@ -242,7 +237,7 @@ where
         }
 
         let thread_id = ThreadId::new(params.thread_id.clone());
-        match self.core.unarchive_thread(&thread_id) {
+        match self.agent.unarchive_thread(&thread_id) {
             Ok(()) => {
                 self.accepted_request_ids.insert(id.clone());
                 let response = ThreadUnarchiveResponse {};
@@ -313,7 +308,7 @@ where
         }
 
         let thread_id = ThreadId::new(params.thread_id.clone());
-        match self.core.delete_thread(&thread_id) {
+        match self.agent.delete_thread(&thread_id) {
             Ok(()) => {
                 self.accepted_request_ids.insert(id.clone());
                 let response = ThreadDeleteResponse {};
@@ -384,7 +379,7 @@ where
         }
 
         let source_thread_id = ThreadId::new(params.thread_id.clone());
-        let snapshot = match self.core.fork_thread(&source_thread_id) {
+        let snapshot = match self.agent.fork_thread(&source_thread_id) {
             Ok(snapshot) => snapshot,
             Err(CoreError::ThreadNotFound(_)) => {
                 return vec![error(

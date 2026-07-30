@@ -34,7 +34,7 @@ where
         }
 
         let thread_id = ThreadId::new(params.thread_id.clone());
-        if !self.core.contains_thread(&thread_id) {
+        if !self.agent.contains_thread(&thread_id) {
             return vec![error(
                 Some(id),
                 ERROR_THREAD_NOT_FOUND,
@@ -43,17 +43,9 @@ where
             )];
         }
 
-        let Some(sequence) = self.last_core_request_sequence.checked_add(1) else {
-            return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
-        };
-        let core_request_id = CoreRequestId::new(sequence);
-        self.last_core_request_sequence = sequence;
-        let outcome =
-            match self
-                .core
-                .start_text_turn(core_request_id, thread_id.clone(), params.input)
-            {
-                Ok(outcome) => outcome,
+        let (core_request_id, outcome) =
+            match self.agent.start_text_turn(thread_id.clone(), params.input) {
+                Ok(result) => result,
                 Err(CoreError::StateUnavailable) => {
                     self.accepted_request_ids.insert(id.clone());
                     return vec![error(
@@ -153,7 +145,7 @@ where
         }
         let thread_id = ThreadId::new(params.thread_id.clone());
         let turn_id = TurnId::new(params.turn_id.clone());
-        if !self.core.contains_thread(&thread_id) {
+        if !self.agent.contains_thread(&thread_id) {
             return vec![error(
                 Some(id),
                 ERROR_THREAD_NOT_FOUND,
@@ -161,7 +153,7 @@ where
                 Some(json!({ "threadId": params.thread_id })),
             )];
         }
-        let outcome = self.core.interrupt_turn(&thread_id, &turn_id);
+        let outcome = self.agent.interrupt_turn(&thread_id, &turn_id);
         match outcome {
             Ok(TurnInterruptOutcome::Accepted) => {
                 self.accepted_request_ids.insert(id.clone());

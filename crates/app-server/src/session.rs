@@ -1,5 +1,3 @@
-use crate::approval::PendingCommandApproval;
-use crate::approval::PendingMcpToolApproval;
 use crate::event_mapping::EventMappingError;
 use crate::event_mapping::map_core_event;
 use crate::event_mapping::map_fork_snapshot;
@@ -10,6 +8,9 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
+use sugarcode_agent_runtime::AgentSurfaceSession;
+use sugarcode_agent_runtime::PendingCommandApproval;
+use sugarcode_agent_runtime::PendingMcpToolApproval;
 use sugarcode_app_server_protocol::CommandApprovalParams;
 use sugarcode_app_server_protocol::CommandApprovalResponse;
 use sugarcode_app_server_protocol::CommandApprovalResponseDecision;
@@ -94,6 +95,7 @@ use sugarcode_core::McpToolCapability;
 use sugarcode_core::TurnInterruptOutcome;
 use sugarcode_core::TurnStartOutcome;
 use sugarcode_protocol::CoreEventKind;
+#[cfg(test)]
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
@@ -132,7 +134,7 @@ enum PendingApprovalResponse {
 #[derive(Debug)]
 pub struct Session<C = Core> {
     state: SessionState,
-    core: C,
+    agent: AgentSurfaceSession<C>,
     accepted_request_ids: HashSet<RequestId>,
     pending_interrupts: HashMap<(String, String), RequestId>,
     pending_approvals: HashMap<RequestId, PendingApprovalResponse>,
@@ -141,7 +143,6 @@ pub struct Session<C = Core> {
     mcp_tool_call_approvals: bool,
     mcp_capability: Option<McpToolCapability>,
     workspace: Option<Arc<WorkspaceTool>>,
-    last_core_request_sequence: u64,
 }
 
 impl Default for Session<Core> {
@@ -161,9 +162,13 @@ where
     C: CoreApi,
 {
     pub fn with_core(core: C) -> Self {
+        Self::with_agent_session(AgentSurfaceSession::new(core))
+    }
+
+    fn with_agent_session(agent: AgentSurfaceSession<C>) -> Self {
         Self {
             state: SessionState::Uninitialized,
-            core,
+            agent,
             accepted_request_ids: HashSet::new(),
             pending_interrupts: HashMap::new(),
             pending_approvals: HashMap::new(),
@@ -172,24 +177,40 @@ where
             mcp_tool_call_approvals: false,
             mcp_capability: None,
             workspace: None,
-            last_core_request_sequence: 0,
         }
     }
 
-    pub(crate) fn with_core_and_workspace(
-        core: C,
+    pub(crate) fn with_agent_session_and_workspace(
+        agent: AgentSurfaceSession<C>,
         workspace: Option<Arc<WorkspaceTool>>,
         mcp_capability: Option<McpToolCapability>,
     ) -> Self {
-        let mut session = Self::with_core(core);
+        let mut session = Self::with_agent_session(agent);
         session.workspace = workspace;
         session.mcp_capability = mcp_capability;
         session
     }
 
     #[cfg(test)]
+    pub(crate) fn with_core_and_workspace(
+        core: C,
+        workspace: Option<Arc<WorkspaceTool>>,
+        mcp_capability: Option<McpToolCapability>,
+    ) -> Self {
+        Self::with_agent_session_and_workspace(
+            AgentSurfaceSession::new(core),
+            workspace,
+            mcp_capability,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_core_and_mcp_capability(core: C, capability: McpToolCapability) -> Self {
-        Self::with_core_and_workspace(core, None, Some(capability))
+        Self::with_agent_session_and_workspace(
+            AgentSurfaceSession::new(core),
+            None,
+            Some(capability),
+        )
     }
 
     pub fn state(&self) -> SessionState {
@@ -234,7 +255,7 @@ where
             capability.set_enabled(false);
         }
         self.pending_approvals.clear();
-        self.core.shutdown()
+        self.agent.shutdown()
     }
 
     pub(crate) fn process_approval_request(

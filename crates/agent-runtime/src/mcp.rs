@@ -24,13 +24,13 @@ struct McpServerRuntime {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum McpServerSpec {
+pub(super) enum McpServerSpec {
     Stdio(StdioServerSpec),
     LoopbackStreamableHttp(LoopbackStreamableHttpServerSpec),
 }
 
 impl McpServerSpec {
-    pub(crate) fn id(&self) -> &str {
+    pub(super) fn id(&self) -> &str {
         match self {
             Self::Stdio(spec) => spec.id(),
             Self::LoopbackStreamableHttp(spec) => spec.id(),
@@ -39,7 +39,7 @@ impl McpServerSpec {
 }
 
 #[derive(Clone)]
-pub(crate) struct McpRuntimeAdapter {
+pub(super) struct McpRuntimeAdapter {
     servers: Vec<McpServerRuntime>,
     definitions: Vec<ModelToolDefinition>,
 }
@@ -55,7 +55,7 @@ impl fmt::Debug for McpRuntimeAdapter {
 }
 
 impl McpRuntimeAdapter {
-    pub(crate) fn new(
+    pub(super) fn new(
         mut discovered: Vec<(McpServerSpec, McpServerInventory)>,
     ) -> Result<Self, &'static str> {
         if discovered.is_empty() || discovered.len() > sugarcode_state::MAX_MCP_SERVERS {

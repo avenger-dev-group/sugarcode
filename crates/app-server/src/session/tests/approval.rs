@@ -1,6 +1,6 @@
 use super::*;
-use crate::approval::PendingCommandApproval;
-use crate::approval::PendingMcpToolApproval;
+use sugarcode_agent_runtime::PendingCommandApproval;
+use sugarcode_agent_runtime::PendingMcpToolApproval;
 use sugarcode_core::CommandApprovalOutcome;
 use sugarcode_core::CommandApprovalRequest;
 use sugarcode_core::McpToolApprovalOutcome;

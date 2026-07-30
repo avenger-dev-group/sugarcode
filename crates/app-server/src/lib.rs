@@ -1,6 +1,4 @@
-mod approval;
 mod event_mapping;
-mod mcp;
 mod session;
 mod stdio;
 
@@ -10,20 +8,10 @@ pub use stdio::serve;
 pub use stdio::serve_with_events;
 pub use stdio::serve_with_session;
 
-use approval::ChannelCommandApprovalRequester;
-use approval::ChannelMcpToolApprovalRequester;
 use std::io;
-use std::sync::Arc;
-use sugarcode_core::Core;
-use sugarcode_core::CoreRuntime;
-use sugarcode_credential_store::CredentialReference;
-use sugarcode_credential_store::CredentialStore;
-use sugarcode_credential_store::OsCredentialStore;
-use sugarcode_model_provider::OpenAiChatCompletionsProvider;
+use sugarcode_agent_runtime::AgentSurfaceLaunchOptions;
+use sugarcode_agent_runtime::AgentSurfaceRuntime;
 use sugarcode_state::EffectiveConfig;
-use sugarcode_state::ModelApiFormat;
-use sugarcode_state::RolloutRepository;
-use zeroize::Zeroizing;
 
 pub async fn run_stdio(
     config: EffectiveConfig,
@@ -33,287 +21,37 @@ pub async fn run_stdio(
     allow_command_workspace_write: bool,
     mcp_servers: Vec<String>,
 ) -> io::Result<()> {
-    if workspace.is_none() && workspace_scope.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "workspace scope requires a workspace",
-        ));
-    }
-    let workspace_root = workspace
-        .as_deref()
-        .map(sugarcode_tools::WorkspaceTool::open)
-        .transpose()
-        .map_err(|kind| io::Error::new(io::ErrorKind::InvalidInput, format!("{kind:?}")))?
-        .map(Arc::new);
-    let (workspace, workspace_instructions, workspace_skills) = match workspace_root.as_ref() {
-        Some(tool) => {
-            let (scope, instructions, skills) = tool
-                .derive_scope_with_context(workspace_scope.as_deref().unwrap_or("."))
-                .map_err(|kind| {
-                    let kind = match kind {
-                        sugarcode_tools::WorkspaceScopeContextErrorKind::Scope(kind) => {
-                            format!("{kind:?}")
-                        }
-                        sugarcode_tools::WorkspaceScopeContextErrorKind::Instructions(kind) => {
-                            format!("{kind:?}")
-                        }
-                        sugarcode_tools::WorkspaceScopeContextErrorKind::Skills(kind) => {
-                            format!("{kind:?}")
-                        }
-                    };
-                    io::Error::new(io::ErrorKind::InvalidInput, kind)
-                })?;
-            (Some(Arc::new(scope)), Some(instructions), Some(skills))
-        }
-        None => (None, None, None),
-    };
-    let command_workspace_root = workspace.as_ref().map(|tool| tool.command_workspace_root());
-    let workspace_read: Option<Arc<dyn sugarcode_tools::WorkspaceReadExecutor>> = workspace
-        .as_ref()
-        .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceReadExecutor>);
-    let workspace_list: Option<Arc<dyn sugarcode_tools::WorkspaceListExecutor>> = workspace
-        .as_ref()
-        .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceListExecutor>);
-    let workspace_search: Option<Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>> = workspace
-        .as_ref()
-        .map(|tool| Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspaceSearchExecutor>);
-    let workspace_patch: Option<Arc<dyn sugarcode_tools::WorkspacePatchExecutor>> =
-        allow_workspace_write
-            .then(|| {
-                workspace.as_ref().map(|tool| {
-                    Arc::clone(tool) as Arc<dyn sugarcode_tools::WorkspacePatchExecutor>
-                })
-            })
-            .flatten();
-    let mcp = discover_selected_mcp_servers(&config, mcp_servers).await?;
-    let model = config.model().cloned();
-    let model_token = model
-        .as_ref()
-        .and_then(|model| model.credential_reference())
-        .map(|reference| load_model_token(config.home().path(), reference))
-        .transpose();
-    let repository = RolloutRepository::open_with_workspace_binding(
-        config.home(),
-        workspace.as_ref().map(|workspace| workspace.binding_id()),
-    )
-    .map_err(io::Error::other)?;
-    for diagnostic in repository.diagnostics() {
+    let command_supervisor_executable = std::env::current_exe()?;
+    let runtime = AgentSurfaceRuntime::launch(AgentSurfaceLaunchOptions {
+        config,
+        workspace,
+        workspace_scope,
+        allow_workspace_write,
+        allow_command_workspace_write,
+        mcp_servers,
+        command_supervisor_executable,
+    })
+    .await?;
+    let parts = runtime.into_parts();
+    for diagnostic in parts.diagnostics {
         eprintln!("sugarcode: {diagnostic}");
     }
-    for diagnostic in repository.projection_diagnostics() {
-        eprintln!("sugarcode: {diagnostic}");
-    }
-    for diagnostic in repository.search_projection_diagnostics() {
-        eprintln!("sugarcode: {diagnostic}");
-    }
-    let core = Core::with_repository(Box::new(repository));
-    let (approval_requester, approvals) = ChannelCommandApprovalRequester::channel(4);
-    let (mcp_approval_requester, mcp_approvals) = ChannelMcpToolApprovalRequester::channel(1);
-    let (runtime, events) = match (model, model_token) {
-        (Some(_), Err(_)) => {
-            eprintln!("sugarcode: configured model credential is unavailable");
-            CoreRuntime::without_model(core)
-        }
-        (Some(model), Ok(token)) => {
-            let provider: Arc<dyn sugarcode_model_provider::ModelProvider> =
-                match model.api_format() {
-                    ModelApiFormat::OpenAiChatCompletions => Arc::new(
-                        OpenAiChatCompletionsProvider::new_secret(model.endpoint().clone(), token)
-                            .map_err(io::Error::other)?,
-                    ),
-                };
-            if let Some(Ok(command_workspace_root)) = command_workspace_root {
-                let executable = std::env::current_exe()?;
-                let command_policy = if allow_command_workspace_write {
-                    sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1
-                } else {
-                    sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1
-                };
-                match sugarcode_tools::NativeShellCommandExecutor::new_with_policy(
-                    executable,
-                    command_workspace_root,
-                    command_policy,
-                ) {
-                    Ok(shell_executor) => CoreRuntime::new_with_shell(
-                        core,
-                        provider,
-                        model.model().to_string(),
-                        workspace_read,
-                        workspace_list,
-                        workspace_search,
-                        Arc::new(shell_executor),
-                        Arc::new(approval_requester),
-                    ),
-                    Err(_) => {
-                        eprintln!("sugarcode: shell/exec unavailable: sandboxUnavailable");
-                        CoreRuntime::new_with_workspace_search(
-                            core,
-                            provider,
-                            model.model().to_string(),
-                            workspace_read,
-                            workspace_list,
-                            workspace_search,
-                        )
-                    }
-                }
-            } else if command_workspace_root.is_some() {
-                eprintln!("sugarcode: shell/exec unavailable: sandboxUnavailable");
-                CoreRuntime::new_with_workspace_search(
-                    core,
-                    provider,
-                    model.model().to_string(),
-                    workspace_read,
-                    workspace_list,
-                    workspace_search,
-                )
-            } else {
-                CoreRuntime::new_with_workspace_search(
-                    core,
-                    provider,
-                    model.model().to_string(),
-                    workspace_read,
-                    workspace_list,
-                    workspace_search,
-                )
-            }
-        }
-        (None, Ok(None)) => CoreRuntime::without_model(core),
-        (None, Ok(Some(_))) | (None, Err(_)) => unreachable!("token lookup requires a model"),
-    };
-    let mut runtime = runtime
-        .with_workspace_patch(workspace_patch)
-        .with_workspace_instructions(workspace_instructions)
-        .with_workspace_skills(workspace_skills);
-    let mcp_capability = sugarcode_core::McpToolCapability::default();
-    let has_mcp = !mcp.is_empty();
-    if !mcp.is_empty() {
-        let adapter = mcp::McpRuntimeAdapter::new(mcp).map_err(io::Error::other)?;
-        runtime = runtime.with_mcp(
-            Arc::new(adapter),
-            Arc::new(mcp_approval_requester),
-            mcp_capability.clone(),
-        );
-    }
-    let session =
-        Session::with_core_and_workspace(runtime, workspace, has_mcp.then_some(mcp_capability));
+    let session = Session::with_agent_session_and_workspace(
+        parts.session,
+        parts.workspace,
+        parts.mcp_capability,
+    );
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());
-    stdio::serve_with_events_and_approvals(input, output, session, events, approvals, mcp_approvals)
-        .await
-}
-
-async fn discover_selected_mcp_servers(
-    config: &EffectiveConfig,
-    mut selected_server_ids: Vec<String>,
-) -> io::Result<Vec<(mcp::McpServerSpec, sugarcode_mcp::McpServerInventory)>> {
-    if selected_server_ids.len() > sugarcode_state::MAX_MCP_SERVERS {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "too many MCP servers selected for this process",
-        ));
-    }
-    selected_server_ids.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
-    if selected_server_ids.windows(2).any(|ids| ids[0] == ids[1]) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "duplicate MCP server selection",
-        ));
-    }
-
-    let selected = selected_server_ids
-        .into_iter()
-        .map(|selected_server_id| {
-            config
-                .mcp_servers()
-                .iter()
-                .find(|server| server.id() == selected_server_id)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "MCP server `{selected_server_id}` is not configured for this process"
-                        ),
-                    )
-                })
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    if selected
-        .iter()
-        .any(|server| server.as_loopback_streamable_http().is_some())
-        && (selected.len() != 1 || selected[0].as_loopback_streamable_http().is_none())
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Streamable HTTP MCP requires exactly one selected HTTP server",
-        ));
-    }
-    let specs = selected
-        .into_iter()
-        .map(|server| {
-            if let Some(server) = server.as_stdio() {
-                Ok(mcp::McpServerSpec::Stdio(
-                    sugarcode_mcp::StdioServerSpec::new(
-                        server.id().to_owned(),
-                        server.executable().to_path_buf(),
-                        server.argv().to_vec(),
-                        server.cwd().to_path_buf(),
-                    ),
-                ))
-            } else if let Some(server) = server.as_loopback_streamable_http() {
-                sugarcode_mcp::LoopbackStreamableHttpServerSpec::new(
-                    server.id().to_owned(),
-                    server.endpoint().as_str().to_owned(),
-                )
-                .map(mcp::McpServerSpec::LoopbackStreamableHttp)
-                .map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "invalid loopback Streamable HTTP MCP endpoint",
-                    )
-                })
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "unsupported MCP transport",
-                ))
-            }
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-
-    let mut discovered = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let inventory = match &spec {
-            mcp::McpServerSpec::Stdio(spec) => sugarcode_mcp::discover_stdio(spec).await,
-            mcp::McpServerSpec::LoopbackStreamableHttp(spec) => {
-                sugarcode_mcp::discover_loopback_streamable_http(spec).await
-            }
-        }
-        .map_err(io::Error::other)?;
-        discovered.push((spec, inventory));
-    }
-    Ok(discovered)
-}
-
-fn load_model_token(home: &std::path::Path, reference: &str) -> io::Result<Zeroizing<String>> {
-    let reference = CredentialReference::parse(reference).map_err(io::Error::other)?;
-    let store = OsCredentialStore::new(home);
-    let Some(secret) = store.get(&reference).map_err(io::Error::other)? else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "configured model credential is missing",
-        ));
-    };
-    let token = std::str::from_utf8(secret.expose())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "model credential is not UTF-8"))?;
-    if token.len() > sugarcode_credential_store::MAX_SECRET_BYTES
-        || !token.bytes().all(|byte| matches!(byte, 0x21..=0x7e))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "model credential is invalid",
-        ));
-    }
-    Ok(Zeroizing::new(token.to_owned()))
+    stdio::serve_with_events_and_approvals(
+        input,
+        output,
+        session,
+        parts.events,
+        parts.command_approvals,
+        parts.mcp_approvals,
+    )
+    .await
 }
 
 pub fn generate_typescript(out_dir: &std::path::Path) -> io::Result<()> {

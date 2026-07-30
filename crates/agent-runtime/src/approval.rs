@@ -9,7 +9,7 @@ use sugarcode_core::McpToolApprovalRequester;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
-pub(crate) struct PendingCommandApproval {
+pub struct PendingCommandApproval {
     pub request: CommandApprovalRequest,
     pub response: oneshot::Sender<CommandApprovalOutcome>,
 }
@@ -49,7 +49,7 @@ impl CommandApprovalRequester for ChannelCommandApprovalRequester {
     }
 }
 
-pub(crate) struct PendingMcpToolApproval {
+pub struct PendingMcpToolApproval {
     pub request: McpToolApprovalRequest,
     pub response: oneshot::Sender<McpToolApprovalOutcome>,
 }

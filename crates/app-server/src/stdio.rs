@@ -1,7 +1,7 @@
 use crate::Session;
-use crate::approval::PendingCommandApproval;
-use crate::approval::PendingMcpToolApproval;
 use std::io;
+use sugarcode_agent_runtime::PendingCommandApproval;
+use sugarcode_agent_runtime::PendingMcpToolApproval;
 use tokio::io::AsyncBufRead;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWrite;

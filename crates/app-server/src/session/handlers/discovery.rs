@@ -34,7 +34,7 @@ where
 
         let cursor = params.cursor.as_deref().map(ThreadId::new);
         let limit = params.limit.unwrap_or(DEFAULT_THREAD_LIST_LIMIT) as usize;
-        let page = match self.core.list_threads(cursor.as_ref(), limit) {
+        let page = match self.agent.list_threads(cursor.as_ref(), limit) {
             Ok(page) => page,
             Err(CoreError::StateUnavailable) => {
                 return vec![error(
@@ -97,7 +97,7 @@ where
         let cursor = params.cursor.as_deref().map(ThreadId::new);
         let limit = params.limit.unwrap_or(DEFAULT_THREAD_SEARCH_LIMIT) as usize;
         let page = match self
-            .core
+            .agent
             .search_threads(&params.query, cursor.as_ref(), limit)
         {
             Ok(page) => page,
