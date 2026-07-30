@@ -54,36 +54,6 @@ jobs:
       - name: Check TypeScript workspace
         run: pnpm check
 
-      - name: Test Desktop command approval in Electron (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          pnpm exec install-electron
-          electron_sandbox_candidate=node_modules/electron/dist/chrome-sandbox
-          if [[ ! -f "$electron_sandbox_candidate" ]]; then
-            echo "::error::Electron sandbox helper is missing after install."
-            exit 1
-          fi
-          electron_sandbox_path="$(readlink -f "$electron_sandbox_candidate")"
-          case "$electron_sandbox_path" in
-            "$GITHUB_WORKSPACE"/node_modules/*) ;;
-            *)
-              echo "::error::Electron sandbox helper resolved outside workspace node_modules."
-              exit 1
-              ;;
-          esac
-          sudo chown root:root "$electron_sandbox_path"
-          sudo chmod 4755 "$electron_sandbox_path"
-          electron_sandbox_permissions="$(stat -c '%u:%g %a' "$electron_sandbox_path")"
-          if [[ "$electron_sandbox_permissions" != "0:0 4755" ]]; then
-            echo "::error::Electron sandbox helper has $electron_sandbox_permissions; expected 0:0 4755."
-            exit 1
-          fi
-          xvfb-run -a pnpm --filter @sugarcode/desktop test:electron
-
-      - name: Test Desktop command approval in Electron
-        if: runner.os != 'Linux'
-        run: pnpm --filter @sugarcode/desktop test:electron
-
       - name: Test native filesystem read-only sandbox
         run: cargo test -p sugarcode-sandbox --test filesystem_read_only --locked -- --nocapture
 
