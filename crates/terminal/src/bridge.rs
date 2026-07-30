@@ -71,11 +71,22 @@ pub(crate) fn run_stdio(workspace: &Path, columns: u16, rows: u16) -> Result<(),
         .map_err(|error| BridgeError::new(format!("shell launch failed: {error}")))?;
     drop(pair.slave);
 
-    let process_id = child
-        .process_id()
-        .ok_or_else(|| BridgeError::new("PTY child did not expose a process identifier"))?;
+    #[cfg(unix)]
+    {
+        let process_id = child
+            .process_id()
+            .ok_or_else(|| BridgeError::new("PTY child did not expose a process identifier"))?;
+        containment
+            .bind_process_group(process_id)
+            .map_err(|error| BridgeError::new(format!("process containment failed: {error}")))?;
+    }
+    #[cfg(windows)]
     containment
-        .bind_process_group(process_id)
+        .bind_process_handle(
+            child
+                .as_raw_handle()
+                .ok_or_else(|| BridgeError::new("PTY child did not expose a process handle"))?,
+        )
         .map_err(|error| BridgeError::new(format!("process containment failed: {error}")))?;
     let mut master = Some(pair.master);
     let reader = master

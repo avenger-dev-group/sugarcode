@@ -146,6 +146,17 @@ export class TerminalController {
     return () => this.listeners.delete(listener);
   };
 
+  getFailureDiagnostic = (): string | null => {
+    const active = this.active;
+    if (!active || active.status !== 'failed') {
+      return null;
+    }
+    const stderr = active.stderrTail.toString('utf8').trim();
+    return stderr.length > 0
+      ? `${active.error ?? 'bridgeCrashed'}: ${stderr}`
+      : (active.error ?? 'bridgeCrashed');
+  };
+
   getSnapshot = (
     request: TerminalSnapshotRequest,
   ): TerminalStateSnapshot => {

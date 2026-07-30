@@ -1213,10 +1213,20 @@ const run = async (): Promise<void> => {
     button.click();
   })()`);
   await waitFor(
-    () => terminalController.getSnapshot({
-      generation: 1,
-      acknowledgeThrough: 0,
-    }).status === 'running',
+    () => {
+      const snapshot = terminalController.getSnapshot({
+        generation: 1,
+        acknowledgeThrough: 0,
+      });
+      if (snapshot.status === 'failed') {
+        throw new Error(
+          `Real Electron PTY failed: ${
+            terminalController.getFailureDiagnostic() ?? snapshot.error
+          }`,
+        );
+      }
+      return snapshot.status === 'running';
+    },
     'real Electron PTY terminal',
   );
   await evaluate(`(async () => {

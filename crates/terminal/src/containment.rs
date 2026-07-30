@@ -68,11 +68,10 @@ impl ProcessContainment {
         use std::ptr;
         use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
             SetInformationJobObject,
         };
-        use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
         let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
         if job.is_null() || job == INVALID_HANDLE_VALUE {
@@ -90,9 +89,7 @@ impl ProcessContainment {
                     .expect("job information size fits u32"),
             )
         };
-        let assigned =
-            configured != 0 && unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) } != 0;
-        if !assigned {
+        if configured == 0 {
             let error = io::Error::last_os_error();
             unsafe {
                 CloseHandle(job);
@@ -100,13 +97,22 @@ impl ProcessContainment {
             return Err(error);
         }
 
-        // The bridge itself is a member of this kill-on-close Job. Intentionally
-        // retain the only handle until process teardown so an abrupt owner loss
-        // also tears down every process inherited by the shell.
+        // Retain the only handle until bridge teardown. The spawned ConPTY shell
+        // is assigned directly rather than assigning the already-running bridge,
+        // which may itself belong to an Electron or CI runner Job.
         Ok(Self { _job: job })
     }
 
-    pub(crate) fn bind_process_group(&mut self, _process_group_id: u32) -> io::Result<()> {
+    pub(crate) fn bind_process_handle(
+        &mut self,
+        process_handle: std::os::windows::io::RawHandle,
+    ) -> io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+        let assigned = unsafe { AssignProcessToJobObject(self._job, process_handle.cast()) };
+        if assigned == 0 {
+            return Err(io::Error::last_os_error());
+        }
         Ok(())
     }
 
@@ -114,7 +120,31 @@ impl ProcessContainment {
         None
     }
 
-    pub(crate) fn terminate(&self) {}
+    pub(crate) fn terminate(&self) {
+        self.terminate_job();
+    }
 
-    pub(crate) fn force_kill(&self) {}
+    pub(crate) fn force_kill(&self) {
+        self.terminate_job();
+    }
+
+    fn terminate_job(&self) {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+
+        unsafe {
+            TerminateJobObject(self._job, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessContainment {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+
+        self.force_kill();
+        unsafe {
+            CloseHandle(self._job);
+        }
+    }
 }
