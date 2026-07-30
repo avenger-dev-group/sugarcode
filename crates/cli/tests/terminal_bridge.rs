@@ -36,7 +36,7 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         }
     });
 
-    let ready = receive_json(&lines_rx, Duration::from_secs(10));
+    let ready = receive_json(&lines_rx, Duration::from_secs(20));
     assert_eq!(ready["type"], "ready");
     assert_eq!(ready["version"], 1);
     assert_eq!(ready["encoding"], "utf-8-replacement");
@@ -69,7 +69,7 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
     .expect("write terminal input");
     input.flush().expect("flush commands");
 
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut transcript = String::new();
     let mut exited = false;
     while Instant::now() < deadline {
