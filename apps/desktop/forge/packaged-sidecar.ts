@@ -233,12 +233,53 @@ const verifyHandshake = async (
   target: CliTarget,
   verificationHome: string,
 ): Promise<void> => {
-  const verificationWorkspace = path.join(
-    path.dirname(verificationHome),
-    'verification-workspace',
+  const verificationWorkspace = await mkdtemp(
+    path.join(
+      path.dirname(verificationHome),
+      'verification-workspace-',
+    ),
   );
-  const inspectionFixture = 'packaged workspace inspection\n';
-  await mkdir(verificationWorkspace, { recursive: true });
+  const initialInspectionFixture = 'packaged workspace inspection\n';
+  const inspectionFixture =
+    'packaged workspace inspection\nchanged in package smoke\n';
+  await writeFile(
+    path.join(verificationWorkspace, 'inspection.txt'),
+    initialInspectionFixture,
+    'utf8',
+  );
+  await runProcess('git', ['init', '--initial-branch=main'], {
+    cwd: verificationWorkspace,
+    env: process.env,
+    timeoutMs: HANDSHAKE_TIMEOUT_MS,
+  });
+  await runProcess(
+    'git',
+    ['config', 'user.name', 'SugarCode Package'],
+    {
+      cwd: verificationWorkspace,
+      env: process.env,
+      timeoutMs: HANDSHAKE_TIMEOUT_MS,
+    },
+  );
+  await runProcess(
+    'git',
+    ['config', 'user.email', 'package@example.invalid'],
+    {
+      cwd: verificationWorkspace,
+      env: process.env,
+      timeoutMs: HANDSHAKE_TIMEOUT_MS,
+    },
+  );
+  await runProcess('git', ['add', 'inspection.txt'], {
+    cwd: verificationWorkspace,
+    env: process.env,
+    timeoutMs: HANDSHAKE_TIMEOUT_MS,
+  });
+  await runProcess('git', ['commit', '-m', 'initial package fixture'], {
+    cwd: verificationWorkspace,
+    env: process.env,
+    timeoutMs: HANDSHAKE_TIMEOUT_MS,
+  });
   await writeFile(
     path.join(verificationWorkspace, 'inspection.txt'),
     inspectionFixture,
@@ -297,6 +338,7 @@ const verifyHandshake = async (
       response.platform.os !== target.expectedPlatform.os ||
       response.platform.arch !== target.expectedPlatform.arch ||
       response.capabilities.workspaceBrowser !== true ||
+      response.capabilities.workspaceGit !== true ||
       !response.workspace ||
       !/^[0-9a-f]{64}$/.test(response.workspace.id)
     ) {
@@ -331,6 +373,118 @@ const verifyHandshake = async (
       (inspection as { content?: unknown }).content !== inspectionFixture
     ) {
       throw new Error('The packaged CLI workspace browser smoke check failed.');
+    }
+    const gitStatus = await client.requestReady(
+      'workspace/git/status',
+      {},
+      AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+    );
+    if (
+      !gitStatus ||
+      typeof gitStatus !== 'object' ||
+      (gitStatus as { status?: unknown }).status !== 'ready' ||
+      (gitStatus as { unstagedCount?: unknown }).unstagedCount !== 1 ||
+      typeof (gitStatus as { revision?: unknown }).revision !== 'string'
+    ) {
+      throw new Error('The packaged CLI Git status smoke check failed.');
+    }
+    const worktreeRevision = (gitStatus as { revision: string }).revision;
+    const gitDiff = await client.requestReady(
+      'workspace/git/diff',
+      {
+        expectedRevision: worktreeRevision,
+        path: 'inspection.txt',
+        source: 'worktree',
+      },
+      AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+    );
+    if (
+      !gitDiff ||
+      typeof gitDiff !== 'object' ||
+      (gitDiff as { status?: unknown }).status !== 'ready' ||
+      !(gitDiff as { content?: unknown }).content ||
+      !(gitDiff as { content: string }).content.includes(
+        '+changed in package smoke',
+      )
+    ) {
+      throw new Error('The packaged CLI Git diff smoke check failed.');
+    }
+    const staged = await client.requestReady(
+      'workspace/git/stage',
+      {
+        expectedRevision: worktreeRevision,
+        paths: ['inspection.txt'],
+      },
+      AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+    );
+    if (
+      !staged ||
+      typeof staged !== 'object' ||
+      (staged as { status?: unknown }).status !== 'applied' ||
+      typeof (staged as { revision?: unknown }).revision !== 'string'
+    ) {
+      throw new Error('The packaged CLI Git stage smoke check failed.');
+    }
+    const unstaged = await client.requestReady(
+      'workspace/git/unstage',
+      {
+        expectedRevision: (staged as { revision: string }).revision,
+        paths: ['inspection.txt'],
+      },
+      AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+    );
+    if (
+      !unstaged ||
+      typeof unstaged !== 'object' ||
+      (unstaged as { status?: unknown }).status !== 'applied' ||
+      typeof (unstaged as { revision?: unknown }).revision !== 'string'
+    ) {
+      throw new Error('The packaged CLI Git unstage smoke check failed.');
+    }
+    const restaged = await client.requestReady(
+      'workspace/git/stage',
+      {
+        expectedRevision: (unstaged as { revision: string }).revision,
+        paths: ['inspection.txt'],
+      },
+      AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+    );
+    if (
+      !restaged ||
+      typeof restaged !== 'object' ||
+      (restaged as { status?: unknown }).status !== 'applied' ||
+      typeof (restaged as { revision?: unknown }).revision !== 'string'
+    ) {
+      throw new Error('The packaged CLI Git restage smoke check failed.');
+    }
+    const committed = await client.requestReady(
+      'workspace/git/commit',
+      {
+        expectedRevision: (restaged as { revision: string }).revision,
+        message: 'verify packaged Git workbench',
+        authorName: 'SugarCode Package',
+        authorEmail: 'package@example.invalid',
+      },
+      AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+    );
+    if (
+      !committed ||
+      typeof committed !== 'object' ||
+      (committed as { status?: unknown }).status !== 'committed' ||
+      typeof (committed as { newHead?: unknown }).newHead !== 'string'
+    ) {
+      throw new Error('The packaged CLI Git commit smoke check failed.');
+    }
+    const actualHead = await runProcess('git', ['rev-parse', 'HEAD'], {
+      cwd: verificationWorkspace,
+      env: process.env,
+      timeoutMs: HANDSHAKE_TIMEOUT_MS,
+    });
+    if (
+      actualHead.stdout.trim() !==
+      (committed as { newHead: string }).newHead
+    ) {
+      throw new Error('The packaged CLI Git commit receipt did not reconcile.');
     }
     if (fatalError) {
       throw fatalError;
@@ -472,6 +626,14 @@ export const preparePackagedSidecar = async (
       await chmod(stagedExecutablePath, 0o755);
     }
     await assertFile(stagedExecutablePath, target.platform, true);
+    await copyFile(
+      path.join(options.workspaceRoot, 'THIRD_PARTY_NOTICES.txt'),
+      path.join(resourceDirectory, 'THIRD_PARTY_NOTICES.txt'),
+    );
+    await assertFile(
+      path.join(resourceDirectory, 'THIRD_PARTY_NOTICES.txt'),
+      target.platform,
+    );
 
     const sourceHash = await sha256File(sourceExecutablePath);
     const stagedHash = await sha256File(stagedExecutablePath);
@@ -579,7 +741,11 @@ export const smokePackagedSidecar = async (
   ).sort();
   if (
     JSON.stringify(resourceEntries) !==
-    JSON.stringify(['bin', 'manifest.json'])
+    JSON.stringify([
+      'THIRD_PARTY_NOTICES.txt',
+      'bin',
+      'manifest.json',
+    ])
   ) {
     throw new Error('The packaged sidecar resource layout is not exact.');
   }

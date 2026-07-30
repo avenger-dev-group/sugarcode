@@ -1,0 +1,50 @@
+SugarCode third-party notices
+=============================
+
+git2-rs
+-------
+
+Copyright (c) 2014 Alex Crichton
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+libgit2
+-------
+
+libgit2 is Copyright (C) the libgit2 contributors, unless otherwise stated.
+See the upstream AUTHORS file for details.
+
+libgit2 is distributed under GNU General Public License version 2 with the
+following linking exception:
+
+In addition to the permissions in the GNU General Public License, the authors
+give unlimited permission to link the compiled version of this library into
+combinations with other programs, and to distribute those combinations
+without any restriction coming from the use of this file. The General Public
+License restrictions apply in other respects; for example, they cover
+modification of the file and distribution when not linked into a combined
+executable.
+
+The complete corresponding libgit2 license text and source used by this build
+are available from:
+
+https://github.com/libgit2/libgit2/tree/v1.9.6
+
+The vendored source is also selected reproducibly by Cargo.lock through the
+libgit2-sys package.

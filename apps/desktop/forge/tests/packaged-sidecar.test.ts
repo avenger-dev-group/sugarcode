@@ -26,6 +26,7 @@ const temporaryRoots: string[] = [];
 const createPackagedFixture = async (): Promise<{
   executablePath: string;
   manifestPath: string;
+  noticesPath: string;
   packageResult: PackageResult;
   prepared: PreparedSidecar;
   resourceDirectory: string;
@@ -63,6 +64,7 @@ const createPackagedFixture = async (): Promise<{
   return {
     executablePath,
     manifestPath: path.join(resourceDirectory, 'manifest.json'),
+    noticesPath: path.join(resourceDirectory, 'THIRD_PARTY_NOTICES.txt'),
     packageResult: {
       arch: target.arch,
       outputPaths: [outputPath],
@@ -96,6 +98,10 @@ const writeManifest = async (
 const writeAppAsar = async (resourcesPath: string): Promise<void> => {
   await mkdir(resourcesPath, { recursive: true });
   await writeFile(path.join(resourcesPath, 'app.asar'), 'test asar');
+};
+
+const writeNotices = async (noticesPath: string): Promise<void> => {
+  await writeFile(noticesPath, 'test third-party notices\n', 'utf8');
 };
 
 afterEach(async () => {
@@ -228,6 +234,7 @@ describe('packaged resources layout', () => {
     const fixture = await createPackagedFixture();
     await writeAppAsar(fixture.resourcesPath);
     await mkdir(path.dirname(fixture.executablePath), { recursive: true });
+    await writeNotices(fixture.noticesPath);
     await writeManifest(fixture.manifestPath, {
       ...fixture.prepared.manifest,
       productVersion: '9.9.9',
@@ -242,6 +249,7 @@ describe('packaged resources layout', () => {
     const fixture = await createPackagedFixture();
     await writeAppAsar(fixture.resourcesPath);
     await mkdir(path.dirname(fixture.executablePath), { recursive: true });
+    await writeNotices(fixture.noticesPath);
     await Promise.all([
       writeFile(fixture.executablePath, 'first executable'),
       writeFile(
@@ -260,6 +268,7 @@ describe('packaged resources layout', () => {
     const fixture = await createPackagedFixture();
     await writeAppAsar(fixture.resourcesPath);
     await mkdir(path.dirname(fixture.executablePath), { recursive: true });
+    await writeNotices(fixture.noticesPath);
     await Promise.all([
       writeFile(fixture.executablePath, 'hash mismatch'),
       writeManifest(fixture.manifestPath, fixture.prepared.manifest),
