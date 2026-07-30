@@ -42,17 +42,6 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
     assert_eq!(ready["version"], 1);
     assert_eq!(ready["encoding"], "utf-8-replacement");
 
-    writeln!(
-        input,
-        "{}",
-        serde_json::json!({
-            "type": "resize",
-            "sequence": 1,
-            "columns": 92,
-            "rows": 31
-        })
-    )
-    .expect("resize terminal");
     let marker_input = if cfg!(windows) {
         "echo SUGARCODE_PTY_ACCEPTANCE\r"
     } else {
@@ -63,7 +52,7 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         "{}",
         serde_json::json!({
             "type": "input",
-            "sequence": 2,
+            "sequence": 1,
             "data": marker_input
         })
     )
@@ -88,6 +77,17 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         }
     }
 
+    writeln!(
+        input,
+        "{}",
+        serde_json::json!({
+            "type": "resize",
+            "sequence": 2,
+            "columns": 92,
+            "rows": 31
+        })
+    )
+    .expect("resize interactive terminal");
     let exit_input = if cfg!(windows) { "exit\r" } else { "exit\n" };
     writeln!(
         input,

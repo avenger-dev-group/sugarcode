@@ -345,6 +345,7 @@ const verifyTerminalBridge = async (
     let stderr = '';
     let transcript = '';
     let ready = false;
+    let resized = false;
     let exitEvent = false;
     let cursorAnswered = false;
     let tuiExitSent = false;
@@ -366,7 +367,7 @@ const verifyTerminalBridge = async (
       child.kill();
       finish(
         new Error(
-          `The packaged CLI terminal bridge timed out: ready=${String(ready)}, tuiExit=${String(tuiExitSent)}, shellExit=${String(shellExitSent)}, transcript=${JSON.stringify(transcript.slice(-2_000))}.`,
+          `The packaged CLI terminal bridge timed out: ready=${String(ready)}, resized=${String(resized)}, tuiExit=${String(tuiExitSent)}, shellExit=${String(shellExitSent)}, transcript=${JSON.stringify(transcript.slice(-2_000))}.`,
         ),
       );
     }, TERMINAL_TIMEOUT_MS);
@@ -394,14 +395,6 @@ const verifyTerminalBridge = async (
         }
         if (event.type === 'ready' && event.version === 1 && !ready) {
           ready = true;
-          child.stdin.write(
-            `${JSON.stringify({
-              type: 'resize',
-              sequence: 1,
-              columns: 91,
-              rows: 32,
-            })}\n`,
-          );
           const quotedExecutable =
             process.platform === 'win32'
               ? `"${executablePath.replaceAll('"', '""')}"`
@@ -417,7 +410,7 @@ const verifyTerminalBridge = async (
           child.stdin.write(
             `${JSON.stringify({
               type: 'input',
-              sequence: 2,
+              sequence: 1,
               data: input,
             })}\n`,
           );
@@ -426,6 +419,17 @@ const verifyTerminalBridge = async (
           typeof event.data === 'string'
         ) {
           transcript = appendBounded(transcript, event.data);
+          if (!resized && transcript.includes('SUGARCODE_PACKAGED_PTY')) {
+            resized = true;
+            child.stdin.write(
+              `${JSON.stringify({
+                type: 'resize',
+                sequence: 2,
+                columns: 91,
+                rows: 32,
+              })}\n`,
+            );
+          }
           if (!cursorAnswered && transcript.includes('\u001b[6n')) {
             cursorAnswered = true;
             child.stdin.write(
@@ -481,8 +485,9 @@ const verifyTerminalBridge = async (
       if (
         code === 0 &&
         signal === null &&
-        ready &&
-        exitEvent &&
+            ready &&
+            resized &&
+            exitEvent &&
         transcript.includes('SUGARCODE_PACKAGED_PTY') &&
         transcript.includes(' SugarCode ') &&
         transcript.includes('\u001b[?1049h') &&
