@@ -1413,9 +1413,26 @@ describe('real Desktop text Agent Turn', () => {
         await vi.waitFor(() => expect(provider.requests).toHaveLength(1), {
           timeout: 10_000,
         });
-        expect(JSON.stringify(provider.requests[0]?.body)).not.toContain(
-          'shell/exec',
-        );
+        expect(provider.requests[0]?.body).toMatchObject({
+          tools: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function',
+              function: expect.objectContaining({
+                name: 'workspace/read',
+              }),
+            }),
+          ]),
+        });
+        expect(provider.requests[0]?.body).not.toMatchObject({
+          tools: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function',
+              function: expect.objectContaining({
+                name: 'shell/exec',
+              }),
+            }),
+          ]),
+        });
       } finally {
         supervisor.shutdown();
       }
