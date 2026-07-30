@@ -274,7 +274,9 @@ async fn process_stream(
             return;
         }
         for choice in chunk.choices {
-            if let Some(tool_calls) = choice.delta.tool_calls {
+            if let Some(tool_calls) = choice.delta.tool_calls
+                && !tool_calls.is_empty()
+            {
                 if !allow_tools || text_seen || tool_calls.len() != 1 {
                     send_error(
                         &sender,
@@ -565,7 +567,10 @@ impl ChatDelta {
     fn is_empty(&self) -> bool {
         self.content.is_none()
             && self.role.is_none()
-            && self.tool_calls.is_none()
+            && self
+                .tool_calls
+                .as_ref()
+                .is_none_or(|tool_calls| tool_calls.is_empty())
             && self.function_call.is_none()
             && self.refusal.is_none()
             && self.audio.is_none()
@@ -573,7 +578,11 @@ impl ChatDelta {
     }
 
     fn has_unsupported_output(&self, allow_tools: bool) -> bool {
-        (!allow_tools && self.tool_calls.is_some())
+        (!allow_tools
+            && self
+                .tool_calls
+                .as_ref()
+                .is_some_and(|tool_calls| !tool_calls.is_empty()))
             || self.function_call.is_some()
             || self.refusal.is_some()
             || self.audio.is_some()

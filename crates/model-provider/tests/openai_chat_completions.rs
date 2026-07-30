@@ -667,14 +667,49 @@ async fn empty_completed_response_is_non_retryable_incomplete() {
 }
 
 #[tokio::test]
-async fn mixed_content_and_tool_output_is_rejected_before_any_delta() {
+async fn empty_tool_call_arrays_on_text_deltas_are_ignored() {
     let body = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"must-not-emit\",\"tool_calls\":[]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你\",\"tool_calls\":[]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"好\",\"tool_calls\":[]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[]},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n",
         "data: [DONE]\n\n"
     );
     let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
     let events = provider(endpoint)
         .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+
+    assert_eq!(
+        events,
+        vec![
+            Ok(ModelEvent::TextDelta("你".to_string())),
+            Ok(ModelEvent::TextDelta("好".to_string())),
+            Ok(ModelEvent::Usage(sugarcode_model_provider::ModelUsage {
+                input_tokens: Some(2),
+                output_tokens: Some(1),
+                total_tokens: Some(3),
+                ..Default::default()
+            })),
+            Ok(ModelEvent::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn mixed_content_and_tool_output_is_rejected_before_any_delta() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"must-not-emit\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
         .await
         .expect("stream starts")
         .collect::<Vec<_>>()
@@ -690,7 +725,7 @@ async fn unsupported_secondary_choice_is_rejected_before_primary_delta() {
     let body = concat!(
         "data: {\"choices\":[",
         "{\"index\":0,\"delta\":{\"content\":\"must-not-emit\"},\"finish_reason\":null},",
-        "{\"index\":1,\"delta\":{\"tool_calls\":[]},\"finish_reason\":\"tool_calls\"}",
+        "{\"index\":1,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}",
         "]}\n\n",
         "data: [DONE]\n\n"
     );
@@ -760,7 +795,7 @@ async fn terminal_reason_matrix_maps_to_stable_non_retryable_errors() {
         ),
         (
             "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[]},\"finish_reason\":null}]}",
-            ModelErrorKind::UnsupportedOutput,
+            ModelErrorKind::Protocol,
         ),
         (
             "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"fixture_unknown\"}]}",
