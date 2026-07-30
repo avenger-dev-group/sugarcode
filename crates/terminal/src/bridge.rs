@@ -446,12 +446,33 @@ fn validate_workspace(workspace: &Path) -> Result<(), BridgeError> {
     let canonical = workspace
         .canonicalize()
         .map_err(|error| BridgeError::new(format!("terminal workspace is unavailable: {error}")))?;
-    if canonical != workspace {
+    if !canonical_workspace_path_matches(&canonical, workspace) {
         return Err(BridgeError::new(
             "terminal workspace path must already be canonical",
         ));
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn canonical_workspace_path_matches(canonical: &Path, workspace: &Path) -> bool {
+    canonical == workspace
+}
+
+#[cfg(windows)]
+fn canonical_workspace_path_matches(canonical: &Path, workspace: &Path) -> bool {
+    fn comparable(path: &Path) -> String {
+        let value = path.to_string_lossy().replace('/', "\\");
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{rest}")
+        } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+            rest.to_string()
+        } else {
+            value
+        }
+    }
+
+    comparable(canonical).eq_ignore_ascii_case(&comparable(workspace))
 }
 
 fn validate_size(columns: u16, rows: u16) -> Result<(), BridgeError> {

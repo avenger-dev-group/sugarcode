@@ -1,4 +1,6 @@
 use super::bridge::Utf8StreamDecoder;
+#[cfg(windows)]
+use super::bridge::canonical_workspace_path_matches;
 
 #[test]
 fn preserves_utf8_split_across_pty_reads() {
@@ -15,4 +17,23 @@ fn replaces_invalid_and_incomplete_utf8_deterministically() {
     assert_eq!(decoder.push(b"ok\xfftail\xe2"), "ok\u{fffd}tail");
     assert_eq!(decoder.finish().as_deref(), Some("\u{fffd}"));
     assert_eq!(decoder.finish(), None);
+}
+
+#[test]
+#[cfg(windows)]
+fn accepts_equivalent_windows_canonical_path_representations() {
+    use std::path::Path;
+
+    assert!(canonical_workspace_path_matches(
+        Path::new(r"\\?\D:\a\sugarcode"),
+        Path::new(r"d:\a\sugarcode"),
+    ));
+    assert!(canonical_workspace_path_matches(
+        Path::new(r"\\?\UNC\server\share\sugarcode"),
+        Path::new(r"\\server\share\sugarcode"),
+    ));
+    assert!(!canonical_workspace_path_matches(
+        Path::new(r"\\?\D:\a\sugarcode"),
+        Path::new(r"D:\a\other"),
+    ));
 }

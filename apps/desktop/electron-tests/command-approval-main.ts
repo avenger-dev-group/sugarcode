@@ -155,7 +155,27 @@ const evaluate = async <Value>(source: string): Promise<Value> => {
   if (!window || window.isDestroyed()) {
     throw new Error('Electron test window is unavailable.');
   }
-  return window.webContents.executeJavaScript(source, true) as Promise<Value>;
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await (window.webContents.executeJavaScript(
+        source,
+        true,
+      ) as Promise<Value>);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !error.message.startsWith('Script failed to execute') ||
+        attempt === maxAttempts
+      ) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 20);
+      });
+    }
+  }
+  throw new Error('Electron script evaluation exhausted its retry bound.');
 };
 
 const waitForAnimationFrame = async (): Promise<void> => {

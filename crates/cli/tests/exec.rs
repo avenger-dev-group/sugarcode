@@ -1,5 +1,6 @@
 use serde_json::Value;
 use serde_json::json;
+#[cfg(unix)]
 use std::fs;
 use std::io::Read;
 use std::io::Write;
@@ -10,6 +11,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+#[cfg(unix)]
 use std::sync::mpsc;
 use std::thread;
 use std::thread::JoinHandle;
@@ -353,12 +355,14 @@ impl Drop for MockProvider {
     }
 }
 
+#[cfg(unix)]
 struct BlockingMockProvider {
     delta_sent: mpsc::Receiver<()>,
     connection_closed: mpsc::Receiver<()>,
     thread: Option<JoinHandle<()>>,
 }
 
+#[cfg(unix)]
 impl BlockingMockProvider {
     fn start(home: &std::path::Path) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind blocking provider");
@@ -404,6 +408,7 @@ impl BlockingMockProvider {
     }
 }
 
+#[cfg(unix)]
 impl Drop for BlockingMockProvider {
     fn drop(&mut self) {
         if let Some(thread) = self.thread.take() {
