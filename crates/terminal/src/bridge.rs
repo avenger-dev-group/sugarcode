@@ -460,7 +460,7 @@ fn canonical_workspace_path_matches(canonical: &Path, workspace: &Path) -> bool 
 }
 
 #[cfg(windows)]
-fn canonical_workspace_path_matches(canonical: &Path, workspace: &Path) -> bool {
+pub(crate) fn canonical_workspace_path_matches(canonical: &Path, workspace: &Path) -> bool {
     fn comparable(path: &Path) -> String {
         let value = path.to_string_lossy().replace('/', "\\");
         if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
