@@ -15,8 +15,29 @@ struct Cli {
     /// Override the SugarCode home directory.
     #[arg(long, global = true, value_name = "DIR")]
     home: Option<PathBuf>,
+    #[command(flatten)]
+    tui: TuiArgs,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+}
+
+#[derive(Debug, Args)]
+struct TuiArgs {
+    /// Explicit workspace root available to the interactive agent.
+    #[arg(long, value_name = "DIR")]
+    workspace: Option<PathBuf>,
+    /// Active workspace scope relative to the explicit workspace root.
+    #[arg(long, value_name = "RELATIVE_DIR", requires = "workspace")]
+    workspace_scope: Option<String>,
+    /// Enable bounded workspace/apply-patch writes for this process only.
+    #[arg(long, requires = "workspace")]
+    allow_workspace_write: bool,
+    /// Enable sandboxed shell-command writes inside the explicit workspace.
+    #[arg(long, requires = "workspace")]
+    allow_command_workspace_write: bool,
+    /// Discover an explicitly configured MCP server for this session.
+    #[arg(long, value_name = "ID", action = clap::ArgAction::Append)]
+    mcp_server: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -296,7 +317,25 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
-    let Cli { home, command } = cli;
+    let Cli { home, tui, command } = cli;
+    let Some(command) = command else {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(
+                "interactive TUI requires terminal stdin and stdout; use `sugarcode exec` for non-interactive input"
+                    .into(),
+            );
+        }
+        sugarcode_tui::run(sugarcode_tui::TuiRequest {
+            home,
+            workspace: tui.workspace,
+            workspace_scope: tui.workspace_scope,
+            allow_workspace_write: tui.allow_workspace_write,
+            allow_command_workspace_write: tui.allow_command_workspace_write,
+            mcp_servers: tui.mcp_server,
+        })
+        .await?;
+        return Ok(sugarcode_exec::EXEC_EXIT_SUCCESS);
+    };
     match command {
         Command::InternalSupervisor => {
             sugarcode_tools::run_shell_command_supervisor()

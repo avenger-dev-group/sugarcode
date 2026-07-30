@@ -21,6 +21,7 @@ sugarcode-exec = { path = "../exec" }
 sugarcode-state = { path = "../state" }
 sugarcode-terminal = { path = "../terminal" }
 sugarcode-tools = { path = "../tools" }
+sugarcode-tui = { path = "../tui" }
 tokio.workspace = true
 url.workspace = true
 zeroize.workspace = true
@@ -28,6 +29,7 @@ zeroize.workspace = true
 [dev-dependencies]
 git2.workspace = true
 libc.workspace = true
+portable-pty.workspace = true
 sugarcode-mcp = { path = "../mcp" }
 tempfile.workspace = true
 tokio-util.workspace = true

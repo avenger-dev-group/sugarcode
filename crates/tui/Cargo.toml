@@ -1,0 +1,20 @@
+[package]
+name = "sugarcode-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+futures-util.workspace = true
+ratatui.workspace = true
+serde_json.workspace = true
+sugarcode-agent-runtime = { path = "../agent-runtime" }
+sugarcode-core = { path = "../core" }
+sugarcode-protocol = { path = "../protocol" }
+sugarcode-state = { path = "../state" }
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
