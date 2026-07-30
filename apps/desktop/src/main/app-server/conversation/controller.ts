@@ -270,7 +270,7 @@ export class ConversationController {
     return () => this.listeners.delete(listener);
   };
 
-  restoreLatestActiveThread = async (): Promise<boolean> => {
+  loadThreadIndex = async (): Promise<boolean> => {
     return this.restoreForConnection();
   };
 
@@ -300,19 +300,14 @@ export class ConversationController {
         ? listed.nextCursor !== null
         : false;
       this.navigator.status = 'ready';
-      const threadId =
-        preferredThreadId ??
-        listed?.data[0]?.id ??
-        fallbackThreadId ??
-        undefined;
-      if (!threadId) {
+      if (!preferredThreadId) {
         return true;
       }
       const snapshot = await rpc.resumeThread(
-        threadId,
+        preferredThreadId,
         abortController.signal,
       );
-      const recovered = recoverConversation(threadId, snapshot);
+      const recovered = recoverConversation(preferredThreadId, snapshot);
       this.replaceRecoveredConversation(recovered);
       return true;
     } catch (error) {
@@ -514,6 +509,7 @@ export class ConversationController {
         return accepted();
       }
       this.replaceRecoveredConversation(recovered);
+      this.phase = 'ready';
       this.navigator.pendingThreadId = undefined;
       this.notice = undefined;
       this.publish();

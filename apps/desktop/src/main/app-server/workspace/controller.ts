@@ -41,6 +41,7 @@ export type WorkspaceLaunchContext = Readonly<{
 type StoredSession = Readonly<{
   schemaVersion: 1;
   path: string;
+  /** Accepted only to read session files written by older Desktop builds. */
   threadId?: string;
 }>;
 
@@ -49,7 +50,6 @@ export class WorkspaceController {
   private revision = 0;
   private generation = 0;
   private workspacePath: string | null = null;
-  private storedThreadId: string | undefined;
   private snapshot: WorkspaceStateSnapshot = {
     revision: 0,
     generation: 0,
@@ -65,16 +65,6 @@ export class WorkspaceController {
         this.publish('ready');
       } else if (connection.status === 'failed') {
         this.publish('failed', 'The selected workspace could not be opened safely.');
-      }
-    });
-    this.options.supervisor.conversation.subscribe((conversation) => {
-      if (
-        this.workspacePath &&
-        conversation.threadId &&
-        conversation.threadId !== this.storedThreadId
-      ) {
-        this.storedThreadId = conversation.threadId;
-        void this.persist();
       }
     });
   }
@@ -106,12 +96,8 @@ export class WorkspaceController {
       return;
     }
     this.workspacePath = validated;
-    this.storedThreadId = stored.threadId;
     this.generation = 1;
-    this.options.supervisor.configureInitialWorkspace(
-      validated,
-      stored.threadId,
-    );
+    this.options.supervisor.configureInitialWorkspace(validated);
     this.publish('selecting');
   };
 
@@ -171,7 +157,6 @@ export class WorkspaceController {
       return { accepted: false, reason: 'failed' };
     }
     this.workspacePath = selected;
-    this.storedThreadId = undefined;
     this.generation += 1;
     try {
       await this.persist();
@@ -298,9 +283,6 @@ export class WorkspaceController {
         `${JSON.stringify({
           schemaVersion: 1,
           path: this.workspacePath,
-          ...(this.storedThreadId
-            ? { threadId: this.storedThreadId }
-            : {}),
         })}\n`,
         'utf8',
       );

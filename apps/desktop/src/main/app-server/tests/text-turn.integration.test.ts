@@ -98,6 +98,19 @@ const MCP_FINAL_BODY = [
 
 const REAL_CLI_TEST_TIMEOUT_MS = 30_000;
 
+const selectDurableThread = async (
+  supervisor: ConnectionSupervisor,
+  threadId: string | undefined,
+): Promise<void> => {
+  expect(threadId).toMatch(/^thr_[0-9a-f]{16}$/);
+  await expect(
+    supervisor.conversation.selectThread(threadId),
+  ).resolves.toEqual({
+    accepted: true,
+    reason: 'accepted',
+  });
+};
+
 type ProviderCapture = Readonly<{
   server: Server;
   port: number;
@@ -427,6 +440,7 @@ describe('real Desktop text Agent Turn', () => {
       first.shutdown();
       second = createSupervisor();
       await second.start();
+      await selectDurableThread(second, durableThreadId);
       expect(second.mcpSession.getSnapshot()).toMatchObject({
         status: 'disabled',
         activeServerIds: [],
@@ -557,6 +571,7 @@ describe('real Desktop text Agent Turn', () => {
       first.shutdown();
       second = createSupervisor();
       await second.start();
+      await selectDurableThread(second, durableThreadId);
       expect(second.getSnapshot().status).toBe('ready');
       expect(second.conversation.getSnapshot()).toMatchObject({
         phase: 'ready',
@@ -750,11 +765,13 @@ describe('real Desktop text Agent Turn', () => {
       );
       const firstSnapshot = first.conversation.getSnapshot();
       expect(JSON.stringify(firstSnapshot)).not.toContain('fixture context');
+      const durableThreadId = firstSnapshot.threadId;
       const durableActivity = firstSnapshot.turns[0]?.workspaceRead;
 
       first.shutdown();
       second = createSupervisor();
       await second.start();
+      await selectDurableThread(second, durableThreadId);
       expect(second.getSnapshot().status).toBe('ready');
       expect(second.conversation.getSnapshot().turns[0]?.workspaceRead)
         .toEqual(durableActivity);
@@ -842,11 +859,13 @@ describe('real Desktop text Agent Turn', () => {
       const firstSnapshot = first.conversation.getSnapshot();
       expect(JSON.stringify(firstSnapshot)).not.toContain('private-plan.txt');
       expect(JSON.stringify(firstSnapshot)).not.toContain('secret-notes.txt');
+      const durableThreadId = firstSnapshot.threadId;
       const durableActivity = firstSnapshot.turns[0]?.workspaceList;
 
       first.shutdown();
       second = createSupervisor();
       await second.start();
+      await selectDurableThread(second, durableThreadId);
       expect(second.conversation.getSnapshot().turns[0]?.workspaceList)
         .toEqual(durableActivity);
       expect(provider.requests).toHaveLength(2);
@@ -943,12 +962,14 @@ describe('real Desktop text Agent Turn', () => {
         'private-search-marker.txt',
       );
       expect(JSON.stringify(firstSnapshot)).not.toContain('"line"');
+      const durableThreadId = firstSnapshot.threadId;
       const durableActivity = firstSnapshot.turns[0]?.workspaceSearch;
 
       first.shutdown();
       await writeFile(privateMatchPath, 'replacement without the query\n');
       second = createSupervisor();
       await second.start();
+      await selectDurableThread(second, durableThreadId);
       expect(second.conversation.getSnapshot().turns[0]?.workspaceSearch)
         .toEqual(durableActivity);
       expect(provider.requests).toHaveLength(2);
@@ -1047,13 +1068,15 @@ describe('real Desktop text Agent Turn', () => {
         { timeout: 10_000 },
       );
       expect(await readFile(filePath, 'utf8')).toBe('one\nsecond\nthree\n');
-      const durableActivity =
-        first.conversation.getSnapshot().turns[0]?.fileChange;
+      const firstSnapshot = first.conversation.getSnapshot();
+      const durableThreadId = firstSnapshot.threadId;
+      const durableActivity = firstSnapshot.turns[0]?.fileChange;
 
       first.shutdown();
       await writeFile(filePath, 'changed after durable result\n');
       second = createSupervisor();
       await second.start();
+      await selectDurableThread(second, durableThreadId);
       expect(second.conversation.getSnapshot().turns[0]?.fileChange)
         .toEqual(durableActivity);
       expect(await readFile(filePath, 'utf8')).toBe(
@@ -1132,10 +1155,13 @@ describe('real Desktop text Agent Turn', () => {
         },
         { timeout: 10_000 },
       );
+      const durableThreadId =
+        first.conversation.getSnapshot().threadId;
 
       first.shutdown();
       second = createSupervisor();
       await second.start();
+      await selectDurableThread(second, durableThreadId);
       expect(second.getSnapshot().status).toBe('ready');
       expect(second.conversation.getSnapshot()).toMatchObject({
         phase: 'ready',
@@ -1213,6 +1239,8 @@ describe('real Desktop text Agent Turn', () => {
         },
         { timeout: 10_000 },
       );
+      const durableThreadId =
+        first.conversation.getSnapshot().threadId;
 
       first.shutdown();
       expect(first.conversation.getSnapshot()).toMatchObject({
@@ -1233,6 +1261,7 @@ describe('real Desktop text Agent Turn', () => {
       });
       second = createSupervisor();
       await second.start();
+      await selectDurableThread(second, durableThreadId);
       expect(second.getSnapshot().status).toBe('ready');
       expect(second.conversation.getSnapshot()).toMatchObject({
         phase: 'ready',
@@ -1351,6 +1380,8 @@ describe('real Desktop text Agent Turn', () => {
         );
         const durableActivity =
           first.conversation.getSnapshot().turns[0]?.commandApproval;
+        const durableThreadId =
+          first.conversation.getSnapshot().threadId;
         expect(JSON.stringify(durableActivity)).not.toContain(
           'private-command-argument',
         );
@@ -1364,6 +1395,7 @@ describe('real Desktop text Agent Turn', () => {
         first.shutdown();
         second = createSupervisor();
         await second.start();
+        await selectDurableThread(second, durableThreadId);
         expect(second.conversation.getSnapshot().turns[0]?.commandApproval)
           .toEqual(durableActivity);
         expect(provider.requests).toHaveLength(2);

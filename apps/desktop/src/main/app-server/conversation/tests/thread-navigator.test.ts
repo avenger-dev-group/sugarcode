@@ -68,16 +68,19 @@ describe('Desktop Thread Navigator', () => {
     };
     const { controller, onProtocolFailure } = createController(rpc);
 
-    await expect(controller.restoreLatestActiveThread()).resolves.toBe(true);
+    await expect(controller.loadThreadIndex()).resolves.toBe(true);
     controller.connectionReady();
     expect(controller.getSnapshot()).toMatchObject({
-      threadId: THREAD_A,
+      phase: 'idle',
+      turns: [],
       navigator: {
         status: 'ready',
         activeThreadIds: [THREAD_A, THREAD_B],
         activeTruncated: true,
       },
     });
+    expect(controller.getSnapshot().threadId).toBeUndefined();
+    expect(rpc.resumeThread).not.toHaveBeenCalled();
 
     await expect(
       controller.searchThreads('historical answer'),
@@ -141,7 +144,7 @@ describe('Desktop Thread Navigator', () => {
       interruptTurn: vi.fn(),
     };
     const { controller } = createController(rpc);
-    await controller.restoreLatestActiveThread();
+    await controller.loadThreadIndex();
     controller.connectionReady();
 
     const stale = controller.searchThreads('first query');
@@ -154,6 +157,7 @@ describe('Desktop Thread Navigator', () => {
       threadIds: [THREAD_A],
     });
 
+    await controller.selectThread(THREAD_A);
     await controller.startTurn('Keep this Turn active.');
     await expect(controller.selectThread(THREAD_B)).resolves.toEqual({
       accepted: false,
@@ -167,7 +171,6 @@ describe('Desktop Thread Navigator', () => {
     const historical = new Promise<ResumeSnapshot>((resolve) => {
       resolveHistorical = resolve;
     });
-    let initialResumeComplete = false;
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => THREAD_A),
       listActiveThreads: vi.fn(async () => ({
@@ -176,10 +179,6 @@ describe('Desktop Thread Navigator', () => {
       })),
       searchThreads: vi.fn(),
       resumeThread: vi.fn(async (threadId: string) => {
-        if (!initialResumeComplete) {
-          initialResumeComplete = true;
-          return resume(THREAD_A, 'Initial answer.');
-        }
         if (threadId === THREAD_B) {
           return historical;
         }
@@ -190,7 +189,7 @@ describe('Desktop Thread Navigator', () => {
       interruptTurn: vi.fn(),
     };
     const { controller } = createController(rpc);
-    await controller.restoreLatestActiveThread();
+    await controller.loadThreadIndex();
     controller.connectionReady();
 
     const stale = controller.selectThread(THREAD_B);
@@ -223,7 +222,7 @@ describe('Desktop Thread Navigator', () => {
       interruptTurn: vi.fn(),
     };
     const { controller } = createController(rpc);
-    await controller.restoreLatestActiveThread();
+    await controller.loadThreadIndex();
     controller.connectionReady();
 
     await expect(
@@ -261,7 +260,7 @@ describe('Desktop Thread Navigator', () => {
       interruptTurn: vi.fn(),
     };
     const { controller, onProtocolFailure } = createController(rpc);
-    await controller.restoreLatestActiveThread();
+    await controller.loadThreadIndex();
     controller.connectionReady();
     await controller.searchThreads('source');
 
@@ -323,8 +322,9 @@ describe('Desktop Thread Navigator', () => {
       interruptTurn: vi.fn(),
     };
     const { controller } = createController(rpc);
-    await controller.restoreLatestActiveThread();
+    await controller.loadThreadIndex();
     controller.connectionReady();
+    await controller.selectThread(THREAD_A);
 
     await expect(controller.archiveThread(THREAD_A)).resolves.toEqual({
       accepted: true,
@@ -396,8 +396,9 @@ describe('Desktop Thread Navigator', () => {
       interruptTurn: vi.fn(),
     };
     const { controller } = createController(rpc);
-    await controller.restoreLatestActiveThread();
+    await controller.loadThreadIndex();
     controller.connectionReady();
+    await controller.selectThread(THREAD_A);
     await controller.startTurn('Keep this Turn active.');
     await expect(controller.deleteThread(THREAD_A)).resolves.toEqual({
       accepted: false,
@@ -420,8 +421,9 @@ describe('Desktop Thread Navigator', () => {
       deleteThread: vi.fn(async () => undefined),
     };
     const idleController = createController(idleRpc).controller;
-    await idleController.restoreLatestActiveThread();
+    await idleController.loadThreadIndex();
     idleController.connectionReady();
+    await idleController.selectThread(THREAD_A);
     await expect(idleController.deleteThread(THREAD_A)).resolves.toEqual({
       accepted: true,
       reason: 'accepted',

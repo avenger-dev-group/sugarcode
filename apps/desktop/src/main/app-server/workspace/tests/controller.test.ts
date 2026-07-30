@@ -1,9 +1,6 @@
 import type {
   ConnectionStateSnapshot,
 } from '@/shared/connection';
-import type {
-  ConversationStateSnapshot,
-} from '@/shared/conversation';
 import type { BrowserWindow, Dialog } from 'electron';
 import {
   mkdir,
@@ -36,20 +33,11 @@ const createFixture = async () => {
   let connectionListener:
     | ((snapshot: ConnectionStateSnapshot) => void)
     | undefined;
-  let conversationListener:
-    | ((snapshot: ConversationStateSnapshot) => void)
-    | undefined;
   const supervisor = {
     subscribe: vi.fn((listener) => {
       connectionListener = listener;
       return vi.fn();
     }),
-    conversation: {
-      subscribe: vi.fn((listener) => {
-        conversationListener = listener;
-        return vi.fn();
-      }),
-    },
     configureInitialWorkspace: vi.fn(() => true),
     getWorkspaceSwitchBlock: vi.fn(() => null),
     switchWorkspace: vi.fn(async () => true),
@@ -89,7 +77,6 @@ const createFixture = async () => {
     connectionListener: () => connectionListener,
     canonicalWorkspace,
     controller,
-    conversationListener: () => conversationListener,
     dialog,
     sessionPath,
     supervisor,
@@ -138,7 +125,7 @@ describe('WorkspaceController', () => {
     );
   });
 
-  it('restores the exact workspace and Thread before the sidecar starts', async () => {
+  it('restores the workspace without selecting a legacy saved Thread', async () => {
     const fixture = await createFixture();
     const threadId = 'thr_0000000000000042';
     await mkdir(path.dirname(fixture.sessionPath), { recursive: true });
@@ -156,7 +143,7 @@ describe('WorkspaceController', () => {
 
     expect(
       fixture.supervisor.configureInitialWorkspace,
-    ).toHaveBeenCalledWith(fixture.canonicalWorkspace, threadId);
+    ).toHaveBeenCalledWith(fixture.canonicalWorkspace);
     expect(fixture.controller.getSnapshot()).toMatchObject({
       generation: 1,
       status: 'selecting',
@@ -191,31 +178,15 @@ describe('WorkspaceController', () => {
     expect(fixture.supervisor.listWorkspace).not.toHaveBeenCalled();
   });
 
-  it('persists the active Thread and keeps browser responses generation-bound', async () => {
+  it('does not persist a Thread selection and keeps browser responses generation-bound', async () => {
     const fixture = await createFixture();
     await fixture.controller.select();
-    fixture.conversationListener()?.({
-      revision: 1,
-      phase: 'ready',
-      threadId: 'thr_0000000000000064',
-      turns: [],
-      navigator: {
-        status: 'ready',
-        activeThreadIds: ['thr_0000000000000064'],
-        activeTruncated: false,
-        search: {
-          query: '',
-          status: 'idle',
-          threadIds: [],
-          truncated: false,
-        },
-      },
-    });
-
-    await vi.waitFor(async () => {
-      const stored = await readFile(fixture.sessionPath, 'utf8');
-      expect(stored).toContain('"threadId":"thr_0000000000000064"');
-    });
+    await expect(readFile(fixture.sessionPath, 'utf8')).resolves.toBe(
+      `${JSON.stringify({
+        schemaVersion: 1,
+        path: fixture.canonicalWorkspace,
+      })}\n`,
+    );
     await expect(
       fixture.controller.inspect({
         generation: fixture.controller.getSnapshot().generation,

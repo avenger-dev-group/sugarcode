@@ -16,6 +16,8 @@
   --color-primary-foreground: var(--primary-foreground);
   --color-surface: var(--surface);
   --color-surface-hover: var(--surface-hover);
+  --color-user-message: var(--user-message);
+  --color-user-message-foreground: var(--user-message-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
@@ -46,6 +48,7 @@
   --radius: 0.625rem;
   --background: #ffffff;
   --primary: #1a1c1f;
+  --user-message-foreground: var(--primary);
   --destructive: oklch(0.577 0.245 27.325);
 }
 
@@ -53,6 +56,7 @@
   color-scheme: dark;
   --background: #181818;
   --primary: #ffffff;
+  --user-message-foreground: var(--background);
   --destructive: oklch(0.704 0.191 22.216);
 }
 
@@ -65,6 +69,7 @@
   --tertiary: rgb(from var(--primary) r g b / 50%);
   --surface: rgb(from var(--primary) r g b / 6%);
   --surface-hover: rgb(from var(--primary) r g b / 10%);
+  --user-message: #c7d7fd;
   --card: var(--background);
   --card-foreground: var(--foreground);
   --popover: var(--background);

@@ -1,6 +1,8 @@
 import {
   type UIEvent,
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -88,7 +90,7 @@ const TERMINAL_LABELS: Record<
   ConversationTurnStatus,
   string | undefined
 > = {
-  completed: 'Turn complete',
+  completed: undefined,
   failed: 'Turn failed',
   interrupted: 'Turn stopped',
   inProgress: undefined,
@@ -923,6 +925,7 @@ export const shouldAcceptSnapshot = (
 export const useTranscriptFollow = (
   thread: ThreadViewModel,
 ): TranscriptFollow => {
+  const transcriptContent = useRef<HTMLDivElement | null>(null);
   const transcriptEnd = useRef<HTMLDivElement | null>(null);
   const transcriptViewport = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscript = useRef<boolean>(true);
@@ -954,6 +957,19 @@ export const useTranscriptFollow = (
     latestUserMessageId,
   );
 
+  const scrollTranscriptToEnd = useCallback((): void => {
+    if (!shouldFollowTranscript.current) {
+      return;
+    }
+    const viewport = transcriptViewport.current;
+    if (viewport) {
+      viewport.scrollTop = viewport.scrollHeight;
+      previousScrollTop.current = viewport.scrollTop;
+      return;
+    }
+    transcriptEnd.current?.scrollIntoView({ block: 'end' });
+  }, []);
+
   const recordScrollPosition = (event: UIEvent<HTMLDivElement>): void => {
     const viewport = event.currentTarget;
     const distanceFromBottom =
@@ -968,7 +984,7 @@ export const useTranscriptFollow = (
     previousScrollTop.current = viewport.scrollTop;
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const threadChanged =
       previousThreadIdentity.current !== thread.threadIdentity;
     const userMessageAdded =
@@ -981,20 +997,33 @@ export const useTranscriptFollow = (
     previousUserMessageId.current = latestUserMessageId;
 
     if (shouldFollowTranscript.current) {
-      transcriptEnd.current?.scrollIntoView({ block: 'end' });
-      const viewport = transcriptViewport.current;
-      if (viewport) {
-        previousScrollTop.current = viewport.scrollTop;
-      }
+      scrollTranscriptToEnd();
+      const animationFrame = requestAnimationFrame(
+        scrollTranscriptToEnd,
+      );
+      return () => cancelAnimationFrame(animationFrame);
     }
+    return undefined;
   }, [
     latestUserMessageId,
+    scrollTranscriptToEnd,
     thread.phase,
     thread.threadIdentity,
     thread.turns,
   ]);
 
+  useEffect(() => {
+    const content = transcriptContent.current;
+    if (!content) {
+      return undefined;
+    }
+    const observer = new ResizeObserver(scrollTranscriptToEnd);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [scrollTranscriptToEnd]);
+
   return {
+    transcriptContent,
     transcriptEnd,
     transcriptViewport,
     recordScrollPosition,

@@ -596,10 +596,17 @@ const run = async (): Promise<void> => {
     getRpc: () => conversationRpc,
     onProtocolFailure: () => lifecycleFailures.push('conversation-protocol'),
   });
-  if (!(await conversation.restoreLatestActiveThread())) {
-    throw new Error('Electron conversation recovery failed.');
+  if (!(await conversation.loadThreadIndex())) {
+    throw new Error('Electron Thread index recovery failed.');
   }
   conversation.connectionReady();
+  if (
+    !(
+      await conversation.selectThread('thr_0000000000000100')
+    ).accepted
+  ) {
+    throw new Error('Electron fixture Thread selection failed.');
+  }
   const rendererPath = path.join(
     __dirname,
     'renderer',
@@ -1037,7 +1044,7 @@ const run = async (): Promise<void> => {
     controller.subscribe(hidePreviewForApproval);
   const unsubscribePreviewMcpApproval =
     mcpApprovals.subscribe(hidePreviewForApproval);
-  const waitForDurableItemIdentity = async (
+  const expectDurableItemIdentityHidden = async (
     itemId: string,
     label: string,
   ): Promise<void> => {
@@ -1045,7 +1052,26 @@ const run = async (): Promise<void> => {
     await waitFor(
       () =>
         evaluate<boolean>(
-          `document.querySelector(${JSON.stringify(selector)})?.textContent === ${JSON.stringify(`Item ${itemId}`)}`,
+          `document.querySelector(${JSON.stringify(selector)}) === null &&
+          !Array.from(document.querySelectorAll('p')).some(
+            (element) => element.textContent === ${JSON.stringify(`Item ${itemId}`)}
+          )`,
+        ),
+      label,
+    );
+  };
+  const expectDurableTurnIdentityHidden = async (
+    turnId: string,
+    label: string,
+  ): Promise<void> => {
+    const selector = `[aria-label="Durable Turn ${turnId}"]`;
+    await waitFor(
+      () =>
+        evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(selector)}) === null &&
+          !Array.from(document.querySelectorAll('p')).some(
+            (element) => element.textContent === ${JSON.stringify(`Turn ${turnId}`)}
+          )`,
         ),
       label,
     );
@@ -1624,6 +1650,23 @@ const run = async (): Promise<void> => {
       ),
     'return to latest Thread',
   );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const viewport = document.querySelector(
+            '[aria-label="Conversation transcript"]',
+          );
+          return viewport instanceof HTMLElement &&
+            Math.abs(
+              viewport.scrollHeight -
+              viewport.clientHeight -
+              viewport.scrollTop
+            ) <= 1;
+        })()`,
+      ),
+    'selected Thread latest-content position',
+  );
   await evaluate(`document.querySelector(
     'button[aria-label="Fork Thread thr_0000000000000100"]',
   )?.click()`);
@@ -1716,13 +1759,8 @@ const run = async (): Promise<void> => {
     'turn_0000000000000099',
     'turn_0000000000000100',
   ]) {
-    await waitFor(
-      () =>
-        evaluate<boolean>(
-          `document.querySelector(
-            '[aria-label="Durable Turn ${turnId}"]',
-          )?.textContent?.includes('Turn ${turnId}') === true`,
-        ),
+    await expectDurableTurnIdentityHidden(
+      turnId,
       `recovered durable Turn identity ${turnId}`,
     );
   }
@@ -1732,7 +1770,7 @@ const run = async (): Promise<void> => {
     'item_0000000000000100',
     'item_0000000000000101',
   ]) {
-    await waitForDurableItemIdentity(
+    await expectDurableItemIdentityHidden(
       itemId,
       `recovered durable Item identity ${itemId}`,
     );
@@ -2104,22 +2142,15 @@ const run = async (): Promise<void> => {
     ].join('\n'),
     'completed',
     async () => {
-      await waitFor(
-        () =>
-          evaluate<boolean>(
-            `document.querySelector(
-              '[aria-label="Durable Turn turn_0000000000000101"]',
-            )?.textContent?.includes(
-              'Turn turn_0000000000000101',
-            ) === true`,
-          ),
+      await expectDurableTurnIdentityHidden(
+        'turn_0000000000000101',
         'live durable Turn identity',
       );
-      await waitForDurableItemIdentity(
+      await expectDurableItemIdentityHidden(
         'turn_0000000000000101/user',
         'live durable UserMessage Item identity',
       );
-      await waitForDurableItemIdentity(
+      await expectDurableItemIdentityHidden(
         'turn_0000000000000101/agent',
         'live durable AgentMessage Item identity',
       );
@@ -2216,22 +2247,15 @@ const run = async (): Promise<void> => {
       ),
     'durable Thread identity after Renderer reload',
   );
-  await waitFor(
-    () =>
-      evaluate<boolean>(
-        `document.querySelector(
-          '[aria-label="Durable Turn turn_0000000000000101"]',
-        )?.textContent?.includes(
-          'Turn turn_0000000000000101',
-        ) === true`,
-      ),
+  await expectDurableTurnIdentityHidden(
+    'turn_0000000000000101',
     'durable Turn identity after Renderer reload',
   );
-  await waitForDurableItemIdentity(
+  await expectDurableItemIdentityHidden(
     'turn_0000000000000101/user',
     'durable UserMessage Item identity after Renderer reload',
   );
-  await waitForDurableItemIdentity(
+  await expectDurableItemIdentityHidden(
     'turn_0000000000000101/agent',
     'durable AgentMessage Item identity after Renderer reload',
   );
@@ -2406,22 +2430,15 @@ const run = async (): Promise<void> => {
       ),
     'stopping workspace list presentation',
   );
-  await waitFor(
-    () =>
-      evaluate<boolean>(
-        `document.querySelector(
-          '[aria-label="Durable Turn turn_0000000000000102"]',
-        )?.textContent?.includes(
-          'Turn turn_0000000000000102',
-        ) === true`,
-      ),
+  await expectDurableTurnIdentityHidden(
+    'turn_0000000000000102',
     'stopping durable Turn identity',
   );
-  await waitForDurableItemIdentity(
+  await expectDurableItemIdentityHidden(
     `${secondTurnId}/user`,
     'stopping durable UserMessage Item identity',
   );
-  await waitForDurableItemIdentity(
+  await expectDurableItemIdentityHidden(
     `${secondTurnId}/agent`,
     'stopping durable AgentMessage Item identity',
   );
@@ -2463,18 +2480,11 @@ const run = async (): Promise<void> => {
       ),
     'interrupted workspace list presentation',
   );
-  await waitFor(
-    () =>
-      evaluate<boolean>(
-        `document.querySelector(
-          '[aria-label="Durable Turn turn_0000000000000102"]',
-        )?.textContent?.includes(
-          'Turn turn_0000000000000102',
-        ) === true`,
-      ),
+  await expectDurableTurnIdentityHidden(
+    'turn_0000000000000102',
     'interrupted durable Turn identity',
   );
-  await waitForDurableItemIdentity(
+  await expectDurableItemIdentityHidden(
     `${secondTurnId}/agent`,
     'interrupted durable AgentMessage Item identity',
   );
@@ -2567,18 +2577,11 @@ const run = async (): Promise<void> => {
       ),
     'uncertain workspace search presentation',
   );
-  await waitFor(
-    () =>
-      evaluate<boolean>(
-        `document.querySelector(
-          '[aria-label="Durable Turn turn_0000000000000103"]',
-        )?.textContent?.includes(
-          'Turn turn_0000000000000103',
-        ) === true`,
-      ),
+  await expectDurableTurnIdentityHidden(
+    'turn_0000000000000103',
     'transport-uncertain durable Turn identity',
   );
-  await waitForDurableItemIdentity(
+  await expectDurableItemIdentityHidden(
     `${thirdTurnId}/agent`,
     'transport-uncertain durable AgentMessage Item identity',
   );
@@ -2622,18 +2625,11 @@ const run = async (): Promise<void> => {
       ),
     'uncertain workspace search after Renderer reload',
   );
-  await waitFor(
-    () =>
-      evaluate<boolean>(
-        `document.querySelector(
-          '[aria-label="Durable Turn turn_0000000000000103"]',
-        )?.textContent?.includes(
-          'Turn turn_0000000000000103',
-        ) === true`,
-      ),
+  await expectDurableTurnIdentityHidden(
+    'turn_0000000000000103',
     'transport-uncertain durable Turn identity after reload',
   );
-  await waitForDurableItemIdentity(
+  await expectDurableItemIdentityHidden(
     `${thirdTurnId}/agent`,
     'transport-uncertain durable AgentMessage Item identity after reload',
   );

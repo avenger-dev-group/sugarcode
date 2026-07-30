@@ -260,7 +260,7 @@ describe('ConnectionSupervisor', () => {
     supervisor.shutdown();
   });
 
-  it('restores the latest active durable Thread before becoming ready', async () => {
+  it('loads the active durable Thread index without selecting a transcript', async () => {
     const child = new FakeChild();
     const { supervisor } = createSupervisor(child, {
       latestThread: {
@@ -289,18 +289,16 @@ describe('ConnectionSupervisor', () => {
     await supervisor.start();
     expect(supervisor.getSnapshot().status).toBe('ready');
     expect(supervisor.conversation.getSnapshot()).toMatchObject({
-      phase: 'ready',
-      threadId: 'thr_0000000000000001',
-      turns: [
-        {
-          status: 'completed',
-          messages: [
-            { role: 'user', text: 'Recovered in Main.' },
-            { role: 'agent', text: 'Durable response.' },
-          ],
-        },
-      ],
+      phase: 'idle',
+      turns: [],
+      navigator: {
+        status: 'ready',
+        activeThreadIds: ['thr_0000000000000001'],
+      },
     });
+    expect(
+      supervisor.conversation.getSnapshot().threadId,
+    ).toBeUndefined();
     supervisor.shutdown();
   });
 
@@ -481,6 +479,12 @@ describe('ConnectionSupervisor', () => {
     });
 
     await supervisor.start();
+    await expect(
+      supervisor.conversation.selectThread(thread.id),
+    ).resolves.toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
     supervisor.mcpApprovals.markSurfaceReady();
     expect(supervisor.mcpSession.toggle('alpha').accepted).toBe(true);
     await expect(supervisor.mcpSession.enable()).resolves.toEqual({

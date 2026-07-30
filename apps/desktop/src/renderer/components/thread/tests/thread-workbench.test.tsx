@@ -15,9 +15,20 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 });
 
 class ResizeObserverStub {
+  static instances: ResizeObserverStub[] = [];
+  readonly callback: ResizeObserverCallback;
   observe = vi.fn();
   unobserve = vi.fn();
   disconnect = vi.fn();
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ResizeObserverStub.instances.push(this);
+  }
+
+  trigger = (): void => {
+    this.callback([], this as unknown as ResizeObserver);
+  };
 }
 
 vi.stubGlobal('ResizeObserver', ResizeObserverStub);
@@ -87,6 +98,7 @@ const createStore = (
 
 afterEach(() => {
   document.body.replaceChildren();
+  ResizeObserverStub.instances = [];
   vi.clearAllMocks();
 });
 
@@ -202,42 +214,33 @@ describe('ThreadWorkbenchView', () => {
     expect(document.body.textContent).toContain(
       'The durable event arrives first.',
     );
-    expect(document.body.textContent).toContain('Turn complete');
-    expect(document.body.textContent).toContain(
+    expect(document.body.textContent).not.toContain('Turn complete');
+    expect(document.body.textContent).not.toContain(
       'Turn turn_0000000000000001',
     );
-    const durableTurn = document.querySelector(
-      '[aria-label="Durable Turn turn_0000000000000001"]',
+    expect(
+      document.querySelector('[aria-label^="Durable Turn "]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('[aria-label^="Durable Item "]'),
+    ).toBeNull();
+    const userMessage = document.querySelector(
+      '[aria-label="Your message"]',
     );
-    expect(durableTurn).not.toBeNull();
-    const turnIdentity = Array.from(
-      durableTurn?.querySelectorAll('p') ?? [],
-    ).find(
-      (element) =>
-        element.textContent === 'Turn turn_0000000000000001',
+    expect(userMessage?.className).toContain('bg-user-message');
+    expect(userMessage?.className).toContain(
+      'text-user-message-foreground',
     );
-    expect(turnIdentity?.className).toContain('break-all');
-    expect(turnIdentity?.className).toContain('font-mono');
-    expect(turnIdentity?.className).toContain('text-tertiary');
-    expect(turnIdentity?.className).not.toContain('uppercase');
-    expect(durableTurn?.querySelector('a, button')).toBeNull();
-    for (const itemId of [
-      'item_0000000000000001',
-      'item_0000000000000002',
-    ]) {
-      const itemIdentity = document.querySelector(
-        `[aria-label="Durable Item ${itemId}"]`,
-      );
-      expect(
-        document.querySelectorAll(`[aria-label="Durable Item ${itemId}"]`),
-      ).toHaveLength(1);
-      expect(itemIdentity?.textContent).toBe(`Item ${itemId}`);
-      expect(itemIdentity?.className).toContain('break-all');
-      expect(itemIdentity?.className).toContain('font-mono');
-      expect(itemIdentity?.className).toContain('text-tertiary');
-      expect(itemIdentity?.className).not.toContain('uppercase');
-      expect(itemIdentity?.querySelector('a, button')).toBeNull();
-    }
+    expect(userMessage?.parentElement?.className).toContain('w-fit');
+    expect(userMessage?.parentElement?.className).toContain(
+      'max-w-[82%]',
+    );
+    const agentResponse = document.querySelector(
+      '[aria-label="Agent response"]',
+    );
+    expect(agentResponse?.textContent).not.toContain('SugarCode');
+    expect(agentResponse?.textContent).not.toContain('SC');
+    expect(agentResponse?.className).not.toContain('grid-cols');
     expect(document.body.textContent).toContain(
       'Thread thr_0000000000000001',
     );
@@ -345,16 +348,14 @@ describe('ThreadWorkbenchView', () => {
     expect(
       document.querySelector('[aria-label="Agent is responding"]'),
     ).not.toBeNull();
-    expect(
-      document.querySelector(
-        '[aria-label="Durable Turn turn_0000000000000002"]',
-      )?.textContent,
-    ).toContain('Turn turn_0000000000000002');
+    expect(document.body.textContent).not.toContain(
+      'Turn turn_0000000000000002',
+    );
     expect(
       document.querySelector(
         '[aria-label="Durable Item item_0000000000000003"]',
-      )?.textContent,
-    ).toBe('Item item_0000000000000003');
+      ),
+    ).toBeNull();
     expect(document.body.textContent).toContain(
       'Thinking through the turn',
     );
@@ -430,6 +431,18 @@ describe('ThreadWorkbenchView', () => {
     viewport.scrollTop = 100;
     viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
     vi.mocked(Element.prototype.scrollIntoView).mockClear();
+    const transcriptContent = viewport.firstElementChild?.firstElementChild;
+    const contentObserver = ResizeObserverStub.instances.find((observer) =>
+      observer.observe.mock.calls.some(
+        ([target]) => target === transcriptContent,
+      ),
+    );
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      value: 1_400,
+    });
+    contentObserver?.trigger();
+    expect(viewport.scrollTop).toBe(100);
 
     await act(async () => {
       root.render(
@@ -447,8 +460,9 @@ describe('ThreadWorkbenchView', () => {
     });
 
     expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(100);
 
-    viewport.scrollTop = 800;
+    viewport.scrollTop = 1_000;
     viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
     await act(async () => {
       root.render(
@@ -464,10 +478,68 @@ describe('ThreadWorkbenchView', () => {
         />,
       );
     });
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
-      block: 'end',
+    expect(viewport.scrollTop).toBe(1_400);
+
+    await act(async () => root.unmount());
+  });
+
+  it('shows the latest content after the user selects a Thread', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const selectedStore = createStore();
+    const idleStore = createStore({
+      thread: toThreadViewModel({
+        revision: 1,
+        phase: 'idle',
+        turns: [],
+      }),
+      navigator: {
+        ...selectedStore.navigator,
+        selectedThreadId: null,
+      },
     });
 
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={idleStore} />);
+    });
+    const viewport = document.querySelector(
+      '[aria-label="Conversation transcript"]',
+    ) as HTMLDivElement;
+    Object.defineProperties(viewport, {
+      scrollHeight: { configurable: true, value: 1_800 },
+      scrollTop: {
+        configurable: true,
+        value: 0,
+        writable: true,
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <ThreadWorkbenchView
+          store={{
+            ...idleStore,
+            thread: selectedStore.thread,
+            navigator: selectedStore.navigator,
+          }}
+        />,
+      );
+    });
+
+    expect(viewport.scrollTop).toBe(1_800);
+    const transcriptContent = viewport.firstElementChild?.firstElementChild;
+    const contentObserver = ResizeObserverStub.instances.find((observer) =>
+      observer.observe.mock.calls.some(
+        ([target]) => target === transcriptContent,
+      ),
+    );
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      value: 2_400,
+    });
+    contentObserver?.trigger();
+    expect(viewport.scrollTop).toBe(2_400);
     await act(async () => root.unmount());
   });
 
@@ -500,6 +572,17 @@ describe('ThreadWorkbenchView', () => {
 
     await act(async () => {
       root.render(<ThreadWorkbenchView store={store} />);
+    });
+    const viewport = document.querySelector(
+      '[aria-label="Conversation transcript"]',
+    ) as HTMLDivElement;
+    Object.defineProperties(viewport, {
+      scrollHeight: { configurable: true, value: 1_600 },
+      scrollTop: {
+        configurable: true,
+        value: 0,
+        writable: true,
+      },
     });
     vi.mocked(Element.prototype.scrollIntoView).mockClear();
 
@@ -536,9 +619,7 @@ describe('ThreadWorkbenchView', () => {
       );
     });
 
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
-      block: 'end',
-    });
+    expect(viewport.scrollTop).toBe(1_600);
     await act(async () => root.unmount());
   });
 
@@ -619,9 +700,7 @@ describe('ThreadWorkbenchView', () => {
       );
     });
 
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
-      block: 'end',
-    });
+    expect(viewport.scrollTop).toBe(1_200);
     await act(async () => root.unmount());
   });
 
@@ -664,16 +743,14 @@ describe('ThreadWorkbenchView', () => {
         '[aria-label="Agent response status is unavailable"]',
       ),
     ).not.toBeNull();
-    expect(
-      document.querySelector(
-        '[aria-label="Durable Turn turn_0000000000000002"]',
-      )?.textContent,
-    ).toContain('Turn turn_0000000000000002');
+    expect(document.body.textContent).not.toContain(
+      'Turn turn_0000000000000002',
+    );
     expect(
       document.querySelector(
         '[aria-label="Durable Item item_0000000000000003"]',
-      )?.textContent,
-    ).toBe('Item item_0000000000000003');
+      ),
+    ).toBeNull();
     expect(document.body.textContent).toContain(
       'Keep this exact partial response.',
     );
@@ -740,8 +817,8 @@ describe('ThreadWorkbenchView', () => {
     expect(
       document.querySelector(
         '[aria-label="Durable Item item_0000000000000004"]',
-      )?.textContent,
-    ).toBe('Item item_0000000000000004');
+      ),
+    ).toBeNull();
     expect(document.body.textContent).not.toContain(
       'Thinking through the turn',
     );

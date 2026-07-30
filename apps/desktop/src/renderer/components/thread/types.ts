@@ -138,6 +138,7 @@ export type TranscriptTurnProps = Readonly<{
 }>;
 
 export type TranscriptFollow = Readonly<{
+  transcriptContent: RefObject<HTMLDivElement | null>;
   transcriptEnd: RefObject<HTMLDivElement | null>;
   transcriptViewport: RefObject<HTMLDivElement | null>;
   recordScrollPosition: (event: UIEvent<HTMLDivElement>) => void;

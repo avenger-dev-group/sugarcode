@@ -42,7 +42,7 @@ const createHarness = (rpc: ConversationRpc) => {
 };
 
 describe('ConversationController', () => {
-  it('restores the latest active Thread before continuing it', async () => {
+  it('loads the active Thread index without selecting until the user chooses', async () => {
     const startThread = vi.fn();
     const startTurn = vi.fn(
       async (): Promise<TurnStartResponse> => ({
@@ -85,13 +85,12 @@ describe('ConversationController', () => {
     });
 
     await expect(
-      controller.restoreLatestActiveThread(),
+      controller.loadThreadIndex(),
     ).resolves.toBe(true);
     expect(controller.getSnapshot().phase).toBe('unavailable');
     controller.connectionReady();
     expect(controller.getSnapshot()).toMatchObject({
-      phase: 'ready',
-      threadId: 'thr_0000000000000001',
+      phase: 'idle',
       navigator: {
         status: 'ready',
         activeThreadIds: ['thr_0000000000000001'],
@@ -103,6 +102,17 @@ describe('ConversationController', () => {
           truncated: false,
         },
       },
+      turns: [],
+    });
+    expect(controller.getSnapshot().threadId).toBeUndefined();
+    expect(rpc.resumeThread).not.toHaveBeenCalled();
+
+    await expect(
+      controller.selectThread('thr_0000000000000001'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
       turns: [
         {
           id: 'turn_0000000000000001',
@@ -139,7 +149,7 @@ describe('ConversationController', () => {
       getRpc: () => emptyRpc,
       onProtocolFailure: vi.fn(),
     });
-    await expect(empty.restoreLatestActiveThread()).resolves.toBe(true);
+    await expect(empty.loadThreadIndex()).resolves.toBe(true);
     empty.connectionReady();
     expect(empty.getSnapshot()).toMatchObject({
       phase: 'idle',
@@ -156,7 +166,7 @@ describe('ConversationController', () => {
       getRpc: () => failedRpc,
       onProtocolFailure: vi.fn(),
     });
-    await expect(failed.restoreLatestActiveThread()).resolves.toBe(false);
+    await expect(failed.loadThreadIndex()).resolves.toBe(false);
     expect(failed.getSnapshot()).toMatchObject({
       phase: 'unavailable',
       notice: {

@@ -29,20 +29,11 @@ const AgentMessageView = ({
 
   return (
     <article
-      className="grid grid-cols-[1.75rem_minmax(0,1fr)] gap-3"
+      className="min-w-0"
       aria-label={ARIA_LABELS[message.state]}
     >
-      <div
-        className="mt-0.5 flex size-7 items-center justify-center rounded-full border bg-background font-mono text-[10px] text-secondary"
-        aria-hidden="true"
-      >
-        SC
-      </div>
-      <div className="min-w-0 pt-0.5">
+      {isStreaming || stateLabel ? (
         <div className="mb-1.5 flex items-center gap-2">
-          <span className="text-xs font-medium uppercase tracking-[0.12em] text-tertiary">
-            SugarCode
-          </span>
           {isStreaming ? (
             <LoaderCircle
               className="size-3 animate-spin text-process"
@@ -55,17 +46,17 @@ const AgentMessageView = ({
             </span>
           ) : null}
         </div>
-        {message.state === 'completed' ||
-        (message.state === 'streaming' && message.text.length > 0) ? (
-          <AgentMarkdown source={message.text} isStreaming={isStreaming} />
-        ) : (
-          <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-process">
-            {message.text || (
-              <span className="text-process">Thinking through the turn…</span>
-            )}
-          </p>
-        )}
-      </div>
+      ) : null}
+      {message.state === 'completed' ||
+      (message.state === 'streaming' && message.text.length > 0) ? (
+        <AgentMarkdown source={message.text} isStreaming={isStreaming} />
+      ) : (
+        <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-process">
+          {message.text || (
+            <span className="text-process">Thinking through the turn…</span>
+          )}
+        </p>
+      )}
     </article>
   );
 };

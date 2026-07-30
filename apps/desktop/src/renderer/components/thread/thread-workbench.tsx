@@ -26,25 +26,11 @@ const TranscriptMessage = ({
   entry,
 }: Readonly<{ entry: TranscriptMessageViewModel }>) =>
   entry.role === 'agent' ? (
-    <div>
-      <p
-        className="mb-2 min-w-0 break-all pl-10 font-mono text-[10px] tracking-[0.08em] text-tertiary"
-        aria-label={`Durable Item ${entry.message.id}`}
-      >
-        Item {entry.message.id}
-      </p>
-      <AgentMessage message={entry.message} />
-    </div>
+    <AgentMessage message={entry.message} />
   ) : (
-    <div className="ml-auto max-w-[82%]">
-      <p
-        className="mb-2 min-w-0 break-all text-right font-mono text-[10px] tracking-[0.08em] text-tertiary"
-        aria-label={`Durable Item ${entry.message.id}`}
-      >
-        Item {entry.message.id}
-      </p>
+    <div className="ml-auto w-fit max-w-[82%]">
       <article
-        className="rounded-2xl rounded-br-md bg-surface px-4 py-3"
+        className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
         aria-label="Your message"
       >
         <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
@@ -158,15 +144,8 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
         ? ''
         : '[contain-intrinsic-size:auto_240px] [content-visibility:auto]'
     }
-    aria-label={`Durable Turn ${turn.id}`}
   >
-    <p
-      className="min-w-0 break-all font-mono text-[10px] tracking-[0.08em] text-tertiary"
-      aria-hidden="true"
-    >
-      Turn {turn.id}
-    </p>
-    <div className="mt-3 space-y-7">
+    <div className="space-y-7">
       {turn.messages
         .filter((entry) => entry.role === 'user')
         .map((entry) => (
@@ -259,6 +238,7 @@ export const ThreadWorkbenchView = ({
   setContextRailOpen,
 }: ThreadWorkbenchViewProps) => {
   const {
+    transcriptContent,
     transcriptEnd,
     transcriptViewport,
     recordScrollPosition,
@@ -322,7 +302,10 @@ export const ThreadWorkbenchView = ({
           onScroll: recordScrollPosition,
         }}
       >
-        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-10 pt-16 sm:px-10 md:pt-10">
+        <div
+          ref={transcriptContent}
+          className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-10 pt-16 sm:px-10 md:pt-10"
+        >
           {store.thread.isEmpty ? (
             <div className="my-auto max-w-xl py-16">
               <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-tertiary">
