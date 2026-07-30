@@ -347,10 +347,43 @@ const verifyTerminalBridge = async (
     let ready = false;
     let resized = false;
     let exitEvent = false;
-    let cursorAnswered = false;
+    let cursorQueriesAnswered = 0;
+    let launchSent = false;
+    let nextInputSequence = 1;
     let tuiExitSent = false;
     let shellExitSent = false;
     let settled = false;
+    const sendCommand = (command: Record<string, unknown>): void => {
+      child.stdin.write(
+        `${JSON.stringify({
+          ...command,
+          sequence: nextInputSequence,
+        })}\n`,
+      );
+      nextInputSequence += 1;
+    };
+    const quotedExecutable =
+      process.platform === 'win32'
+        ? `"${executablePath.replaceAll('"', '""')}"`
+        : `'${executablePath.replaceAll("'", "'\\''")}'`;
+    const quotedHome =
+      process.platform === 'win32'
+        ? `"${verificationHome.replaceAll('"', '""')}"`
+        : `'${verificationHome.replaceAll("'", "'\\''")}'`;
+    const terminalInput =
+      process.platform === 'win32'
+        ? `echo SUGARCODE_PACKAGED_PTY\r${quotedExecutable} --home ${quotedHome}\r`
+        : `printf 'SUGARCODE_PACKAGED_PTY\\n'\n${quotedExecutable} --home ${quotedHome}\n`;
+    const sendLaunch = (): void => {
+      if (launchSent) {
+        return;
+      }
+      launchSent = true;
+      sendCommand({
+        type: 'input',
+        data: terminalInput,
+      });
+    };
     const finish = (error?: Error): void => {
       if (settled) {
         return;
@@ -367,7 +400,7 @@ const verifyTerminalBridge = async (
       child.kill();
       finish(
         new Error(
-          `The packaged CLI terminal bridge timed out: ready=${String(ready)}, resized=${String(resized)}, tuiExit=${String(tuiExitSent)}, shellExit=${String(shellExitSent)}, transcript=${JSON.stringify(transcript.slice(-2_000))}.`,
+          `The packaged CLI terminal bridge timed out: ready=${String(ready)}, launch=${String(launchSent)}, resized=${String(resized)}, cursorAnswers=${String(cursorQueriesAnswered)}, tuiExit=${String(tuiExitSent)}, shellExit=${String(shellExitSent)}, transcript=${JSON.stringify(transcript.slice(-2_000))}.`,
         ),
       );
     }, TERMINAL_TIMEOUT_MS);
@@ -395,60 +428,44 @@ const verifyTerminalBridge = async (
         }
         if (event.type === 'ready' && event.version === 1 && !ready) {
           ready = true;
-          const quotedExecutable =
-            process.platform === 'win32'
-              ? `"${executablePath.replaceAll('"', '""')}"`
-              : `'${executablePath.replaceAll("'", "'\\''")}'`;
-          const quotedHome =
-            process.platform === 'win32'
-              ? `"${verificationHome.replaceAll('"', '""')}"`
-              : `'${verificationHome.replaceAll("'", "'\\''")}'`;
-          const input =
-            process.platform === 'win32'
-              ? `echo SUGARCODE_PACKAGED_PTY\r${quotedExecutable} --home ${quotedHome}\r`
-              : `printf 'SUGARCODE_PACKAGED_PTY\\n'\n${quotedExecutable} --home ${quotedHome}\n`;
-          child.stdin.write(
-            `${JSON.stringify({
-              type: 'input',
-              sequence: 1,
-              data: input,
-            })}\n`,
-          );
+          if (process.platform !== 'win32') {
+            sendLaunch();
+          }
         } else if (
           event.type === 'output' &&
           typeof event.data === 'string'
         ) {
           transcript = appendBounded(transcript, event.data);
+          const cursorQueryCount =
+            transcript.split('\u001b[6n').length - 1;
+          while (cursorQueriesAnswered < cursorQueryCount) {
+            sendCommand({
+              type: 'input',
+              data: '\u001b[24;1R',
+            });
+            cursorQueriesAnswered += 1;
+          }
+          if (
+            process.platform === 'win32' &&
+            !launchSent &&
+            cursorQueriesAnswered > 0
+          ) {
+            sendLaunch();
+          }
           if (!resized && transcript.includes('SUGARCODE_PACKAGED_PTY')) {
             resized = true;
-            child.stdin.write(
-              `${JSON.stringify({
-                type: 'resize',
-                sequence: 2,
-                columns: 91,
-                rows: 32,
-              })}\n`,
-            );
-          }
-          if (!cursorAnswered && transcript.includes('\u001b[6n')) {
-            cursorAnswered = true;
-            child.stdin.write(
-              `${JSON.stringify({
-                type: 'input',
-                sequence: 3,
-                data: '\u001b[24;1R',
-              })}\n`,
-            );
+            sendCommand({
+              type: 'resize',
+              columns: 91,
+              rows: 32,
+            });
           }
           if (!tuiExitSent && transcript.includes(' SugarCode ')) {
             tuiExitSent = true;
-            child.stdin.write(
-              `${JSON.stringify({
-                type: 'input',
-                sequence: 4,
-                data: '\u0011',
-              })}\n`,
-            );
+            sendCommand({
+              type: 'input',
+              data: '\u0011',
+            });
           }
           if (
             tuiExitSent &&
@@ -456,13 +473,10 @@ const verifyTerminalBridge = async (
             transcript.includes('\u001b[?1049l')
           ) {
             shellExitSent = true;
-            child.stdin.write(
-              `${JSON.stringify({
-                type: 'input',
-                sequence: 5,
-                data: process.platform === 'win32' ? 'exit\r' : 'exit\n',
-              })}\n`,
-            );
+            sendCommand({
+              type: 'input',
+              data: process.platform === 'win32' ? 'exit\r' : 'exit\n',
+            });
           }
         } else if (event.type === 'exit') {
           exitEvent =

@@ -42,6 +42,40 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
     assert_eq!(ready["version"], 1);
     assert_eq!(ready["encoding"], "utf-8-replacement");
 
+    let mut command_sequence = 1_u64;
+    let mut transcript = String::new();
+    #[cfg(windows)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !transcript.contains("\u{1b}[6n") {
+            let event = receive_json(
+                &lines_rx,
+                deadline.saturating_duration_since(Instant::now()),
+                "initial ConPTY cursor query",
+            );
+            match event["type"].as_str() {
+                Some("output") => {
+                    transcript.push_str(event["data"].as_str().expect("output data"));
+                }
+                Some("exit") => panic!("shell exited during cursor negotiation: {event}"),
+                Some("error") => panic!("terminal bridge error: {event}"),
+                _ => {}
+            }
+        }
+        writeln!(
+            input,
+            "{}",
+            serde_json::json!({
+                "type": "input",
+                "sequence": command_sequence,
+                "data": "\u{1b}[24;1R"
+            })
+        )
+        .expect("answer initial ConPTY cursor query");
+        command_sequence = command_sequence.saturating_add(1);
+        input.flush().expect("flush cursor response");
+    }
+
     let marker_input = if cfg!(windows) {
         "echo SUGARCODE_PTY_ACCEPTANCE\r"
     } else {
@@ -52,15 +86,15 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         "{}",
         serde_json::json!({
             "type": "input",
-            "sequence": 1,
+            "sequence": command_sequence,
             "data": marker_input
         })
     )
     .expect("write terminal input");
+    command_sequence = command_sequence.saturating_add(1);
     input.flush().expect("flush marker command");
 
     let deadline = Instant::now() + Duration::from_secs(30);
-    let mut transcript = String::new();
     while !transcript.contains("SUGARCODE_PTY_ACCEPTANCE") {
         let event = receive_json(
             &lines_rx,
@@ -82,19 +116,20 @@ fn hidden_desktop_bridge_runs_a_real_interactive_pty() {
         "{}",
         serde_json::json!({
             "type": "resize",
-            "sequence": 2,
+            "sequence": command_sequence,
             "columns": 92,
             "rows": 31
         })
     )
     .expect("resize interactive terminal");
+    command_sequence = command_sequence.saturating_add(1);
     let exit_input = if cfg!(windows) { "exit\r" } else { "exit\n" };
     writeln!(
         input,
         "{}",
         serde_json::json!({
             "type": "input",
-            "sequence": 3,
+            "sequence": command_sequence,
             "data": exit_input
         })
     )
