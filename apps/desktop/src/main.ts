@@ -39,6 +39,9 @@ const rendererFilePath = path.join(
   __dirname,
   `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
 );
+const appIconPath = app.isPackaged
+  ? path.join(process.resourcesPath, 'icon.png')
+  : path.join(app.getAppPath(), 'assets', 'icon.png');
 
 const isAllowedRendererUrl = (url: string): boolean => {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -60,6 +63,7 @@ const createWindow = (): void => {
     height: 800,
     minWidth: 360,
     minHeight: 480,
+    icon: appIconPath,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

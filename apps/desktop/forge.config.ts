@@ -6,6 +6,9 @@ import path from 'node:path';
 
 import { createPackagedSidecarHooks } from './forge/packaged-sidecar';
 
+const appIconBasePath = path.join(__dirname, 'assets', 'icon');
+const appIconPngPath = `${appIconBasePath}.png`;
+
 const sidecarHooks = createPackagedSidecarHooks({
   desktopRoot: __dirname,
   workspaceRoot: path.resolve(__dirname, '..', '..'),
@@ -14,6 +17,8 @@ const sidecarHooks = createPackagedSidecarHooks({
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    extraResource: appIconPngPath,
+    icon: appIconBasePath,
   },
   rebuildConfig: {},
   hooks: {
@@ -23,7 +28,9 @@ const config: ForgeConfig = {
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
-      config: {},
+      config: {
+        setupIcon: `${appIconBasePath}.ico`,
+      },
     },
     {
       name: '@electron-forge/maker-zip',
@@ -32,11 +39,15 @@ const config: ForgeConfig = {
     },
     {
       name: '@electron-forge/maker-rpm',
-      config: {},
+      config: {
+        icon: appIconPngPath,
+      },
     },
     {
       name: '@electron-forge/maker-deb',
-      config: {},
+      config: {
+        icon: appIconPngPath,
+      },
     },
   ],
   plugins: [
