@@ -18,6 +18,29 @@ import {
 } from '@/shared/connection';
 import type { DesktopApi } from '@/shared/desktop-api';
 import {
+  GIT_COMMIT_CHANNEL,
+  GIT_DIFF_CHANNEL,
+  GIT_REFRESH_CHANNEL,
+  GIT_STAGE_CHANNEL,
+  GIT_STATE_CHANGED_CHANNEL,
+  GIT_STATE_GET_CHANNEL,
+  GIT_UNSTAGE_CHANNEL,
+  isGitCommitResult,
+  isGitDiffResult,
+  isGitMutationResult,
+  isGitRefreshResult,
+  isGitStateSnapshot,
+  type GitCommitRequest,
+  type GitCommitResult,
+  type GitDiffRequest,
+  type GitDiffResult,
+  type GitGenerationRequest,
+  type GitMutationRequest,
+  type GitMutationResult,
+  type GitRefreshResult,
+  type GitStateSnapshot,
+} from '@/shared/git';
+import {
   CONVERSATION_SEND_CHANNEL,
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
@@ -117,6 +140,88 @@ const invokeConversationThreadAction = async (
 export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
 ): DesktopApi => ({
+  getGitState: async (): Promise<GitStateSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      GIT_STATE_GET_CHANNEL,
+    );
+    if (!isGitStateSnapshot(snapshot)) {
+      throw new Error('Main returned an invalid Git state snapshot.');
+    }
+    return snapshot;
+  },
+  onGitStateChanged: (listener) => {
+    const handler = (
+      _event: IpcRendererEvent,
+      snapshot: unknown,
+    ): void => {
+      if (isGitStateSnapshot(snapshot)) {
+        listener(snapshot);
+      }
+    };
+    ipcRenderer.on(GIT_STATE_CHANGED_CHANNEL, handler);
+    return () =>
+      ipcRenderer.removeListener(GIT_STATE_CHANGED_CHANNEL, handler);
+  },
+  refreshGitStatus: async (
+    request: GitGenerationRequest,
+  ): Promise<GitRefreshResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      GIT_REFRESH_CHANNEL,
+      request,
+    );
+    if (!isGitRefreshResult(result)) {
+      throw new Error('Main returned an invalid Git refresh result.');
+    }
+    return result;
+  },
+  loadGitDiff: async (
+    request: GitDiffRequest,
+  ): Promise<GitDiffResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      GIT_DIFF_CHANNEL,
+      request,
+    );
+    if (!isGitDiffResult(result)) {
+      throw new Error('Main returned an invalid Git diff result.');
+    }
+    return result;
+  },
+  stageGitPaths: async (
+    request: GitMutationRequest,
+  ): Promise<GitMutationResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      GIT_STAGE_CHANNEL,
+      request,
+    );
+    if (!isGitMutationResult(result)) {
+      throw new Error('Main returned an invalid Git stage result.');
+    }
+    return result;
+  },
+  unstageGitPaths: async (
+    request: GitMutationRequest,
+  ): Promise<GitMutationResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      GIT_UNSTAGE_CHANNEL,
+      request,
+    );
+    if (!isGitMutationResult(result)) {
+      throw new Error('Main returned an invalid Git unstage result.');
+    }
+    return result;
+  },
+  commitGitIndex: async (
+    request: GitCommitRequest,
+  ): Promise<GitCommitResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      GIT_COMMIT_CHANNEL,
+      request,
+    );
+    if (!isGitCommitResult(result)) {
+      throw new Error('Main returned an invalid Git commit result.');
+    }
+    return result;
+  },
   getMcpConfig: async (): Promise<McpConfigInspection> => {
     const inspection: unknown = await ipcRenderer.invoke(
       MCP_CONFIG_GET_CHANNEL,

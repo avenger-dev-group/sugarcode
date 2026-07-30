@@ -3,6 +3,13 @@ import type {
   InitializeResponse,
   WorkspaceInspectResponse,
   WorkspaceListResponse,
+  WorkspaceGitCommitParams,
+  WorkspaceGitCommitResponse,
+  WorkspaceGitDiffParams,
+  WorkspaceGitDiffResponse,
+  WorkspaceGitMutationParams,
+  WorkspaceGitMutationResponse,
+  WorkspaceGitStatusResponse,
 } from '@sugarcode/app-server-protocol';
 import {
   PROTOCOL_VERSION,
@@ -53,6 +60,12 @@ import {
 import { McpApprovalController } from '../mcp/approval-controller';
 import { discoverMcpServers } from '../mcp/config-discovery';
 import { McpSessionController } from '../mcp/session-controller';
+import {
+  parseWorkspaceGitCommitResponse,
+  parseWorkspaceGitDiffResponse,
+  parseWorkspaceGitMutationResponse,
+  parseWorkspaceGitStatusResponse,
+} from '../git/protocol';
 
 type SpawnProcess = (
   command: string,
@@ -150,6 +163,7 @@ export class ConnectionSupervisor {
   private connectionGeneration = 0;
   private modelConfigTransaction = false;
   private workspaceTransaction = false;
+  private gitTransaction = false;
   private workspacePath: string | null = null;
   private workspaceBindingId: string | null = null;
   private preferredInitialThreadId: string | undefined;
@@ -180,7 +194,9 @@ export class ConnectionSupervisor {
       getRpc: () => this.conversationRpc,
       onProtocolFailure: () => this.failAndTerminate('protocol-invalid'),
       getActionBlocked: () =>
-        this.modelConfigTransaction || this.workspaceTransaction,
+        this.modelConfigTransaction ||
+        this.workspaceTransaction ||
+        this.gitTransaction,
     });
     this.mcpSession = new McpSessionController({
       getRestartBlock: this.getMcpRestartBlock,
@@ -290,6 +306,86 @@ export class ConnectionSupervisor {
       path,
     });
     return parseWorkspaceInspectResponse(result, path);
+  };
+
+  gitStatus = async (): Promise<WorkspaceGitStatusResponse> => {
+    if (!this.client || !this.workspaceBindingId) {
+      throw new ConnectionClosedError('Workspace Git is unavailable.');
+    }
+    return parseWorkspaceGitStatusResponse(
+      await this.client.requestReady('workspace/git/status', {}),
+    );
+  };
+
+  gitDiff = async (
+    params: WorkspaceGitDiffParams,
+  ): Promise<WorkspaceGitDiffResponse> => {
+    if (!this.client || !this.workspaceBindingId) {
+      throw new ConnectionClosedError('Workspace Git is unavailable.');
+    }
+    return parseWorkspaceGitDiffResponse(
+      await this.client.requestReady('workspace/git/diff', params),
+      params.expectedRevision,
+      params.path,
+      params.source,
+    );
+  };
+
+  gitStage = async (
+    params: WorkspaceGitMutationParams,
+  ): Promise<WorkspaceGitMutationResponse> => {
+    if (!this.client || !this.workspaceBindingId) {
+      throw new ConnectionClosedError('Workspace Git is unavailable.');
+    }
+    return parseWorkspaceGitMutationResponse(
+      await this.client.requestReady('workspace/git/stage', params),
+      params.paths,
+    );
+  };
+
+  gitUnstage = async (
+    params: WorkspaceGitMutationParams,
+  ): Promise<WorkspaceGitMutationResponse> => {
+    if (!this.client || !this.workspaceBindingId) {
+      throw new ConnectionClosedError('Workspace Git is unavailable.');
+    }
+    return parseWorkspaceGitMutationResponse(
+      await this.client.requestReady('workspace/git/unstage', params),
+      params.paths,
+    );
+  };
+
+  gitCommit = async (
+    params: WorkspaceGitCommitParams,
+  ): Promise<WorkspaceGitCommitResponse> => {
+    if (!this.client || !this.workspaceBindingId) {
+      throw new ConnectionClosedError('Workspace Git is unavailable.');
+    }
+    return parseWorkspaceGitCommitResponse(
+      await this.client.requestReady('workspace/git/commit', params),
+    );
+  };
+
+  beginGitTransaction = ():
+    | Readonly<{ release: () => void }>
+    | 'turnActive'
+    | 'approvalPending'
+    | 'busy'
+    | 'unavailable' => {
+    const block = this.getGitTransactionBlock();
+    if (block) {
+      return block;
+    }
+    this.gitTransaction = true;
+    let released = false;
+    return {
+      release: () => {
+        if (!released) {
+          released = true;
+          this.gitTransaction = false;
+        }
+      },
+    };
   };
 
   private beginWorkspaceTransaction = ():
@@ -651,6 +747,7 @@ export class ConnectionSupervisor {
     }
     if (
       (response.capabilities.workspaceBrowser === true) !== expectsWorkspace ||
+      (response.capabilities.workspaceGit === true) !== expectsWorkspace ||
       (response.workspace !== undefined) !== expectsWorkspace ||
       (response.workspace !== undefined &&
         !/^[0-9a-f]{64}$/.test(response.workspace.id))
@@ -750,7 +847,11 @@ export class ConnectionSupervisor {
     | 'busy'
     | 'unavailable'
     | null => {
-    if (this.modelConfigTransaction || this.workspaceTransaction) {
+    if (
+      this.modelConfigTransaction ||
+      this.workspaceTransaction ||
+      this.gitTransaction
+    ) {
       return 'busy';
     }
     if (this.snapshot.status !== 'ready' || !this.resolvedCli) {
@@ -782,6 +883,52 @@ export class ConnectionSupervisor {
     return null;
   };
 
+  private getGitTransactionBlock = ():
+    | 'turnActive'
+    | 'approvalPending'
+    | 'busy'
+    | 'unavailable'
+    | null => {
+    if (
+      this.gitTransaction ||
+      this.modelConfigTransaction ||
+      this.workspaceTransaction ||
+      this.restarting ||
+      this.snapshot.status === 'connecting'
+    ) {
+      return 'busy';
+    }
+    if (
+      this.snapshot.status !== 'ready' ||
+      !this.client ||
+      !this.workspaceBindingId ||
+      this.shuttingDown
+    ) {
+      return 'unavailable';
+    }
+    const conversation = this.conversation.getSnapshot();
+    if (
+      conversation.phase === 'starting' ||
+      conversation.phase === 'inProgress' ||
+      conversation.phase === 'stopping'
+    ) {
+      return 'turnActive';
+    }
+    if (
+      conversation.navigator.pendingThreadId ||
+      conversation.navigator.search.status === 'loading'
+    ) {
+      return 'busy';
+    }
+    if (
+      this.commandApprovals.getSnapshot().status === 'pending' ||
+      this.mcpApprovals.getSnapshot().status === 'pending'
+    ) {
+      return 'approvalPending';
+    }
+    return null;
+  };
+
   private restartWithMcp = async (
     serverIds: readonly string[],
   ): Promise<boolean> => {
@@ -808,6 +955,7 @@ export class ConnectionSupervisor {
     if (
       this.modelConfigTransaction ||
       this.workspaceTransaction ||
+      this.gitTransaction ||
       this.restarting ||
       this.snapshot.status === 'connecting'
     ) {

@@ -21,7 +21,20 @@ import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
 import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
-import { WORKSPACE_STATE_GET_CHANNEL } from '@/shared/workspace';
+import {
+  GIT_COMMIT_CHANNEL,
+  GIT_DIFF_CHANNEL,
+  GIT_REFRESH_CHANNEL,
+  GIT_STAGE_CHANNEL,
+  GIT_STATE_CHANGED_CHANNEL,
+  GIT_STATE_GET_CHANNEL,
+  GIT_UNSTAGE_CHANNEL,
+  type GitStateSnapshot,
+} from '@/shared/git';
+import {
+  WORKSPACE_LIST_CHANNEL,
+  WORKSPACE_STATE_GET_CHANNEL,
+} from '@/shared/workspace';
 
 type WrittenDecision = Readonly<{
   id: string | number;
@@ -603,9 +616,177 @@ const run = async (): Promise<void> => {
   }));
   ipcMain.handle(WORKSPACE_STATE_GET_CHANNEL, () => ({
     revision: 1,
-    generation: 0,
-    status: 'unselected',
+    generation: 1,
+    status: 'ready',
+    name: 'electron-fixture',
   }));
+  ipcMain.handle(
+    WORKSPACE_LIST_CHANNEL,
+    (_event, request: { path: string }) => ({
+      accepted: true,
+      generation: 1,
+      path: request.path,
+      entries: [],
+    }),
+  );
+  const gitRevisionA = '1'.repeat(64);
+  const gitRevisionB = '2'.repeat(64);
+  const gitRevisionC = '3'.repeat(64);
+  const gitRevisionD = '4'.repeat(64);
+  const gitHead = '5'.repeat(40);
+  let gitState: GitStateSnapshot = {
+    revision: 1,
+    generation: 1,
+    status: 'ready',
+    repository: {
+      status: 'ready',
+      revision: gitRevisionA,
+      branch: 'main',
+      head: gitHead,
+      repositoryState: 'clean',
+      mutationAllowed: true,
+      entries: [
+        {
+          path: 'src/main.rs',
+          worktree: 'modified',
+          stageable: true,
+        },
+      ],
+      stagedCount: 0,
+      unstagedCount: 1,
+      unsupportedPaths: 0,
+    },
+  };
+  const publishGitState = (): void => {
+    window?.webContents.send(GIT_STATE_CHANGED_CHANNEL, gitState);
+  };
+  ipcMain.handle(GIT_STATE_GET_CHANNEL, () => gitState);
+  ipcMain.handle(GIT_REFRESH_CHANNEL, () => ({
+    accepted: true,
+    state: gitState,
+  }));
+  ipcMain.handle(GIT_DIFF_CHANNEL, (_event, request: { source: string }) => ({
+    accepted: true,
+    generation: 1,
+    diff: {
+      status: 'ready',
+      revision:
+        gitState.repository?.status === 'ready'
+          ? gitState.repository.revision
+          : gitRevisionA,
+      path: 'src/main.rs',
+      source: request.source,
+      content:
+        'diff --git a/src/main.rs b/src/main.rs\n@@ -1,1 +1,1 @@\n-old\n+after\n',
+      additions: 1,
+      deletions: 1,
+    },
+  }));
+  let stageSequence = 0;
+  ipcMain.handle(GIT_STAGE_CHANNEL, () => {
+    stageSequence += 1;
+    const revision = stageSequence === 1 ? gitRevisionB : gitRevisionD;
+    gitState = {
+      revision: gitState.revision + 1,
+      generation: 1,
+      status: 'ready',
+      repository: {
+        status: 'ready',
+        revision,
+        branch: 'main',
+        head: gitHead,
+        repositoryState: 'clean',
+        mutationAllowed: true,
+        entries: [
+          {
+            path: 'src/main.rs',
+            index: 'modified',
+            stageable: true,
+          },
+        ],
+        stagedCount: 1,
+        unstagedCount: 0,
+        unsupportedPaths: 0,
+      },
+    };
+    publishGitState();
+    return {
+      accepted: true,
+      state: gitState,
+      receipt: {
+        status: 'applied',
+        revision,
+        paths: ['src/main.rs'],
+      },
+    };
+  });
+  ipcMain.handle(GIT_UNSTAGE_CHANNEL, () => {
+    gitState = {
+      revision: gitState.revision + 1,
+      generation: 1,
+      status: 'ready',
+      repository: {
+        status: 'ready',
+        revision: gitRevisionC,
+        branch: 'main',
+        head: gitHead,
+        repositoryState: 'clean',
+        mutationAllowed: true,
+        entries: [
+          {
+            path: 'src/main.rs',
+            worktree: 'modified',
+            stageable: true,
+          },
+        ],
+        stagedCount: 0,
+        unstagedCount: 1,
+        unsupportedPaths: 0,
+      },
+    };
+    publishGitState();
+    return {
+      accepted: true,
+      state: gitState,
+      receipt: {
+        status: 'applied',
+        revision: gitRevisionC,
+        paths: ['src/main.rs'],
+      },
+    };
+  });
+  ipcMain.handle(GIT_COMMIT_CHANNEL, () => {
+    const receipt = {
+      status: 'committed' as const,
+      revision: gitRevisionA,
+      oldHead: gitHead,
+      newHead: '6'.repeat(40),
+    };
+    gitState = {
+      revision: gitState.revision + 1,
+      generation: 1,
+      status: 'ready',
+      repository: {
+        status: 'ready',
+        revision: gitRevisionA,
+        branch: 'main',
+        head: receipt.newHead,
+        repositoryState: 'clean',
+        mutationAllowed: true,
+        entries: [],
+        stagedCount: 0,
+        unstagedCount: 0,
+        unsupportedPaths: 0,
+      },
+      lastCommit: receipt,
+    };
+    publishGitState();
+    return {
+      accepted: true,
+      state: gitState,
+      receipt,
+    };
+  });
   const disposeApprovalIpc = registerCommandApprovalIpc({
     controller,
     getMainWindow: () => window,
@@ -682,6 +863,134 @@ const run = async (): Promise<void> => {
 
   await window.loadFile(rendererPath);
   window.show();
+  await evaluate(`document.querySelector(
+    'button[title="Git changes"]',
+  )?.click()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[aria-label="Git change workbench"]')
+          ?.textContent?.includes('src/main.rs') === true`,
+      ),
+    'Git status workbench',
+  );
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.includes(
+        'Working · Modified',
+      ) === true);
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('Working-tree diff action was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Git diff for src/main.rs"]',
+        )?.textContent?.includes('+after') === true`,
+      ),
+    'Git working-tree diff',
+  );
+  const selectAndClick = async (label: string): Promise<void> => {
+    await evaluate(`document.querySelector(
+      'button[aria-label="Select src/main.rs"]',
+    )?.click()`);
+    await evaluate(`(() => {
+      const button = Array.from(document.querySelectorAll('button'))
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)});
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error(${JSON.stringify(`${label} was unavailable.`)});
+      }
+      button.click();
+    })()`);
+  };
+  await selectAndClick('Stage selected');
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[aria-label="Git change workbench"]')
+          ?.textContent?.includes('1 staged') === true`,
+      ),
+    'Git stage presentation',
+  );
+  await selectAndClick('Unstage selected');
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[aria-label="Git change workbench"]')
+          ?.textContent?.includes('0 staged') === true`,
+      ),
+    'Git unstage presentation',
+  );
+  await selectAndClick('Stage selected');
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[aria-label="Git change workbench"]')
+          ?.textContent?.includes('1 staged') === true`,
+      ),
+    'Git restage presentation',
+  );
+  await evaluate(`(() => {
+    const values = [
+      ['textarea', 'electron Git commit'],
+      ['input[placeholder="Name"]', 'Electron Test'],
+      ['input[placeholder="name@example.com"]', 'electron@example.invalid'],
+    ];
+    for (const [selector, value] of values) {
+      const input = document.querySelector(selector);
+      if (!(input instanceof HTMLInputElement) &&
+          !(input instanceof HTMLTextAreaElement)) {
+        throw new Error('Git commit field was unavailable.');
+      }
+      const prototype = input instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(
+        input,
+        value,
+      );
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  })()`);
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.trim() ===
+        'Commit staged index');
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      throw new Error('Commit confirmation trigger was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[role="alertdialog"]')
+          ?.textContent?.includes('Create this local commit?') === true`,
+      ),
+    'Git commit confirmation',
+  );
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.trim() === 'Create commit');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('Create commit action was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector('[aria-label="Git change workbench"]')
+          ?.textContent?.includes('Commit created') === true`,
+      ),
+    'Git commit receipt',
+  );
+  await evaluate(`document.querySelector(
+    'button[aria-label="Close Git workbench"]',
+  )?.click()`);
   await evaluate(`document.querySelector(
     'button[aria-label="Open model settings"]',
   )?.click()`);
@@ -2240,6 +2549,13 @@ const run = async (): Promise<void> => {
   disposeModelConfigIpc();
   ipcMain.removeHandler(CONNECTION_STATE_GET_CHANNEL);
   ipcMain.removeHandler(WORKSPACE_STATE_GET_CHANNEL);
+  ipcMain.removeHandler(WORKSPACE_LIST_CHANNEL);
+  ipcMain.removeHandler(GIT_STATE_GET_CHANNEL);
+  ipcMain.removeHandler(GIT_REFRESH_CHANNEL);
+  ipcMain.removeHandler(GIT_DIFF_CHANNEL);
+  ipcMain.removeHandler(GIT_STAGE_CHANNEL);
+  ipcMain.removeHandler(GIT_UNSTAGE_CHANNEL);
+  ipcMain.removeHandler(GIT_COMMIT_CHANNEL);
   controller.shutdown();
   mcpApprovals.shutdown();
   if (lifecycleFailures.length > 0) {

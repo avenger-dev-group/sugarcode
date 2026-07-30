@@ -91,7 +91,10 @@ const attachInitializeServer = (
                     }
                   : {}),
                 ...(overrides.workspace
-                  ? { workspaceBrowser: true }
+                  ? {
+                      workspaceBrowser: true,
+                      workspaceGit: true,
+                    }
                   : {}),
               },
               platform: {

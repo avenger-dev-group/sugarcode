@@ -99,6 +99,7 @@ const AlertDialogDescription = ({
 
 const AlertDialogAction = AlertDialogPrimitive.Action;
 const AlertDialogCancel = AlertDialogPrimitive.Cancel;
+const AlertDialogTrigger = AlertDialogPrimitive.Trigger;
 
 export {
   AlertDialog,
@@ -109,4 +110,5 @@ export {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 };

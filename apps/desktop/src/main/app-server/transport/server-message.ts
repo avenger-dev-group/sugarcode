@@ -201,6 +201,8 @@ export const parseInitializeResponse = (
       typeof value.capabilities.mcpToolCallApprovals !== 'boolean') ||
     (value.capabilities.workspaceBrowser !== undefined &&
       typeof value.capabilities.workspaceBrowser !== 'boolean') ||
+    (value.capabilities.workspaceGit !== undefined &&
+      typeof value.capabilities.workspaceGit !== 'boolean') ||
     (value.workspace !== undefined &&
       (!isRecord(value.workspace) ||
         !isNonEmptyString(value.workspace.id)))
@@ -233,6 +235,12 @@ export const parseInitializeResponse = (
         ? {
             workspaceBrowser:
               value.capabilities.workspaceBrowser as boolean,
+          }
+        : {}),
+      ...(value.capabilities.workspaceGit !== undefined
+        ? {
+            workspaceGit:
+              value.capabilities.workspaceGit as boolean,
           }
         : {}),
     },

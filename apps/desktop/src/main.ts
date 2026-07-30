@@ -7,6 +7,8 @@ import { registerCommandApprovalIpc } from '@/main/app-server/command-approval/i
 import { registerConnectionIpc } from '@/main/app-server/connection/ipc';
 import { ConnectionSupervisor } from '@/main/app-server/connection/supervisor';
 import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
+import { GitController } from '@/main/app-server/git/controller';
+import { registerGitIpc } from '@/main/app-server/git/ipc';
 import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
 import { McpConfigController } from '@/main/app-server/mcp/config-controller';
 import { ModelConfigController } from '@/main/app-server/model-config/controller';
@@ -22,6 +24,7 @@ let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
 let disposeWorkspaceIpc: (() => void) | null = null;
+let disposeGitIpc: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -139,6 +142,14 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
+  disposeGitIpc = registerGitIpc({
+    controller: new GitController({
+      supervisor,
+      workspace: workspaceController,
+    }),
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
   createWindow();
   void supervisor.start();
 };
@@ -178,5 +189,7 @@ if (started) {
     disposeModelConfigIpc = null;
     disposeWorkspaceIpc?.();
     disposeWorkspaceIpc = null;
+    disposeGitIpc?.();
+    disposeGitIpc = null;
   });
 }
