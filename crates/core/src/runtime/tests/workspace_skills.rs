@@ -67,13 +67,19 @@ async fn inventory_and_selected_skill_are_ordered_reused_and_audited_without_con
             .map(|instruction| instruction.source)
             .collect::<Vec<_>>(),
         vec![
+            ModelInstructionSource::SugarCodeBaseAgentV1,
             ModelInstructionSource::WorkspaceSkillsInventoryV1,
             ModelInstructionSource::SelectedWorkspaceSkillsV1,
         ]
     );
-    assert!(requests[0].instructions[0].content.contains("$review"));
     assert!(
-        requests[0].instructions[1]
+        requests[0].instructions[0]
+            .content
+            .starts_with("You are SugarCode")
+    );
+    assert!(requests[0].instructions[1].content.contains("$review"));
+    assert!(
+        requests[0].instructions[2]
             .content
             .contains("private review workflow")
     );

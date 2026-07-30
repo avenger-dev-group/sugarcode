@@ -36,17 +36,12 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
         8,
     );
     let first_request = &first.provider_requests()[0];
+    let messages = provider_messages_after_base_agent(first_request);
+    assert_eq!(messages.len(), 2);
+    assert_root_workspace_instruction(&messages[0], FIRST_INSTRUCTION);
     assert_eq!(
-        first_request["messages"],
-        json!([
-            {
-                "role": "developer",
-                "content": format!(
-                    "Workspace instructions from the opened workspace root AGENTS.md (boundedWorkspaceInstructionsV1):\n\n{FIRST_INSTRUCTION}"
-                )
-            },
-            {"role": "user", "content": "first input"}
-        ])
+        messages[1],
+        json!({"role": "user", "content": "first input"})
     );
     let first_public = serde_json::to_string(&first_public).expect("public JSON");
     assert!(!first_public.contains(FIRST_INSTRUCTION));
@@ -79,15 +74,11 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
         8,
     );
     let second_request = &second.provider_requests()[0];
+    let messages = provider_messages_after_base_agent(second_request);
+    assert_root_workspace_instruction(&messages[0], SECOND_INSTRUCTION);
     assert_eq!(
-        second_request["messages"],
+        &messages[1..],
         json!([
-            {
-                "role": "developer",
-                "content": format!(
-                    "Workspace instructions from the opened workspace root AGENTS.md (boundedWorkspaceInstructionsV1):\n\n{SECOND_INSTRUCTION}"
-                )
-            },
             {"role": "user", "content": "first input"},
             {
                 "role": "assistant",
@@ -95,6 +86,8 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
             },
             {"role": "user", "content": "second input"}
         ])
+        .as_array()
+        .expect("expected history")
     );
     let public_json =
         serde_json::to_string(&(resumed, second_public)).expect("combined public JSON");
@@ -151,7 +144,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
         8,
     );
     let first_request = &first.provider_requests()[0];
-    let first_developer = first_request["messages"][0]["content"]
+    let first_developer = provider_messages_after_base_agent(first_request)[0]["content"]
         .as_str()
         .expect("developer message");
     assert!(first_developer.contains("boundedNestedWorkspaceInstructionsV1"));
@@ -204,7 +197,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
         8,
     );
     let second_request = &second.provider_requests()[0];
-    let second_developer = second_request["messages"][0]["content"]
+    let second_developer = provider_messages_after_base_agent(second_request)[0]["content"]
         .as_str()
         .expect("developer message");
     assert!(second_developer.contains(SECOND_LEAF_INSTRUCTION));
@@ -228,4 +221,18 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
     assert!(!rollout.contains(FIRST_LEAF_INSTRUCTION));
     assert!(!rollout.contains(SECOND_LEAF_INSTRUCTION));
     assert!(!rollout.contains("projects/active"));
+}
+
+fn assert_root_workspace_instruction(message: &Value, instruction: &str) {
+    assert_eq!(message["role"], "developer");
+    let content = message["content"]
+        .as_str()
+        .expect("root workspace instruction");
+    assert!(
+        content.starts_with(
+            "Repository-specific instructions from the opened workspace root AGENTS.md"
+        )
+    );
+    assert!(content.contains("subordinate to SugarCode's built-in agent instructions"));
+    assert!(content.ends_with(instruction));
 }

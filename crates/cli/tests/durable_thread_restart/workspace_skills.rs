@@ -67,7 +67,7 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
     let first_requests = first.provider_requests();
     assert_eq!(first_requests.len(), 2);
     for request in &first_requests {
-        let messages = request["messages"].as_array().expect("provider messages");
+        let messages = provider_messages_after_base_agent(request);
         assert_eq!(messages[0]["role"], "developer");
         assert_eq!(messages[1]["role"], "developer");
         let inventory = messages[0]["content"].as_str().expect("Skill inventory");
@@ -80,9 +80,12 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
         assert!(!selected.contains("root review body marker"));
         assert!(!selected.contains("second scoped review body marker"));
     }
-    assert_eq!(first_requests[0]["messages"][2]["content"], "Apply $review");
     assert_eq!(
-        first_requests[1]["messages"][4]["content"],
+        provider_messages_after_base_agent(&first_requests[0])[2]["content"],
+        "Apply $review"
+    );
+    assert_eq!(
+        provider_messages_after_base_agent(&first_requests[1])[4]["content"],
         "Apply $review again"
     );
     assert_public_redaction(&(first_public, snapshotted_public));
@@ -114,9 +117,7 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
         8,
     );
     let restarted_request = &second.provider_requests()[0];
-    let messages = restarted_request["messages"]
-        .as_array()
-        .expect("provider messages");
+    let messages = provider_messages_after_base_agent(restarted_request);
     assert_eq!(messages[0]["role"], "developer");
     assert_eq!(messages[1]["role"], "developer");
     let inventory = messages[0]["content"].as_str().expect("Skill inventory");

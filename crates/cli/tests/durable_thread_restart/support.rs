@@ -516,3 +516,26 @@ pub(super) fn assert_active_archive_views(server: &mut RunningServer, request_pr
         json!({"threadId": "thr_0000000000000002"})
     );
 }
+
+pub(super) fn provider_messages_after_base_agent(request: &Value) -> &[Value] {
+    let messages = request["messages"].as_array().expect("provider messages");
+    let base = messages.first().expect("built-in base agent message");
+    assert_eq!(base["role"], "developer");
+    let content = base["content"]
+        .as_str()
+        .expect("built-in base agent content");
+    assert!(content.starts_with("You are SugarCode, a coding agent"));
+    for section in [
+        "# Instruction authority",
+        "# Autonomy and completion",
+        "# Tool protocol and boundaries",
+        "# Engineering workflow",
+        "# Final response",
+    ] {
+        assert!(
+            content.contains(section),
+            "built-in base agent prompt missing {section}"
+        );
+    }
+    &messages[1..]
+}

@@ -65,10 +65,13 @@ async fn one_workspace_snapshot_is_reused_across_all_provider_rounds_and_audited
 
     let requests = requests.lock().expect("requests");
     assert_eq!(requests.len(), 2);
-    let expected = vec![ModelInstruction {
-        source: ModelInstructionSource::WorkspaceRootAgentsV1,
-        content: INSTRUCTION.to_string(),
-    }];
+    let expected = vec![
+        crate::agent_instructions::sugarcode_base_agent_instruction_v1(),
+        ModelInstruction {
+            source: ModelInstructionSource::WorkspaceRootAgentsV1,
+            content: INSTRUCTION.to_string(),
+        },
+    ];
     assert_eq!(requests[0].instructions, expected);
     assert_eq!(requests[1].instructions, expected);
     drop(requests);
@@ -176,16 +179,19 @@ async fn nested_workspace_hierarchy_is_one_ordered_instruction_and_one_aggregate
     let requests = requests.lock().expect("requests");
     assert_eq!(
         requests[0].instructions,
-        vec![ModelInstruction {
-            source: ModelInstructionSource::WorkspaceAgentsHierarchyV1,
-            content: concat!(
-                "--- AGENTS.md: AGENTS.md ---\n",
-                "root rule\n\n",
-                "--- AGENTS.md: projects/active/AGENTS.md ---\n",
-                "deeper rule"
-            )
-            .to_string(),
-        }]
+        vec![
+            crate::agent_instructions::sugarcode_base_agent_instruction_v1(),
+            ModelInstruction {
+                source: ModelInstructionSource::WorkspaceAgentsHierarchyV1,
+                content: concat!(
+                    "--- AGENTS.md: AGENTS.md ---\n",
+                    "root rule\n\n",
+                    "--- AGENTS.md: projects/active/AGENTS.md ---\n",
+                    "deeper rule"
+                )
+                .to_string(),
+            },
+        ]
     );
     drop(requests);
 

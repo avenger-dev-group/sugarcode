@@ -11,6 +11,8 @@ use sugarcode_model_provider::ModelRole;
 use sugarcode_model_provider::ModelToolCall;
 use sugarcode_model_provider::ModelToolDefinition;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
+use sugarcode_model_provider::WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX;
+use sugarcode_model_provider::WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -56,17 +58,24 @@ async fn recorded_success_stream_normalizes_text_and_usage() {
 }
 
 #[tokio::test]
-async fn workspace_instructions_are_first_redacted_developer_context() {
+async fn built_in_base_precedes_workspace_instructions_as_redacted_developer_context() {
     let (endpoint, server, request_rx) =
         capturing_response_server(SUCCESS.as_bytes().to_vec()).await;
     let provider = provider(endpoint);
     let mut request = request();
-    request.instructions.push(ModelInstruction {
-        source: ModelInstructionSource::WorkspaceRootAgentsV1,
-        content: "Keep the repository green.".to_string(),
-    });
+    request.instructions = vec![
+        ModelInstruction {
+            source: ModelInstructionSource::SugarCodeBaseAgentV1,
+            content: "You are SugarCode. Follow the built-in contract.".to_string(),
+        },
+        ModelInstruction {
+            source: ModelInstructionSource::WorkspaceRootAgentsV1,
+            content: "Keep the repository green.".to_string(),
+        },
+    ];
     let debug = format!("{request:?}");
-    assert!(debug.contains("instruction_count: 1"));
+    assert!(debug.contains("instruction_count: 2"));
+    assert!(!debug.contains("You are SugarCode."));
     assert!(!debug.contains("Keep the repository green."));
 
     let events = provider
@@ -81,14 +90,15 @@ async fn workspace_instructions_are_first_redacted_developer_context() {
     assert_eq!(body["messages"][0]["role"], "developer");
     assert_eq!(
         body["messages"][0]["content"],
-        concat!(
-            "Workspace instructions from the opened workspace root AGENTS.md ",
-            "(boundedWorkspaceInstructionsV1):\n\n",
-            "Keep the repository green."
-        )
+        "You are SugarCode. Follow the built-in contract."
     );
-    assert_eq!(body["messages"][1]["role"], "user");
-    assert_eq!(body["messages"][1]["content"], "Hello");
+    assert_eq!(body["messages"][1]["role"], "developer");
+    assert_eq!(
+        body["messages"][1]["content"],
+        format!("{WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX}Keep the repository green.")
+    );
+    assert_eq!(body["messages"][2]["role"], "user");
+    assert_eq!(body["messages"][2]["content"], "Hello");
 }
 
 #[tokio::test]
@@ -235,11 +245,8 @@ async fn nested_workspace_instructions_have_explicit_deeper_precedence() {
     let content = body["messages"][0]["content"]
         .as_str()
         .expect("developer content");
-    assert!(content.starts_with(
-        "Workspace instructions discovered from the opened workspace root to the active workspace scope \
-         (boundedNestedWorkspaceInstructionsV1). All entries apply. If entries conflict, the later, \
-         deeper entry overrides the earlier, shallower entry.\n\n"
-    ));
+    assert!(content.starts_with(WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX));
+    assert!(content.contains("subordinate to SugarCode's built-in agent instructions"));
     assert!(
         content.find("AGENTS.md ---\nroot") < content.find("projects/active/AGENTS.md ---\nleaf")
     );

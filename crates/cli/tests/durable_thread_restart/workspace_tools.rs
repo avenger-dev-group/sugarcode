@@ -64,7 +64,8 @@ fn resumes_forks_and_continues_completed_workspace_list_history_across_two_proce
         expected_workspace_tools()
     );
     assert!(first_requests[1].get("tools").is_none());
-    let original_result = first_requests[1]["messages"][2]["content"]
+    let second_round_messages = provider_messages_after_base_agent(&first_requests[1]);
+    let original_result = second_round_messages[2]["content"]
         .as_str()
         .expect("workspace/list result")
         .to_string();
@@ -151,6 +152,7 @@ fn resumes_forks_and_continues_completed_workspace_list_history_across_two_proce
     );
     assert_eq!(continued[5]["params"]["turn"]["status"], "completed");
     let continued_request = &second.provider_requests()[0];
+    let continued_messages = provider_messages_after_base_agent(continued_request);
     assert_eq!(
         continued_request["tools"]
             .as_array()
@@ -161,11 +163,11 @@ fn resumes_forks_and_continues_completed_workspace_list_history_across_two_proce
         expected_workspace_tools()
     );
     assert_eq!(
-        continued_request["messages"][1]["tool_calls"][0]["function"]["name"],
+        continued_messages[1]["tool_calls"][0]["function"]["name"],
         "workspace/list"
     );
     assert_eq!(
-        continued_request["messages"][2]["content"],
+        continued_messages[2]["content"],
         Value::String(original_result)
     );
     assert!(!continued_request.to_string().contains("replacement.txt"));
@@ -340,9 +342,10 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
     );
     let requests = second.provider_requests();
     assert_eq!(requests.len(), 1);
-    let continued_messages = &requests[0]["messages"];
-    assert_eq!(continued_messages.as_array().expect("messages").len(), 2);
-    let serialized_messages = continued_messages.to_string();
+    let continued_messages = provider_messages_after_base_agent(&requests[0]);
+    assert_eq!(continued_messages.len(), 2);
+    let serialized_messages =
+        serde_json::to_string(continued_messages).expect("serialize messages");
     assert!(!serialized_messages.contains("failed private marker"));
     assert!(!serialized_messages.contains("interrupted private marker"));
     second.finish();

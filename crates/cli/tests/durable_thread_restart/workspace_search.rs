@@ -66,7 +66,8 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
         expected_workspace_tools()
     );
     assert!(first_requests[1].get("tools").is_none());
-    let original_result = first_requests[1]["messages"][2]["content"]
+    let second_round_messages = provider_messages_after_base_agent(&first_requests[1]);
+    let original_result = second_round_messages[2]["content"]
         .as_str()
         .expect("workspace/search result")
         .to_string();
@@ -158,6 +159,7 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
     );
     assert_eq!(continued[5]["params"]["turn"]["status"], "completed");
     let continued_request = &second.provider_requests()[0];
+    let continued_messages = provider_messages_after_base_agent(continued_request);
     assert_eq!(
         continued_request["tools"]
             .as_array()
@@ -168,15 +170,15 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
         expected_workspace_tools()
     );
     assert_eq!(
-        continued_request["messages"][1]["tool_calls"][0]["function"]["name"],
+        continued_messages[1]["tool_calls"][0]["function"]["name"],
         "workspace/search"
     );
     assert_eq!(
-        continued_request["messages"][1]["tool_calls"][0]["function"]["arguments"],
+        continued_messages[1]["tool_calls"][0]["function"]["arguments"],
         Value::String("{\"path\":\"src\",\"query\":\"needle\"}".to_string())
     );
     assert_eq!(
-        continued_request["messages"][2]["content"],
+        continued_messages[2]["content"],
         Value::String(original_result)
     );
     assert!(!continued_request.to_string().contains("replacement.txt"));

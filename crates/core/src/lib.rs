@@ -1,3 +1,4 @@
+mod agent_instructions;
 mod approval;
 mod context;
 mod mcp;

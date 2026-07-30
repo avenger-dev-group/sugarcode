@@ -119,6 +119,8 @@ use tool_dispatch::shell_tool_arguments;
 use tool_dispatch::workspace_tool_arguments;
 use tool_dispatch::workspace_tool_definitions;
 
+use crate::agent_instructions::sugarcode_base_agent_instruction_v1;
+
 const MAX_TOOL_CALLS_PER_TURN: usize = 1;
 const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
@@ -431,7 +433,8 @@ impl CoreApi for CoreRuntime {
             .workspace_skills
             .as_deref()
             .map(|skills| workspace_skills_audit(skills, selection.as_ref()));
-        let mut instructions = workspace_model_instructions(self);
+        let mut instructions = vec![sugarcode_base_agent_instruction_v1()];
+        instructions.extend(workspace_model_instructions(self));
         if let Some(skills) = self.workspace_skills.as_deref()
             && !skills.inventory().is_empty()
         {

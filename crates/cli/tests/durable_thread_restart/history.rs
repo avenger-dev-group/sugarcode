@@ -83,8 +83,9 @@ fn resumes_completed_history_across_two_cli_processes() {
     );
     let second_requests = second.provider_requests();
     assert!(second_requests[0].get("tools").is_none());
+    let messages = provider_messages_after_base_agent(&second_requests[0]);
     assert_eq!(
-        second_requests[0]["messages"],
+        messages,
         json!([
             {"role": "user", "content": "Hello"},
             {
@@ -93,6 +94,8 @@ fn resumes_completed_history_across_two_cli_processes() {
             },
             {"role": "user", "content": "Hello"}
         ])
+        .as_array()
+        .expect("expected messages")
     );
     second.finish();
 }
@@ -167,14 +170,15 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
     assert_eq!(checkpoint[7]["params"]["turn"]["status"], "completed");
     let first_requests = first.provider_requests();
     assert_eq!(first_requests.len(), 7);
-    assert_eq!(first_requests[6]["messages"][0]["role"], "user");
+    let checkpoint_messages = provider_messages_after_base_agent(&first_requests[6]);
+    assert_eq!(checkpoint_messages[0]["role"], "user");
     assert!(
-        first_requests[6]["messages"][0]["content"]
+        checkpoint_messages[0]["content"]
             .as_str()
             .expect("compaction")
             .starts_with("SugarCode deterministic persisted compaction v1\n")
     );
-    assert_eq!(first_requests[6]["messages"][1]["content"], "checkpoint");
+    assert_eq!(checkpoint_messages[1]["content"], "checkpoint");
     first.finish();
 
     let rollout = fs::read_to_string(home.path().join("rollouts/v1/thr_0000000000000001.jsonl"))
@@ -207,18 +211,16 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
     );
     assert_eq!(continued[7]["params"]["turn"]["status"], "completed");
     let request = &second.provider_requests()[0];
+    let messages = provider_messages_after_base_agent(request);
     assert!(
-        request["messages"][0]["content"]
+        messages[0]["content"]
             .as_str()
             .expect("persisted compaction")
             .starts_with("SugarCode deterministic persisted compaction v1\n")
     );
-    assert_eq!(request["messages"][1]["content"], "checkpoint");
-    assert_eq!(
-        request["messages"][2]["content"],
-        "SugarCode deterministic response."
-    );
-    assert_eq!(request["messages"][3]["content"], "continued");
+    assert_eq!(messages[1]["content"], "checkpoint");
+    assert_eq!(messages[2]["content"], "SugarCode deterministic response.");
+    assert_eq!(messages[3]["content"], "continued");
     second.finish();
 }
 
@@ -329,16 +331,11 @@ fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() 
     );
     assert_eq!(continued[5]["params"]["turn"]["status"], "completed");
     let continued_request = &second.provider_requests()[0];
-    assert_eq!(continued_request["messages"][0]["role"], "user");
-    assert_eq!(
-        continued_request["messages"][1]["tool_calls"][0]["id"],
-        "call_restart"
-    );
-    assert_eq!(continued_request["messages"][2]["role"], "tool");
-    assert_eq!(
-        continued_request["messages"][2]["content"],
-        "persisted context"
-    );
-    assert_eq!(continued_request["messages"][3]["content"], "First final.");
+    let messages = provider_messages_after_base_agent(continued_request);
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[1]["tool_calls"][0]["id"], "call_restart");
+    assert_eq!(messages[2]["role"], "tool");
+    assert_eq!(messages[2]["content"], "persisted context");
+    assert_eq!(messages[3]["content"], "First final.");
     second.finish();
 }
