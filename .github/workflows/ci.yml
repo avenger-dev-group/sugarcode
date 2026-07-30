@@ -111,6 +111,20 @@ jobs:
       - name: Test active workspace scope boundary
         run: cargo test -p sugarcode-tools --test workspace_scope --locked -- --nocapture
 
+      - name: Test shared in-process agent surface runtime
+        run: cargo test -p sugarcode-agent-runtime --locked -- --nocapture
+
+      - name: Test durable headless exec surface
+        run: cargo test -p sugarcode-cli --test exec --locked -- --nocapture
+
+      - name: Test interactive terminal UI and PTY restoration
+        run: |
+          cargo test -p sugarcode-tui --locked -- --nocapture
+          cargo test -p sugarcode-cli --test tui --locked -- --nocapture
+
+      - name: Test user-confirmed Desktop terminal bridge
+        run: cargo test -p sugarcode-terminal --locked -- --nocapture
+
       - name: Test Rust workspace
         run: cargo test --workspace --locked
 

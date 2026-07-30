@@ -64,6 +64,12 @@ type ProcessResult = Readonly<{
   stderr: string;
 }>;
 
+type ProcessOptions = SpawnOptionsWithoutStdio &
+  Readonly<{
+    timeoutMs: number;
+    expectedExitCodes?: readonly number[];
+  }>;
+
 type PreparedSidecar = Readonly<{
   temporaryRoot: string;
   verificationHome: string;
@@ -117,11 +123,16 @@ const appendBounded = (current: string, chunk: Buffer | string): string => {
 const runProcess = (
   command: string,
   args: readonly string[],
-  options: SpawnOptionsWithoutStdio & Readonly<{ timeoutMs: number }>,
+  options: ProcessOptions,
 ): Promise<ProcessResult> =>
   new Promise((resolve, reject) => {
+    const {
+      timeoutMs,
+      expectedExitCodes = [0],
+      ...spawnOptions
+    } = options;
     const child = spawn(command, args, {
-      ...options,
+      ...spawnOptions,
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -132,7 +143,7 @@ const runProcess = (
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();
-    }, options.timeoutMs);
+    }, timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => {
       stdout = appendBounded(stdout, chunk);
     });
@@ -147,7 +158,11 @@ const runProcess = (
       clearTimeout(timer);
       if (timedOut) {
         reject(new Error(`Process timed out: ${command}.`));
-      } else if (code !== 0 || signal !== null) {
+      } else if (
+        code === null ||
+        !expectedExitCodes.includes(code) ||
+        signal !== null
+      ) {
         reject(
           new Error(
             `Process failed: ${command} ${args.join(' ')}\n${stderr}`.trim(),
@@ -201,6 +216,73 @@ const verifyVersion = async (
     `app-server-protocol ${PROTOCOL_VERSION}\n`;
   if (result.stdout !== expected) {
     throw new Error('The packaged CLI reported unexpected versions.');
+  }
+};
+
+const verifyExec = async (
+  executablePath: string,
+  workingDirectory: string,
+  target: CliTarget,
+  verificationHome: string,
+): Promise<void> => {
+  const result = await runProcess(
+    executablePath,
+    ['exec', '--json', 'packaged headless exec smoke'],
+    {
+      cwd: workingDirectory,
+      env: createCliEnvironment(
+        {
+          ...process.env,
+          SUGARCODE_HOME: verificationHome,
+        },
+        target.platform,
+      ),
+      timeoutMs: HANDSHAKE_TIMEOUT_MS,
+      expectedExitCodes: [3],
+    },
+  );
+  const records = result.stdout
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const error = records.at(-1);
+  if (
+    records[0]?.type !== 'runStarted' ||
+    error?.type !== 'error' ||
+    error.version !== 1 ||
+    error.exitCode !== 3 ||
+    error.category !== 'configuration'
+  ) {
+    throw new Error('The packaged headless exec smoke check failed.');
+  }
+};
+
+const verifyTuiRoute = async (
+  executablePath: string,
+  workingDirectory: string,
+  target: CliTarget,
+  verificationHome: string,
+): Promise<void> => {
+  const result = await runProcess(executablePath, [], {
+    cwd: workingDirectory,
+    env: createCliEnvironment(
+      {
+        ...process.env,
+        SUGARCODE_HOME: verificationHome,
+      },
+      target.platform,
+    ),
+    timeoutMs: HANDSHAKE_TIMEOUT_MS,
+    expectedExitCodes: [1],
+  });
+  if (
+    result.stdout !== '' ||
+    !result.stderr.includes(
+      'interactive TUI requires terminal stdin and stdout',
+    ) ||
+    !result.stderr.includes('sugarcode exec')
+  ) {
+    throw new Error('The packaged TUI route smoke check failed.');
   }
 };
 
@@ -264,6 +346,9 @@ const verifyTerminalBridge = async (
     let transcript = '';
     let ready = false;
     let exitEvent = false;
+    let cursorAnswered = false;
+    let tuiExitSent = false;
+    let shellExitSent = false;
     let settled = false;
     const finish = (error?: Error): void => {
       if (settled) {
@@ -279,7 +364,11 @@ const verifyTerminalBridge = async (
     };
     const timer = setTimeout(() => {
       child.kill();
-      finish(new Error('The packaged CLI terminal bridge timed out.'));
+      finish(
+        new Error(
+          `The packaged CLI terminal bridge timed out: ready=${String(ready)}, tuiExit=${String(tuiExitSent)}, shellExit=${String(shellExitSent)}, transcript=${JSON.stringify(transcript.slice(-2_000))}.`,
+        ),
+      );
     }, TERMINAL_TIMEOUT_MS);
     child.stderr.on('data', (chunk: Buffer) => {
       stderr = appendBounded(stderr, chunk);
@@ -313,10 +402,18 @@ const verifyTerminalBridge = async (
               rows: 32,
             })}\n`,
           );
+          const quotedExecutable =
+            process.platform === 'win32'
+              ? `"${executablePath.replaceAll('"', '""')}"`
+              : `'${executablePath.replaceAll("'", "'\\''")}'`;
+          const quotedHome =
+            process.platform === 'win32'
+              ? `"${verificationHome.replaceAll('"', '""')}"`
+              : `'${verificationHome.replaceAll("'", "'\\''")}'`;
           const input =
             process.platform === 'win32'
-              ? 'echo SUGARCODE_PACKAGED_PTY\r\nexit\r\n'
-              : "printf 'SUGARCODE_PACKAGED_PTY\\n'\nexit\n";
+              ? `echo SUGARCODE_PACKAGED_PTY\r\n${quotedExecutable} --home ${quotedHome}\r\n`
+              : `printf 'SUGARCODE_PACKAGED_PTY\\n'\n${quotedExecutable} --home ${quotedHome}\n`;
           child.stdin.write(
             `${JSON.stringify({
               type: 'input',
@@ -329,6 +426,40 @@ const verifyTerminalBridge = async (
           typeof event.data === 'string'
         ) {
           transcript = appendBounded(transcript, event.data);
+          if (!cursorAnswered && transcript.includes('\u001b[6n')) {
+            cursorAnswered = true;
+            child.stdin.write(
+              `${JSON.stringify({
+                type: 'input',
+                sequence: 3,
+                data: '\u001b[24;1R',
+              })}\n`,
+            );
+          }
+          if (!tuiExitSent && transcript.includes(' SugarCode ')) {
+            tuiExitSent = true;
+            child.stdin.write(
+              `${JSON.stringify({
+                type: 'input',
+                sequence: 4,
+                data: '\u0011',
+              })}\n`,
+            );
+          }
+          if (
+            tuiExitSent &&
+            !shellExitSent &&
+            transcript.includes('\u001b[?1049l')
+          ) {
+            shellExitSent = true;
+            child.stdin.write(
+              `${JSON.stringify({
+                type: 'input',
+                sequence: 5,
+                data: process.platform === 'win32' ? 'exit\r\n' : 'exit\n',
+              })}\n`,
+            );
+          }
         } else if (event.type === 'exit') {
           exitEvent =
             event.reason === 'natural' &&
@@ -336,7 +467,9 @@ const verifyTerminalBridge = async (
         } else if (event.type === 'error') {
           child.kill();
           finish(
-            new Error('The packaged terminal bridge reported an error.'),
+            new Error(
+              `The packaged terminal bridge reported an error: code=${String(event.code)}, message=${String(event.message)}.`,
+            ),
           );
           return;
         }
@@ -350,7 +483,10 @@ const verifyTerminalBridge = async (
         signal === null &&
         ready &&
         exitEvent &&
-        transcript.includes('SUGARCODE_PACKAGED_PTY')
+        transcript.includes('SUGARCODE_PACKAGED_PTY') &&
+        transcript.includes(' SugarCode ') &&
+        transcript.includes('\u001b[?1049h') &&
+        transcript.includes('\u001b[?1049l')
       ) {
         finish();
       } else {
@@ -650,6 +786,18 @@ const verifyExecutable = async (
 ): Promise<void> => {
   await assertFile(executablePath, target.platform, true);
   await verifyVersion(
+    executablePath,
+    workingDirectory,
+    target,
+    verificationHome,
+  );
+  await verifyExec(
+    executablePath,
+    workingDirectory,
+    target,
+    verificationHome,
+  );
+  await verifyTuiRoute(
     executablePath,
     workingDirectory,
     target,
