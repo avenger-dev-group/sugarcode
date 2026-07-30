@@ -5,7 +5,7 @@ import {
   type NativeImage,
 } from 'electron';
 import { createServer } from 'node:http';
-import { writeFile } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -22,6 +22,8 @@ import type { ModelConfigController } from '@/main/app-server/model-config/contr
 import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
 import { PreviewController } from '@/main/preview/controller';
 import { registerPreviewIpc } from '@/main/preview/ipc';
+import { TerminalController } from '@/main/terminal/controller';
+import { registerTerminalIpc } from '@/main/terminal/ipc';
 import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
@@ -667,6 +669,52 @@ const run = async (): Promise<void> => {
       sandbox: true,
     },
   });
+  const electronWorkspace = await realpath(
+    path.resolve(__dirname, '..', '..', '..'),
+  );
+  const terminalController = new TerminalController({
+    dialog: {
+      showMessageBox: async () => ({
+        response: 0,
+        checkboxChecked: false,
+      }),
+    },
+    getMainWindow: () => window,
+    getWorkspace: () => ({
+      generation: 1,
+      path: electronWorkspace,
+      name: 'sugarcode',
+    }),
+    getResolvedCli: () => ({
+      executablePath: path.join(
+        electronWorkspace,
+        'target',
+        'debug',
+        process.platform === 'win32' ? 'sugarcode.exe' : 'sugarcode',
+      ),
+      workingDirectory: electronWorkspace,
+    }),
+    getCliEnvironment: () => ({ ...process.env }),
+    isApprovalPending: () =>
+      controller.getSnapshot().status === 'pending' ||
+      mcpApprovals.getSnapshot().status === 'pending',
+  });
+  let terminalTranscript = '';
+  const unsubscribeTerminalTranscript = terminalController.subscribe(
+    (signal) => {
+      if (!signal.sessionId) {
+        return;
+      }
+      const snapshot = terminalController.getSnapshot({
+        generation: signal.generation,
+        sessionId: signal.sessionId,
+        acknowledgeThrough: 0,
+      });
+      terminalTranscript += snapshot.output
+        .map((chunk) => chunk.data)
+        .join('');
+    },
+  );
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on(
     'did-start-navigation',
@@ -674,16 +722,19 @@ const run = async (): Promise<void> => {
       if (isMainFrame) {
         controller.surfaceUnavailable();
         mcpApprovals.surfaceUnavailable();
+        terminalController.rendererUnavailable();
       }
     },
   );
   window.webContents.on('render-process-gone', () => {
     controller.surfaceUnavailable();
     mcpApprovals.surfaceUnavailable();
+    terminalController.rendererUnavailable();
   });
   window.once('closed', () => {
     controller.surfaceUnavailable();
     mcpApprovals.surfaceUnavailable();
+    terminalController.rendererUnavailable();
     window = null;
   });
   ipcMain.handle(CONNECTION_STATE_GET_CHANNEL, () => ({
@@ -942,15 +993,24 @@ const run = async (): Promise<void> => {
     getMainWindow: () => window,
     isAllowedUrl: (url) => url === rendererUrl,
   });
-  const hidePreviewForApproval = (
-    snapshot: Readonly<{ status: string }>,
-  ): void => {
-    if (snapshot.status === 'pending') {
+  const disposeTerminalIpc = registerTerminalIpc({
+    controller: terminalController,
+    getMainWindow: () => window,
+    isAllowedUrl: (url) => url === rendererUrl,
+  });
+  const hidePreviewForApproval = (): void => {
+    const approvalPending =
+      controller.getSnapshot().status === 'pending' ||
+      mcpApprovals.getSnapshot().status === 'pending';
+    if (approvalPending) {
+      terminalController.pauseForApproval();
       previewController.hideForApproval();
       if (window && !window.isDestroyed()) {
         window.show();
         window.focus();
       }
+    } else {
+      terminalController.resumeAfterApproval();
     }
   };
   const unsubscribePreviewCommandApproval =
@@ -1117,6 +1177,169 @@ const run = async (): Promise<void> => {
   );
   await evaluate(`document.querySelector(
     'button[aria-label="Close local preview workbench"]',
+  )?.click()`);
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.trim() === 'Terminal');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('Terminal workbench trigger was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `Array.from(document.querySelectorAll('button')).some(
+          (candidate) =>
+            candidate.textContent?.trim() === 'Open real shell' &&
+            candidate instanceof HTMLButtonElement &&
+            !candidate.disabled,
+        )`,
+      ),
+    'real terminal open action',
+  );
+  const lightTerminalBackground = await evaluate<string>(
+    `getComputedStyle(
+      document.querySelector('[aria-label="Local terminal workbench"]'),
+    ).backgroundColor`,
+  );
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.trim() ===
+        'Open real shell');
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      throw new Error('Real terminal open action was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () => terminalController.getSnapshot({
+      generation: 1,
+      acknowledgeThrough: 0,
+    }).status === 'running',
+    'real Electron PTY terminal',
+  );
+  await evaluate(`(async () => {
+    const snapshot = await window.sugarcode.getTerminalSnapshot({
+      generation: 1,
+      acknowledgeThrough: 0,
+    });
+    if (snapshot.status !== 'running') {
+      throw new Error('Electron PTY session was not running.');
+    }
+    await window.sugarcode.writeTerminalInput({
+      generation: 1,
+      sessionId: snapshot.sessionId,
+      data: ${JSON.stringify(
+        process.platform === 'win32'
+          ? 'echo SUGARCODE_ELECTRON_PTY\r\n'
+          : "printf 'SUGARCODE_ELECTRON_PTY\\n'\n",
+      )},
+    });
+  })()`);
+  await waitFor(
+    () => terminalTranscript.includes('SUGARCODE_ELECTRON_PTY'),
+    'real Electron PTY output',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Local terminal workbench"] .xterm-rows',
+        )?.textContent?.includes('SUGARCODE_ELECTRON_PTY') === true`,
+      ),
+    'rendered Electron PTY output',
+  );
+  await writeFile(
+    path.join(__dirname, 'terminal-workbench-light.png'),
+    (await capturePageWithRetry('light terminal workbench')).toPNG(),
+  );
+  controller.handleServerRequest(
+    request('approval/electron-terminal-pause'),
+  );
+  await waitFor(
+    () =>
+      terminalController.getSnapshot({
+        generation: 1,
+        acknowledgeThrough: 0,
+      }).status === 'paused',
+    'terminal approval pause',
+  );
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent === 'Deny');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('Terminal-pause approval denial was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      writtenDecisions.some(
+        (entry) =>
+          entry.id === 'approval/electron-terminal-pause' &&
+          entry.decision === 'denied',
+      ),
+    'terminal-pause approval denial',
+  );
+  controller.handleNotification(
+    completion('approval/electron-terminal-pause', 'denied'),
+  );
+  await waitFor(
+    () =>
+      terminalController.getSnapshot({
+        generation: 1,
+        acknowledgeThrough: 0,
+      }).status === 'running',
+    'terminal approval resume',
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const workbench = document.querySelector(
+            '[aria-label="Local terminal workbench"]',
+          );
+          const button = Array.from(
+            workbench?.querySelectorAll('button') ?? [],
+          ).find((candidate) => candidate.textContent?.trim() === 'Stop');
+          return button instanceof HTMLButtonElement && !button.disabled;
+        })()`,
+      ),
+    'enabled terminal stop action',
+  );
+  await evaluate(`(() => {
+    const workbench = document.querySelector(
+      '[aria-label="Local terminal workbench"]',
+    );
+    const button = Array.from(workbench?.querySelectorAll('button') ?? [])
+      .find((candidate) => candidate.textContent?.trim() === 'Stop');
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      throw new Error('Terminal stop action was unavailable.');
+    }
+    button.click();
+  })()`);
+  try {
+    await waitFor(
+      () =>
+        terminalController.getSnapshot({
+          generation: 1,
+          acknowledgeThrough: 0,
+        }).status === 'exited',
+      'terminal deterministic exit',
+    );
+  } catch {
+    throw new Error(
+      `Terminal stop did not exit: ${JSON.stringify(
+        terminalController.getSnapshot({
+          generation: 1,
+          acknowledgeThrough: 0,
+        }),
+      )}`,
+    );
+  }
+  await evaluate(`document.querySelector(
+    'button[aria-label="Close terminal workbench"]',
   )?.click()`);
   await evaluate(`document.querySelector(
     'button[title="Git changes"]',
@@ -1294,7 +1517,9 @@ const run = async (): Promise<void> => {
   await waitFor(
     () =>
       evaluate<boolean>(
-        `document.querySelector('[role="dialog"]') === null`,
+        `document.querySelector(
+          '[role="dialog"] #model-endpoint',
+        ) === null`,
       ),
     'model configuration dialog dismissal',
   );
@@ -2714,6 +2939,109 @@ const run = async (): Promise<void> => {
   await evaluate(`document.querySelector(
     'button[aria-label="Close local preview workbench"]',
   )?.click()`);
+  await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.trim() === 'Terminal');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('Dark terminal workbench trigger was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `document.querySelector(
+          '[aria-label="Local terminal workbench"]',
+        )?.getAttribute('aria-hidden') === 'false'`,
+      ),
+    'dark terminal workbench',
+  );
+  await evaluate(`(() => {
+    const workbench = document.querySelector(
+      '[aria-label="Local terminal workbench"]',
+    );
+    const button = Array.from(workbench?.querySelectorAll('button') ?? [])
+      .find((candidate) =>
+        ['Open real shell', 'New shell'].includes(
+          candidate.textContent?.trim() ?? '',
+        ),
+      );
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      throw new Error('Dark terminal launch action was unavailable.');
+    }
+    button.click();
+  })()`);
+  await waitFor(
+    () =>
+      terminalController.getSnapshot({
+        generation: 1,
+        acknowledgeThrough: 0,
+      }).status === 'running',
+    'dark real Electron PTY terminal',
+  );
+  const darkTerminalBackground = await evaluate<string>(
+    `getComputedStyle(
+      document.querySelector('[aria-label="Local terminal workbench"]'),
+    ).backgroundColor`,
+  );
+  if (darkTerminalBackground === lightTerminalBackground) {
+    throw new Error('Terminal workbench did not apply dark tokens.');
+  }
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 200);
+  });
+  await writeFile(
+    path.join(__dirname, 'terminal-workbench-dark.png'),
+    (await capturePageWithRetry('dark terminal workbench')).toPNG(),
+  );
+  await waitFor(
+    () =>
+      evaluate<boolean>(
+        `(() => {
+          const workbench = document.querySelector(
+            '[aria-label="Local terminal workbench"]',
+          );
+          const button = Array.from(
+            workbench?.querySelectorAll('button') ?? [],
+          ).find((candidate) => candidate.textContent?.trim() === 'Stop');
+          return button instanceof HTMLButtonElement && !button.disabled;
+        })()`,
+      ),
+    'enabled dark terminal stop action',
+  );
+  await evaluate(`(() => {
+    const workbench = document.querySelector(
+      '[aria-label="Local terminal workbench"]',
+    );
+    const button = Array.from(workbench?.querySelectorAll('button') ?? [])
+      .find((candidate) => candidate.textContent?.trim() === 'Stop');
+    if (!(button instanceof HTMLButtonElement) || button.disabled) {
+      throw new Error('Dark terminal stop action was unavailable.');
+    }
+    button.click();
+  })()`);
+  try {
+    await waitFor(
+      () =>
+        terminalController.getSnapshot({
+          generation: 1,
+          acknowledgeThrough: 0,
+        }).status === 'exited',
+      'dark terminal deterministic exit',
+    );
+  } catch {
+    throw new Error(
+      `Dark terminal stop did not exit: ${JSON.stringify(
+        terminalController.getSnapshot({
+          generation: 1,
+          acknowledgeThrough: 0,
+        }),
+      )}`,
+    );
+  }
+  await evaluate(`document.querySelector(
+    'button[aria-label="Close terminal workbench"]',
+  )?.click()`);
 
   mcpApprovals.handleServerRequest(
     mcpRequest('approval/mcp-electron-dark'),
@@ -2830,9 +3158,12 @@ const run = async (): Promise<void> => {
   disposeMcpIpc();
   disposeModelConfigIpc();
   disposePreviewIpc();
+  disposeTerminalIpc();
+  unsubscribeTerminalTranscript();
   unsubscribePreviewCommandApproval();
   unsubscribePreviewMcpApproval();
   previewController.shutdown();
+  terminalController.shutdown();
   ipcMain.removeHandler(CONNECTION_STATE_GET_CHANNEL);
   ipcMain.removeHandler(WORKSPACE_STATE_GET_CHANNEL);
   ipcMain.removeHandler(WORKSPACE_LIST_CHANNEL);

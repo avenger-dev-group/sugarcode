@@ -33,6 +33,8 @@ enum Command {
     #[cfg(debug_assertions)]
     #[command(hide = true, name = "__command-workspace-write-acceptance")]
     InternalWorkspaceWriteAcceptance,
+    #[command(hide = true, name = "__desktop-terminal")]
+    InternalDesktopTerminal(DesktopTerminalArgs),
     /// Print product and app-server protocol versions.
     Version,
     /// Validate SugarCode's non-secret configuration.
@@ -224,6 +226,16 @@ struct AppServerArgs {
     command: Option<AppServerCommand>,
 }
 
+#[derive(Debug, Args)]
+struct DesktopTerminalArgs {
+    #[arg(long, value_name = "DIR")]
+    workspace: PathBuf,
+    #[arg(long, value_parser = clap::value_parser!(u16).range(2..=500))]
+    columns: u16,
+    #[arg(long, value_parser = clap::value_parser!(u16).range(2..=300))]
+    rows: u16,
+}
+
 #[derive(Debug, Subcommand)]
 enum AppServerCommand {
     /// Generate TypeScript bindings from the Rust public protocol types.
@@ -282,6 +294,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             std::os::unix::fs::symlink("symlink-target.txt", "symlink-created.txt")?;
             std::fs::write("binary.bin", [0_u8, 159, 146, 150, 255])?;
             println!("workspace-write-acceptance:ok");
+        }
+        Command::InternalDesktopTerminal(args) => {
+            sugarcode_terminal::run_stdio(&args.workspace, args.columns, args.rows)?;
         }
         Command::Version => {
             println!(

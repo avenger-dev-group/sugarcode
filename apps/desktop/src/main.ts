@@ -17,6 +17,8 @@ import { WorkspaceController } from '@/main/app-server/workspace/controller';
 import { registerWorkspaceIpc } from '@/main/app-server/workspace/ipc';
 import { PreviewController } from '@/main/preview/controller';
 import { registerPreviewIpc } from '@/main/preview/ipc';
+import { TerminalController } from '@/main/terminal/controller';
+import { registerTerminalIpc } from '@/main/terminal/ipc';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
@@ -30,6 +32,8 @@ let disposeGitIpc: (() => void) | null = null;
 let previewController: PreviewController | null = null;
 let disposePreviewIpc: (() => void) | null = null;
 let disposePreviewApprovalSubscriptions: (() => void) | null = null;
+let terminalController: TerminalController | null = null;
+let disposeTerminalIpc: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -78,6 +82,7 @@ const createWindow = (): void => {
         supervisor?.commandApprovals.surfaceUnavailable();
         supervisor?.mcpApprovals.surfaceUnavailable();
         previewController?.shutdown();
+        terminalController?.rendererUnavailable();
       }
     },
   );
@@ -85,11 +90,13 @@ const createWindow = (): void => {
     supervisor?.commandApprovals.surfaceUnavailable();
     supervisor?.mcpApprovals.surfaceUnavailable();
     previewController?.shutdown();
+    terminalController?.rendererUnavailable();
   });
   window.once('closed', () => {
     supervisor?.commandApprovals.surfaceUnavailable();
     supervisor?.mcpApprovals.surfaceUnavailable();
     previewController?.shutdown();
+    terminalController?.rendererUnavailable();
     if (mainWindow === window) {
       mainWindow = null;
     }
@@ -117,10 +124,21 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     sessionPath: path.join(app.getPath('userData'), 'workspace-session-v1.json'),
     beforeWorkspaceSwitch: async () => {
+      await terminalController?.closeForWorkspaceChange();
       await previewController?.closeForWorkspaceChange();
     },
   });
   await workspaceController.restore();
+  terminalController = new TerminalController({
+    dialog,
+    getMainWindow: () => mainWindow,
+    getWorkspace: workspaceController.getLaunchContext,
+    getResolvedCli: supervisor.getResolvedCli,
+    getCliEnvironment: () => ({ ...process.env }),
+    isApprovalPending: () =>
+      supervisor?.commandApprovals.getSnapshot().status === 'pending' ||
+      supervisor?.mcpApprovals.getSnapshot().status === 'pending',
+  });
   previewController = new PreviewController({
     dialog,
     getMainWindow: () => mainWindow,
@@ -174,12 +192,20 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
-  const hidePreviewForApproval = (
-    snapshot: Readonly<{ status: string }>,
-  ): void => {
-    if (snapshot.status !== 'pending') {
+  disposeTerminalIpc = registerTerminalIpc({
+    controller: terminalController,
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  const hidePreviewForApproval = (): void => {
+    const approvalPending =
+      supervisor?.commandApprovals.getSnapshot().status === 'pending' ||
+      supervisor?.mcpApprovals.getSnapshot().status === 'pending';
+    if (!approvalPending) {
+      terminalController?.resumeAfterApproval();
       return;
     }
+    terminalController?.pauseForApproval();
     previewController?.hideForApproval();
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) {
@@ -219,6 +245,7 @@ if (started) {
   });
 
   app.on('before-quit', () => {
+    terminalController?.shutdown();
     previewController?.shutdown();
     supervisor?.shutdown();
   });
@@ -241,9 +268,13 @@ if (started) {
     disposeGitIpc = null;
     disposePreviewIpc?.();
     disposePreviewIpc = null;
+    disposeTerminalIpc?.();
+    disposeTerminalIpc = null;
     disposePreviewApprovalSubscriptions?.();
     disposePreviewApprovalSubscriptions = null;
     previewController?.shutdown();
     previewController = null;
+    terminalController?.shutdown();
+    terminalController = null;
   });
 }

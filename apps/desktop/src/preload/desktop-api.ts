@@ -126,6 +126,24 @@ import {
   type PreviewSessionRequest,
   type PreviewStateSnapshot,
 } from '@/shared/preview';
+import {
+  isTerminalActionResult,
+  isTerminalStateSignal,
+  isTerminalStateSnapshot,
+  TERMINAL_CREATE_CHANNEL,
+  TERMINAL_INPUT_CHANNEL,
+  TERMINAL_RESIZE_CHANNEL,
+  TERMINAL_STATE_CHANGED_CHANNEL,
+  TERMINAL_STATE_GET_CHANNEL,
+  TERMINAL_TERMINATE_CHANNEL,
+  type TerminalActionResult,
+  type TerminalCreateRequest,
+  type TerminalInputRequest,
+  type TerminalResizeRequest,
+  type TerminalSessionRequest,
+  type TerminalSnapshotRequest,
+  type TerminalStateSnapshot,
+} from '@/shared/terminal';
 
 type StateChangedHandler = (
   event: IpcRendererEvent,
@@ -156,6 +174,67 @@ const invokeConversationThreadAction = async (
 export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
 ): DesktopApi => ({
+  getTerminalSnapshot: async (
+    request: TerminalSnapshotRequest,
+  ): Promise<TerminalStateSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      TERMINAL_STATE_GET_CHANNEL,
+      request,
+    );
+    if (!isTerminalStateSnapshot(snapshot)) {
+      throw new Error('Main returned an invalid terminal state snapshot.');
+    }
+    return snapshot;
+  },
+  onTerminalStateChanged: (listener) => {
+    const handler = (
+      _event: IpcRendererEvent,
+      signal: unknown,
+    ): void => {
+      if (isTerminalStateSignal(signal)) {
+        listener(signal);
+      }
+    };
+    ipcRenderer.on(TERMINAL_STATE_CHANGED_CHANNEL, handler);
+    return () =>
+      ipcRenderer.removeListener(TERMINAL_STATE_CHANGED_CHANNEL, handler);
+  },
+  createTerminal: (
+    request: TerminalCreateRequest,
+  ): Promise<TerminalActionResult> =>
+    invokeTerminalAction(
+      ipcRenderer,
+      TERMINAL_CREATE_CHANNEL,
+      request,
+      'create',
+    ),
+  writeTerminalInput: (
+    request: TerminalInputRequest,
+  ): Promise<TerminalActionResult> =>
+    invokeTerminalAction(
+      ipcRenderer,
+      TERMINAL_INPUT_CHANNEL,
+      request,
+      'input',
+    ),
+  resizeTerminal: (
+    request: TerminalResizeRequest,
+  ): Promise<TerminalActionResult> =>
+    invokeTerminalAction(
+      ipcRenderer,
+      TERMINAL_RESIZE_CHANNEL,
+      request,
+      'resize',
+    ),
+  terminateTerminal: (
+    request: TerminalSessionRequest,
+  ): Promise<TerminalActionResult> =>
+    invokeTerminalAction(
+      ipcRenderer,
+      TERMINAL_TERMINATE_CHANNEL,
+      request,
+      'terminate',
+    ),
   getPreviewState: async (): Promise<PreviewStateSnapshot> => {
     const snapshot: unknown = await ipcRenderer.invoke(
       PREVIEW_STATE_GET_CHANNEL,
@@ -735,6 +814,23 @@ export const createDesktopApi = (
     return result;
   },
 });
+
+const invokeTerminalAction = async (
+  ipcRenderer: IpcRendererBoundary,
+  channel: string,
+  request:
+    | TerminalCreateRequest
+    | TerminalInputRequest
+    | TerminalResizeRequest
+    | TerminalSessionRequest,
+  action: string,
+): Promise<TerminalActionResult> => {
+  const result: unknown = await ipcRenderer.invoke(channel, request);
+  if (!isTerminalActionResult(result)) {
+    throw new Error(`Main returned an invalid terminal ${action} result.`);
+  }
+  return result;
+};
 
 const invokePreviewAction = async (
   ipcRenderer: IpcRendererBoundary,

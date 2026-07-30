@@ -9,6 +9,7 @@ import { ModelConfigWorkbench } from '@/renderer/components/model-config/model-c
 import { WorkspaceWorkbench } from '@/renderer/components/workspace/workbench/workspace-workbench';
 import { GitWorkbench } from '@/renderer/components/workspace/git/git-workbench';
 import { PreviewWorkbench } from '@/renderer/components/workspace/preview/preview-workbench';
+import { TerminalWorkbench } from '@/renderer/components/workspace/terminal/terminal-workbench';
 
 import { useStore } from './use-store';
 
@@ -18,7 +19,7 @@ export const FoundationScreen = () => {
   return (
     <div className={isDark ? 'dark' : undefined}>
       <main className="flex h-screen min-h-[30rem] min-w-0 flex-col overflow-hidden bg-background text-foreground">
-        <header className="relative z-10 grid min-h-20 min-w-0 grid-cols-[minmax(0,1fr)_auto_auto_auto_auto_auto] items-center gap-x-2 gap-y-2 border-b bg-background px-4 py-3 sm:flex sm:gap-4 sm:px-6">
+        <header className="relative z-10 grid min-h-20 min-w-0 grid-cols-[minmax(0,1fr)_auto_auto_auto_auto_auto_auto] items-center gap-x-2 gap-y-2 border-b bg-background px-4 py-3 sm:flex sm:gap-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-2.5 sm:min-w-32">
             <span
               className="size-2 rounded-full bg-primary"
@@ -34,7 +35,7 @@ export const FoundationScreen = () => {
             </div>
           </div>
 
-          <div className="col-span-5 row-start-2 min-w-0 w-full sm:col-auto sm:row-auto sm:ml-auto sm:max-w-xs">
+          <div className="col-span-6 row-start-2 min-w-0 w-full sm:col-auto sm:row-auto sm:ml-auto sm:max-w-xs">
             <ConnectionStatus />
           </div>
 
@@ -42,6 +43,7 @@ export const FoundationScreen = () => {
           <WorkspaceWorkbench />
           <GitWorkbench />
           <PreviewWorkbench />
+          <TerminalWorkbench />
 
           <Button
             type="button"

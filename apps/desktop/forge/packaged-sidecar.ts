@@ -21,6 +21,7 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
+  realpath,
   readFile,
   readdir,
   rm,
@@ -45,6 +46,7 @@ const PROCESS_OUTPUT_LIMIT = 64 * 1024;
 const VERSION_TIMEOUT_MS = 15_000;
 const HANDSHAKE_TIMEOUT_MS = 15_000;
 const BUILD_TIMEOUT_MS = 10 * 60_000;
+const TERMINAL_TIMEOUT_MS = 20_000;
 
 export type SidecarManifest = Readonly<{
   schemaVersion: 1;
@@ -227,6 +229,140 @@ const waitForCleanExit = (
       }
     });
   });
+
+const verifyTerminalBridge = async (
+  executablePath: string,
+  workspace: string,
+  verificationHome: string,
+): Promise<void> => {
+  const canonicalWorkspace = await realpath(workspace);
+  const child = spawn(
+    executablePath,
+    [
+      '__desktop-terminal',
+      '--workspace',
+      canonicalWorkspace,
+      '--columns',
+      '80',
+      '--rows',
+      '24',
+    ],
+    {
+      cwd: canonicalWorkspace,
+      env: {
+        ...process.env,
+        SUGARCODE_HOME: verificationHome,
+      },
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    let stdoutBuffer = '';
+    let stderr = '';
+    let transcript = '';
+    let ready = false;
+    let exitEvent = false;
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(new Error('The packaged CLI terminal bridge timed out.'));
+    }, TERMINAL_TIMEOUT_MS);
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr = appendBounded(stderr, chunk);
+    });
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBuffer += chunk.toString('utf8');
+      if (stdoutBuffer.length > PROCESS_OUTPUT_LIMIT) {
+        child.kill();
+        finish(new Error('The packaged terminal protocol exceeded its bound.'));
+        return;
+      }
+      let newline = stdoutBuffer.indexOf('\n');
+      while (newline >= 0) {
+        const line = stdoutBuffer.slice(0, newline);
+        stdoutBuffer = stdoutBuffer.slice(newline + 1);
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          child.kill();
+          finish(new Error('The packaged terminal emitted invalid JSON.'));
+          return;
+        }
+        if (event.type === 'ready' && event.version === 1 && !ready) {
+          ready = true;
+          child.stdin.write(
+            `${JSON.stringify({
+              type: 'resize',
+              sequence: 1,
+              columns: 91,
+              rows: 32,
+            })}\n`,
+          );
+          const input =
+            process.platform === 'win32'
+              ? 'echo SUGARCODE_PACKAGED_PTY\r\nexit\r\n'
+              : "printf 'SUGARCODE_PACKAGED_PTY\\n'\nexit\n";
+          child.stdin.write(
+            `${JSON.stringify({
+              type: 'input',
+              sequence: 2,
+              data: input,
+            })}\n`,
+          );
+        } else if (
+          event.type === 'output' &&
+          typeof event.data === 'string'
+        ) {
+          transcript = appendBounded(transcript, event.data);
+        } else if (event.type === 'exit') {
+          exitEvent =
+            event.reason === 'natural' &&
+            typeof event.exitCode === 'number';
+        } else if (event.type === 'error') {
+          child.kill();
+          finish(
+            new Error('The packaged terminal bridge reported an error.'),
+          );
+          return;
+        }
+        newline = stdoutBuffer.indexOf('\n');
+      }
+    });
+    child.once('error', (error) => finish(error));
+    child.once('close', (code, signal) => {
+      if (
+        code === 0 &&
+        signal === null &&
+        ready &&
+        exitEvent &&
+        transcript.includes('SUGARCODE_PACKAGED_PTY')
+      ) {
+        finish();
+      } else {
+        finish(
+          new Error(
+            `The packaged terminal smoke failed: code=${String(code)}, signal=${String(signal)}, stderr=${stderr}`,
+          ),
+        );
+      }
+    });
+  });
+};
 
 const verifyHandshake = async (
   executablePath: string,
@@ -491,6 +627,11 @@ const verifyHandshake = async (
     }
     client.close();
     await exit;
+    await verifyTerminalBridge(
+      executablePath,
+      verificationWorkspace,
+      verificationHome,
+    );
   } catch (error) {
     client.close();
     if (child.exitCode === null && !child.killed) {

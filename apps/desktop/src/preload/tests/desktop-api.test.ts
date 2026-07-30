@@ -43,6 +43,12 @@ import {
   PREVIEW_STATE_CHANGED_CHANNEL,
   PREVIEW_STATE_GET_CHANNEL,
 } from '@/shared/preview';
+import {
+  TERMINAL_CREATE_CHANNEL,
+  TERMINAL_INPUT_CHANNEL,
+  TERMINAL_STATE_CHANGED_CHANNEL,
+  TERMINAL_STATE_GET_CHANNEL,
+} from '@/shared/terminal';
 
 import {
   createDesktopApi,
@@ -306,6 +312,100 @@ describe('createDesktopApi', () => {
     await expect(
       api.closePreview({ generation: 3, sessionId }),
     ).rejects.toThrow('invalid preview close result');
+  });
+
+  it('exposes only the fixed terminal pull and action boundary', async () => {
+    const boundary = createIpcBoundary();
+    const api = createDesktopApi(boundary.ipc);
+    const sessionId = '12345678-1234-4123-8123-123456789abc';
+    boundary.invoke.mockImplementation(async (channel: string) => {
+      if (channel === TERMINAL_STATE_GET_CHANNEL) {
+        return {
+          revision: 2,
+          generation: 3,
+          status: 'running',
+          sessionId,
+          workspaceName: 'sugarcode',
+          shell: '/bin/zsh',
+          acknowledgedThrough: 0,
+          output: [{ sequence: 1, data: 'ready\r\n' }],
+        };
+      }
+      return { accepted: true, reason: 'accepted' };
+    });
+
+    await expect(
+      api.getTerminalSnapshot({
+        generation: 3,
+        sessionId,
+        acknowledgeThrough: 0,
+      }),
+    ).resolves.toMatchObject({ status: 'running', sessionId });
+    await expect(
+      api.createTerminal({ generation: 3, columns: 80, rows: 24 }),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(
+      api.writeTerminalInput({
+        generation: 3,
+        sessionId,
+        data: 'echo safe boundary\r',
+      }),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      TERMINAL_CREATE_CHANNEL,
+      { generation: 3, columns: 80, rows: 24 },
+    );
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      TERMINAL_INPUT_CHANNEL,
+      {
+        generation: 3,
+        sessionId,
+        data: 'echo safe boundary\r',
+      },
+    );
+
+    const listener = vi.fn();
+    const unsubscribe = api.onTerminalStateChanged(listener);
+    const handler = boundary.listeners.get(TERMINAL_STATE_CHANGED_CHANNEL);
+    handler?.(
+      {} as IpcRendererEvent,
+      {
+        revision: 3,
+        generation: 3,
+        status: 'paused',
+        sessionId,
+      },
+    );
+    handler?.(
+      {} as IpcRendererEvent,
+      {
+        revision: 4,
+        generation: 3,
+        status: 'running',
+        sessionId,
+        processGroupId: 42,
+      },
+    );
+    expect(listener).toHaveBeenCalledOnce();
+    unsubscribe();
+
+    boundary.invoke.mockResolvedValue({
+      revision: 4,
+      generation: 3,
+      status: 'running',
+      sessionId,
+      workspaceName: 'sugarcode',
+      acknowledgedThrough: 1,
+      output: [],
+      environment: { PATH: '/unsafe' },
+    });
+    await expect(
+      api.getTerminalSnapshot({
+        generation: 3,
+        sessionId,
+        acknowledgeThrough: 1,
+      }),
+    ).rejects.toThrow('invalid terminal state snapshot');
   });
 
   it('validates the bounded command approval API and unsubscribe path', async () => {

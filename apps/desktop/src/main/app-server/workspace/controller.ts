@@ -32,6 +32,12 @@ type WorkspaceControllerOptions = Readonly<{
 
 type Listener = (snapshot: WorkspaceStateSnapshot) => void;
 
+export type WorkspaceLaunchContext = Readonly<{
+  generation: number;
+  path: string;
+  name: string;
+}>;
+
 type StoredSession = Readonly<{
   schemaVersion: 1;
   path: string;
@@ -74,6 +80,15 @@ export class WorkspaceController {
   }
 
   getSnapshot = (): WorkspaceStateSnapshot => this.snapshot;
+
+  getLaunchContext = (): WorkspaceLaunchContext | null =>
+    this.workspacePath && this.snapshot.status === 'ready'
+      ? {
+          generation: this.generation,
+          path: this.workspacePath,
+          name: path.basename(this.workspacePath),
+        }
+      : null;
 
   subscribe = (listener: Listener): (() => void) => {
     this.listeners.add(listener);

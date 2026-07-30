@@ -6,6 +6,7 @@ import type { ModelConfigApi } from './model-config';
 import type { WorkspaceApi } from './workspace';
 import type { GitApi } from './git';
 import type { PreviewApi } from './preview';
+import type { TerminalApi } from './terminal';
 
 export type DesktopApi = Readonly<
   ConnectionApi &
@@ -15,5 +16,6 @@ export type DesktopApi = Readonly<
     ModelConfigApi &
     WorkspaceApi &
     GitApi &
-    PreviewApi
+    PreviewApi &
+    TerminalApi
 >;

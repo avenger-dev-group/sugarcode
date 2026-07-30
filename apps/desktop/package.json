@@ -16,7 +16,7 @@
     "test:unit": "vitest run --exclude \"**/*.integration.test.ts\"",
     "test:integration": "vitest run src/main/app-server/tests/handshake.integration.test.ts src/main/app-server/tests/text-turn.integration.test.ts src/main/app-server/tests/model-config.integration.test.ts",
     "build:electron-test": "vite build --config vite.electron-test-main.config.ts && vite build --config vite.electron-test-preload.config.ts && vite build --config vite.electron-test-renderer.config.ts",
-    "test:electron": "pnpm build:electron-test && electron .electron-test/main.cjs",
+    "test:electron": "pnpm --dir ../.. build:cli:dev && pnpm build:electron-test && electron .electron-test/main.cjs",
     "check": "pnpm lint && pnpm typecheck && pnpm test:unit"
   },
   "keywords": [],
@@ -56,6 +56,8 @@
   },
   "dependencies": {
     "@sugarcode/app-server-protocol": "workspace:*",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "electron-squirrel-startup": "^1.0.1",
