@@ -321,13 +321,12 @@ impl App {
             let _ = approval.response.send(fallback);
             return;
         }
-        let command = std::iter::once(approval.request.command.as_str())
-            .chain(approval.request.arguments.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" ");
         let detail = format!(
-            "Command\n{command}\n\ncwd: {}\nsandbox: {:?}\nnetwork: {:?}\nworkspace write: {:?}",
+            "Command argv\n{}\n\ncwd: {}\nenvironment: {}\nsandboxed: {}\nsandbox: {:?}\nnetwork: {:?}\nworkspace write: {:?}",
+            format_argv(&approval.request.command, &approval.request.arguments),
             approval.request.cwd,
+            approval.request.environment_policy,
+            approval.request.sandboxed,
             approval.request.sandbox_policy,
             approval.request.network_policy,
             approval.request.workspace_write_policy
@@ -568,6 +567,20 @@ impl App {
 
 fn core_error(message: &'static str) -> impl FnOnce(sugarcode_core::CoreError) -> io::Error {
     move |error| io::Error::other(format!("{message}: {error:?}"))
+}
+
+pub(crate) fn format_argv(command: &str, arguments: &[String]) -> String {
+    std::iter::once(command)
+        .chain(arguments.iter().map(String::as_str))
+        .enumerate()
+        .map(|(index, value)| {
+            format!(
+                "argv[{index}] {}",
+                serde_json::to_string(value).expect("a Rust string is valid JSON")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn transcript_from_snapshot(

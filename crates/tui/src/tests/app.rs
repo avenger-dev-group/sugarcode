@@ -5,6 +5,22 @@ use sugarcode_core::CommandApprovalOutcome;
 use tokio::sync::oneshot;
 
 #[test]
+fn command_argv_preserves_exact_inert_argument_boundaries() {
+    let rendered = super::app::format_argv(
+        "/usr/bin/printf",
+        &[
+            "%s; not shell".to_string(),
+            "hello world".to_string(),
+            "雪".to_string(),
+        ],
+    );
+    assert_eq!(
+        rendered,
+        "argv[0] \"/usr/bin/printf\"\nargv[1] \"%s; not shell\"\nargv[2] \"hello world\"\nargv[3] \"雪\""
+    );
+}
+
+#[test]
 fn unicode_paste_is_retained_and_wrong_focus_is_inert() {
     let mut app = App::fixture();
     app.handle_paste("你好 👋");
