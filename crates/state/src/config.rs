@@ -1206,14 +1206,6 @@ fn validate_endpoint(api_format: ModelApiFormat, endpoint: &Url) -> Result<(), &
     {
         return Err("unsafeEndpoint");
     }
-    if endpoint.scheme() == "http" {
-        let host = endpoint
-            .host_str()
-            .expect("host presence was validated above");
-        if !matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]") {
-            return Err("insecureEndpoint");
-        }
-    }
     if api_format == ModelApiFormat::OpenAiChatCompletions
         && !endpoint.path().ends_with("/chat/completions")
     {

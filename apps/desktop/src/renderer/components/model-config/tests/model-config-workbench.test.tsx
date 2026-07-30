@@ -57,6 +57,13 @@ describe('ModelConfigWorkbench', () => {
     expect(password.type).toBe('password');
     expect(password.autocomplete).toBe('new-password');
     expect(document.querySelector('label[for="model-endpoint"]')).not.toBeNull();
+    expect(document.querySelector('#credential-reference')).toBeNull();
+    expect(document.body.textContent).not.toContain('Credential reference');
+    expect(document.body.textContent).not.toContain('Replace credential');
+    expect(document.body.textContent).toContain('API key (optional)');
+    expect(document.body.textContent).toContain(
+      'HTTP sends prompts and API credentials without transport encryption.',
+    );
     expect(document.body.textContent).not.toContain('secret-sentinel');
 
     password.value = 'secret-sentinel';
@@ -75,6 +82,68 @@ describe('ModelConfigWorkbench', () => {
       credential: 'secret-sentinel',
     });
     expect(document.body.textContent).not.toContain('secret-sentinel');
+    await act(async () => root.unmount());
+  });
+
+  it('assigns the internal credential reference when a new API key is entered', async () => {
+    const inspection: ModelConfigInspection = {
+      contractVersion: 1,
+      revision: 'b'.repeat(64),
+      config: null,
+      credentialStatus: 'notConfigured',
+    };
+    const save = vi.fn(async () => ({
+      accepted: true as const,
+      state: 'active' as const,
+      inspection: INSPECTION,
+    }));
+    Object.defineProperty(window, 'sugarcode', {
+      configurable: true,
+      value: {
+        getModelConfig: vi.fn(async () => inspection),
+        saveModelConfig: save,
+        deleteModelCredential: vi.fn(),
+        retryModelConnection: vi.fn(),
+      } as unknown as DesktopApi,
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<ModelConfigWorkbench />));
+
+    await act(async () => {
+      (
+        container.querySelector(
+          'button[aria-label="Open model settings"]',
+        ) as HTMLButtonElement
+      ).click();
+    });
+    await act(async () => Promise.resolve());
+
+    const password = document.querySelector(
+      '#model-credential',
+    ) as HTMLInputElement;
+    password.value = 'new-secret-sentinel';
+    await act(async () => {
+      (
+        document.querySelector(
+          'button[type="submit"]',
+        ) as HTMLButtonElement
+      ).click();
+    });
+
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: inspection.revision,
+      config: {
+        apiFormat: 'openai-chat-completions',
+        endpoint: 'https://api.openai.com/v1/chat/completions',
+        model: '',
+        credentialReference: 'model-api-token',
+      },
+      credential: 'new-secret-sentinel',
+    });
+    expect(password.value).toBe('');
+    expect(document.body.textContent).not.toContain('new-secret-sentinel');
     await act(async () => root.unmount());
   });
 });

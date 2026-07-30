@@ -130,9 +130,11 @@ fn saving_model_config_refuses_to_replace_a_symlink() {
 }
 
 #[test]
-fn model_endpoint_requires_https_except_for_exact_loopback_hosts() {
+fn model_endpoint_accepts_http_and_https_transports() {
     for endpoint in [
         "https://example.com/v1/chat/completions",
+        "http://example.com/v1/chat/completions",
+        "http://localhost.example/v1/chat/completions",
         "http://localhost:18080/v1/chat/completions",
         "http://127.0.0.1:18080/v1/chat/completions",
         "http://[::1]:18080/v1/chat/completions",
@@ -147,8 +149,7 @@ fn model_endpoint_requires_https_except_for_exact_loopback_hosts() {
     }
 
     for endpoint in [
-        "http://example.com/v1/chat/completions",
-        "http://localhost.example/v1/chat/completions",
+        "ftp://example.com/v1/chat/completions",
         "https://user@example.com/v1/chat/completions",
         "https://example.com/v1/chat/completions?debug=true",
         "https://example.com/v1/chat/completions#fragment",

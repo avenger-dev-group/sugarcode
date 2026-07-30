@@ -1,4 +1,11 @@
-import { KeyRound, LoaderCircle, Settings2, Trash2, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  KeyRound,
+  LoaderCircle,
+  Settings2,
+  Trash2,
+  X,
+} from 'lucide-react';
 import {
   type FormEvent,
   useEffect,
@@ -50,21 +57,31 @@ const EMPTY_CONFIG: ModelConfigValue = {
   apiFormat: 'openai-chat-completions',
   endpoint: 'https://api.openai.com/v1/chat/completions',
   model: '',
-  credentialReference: 'model-api-token',
+  credentialReference: null,
 };
+
+const MODEL_CREDENTIAL_REFERENCE = 'model-api-token';
 
 const statusLabel = (
   inspection: ModelConfigInspection | null,
 ): string => {
   switch (inspection?.credentialStatus) {
     case 'present':
-      return 'Credential present';
+      return 'API key saved';
     case 'missing':
-      return 'Credential missing';
+      return 'API key missing';
     case 'unavailable':
-      return 'Credential status unavailable';
+      return 'API key status unavailable';
     default:
-      return 'No credential reference';
+      return 'API key not configured';
+  }
+};
+
+const usesPlaintextHttp = (endpoint: string): boolean => {
+  try {
+    return new URL(endpoint).protocol === 'http:';
+  } catch {
+    return false;
   }
 };
 
@@ -162,9 +179,16 @@ export const ModelConfigWorkbench = () => {
     }
     setNotice(null);
     setPhase('saving');
+    const submittedConfig =
+      credential.length > 0
+        ? {
+            ...config,
+            credentialReference: MODEL_CREDENTIAL_REFERENCE,
+          }
+        : config;
     void saveModelConfig({
       expectedRevision: inspection.revision,
-      config,
+      config: submittedConfig,
       ...(credential.length > 0 ? { credential } : {}),
     })
       .then((result) => {
@@ -272,6 +296,19 @@ export const ModelConfigWorkbench = () => {
                     }))
                   }
                 />
+                {usesPlaintextHttp(config.endpoint) ? (
+                  <span
+                    className="flex items-start gap-1.5 text-xs text-destructive"
+                    role="alert"
+                  >
+                    <AlertTriangle
+                      className="mt-0.5 size-3.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                    HTTP sends prompts and API credentials without transport
+                    encryption. Use it only with a trusted endpoint and network.
+                  </span>
+                ) : null}
               </label>
               <label className="grid gap-1.5 text-sm" htmlFor="model-name">
                 <span>Model</span>
@@ -283,26 +320,6 @@ export const ModelConfigWorkbench = () => {
                     setConfig((current) => ({
                       ...current,
                       model: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <label
-                className="grid gap-1.5 text-sm"
-                htmlFor="credential-reference"
-              >
-                <span>Credential reference</span>
-                <Input
-                  id="credential-reference"
-                  value={config.credentialReference ?? ''}
-                  spellCheck={false}
-                  onChange={(event) =>
-                    setConfig((current) => ({
-                      ...current,
-                      credentialReference:
-                        event.target.value.length > 0
-                          ? event.target.value
-                          : null,
                     }))
                   }
                 />
@@ -319,7 +336,7 @@ export const ModelConfigWorkbench = () => {
                   className="mt-3 grid gap-1.5 text-sm"
                   htmlFor="model-credential"
                 >
-                  <span>Replace credential</span>
+                  <span>API key (optional)</span>
                   <Input
                     ref={passwordRef}
                     id="model-credential"
@@ -333,10 +350,11 @@ export const ModelConfigWorkbench = () => {
                   id="model-credential-help"
                   className="mt-2 text-xs text-tertiary"
                 >
-                  Leave blank to keep the current credential. SugarCode never
-                  reveals or copies stored credentials.
+                  Paste a key to save or replace it. Leave blank to keep the
+                  saved key, or for endpoints that do not require
+                  authentication. SugarCode never reveals stored keys.
                 </p>
-                {inspection?.config?.credentialReference ? (
+                {inspection?.credentialStatus === 'present' ? (
                   <Button
                     className="mt-3"
                     type="button"
@@ -345,7 +363,7 @@ export const ModelConfigWorkbench = () => {
                     onClick={() => setDeleteOpen(true)}
                   >
                     <Trash2 aria-hidden="true" />
-                    Delete credential
+                    Delete API key
                   </Button>
                 ) : null}
               </div>
@@ -409,11 +427,11 @@ export const ModelConfigWorkbench = () => {
           }}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete model credential?</AlertDialogTitle>
+            <AlertDialogTitle>Delete saved API key?</AlertDialogTitle>
             <AlertDialogDescription>
-              The configuration will keep its credential reference, but its
-              status will become missing. The local Agent will reconnect with
-              MCP disabled.
+              The model endpoint and model name will remain configured. The
+              local Agent will reconnect without an API key and with MCP
+              disabled.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="mt-5">
@@ -428,7 +446,7 @@ export const ModelConfigWorkbench = () => {
                 variant="destructive"
                 onClick={removeCredential}
               >
-                Delete credential
+                Delete API key
               </Button>
             </AlertDialogAction>
           </AlertDialogFooter>

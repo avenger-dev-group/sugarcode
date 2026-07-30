@@ -120,12 +120,7 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
 }
 
 fn validate_endpoint(endpoint: &Url) -> Result<(), ModelError> {
-    let transport_is_safe = endpoint.scheme() == "https"
-        || (endpoint.scheme() == "http"
-            && endpoint
-                .host_str()
-                .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1" | "[::1]")));
-    let valid = transport_is_safe
+    let valid = matches!(endpoint.scheme(), "http" | "https")
         && endpoint.host_str().is_some()
         && endpoint.username().is_empty()
         && endpoint.password().is_none()
@@ -234,7 +229,7 @@ async fn process_stream(
                 send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
                 return;
             };
-            if usage_seen || !chunk.choices.is_empty() {
+            if usage_seen || !is_usage_only_choices(&chunk.choices) {
                 send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
                 return;
             }
@@ -360,6 +355,17 @@ async fn process_stream(
             }
         }
     }
+}
+
+fn is_usage_only_choices(choices: &[ChatChoice]) -> bool {
+    choices.is_empty()
+        || matches!(
+            choices,
+            [choice]
+                if choice.index == 0
+                    && choice.finish_reason.is_none()
+                    && choice.delta.is_empty()
+        )
 }
 
 async fn send_error(sender: &mpsc::Sender<Result<ModelEvent, ModelError>>, error: ModelError) {
@@ -555,6 +561,16 @@ struct ChatDelta {
 }
 
 impl ChatDelta {
+    fn is_empty(&self) -> bool {
+        self.content.is_none()
+            && self.role.is_none()
+            && self.tool_calls.is_none()
+            && self.function_call.is_none()
+            && self.refusal.is_none()
+            && self.audio.is_none()
+            && self.extra.is_empty()
+    }
+
     fn has_unsupported_output(&self, allow_tools: bool) -> bool {
         (!allow_tools && self.tool_calls.is_some())
             || self.function_call.is_some()

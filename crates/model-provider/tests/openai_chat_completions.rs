@@ -469,13 +469,10 @@ async fn malformed_recorded_event_is_a_non_retryable_protocol_error() {
 }
 
 #[test]
-fn remote_plaintext_http_endpoint_is_rejected() {
+fn remote_plaintext_http_endpoint_is_accepted() {
     let endpoint =
         Url::parse("http://example.com/v1/chat/completions").expect("remote HTTP endpoint");
-    let error = OpenAiChatCompletionsProvider::new(endpoint, None)
-        .expect_err("remote plaintext HTTP must fail");
-    assert_eq!(error.kind(), ModelErrorKind::InvalidRequest);
-    assert!(!error.retryable());
+    OpenAiChatCompletionsProvider::new(endpoint, None).expect("remote plaintext HTTP is supported");
 }
 
 #[tokio::test]
@@ -543,6 +540,37 @@ async fn usage_only_chunk_after_finish_reason_is_accepted_once() {
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert_eq!(
+        events,
+        vec![
+            Ok(ModelEvent::TextDelta("done".to_string())),
+            Ok(ModelEvent::Usage(sugarcode_model_provider::ModelUsage {
+                input_tokens: Some(2),
+                output_tokens: Some(3),
+                total_tokens: Some(5),
+                ..Default::default()
+            })),
+            Ok(ModelEvent::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn usage_chunk_with_one_empty_choice_is_accepted() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
         "data: [DONE]\n\n"
     );
     let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
