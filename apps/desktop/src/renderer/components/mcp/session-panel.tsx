@@ -22,7 +22,10 @@ const STATUS_LABELS = {
   unavailable: 'Unavailable',
 } as const;
 
-const McpSessionPanelContent = ({ turnBusy }: McpSessionPanelProps) => {
+const McpSessionPanelContent = ({
+  turnBusy,
+  embedded = false,
+}: McpSessionPanelProps) => {
   const store = useStore();
   const { session } = store;
   const applying = ['loading', 'enabling', 'disabling', 'rollingBack'].includes(
@@ -33,7 +36,14 @@ const McpSessionPanelContent = ({ turnBusy }: McpSessionPanelProps) => {
     JSON.stringify(session.activeServerIds);
 
   return (
-    <section className="border-t bg-background/70 px-3 py-3" aria-labelledby="mcp-session-title">
+    <section
+      className={
+        embedded
+          ? 'bg-background px-3 py-5'
+          : 'border-t bg-background/70 px-3 py-3'
+      }
+      aria-labelledby="mcp-session-title"
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-tertiary">

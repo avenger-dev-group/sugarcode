@@ -924,22 +924,81 @@ export const useTranscriptFollow = (
   thread: ThreadViewModel,
 ): TranscriptFollow => {
   const transcriptEnd = useRef<HTMLDivElement | null>(null);
+  const transcriptViewport = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscript = useRef<boolean>(true);
+  const previousScrollTop = useRef<number>(0);
+  const previousThreadIdentity = useRef<string | null>(
+    thread.threadIdentity,
+  );
+  const latestUserMessageId = (() => {
+    for (
+      let turnIndex = thread.turns.length - 1;
+      turnIndex >= 0;
+      turnIndex -= 1
+    ) {
+      const messages = thread.turns[turnIndex]?.messages ?? [];
+      for (
+        let messageIndex = messages.length - 1;
+        messageIndex >= 0;
+        messageIndex -= 1
+      ) {
+        const entry = messages[messageIndex];
+        if (entry?.role === 'user') {
+          return entry.message.id;
+        }
+      }
+    }
+    return null;
+  })();
+  const previousUserMessageId = useRef<string | null>(
+    latestUserMessageId,
+  );
 
   const recordScrollPosition = (event: UIEvent<HTMLDivElement>): void => {
     const viewport = event.currentTarget;
     const distanceFromBottom =
       viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-    shouldFollowTranscript.current = distanceFromBottom <= 48;
+    const isNearBottom = distanceFromBottom <= 48;
+    const movedUp = viewport.scrollTop < previousScrollTop.current;
+    if (isNearBottom) {
+      shouldFollowTranscript.current = true;
+    } else if (movedUp) {
+      shouldFollowTranscript.current = false;
+    }
+    previousScrollTop.current = viewport.scrollTop;
   };
 
   useEffect(() => {
+    const threadChanged =
+      previousThreadIdentity.current !== thread.threadIdentity;
+    const userMessageAdded =
+      latestUserMessageId !== null &&
+      previousUserMessageId.current !== latestUserMessageId;
+    if (threadChanged || userMessageAdded) {
+      shouldFollowTranscript.current = true;
+    }
+    previousThreadIdentity.current = thread.threadIdentity;
+    previousUserMessageId.current = latestUserMessageId;
+
     if (shouldFollowTranscript.current) {
       transcriptEnd.current?.scrollIntoView({ block: 'end' });
+      const viewport = transcriptViewport.current;
+      if (viewport) {
+        previousScrollTop.current = viewport.scrollTop;
+      }
     }
-  }, [thread.turns, thread.phase]);
+  }, [
+    latestUserMessageId,
+    thread.phase,
+    thread.threadIdentity,
+    thread.turns,
+  ]);
 
-  return { transcriptEnd, recordScrollPosition };
+  return {
+    transcriptEnd,
+    transcriptViewport,
+    recordScrollPosition,
+  };
 };
 
 export const useStore = (): ThreadStore => {

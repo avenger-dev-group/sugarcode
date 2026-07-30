@@ -56,8 +56,8 @@ const isAllowedRendererUrl = (url: string): boolean => {
 
 const createWindow = (): void => {
   const window = new BrowserWindow({
-    width: 800,
-    height: 600,
+    width: 1280,
+    height: 800,
     minWidth: 360,
     minHeight: 480,
     webPreferences: {

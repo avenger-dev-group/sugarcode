@@ -91,6 +91,32 @@ afterEach(() => {
 });
 
 describe('ThreadWorkbenchView', () => {
+  it('keeps the composer in flow after the scrollable transcript', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={createStore()} />);
+    });
+
+    const transcript = document.querySelector(
+      '[data-layout="conversation-scroll"]',
+    ) as HTMLElement;
+    const composer = document.querySelector(
+      '[data-layout="conversation-composer"]',
+    ) as HTMLElement;
+    expect(transcript.parentElement).toBe(composer.parentElement);
+    expect(
+      transcript.compareDocumentPosition(composer) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(composer.className).toContain('shrink-0');
+    expect(composer.className).not.toContain('absolute');
+
+    await act(async () => root.unmount());
+  });
+
   it('preserves completed Turn identities while a later message grows', () => {
     const initial = toThreadViewModel({
       revision: 1,
@@ -394,8 +420,14 @@ describe('ThreadWorkbenchView', () => {
     Object.defineProperties(viewport, {
       clientHeight: { configurable: true, value: 400 },
       scrollHeight: { configurable: true, value: 1_200 },
-      scrollTop: { configurable: true, value: 100 },
+      scrollTop: {
+        configurable: true,
+        value: 800,
+        writable: true,
+      },
     });
+    viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
+    viewport.scrollTop = 100;
     viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
     vi.mocked(Element.prototype.scrollIntoView).mockClear();
 
@@ -415,6 +447,181 @@ describe('ThreadWorkbenchView', () => {
     });
 
     expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+
+    viewport.scrollTop = 800;
+    viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await act(async () => {
+      root.render(
+        <ThreadWorkbenchView
+          store={{
+            ...store,
+            thread: {
+              ...store.thread,
+              phase: 'ready',
+              statusLabel: 'Ready for the next turn',
+            },
+          }}
+        />,
+      );
+    });
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
+      block: 'end',
+    });
+
+    await act(async () => root.unmount());
+  });
+
+  it('follows a growing Agent response while the reader remains at the bottom', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = createStore({
+      thread: toThreadViewModel({
+        revision: 1,
+        phase: 'inProgress',
+        threadId: 'thr_0000000000000001',
+        activeTurnId: 'turn_0000000000000002',
+        turns: [
+          {
+            id: 'turn_0000000000000002',
+            status: 'inProgress',
+            messages: [
+              {
+                id: 'item_0000000000000003',
+                role: 'agent',
+                text: 'First chunk',
+                status: 'inProgress',
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+    vi.mocked(Element.prototype.scrollIntoView).mockClear();
+
+    await act(async () => {
+      root.render(
+        <ThreadWorkbenchView
+          store={{
+            ...store,
+            thread: toThreadViewModel(
+              {
+                revision: 2,
+                phase: 'inProgress',
+                threadId: 'thr_0000000000000001',
+                activeTurnId: 'turn_0000000000000002',
+                turns: [
+                  {
+                    id: 'turn_0000000000000002',
+                    status: 'inProgress',
+                    messages: [
+                      {
+                        id: 'item_0000000000000003',
+                        role: 'agent',
+                        text: 'First chunk and the next chunk',
+                        status: 'inProgress',
+                      },
+                    ],
+                  },
+                ],
+              },
+              store.thread,
+            ),
+          }}
+        />,
+      );
+    });
+
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
+      block: 'end',
+    });
+    await act(async () => root.unmount());
+  });
+
+  it('resumes following for a new user message after the reader scrolled up', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const store = createStore();
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={store} />);
+    });
+    const viewport = document.querySelector(
+      '[aria-label="Conversation transcript"]',
+    ) as HTMLDivElement;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 1_200 },
+      scrollTop: {
+        configurable: true,
+        value: 800,
+        writable: true,
+      },
+    });
+    viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
+    viewport.scrollTop = 100;
+    viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
+    vi.mocked(Element.prototype.scrollIntoView).mockClear();
+
+    await act(async () => {
+      root.render(
+        <ThreadWorkbenchView
+          store={{
+            ...store,
+            thread: toThreadViewModel(
+              {
+                revision: 5,
+                phase: 'inProgress',
+                threadId: 'thr_0000000000000001',
+                activeTurnId: 'turn_0000000000000002',
+                turns: [
+                  {
+                    id: 'turn_0000000000000001',
+                    status: 'completed',
+                    messages: [
+                      {
+                        id: 'item_0000000000000001',
+                        role: 'user',
+                        text: 'Explain the boundary.',
+                        status: 'completed',
+                      },
+                      {
+                        id: 'item_0000000000000002',
+                        role: 'agent',
+                        text: 'The durable event arrives first.',
+                        status: 'completed',
+                      },
+                    ],
+                  },
+                  {
+                    id: 'turn_0000000000000002',
+                    status: 'inProgress',
+                    messages: [
+                      {
+                        id: 'item_0000000000000003',
+                        role: 'user',
+                        text: 'Continue.',
+                        status: 'completed',
+                      },
+                    ],
+                  },
+                ],
+              },
+              store.thread,
+            ),
+          }}
+        />,
+      );
+    });
+
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
+      block: 'end',
+    });
     await act(async () => root.unmount());
   });
 

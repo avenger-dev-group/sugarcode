@@ -4,6 +4,7 @@ import type { FoundationStore, Theme } from './types';
 
 export const useStore = (): FoundationStore => {
   const [theme, setTheme] = useState<Theme>('light');
+  const [contextRailOpen, setContextRailOpen] = useState<boolean>(false);
   const isDark = theme === 'dark';
 
   useEffect(() => {
@@ -19,7 +20,9 @@ export const useStore = (): FoundationStore => {
 
   return {
     isDark,
+    contextRailOpen,
     themeLabel: isDark ? 'Use light theme' : 'Use dark theme',
+    setContextRailOpen,
     toggleTheme,
   };
 };

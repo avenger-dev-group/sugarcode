@@ -25,6 +25,7 @@ export type McpStore = Readonly<{
 
 export type McpSessionPanelProps = Readonly<{
   turnBusy: boolean;
+  embedded?: boolean;
 }>;
 
 export type McpActivityState =

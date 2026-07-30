@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { AgentMarkdown } from '../agent-markdown';
 import {
+  normalizeCompactMarkdownTables,
   projectAgentMarkdownTokens,
   repairStreamingMarkdown,
 } from '../agent-markdown-parser';
@@ -189,6 +190,117 @@ describe('AgentMarkdown', () => {
     );
     expect(document.querySelector('[role="img"]')?.textContent).toBe(
       'Image: Remote preview',
+    );
+
+    await unmount();
+  });
+
+  it('renders GFM tables with inline formatting and bounded overflow', async () => {
+    const unmount = await render(
+      <AgentMarkdown
+        source={[
+          '**Key concepts**',
+          '',
+          '| Concept | Description |',
+          '|:--------|------------:|',
+          '| **Dialplan** | `XML` routing |',
+          '| Event Socket | [ESL](https://example.com/esl) control |',
+        ].join('\n')}
+        isStreaming={false}
+      />,
+    );
+
+    const table = document.querySelector('table');
+    expect(table).not.toBeNull();
+    expect(document.querySelectorAll('thead th')).toHaveLength(2);
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(2);
+    expect(document.querySelectorAll('tbody td')).toHaveLength(4);
+    expect(document.querySelector('tbody strong')?.textContent).toBe(
+      'Dialplan',
+    );
+    expect(document.querySelector('tbody code')?.textContent).toBe('XML');
+    expect(document.querySelector('tbody a')).toBeNull();
+    expect(document.querySelector('tbody [role="link"]')?.textContent).toBe(
+      'ESL',
+    );
+    expect(
+      table?.parentElement?.className,
+    ).toContain('overflow-x-auto');
+    expect(document.querySelectorAll('th[scope="col"]')).toHaveLength(2);
+    expect(document.querySelector('th')?.className).toContain('text-left');
+    expect(
+      document.querySelectorAll('th')[1]?.className,
+    ).toContain('text-right');
+
+    await unmount();
+  });
+
+  it('repairs compact single-line table rows without changing fenced code', async () => {
+    const compactTable =
+      '| 概念 | 说明 | |------|------| | **Dialplan** | 呼叫路由逻辑，XML 或 inline 方式 | | ** Sofia SIP** | SIP 协议栈模块，管理 profile/gateway | | **Event Socket** | 外部程序通过 ESL 连接控制呼叫 | | **mod\\_模块* | 功能以模块形式加载，如 mod_dptools、mod_commands | | **Directory** | 用户注册目录，配置分机账号 |';
+    const fenced = ['```text', compactTable, '```'].join('\n');
+    const normalized = normalizeCompactMarkdownTables(compactTable);
+
+    expect(normalized.length).toBe(compactTable.length);
+    expect(normalized.split('\n')).toHaveLength(7);
+    expect(normalizeCompactMarkdownTables(fenced)).toBe(fenced);
+
+    const unmount = await render(
+      <AgentMarkdown source={compactTable} isStreaming={false} />,
+    );
+
+    expect(document.querySelectorAll('thead th')).toHaveLength(2);
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(5);
+    expect(
+      Array.from(document.querySelectorAll('tbody strong')).map(
+        (element) => element.textContent,
+      ),
+    ).toEqual([
+      'Dialplan',
+      'Sofia SIP',
+      'Event Socket',
+      'mod_模块',
+      'Directory',
+    ]);
+    expect(document.body.textContent).toContain('profile/gateway');
+    expect(document.body.textContent).not.toContain('------');
+    expect(document.body.textContent).not.toContain('**');
+
+    await unmount();
+  });
+
+  it('does not repair malformed emphasis inside fenced table text', async () => {
+    const fenced = [
+      '```text',
+      '| A | B |',
+      '|---|---|',
+      '| ** spaced** | **unclosed* |',
+      '```',
+    ].join('\n');
+    const unmount = await render(
+      <AgentMarkdown source={fenced} isStreaming={false} />,
+    );
+
+    expect(document.querySelector('table')).toBeNull();
+    expect(document.querySelector('pre code')?.textContent).toContain(
+      '| ** spaced** | **unclosed* |',
+    );
+
+    await unmount();
+  });
+
+  it('keeps a growing compact table renderable while streaming', async () => {
+    const unmount = await render(
+      <AgentMarkdown
+        source="| Name | State | |---|---| | parser | **streaming"
+        isStreaming
+      />,
+    );
+
+    expect(document.querySelectorAll('thead th')).toHaveLength(2);
+    expect(document.querySelectorAll('tbody tr')).toHaveLength(1);
+    expect(document.querySelector('tbody strong')?.textContent).toBe(
+      'streaming',
     );
 
     await unmount();

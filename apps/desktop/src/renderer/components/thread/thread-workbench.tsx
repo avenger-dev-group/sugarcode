@@ -1,4 +1,4 @@
-import { ArrowUp, PanelLeft, Square } from 'lucide-react';
+import { ArrowUp, PanelLeft, PanelRight, Square } from 'lucide-react';
 import { memo } from 'react';
 
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
@@ -253,22 +253,32 @@ const TranscriptTurn = memo(TranscriptTurnView);
 
 export const ThreadWorkbenchView = ({
   store,
+  navigationFooter,
+  contextRail,
+  contextRailOpen = false,
+  setContextRailOpen,
 }: ThreadWorkbenchViewProps) => {
-  const { transcriptEnd, recordScrollPosition } = useTranscriptFollow(
-    store.thread,
-  );
+  const {
+    transcriptEnd,
+    transcriptViewport,
+    recordScrollPosition,
+  } = useTranscriptFollow(store.thread);
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
-      <aside className="hidden min-h-0 w-60 shrink-0 md:block">
-        <ThreadNavigator store={store} />
+    <div className="relative grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] md:grid-cols-[15.5rem_minmax(0,1fr)] xl:grid-cols-[15.5rem_minmax(0,1fr)_17.5rem]">
+      <aside className="hidden min-h-0 md:block">
+        <ThreadNavigator store={store} footer={navigationFooter} />
       </aside>
       {store.navigatorOpen ? (
-        <div className="h-[45vh] min-h-56 shrink-0 border-b md:hidden">
-          <ThreadNavigator id="thread-navigator" store={store} />
+        <div className="absolute inset-x-0 top-0 z-20 h-[45vh] min-h-56 border-b shadow-xl md:hidden">
+          <ThreadNavigator
+            id="thread-navigator"
+            store={store}
+            footer={navigationFooter}
+          />
         </div>
       ) : null}
-      <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      <section className="relative flex min-h-0 min-w-0 flex-col xl:border-r">
       <div className="pointer-events-none absolute inset-0 workbench-grid" />
       <Button
         type="button"
@@ -286,15 +296,33 @@ export const ThreadWorkbenchView = ({
       >
         <PanelLeft aria-hidden="true" />
       </Button>
+      {contextRail ? (
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          className="absolute right-3 top-3 z-10 bg-background/90 shadow-sm xl:hidden"
+          aria-label={
+            contextRailOpen ? 'Hide workspace tools' : 'Show workspace tools'
+          }
+          aria-controls="workspace-tools"
+          aria-expanded={contextRailOpen}
+          onClick={() => setContextRailOpen?.(!contextRailOpen)}
+        >
+          <PanelRight aria-hidden="true" />
+        </Button>
+      ) : null}
       <ScrollArea
+        data-layout="conversation-scroll"
         className="relative min-h-0 min-w-0 flex-1"
         viewportProps={{
           'aria-label': 'Conversation transcript',
           tabIndex: 0,
+          ref: transcriptViewport,
           onScroll: recordScrollPosition,
         }}
       >
-        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-44 pt-16 sm:px-10 md:pt-10">
+        <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-10 pt-16 sm:px-10 md:pt-10">
           {store.thread.isEmpty ? (
             <div className="my-auto max-w-xl py-16">
               <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-tertiary">
@@ -322,7 +350,10 @@ export const ThreadWorkbenchView = ({
         </div>
       </ScrollArea>
 
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-background via-background to-transparent px-4 pb-5 pt-12 sm:px-8">
+      <div
+        data-layout="conversation-composer"
+        className="relative z-10 shrink-0 border-t bg-background px-4 pb-3 pt-3 sm:px-8"
+      >
         <div className="mx-auto max-w-3xl">
           {(store.actionError || store.thread.notice) && (
             <p
@@ -421,6 +452,19 @@ export const ThreadWorkbenchView = ({
         </div>
       </div>
       </section>
+      {contextRail ? (
+        <aside
+          id="workspace-tools"
+          className={`fixed inset-y-0 right-0 z-30 min-h-0 w-[17.5rem] overflow-y-auto border-l bg-background shadow-[-18px_0_50px_var(--shadow-soft)] transition-transform duration-150 motion-reduce:transition-none xl:static xl:z-auto xl:w-auto xl:visible xl:translate-x-0 xl:border-l-0 xl:shadow-none ${
+            contextRailOpen
+              ? 'visible translate-x-0'
+              : 'invisible translate-x-full'
+          }`}
+          aria-label="Workspace tools"
+        >
+          {contextRail}
+        </aside>
+      ) : null}
     </div>
   );
 };

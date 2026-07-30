@@ -1,5 +1,6 @@
 import {
   Archive,
+  Code2,
   GitFork,
   LoaderCircle,
   MessageSquareText,
@@ -30,13 +31,13 @@ import {
 } from '@/renderer/components/ui/alert-dialog';
 import { Input } from '@/renderer/components/ui/input';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
-import { McpSessionPanel } from '@/renderer/components/mcp/session-panel';
 
 import type { ThreadStore } from './types';
 
 type ThreadNavigatorProps = Readonly<{
   store: ThreadStore;
   id?: string;
+  footer?: ReactNode;
 }>;
 
 const focusThreadAt = (
@@ -49,7 +50,11 @@ const focusThreadAt = (
   buttons.at(index)?.focus();
 };
 
-export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
+export const ThreadNavigator = ({
+  store,
+  id,
+  footer,
+}: ThreadNavigatorProps) => {
   const [query, setQuery] = useState(store.navigator.query);
   const [deleteThreadId, setDeleteThreadId] = useState<string | null>(
     null,
@@ -129,7 +134,20 @@ export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
         }
       }}
     >
-      <div className="border-b px-4 pb-4 pt-5">
+      <div className="border-b px-3 pb-4 pt-4">
+        <div className="mb-5 flex items-center gap-2.5 px-1">
+          <span className="grid size-7 place-items-center rounded-lg border bg-background shadow-sm">
+            <Code2 className="size-4" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold tracking-[-0.02em]">
+              SugarCode
+            </p>
+            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-tertiary">
+              Local coding agent
+            </p>
+          </div>
+        </div>
         <div className="flex items-baseline justify-between gap-3">
           <div>
             <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-tertiary">
@@ -299,15 +317,11 @@ export const ThreadNavigator = ({ store, id }: ThreadNavigatorProps) => {
           </Button>
         </div>
       ) : null}
-      <div className="max-h-[45%] shrink-0 overflow-y-auto">
-        <McpSessionPanel
-          turnBusy={
-            store.thread.phase === 'starting' ||
-            store.thread.phase === 'inProgress' ||
-            store.thread.phase === 'stopping'
-          }
-        />
-      </div>
+      {footer ? (
+        <div className="shrink-0 border-t p-2">
+          {footer}
+        </div>
+      ) : null}
       </nav>
 
       <AlertDialog

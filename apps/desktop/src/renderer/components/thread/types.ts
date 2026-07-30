@@ -1,4 +1,4 @@
-import type { RefObject, UIEvent } from 'react';
+import type { ReactNode, RefObject, UIEvent } from 'react';
 
 import type {
   ConversationPhase,
@@ -127,6 +127,10 @@ export type ThreadStore = Readonly<{
 
 export type ThreadWorkbenchViewProps = Readonly<{
   store: ThreadStore;
+  navigationFooter?: ReactNode;
+  contextRail?: ReactNode;
+  contextRailOpen?: boolean;
+  setContextRailOpen?: (open: boolean) => void;
 }>;
 
 export type TranscriptTurnProps = Readonly<{
@@ -135,5 +139,6 @@ export type TranscriptTurnProps = Readonly<{
 
 export type TranscriptFollow = Readonly<{
   transcriptEnd: RefObject<HTMLDivElement | null>;
+  transcriptViewport: RefObject<HTMLDivElement | null>;
   recordScrollPosition: (event: UIEvent<HTMLDivElement>) => void;
 }>;

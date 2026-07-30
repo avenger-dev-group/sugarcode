@@ -40,6 +40,19 @@ const codeFenceLineCount = (text: string): number => {
 const codeFenceLineLabel = (lines: number): string =>
   `${lines} ${lines === 1 ? 'line' : 'lines'}`;
 
+const tableAlignmentClass = (
+  alignment: 'center' | 'left' | 'right' | null,
+): string => {
+  switch (alignment) {
+    case 'center':
+      return 'text-center';
+    case 'right':
+      return 'text-right';
+    default:
+      return 'text-left';
+  }
+};
+
 const renderText = (
   text: string,
   keyPrefix: string,
@@ -223,6 +236,48 @@ const renderTokens = (
       }
       case 'hr':
         return [<hr key={key} className="my-5 border-border" />];
+      case 'table': {
+        const table = token as Tokens.Table;
+        return [
+          <div
+            key={key}
+            className="mt-3 max-w-full overflow-x-auto rounded-xl border first:mt-0"
+          >
+            <table className="w-full min-w-[32rem] border-collapse text-sm font-normal leading-[22px]">
+              <thead className="bg-surface">
+                <tr>
+                  {table.header.map((cell, cellIndex) => (
+                    <th
+                      key={`${key}:header:${cellIndex}`}
+                      scope="col"
+                      className={`border-r px-3 py-2.5 font-medium last:border-r-0 ${tableAlignmentClass(cell.align)}`}
+                    >
+                      {children(cell.tokens)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {table.rows.map((row, rowIndex) => (
+                  <tr
+                    key={`${key}:row:${rowIndex}`}
+                    className="border-t align-top"
+                  >
+                    {row.map((cell, cellIndex) => (
+                      <td
+                        key={`${key}:row:${rowIndex}:cell:${cellIndex}`}
+                        className={`border-r px-3 py-2.5 last:border-r-0 ${tableAlignmentClass(cell.align)}`}
+                      >
+                        {children(cell.tokens)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>,
+        ];
+      }
       case 'strong':
         return [
           <strong key={key} className="font-bold">
@@ -287,7 +342,6 @@ const renderTokens = (
         ];
       case 'del':
         return [<Fragment key={key}>{children(token.tokens)}</Fragment>];
-      case 'table':
       case 'checkbox':
       case 'list_item':
         return [];

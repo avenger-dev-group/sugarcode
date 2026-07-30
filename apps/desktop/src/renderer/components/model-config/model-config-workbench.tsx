@@ -53,6 +53,11 @@ type Phase =
   | 'deleting'
   | 'retrying';
 
+type ModelConfigSettingsPanelProps = Readonly<{
+  active?: boolean;
+  showCloseAction?: boolean;
+}>;
+
 const EMPTY_CONFIG: ModelConfigValue = {
   apiFormat: 'openai-chat-completions',
   endpoint: 'https://api.openai.com/v1/chat/completions',
@@ -116,32 +121,33 @@ const noticeFor = (result: ModelConfigActionResult): string => {
   return 'The model configuration action could not be completed.';
 };
 
-export const ModelConfigWorkbench = () => {
-  const [open, setOpen] = useState(false);
+export const ModelConfigSettingsPanel = ({
+  active = true,
+  showCloseAction = false,
+}: ModelConfigSettingsPanelProps) => {
   const [phase, setPhase] = useState<Phase>('idle');
   const [inspection, setInspection] =
     useState<ModelConfigInspection | null>(null);
   const [config, setConfig] = useState<ModelConfigValue>(EMPTY_CONFIG);
   const [notice, setNotice] = useState<string | null>(null);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState<boolean>(false);
   const passwordRef = useRef<HTMLInputElement>(null);
-  const endpointRef = useRef<HTMLInputElement>(null);
   const cancelDeleteRef = useRef<HTMLButtonElement>(null);
   const busy = phase !== 'idle';
 
   useEffect(() => {
-    if (!open) {
+    if (!active) {
       if (passwordRef.current) {
         passwordRef.current.value = '';
       }
       return;
     }
-    let active = true;
+    let current = true;
     setPhase('loading');
     setNotice(null);
     void getModelConfig()
       .then((next) => {
-        if (!active) {
+        if (!current) {
           return;
         }
         setInspection(next);
@@ -149,15 +155,15 @@ export const ModelConfigWorkbench = () => {
         setPhase('idle');
       })
       .catch(() => {
-        if (active) {
+        if (current) {
           setNotice('The saved model configuration is unavailable.');
           setPhase('idle');
         }
       });
     return () => {
-      active = false;
+      current = false;
     };
-  }, [open]);
+  }, [active]);
 
   const applyResult = (result: ModelConfigActionResult): void => {
     if (result.inspection) {
@@ -232,191 +238,151 @@ export const ModelConfigWorkbench = () => {
 
   return (
     <>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger asChild>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            aria-label="Open model settings"
-            title="Model settings"
-          >
-            <Settings2 aria-hidden="true" />
-          </Button>
-        </DialogTrigger>
-        <DialogContent
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            endpointRef.current?.focus();
-          }}
-        >
-          <div className="flex items-start gap-4 border-b px-5 py-4">
-            <div className="min-w-0 flex-1">
-              <DialogTitle className="text-lg font-semibold tracking-[-0.02em]">
-                Model connection
-              </DialogTitle>
-              <DialogDescription className="mt-1 text-sm text-secondary">
-                Configure the OpenAI-compatible endpoint used by the packaged
-                local Agent.
-              </DialogDescription>
+      <form className="mx-auto w-full max-w-2xl" onSubmit={submit}>
+        <fieldset className="grid gap-5" disabled={busy || !inspection}>
+          <legend className="sr-only">Model configuration</legend>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="grid gap-1.5 text-sm" htmlFor="model-name">
+              <span>Model</span>
+              <Input
+                id="model-name"
+                value={config.model}
+                spellCheck={false}
+                placeholder="gpt-5.6"
+                onChange={(event) =>
+                  setConfig((current) => ({
+                    ...current,
+                    model: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <div className="grid gap-1.5 text-sm">
+              <span>API format</span>
+              <div className="flex h-9 items-center rounded-lg border bg-surface px-3 font-mono text-[11px] text-secondary">
+                OpenAI Chat Completions
+              </div>
             </div>
-            <DialogClose asChild>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                aria-label="Close model settings"
+          </div>
+          <label className="grid gap-1.5 text-sm" htmlFor="model-endpoint">
+            <span>Endpoint</span>
+            <Input
+              id="model-endpoint"
+              value={config.endpoint}
+              inputMode="url"
+              spellCheck={false}
+              onChange={(event) =>
+                setConfig((current) => ({
+                  ...current,
+                  endpoint: event.target.value,
+                }))
+              }
+            />
+            {usesPlaintextHttp(config.endpoint) ? (
+              <span
+                className="flex items-start gap-1.5 text-xs text-destructive"
+                role="alert"
               >
-                <X aria-hidden="true" />
+                <AlertTriangle
+                  className="mt-0.5 size-3.5 shrink-0"
+                  aria-hidden="true"
+                />
+                HTTP sends prompts and API credentials without transport
+                encryption. Use it only with a trusted endpoint and network.
+              </span>
+            ) : null}
+          </label>
+
+          <div className="rounded-xl border bg-surface p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <KeyRound className="size-4 text-secondary" aria-hidden="true" />
+              <p className="text-sm font-medium">{statusLabel(inspection)}</p>
+            </div>
+            <label
+              className="mt-3 grid gap-1.5 text-sm"
+              htmlFor="model-credential"
+            >
+              <span>API key (optional)</span>
+              <Input
+                ref={passwordRef}
+                id="model-credential"
+                type="password"
+                autoComplete="new-password"
+                spellCheck={false}
+                aria-describedby="model-credential-help"
+              />
+            </label>
+            <p
+              id="model-credential-help"
+              className="mt-2 text-xs text-tertiary"
+            >
+              Paste a key to save or replace it. Leave blank to keep the saved
+              key, or for endpoints that do not require authentication.
+              SugarCode never reveals stored keys.
+            </p>
+            {inspection?.credentialStatus === 'present' ? (
+              <Button
+                className="mt-3"
+                type="button"
+                size="sm"
+                variant="destructive"
+                onClick={() => setDeleteOpen(true)}
+              >
+                <Trash2 aria-hidden="true" />
+                Delete API key
+              </Button>
+            ) : null}
+          </div>
+        </fieldset>
+
+        <div
+          className="mt-4 min-h-10 rounded-lg border px-3 py-2 text-sm text-secondary"
+          role="status"
+          aria-live="polite"
+        >
+          {busy ? (
+            <span className="flex items-center gap-2">
+              <LoaderCircle
+                className="size-4 animate-spin motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+              {phase === 'loading'
+                ? 'Loading saved configuration…'
+                : phase === 'deleting'
+                  ? 'Deleting credential and reconnecting…'
+                  : phase === 'retrying'
+                    ? 'Retrying the saved connection…'
+                    : 'Saving and reconnecting…'}
+            </span>
+          ) : (
+            notice ??
+            'Saving reconnects the local Agent, restores this Thread, and leaves MCP disabled.'
+          )}
+        </div>
+
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          {notice?.startsWith('Saved, but') ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={retry}
+            >
+              Retry connection
+            </Button>
+          ) : null}
+          {showCloseAction ? (
+            <DialogClose asChild>
+              <Button type="button" variant="ghost" disabled={busy}>
+                Close
               </Button>
             </DialogClose>
-          </div>
-
-          <form
-            className="min-h-0 overflow-y-auto px-5 py-5"
-            onSubmit={submit}
-          >
-            <fieldset
-              className="grid gap-4"
-              disabled={busy || !inspection}
-            >
-              <legend className="sr-only">Model configuration</legend>
-              <label className="grid gap-1.5 text-sm" htmlFor="model-endpoint">
-                <span>Endpoint</span>
-                <Input
-                  ref={endpointRef}
-                  id="model-endpoint"
-                  value={config.endpoint}
-                  inputMode="url"
-                  spellCheck={false}
-                  onChange={(event) =>
-                    setConfig((current) => ({
-                      ...current,
-                      endpoint: event.target.value,
-                    }))
-                  }
-                />
-                {usesPlaintextHttp(config.endpoint) ? (
-                  <span
-                    className="flex items-start gap-1.5 text-xs text-destructive"
-                    role="alert"
-                  >
-                    <AlertTriangle
-                      className="mt-0.5 size-3.5 shrink-0"
-                      aria-hidden="true"
-                    />
-                    HTTP sends prompts and API credentials without transport
-                    encryption. Use it only with a trusted endpoint and network.
-                  </span>
-                ) : null}
-              </label>
-              <label className="grid gap-1.5 text-sm" htmlFor="model-name">
-                <span>Model</span>
-                <Input
-                  id="model-name"
-                  value={config.model}
-                  spellCheck={false}
-                  onChange={(event) =>
-                    setConfig((current) => ({
-                      ...current,
-                      model: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-
-              <div className="mt-1 rounded-xl border bg-surface p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <KeyRound className="size-4 text-secondary" aria-hidden="true" />
-                  <p className="text-sm font-medium">
-                    {statusLabel(inspection)}
-                  </p>
-                </div>
-                <label
-                  className="mt-3 grid gap-1.5 text-sm"
-                  htmlFor="model-credential"
-                >
-                  <span>API key (optional)</span>
-                  <Input
-                    ref={passwordRef}
-                    id="model-credential"
-                    type="password"
-                    autoComplete="new-password"
-                    spellCheck={false}
-                    aria-describedby="model-credential-help"
-                  />
-                </label>
-                <p
-                  id="model-credential-help"
-                  className="mt-2 text-xs text-tertiary"
-                >
-                  Paste a key to save or replace it. Leave blank to keep the
-                  saved key, or for endpoints that do not require
-                  authentication. SugarCode never reveals stored keys.
-                </p>
-                {inspection?.credentialStatus === 'present' ? (
-                  <Button
-                    className="mt-3"
-                    type="button"
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => setDeleteOpen(true)}
-                  >
-                    <Trash2 aria-hidden="true" />
-                    Delete API key
-                  </Button>
-                ) : null}
-              </div>
-            </fieldset>
-
-            <div
-              className="mt-4 min-h-10 rounded-lg border px-3 py-2 text-sm text-secondary"
-              role="status"
-              aria-live="polite"
-            >
-              {busy ? (
-                <span className="flex items-center gap-2">
-                  <LoaderCircle
-                    className="size-4 animate-spin motion-reduce:animate-none"
-                    aria-hidden="true"
-                  />
-                  {phase === 'loading'
-                    ? 'Loading saved configuration…'
-                    : phase === 'deleting'
-                      ? 'Deleting credential and reconnecting…'
-                      : phase === 'retrying'
-                        ? 'Retrying the saved connection…'
-                        : 'Saving and reconnecting…'}
-                </span>
-              ) : (
-                notice ??
-                'Saving reconnects the local Agent, restores this Thread, and leaves MCP disabled.'
-              )}
-            </div>
-
-            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              {notice?.startsWith('Saved, but') ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={retry}
-                >
-                  Retry connection
-                </Button>
-              ) : null}
-              <DialogClose asChild>
-                <Button type="button" variant="ghost" disabled={busy}>
-                  Close
-                </Button>
-              </DialogClose>
-              <Button type="submit" disabled={busy || !inspection}>
-                Save and reconnect
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+          ) : null}
+          <Button type="submit" disabled={busy || !inspection}>
+            Save and reconnect
+          </Button>
+        </div>
+      </form>
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent
@@ -453,5 +419,54 @@ export const ModelConfigWorkbench = () => {
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+};
+
+export const ModelConfigWorkbench = () => {
+  const [open, setOpen] = useState<boolean>(false);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          aria-label="Open model settings"
+          title="Model settings"
+        >
+          <Settings2 aria-hidden="true" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <div className="flex items-start gap-4 border-b px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <DialogTitle className="text-lg font-semibold tracking-[-0.02em]">
+              Model connection
+            </DialogTitle>
+            <DialogDescription className="mt-1 text-sm text-secondary">
+              Configure the OpenAI-compatible endpoint used by the packaged
+              local Agent.
+            </DialogDescription>
+          </div>
+          <DialogClose asChild>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              aria-label="Close model settings"
+            >
+              <X aria-hidden="true" />
+            </Button>
+          </DialogClose>
+        </div>
+        <div className="min-h-0 overflow-y-auto px-5 py-5">
+          <ModelConfigSettingsPanel
+            active={open}
+            showCloseAction
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 };

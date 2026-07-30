@@ -3,10 +3,16 @@ import { lexer, type MarkedOptions, type Token } from 'marked';
 const MARKDOWN_OPTIONS: MarkedOptions = {
   async: false,
   breaks: false,
-  gfm: false,
+  gfm: true,
   pedantic: false,
 };
 const MAX_INCREMENTAL_CACHE_SOURCE_CHARS = 1_000_000;
+const COMPACT_TABLE_SEPARATOR_PATTERN =
+  /\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|/u;
+const TABLE_SEPARATOR_LINE_PATTERN =
+  /^ {0,3}\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?[ \t]*$/u;
+const PIPE_TABLE_LINE_PATTERN = /^ {0,3}\|/u;
+const FENCE_LINE_PATTERN = /^ {0,3}(`{3,}|~{3,})(?:[^`~]*)$/u;
 
 export type AgentMarkdownTokenCache = Readonly<{
   prefixSource: string;
@@ -18,15 +24,106 @@ export type AgentMarkdownTokenProjection = Readonly<{
   tokens: readonly Token[];
 }>;
 
+export const normalizeCompactMarkdownTables = (source: string): string => {
+  let fence: { character: '`' | '~'; length: number } | null = null;
+
+  return source
+    .split('\n')
+    .map((line) => {
+      const markerMatch = FENCE_LINE_PATTERN.exec(line);
+      const marker = markerMatch?.[1];
+      if (marker) {
+        const character = marker[0] as '`' | '~';
+        if (!fence) {
+          fence = { character, length: marker.length };
+        } else if (
+          character === fence.character &&
+          marker.length >= fence.length &&
+          /^ {0,3}(?:`{3,}|~{3,})\s*$/u.test(line)
+        ) {
+          fence = null;
+        }
+        return line;
+      }
+      if (
+        fence ||
+        !/^ {0,3}\|/u.test(line) ||
+        !COMPACT_TABLE_SEPARATOR_PATTERN.test(line)
+      ) {
+        return line;
+      }
+      return line.replace(
+        /\|([ \t]+)\|/gu,
+        (_boundary, whitespace: string) =>
+          `|\n${whitespace.slice(1)}|`,
+      );
+    })
+    .join('\n');
+};
+
+const normalizeTableCellEmphasis = (source: string): string => {
+  const lines = source.split('\n');
+  let fence: { character: '`' | '~'; length: number } | null = null;
+  const eligibleTableLines = lines.map((line) => {
+    const markerMatch = FENCE_LINE_PATTERN.exec(line);
+    const marker = markerMatch?.[1];
+    if (marker) {
+      const character = marker[0] as '`' | '~';
+      if (!fence) {
+        fence = { character, length: marker.length };
+      } else if (
+        character === fence.character &&
+        marker.length >= fence.length &&
+        /^ {0,3}(?:`{3,}|~{3,})\s*$/u.test(line)
+      ) {
+        fence = null;
+      }
+      return false;
+    }
+    return !fence && PIPE_TABLE_LINE_PATTERN.test(line);
+  });
+
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (
+      !eligibleTableLines[index] ||
+      !eligibleTableLines[index + 1] ||
+      !TABLE_SEPARATOR_LINE_PATTERN.test(lines[index + 1] ?? '')
+    ) {
+      continue;
+    }
+
+    for (
+      let rowIndex = index;
+      rowIndex < lines.length && eligibleTableLines[rowIndex];
+      rowIndex += 1
+    ) {
+      if (rowIndex === index + 1) {
+        continue;
+      }
+      lines[rowIndex] = (lines[rowIndex] ?? '')
+        .replace(
+          /(\|[ \t]*)\*\*([ \t]+)(?=\S)/gu,
+          '$1$2**',
+        )
+        .replace(
+          /(\|[ \t]*\*\*)([^|\n]*?[^*\s])\*([ \t]*\|)/gu,
+          '$1$2**$3',
+        );
+    }
+  }
+
+  return lines.join('\n');
+};
+
 const closingFenceFor = (source: string): string | null => {
   let opening: { character: '`' | '~'; length: number } | null = null;
 
   for (const line of source.split('\n')) {
-    const fence = /^ {0,3}(`{3,}|~{3,})(?:[^`~]*)$/.exec(line);
-    if (!fence) {
+    const fenceMatch = FENCE_LINE_PATTERN.exec(line);
+    if (!fenceMatch) {
       continue;
     }
-    const marker = fence[1];
+    const marker = fenceMatch[1];
     if (!marker) {
       continue;
     }
@@ -84,8 +181,15 @@ export const repairStreamingMarkdown = (source: string): string => {
   return closeIncompleteEmphasis(closeIncompleteLink(source));
 };
 
-const lex = (source: string): readonly Token[] =>
-  Array.from(lexer(source, MARKDOWN_OPTIONS));
+const lex = (source: string): readonly Token[] => {
+  const normalizedTables = normalizeCompactMarkdownTables(source);
+  return Array.from(
+    lexer(
+      normalizeTableCellEmphasis(normalizedTables),
+      MARKDOWN_OPTIONS,
+    ),
+  );
+};
 
 const sourceLength = (tokens: readonly Token[]): number =>
   tokens.reduce((length, token) => length + token.raw.length, 0);
