@@ -1,3 +1,4 @@
 packages/app-server-protocol/src/generated/** text eol=lf
 packages/app-server-protocol/schema/** text eol=lf
 protocol-fixtures/app-server/v1/*.jsonl text eol=lf
+protocol-fixtures/exec-v1/*.jsonl text eol=lf
