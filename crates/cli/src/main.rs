@@ -5,6 +5,7 @@ use clap::Args;
 use clap::Parser;
 use clap::Subcommand;
 use std::io::IsTerminal;
+use std::io::Read;
 use std::path::PathBuf;
 use sugarcode_credential_store::OsCredentialStore;
 
@@ -43,6 +44,8 @@ enum Command {
     Credential(CredentialArgs),
     /// Run the local app server or generate its public protocol artifacts.
     AppServer(AppServerArgs),
+    /// Run one non-interactive agent turn.
+    Exec(ExecArgs),
 }
 
 #[derive(Debug, Args)]
@@ -236,6 +239,34 @@ struct DesktopTerminalArgs {
     rows: u16,
 }
 
+#[derive(Debug, Args)]
+struct ExecArgs {
+    /// Resume one existing active Thread instead of creating a new Thread.
+    #[arg(long, value_name = "THREAD_ID")]
+    resume: Option<String>,
+    /// Explicit workspace root available to bounded model tools and instructions.
+    #[arg(long, value_name = "DIR")]
+    workspace: Option<PathBuf>,
+    /// Active workspace scope relative to the explicit workspace root.
+    #[arg(long, value_name = "RELATIVE_DIR", requires = "workspace")]
+    workspace_scope: Option<String>,
+    /// Enable bounded workspace/apply-patch writes for this process only.
+    #[arg(long, requires = "workspace")]
+    allow_workspace_write: bool,
+    /// Enable sandboxed shell-command writes inside the explicit workspace.
+    #[arg(long, requires = "workspace")]
+    allow_command_workspace_write: bool,
+    /// Discover one explicitly configured MCP server for this run.
+    #[arg(long, value_name = "ID", action = clap::ArgAction::Append)]
+    mcp_server: Vec<String>,
+    /// Emit versioned JSON Lines instead of human-readable events.
+    #[arg(long)]
+    json: bool,
+    /// One prompt. When omitted, read a bounded prompt from non-terminal stdin.
+    #[arg(value_name = "PROMPT")]
+    prompt: Option<String>,
+}
+
 #[derive(Debug, Subcommand)]
 enum AppServerCommand {
     /// Generate TypeScript bindings from the Rust public protocol types.
@@ -252,13 +283,19 @@ struct OutputArgs {
 
 #[tokio::main]
 async fn main() {
-    if let Err(error) = run(Cli::parse()).await {
-        eprintln!("sugarcode: {error}");
-        std::process::exit(1);
+    match run(Cli::parse()).await {
+        Ok(code) if code != sugarcode_exec::EXEC_EXIT_SUCCESS => {
+            std::process::exit(i32::from(code));
+        }
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("sugarcode: {error}");
+            std::process::exit(1);
+        }
     }
 }
 
-async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
     let Cli { home, command } = cli;
     match command {
         Command::InternalSupervisor => {
@@ -544,6 +581,43 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         },
+        Command::Exec(args) => {
+            let prompt = match args.prompt {
+                Some(prompt) => prompt,
+                None if std::io::stdin().is_terminal() => String::new(),
+                None => {
+                    let mut prompt = String::new();
+                    std::io::stdin()
+                        .lock()
+                        .take((sugarcode_exec::MAX_EXEC_PROMPT_BYTES + 1) as u64)
+                        .read_to_string(&mut prompt)?;
+                    prompt
+                }
+            };
+            let cancellation = sugarcode_exec::termination_token();
+            let exit_code = sugarcode_exec::run(
+                sugarcode_exec::ExecRequest {
+                    home,
+                    workspace: args.workspace,
+                    workspace_scope: args.workspace_scope,
+                    allow_workspace_write: args.allow_workspace_write,
+                    allow_command_workspace_write: args.allow_command_workspace_write,
+                    mcp_servers: args.mcp_server,
+                    resume_thread_id: args.resume,
+                    prompt,
+                    output_format: if args.json {
+                        sugarcode_exec::ExecOutputFormat::JsonLines
+                    } else {
+                        sugarcode_exec::ExecOutputFormat::Human
+                    },
+                },
+                &mut std::io::stdout().lock(),
+                &mut std::io::stderr().lock(),
+                cancellation,
+            )
+            .await;
+            return Ok(exit_code);
+        }
     }
-    Ok(())
+    Ok(sugarcode_exec::EXEC_EXIT_SUCCESS)
 }

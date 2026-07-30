@@ -22,6 +22,7 @@ pub use runtime::CoreRuntime;
 pub use thread::Core;
 pub use thread::CoreApi;
 pub use thread::CoreError;
+pub use thread::MAX_USER_MESSAGE_BYTES;
 pub use thread::PreparedMessage;
 pub use thread::PreparedMessageRole;
 pub use thread::PreparedTextTurn;

@@ -17,6 +17,7 @@ sha2.workspace = true
 sugarcode-app-server = { path = "../app-server" }
 sugarcode-app-server-protocol = { path = "../app-server-protocol" }
 sugarcode-credential-store = { path = "../credential-store" }
+sugarcode-exec = { path = "../exec" }
 sugarcode-state = { path = "../state" }
 sugarcode-terminal = { path = "../terminal" }
 sugarcode-tools = { path = "../tools" }
@@ -26,6 +27,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 git2.workspace = true
+libc.workspace = true
 sugarcode-mcp = { path = "../mcp" }
 tempfile.workspace = true
 tokio-util.workspace = true

@@ -2446,12 +2446,14 @@ version = "1.0.0"
 dependencies = [
  "clap",
  "git2",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
  "sugarcode-app-server",
  "sugarcode-app-server-protocol",
  "sugarcode-credential-store",
+ "sugarcode-exec",
  "sugarcode-mcp",
  "sugarcode-state",
  "sugarcode-terminal",
@@ -2487,6 +2489,21 @@ dependencies = [
  "keyring",
  "sha2",
  "zeroize",
+]
+
+[[package]]
+name = "sugarcode-exec"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sugarcode-agent-runtime",
+ "sugarcode-core",
+ "sugarcode-protocol",
+ "sugarcode-state",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
