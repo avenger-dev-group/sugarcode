@@ -19,9 +19,8 @@ import {
   type ModelConfigValue,
 } from '@/shared/model-config';
 import {
-  deleteModelCredential,
+  deleteModelApiKey,
   getModelConfig,
-  retryModelConnection,
   saveModelConfig,
 } from '@/renderer/services/model-config';
 import {
@@ -49,9 +48,7 @@ type Phase =
   | 'idle'
   | 'loading'
   | 'saving'
-  | 'reconnecting'
-  | 'deleting'
-  | 'retrying';
+  | 'deleting';
 
 type ModelConfigSettingsPanelProps = Readonly<{
   active?: boolean;
@@ -62,21 +59,14 @@ const EMPTY_CONFIG: ModelConfigValue = {
   apiFormat: 'openai-chat-completions',
   endpoint: 'https://api.openai.com/v1/chat/completions',
   model: '',
-  credentialReference: null,
 };
-
-const MODEL_CREDENTIAL_REFERENCE = 'model-api-token';
 
 const statusLabel = (
   inspection: ModelConfigInspection | null,
 ): string => {
-  switch (inspection?.credentialStatus) {
+  switch (inspection?.apiKeyStatus) {
     case 'present':
       return 'API key saved';
-    case 'missing':
-      return 'API key missing';
-    case 'unavailable':
-      return 'API key status unavailable';
     default:
       return 'API key not configured';
   }
@@ -91,26 +81,11 @@ const usesPlaintextHttp = (endpoint: string): boolean => {
 };
 
 const noticeFor = (result: ModelConfigActionResult): string => {
-  if (result.state === 'active') {
-    return 'Saved and active. The exact current Thread was restored.';
-  }
-  if (result.state === 'savedNotActive') {
-    return 'Saved, but the new local Agent connection is not active.';
-  }
-  if (result.state === 'credentialStoredConfigUnchanged') {
-    return 'The credential was stored, but configuration was not changed.';
-  }
-  if (result.reason === 'turnActive') {
-    return 'Finish or stop the active Turn before reconnecting.';
-  }
-  if (result.reason === 'approvalPending') {
-    return 'Resolve the pending approval before reconnecting.';
-  }
-  if (result.reason === 'navigationPending') {
-    return 'Wait for Thread navigation to finish before reconnecting.';
+  if (result.state === 'saved') {
+    return 'Saved. New Turns will use this model configuration.';
   }
   if (result.reason === 'reconnectPending') {
-    return 'Another reconnect is already in progress.';
+    return 'Another local configuration or workspace change is in progress.';
   }
   if (result.reason === 'stale') {
     return 'Configuration changed elsewhere. Reload before saving.';
@@ -179,59 +154,35 @@ export const ModelConfigSettingsPanel = ({
     if (!inspection || busy) {
       return;
     }
-    const credential = passwordRef.current?.value ?? '';
+    const apiKey = passwordRef.current?.value ?? '';
     if (passwordRef.current) {
       passwordRef.current.value = '';
     }
     setNotice(null);
     setPhase('saving');
-    const submittedConfig =
-      credential.length > 0
-        ? {
-            ...config,
-            credentialReference: MODEL_CREDENTIAL_REFERENCE,
-          }
-        : config;
     void saveModelConfig({
       expectedRevision: inspection.revision,
-      config: submittedConfig,
-      ...(credential.length > 0 ? { credential } : {}),
+      config,
+      ...(apiKey.length > 0 ? { apiKey } : {}),
     })
-      .then((result) => {
-        setPhase('reconnecting');
-        applyResult(result);
-      })
+      .then(applyResult)
       .catch(() => {
         setNotice('The model configuration could not be saved.');
         setPhase('idle');
       });
   };
 
-  const removeCredential = (): void => {
+  const removeApiKey = (): void => {
     if (!inspection || busy) {
       return;
     }
     setDeleteOpen(false);
     setNotice(null);
     setPhase('deleting');
-    void deleteModelCredential(inspection.revision)
+    void deleteModelApiKey(inspection.revision)
       .then(applyResult)
       .catch(() => {
-        setNotice('The credential could not be deleted.');
-        setPhase('idle');
-      });
-  };
-
-  const retry = (): void => {
-    if (busy) {
-      return;
-    }
-    setNotice(null);
-    setPhase('retrying');
-    void retryModelConnection()
-      .then(applyResult)
-      .catch(() => {
-        setNotice('The saved configuration is still not active.');
+        setNotice('The API key could not be deleted.');
         setPhase('idle');
       });
   };
@@ -318,9 +269,10 @@ export const ModelConfigSettingsPanel = ({
             >
               Paste a key to save or replace it. Leave blank to keep the saved
               key, or for endpoints that do not require authentication.
-              SugarCode never reveals stored keys.
+              SugarCode stores it with this model configuration and never
+              reveals it in the app.
             </p>
-            {inspection?.credentialStatus === 'present' ? (
+            {inspection?.apiKeyStatus === 'present' ? (
               <Button
                 className="mt-3"
                 type="button"
@@ -349,28 +301,16 @@ export const ModelConfigSettingsPanel = ({
               {phase === 'loading'
                 ? 'Loading saved configuration…'
                 : phase === 'deleting'
-                  ? 'Deleting credential and reconnecting…'
-                  : phase === 'retrying'
-                    ? 'Retrying the saved connection…'
-                    : 'Saving and reconnecting…'}
+                  ? 'Deleting API key…'
+                  : 'Saving model configuration…'}
             </span>
           ) : (
             notice ??
-            'Saving reconnects the local Agent, restores this Thread, and leaves MCP disabled.'
+            'Saving does not reconnect the CLI or interrupt the current Turn. New Turns use the latest saved model configuration.'
           )}
         </div>
 
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          {notice?.startsWith('Saved, but') ? (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={retry}
-            >
-              Retry connection
-            </Button>
-          ) : null}
           {showCloseAction ? (
             <DialogClose asChild>
               <Button type="button" variant="ghost" disabled={busy}>
@@ -379,7 +319,7 @@ export const ModelConfigSettingsPanel = ({
             </DialogClose>
           ) : null}
           <Button type="submit" disabled={busy || !inspection}>
-            Save and reconnect
+            Save configuration
           </Button>
         </div>
       </form>
@@ -396,8 +336,8 @@ export const ModelConfigSettingsPanel = ({
             <AlertDialogTitle>Delete saved API key?</AlertDialogTitle>
             <AlertDialogDescription>
               The model endpoint and model name will remain configured. The
-              local Agent will reconnect without an API key and with MCP
-              disabled.
+              current Turn will continue unchanged; new Turns will use this
+              model without an API key.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="mt-5">
@@ -410,7 +350,7 @@ export const ModelConfigSettingsPanel = ({
               <Button
                 type="button"
                 variant="destructive"
-                onClick={removeCredential}
+                onClick={removeApiKey}
               >
                 Delete API key
               </Button>

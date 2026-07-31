@@ -136,7 +136,7 @@ const CORE_EVENT_CAPACITY: usize = 64;
 #[derive(Clone)]
 pub struct CoreRuntime {
     core: Arc<Mutex<Core>>,
-    model_gateway: Option<ModelGateway>,
+    model_gateway: Option<ModelGatewaySource>,
     workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
     workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
     workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
@@ -152,6 +152,36 @@ pub struct CoreRuntime {
     collaboration: Arc<CollaborationCoordinator>,
     event_tx: mpsc::Sender<CoreEvent>,
     active: Arc<Mutex<BTreeMap<ThreadId, ActiveTurn>>>,
+}
+
+pub struct ResolvedModel {
+    pub provider: Arc<dyn ModelProvider>,
+    pub model: String,
+}
+
+pub trait ModelResolver: Send + Sync {
+    fn resolve(&self) -> Result<ResolvedModel, ModelError>;
+}
+
+#[derive(Clone)]
+enum ModelGatewaySource {
+    Fixed(ModelGateway),
+    Resolver(Arc<dyn ModelResolver>),
+}
+
+impl ModelGatewaySource {
+    fn resolve(&self) -> Result<ModelGateway, ModelError> {
+        match self {
+            Self::Fixed(gateway) => Ok(gateway.clone()),
+            Self::Resolver(resolver) => {
+                let resolved = resolver.resolve()?;
+                Ok(ModelGateway {
+                    provider: resolved.provider,
+                    model: Arc::from(resolved.model),
+                })
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -240,10 +270,42 @@ impl CoreRuntime {
         (
             Self {
                 core: Arc::new(Mutex::new(core)),
-                model_gateway: Some(ModelGateway {
+                model_gateway: Some(ModelGatewaySource::Fixed(ModelGateway {
                     provider,
                     model: Arc::from(model),
-                }),
+                })),
+                workspace_read,
+                workspace_list,
+                workspace_search,
+                workspace_patch: None,
+                workspace_instructions: None,
+                workspace_skills: None,
+                shell_executor: None,
+                approval_requester: None,
+                mcp_executor: None,
+                mcp_approval_requester: None,
+                mcp_capability: McpToolCapability::default(),
+                mcp_execution_lease: Arc::new(tokio::sync::Semaphore::new(1)),
+                collaboration: Arc::new(CollaborationCoordinator::default()),
+                event_tx,
+                active: Arc::new(Mutex::new(BTreeMap::new())),
+            },
+            event_rx,
+        )
+    }
+
+    pub fn new_with_model_resolver(
+        core: Core,
+        resolver: Arc<dyn ModelResolver>,
+        workspace_read: Option<Arc<dyn WorkspaceReadExecutor>>,
+        workspace_list: Option<Arc<dyn WorkspaceListExecutor>>,
+        workspace_search: Option<Arc<dyn WorkspaceSearchExecutor>>,
+    ) -> (Self, mpsc::Receiver<CoreEvent>) {
+        let (event_tx, event_rx) = mpsc::channel(CORE_EVENT_CAPACITY);
+        (
+            Self {
+                core: Arc::new(Mutex::new(core)),
+                model_gateway: Some(ModelGatewaySource::Resolver(resolver)),
                 workspace_read,
                 workspace_list,
                 workspace_search,
@@ -293,6 +355,16 @@ impl CoreRuntime {
         workspace_patch: Option<Arc<dyn WorkspacePatchExecutor>>,
     ) -> Self {
         self.workspace_patch = workspace_patch;
+        self
+    }
+
+    pub fn with_shell_capability(
+        mut self,
+        shell_executor: Arc<dyn ShellCommandExecutor>,
+        approval_requester: Arc<dyn CommandApprovalRequester>,
+    ) -> Self {
+        self.shell_executor = Some(shell_executor);
+        self.approval_requester = Some(approval_requester);
         self
     }
 
@@ -673,7 +745,7 @@ async fn run_turn(
         }
     }
 
-    let Some(model_gateway) = runtime.model_gateway.as_ref() else {
+    let Some(model_gateway_source) = runtime.model_gateway.as_ref() else {
         finish_failed_and_emit(
             &runtime,
             &prepared,
@@ -683,6 +755,14 @@ async fn run_turn(
         .await;
         clear_active(&runtime, &thread_id, &turn_id);
         return;
+    };
+    let model_gateway = match model_gateway_source.resolve() {
+        Ok(gateway) => gateway,
+        Err(error) => {
+            finish_failed_and_emit(&runtime, &prepared, error, None).await;
+            clear_active(&runtime, &thread_id, &turn_id);
+            return;
+        }
     };
     let mut messages = prepared
         .history
@@ -724,7 +804,7 @@ async fn run_turn(
             match compact_active_turn(
                 &runtime,
                 &prepared,
-                model_gateway,
+                &model_gateway,
                 &messages,
                 &tools,
                 compaction_ordinal,

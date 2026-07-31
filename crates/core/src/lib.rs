@@ -20,6 +20,8 @@ pub use mcp::McpToolPrepareError;
 pub use mcp::McpToolRequestState;
 pub use mcp::PreparedMcpToolCall;
 pub use runtime::CoreRuntime;
+pub use runtime::ModelResolver;
+pub use runtime::ResolvedModel;
 pub use thread::Core;
 pub use thread::CoreApi;
 pub use thread::CoreError;

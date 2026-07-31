@@ -7,11 +7,6 @@ use std::fmt;
 use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
-use sugarcode_credential_store::CredentialReference;
-use sugarcode_credential_store::CredentialStore;
-use sugarcode_credential_store::CredentialStoreErrorKind;
-use sugarcode_credential_store::MAX_SECRET_BYTES;
-use sugarcode_credential_store::SecretValue;
 use sugarcode_state::EffectiveConfig;
 use sugarcode_state::MAX_CONFIG_BYTES;
 use sugarcode_state::McpServerConfig;
@@ -31,7 +26,6 @@ pub enum ModelConfigCommandError {
     InvalidInput,
     InvalidConfiguration,
     RevisionMismatch,
-    CredentialFailed(CredentialStoreErrorKind),
     WriteFailed,
 }
 
@@ -45,7 +39,6 @@ impl fmt::Display for ModelConfigCommandError {
             Self::InvalidInput => "model configuration input is invalid",
             Self::InvalidConfiguration => "model configuration is invalid",
             Self::RevisionMismatch => "model configuration changed before it could be saved",
-            Self::CredentialFailed(_) => "model credential could not be updated",
             Self::WriteFailed => "model configuration could not be saved",
         })
     }
@@ -88,7 +81,7 @@ pub fn validate_model_config(
     if input.contract_version != MODEL_CONFIG_CONTRACT_VERSION {
         return Err(ModelConfigCommandError::InvalidInput);
     }
-    let model = parse_model(input.config)?;
+    let model = parse_model(input.config, None)?;
     write_json(
         output,
         &ValidationReceipt {
@@ -101,7 +94,6 @@ pub fn validate_model_config(
 
 pub fn set_model_config(
     home: &SugarCodeHome,
-    store: &dyn CredentialStore,
     input: &mut dyn Read,
     output: &mut dyn Write,
 ) -> Result<(), ModelConfigCommandError> {
@@ -109,90 +101,61 @@ pub fn set_model_config(
     if input.contract_version != MODEL_CONFIG_CONTRACT_VERSION {
         return Err(ModelConfigCommandError::InvalidInput);
     }
-    let model = parse_model(input.config)?;
-    let existing = sugarcode_state::load_effective_config_for_home(home.clone())
+    let existing = sugarcode_state::load_model_edit_config_for_home(home.clone())
         .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
     if config_revision(existing.model()) != input.expected_revision {
         return Err(ModelConfigCommandError::RevisionMismatch);
     }
+    let api_key = resolve_api_key_update(existing.model(), input.api_key_update);
+    let model = parse_model(input.config, api_key)?;
     sugarcode_state::save_model_config(home, &model)
         .map_err(|_| ModelConfigCommandError::WriteFailed)?;
-    inspect_model_config(home, store, output)
+    inspect_model_config(home, output)
 }
 
 pub fn inspect_model_config(
     home: &SugarCodeHome,
-    store: &dyn CredentialStore,
     output: &mut dyn Write,
 ) -> Result<(), ModelConfigCommandError> {
-    let config = sugarcode_state::load_effective_config_for_home(home.clone())
+    let config = sugarcode_state::load_model_edit_config_for_home(home.clone())
         .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
-    let status = credential_status_for_model(store, config.model());
+    let status = api_key_status_for_model(config.model());
     write_json(
         output,
         &InspectionReceipt {
             contract_version: MODEL_CONFIG_CONTRACT_VERSION,
             revision: config_revision(config.model()),
             config: config.model().map(ModelConfigView::from),
-            credential_status: status,
+            api_key_status: status,
         },
     )
 }
 
-pub fn set_model_credential(
-    store: &dyn CredentialStore,
-    reference: &str,
-    input: &mut dyn Read,
+pub fn delete_model_api_key(
+    home: &SugarCodeHome,
     output: &mut dyn Write,
-) -> Result<(), ModelConfigCommandError> {
-    let reference = CredentialReference::parse(reference)
-        .map_err(|error| ModelConfigCommandError::CredentialFailed(error.kind()))?;
-    let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_SECRET_BYTES));
-    input
-        .take((MAX_SECRET_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| ModelConfigCommandError::InvalidInput)?;
-    if bytes.is_empty()
-        || bytes.len() > MAX_SECRET_BYTES
-        || !bytes.iter().all(|byte| matches!(byte, 0x21..=0x7e))
-    {
-        return Err(ModelConfigCommandError::InvalidConfiguration);
+) -> Result<bool, ModelConfigCommandError> {
+    let existing = sugarcode_state::load_model_edit_config_for_home(home.clone())
+        .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
+    let Some(existing_model) = existing.model() else {
+        inspect_model_config(home, output)?;
+        return Ok(false);
+    };
+    if existing_model.api_key().is_none() {
+        inspect_model_config(home, output)?;
+        return Ok(false);
     }
-    let secret = SecretValue::from_zeroizing(bytes)
-        .map_err(|error| ModelConfigCommandError::CredentialFailed(error.kind()))?;
-    store
-        .set(&reference, &secret)
-        .map_err(|error| ModelConfigCommandError::CredentialFailed(error.kind()))?;
-    write_credential_receipt(output, reference.as_str(), CredentialStatus::Present, None)
-}
-
-pub fn show_model_credential_status(
-    store: &dyn CredentialStore,
-    reference: &str,
-    output: &mut dyn Write,
-) -> Result<(), ModelConfigCommandError> {
-    let reference = CredentialReference::parse(reference)
-        .map_err(|error| ModelConfigCommandError::CredentialFailed(error.kind()))?;
-    let status = credential_status(store, &reference);
-    write_credential_receipt(output, reference.as_str(), status, None)
-}
-
-pub fn delete_model_credential(
-    store: &dyn CredentialStore,
-    reference: &str,
-    output: &mut dyn Write,
-) -> Result<(), ModelConfigCommandError> {
-    let reference = CredentialReference::parse(reference)
-        .map_err(|error| ModelConfigCommandError::CredentialFailed(error.kind()))?;
-    let deleted = store
-        .delete(&reference)
-        .map_err(|error| ModelConfigCommandError::CredentialFailed(error.kind()))?;
-    write_credential_receipt(
-        output,
-        reference.as_str(),
-        CredentialStatus::Missing,
-        Some(deleted),
+    let model = ModelConfig::new(
+        existing_model.api_format(),
+        existing_model.endpoint().clone(),
+        existing_model.model().to_owned(),
+        None,
     )
+    .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
+    sugarcode_state::save_model_config(home, &model)
+        .map_err(|_| ModelConfigCommandError::WriteFailed)?;
+    inspect_model_config(home, output)?;
+    Ok(true)
 }
 
 pub fn list_mcp_servers(
@@ -393,20 +356,18 @@ fn read_json<T: for<'de> Deserialize<'de>>(
     serde_json::from_slice(bytes.as_slice()).map_err(|_| ModelConfigCommandError::InvalidInput)
 }
 
-fn parse_model(input: ModelConfigInput) -> Result<ModelConfig, ModelConfigCommandError> {
+fn parse_model(
+    input: ModelConfigInput,
+    api_key: Option<String>,
+) -> Result<ModelConfig, ModelConfigCommandError> {
     let api_format = match input.api_format.as_str() {
         "openai-chat-completions" => ModelApiFormat::OpenAiChatCompletions,
         _ => return Err(ModelConfigCommandError::InvalidConfiguration),
     };
     let endpoint =
         Url::parse(&input.endpoint).map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
-    ModelConfig::new(
-        api_format,
-        endpoint,
-        input.model,
-        input.credential_reference,
-    )
-    .map_err(|_| ModelConfigCommandError::InvalidConfiguration)
+    ModelConfig::new(api_format, endpoint, input.model, api_key)
+        .map_err(|_| ModelConfigCommandError::InvalidConfiguration)
 }
 
 fn config_revision(model: Option<&ModelConfig>) -> String {
@@ -421,53 +382,36 @@ fn config_revision(model: Option<&ModelConfig>) -> String {
             hasher.update(b"\0");
             hasher.update(model.model().as_bytes());
             hasher.update(b"\0");
-            if let Some(reference) = model.credential_reference() {
-                hasher.update(reference.as_bytes());
+            if let Some(api_key) = model.api_key() {
+                hasher.update(b"local\0");
+                hasher.update(api_key.as_bytes());
             }
         }
     }
     format!("{:x}", hasher.finalize())
 }
 
-fn credential_status_for_model(
-    store: &dyn CredentialStore,
-    model: Option<&ModelConfig>,
-) -> CredentialStatus {
-    let Some(reference) = model.and_then(ModelConfig::credential_reference) else {
-        return CredentialStatus::NotConfigured;
+fn api_key_status_for_model(model: Option<&ModelConfig>) -> ApiKeyStatus {
+    let Some(model) = model else {
+        return ApiKeyStatus::NotConfigured;
     };
-    let Ok(reference) = CredentialReference::parse(reference) else {
-        return CredentialStatus::Unavailable;
-    };
-    credential_status(store, &reference)
-}
-
-fn credential_status(
-    store: &dyn CredentialStore,
-    reference: &CredentialReference,
-) -> CredentialStatus {
-    match store.get(reference) {
-        Ok(Some(_)) => CredentialStatus::Present,
-        Ok(None) => CredentialStatus::Missing,
-        Err(_) => CredentialStatus::Unavailable,
+    if model.api_key().is_some() {
+        return ApiKeyStatus::Present;
     }
+    ApiKeyStatus::NotConfigured
 }
 
-fn write_credential_receipt(
-    output: &mut dyn Write,
-    reference: &str,
-    status: CredentialStatus,
-    deleted: Option<bool>,
-) -> Result<(), ModelConfigCommandError> {
-    write_json(
-        output,
-        &CredentialReceipt {
-            contract_version: MODEL_CONFIG_CONTRACT_VERSION,
-            reference,
-            status,
-            deleted,
-        },
-    )
+fn resolve_api_key_update(
+    existing: Option<&ModelConfig>,
+    update: ModelApiKeyUpdate,
+) -> Option<String> {
+    match update {
+        ModelApiKeyUpdate::Preserve => existing
+            .and_then(ModelConfig::api_key)
+            .map(ToOwned::to_owned),
+        ModelApiKeyUpdate::Set { value } => Some(value),
+        ModelApiKeyUpdate::Delete => None,
+    }
 }
 
 fn write_json(
@@ -491,6 +435,7 @@ struct ModelConfigSetInput {
     contract_version: u32,
     expected_revision: String,
     config: ModelConfigInput,
+    api_key_update: ModelApiKeyUpdate,
 }
 
 #[derive(Deserialize)]
@@ -499,7 +444,19 @@ struct ModelConfigInput {
     api_format: String,
     endpoint: String,
     model: String,
-    credential_reference: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "action",
+    deny_unknown_fields,
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum ModelApiKeyUpdate {
+    Preserve,
+    Set { value: String },
+    Delete,
 }
 
 #[derive(Serialize)]
@@ -516,7 +473,7 @@ struct InspectionReceipt<'a> {
     contract_version: u32,
     revision: String,
     config: Option<ModelConfigView<'a>>,
-    credential_status: CredentialStatus,
+    api_key_status: ApiKeyStatus,
 }
 
 #[derive(Serialize)]
@@ -525,7 +482,6 @@ struct ModelConfigView<'a> {
     api_format: &'a str,
     endpoint: &'a str,
     model: &'a str,
-    credential_reference: Option<&'a str>,
 }
 
 impl<'a> From<&'a ModelConfig> for ModelConfigView<'a> {
@@ -534,28 +490,15 @@ impl<'a> From<&'a ModelConfig> for ModelConfigView<'a> {
             api_format: model.api_format().as_str(),
             endpoint: model.endpoint().as_str(),
             model: model.model(),
-            credential_reference: model.credential_reference(),
         }
     }
 }
 
 #[derive(Serialize, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
-enum CredentialStatus {
+enum ApiKeyStatus {
     NotConfigured,
     Present,
-    Missing,
-    Unavailable,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CredentialReceipt<'a> {
-    contract_version: u32,
-    reference: &'a str,
-    status: CredentialStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    deleted: Option<bool>,
 }
 
 #[derive(Serialize)]

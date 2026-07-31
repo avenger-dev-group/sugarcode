@@ -10,12 +10,13 @@ use std::path::Path;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 use url::Url;
+use zeroize::Zeroizing;
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 pub const MAX_MODEL_NAME_BYTES: usize = 256;
-pub const MAX_CREDENTIAL_REFERENCE_BYTES: usize = 64;
+pub const MAX_MODEL_API_KEY_BYTES: usize = 2 * 1024;
 pub const MAX_MCP_SERVERS: usize = 2;
 pub const MAX_MCP_SERVER_ID_BYTES: usize = 32;
 pub const MAX_MCP_PATH_BYTES: usize = 1024;
@@ -42,7 +43,7 @@ pub struct ModelConfig {
     api_format: ModelApiFormat,
     endpoint: Url,
     model: String,
-    credential_reference: Option<String>,
+    api_key: Option<Zeroizing<String>>,
 }
 
 impl ModelConfig {
@@ -50,18 +51,18 @@ impl ModelConfig {
         api_format: ModelApiFormat,
         endpoint: Url,
         model: String,
-        credential_reference: Option<String>,
+        api_key: Option<String>,
     ) -> Result<Self, &'static str> {
         validate_endpoint(api_format, &endpoint)?;
         validate_model(&model)?;
-        if let Some(reference) = credential_reference.as_deref() {
-            validate_credential_reference(reference)?;
+        if let Some(api_key) = api_key.as_deref() {
+            validate_model_api_key(api_key)?;
         }
         Ok(Self {
             api_format,
             endpoint,
             model,
-            credential_reference,
+            api_key: api_key.map(Zeroizing::new),
         })
     }
 
@@ -77,8 +78,8 @@ impl ModelConfig {
         &self.model
     }
 
-    pub fn credential_reference(&self) -> Option<&str> {
-        self.credential_reference.as_deref()
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref().map(String::as_str)
     }
 }
 
@@ -89,7 +90,7 @@ impl fmt::Debug for ModelConfig {
             .field("api_format", &self.api_format)
             .field("endpoint", &"<redacted>")
             .field("model", &"<redacted>")
-            .field("credential_reference", &self.credential_reference)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }
@@ -447,7 +448,50 @@ pub fn load_effective_config(cli_home: Option<PathBuf>) -> Result<EffectiveConfi
     Ok(load_effective_config_for_home(home)?)
 }
 
+/// Loads the process-wide configuration needed to start a SugarCode surface.
+///
+/// Model configuration is deliberately not parsed here. A model is selected
+/// and validated when a Turn starts, so a broken or missing model entry cannot
+/// prevent the CLI, workspace, history, settings, or other local capabilities
+/// from becoming available.
+pub fn load_runtime_config(cli_home: Option<PathBuf>) -> Result<EffectiveConfig, StateError> {
+    let home = resolve_sugarcode_home_from_process(cli_home)?;
+    Ok(load_runtime_config_for_home(home)?)
+}
+
 pub fn load_effective_config_for_home(home: SugarCodeHome) -> Result<EffectiveConfig, ConfigError> {
+    load_config_for_home(home, true)
+}
+
+pub fn load_runtime_config_for_home(home: SugarCodeHome) -> Result<EffectiveConfig, ConfigError> {
+    load_config_for_home(home, false)
+}
+
+/// Loads a valid model when possible, but treats only an invalid model section
+/// as empty so model settings can repair it without discarding valid MCP
+/// configuration from the same file.
+pub fn load_model_edit_config_for_home(
+    home: SugarCodeHome,
+) -> Result<EffectiveConfig, ConfigError> {
+    match load_effective_config_for_home(home.clone()) {
+        Ok(config) => Ok(config),
+        Err(error) if is_model_section_error(&error) => load_runtime_config_for_home(home),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_model_section_error(error: &ConfigError) -> bool {
+    match error {
+        ConfigError::InvalidModelField { .. } => true,
+        ConfigError::UnknownField { field, .. } => field.starts_with("model."),
+        _ => false,
+    }
+}
+
+fn load_config_for_home(
+    home: SugarCodeHome,
+    include_model: bool,
+) -> Result<EffectiveConfig, ConfigError> {
     let config_path = home.path().join(CONFIG_FILE_NAME);
     let metadata = match fs::symlink_metadata(&config_path) {
         Ok(metadata) => metadata,
@@ -539,9 +583,13 @@ pub fn load_effective_config_for_home(home: SugarCodeHome) -> Result<EffectiveCo
         });
     }
 
-    let model = match table.get("model") {
-        None => None,
-        Some(value) => Some(parse_model_config(value, contents, &config_path)?),
+    let model = if include_model {
+        match table.get("model") {
+            None => None,
+            Some(value) => Some(parse_model_config(value, contents, &config_path)?),
+        }
+    } else {
+        None
     };
     let mcp_servers = match table.get("mcp") {
         None => Vec::new(),
@@ -571,7 +619,7 @@ pub fn save_model_config(
     home: &SugarCodeHome,
     model: &ModelConfig,
 ) -> Result<EffectiveConfig, ConfigError> {
-    let existing = load_effective_config_for_home(home.clone())?;
+    let existing = load_model_edit_config_for_home(home.clone())?;
     save_config(home, Some(model), existing.mcp_servers())
 }
 
@@ -754,7 +802,7 @@ fn parse_model_config(
         .filter(|key| {
             !matches!(
                 key.as_str(),
-                "api_format" | "endpoint" | "model" | "credential"
+                "api_format" | "endpoint" | "model" | "api_key" | "credential"
             )
         })
         .cloned()
@@ -789,23 +837,31 @@ fn parse_model_config(
         .map_err(|kind| invalid_model_field(path, contents, "endpoint", kind))?;
     let model = required_model_string(table, "model", contents, path)?.to_owned();
     validate_model(&model).map_err(|kind| invalid_model_field(path, contents, "model", kind))?;
-    let credential_reference = match table.get("credential") {
+    if table.get("credential").is_some_and(|value| !value.is_str()) {
+        return Err(invalid_model_field(
+            path,
+            contents,
+            "credential",
+            "expectedString",
+        ));
+    }
+    let api_key = match table.get("api_key") {
         None => None,
-        Some(toml::Value::String(reference)) => {
-            validate_credential_reference(reference)
-                .map_err(|kind| invalid_model_field(path, contents, "credential", kind))?;
-            Some(reference.clone())
+        Some(toml::Value::String(api_key)) => {
+            validate_model_api_key(api_key)
+                .map_err(|kind| invalid_model_field(path, contents, "api_key", kind))?;
+            Some(api_key.clone())
         }
         Some(_) => {
             return Err(invalid_model_field(
                 path,
                 contents,
-                "credential",
+                "api_key",
                 "expectedString",
             ));
         }
     };
-    ModelConfig::new(api_format, endpoint, model, credential_reference)
+    ModelConfig::new(api_format, endpoint, model, api_key)
         .map_err(|kind| invalid_model_field(path, contents, "model", kind))
 }
 
@@ -1224,18 +1280,14 @@ fn validate_model(model: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn validate_credential_reference(reference: &str) -> Result<(), &'static str> {
-    let bytes = reference.as_bytes();
-    let valid = !bytes.is_empty()
-        && bytes.len() <= MAX_CREDENTIAL_REFERENCE_BYTES
-        && bytes[0].is_ascii_lowercase()
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-');
-    if valid {
-        Ok(())
+fn validate_model_api_key(api_key: &str) -> Result<(), &'static str> {
+    if api_key.is_empty()
+        || api_key.len() > MAX_MODEL_API_KEY_BYTES
+        || !api_key.bytes().all(|byte| matches!(byte, 0x21..=0x7e))
+    {
+        Err("invalidApiKey")
     } else {
-        Err("invalidCredentialReference")
+        Ok(())
     }
 }
 
@@ -1267,9 +1319,9 @@ fn encode_config(
             toml_string(model.endpoint.as_str()),
             toml_string(model.model())
         ));
-        if let Some(reference) = model.credential_reference() {
-            output.push_str("credential = ");
-            output.push_str(&toml_string(reference));
+        if let Some(api_key) = model.api_key() {
+            output.push_str("api_key = ");
+            output.push_str(&toml_string(api_key));
             output.push('\n');
         }
     }

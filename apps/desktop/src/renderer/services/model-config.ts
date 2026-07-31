@@ -2,8 +2,6 @@ export const getModelConfig = () => window.sugarcode.getModelConfig();
 export const saveModelConfig: typeof window.sugarcode.saveModelConfig = (
   request,
 ) => window.sugarcode.saveModelConfig(request);
-export const deleteModelCredential: typeof window.sugarcode.deleteModelCredential =
+export const deleteModelApiKey: typeof window.sugarcode.deleteModelApiKey =
   (expectedRevision) =>
-    window.sugarcode.deleteModelCredential(expectedRevision);
-export const retryModelConnection = () =>
-  window.sugarcode.retryModelConnection();
+    window.sugarcode.deleteModelApiKey(expectedRevision);

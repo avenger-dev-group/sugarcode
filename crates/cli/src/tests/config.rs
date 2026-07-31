@@ -1,55 +1,5 @@
 use super::*;
-use std::collections::BTreeMap;
-use std::sync::Mutex;
-use sugarcode_credential_store::CredentialStoreError;
 use sugarcode_state::HomeResolutionInputs;
-
-#[derive(Debug, Default)]
-struct MemoryCredentialStore {
-    values: Mutex<BTreeMap<String, Vec<u8>>>,
-    unavailable: bool,
-}
-
-impl CredentialStore for MemoryCredentialStore {
-    fn get(
-        &self,
-        reference: &CredentialReference,
-    ) -> Result<Option<SecretValue>, CredentialStoreError> {
-        if self.unavailable {
-            return Err(CredentialStoreError::new(
-                CredentialStoreErrorKind::AccessUnavailable,
-            ));
-        }
-        self.values
-            .lock()
-            .expect("credential lock")
-            .get(reference.as_str())
-            .cloned()
-            .map(SecretValue::new)
-            .transpose()
-    }
-
-    fn set(
-        &self,
-        reference: &CredentialReference,
-        secret: &SecretValue,
-    ) -> Result<(), CredentialStoreError> {
-        self.values
-            .lock()
-            .expect("credential lock")
-            .insert(reference.as_str().to_string(), secret.expose().to_vec());
-        Ok(())
-    }
-
-    fn delete(&self, reference: &CredentialReference) -> Result<bool, CredentialStoreError> {
-        Ok(self
-            .values
-            .lock()
-            .expect("credential lock")
-            .remove(reference.as_str())
-            .is_some())
-    }
-}
 
 fn resolved_home(directory: &tempfile::TempDir) -> SugarCodeHome {
     sugarcode_state::resolve_sugarcode_home(HomeResolutionInputs {
@@ -59,12 +9,11 @@ fn resolved_home(directory: &tempfile::TempDir) -> SugarCodeHome {
     .expect("resolved home")
 }
 
-fn config_value(reference: Option<&str>) -> serde_json::Value {
+fn config_value() -> serde_json::Value {
     serde_json::json!({
         "apiFormat": "openai-chat-completions",
         "endpoint": "http://127.0.0.1:18080/v1/chat/completions",
-        "model": "fixture-model",
-        "credentialReference": reference
+        "model": "fixture-model"
     })
 }
 
@@ -72,7 +21,7 @@ fn config_value(reference: Option<&str>) -> serde_json::Value {
 fn validation_is_strict_and_returns_the_rust_owned_shape() {
     let input = serde_json::to_vec(&serde_json::json!({
         "contractVersion": 1,
-        "config": config_value(Some("model-api-token"))
+        "config": config_value()
     }))
     .expect("input");
     let mut output = Vec::new();
@@ -82,11 +31,11 @@ fn validation_is_strict_and_returns_the_rust_owned_shape() {
         serde_json::json!({
             "contractVersion": 1,
             "valid": true,
-            "config": config_value(Some("model-api-token"))
+            "config": config_value()
         })
     );
 
-    let mut unknown = br#"{"contractVersion":1,"config":{"apiFormat":"openai-chat-completions","endpoint":"http://127.0.0.1:18080/v1/chat/completions","model":"fixture-model","credentialReference":null,"token":"secret"}}"#.as_slice();
+    let mut unknown = br#"{"contractVersion":1,"config":{"apiFormat":"openai-chat-completions","endpoint":"http://127.0.0.1:18080/v1/chat/completions","model":"fixture-model","apiKey":"secret"}}"#.as_slice();
     assert_eq!(
         validate_model_config(&mut unknown, &mut Vec::new()),
         Err(ModelConfigCommandError::InvalidInput)
@@ -94,7 +43,7 @@ fn validation_is_strict_and_returns_the_rust_owned_shape() {
 }
 
 #[test]
-fn set_requires_revision_preserves_mcp_and_never_accepts_a_token() {
+fn set_requires_revision_and_atomically_persists_api_key_with_model_config() {
     let directory = tempfile::tempdir().expect("home");
     std::fs::write(
         directory.path().join("config.toml"),
@@ -106,124 +55,92 @@ fn set_requires_revision_preserves_mcp_and_never_accepts_a_token() {
     )
     .expect("config");
     let home = resolved_home(&directory);
-    let store = MemoryCredentialStore::default();
     let current = sugarcode_state::load_effective_config_for_home(home.clone()).expect("current");
     let revision = config_revision(current.model());
     let sentinel = "credential-secret-sentinel";
     let input = serde_json::to_vec(&serde_json::json!({
         "contractVersion": 1,
         "expectedRevision": revision,
-        "config": config_value(Some("model-api-token"))
+        "config": config_value(),
+        "apiKeyUpdate": {"action": "set", "value": sentinel}
     }))
     .expect("input");
     let mut output = Vec::new();
-    set_model_config(&home, &store, &mut input.as_slice(), &mut output).expect("set");
+    set_model_config(&home, &mut input.as_slice(), &mut output).expect("set");
     let receipt = serde_json::from_slice::<serde_json::Value>(&output).expect("receipt JSON");
     assert_eq!(receipt["contractVersion"], 1);
-    assert_eq!(receipt["credentialStatus"], "missing");
+    assert_eq!(receipt["apiKeyStatus"], "present");
+    assert!(!String::from_utf8_lossy(&output).contains(sentinel));
     let stored =
         std::fs::read_to_string(directory.path().join("config.toml")).expect("config TOML");
     assert!(stored.contains("[[mcp.servers]]"));
-    assert!(stored.contains("credential = \"model-api-token\""));
-    assert!(!stored.contains(sentinel));
-    assert!(!stored.contains("token ="));
+    assert!(stored.contains(&format!("api_key = \"{sentinel}\"")));
+    assert!(!stored.contains("credential ="));
 
     let stale = serde_json::to_vec(&serde_json::json!({
         "contractVersion": 1,
         "expectedRevision": "0".repeat(64),
-        "config": config_value(None)
+        "config": config_value(),
+        "apiKeyUpdate": {"action": "preserve"}
     }))
     .expect("input");
     assert_eq!(
-        set_model_config(&home, &store, &mut stale.as_slice(), &mut Vec::new()),
+        set_model_config(&home, &mut stale.as_slice(), &mut Vec::new()),
         Err(ModelConfigCommandError::RevisionMismatch)
     );
 }
 
 #[test]
-fn model_credential_is_bounded_header_safe_and_redacted() {
-    let store = MemoryCredentialStore::default();
-    let sentinel = b"credential-secret-sentinel";
-    let mut output = Vec::new();
-    set_model_credential(
-        &store,
-        "model-api-token",
-        &mut sentinel.as_slice(),
-        &mut output,
-    )
-    .expect("set credential");
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&output).expect("JSON"),
-        serde_json::json!({
-            "contractVersion": 1,
-            "reference": "model-api-token",
-            "status": "present"
-        })
-    );
-    assert!(
-        !String::from_utf8(output)
-            .expect("UTF-8")
-            .contains("sentinel")
-    );
+fn model_api_key_is_bounded_and_header_safe() {
+    let directory = tempfile::tempdir().expect("home");
+    let home = resolved_home(&directory);
     for invalid in [
-        Vec::new(),
-        b"contains space".to_vec(),
-        b"contains\nnewline".to_vec(),
-        vec![b'a'; MAX_SECRET_BYTES + 1],
+        String::new(),
+        "contains space".to_string(),
+        "contains\nnewline".to_string(),
+        "a".repeat(sugarcode_state::MAX_MODEL_API_KEY_BYTES + 1),
     ] {
+        let input = serde_json::to_vec(&serde_json::json!({
+            "contractVersion": 1,
+            "expectedRevision": config_revision(None),
+            "config": config_value(),
+            "apiKeyUpdate": {"action": "set", "value": invalid}
+        }))
+        .expect("input");
         assert_eq!(
-            set_model_credential(
-                &store,
-                "model-api-token",
-                &mut invalid.as_slice(),
-                &mut Vec::new()
-            ),
+            set_model_config(&home, &mut input.as_slice(), &mut Vec::new()),
             Err(ModelConfigCommandError::InvalidConfiguration)
         );
     }
 }
 
 #[test]
-fn inspect_reports_unavailable_without_backend_details() {
+fn delete_update_removes_only_the_local_api_key() {
     let directory = tempfile::tempdir().expect("home");
     let home = resolved_home(&directory);
-    let initial =
-        sugarcode_state::load_effective_config_for_home(home.clone()).expect("initial config");
-    let model = parse_model(ModelConfigInput {
-        api_format: "openai-chat-completions".to_string(),
-        endpoint: "http://127.0.0.1:18080/v1/chat/completions".to_string(),
-        model: "fixture-model".to_string(),
-        credential_reference: Some("model-api-token".to_string()),
-    })
+    let model = ModelConfig::new(
+        ModelApiFormat::OpenAiChatCompletions,
+        Url::parse("http://127.0.0.1:18080/v1/chat/completions").expect("URL"),
+        "fixture-model".to_string(),
+        Some("secret".to_string()),
+    )
     .expect("model");
     sugarcode_state::save_model_config(&home, &model).expect("save");
-    assert!(initial.model().is_none());
-    let store = MemoryCredentialStore {
-        unavailable: true,
-        ..Default::default()
-    };
+    let input = serde_json::to_vec(&serde_json::json!({
+        "contractVersion": 1,
+        "expectedRevision": config_revision(Some(&model)),
+        "config": config_value(),
+        "apiKeyUpdate": {"action": "delete"}
+    }))
+    .expect("input");
     let mut output = Vec::new();
-    inspect_model_config(&home, &store, &mut output).expect("inspect");
-    let text = String::from_utf8(output).expect("UTF-8");
-    assert!(text.contains("\"credentialStatus\":\"unavailable\""));
-    assert!(!text.contains("AccessUnavailable"));
-    assert!(!text.contains("backend"));
-}
-
-#[test]
-fn delete_receipt_is_idempotent() {
-    let store = MemoryCredentialStore::default();
-    let mut first = Vec::new();
-    delete_model_credential(&store, "model-api-token", &mut first).expect("delete");
+    set_model_config(&home, &mut input.as_slice(), &mut output).expect("delete key");
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&first).expect("JSON"),
-        serde_json::json!({
-            "contractVersion": 1,
-            "reference": "model-api-token",
-            "status": "missing",
-            "deleted": false
-        })
+        serde_json::from_slice::<serde_json::Value>(&output).expect("JSON")["apiKeyStatus"],
+        "notConfigured"
     );
+    let stored = std::fs::read_to_string(directory.path().join("config.toml")).expect("config");
+    assert!(!stored.contains("api_key"));
 }
 
 #[test]
@@ -260,12 +177,14 @@ fn mcp_inventory_is_sorted_and_redacted() {
 fn mcp_management_validates_replaces_and_preserves_model_configuration() {
     let directory = tempfile::tempdir().expect("home");
     let home = resolved_home(&directory);
-    let model = parse_model(ModelConfigInput {
-        api_format: "openai-chat-completions".to_string(),
-        endpoint: "http://127.0.0.1:18080/v1/chat/completions".to_string(),
-        model: "fixture-model".to_string(),
-        credential_reference: Some("model-api-token".to_string()),
-    })
+    let model = parse_model(
+        ModelConfigInput {
+            api_format: "openai-chat-completions".to_string(),
+            endpoint: "http://127.0.0.1:18080/v1/chat/completions".to_string(),
+            model: "fixture-model".to_string(),
+        },
+        Some("secret".to_string()),
+    )
     .expect("model");
     sugarcode_state::save_model_config(&home, &model).expect("save model");
 

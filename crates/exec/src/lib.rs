@@ -94,6 +94,16 @@ where
             );
         }
     };
+    if config.model().is_none() {
+        return surface_error(
+            stdout,
+            stderr,
+            request.output_format,
+            EXEC_EXIT_CONFIGURATION,
+            ExecErrorCategoryV1::Configuration,
+            "model unavailable",
+        );
+    }
     let command_supervisor_executable = match std::env::current_exe() {
         Ok(path) => path,
         Err(_) => {

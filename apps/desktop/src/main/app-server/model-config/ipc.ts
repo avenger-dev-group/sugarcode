@@ -1,9 +1,8 @@
 import { ipcMain } from 'electron';
 
 import {
-  MODEL_CONFIG_DELETE_CREDENTIAL_CHANNEL,
+  MODEL_CONFIG_DELETE_API_KEY_CHANNEL,
   MODEL_CONFIG_GET_CHANNEL,
-  MODEL_CONFIG_RETRY_CONNECTION_CHANNEL,
   MODEL_CONFIG_SAVE_CHANNEL,
 } from '@/shared/model-config';
 
@@ -35,22 +34,17 @@ export const registerModelConfigIpc = (
     return options.controller.save(request);
   });
   ipcMain.handle(
-    MODEL_CONFIG_DELETE_CREDENTIAL_CHANNEL,
+    MODEL_CONFIG_DELETE_API_KEY_CHANNEL,
     (event, expectedRevision: unknown) => {
       trusted(event);
-      return options.controller.deleteCredential(expectedRevision);
+      return options.controller.deleteApiKey(expectedRevision);
     },
   );
-  ipcMain.handle(MODEL_CONFIG_RETRY_CONNECTION_CHANNEL, (event) => {
-    trusted(event);
-    return options.controller.retryConnection();
-  });
   return () => {
     for (const channel of [
       MODEL_CONFIG_GET_CHANNEL,
       MODEL_CONFIG_SAVE_CHANNEL,
-      MODEL_CONFIG_DELETE_CREDENTIAL_CHANNEL,
-      MODEL_CONFIG_RETRY_CONNECTION_CHANNEL,
+      MODEL_CONFIG_DELETE_API_KEY_CHANNEL,
     ]) {
       ipcMain.removeHandler(channel);
     }

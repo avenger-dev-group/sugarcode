@@ -1,5 +1,4 @@
 mod config;
-mod credential;
 
 use clap::Args;
 use clap::Parser;
@@ -7,7 +6,6 @@ use clap::Subcommand;
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
-use sugarcode_credential_store::OsCredentialStore;
 
 #[derive(Debug, Parser)]
 #[command(name = "sugarcode", version)]
@@ -59,10 +57,8 @@ enum Command {
     InternalDesktopTerminal(DesktopTerminalArgs),
     /// Print product and app-server protocol versions.
     Version,
-    /// Validate SugarCode's non-secret configuration.
+    /// Validate SugarCode's local configuration.
     Config(ConfigArgs),
-    /// Manage secrets in the operating-system credential store.
-    Credential(CredentialArgs),
     /// Run the local app server or generate its public protocol artifacts.
     AppServer(AppServerArgs),
     /// Run one non-interactive agent turn.
@@ -93,7 +89,13 @@ struct ModelConfigArgs {
 
 #[derive(Debug, Subcommand)]
 enum ModelConfigCommand {
-    /// Inspect the saved model configuration and credential status.
+    /// Delete only the locally stored model API key.
+    DeleteApiKey {
+        /// Emit the resulting model configuration receipt as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect the saved model configuration and API-key status.
     Inspect {
         /// Emit one versioned JSON object.
         #[arg(long)]
@@ -108,50 +110,11 @@ enum ModelConfigCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Read a complete non-secret model configuration from standard input and save it.
+    /// Read a complete model configuration update from standard input and save it.
     Set {
         /// Require JSON configuration input on standard input.
         #[arg(long)]
         stdin: bool,
-        /// Emit one versioned JSON object.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Manage the credential referenced by the model configuration.
-    Credential(ModelCredentialArgs),
-}
-
-#[derive(Debug, Args)]
-struct ModelCredentialArgs {
-    #[command(subcommand)]
-    command: ModelCredentialCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum ModelCredentialCommand {
-    /// Read a model API token from standard input and store it.
-    Set {
-        /// Non-secret logical credential reference.
-        reference: String,
-        /// Require secret input on standard input.
-        #[arg(long)]
-        stdin: bool,
-        /// Emit one versioned JSON object.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Report whether a model API token is present.
-    Status {
-        /// Non-secret logical credential reference.
-        reference: String,
-        /// Emit one versioned JSON object.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Delete a model API token if present.
-    Delete {
-        /// Non-secret logical credential reference.
-        reference: String,
         /// Emit one versioned JSON object.
         #[arg(long)]
         json: bool,
@@ -195,34 +158,6 @@ enum McpConfigCommand {
         /// Emit one versioned JSON object.
         #[arg(long)]
         json: bool,
-    },
-}
-
-#[derive(Debug, Args)]
-struct CredentialArgs {
-    #[command(subcommand)]
-    command: CredentialCommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum CredentialCommand {
-    /// Read a secret from standard input and store it.
-    Set {
-        /// Non-secret logical credential reference.
-        reference: String,
-        /// Require secret input on standard input.
-        #[arg(long)]
-        stdin: bool,
-    },
-    /// Report whether a credential is present without displaying it.
-    Status {
-        /// Non-secret logical credential reference.
-        reference: String,
-    },
-    /// Delete a credential if it is present.
-    Delete {
-        /// Non-secret logical credential reference.
-        reference: String,
     },
 }
 
@@ -399,6 +334,24 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Config(ConfigArgs {
             command:
                 ConfigCommand::Model(ModelConfigArgs {
+                    command: ModelConfigCommand::DeleteApiKey { json },
+                }),
+        }) => {
+            let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
+            if json {
+                config::delete_model_api_key(&resolved_home, &mut std::io::stdout().lock())?;
+            } else {
+                let removed = config::delete_model_api_key(&resolved_home, &mut std::io::sink())?;
+                if removed {
+                    println!("Model API key removed from local configuration.");
+                } else {
+                    println!("Model API key is not configured.");
+                }
+            }
+        }
+        Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Model(ModelConfigArgs {
                     command: ModelConfigCommand::Set { stdin, json },
                 }),
         }) => {
@@ -406,10 +359,8 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                 return Err(Box::new(config::ModelConfigCommandError::StdinRequired));
             }
             let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
-            let store = OsCredentialStore::new(resolved_home.path());
             config::set_model_config(
                 &resolved_home,
-                &store,
                 &mut std::io::stdin().lock(),
                 &mut std::io::stdout().lock(),
             )?;
@@ -424,8 +375,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                 return Err("config model inspect requires --json".into());
             }
             let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
-            let store = OsCredentialStore::new(resolved_home.path());
-            config::inspect_model_config(&resolved_home, &store, &mut std::io::stdout().lock())?;
+            config::inspect_model_config(&resolved_home, &mut std::io::stdout().lock())?;
         }
         Command::Config(ConfigArgs {
             command:
@@ -440,52 +390,6 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                 &mut std::io::stdin().lock(),
                 &mut std::io::stdout().lock(),
             )?;
-        }
-        Command::Config(ConfigArgs {
-            command:
-                ConfigCommand::Model(ModelConfigArgs {
-                    command: ModelConfigCommand::Credential(args),
-                }),
-        }) => {
-            let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
-            let store = OsCredentialStore::new(resolved_home.path());
-            match args.command {
-                ModelCredentialCommand::Set {
-                    reference,
-                    stdin,
-                    json,
-                } => {
-                    if !stdin || !json || std::io::stdin().is_terminal() {
-                        return Err(Box::new(config::ModelConfigCommandError::StdinRequired));
-                    }
-                    config::set_model_credential(
-                        &store,
-                        &reference,
-                        &mut std::io::stdin().lock(),
-                        &mut std::io::stdout().lock(),
-                    )?;
-                }
-                ModelCredentialCommand::Status { reference, json } => {
-                    if !json {
-                        return Err("config model credential status requires --json".into());
-                    }
-                    config::show_model_credential_status(
-                        &store,
-                        &reference,
-                        &mut std::io::stdout().lock(),
-                    )?;
-                }
-                ModelCredentialCommand::Delete { reference, json } => {
-                    if !json {
-                        return Err("config model credential delete requires --json".into());
-                    }
-                    config::delete_model_credential(
-                        &store,
-                        &reference,
-                        &mut std::io::stdout().lock(),
-                    )?;
-                }
-            }
         }
         Command::Config(ConfigArgs {
             command:
@@ -541,30 +445,6 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                 &mut std::io::stdout().lock(),
             )?;
         }
-        Command::Credential(args) => {
-            let config = sugarcode_state::load_effective_config(home)?;
-            let store = OsCredentialStore::new(config.home().path());
-            let action = match args.command {
-                CredentialCommand::Set { reference, stdin } => credential::CredentialAction::Set {
-                    reference,
-                    read_stdin: stdin,
-                },
-                CredentialCommand::Status { reference } => {
-                    credential::CredentialAction::Status { reference }
-                }
-                CredentialCommand::Delete { reference } => {
-                    credential::CredentialAction::Delete { reference }
-                }
-            };
-            let stdin_is_terminal = std::io::stdin().is_terminal();
-            credential::run_credential_action(
-                action,
-                &store,
-                &mut std::io::stdin().lock(),
-                stdin_is_terminal,
-                &mut std::io::stdout().lock(),
-            )?;
-        }
         Command::AppServer(args) => match (
             args.stdio,
             args.command,
@@ -585,7 +465,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                 allow_command_workspace_write,
                 mcp_server,
             ) => {
-                let effective_config = sugarcode_state::load_effective_config(home)?;
+                let effective_config = sugarcode_state::load_runtime_config(home)?;
                 sugarcode_app_server::run_stdio(
                     effective_config,
                     workspace,

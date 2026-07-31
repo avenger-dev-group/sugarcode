@@ -1,49 +1,36 @@
 export const MODEL_CONFIG_GET_CHANNEL = 'model-config:get';
 export const MODEL_CONFIG_SAVE_CHANNEL = 'model-config:save';
-export const MODEL_CONFIG_DELETE_CREDENTIAL_CHANNEL =
-  'model-config:delete-credential';
-export const MODEL_CONFIG_RETRY_CONNECTION_CHANNEL =
-  'model-config:retry-connection';
+export const MODEL_CONFIG_DELETE_API_KEY_CHANNEL =
+  'model-config:delete-api-key';
 
-export type ModelCredentialStatus =
+export type ModelApiKeyStatus =
   | 'notConfigured'
-  | 'present'
-  | 'missing'
-  | 'unavailable';
+  | 'present';
 
 export type ModelConfigValue = Readonly<{
   apiFormat: 'openai-chat-completions';
   endpoint: string;
   model: string;
-  credentialReference: string | null;
 }>;
 
 export type ModelConfigInspection = Readonly<{
   contractVersion: 1;
   revision: string;
   config: ModelConfigValue | null;
-  credentialStatus: ModelCredentialStatus;
+  apiKeyStatus: ModelApiKeyStatus;
 }>;
 
 export type ModelConfigSaveRequest = Readonly<{
   expectedRevision: string;
   config: ModelConfigValue;
-  credential?: string;
+  apiKey?: string;
 }>;
 
 export type ModelConfigActionResult = Readonly<{
   accepted: boolean;
-  state:
-    | 'active'
-    | 'savedNotActive'
-    | 'credentialStoredConfigUnchanged'
-    | 'blocked'
-    | 'failed';
+  state: 'saved' | 'blocked' | 'failed';
   inspection?: ModelConfigInspection;
   reason?:
-    | 'turnActive'
-    | 'approvalPending'
-    | 'navigationPending'
     | 'reconnectPending'
     | 'unavailable'
     | 'invalid'
@@ -55,10 +42,9 @@ export type ModelConfigApi = Readonly<{
   saveModelConfig: (
     request: ModelConfigSaveRequest,
   ) => Promise<ModelConfigActionResult>;
-  deleteModelCredential: (
+  deleteModelApiKey: (
     expectedRevision: string,
   ) => Promise<ModelConfigActionResult>;
-  retryModelConnection: () => Promise<ModelConfigActionResult>;
 }>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -87,12 +73,7 @@ export const isModelConfigValue = (
 ): value is ModelConfigValue => {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      'apiFormat',
-      'endpoint',
-      'model',
-      'credentialReference',
-    ]) ||
+    !hasOnlyKeys(value, ['apiFormat', 'endpoint', 'model']) ||
     value.apiFormat !== 'openai-chat-completions' ||
     typeof value.endpoint !== 'string' ||
     byteLength(value.endpoint) > 16 * 1024 ||
@@ -101,11 +82,7 @@ export const isModelConfigValue = (
   ) {
     return false;
   }
-  const reference = value.credentialReference;
-  return (
-    reference === null ||
-    (typeof reference === 'string' && byteLength(reference) <= 64)
-  );
+  return true;
 };
 
 export const isModelConfigInspection = (
@@ -117,38 +94,28 @@ export const isModelConfigInspection = (
       'contractVersion',
       'revision',
       'config',
-      'credentialStatus',
+      'apiKeyStatus',
     ]) ||
     value.contractVersion !== 1 ||
     !isRevision(value.revision) ||
     (value.config !== null && !isModelConfigValue(value.config)) ||
-    ![
-      'notConfigured',
-      'present',
-      'missing',
-      'unavailable',
-    ].includes(value.credentialStatus as string)
+    !['notConfigured', 'present'].includes(value.apiKeyStatus as string)
   ) {
     return false;
   }
-  const config = value.config as ModelConfigValue | null;
-  const hasReference =
-    config !== null && config.credentialReference !== null;
-  return hasReference
-    ? value.credentialStatus !== 'notConfigured'
-    : value.credentialStatus === 'notConfigured';
+  return value.config !== null || value.apiKeyStatus === 'notConfigured';
 };
 
 export const isModelConfigSaveRequest = (
   value: unknown,
 ): value is ModelConfigSaveRequest =>
   isRecord(value) &&
-  hasOnlyKeys(value, ['expectedRevision', 'config'], ['credential']) &&
+  hasOnlyKeys(value, ['expectedRevision', 'config'], ['apiKey']) &&
   isRevision(value.expectedRevision) &&
   isModelConfigValue(value.config) &&
-  (value.credential === undefined ||
-    (typeof value.credential === 'string' &&
-      byteLength(value.credential) <= 2_048));
+  (value.apiKey === undefined ||
+    (typeof value.apiKey === 'string' &&
+      byteLength(value.apiKey) <= 2_048));
 
 export const isModelConfigActionResult = (
   value: unknown,
@@ -157,20 +124,11 @@ export const isModelConfigActionResult = (
     !isRecord(value) ||
     !hasOnlyKeys(value, ['accepted', 'state'], ['inspection', 'reason']) ||
     typeof value.accepted !== 'boolean' ||
-    ![
-      'active',
-      'savedNotActive',
-      'credentialStoredConfigUnchanged',
-      'blocked',
-      'failed',
-    ].includes(value.state as string) ||
+    !['saved', 'blocked', 'failed'].includes(value.state as string) ||
     (value.inspection !== undefined &&
       !isModelConfigInspection(value.inspection)) ||
     (value.reason !== undefined &&
       ![
-        'turnActive',
-        'approvalPending',
-        'navigationPending',
         'reconnectPending',
         'unavailable',
         'invalid',
@@ -179,5 +137,5 @@ export const isModelConfigActionResult = (
   ) {
     return false;
   }
-  return value.accepted === (value.state === 'active');
+  return value.accepted === (value.state === 'saved');
 };

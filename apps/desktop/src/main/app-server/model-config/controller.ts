@@ -6,10 +6,7 @@ import {
 } from '@/shared/model-config';
 
 import { CliOneShotError, runCliJson } from '../cli/one-shot';
-import type {
-  ConnectionSupervisor,
-  ModelConfigRestartBlock,
-} from '../connection/supervisor';
+import type { ConnectionSupervisor } from '../connection/supervisor';
 
 type ModelConfigControllerOptions = Readonly<{
   supervisor: ConnectionSupervisor;
@@ -17,7 +14,7 @@ type ModelConfigControllerOptions = Readonly<{
 }>;
 
 const blocked = (
-  reason: ModelConfigRestartBlock | 'invalid' | 'stale',
+  reason: 'reconnectPending' | 'unavailable' | 'invalid' | 'stale',
 ): ModelConfigActionResult => ({
   accepted: false,
   state: 'blocked',
@@ -56,11 +53,10 @@ export class ModelConfigController {
     if (!isModelConfigSaveRequest(request)) {
       return blocked('invalid');
     }
-    const lease = this.options.supervisor.beginModelConfigTransaction();
+    const lease = this.options.supervisor.beginConfigWrite();
     if (typeof lease === 'string') {
       return blocked(lease);
     }
-    let credentialStored = false;
     try {
       try {
         await this.runCommand(
@@ -77,83 +73,58 @@ export class ModelConfigController {
         return failed('invalid');
       }
 
-      if (request.credential !== undefined) {
-        if (request.credential.length === 0) {
-          return failed('invalid');
-        }
-        const secret = Buffer.from(request.credential, 'utf8');
-        try {
-          await this.runCommand(
-            [
-              'config',
-              'model',
-              'credential',
-              'set',
-              request.config.credentialReference ?? '',
-              '--stdin',
-              '--json',
-            ],
-            secret,
-          );
-          credentialStored = true;
-        } catch {
-          return failed();
-        } finally {
-          secret.fill(0);
-        }
+      if (request.apiKey !== undefined && request.apiKey.length === 0) {
+        return failed('invalid');
       }
 
       let inspection: ModelConfigInspection;
+      const input = Buffer.from(
+        JSON.stringify({
+          contractVersion: 1,
+          expectedRevision: request.expectedRevision,
+          config: request.config,
+          apiKeyUpdate:
+            request.apiKey === undefined
+              ? { action: 'preserve' }
+              : { action: 'set', value: request.apiKey },
+        }),
+        'utf8',
+      );
       try {
-        const value = await this.runCommand(
-          ['config', 'model', 'set', '--stdin', '--json'],
-          Buffer.from(
-            JSON.stringify({
-              contractVersion: 1,
-              expectedRevision: request.expectedRevision,
-              config: request.config,
-            }),
-            'utf8',
-          ),
-        );
-        if (!isModelConfigInspection(value)) {
-          return failed();
+        try {
+          const value = await this.runCommand(
+            ['config', 'model', 'set', '--stdin', '--json'],
+            input,
+          );
+          if (!isModelConfigInspection(value)) {
+            return failed();
+          }
+          inspection = value;
+        } catch {
+          const current = await this.inspect().catch(
+            (): undefined => undefined,
+          );
+          if (current?.revision !== request.expectedRevision) {
+            return blocked('stale');
+          }
+          return {
+            accepted: false,
+            state: 'failed',
+            reason: 'unavailable',
+            ...(current ? { inspection: current } : {}),
+          };
         }
-        inspection = value;
-      } catch {
-        const current = await this.inspect().catch(
-          (): undefined => undefined,
-        );
-        if (current?.revision !== request.expectedRevision) {
-          return blocked('stale');
-        }
-        return {
-          accepted: false,
-          state: credentialStored
-            ? 'credentialStoredConfigUnchanged'
-            : 'failed',
-          reason: 'unavailable',
-          ...(current ? { inspection: current } : {}),
-        };
+      } finally {
+        input.fill(0);
       }
 
-      if (
-        await this.options.supervisor.activateSavedModelConfiguration()
-      ) {
-        return { accepted: true, state: 'active', inspection };
-      }
-      return {
-        accepted: false,
-        state: 'savedNotActive',
-        reason: 'unavailable',
-        inspection,
-      };
+      return { accepted: true, state: 'saved', inspection };
     } finally {
       lease.release();
     }
   };
 
-  deleteCredential = async (
+  deleteApiKey = async (
     expectedRevision: unknown,
   ): Promise<ModelConfigActionResult> => {
     if (
@@ -162,7 +133,7 @@ export class ModelConfigController {
     ) {
       return blocked('invalid');
     }
-    const lease = this.options.supervisor.beginModelConfigTransaction();
+    const lease = this.options.supervisor.beginConfigWrite();
     if (typeof lease === 'string') {
       return blocked(lease);
     }
@@ -176,62 +147,34 @@ export class ModelConfigController {
       if (current.revision !== expectedRevision) {
         return blocked('stale');
       }
-      const reference = current.config?.credentialReference;
-      if (!reference) {
+      if (!current.config || current.apiKeyStatus === 'notConfigured') {
         return failed('invalid');
       }
+      const input = Buffer.from(
+        JSON.stringify({
+          contractVersion: 1,
+          expectedRevision,
+          config: current.config,
+          apiKeyUpdate: { action: 'delete' },
+        }),
+        'utf8',
+      );
+      let inspection: ModelConfigInspection;
       try {
-        await this.runCommand([
-          'config',
-          'model',
-          'credential',
-          'delete',
-          reference,
-          '--json',
-        ]);
+        const value = await this.runCommand(
+          ['config', 'model', 'set', '--stdin', '--json'],
+          input,
+        );
+        if (!isModelConfigInspection(value)) {
+          return failed();
+        }
+        inspection = value;
       } catch {
         return failed();
+      } finally {
+        input.fill(0);
       }
-      const inspection = await this.inspect().catch(() => current);
-      if (
-        await this.options.supervisor.activateSavedModelConfiguration()
-      ) {
-        return { accepted: true, state: 'active', inspection };
-      }
-      return {
-        accepted: false,
-        state: 'savedNotActive',
-        reason: 'unavailable',
-        inspection,
-      };
-    } finally {
-      lease.release();
-    }
-  };
-
-  retryConnection = async (): Promise<ModelConfigActionResult> => {
-    const lease = this.options.supervisor.beginModelConfigTransaction();
-    if (typeof lease === 'string') {
-      return blocked(lease);
-    }
-    try {
-      const inspection = await this.inspect().catch(
-        (): undefined => undefined,
-      );
-      if (!inspection) {
-        return failed();
-      }
-      if (
-        await this.options.supervisor.activateSavedModelConfiguration()
-      ) {
-        return { accepted: true, state: 'active', inspection };
-      }
-      return {
-        accepted: false,
-        state: 'savedNotActive',
-        reason: 'unavailable',
-        inspection,
-      };
+      return { accepted: true, state: 'saved', inspection };
     } finally {
       lease.release();
     }

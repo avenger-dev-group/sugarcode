@@ -490,9 +490,9 @@ fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
             "config": {
                 "apiFormat": "openai-chat-completions",
                 "endpoint": format!("http://{address}/v1/chat/completions"),
-                "model": "fixture-model",
-                "credentialReference": Value::Null
-            }
+                "model": "fixture-model"
+            },
+            "apiKeyUpdate": {"action": "preserve"}
         })
     )
     .expect("write model config");

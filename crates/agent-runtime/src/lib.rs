@@ -18,14 +18,16 @@ use std::sync::Arc;
 use sugarcode_core::Core;
 use sugarcode_core::CoreRuntime;
 use sugarcode_core::McpToolCapability;
-use sugarcode_credential_store::CredentialReference;
-use sugarcode_credential_store::CredentialStore;
-use sugarcode_credential_store::OsCredentialStore;
+use sugarcode_core::ModelResolver;
+use sugarcode_core::ResolvedModel;
+use sugarcode_model_provider::ModelError;
+use sugarcode_model_provider::ModelErrorKind;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_state::EffectiveConfig;
 use sugarcode_state::ModelApiFormat;
 use sugarcode_state::RolloutRepository;
+use sugarcode_state::SugarCodeHome;
 use sugarcode_tools::WorkspaceTool;
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
@@ -80,6 +82,33 @@ pub struct AgentSurfaceRuntimeParts {
     pub workspace: Option<Arc<WorkspaceTool>>,
     pub mcp_capability: Option<McpToolCapability>,
     pub diagnostics: Vec<String>,
+}
+
+#[derive(Clone)]
+struct LocalModelResolver {
+    home: SugarCodeHome,
+}
+
+impl ModelResolver for LocalModelResolver {
+    fn resolve(&self) -> Result<ResolvedModel, ModelError> {
+        let config = sugarcode_state::load_effective_config_for_home(self.home.clone())
+            .map_err(|_| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        let model = config
+            .model()
+            .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        let token = model
+            .api_key()
+            .map(|api_key| Zeroizing::new(api_key.to_owned()));
+        let provider: Arc<dyn sugarcode_model_provider::ModelProvider> = match model.api_format() {
+            ModelApiFormat::OpenAiChatCompletions => Arc::new(
+                OpenAiChatCompletionsProvider::new_secret(model.endpoint().clone(), token)?,
+            ),
+        };
+        Ok(ResolvedModel {
+            provider,
+            model: model.model().to_string(),
+        })
+    }
 }
 
 impl AgentSurfaceRuntime {
@@ -145,12 +174,9 @@ impl AgentSurfaceRuntime {
             })
             .flatten();
         let mcp = discover_selected_mcp_servers(&options.config, options.mcp_servers).await?;
-        let model = options.config.model().cloned();
-        let model_token = model
-            .as_ref()
-            .and_then(|model| model.credential_reference())
-            .map(|reference| load_model_token(options.config.home().path(), reference))
-            .transpose();
+        let model_resolver: Arc<dyn ModelResolver> = Arc::new(LocalModelResolver {
+            home: options.config.home().clone(),
+        });
         let active_workspace_binding = match options.thread_workspace_binding {
             ThreadWorkspaceBinding::Workspace => {
                 workspace.as_ref().map(|workspace| workspace.binding_id())
@@ -182,79 +208,36 @@ impl AgentSurfaceRuntime {
         let core = Core::with_repository(Box::new(repository));
         let (approval_requester, command_approvals) = ChannelCommandApprovalRequester::channel(4);
         let (mcp_approval_requester, mcp_approvals) = ChannelMcpToolApprovalRequester::channel(1);
-        let (runtime, events) = match (model, model_token) {
-            (Some(_), Err(_)) => {
-                diagnostics.push("configured model credential is unavailable".to_string());
-                CoreRuntime::without_model(core)
-            }
-            (Some(model), Ok(token)) => {
-                let provider: Arc<dyn sugarcode_model_provider::ModelProvider> = match model
-                    .api_format()
-                {
-                    ModelApiFormat::OpenAiChatCompletions => Arc::new(
-                        OpenAiChatCompletionsProvider::new_secret(model.endpoint().clone(), token)
-                            .map_err(io::Error::other)?,
-                    ),
-                };
-                if let Some(Ok(command_workspace_root)) = command_workspace_root {
-                    let command_policy = if options.allow_command_workspace_write {
-                        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1
-                    } else {
-                        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1
-                    };
-                    match sugarcode_tools::NativeShellCommandExecutor::new_with_policy(
-                        options.command_supervisor_executable,
-                        command_workspace_root,
-                        command_policy,
-                    ) {
-                        Ok(shell_executor) => CoreRuntime::new_with_shell(
-                            core,
-                            provider,
-                            model.model().to_string(),
-                            workspace_read,
-                            workspace_list,
-                            workspace_search,
-                            Arc::new(shell_executor),
-                            Arc::new(approval_requester),
-                        ),
-                        Err(_) => {
-                            diagnostics
-                                .push("shell/exec unavailable: sandboxUnavailable".to_string());
-                            CoreRuntime::new_with_workspace_search(
-                                core,
-                                provider,
-                                model.model().to_string(),
-                                workspace_read,
-                                workspace_list,
-                                workspace_search,
-                            )
-                        }
-                    }
-                } else if command_workspace_root.is_some() {
+        let (runtime, events) = CoreRuntime::new_with_model_resolver(
+            core,
+            model_resolver,
+            workspace_read,
+            workspace_list,
+            workspace_search,
+        );
+        let runtime = if let Some(Ok(command_workspace_root)) = command_workspace_root {
+            let command_policy = if options.allow_command_workspace_write {
+                sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1
+            } else {
+                sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1
+            };
+            match sugarcode_tools::NativeShellCommandExecutor::new_with_policy(
+                options.command_supervisor_executable,
+                command_workspace_root,
+                command_policy,
+            ) {
+                Ok(shell_executor) => runtime
+                    .with_shell_capability(Arc::new(shell_executor), Arc::new(approval_requester)),
+                Err(_) => {
                     diagnostics.push("shell/exec unavailable: sandboxUnavailable".to_string());
-                    CoreRuntime::new_with_workspace_search(
-                        core,
-                        provider,
-                        model.model().to_string(),
-                        workspace_read,
-                        workspace_list,
-                        workspace_search,
-                    )
-                } else {
-                    CoreRuntime::new_with_workspace_search(
-                        core,
-                        provider,
-                        model.model().to_string(),
-                        workspace_read,
-                        workspace_list,
-                        workspace_search,
-                    )
+                    runtime
                 }
             }
-            (None, Ok(None)) => CoreRuntime::without_model(core),
-            (None, Ok(Some(_))) | (None, Err(_)) => {
-                unreachable!("token lookup requires a model")
+        } else {
+            if command_workspace_root.is_some() {
+                diagnostics.push("shell/exec unavailable: sandboxUnavailable".to_string());
             }
+            runtime
         };
         let mut core = runtime
             .with_workspace_patch(workspace_patch)
@@ -385,26 +368,4 @@ async fn discover_selected_mcp_servers(
         discovered.push((spec, inventory));
     }
     Ok(discovered)
-}
-
-fn load_model_token(home: &std::path::Path, reference: &str) -> io::Result<Zeroizing<String>> {
-    let reference = CredentialReference::parse(reference).map_err(io::Error::other)?;
-    let store = OsCredentialStore::new(home);
-    let Some(secret) = store.get(&reference).map_err(io::Error::other)? else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "configured model credential is missing",
-        ));
-    };
-    let token = std::str::from_utf8(secret.expose())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "model credential is not UTF-8"))?;
-    if token.len() > sugarcode_credential_store::MAX_SECRET_BYTES
-        || !token.bytes().all(|byte| matches!(byte, 0x21..=0x7e))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "model credential is invalid",
-        ));
-    }
-    Ok(Zeroizing::new(token.to_owned()))
 }

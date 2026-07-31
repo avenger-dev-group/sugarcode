@@ -443,12 +443,20 @@ export class ConnectionSupervisor {
     };
   };
 
-  beginModelConfigTransaction = ():
+  beginConfigWrite = ():
     | Readonly<{ release: () => void }>
-    | ModelConfigRestartBlock => {
-    const block = this.getModelConfigRestartBlock();
-    if (block) {
-      return block;
+    | 'reconnectPending'
+    | 'unavailable' => {
+    if (
+      this.modelConfigTransaction ||
+      this.workspaceTransaction ||
+      this.gitTransaction ||
+      this.restarting
+    ) {
+      return 'reconnectPending';
+    }
+    if (!this.resolvedCli || this.shuttingDown) {
+      return 'unavailable';
     }
     this.modelConfigTransaction = true;
     let released = false;
@@ -460,28 +468,6 @@ export class ConnectionSupervisor {
         }
       },
     };
-  };
-
-  activateSavedModelConfiguration = async (): Promise<boolean> => {
-    const target = getCliTarget(this.options.platform, this.options.arch);
-    if (
-      !this.modelConfigTransaction ||
-      !target ||
-      !this.resolvedCli ||
-      this.shuttingDown
-    ) {
-      return false;
-    }
-    const preferredThreadId = this.conversation.getSnapshot().threadId;
-    if (!(await this.closeForRestart())) {
-      return false;
-    }
-    if (this.shuttingDown) {
-      return false;
-    }
-    this.mcpSession.initialize(this.mcpSession.getSnapshot().servers);
-    this.transition('connecting');
-    return this.connect([], preferredThreadId, target.expectedPlatform);
   };
 
   subscribe = (listener: ConnectionStateListener): (() => void) => {

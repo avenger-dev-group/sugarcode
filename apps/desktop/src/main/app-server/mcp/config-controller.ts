@@ -53,7 +53,7 @@ export class McpConfigController {
     ) {
       return rejected('sessionActive');
     }
-    const lease = this.options.supervisor.beginModelConfigTransaction();
+    const lease = this.options.supervisor.beginConfigWrite();
     if (typeof lease === 'string') {
       return rejected(lease);
     }

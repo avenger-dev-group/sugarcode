@@ -112,7 +112,8 @@ export class WorkspaceController {
       } else if (connection.status === 'failed') {
         this.publish(
           'failed',
-          'The selected workspace could not be opened safely.',
+          connection.diagnostic?.summary ??
+            'The local CLI stopped while opening this workspace.',
         );
       }
     });

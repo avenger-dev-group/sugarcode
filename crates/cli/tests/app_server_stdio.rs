@@ -848,12 +848,24 @@ fn approved_command_stays_bound_to_the_original_workspace_scope() {
 }
 
 #[test]
-fn missing_model_still_serves_threads_and_returns_stable_turn_error() {
+fn model_configuration_is_resolved_per_turn_without_restarting_app_server() {
     let home = tempfile::tempdir().expect("isolated SugarCode home");
+    let workspace = tempfile::tempdir().expect("isolated workspace");
+    fs::write(
+        home.path().join("config.toml"),
+        "schema_version = 1\n\
+         [model]\n\
+         api_format = \"openai-chat-completions\"\n\
+         endpoint = \"https://example.com/v1/chat/completions\"\n\
+         model = \"fixture-model\"\n\
+         api_key = \"invalid key\"\n",
+    )
+    .expect("invalid model config");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home.path())
-        .args(["app-server", "--stdio"])
+        .args(["app-server", "--stdio", "--workspace"])
+        .arg(workspace.path())
         .env_remove("SUGARCODE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -874,7 +886,12 @@ fn missing_model_still_serves_threads_and_returns_stable_turn_error() {
             }
         }),
     );
-    assert_eq!(read_json(&mut stdout)["id"], "initialize");
+    let initialized = read_json(&mut stdout);
+    assert_eq!(initialized["id"], "initialize");
+    assert_eq!(
+        initialized["result"]["capabilities"]["workspaceBrowser"],
+        true
+    );
     send_json(
         &mut stdin,
         json!({"jsonrpc": "2.0", "method": "initialized"}),
@@ -889,18 +906,45 @@ fn missing_model_still_serves_threads_and_returns_stable_turn_error() {
         .expect("thread id")
         .to_string();
     assert_eq!(read_json(&mut stdout)["method"], "thread/started");
-    let turn = json!({
+    send_json(
+        &mut stdin,
+        json!({
         "jsonrpc": "2.0",
-        "id": "retry",
+        "id": "missing-model",
         "method": "turn/start",
         "params": {"threadId": thread_id, "input": "Hello"}
-    });
-    for _ in 0..2 {
-        send_json(&mut stdin, turn.clone());
-        let error = read_json(&mut stdout);
-        assert_eq!(error["id"], "retry");
-        assert_eq!(error["error"]["code"], -32007);
-        assert!(error["error"].get("data").is_none());
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "missing-model");
+    loop {
+        let message = read_json(&mut stdout);
+        if message["method"] == "turn/completed" {
+            assert_eq!(message["params"]["turn"]["status"], "failed");
+            assert_eq!(message["params"]["turn"]["error"]["kind"], "invalidRequest");
+            break;
+        }
+    }
+
+    let _provider = MockProvider::start_with_body(
+        home.path(),
+        include_str!("../../model-provider/tests/fixtures/completed.sse"),
+    );
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "configured-model",
+            "method": "turn/start",
+            "params": {"threadId": thread_id, "input": "Hello again"}
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "configured-model");
+    loop {
+        let message = read_json(&mut stdout);
+        if message["method"] == "turn/completed" {
+            assert_eq!(message["params"]["turn"]["status"], "completed");
+            break;
+        }
     }
     drop(stdin);
     let output = child.wait_with_output().expect("wait for app-server");
@@ -995,7 +1039,7 @@ fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
         }),
     );
     let active_error = read_json(&mut stdout);
-    assert_eq!(active_error["id"], "interrupt");
+    assert_eq!(active_error["id"], "interrupt", "{active_error}");
     assert_eq!(active_error["error"]["code"], -32009);
     assert_eq!(active_error["error"]["data"]["turnId"], turn_id);
 
@@ -1127,7 +1171,10 @@ fn stdin_eof_interrupts_active_stream_flushes_terminal_and_replays_it_once() {
     assert_eq!(trailing.len(), 2);
     assert_eq!(trailing[0]["method"], "item/completed");
     assert_eq!(trailing[1]["method"], "turn/completed");
-    assert_eq!(trailing[1]["params"]["turn"]["status"], "interrupted");
+    assert_eq!(
+        trailing[1]["params"]["turn"]["status"], "interrupted",
+        "{trailing:?}"
+    );
     provider.wait_until_connection_closed();
     assert!(child.wait().expect("wait app-server").success());
     let mut stderr = String::new();
@@ -1552,7 +1599,10 @@ impl BlockingMockProvider {
         let thread = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept provider request");
             read_provider_request(&mut stream);
-            let event = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n";
+            let event = format!(
+                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{}\"}},\"finish_reason\":null}}]}}\n\n",
+                "partial".repeat(80)
+            );
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{}\r\n",
@@ -1653,9 +1703,9 @@ fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
             "config": {
                 "apiFormat": "openai-chat-completions",
                 "endpoint": format!("http://{address}/v1/chat/completions"),
-                "model": "fixture-model",
-                "credentialReference": null
-            }
+                "model": "fixture-model"
+            },
+            "apiKeyUpdate": {"action": "preserve"}
         })
     )
     .expect("write model config");
