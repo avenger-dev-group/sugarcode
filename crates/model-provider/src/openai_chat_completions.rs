@@ -42,7 +42,6 @@ const MAX_TOOL_NAME_BYTES: usize = 128;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 32 * 1024;
 const MAX_PARALLEL_TOOL_CALLS: usize = 4;
 const MAX_TOOL_COMMENTARY_BYTES: usize = 512;
-const TOOL_COMMENTARY_GRACE: Duration = Duration::from_millis(250);
 
 pub struct OpenAiChatCompletionsProvider {
     client: reqwest::Client,
@@ -166,31 +165,19 @@ async fn process_stream(
     let mut usage_seen = false;
     let mut text_committed = false;
     let mut pending_text = String::new();
-    let mut pending_text_deadline = None;
     let mut completed_commentary = None;
     let mut tool_assemblers = BTreeMap::<u64, ToolCallAssembler>::new();
     let mut completed_tool_calls: Option<Vec<ModelToolCall>> = None;
     loop {
-        let awaiting_possible_commentary = allow_tools
-            && !text_committed
-            && !pending_text.is_empty()
-            && tool_assemblers.is_empty();
-        let event_deadline = pending_text_deadline
-            .filter(|_| awaiting_possible_commentary)
-            .unwrap_or_else(|| tokio::time::Instant::now() + IDLE_TIMEOUT);
         let next = tokio::select! {
             _ = sender.closed() => return,
-            next = tokio::time::timeout_at(event_deadline, stream.next()) => next,
+            next = tokio::time::timeout(IDLE_TIMEOUT, stream.next()) => next,
         };
         let event = match next {
-            Err(_) if awaiting_possible_commentary => {
-                pending_text_deadline = None;
+            Err(_) => {
                 if !flush_pending_answer(&sender, &mut pending_text, &mut text_committed).await {
                     return;
                 }
-                continue;
-            }
-            Err(_) => {
                 send_error(&sender, ModelError::new(ModelErrorKind::Timeout, true)).await;
                 return;
             }
@@ -334,14 +321,9 @@ async fn process_stream(
                     return;
                 }
                 if allow_tools && !text_committed {
-                    if pending_text.is_empty() {
-                        pending_text_deadline =
-                            Some(tokio::time::Instant::now() + TOOL_COMMENTARY_GRACE);
-                    }
                     pending_text.push_str(&content);
                     if pending_text.len() > MAX_TOOL_COMMENTARY_BYTES {
                         text_committed = true;
-                        pending_text_deadline = None;
                         let content = std::mem::take(&mut pending_text);
                         if sender
                             .send(Ok(ModelEvent::TextDelta(content)))
@@ -397,7 +379,6 @@ async fn process_stream(
                     "stop" if tool_assemblers.is_empty() => {
                         if !pending_text.is_empty() {
                             text_committed = true;
-                            pending_text_deadline = None;
                             if sender
                                 .send(Ok(ModelEvent::TextDelta(std::mem::take(&mut pending_text))))
                                 .await
@@ -440,7 +421,6 @@ async fn process_stream(
                         match calls {
                             Ok(calls) => {
                                 if !pending_text.is_empty() {
-                                    pending_text_deadline = None;
                                     completed_commentary = Some(std::mem::take(&mut pending_text));
                                 }
                                 completed_tool_calls = Some(calls);

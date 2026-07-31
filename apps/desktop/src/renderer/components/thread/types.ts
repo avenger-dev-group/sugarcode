@@ -1,4 +1,11 @@
-import type { ReactNode, RefObject, UIEvent } from 'react';
+import type {
+  KeyboardEvent,
+  PointerEvent,
+  ReactNode,
+  RefObject,
+  UIEvent,
+  WheelEvent,
+} from 'react';
 
 import type {
   ConversationPhase,
@@ -188,4 +195,8 @@ export type TranscriptFollow = Readonly<{
   transcriptEnd: RefObject<HTMLDivElement | null>;
   transcriptViewport: RefObject<HTMLDivElement | null>;
   recordScrollPosition: (event: UIEvent<HTMLDivElement>) => void;
+  recordWheelScrollIntent: (event: WheelEvent<HTMLDivElement>) => void;
+  recordKeyScrollIntent: (event: KeyboardEvent<HTMLDivElement>) => void;
+  beginPointerScroll: (event: PointerEvent<HTMLDivElement>) => void;
+  endPointerScroll: (event: PointerEvent<HTMLDivElement>) => void;
 }>;

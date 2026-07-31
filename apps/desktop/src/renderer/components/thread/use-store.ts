@@ -59,6 +59,10 @@ import type {
   TranscriptMessageViewModel,
   TurnViewModel,
 } from './types';
+import {
+  isTranscriptScrollUpKey,
+  shouldFollowTranscriptAfterScroll,
+} from './transcript-follow';
 import { toTurnFailureViewModel } from './turn-failure';
 
 export const useActivityDisclosureStore = (
@@ -921,6 +925,7 @@ export const useTranscriptFollow = (
   const transcriptViewport = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscript = useRef<boolean>(true);
   const previousScrollTop = useRef<number>(0);
+  const pointerScrollActive = useRef<boolean>(false);
   const previousThreadIdentity = useRef<string | null>(thread.threadIdentity);
   const latestUserMessageId = (() => {
     for (
@@ -959,16 +964,39 @@ export const useTranscriptFollow = (
 
   const recordScrollPosition = (event: UIEvent<HTMLDivElement>): void => {
     const viewport = event.currentTarget;
-    const distanceFromBottom =
-      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-    const isNearBottom = distanceFromBottom <= 48;
-    const movedUp = viewport.scrollTop < previousScrollTop.current;
-    if (isNearBottom) {
-      shouldFollowTranscript.current = true;
-    } else if (movedUp) {
+    shouldFollowTranscript.current = shouldFollowTranscriptAfterScroll({
+      wasFollowing: shouldFollowTranscript.current,
+      previousScrollTop: previousScrollTop.current,
+      scrollTop: viewport.scrollTop,
+      scrollHeight: viewport.scrollHeight,
+      clientHeight: viewport.clientHeight,
+      pointerScrollActive: pointerScrollActive.current,
+    });
+    previousScrollTop.current = viewport.scrollTop;
+  };
+
+  const recordWheelScrollIntent: TranscriptFollow['recordWheelScrollIntent'] = (
+    event,
+  ): void => {
+    if (event.deltaY < 0) {
       shouldFollowTranscript.current = false;
     }
-    previousScrollTop.current = viewport.scrollTop;
+  };
+
+  const recordKeyScrollIntent: TranscriptFollow['recordKeyScrollIntent'] = (
+    event,
+  ): void => {
+    if (isTranscriptScrollUpKey(event.key, event.shiftKey)) {
+      shouldFollowTranscript.current = false;
+    }
+  };
+
+  const beginPointerScroll: TranscriptFollow['beginPointerScroll'] = (): void => {
+    pointerScrollActive.current = true;
+  };
+
+  const endPointerScroll: TranscriptFollow['endPointerScroll'] = (): void => {
+    pointerScrollActive.current = false;
   };
 
   useLayoutEffect(() => {
@@ -1012,6 +1040,10 @@ export const useTranscriptFollow = (
     transcriptEnd,
     transcriptViewport,
     recordScrollPosition,
+    recordWheelScrollIntent,
+    recordKeyScrollIntent,
+    beginPointerScroll,
+    endPointerScroll,
   };
 };
 

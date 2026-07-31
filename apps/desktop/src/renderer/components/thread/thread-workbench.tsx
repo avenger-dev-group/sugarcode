@@ -245,6 +245,10 @@ export const ThreadWorkbenchView = ({
     transcriptEnd,
     transcriptViewport,
     recordScrollPosition,
+    recordWheelScrollIntent,
+    recordKeyScrollIntent,
+    beginPointerScroll,
+    endPointerScroll,
   } = useTranscriptFollow(store.thread);
 
   return (
@@ -356,6 +360,11 @@ export const ThreadWorkbenchView = ({
         <ScrollArea
           data-layout="conversation-scroll"
           className="relative min-h-0 min-w-0 flex-1"
+          onWheel={recordWheelScrollIntent}
+          onKeyDown={recordKeyScrollIntent}
+          onPointerDown={beginPointerScroll}
+          onPointerUp={endPointerScroll}
+          onPointerCancel={endPointerScroll}
           viewportProps={{
             'aria-label': 'Conversation transcript',
             tabIndex: 0,
@@ -476,9 +485,6 @@ export const ThreadWorkbenchView = ({
                 )}
               </div>
             </div>
-            <p className="mt-2 text-center text-[11px] text-tertiary">
-              Enter 发送 · Shift+Enter 换行
-            </p>
           </div>
         </div>
       </section>

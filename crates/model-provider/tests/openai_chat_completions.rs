@@ -793,7 +793,7 @@ async fn empty_tool_call_arrays_on_text_deltas_are_ignored() {
 }
 
 #[tokio::test]
-async fn tool_capable_answer_streams_after_one_total_commentary_grace() {
+async fn tool_capable_short_answer_waits_for_semantic_finish() {
     let parts = vec![
         (
             std::time::Duration::ZERO,
@@ -828,8 +828,51 @@ async fn tool_capable_answer_streams_after_one_total_commentary_grace() {
     assert_eq!(
         events,
         vec![
-            Ok(ModelEvent::TextDelta("AB".to_string())),
-            Ok(ModelEvent::TextDelta("C".to_string())),
+            Ok(ModelEvent::TextDelta("ABC".to_string())),
+            Ok(ModelEvent::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn delayed_short_commentary_before_a_tool_call_is_preserved() {
+    let parts = vec![
+        (
+            std::time::Duration::ZERO,
+            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I will inspect the workspace.\"},\"finish_reason\":null}]}\n\n"
+                .to_vec(),
+        ),
+        (
+            std::time::Duration::from_millis(300),
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n"
+            )
+            .as_bytes()
+            .to_vec(),
+        ),
+    ];
+    let (endpoint, server) = delayed_response_server(parts).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+
+    assert_eq!(
+        events,
+        vec![
+            Ok(ModelEvent::Commentary(
+                "I will inspect the workspace.".to_string()
+            )),
+            Ok(ModelEvent::ToolCall(ModelToolCall {
+                id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({"path": "README.md"}),
+            })),
             Ok(ModelEvent::Completed),
         ]
     );
