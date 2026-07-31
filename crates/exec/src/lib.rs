@@ -476,24 +476,11 @@ where
                     finish_tasks(command_approval_task, mcp_approval_task);
                     return code;
                 };
-                if event.request_id != core_request_id {
-                    output_failure_shutdown(
-                        &mut session,
-                        &mut events,
-                        &thread_id,
-                        active_turn_id.as_ref(),
-                    ).await;
-                    let code = emitter_error(
-                        &mut output,
-                        stderr,
-                        EXEC_EXIT_INTERNAL,
-                        ExecErrorCategoryV1::Internal,
-                        "invalid runtime event",
-                        Some(thread_id.as_str()),
-                        active_turn_id.as_ref().map(TurnId::as_str),
-                    );
-                    finish_tasks(command_approval_task, mcp_approval_task);
-                    return code;
+                if !belongs_to_exec_request(&event, core_request_id) {
+                    // Collaboration children share Core's event channel but are hidden from the
+                    // exec-v1 surface. Their public lifecycle is represented by the parent
+                    // AgentTask and AgentTaskResult items.
+                    continue;
                 }
                 if let CoreEventKind::TurnStarted { turn_id, .. } = &event.kind {
                     active_turn_id = Some(turn_id.clone());
@@ -633,6 +620,13 @@ async fn output_failure_shutdown(
     }
     let _ = session.shutdown().await;
     while events.try_recv().is_ok() {}
+}
+
+fn belongs_to_exec_request(
+    event: &CoreEvent,
+    request_id: sugarcode_protocol::CoreRequestId,
+) -> bool {
+    event.request_id == request_id
 }
 
 async fn deny_command_approvals(

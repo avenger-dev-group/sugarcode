@@ -350,6 +350,15 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                     DurableItemSnapshot::AgentCommentary { .. },
                     DurableItemSnapshot::AgentCommentary { .. },
                 ) => started == terminal,
+                (DurableItemSnapshot::AgentTask { .. }, DurableItemSnapshot::AgentTask { .. })
+                | (
+                    DurableItemSnapshot::AgentTaskAmendment { .. },
+                    DurableItemSnapshot::AgentTaskAmendment { .. },
+                )
+                | (
+                    DurableItemSnapshot::AgentTaskResult { .. },
+                    DurableItemSnapshot::AgentTaskResult { .. },
+                ) => started == terminal,
                 (
                     DurableItemSnapshot::ContextCompaction { id: started_id, .. },
                     DurableItemSnapshot::ContextCompaction {

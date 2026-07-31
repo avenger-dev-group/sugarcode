@@ -56,8 +56,8 @@ async fn output_limit_fails_once_without_committing_the_oversized_delta() {
     let oversized = "x".repeat(crate::thread::MAX_AGENT_MESSAGE_BYTES + 1);
     let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
         events: vec![
-            Ok(ModelEvent::TextDelta(oversized)),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::text_delta(oversized)),
+            Ok(model_event::COMPLETED),
         ],
         stay_open: false,
     });
@@ -103,17 +103,16 @@ async fn output_limit_fails_once_without_committing_the_oversized_delta() {
         turn.error.as_ref().map(|error| error.kind),
         Some(DurableTurnErrorKind::OutputTooLarge)
     );
-    assert!(matches!(
-        turn.items.last(),
-        Some(sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. })
-            if text.is_empty()
-    ));
+    assert!(!turn.items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
+    )));
 }
 
 #[tokio::test]
 async fn interrupt_cancels_a_pending_stream_and_emits_one_interrupted_terminal() {
     let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
-        events: vec![Ok(ModelEvent::TextDelta("partial".to_string()))],
+        events: vec![Ok(model_event::text_delta("partial".to_string()))],
         stay_open: true,
     });
     let TurnStartOutcome::Accepted { turn_id } = runtime
@@ -128,7 +127,7 @@ async fn interrupt_cancels_a_pending_stream_and_emits_one_interrupted_terminal()
     };
     loop {
         let event = events.recv().await.expect("pre-interrupt event");
-        if matches!(event.kind, CoreEventKind::AgentMessageDelta { .. }) {
+        if matches!(event.kind, CoreEventKind::AgentOutputDelta { .. }) {
             break;
         }
     }
@@ -150,7 +149,7 @@ async fn interrupt_cancels_a_pending_stream_and_emits_one_interrupted_terminal()
             .iter()
             .filter(|event| matches!(event.kind, CoreEventKind::ItemCompleted { .. }))
             .count(),
-        1
+        0
     );
     assert_eq!(
         terminals
@@ -178,9 +177,9 @@ async fn interrupt_cancels_a_pending_stream_and_emits_one_interrupted_terminal()
 }
 
 #[tokio::test]
-async fn interrupt_after_durable_agent_start_preserves_one_item_lifecycle_and_terminal() {
+async fn interrupt_while_preview_is_backpressured_persists_no_agent_item() {
     let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
-        events: vec![Ok(ModelEvent::TextDelta("partial".to_string()))],
+        events: vec![Ok(model_event::text_delta("partial".to_string()))],
         stay_open: true,
     });
     for _ in 0..CORE_EVENT_CAPACITY - 3 {
@@ -215,7 +214,7 @@ async fn interrupt_after_durable_agent_start_preserves_one_item_lifecycle_and_te
             if turn.items.iter().any(|item| {
                 matches!(
                     item,
-                    sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
+                    sugarcode_state::DurableItemSnapshot::UserMessage { .. }
                 )
             }) {
                 break;
@@ -224,7 +223,7 @@ async fn interrupt_after_durable_agent_start_preserves_one_item_lifecycle_and_te
         }
     })
     .await
-    .expect("durable agent item");
+    .expect("durable user item");
     assert_eq!(
         runtime
             .interrupt_turn(&thread_id, &turn_id)
@@ -261,7 +260,7 @@ async fn interrupt_after_durable_agent_start_preserves_one_item_lifecycle_and_te
                 }
             ))
             .count(),
-        1
+        0
     );
     assert_eq!(
         lifecycle
@@ -277,7 +276,7 @@ async fn interrupt_after_durable_agent_start_preserves_one_item_lifecycle_and_te
                 }
             ))
             .count(),
-        1
+        0
     );
     assert_eq!(
         lifecycle
@@ -301,14 +300,14 @@ async fn interrupt_after_durable_agent_start_preserves_one_item_lifecycle_and_te
                 sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
             ))
             .count(),
-        1
+        0
     );
 }
 
 #[tokio::test]
 async fn active_turn_rejects_thread_lifecycle_and_fork_until_terminal() {
     let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
-        events: vec![Ok(ModelEvent::TextDelta("partial".to_string()))],
+        events: vec![Ok(model_event::text_delta("partial".to_string()))],
         stay_open: true,
     });
     let TurnStartOutcome::Accepted { turn_id } = runtime
@@ -324,7 +323,7 @@ async fn active_turn_rejects_thread_lifecycle_and_fork_until_terminal() {
     loop {
         if matches!(
             events.recv().await.expect("pre-lifecycle event").kind,
-            CoreEventKind::AgentMessageDelta { .. }
+            CoreEventKind::AgentOutputDelta { .. }
         ) {
             break;
         }
@@ -367,7 +366,7 @@ async fn active_turn_rejects_thread_lifecycle_and_fork_until_terminal() {
 #[tokio::test]
 async fn shutdown_waits_for_active_turn_to_persist_interrupted() {
     let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
-        events: vec![Ok(ModelEvent::TextDelta("partial".to_string()))],
+        events: vec![Ok(model_event::text_delta("partial".to_string()))],
         stay_open: true,
     });
     let TurnStartOutcome::Accepted { turn_id } = runtime
@@ -383,7 +382,7 @@ async fn shutdown_waits_for_active_turn_to_persist_interrupted() {
     loop {
         if matches!(
             events.recv().await.expect("pre-shutdown event").kind,
-            CoreEventKind::AgentMessageDelta { .. }
+            CoreEventKind::AgentOutputDelta { .. }
         ) {
             break;
         }

@@ -192,34 +192,64 @@ pub enum ModelRole {
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum ModelEvent {
-    TextDelta(String),
-    Commentary(String),
-    ToolCall(ModelToolCall),
-    ToolCallBatch(Vec<ModelToolCall>),
-    Usage(ModelUsage),
-    Completed,
+    OutputTextDelta { output_index: u32, delta: String },
+    ResponseCompleted(ModelResponse),
 }
 
 impl fmt::Debug for ModelEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TextDelta(delta) => formatter
-                .debug_tuple("TextDelta")
-                .field(&format_args!("{} bytes", delta.len()))
+            Self::OutputTextDelta {
+                output_index,
+                delta,
+            } => formatter
+                .debug_struct("OutputTextDelta")
+                .field("output_index", output_index)
+                .field("delta", &format_args!("{} bytes", delta.len()))
                 .finish(),
-            Self::Commentary(text) => formatter
-                .debug_tuple("Commentary")
-                .field(&format_args!("{} bytes", text.len()))
+            Self::ResponseCompleted(response) => formatter
+                .debug_tuple("ResponseCompleted")
+                .field(response)
                 .finish(),
-            Self::ToolCall(call) => formatter.debug_tuple("ToolCall").field(call).finish(),
-            Self::ToolCallBatch(calls) => formatter
-                .debug_tuple("ToolCallBatch")
-                .field(&calls.len())
-                .finish(),
-            Self::Usage(usage) => formatter.debug_tuple("Usage").field(usage).finish(),
-            Self::Completed => formatter.write_str("Completed"),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelResponse {
+    pub output: Vec<ModelOutputItem>,
+    pub usage: Option<ModelUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOutputItem {
+    pub output_index: u32,
+    pub kind: ModelOutputItemKind,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ModelOutputItemKind {
+    AssistantText { phase: ModelTextPhase, text: String },
+    ToolCall(ModelToolCall),
+}
+
+impl fmt::Debug for ModelOutputItemKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AssistantText { phase, text } => formatter
+                .debug_struct("AssistantText")
+                .field("phase", phase)
+                .field("text", &format_args!("{} bytes", text.len()))
+                .finish(),
+            Self::ToolCall(call) => formatter.debug_tuple("ToolCall").field(call).finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelTextPhase {
+    Final,
+    Commentary,
 }
 
 #[derive(Clone, PartialEq, Eq)]

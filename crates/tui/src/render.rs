@@ -78,7 +78,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
         );
     }
 
-    let transcript = app
+    let mut transcript = app
         .transcript
         .iter()
         .flat_map(|entry| {
@@ -92,6 +92,16 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
             ]
         })
         .collect::<Vec<_>>();
+    transcript.extend(app.pending_outputs.values().flat_map(|text| {
+        [
+            Line::styled(
+                "Progress",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Line::raw(text.clone()),
+            Line::raw(""),
+        ]
+    }));
     frame.render_widget(
         Paragraph::new(Text::from(transcript))
             .block(panel(

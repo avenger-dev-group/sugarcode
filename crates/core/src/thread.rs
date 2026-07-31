@@ -46,7 +46,7 @@ use snapshots::{
 
 const DETERMINISTIC_AGENT_MESSAGE: &str = "SugarCode deterministic response.";
 pub const MAX_AGENT_MESSAGE_BYTES: usize = 512 * 1024;
-pub const MAX_AGENT_COMMENTARY_BYTES: usize = 4 * 1024;
+pub const MAX_AGENT_COMMENTARY_BYTES: usize = 512;
 pub const MAX_PROVIDER_HISTORY_BYTES: usize = crate::context::MAX_PROVIDER_CONTEXT_BYTES;
 pub const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
 

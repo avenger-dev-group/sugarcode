@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "method": "turn/agentOutput/delta",
+  "params": {
+    "threadId": "thr_0000000000000001",
+    "turnId": "turn_0000000000000001",
+    "output": {
+      "responseOrdinal": 2,
+      "outputIndex": 0
+    },
+    "delta": "Inspecting the workspace"
+  }
+}

@@ -5,6 +5,4 @@
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
-{"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000002","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
-{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000002","text":"","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"failed","error":{"kind":"server","retryable":true}}}}

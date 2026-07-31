@@ -517,3 +517,48 @@ pub(super) async fn append_completed_tool_item(
     }
     Some(item)
 }
+
+pub(super) async fn append_completed_agent_output_item(
+    runtime: &CoreRuntime,
+    prepared: &crate::PreparedTextTurn,
+    output: CoreAgentOutputRef,
+    kind: CoreItemKind,
+) -> Option<CoreItemSnapshot> {
+    let item = runtime
+        .lock_core()
+        .and_then(|mut core| {
+            core.append_completed_item(&prepared.thread_id, &prepared.turn_id, kind)
+        })
+        .ok()?;
+    let durable_event = CancellationToken::new();
+    if !send_event(
+        runtime,
+        &durable_event,
+        prepared.request_id,
+        CoreEventKind::AgentOutputResolved {
+            thread_id: prepared.thread_id.clone(),
+            turn_id: prepared.turn_id.clone(),
+            output,
+            item: item.clone(),
+        },
+    )
+    .await
+    {
+        return None;
+    }
+    if !send_event(
+        runtime,
+        &durable_event,
+        prepared.request_id,
+        CoreEventKind::ItemCompleted {
+            thread_id: prepared.thread_id.clone(),
+            turn_id: prepared.turn_id.clone(),
+            item: item.clone(),
+        },
+    )
+    .await
+    {
+        return None;
+    }
+    Some(item)
+}

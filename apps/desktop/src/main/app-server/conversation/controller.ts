@@ -3,6 +3,7 @@ import type { ThreadListResponse } from '@sugarcode/app-server-protocol';
 import type {
   ConversationActionResult,
   ConversationActivity,
+  ConversationAgentOutput,
   ConversationAgentTaskStatus,
   ConversationCommandApprovalDecision,
   ConversationCommentaryActivity,
@@ -33,6 +34,7 @@ import {
 } from '@/shared/conversation';
 
 import {
+  type AgentOutputRef,
   type ConversationLifecycle,
   parseConversationLifecycle,
 } from './protocol';
@@ -63,6 +65,11 @@ type MutableMessage = {
   role: ConversationMessage['role'];
   text: string;
   status: ConversationMessage['status'];
+  agentOutput?: AgentOutputRef;
+};
+
+type MutableAgentOutput = {
+  -readonly [Key in keyof ConversationAgentOutput]: ConversationAgentOutput[Key];
 };
 
 type MutableContextCompactionActivity = {
@@ -235,6 +242,7 @@ type MutableTurn = {
   id: string;
   status: ConversationTurnStatus;
   messages: MutableMessage[];
+  pendingAgentOutputs: MutableAgentOutput[];
   activities: MutableConversationActivity[];
   contextCompactions?: MutableContextCompactionActivity[];
   workspaceRead?: MutableWorkspaceReadActivity;
@@ -424,6 +432,7 @@ export class ConversationController {
     this.navigator.mutationNotice = undefined;
     this.awaitingTurnResponse = false;
     this.bufferedLifecycle = [];
+    const clearedAgentOutput = this.clearPendingAgentOutputs();
     const alreadyUnavailable = this.phase === 'unavailable';
     this.phase = 'unavailable';
     if (showConnectionLost) {
@@ -432,14 +441,14 @@ export class ConversationController {
         kind: 'connectionLost',
         summary: 'The local Agent connection is unavailable.',
       };
-      if (!alreadyUnavailable || !alreadyReported) {
+      if (!alreadyUnavailable || !alreadyReported || clearedAgentOutput) {
         this.publish();
       }
       return;
     }
     const hadNotice = this.notice !== undefined;
     this.notice = undefined;
-    if (!alreadyUnavailable || hadNotice) {
+    if (!alreadyUnavailable || hadNotice || clearedAgentOutput) {
       this.publish();
     }
   };
@@ -836,6 +845,7 @@ export class ConversationController {
         id: response.turn.id,
         status: 'inProgress',
         messages: [],
+        pendingAgentOutputs: [],
         activities: [],
       };
       this.turns.push(turn);
@@ -979,6 +989,14 @@ export class ConversationController {
         if (this.hasItemId(turn, lifecycle.params.item.id)) {
           throw new Error('Duplicate conversation Item ID.');
         }
+        const sourceOutput = lifecycle.params.agentOutput;
+        if (
+          sourceOutput &&
+          lifecycle.params.item.type !== 'agentMessage' &&
+          lifecycle.params.item.type !== 'agentCommentary'
+        ) {
+          throw new Error('Agent output resolved to a non-text Item.');
+        }
         if (
           lifecycle.params.item.type === 'userMessage' ||
           lifecycle.params.item.type === 'agentMessage'
@@ -989,8 +1007,16 @@ export class ConversationController {
               lifecycle.params.item.type === 'userMessage' ? 'user' : 'agent',
             text: lifecycle.params.item.text,
             status: 'inProgress',
+            ...(sourceOutput ? { agentOutput: { ...sourceOutput } } : {}),
           });
         } else if (lifecycle.params.item.type === 'agentCommentary') {
+          if (sourceOutput) {
+            this.resolvePendingAgentOutput(
+              turn,
+              sourceOutput,
+              lifecycle.params.item.text,
+            );
+          }
           turn.activities.push({
             type: 'commentary',
             activity: {
@@ -1468,6 +1494,40 @@ export class ConversationController {
             outcome: { ...lifecycle.params.item.outcome },
           };
         }
+        if (
+          sourceOutput &&
+          lifecycle.params.item.type === 'agentMessage'
+        ) {
+          return;
+        }
+        this.publish();
+        return;
+      }
+      case 'agentOutputDelta': {
+        const turn = this.requireCorrelatedTurn(
+          lifecycle.params.threadId,
+          lifecycle.params.turnId,
+        );
+        const { output, delta } = lifecycle.params;
+        let pending = turn.pendingAgentOutputs.find(
+          (candidate) =>
+            candidate.responseOrdinal === output.responseOrdinal &&
+            candidate.outputIndex === output.outputIndex,
+        );
+        if (!pending) {
+          if (turn.pendingAgentOutputs.length > 0) {
+            throw new Error('Multiple unresolved Agent outputs are unsupported.');
+          }
+          pending = { ...output, text: '' };
+          turn.pendingAgentOutputs.push(pending);
+        }
+        if (
+          new TextEncoder().encode(`${pending.text}${delta}`).byteLength >
+          512 * 1024
+        ) {
+          throw new Error('Agent output preview exceeded its size limit.');
+        }
+        pending.text += delta;
         this.publish();
         return;
       }
@@ -1479,6 +1539,14 @@ export class ConversationController {
         const message = this.requireMessage(turn, lifecycle.params.itemId);
         if (message.role !== 'agent' || message.status !== 'inProgress') {
           throw new Error('Agent delta did not match an active AgentMessage.');
+        }
+        if (message.agentOutput) {
+          this.resolvePendingAgentOutput(
+            turn,
+            message.agentOutput,
+            `${message.text}${lifecycle.params.delta}`,
+          );
+          delete message.agentOutput;
         }
         message.text += lifecycle.params.delta;
         this.publish();
@@ -1498,6 +1566,9 @@ export class ConversationController {
             lifecycle.params.item.type === 'userMessage' ? 'user' : 'agent';
           if (message.role !== role || message.status !== 'inProgress') {
             throw new Error('Completed Item did not match its started Item.');
+          }
+          if (message.agentOutput) {
+            throw new Error('AgentMessage completed before output resolution.');
           }
           message.text = lifecycle.params.item.text;
           message.status = 'completed';
@@ -1920,6 +1991,16 @@ export class ConversationController {
           lifecycle.params.threadId,
           lifecycle.params.turn.id,
         );
+        if (
+          lifecycle.params.turn.status === 'completed' &&
+          turn.pendingAgentOutputs.length > 0
+        ) {
+          throw new Error('Turn completed with unresolved Agent output.');
+        }
+        turn.pendingAgentOutputs = [];
+        for (const message of turn.messages) {
+          delete message.agentOutput;
+        }
         if (turn.messages.some((message) => message.status !== 'completed')) {
           throw new Error('Turn completed before all text Items completed.');
         }
@@ -2070,6 +2151,42 @@ export class ConversationController {
       throw new Error('Conversation lifecycle referenced another Item.');
     }
     return message;
+  };
+
+  private resolvePendingAgentOutput = (
+    turn: MutableTurn,
+    output: AgentOutputRef,
+    completedText: string,
+  ): void => {
+    const index = turn.pendingAgentOutputs.findIndex(
+      (candidate) =>
+        candidate.responseOrdinal === output.responseOrdinal &&
+        candidate.outputIndex === output.outputIndex,
+    );
+    if (index < 0) {
+      return;
+    }
+    if (turn.pendingAgentOutputs[index]?.text !== completedText) {
+      throw new Error('Agent output preview did not match completed text.');
+    }
+    turn.pendingAgentOutputs.splice(index, 1);
+  };
+
+  private clearPendingAgentOutputs = (): boolean => {
+    let changed = false;
+    for (const turn of this.turns) {
+      if (turn.pendingAgentOutputs.length > 0) {
+        turn.pendingAgentOutputs = [];
+        changed = true;
+      }
+      for (const message of turn.messages) {
+        if (message.agentOutput) {
+          delete message.agentOutput;
+          changed = true;
+        }
+      }
+    }
+    return changed;
   };
 
   private requireWorkspaceRead = (
@@ -2415,7 +2532,13 @@ export class ConversationController {
     this.turns = recovered.turns.map((turn) => ({
       id: turn.id,
       status: turn.status,
-      messages: turn.messages.map((message) => ({ ...message })),
+      messages: turn.messages.map(({ id, role, text, status }) => ({
+        id,
+        role,
+        text,
+        status,
+      })),
+      pendingAgentOutputs: [] as MutableAgentOutput[],
       activities: (turn.activities ?? []).map(toMutableConversationActivity),
       ...(turn.contextCompactions
         ? {
@@ -2539,7 +2662,19 @@ export class ConversationController {
     turns: this.turns.map((turn): ConversationTurn => ({
       id: turn.id,
       status: turn.status,
-      messages: turn.messages.map((message) => ({ ...message })),
+      messages: turn.messages.map(({ id, role, text, status }) => ({
+        id,
+        role,
+        text,
+        status,
+      })),
+      ...(turn.pendingAgentOutputs.length > 0
+        ? {
+            pendingAgentOutputs: turn.pendingAgentOutputs.map((output) => ({
+              ...output,
+            })),
+          }
+        : {}),
       ...(turn.activities.length > 0
         ? {
             activities: turn.activities.map((activity): ConversationActivity =>

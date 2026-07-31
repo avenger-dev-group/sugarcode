@@ -641,7 +641,6 @@ pub(crate) fn valid_incremental_item(
 }
 
 fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) -> bool {
-    const MAX_MCP_TOOL_CALLS_PER_TURN: usize = 4;
     match item {
         DurableItemSnapshot::McpToolCall {
             call_id,
@@ -667,17 +666,6 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            let prior_sequence_closed = prior_calls.last().is_none_or(|(prior_call_id, _, _)| {
-                existing.iter().any(|item| {
-                    matches!(
-                        item,
-                        DurableItemSnapshot::McpToolResult {
-                            call_id,
-                            ..
-                        } if call_id == *prior_call_id
-                    )
-                })
-            });
             let Some(server_id) = mcp_server_id(name) else {
                 return false;
             };
@@ -689,7 +677,6 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                 && *arguments_bytes == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
                 && arguments_sha256 == &sha256_bytes(&bytes)
                 && valid_sha256(inventory_sha256)
-                && prior_calls.len() < MAX_MCP_TOOL_CALLS_PER_TURN
                 && prior_calls
                     .iter()
                     .filter(|(_, prior_name, _)| mcp_server_id(prior_name) == Some(server_id))
@@ -697,7 +684,6 @@ fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) 
                 && prior_calls
                     .iter()
                     .all(|(prior_call_id, _, _)| *prior_call_id != call_id)
-                && prior_sequence_closed
         }
         DurableItemSnapshot::McpToolCallApprovalRequest {
             approval_id,

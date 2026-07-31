@@ -164,9 +164,9 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
                     "input": "u"
                 }
             }),
-            15,
+            8,
         );
-        assert_eq!(completed[14]["params"]["turn"]["status"], "completed");
+        assert_eq!(completed[7]["params"]["turn"]["status"], "completed");
     }
     let checkpoint = first.send(
         json!({

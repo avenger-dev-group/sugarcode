@@ -33,7 +33,7 @@ async fn three_workspace_reads_execute_concurrently_and_replay_in_call_order() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCallBatch(vec![
+                Ok(model_event::tool_call_batch(vec![
                     ModelToolCall {
                         id: "call_a".to_string(),
                         name: "workspace/read".to_string(),
@@ -50,11 +50,11 @@ async fn three_workspace_reads_execute_concurrently_and_replay_in_call_order() {
                         arguments: serde_json::json!({ "path": "c.md" }),
                     },
                 ])),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("Done.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta("Done.".to_string())),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: requests.clone(),
@@ -130,30 +130,30 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_1".to_string(),
                     name: "workspace/read".to_string(),
                     arguments: serde_json::json!({ "path": "README.txt" }),
                 })),
-                Ok(ModelEvent::Usage(ModelUsage {
+                Ok(model_event::usage(ModelUsage {
                     input_tokens: Some(3),
                     cached_input_tokens: Some(1),
                     output_tokens: Some(2),
                     reasoning_output_tokens: Some(1),
                     total_tokens: Some(5),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("I read it.".to_string())),
-                Ok(ModelEvent::Usage(ModelUsage {
+                Ok(model_event::text_delta("I read it.".to_string())),
+                Ok(model_event::usage(ModelUsage {
                     input_tokens: Some(7),
                     cached_input_tokens: Some(2),
                     output_tokens: Some(4),
                     reasoning_output_tokens: Some(2),
                     total_tokens: Some(11),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: requests.clone(),
@@ -285,19 +285,21 @@ async fn commentary_is_durable_and_replayed_before_its_tool_call() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::Commentary(
+                Ok(model_event::commentary(
                     "I will inspect the workspace first.".to_string(),
                 )),
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_commentary".to_string(),
                     name: "workspace/read".to_string(),
                     arguments: serde_json::json!({ "path": "README.txt" }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("The workspace is ready.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta(
+                    "The workspace is ready.".to_string(),
+                )),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: requests.clone(),
@@ -377,16 +379,16 @@ async fn workspace_list_uses_the_shared_authority_and_one_durable_tool_round() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_list".to_string(),
                     name: "workspace/list".to_string(),
                     arguments: serde_json::json!({ "path": "." }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("I listed it.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta("I listed it.".to_string())),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: requests.clone(),
@@ -491,16 +493,18 @@ async fn serialized_tool_result_limit_becomes_one_durable_error_result() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_escaped".to_string(),
                     name: "workspace/read".to_string(),
                     arguments: serde_json::json!({ "path": "escaped.txt" }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("The result was bounded.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta(
+                    "The result was bounded.".to_string(),
+                )),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: requests.clone(),
@@ -562,12 +566,12 @@ async fn serialized_tool_result_limit_becomes_one_durable_error_result() {
 #[tokio::test]
 async fn unknown_tool_calls_fail_without_execution() {
     for rounds in [VecDeque::from([vec![
-        Ok(ModelEvent::ToolCall(ModelToolCall {
+        Ok(model_event::tool_call(ModelToolCall {
             id: "call_unknown".to_string(),
             name: "workspace/unknown".to_string(),
             arguments: serde_json::json!({ "path": "README.txt" }),
         })),
-        Ok(ModelEvent::Completed),
+        Ok(model_event::COMPLETED),
     ]])] {
         let directory = tempfile::tempdir().expect("workspace");
         std::fs::write(directory.path().join("README.txt"), "bounded context")
@@ -622,61 +626,69 @@ async fn unknown_tool_calls_fail_without_execution() {
 }
 
 #[tokio::test]
-async fn multiple_calls_and_text_with_tool_are_unsupported_output() {
-    let cases = [
-        vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
-                id: "call_first".to_string(),
-                name: "workspace/read".to_string(),
-                arguments: serde_json::json!({ "path": "README.txt" }),
-            })),
-            Ok(ModelEvent::ToolCall(ModelToolCall {
-                id: "call_second".to_string(),
-                name: "workspace/read".to_string(),
-                arguments: serde_json::json!({ "path": "README.txt" }),
-            })),
-            Ok(ModelEvent::Completed),
-        ],
-        vec![
-            Ok(ModelEvent::TextDelta("I will read it.".to_string())),
-            Ok(ModelEvent::ToolCall(ModelToolCall {
-                id: "call_after_text".to_string(),
-                name: "workspace/read".to_string(),
-                arguments: serde_json::json!({ "path": "README.txt" }),
-            })),
-            Ok(ModelEvent::Completed),
-        ],
-    ];
-    for events_for_case in cases {
-        let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
-            events: events_for_case,
-            stay_open: false,
-        });
-        let TurnStartOutcome::Accepted { turn_id } = runtime
-            .start_text_turn(
-                CoreRequestId::new(2),
-                thread_id.clone(),
-                Some("Read it".to_string()),
-            )
-            .expect("start text turn")
-        else {
-            panic!("asynchronous turn");
-        };
+async fn read_only_tool_batch_is_not_limited_by_item_count() {
+    let calls = (0..32)
+        .map(|index| ModelToolCall {
+            id: format!("call_{index}"),
+            name: "workspace/read".to_string(),
+            arguments: serde_json::json!({ "path": "README.txt" }),
+        })
+        .collect();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![Ok(model_event::tool_call_batch(calls))],
+            vec![
+                Ok(model_event::text_delta("Reviewed.".to_string())),
+                Ok(model_event::COMPLETED),
+            ],
+        ])),
+        requests: requests.clone(),
+    };
+    let mut core = Core::new();
+    let started = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread");
+    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+        panic!("thread event");
+    };
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("README.txt"), "bounded context")
+        .expect("workspace fixture");
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(tool),
+        None,
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Review it".to_string()),
+        )
+        .expect("start text turn")
+    else {
+        panic!("asynchronous turn");
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while !matches!(
             events.recv().await.expect("terminal event").kind,
-            CoreEventKind::TurnFailed { .. }
+            CoreEventKind::TurnCompleted { .. }
         ) {}
-        let snapshot = runtime.resume_thread(&thread_id).expect("resume");
-        let turn = snapshot
-            .turns
-            .iter()
-            .find(|turn| turn.id == turn_id)
-            .expect("persisted turn");
-        assert_eq!(
-            turn.error.as_ref().map(|error| error.kind),
-            Some(DurableTurnErrorKind::UnsupportedOutput)
-        );
-    }
+    })
+    .await
+    .expect("read-only calls must complete with bounded execution concurrency");
+    assert_eq!(requests.lock().expect("requests").len(), 2);
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    let turn = snapshot
+        .turns
+        .iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("persisted turn");
+    assert_eq!(turn.status, DurableTurnStatus::Completed);
 }
 
 #[tokio::test]
@@ -687,20 +699,20 @@ async fn duplicate_call_id_across_provider_rounds_is_unsupported_output() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_duplicate".to_string(),
                     name: "workspace/read".to_string(),
                     arguments: serde_json::json!({ "path": "README.txt" }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_duplicate".to_string(),
                     name: "workspace/read".to_string(),
                     arguments: serde_json::json!({ "path": "README.txt" }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: Arc::new(Mutex::new(Vec::new())),
@@ -751,19 +763,19 @@ async fn twenty_lightweight_local_calls_continue_in_one_turn_before_final_text()
     let mut rounds = VecDeque::new();
     for index in 0..20 {
         rounds.push_back(vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+            Ok(model_event::tool_call(ModelToolCall {
                 id: format!("call_{index}"),
                 name: "workspace/read".to_string(),
                 arguments: serde_json::json!({ "path": "README.txt" }),
             })),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::COMPLETED),
         ]);
     }
     rounds.push_back(vec![
-        Ok(ModelEvent::TextDelta(
+        Ok(model_event::text_delta(
             "Verified after twenty reads.".to_string(),
         )),
-        Ok(ModelEvent::Completed),
+        Ok(model_event::COMPLETED),
     ]);
     let directory = tempfile::tempdir().expect("workspace");
     std::fs::write(directory.path().join("README.txt"), "bounded context")
@@ -835,36 +847,47 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
             self.requests.lock().expect("requests").push(request);
             let call = self.calls.load(Ordering::Acquire);
             let events = if compaction {
+                let text = "The user asked to inspect large.txt. Prior reads succeeded; continue with the final answer.";
                 vec![
-                    Ok(ModelEvent::TextDelta(
-                        "The user asked to inspect large.txt. Prior reads succeeded; continue with the final answer."
-                            .to_string(),
-                    )),
-                    Ok(ModelEvent::Usage(ModelUsage {
-                        input_tokens: Some(10),
-                        cached_input_tokens: None,
-                        output_tokens: Some(5),
-                        reasoning_output_tokens: None,
-                        total_tokens: Some(15),
+                    Ok(model_event::text_delta(text.to_string())),
+                    Ok(ModelEvent::ResponseCompleted(ModelResponse {
+                        output: vec![sugarcode_model_provider::ModelOutputItem {
+                            output_index: 0,
+                            kind: ModelOutputItemKind::AssistantText {
+                                phase: ModelTextPhase::Final,
+                                text: text.to_string(),
+                            },
+                        }],
+                        usage: Some(ModelUsage {
+                            input_tokens: Some(10),
+                            cached_input_tokens: None,
+                            output_tokens: Some(5),
+                            reasoning_output_tokens: None,
+                            total_tokens: Some(15),
+                        }),
                     })),
-                    Ok(ModelEvent::Completed),
                 ]
             } else if call < 13 {
                 self.calls.fetch_add(1, Ordering::AcqRel);
-                vec![
-                    Ok(ModelEvent::ToolCall(ModelToolCall {
-                        id: format!("large_call_{call}"),
-                        name: "workspace/read".to_string(),
-                        arguments: serde_json::json!({ "path": "large.txt" }),
-                    })),
-                    Ok(ModelEvent::Completed),
-                ]
+                vec![Ok(model_event::tool_call(ModelToolCall {
+                    id: format!("large_call_{call}"),
+                    name: "workspace/read".to_string(),
+                    arguments: serde_json::json!({ "path": "large.txt" }),
+                }))]
             } else {
+                let text = "Large file inspection completed.";
                 vec![
-                    Ok(ModelEvent::TextDelta(
-                        "Large file inspection completed.".to_string(),
-                    )),
-                    Ok(ModelEvent::Completed),
+                    Ok(model_event::text_delta(text.to_string())),
+                    Ok(ModelEvent::ResponseCompleted(ModelResponse {
+                        output: vec![sugarcode_model_provider::ModelOutputItem {
+                            output_index: 0,
+                            kind: ModelOutputItemKind::AssistantText {
+                                phase: ModelTextPhase::Final,
+                                text: text.to_string(),
+                            },
+                        }],
+                        usage: None,
+                    })),
                 ]
             };
             async move { Ok(stream::iter(events).boxed()) }.boxed()
@@ -1011,12 +1034,12 @@ async fn interrupt_after_tool_call_persists_no_tool_result() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_cancel".to_string(),
                     name: "workspace/read".to_string(),
                     arguments: serde_json::json!({ "path": "blocked.txt" }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             Vec::new(),
         ])),

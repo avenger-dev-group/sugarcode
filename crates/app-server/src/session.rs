@@ -769,6 +769,8 @@ fn core_event_thread_id(kind: &CoreEventKind) -> Option<&ThreadId> {
         CoreEventKind::ThreadStarted { thread_id }
         | CoreEventKind::TurnStarted { thread_id, .. }
         | CoreEventKind::ItemStarted { thread_id, .. }
+        | CoreEventKind::AgentOutputDelta { thread_id, .. }
+        | CoreEventKind::AgentOutputResolved { thread_id, .. }
         | CoreEventKind::AgentMessageDelta { thread_id, .. }
         | CoreEventKind::ItemCompleted { thread_id, .. }
         | CoreEventKind::TurnCompleted { thread_id, .. }

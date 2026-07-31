@@ -432,6 +432,27 @@ pub struct ItemStartedNotification {
     pub thread_id: String,
     pub turn_id: String,
     pub item: Item,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_output: Option<AgentOutputRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct AgentOutputRef {
+    pub response_ordinal: u64,
+    pub output_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct AgentOutputDeltaNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub output: AgentOutputRef,
+    pub delta: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

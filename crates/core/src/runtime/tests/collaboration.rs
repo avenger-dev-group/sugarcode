@@ -32,7 +32,7 @@ impl RoutingCollaborationProvider {
                 ]
                 .join("\n\n");
                 vec![
-                    Ok(ModelEvent::ToolCallBatch(vec![
+                    Ok(model_event::tool_call_batch(vec![
                         ModelToolCall {
                             id: "call_dispatch".to_string(),
                             name: "collaboration/dispatch".to_string(),
@@ -55,14 +55,14 @@ impl RoutingCollaborationProvider {
                             }),
                         },
                     ])),
-                    Ok(ModelEvent::Completed),
+                    Ok(model_event::COMPLETED),
                 ]
             }
             1 => vec![
-                Ok(ModelEvent::TextDelta(
+                Ok(model_event::text_delta(
                     "Delegation completed after the child result was recorded.".to_string(),
                 )),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             _ => panic!("unexpected root model round"),
         }
@@ -83,14 +83,15 @@ impl ModelProvider for RoutingCollaborationProvider {
         });
         let events = if is_child {
             vec![
-                Ok(ModelEvent::TextDelta(
+                Ok(model_event::text_delta(
                     "Workspace inspection completed.".to_string(),
                 )),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ]
         } else {
             self.root_events()
         };
+        let events = normalize_model_events(events);
         async move { Ok(stream::iter(events).boxed()) }.boxed()
     }
 }
@@ -189,7 +190,7 @@ async fn dispatch_wait_persists_hidden_child_origin_and_public_result() {
 }
 
 #[test]
-fn collaboration_dispatch_shape_requires_auditor_and_full_markdown() {
+fn collaboration_dispatch_shape_requires_auditor_and_core_markdown() {
     let task = DispatchTask {
         client_task_key: "writer".to_string(),
         title: "Write".to_string(),
@@ -199,6 +200,19 @@ fn collaboration_dispatch_shape_requires_auditor_and_full_markdown() {
         task_markdown: "# Objective\nWrite".to_string(),
     };
     assert!(validate_dispatch_shape(&[task]).is_err());
+}
+
+#[test]
+fn collaboration_dispatch_treats_markdown_structure_as_advisory() {
+    let task = DispatchTask {
+        client_task_key: "explore".to_string(),
+        title: "Explore".to_string(),
+        role: AgentRole::Explorer,
+        access: AgentAccess::ReadOnly,
+        depends_on: Vec::new(),
+        task_markdown: "Inspect the project and report the evidence.".to_string(),
+    };
+    assert!(validate_dispatch_shape(&[task]).is_ok());
 }
 
 fn valid_task_markdown(objective: &str) -> String {

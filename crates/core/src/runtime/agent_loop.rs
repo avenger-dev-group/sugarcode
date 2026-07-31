@@ -1,13 +1,11 @@
 use super::*;
 use std::collections::BTreeSet;
 
-pub(super) const MAX_MCP_TOOL_CALLS_PER_TURN: usize = 4;
 pub(super) const MAX_CONSECUTIVE_APPROVAL_DENIALS: u8 = 3;
 
 #[derive(Debug, Default)]
 pub(super) struct AgentLoopState {
     call_ids: BTreeSet<String>,
-    mcp_calls: usize,
     consecutive_approval_denials: u8,
 }
 
@@ -30,21 +28,12 @@ impl AgentLoopState {
         } else {
             tools.extend(runtime.collaboration.tool_definitions());
         }
-        if self.mcp_calls >= MAX_MCP_TOOL_CALLS_PER_TURN {
-            tools.retain(|tool| !tool.name.starts_with("mcp__"));
-        }
         tools
     }
 
     pub(super) fn observe_call(&mut self, call: &ModelToolCall) -> bool {
         if !self.call_ids.insert(call.id.clone()) {
             return false;
-        }
-        if call.name.starts_with("mcp__") {
-            if self.mcp_calls >= MAX_MCP_TOOL_CALLS_PER_TURN {
-                return false;
-            }
-            self.mcp_calls += 1;
         }
         true
     }

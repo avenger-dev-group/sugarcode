@@ -1,5 +1,7 @@
 use serde_json::to_value;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
+use sugarcode_app_server_protocol::AgentOutputDeltaNotification;
+use sugarcode_app_server_protocol::AgentOutputRef;
 use sugarcode_app_server_protocol::AgentTaskAccess;
 use sugarcode_app_server_protocol::AgentTaskRole;
 use sugarcode_app_server_protocol::AgentTaskStatus;
@@ -170,6 +172,7 @@ pub(crate) fn map_turn_lifecycle(
                 thread_id: public_thread_id.clone(),
                 turn_id: public_turn_id.clone(),
                 item: started_public_item,
+                agent_output: None,
             })
             .map_err(|_| EventMappingError)?,
         ),
@@ -547,6 +550,43 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 item: map_core_item(item),
+                agent_output: None,
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
+        CoreEventKind::AgentOutputDelta {
+            thread_id,
+            turn_id,
+            output,
+            delta,
+        } => notification(
+            "turn/agentOutput/delta",
+            to_value(AgentOutputDeltaNotification {
+                thread_id: thread_id.into_string(),
+                turn_id: turn_id.into_string(),
+                output: AgentOutputRef {
+                    response_ordinal: output.response_ordinal,
+                    output_index: output.output_index,
+                },
+                delta,
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
+        CoreEventKind::AgentOutputResolved {
+            thread_id,
+            turn_id,
+            output,
+            item,
+        } => notification(
+            "item/started",
+            to_value(ItemStartedNotification {
+                thread_id: thread_id.into_string(),
+                turn_id: turn_id.into_string(),
+                item: map_core_item(item),
+                agent_output: Some(AgentOutputRef {
+                    response_ordinal: output.response_ordinal,
+                    output_index: output.output_index,
+                }),
             })
             .map_err(|_| EventMappingError)?,
         ),
@@ -1198,4 +1238,66 @@ fn notification(method: &str, params: serde_json::Value) -> JsonRpcMessage {
         method: method.to_string(),
         params: Some(params),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sugarcode_protocol::CoreAgentOutputRef;
+    use sugarcode_protocol::CoreItemSnapshot;
+    use sugarcode_protocol::ItemId;
+    use sugarcode_protocol::TurnId;
+
+    #[test]
+    fn provisional_delta_and_resolution_keep_one_output_reference() {
+        let thread_id = ThreadId::new("thr_0000000000000001");
+        let turn_id = TurnId::new("turn_0000000000000001");
+        let output = CoreAgentOutputRef {
+            response_ordinal: 2,
+            output_index: 0,
+        };
+        let delta = map_core_event(CoreEvent {
+            request_id: CoreRequestId::new(1),
+            kind: CoreEventKind::AgentOutputDelta {
+                thread_id: thread_id.clone(),
+                turn_id: turn_id.clone(),
+                output,
+                delta: "Inspecting".to_string(),
+            },
+        })
+        .expect("delta maps");
+        assert_eq!(
+            serde_json::to_value(delta).expect("delta serializes"),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "turn/agentOutput/delta",
+                "params": {
+                    "threadId": thread_id.as_str(),
+                    "turnId": turn_id.as_str(),
+                    "output": {"responseOrdinal": 2, "outputIndex": 0},
+                    "delta": "Inspecting"
+                }
+            })
+        );
+
+        let resolved = map_core_event(CoreEvent {
+            request_id: CoreRequestId::new(1),
+            kind: CoreEventKind::AgentOutputResolved {
+                thread_id,
+                turn_id,
+                output,
+                item: CoreItemSnapshot {
+                    id: ItemId::new("item_0000000000000001"),
+                    kind: CoreItemKind::AgentCommentary {
+                        text: "Inspecting".to_string(),
+                    },
+                },
+            },
+        })
+        .expect("resolution maps");
+        let value = serde_json::to_value(resolved).expect("resolution serializes");
+        assert_eq!(value["method"], "item/started");
+        assert_eq!(value["params"]["agentOutput"]["responseOrdinal"], 2);
+        assert_eq!(value["params"]["item"]["type"], "agentCommentary");
+    }
 }

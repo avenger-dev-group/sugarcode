@@ -26,8 +26,8 @@ async fn inventory_and_selected_skill_are_ordered_reused_and_audited_without_con
     let requests = Arc::new(Mutex::new(Vec::new()));
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([vec![
-            Ok(ModelEvent::TextDelta("done".to_string())),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::text_delta("done".to_string())),
+            Ok(model_event::COMPLETED),
         ]])),
         requests: Arc::clone(&requests),
     };
@@ -115,8 +115,8 @@ async fn selection_limit_failure_is_atomic_before_turn_id_allocation() {
     let (_, _, skills) = tool.derive_scope_with_context(".").expect("context");
     let (mut runtime, _events, thread_id) = runtime(RecordedProvider {
         events: vec![
-            Ok(ModelEvent::TextDelta("done".to_string())),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::text_delta("done".to_string())),
+            Ok(model_event::COMPLETED),
         ],
         stay_open: false,
     });

@@ -1,5 +1,7 @@
 use serde_json::json;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
+use sugarcode_app_server_protocol::AgentOutputDeltaNotification;
+use sugarcode_app_server_protocol::AgentOutputRef;
 use sugarcode_app_server_protocol::AgentTaskAccess;
 use sugarcode_app_server_protocol::AgentTaskRole;
 use sugarcode_app_server_protocol::AgentTaskStatus;
@@ -719,6 +721,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
             thread_id: thread_id.clone(),
             turn_id: turn_id.clone(),
             item: started_item,
+            agent_output: None,
         })
         .expect("item/started serializes"),
         json!({
@@ -784,6 +787,28 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
 }
 
 #[test]
+fn provisional_agent_output_fixture_is_additive_and_provider_neutral() {
+    let fixture = include_str!(
+        "../../../protocol-fixtures/app-server/v1/agent-output-delta.notification.json"
+    );
+    let value: serde_json::Value = serde_json::from_str(fixture).expect("valid fixture JSON");
+    let params = value.get("params").cloned().expect("notification params");
+    assert_eq!(
+        serde_json::from_value::<AgentOutputDeltaNotification>(params)
+            .expect("Agent output notification"),
+        AgentOutputDeltaNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn_id: "turn_0000000000000001".to_string(),
+            output: AgentOutputRef {
+                response_ordinal: 2,
+                output_index: 0,
+            },
+            delta: "Inspecting the workspace".to_string(),
+        }
+    );
+}
+
+#[test]
 fn agent_commentary_item_lifecycle_preserves_process_text() {
     let item = Item::AgentCommentary {
         id: "item_0000000000000002".to_string(),
@@ -795,6 +820,7 @@ fn agent_commentary_item_lifecycle_preserves_process_text() {
             thread_id: "thr_0000000000000001".to_string(),
             turn_id: "turn_0000000000000001".to_string(),
             item: item.clone(),
+            agent_output: None,
         })
         .expect("commentary item/started serializes"),
         json!({

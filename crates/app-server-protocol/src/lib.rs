@@ -20,6 +20,8 @@ pub use initialize::ServerCapabilities;
 pub use initialize::ServerInfo;
 pub use initialize::WorkspaceBinding;
 pub use item::AgentMessageDeltaNotification;
+pub use item::AgentOutputDeltaNotification;
+pub use item::AgentOutputRef;
 pub use item::AgentTaskAccess;
 pub use item::AgentTaskRole;
 pub use item::AgentTaskStatus;

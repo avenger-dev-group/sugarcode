@@ -95,34 +95,34 @@ async fn local_mcp_local_tools_alternate_in_one_turn() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_local_1".to_string(),
                     name: "workspace/read".to_string(),
                     arguments: serde_json::json!({"path": "first.txt"}),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_mcp_between".to_string(),
                     name: "mcp__fixture__inspect".to_string(),
                     arguments: serde_json::json!({"value": "between"}),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_local_2".to_string(),
                     name: "workspace/read".to_string(),
                     arguments: serde_json::json!({"path": "second.txt"}),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta(
+                Ok(model_event::text_delta(
                     "Alternating tools completed.".to_string(),
                 )),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: requests.clone(),
@@ -201,16 +201,16 @@ async fn approved_mcp_call_crosses_attempt_before_one_execution_and_second_round
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_mcp".to_string(),
                     name: "mcp__fixture__inspect".to_string(),
                     arguments: serde_json::json!({"value": "hello"}),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("Finished.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta("Finished.".to_string())),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: requests.clone(),
@@ -352,22 +352,21 @@ async fn approved_mcp_call_crosses_attempt_before_one_execution_and_second_round
 }
 
 #[tokio::test]
-async fn four_approved_mcp_calls_are_sequentially_correlated_and_then_tools_are_removed() {
+async fn effectful_tool_batch_is_not_limited_by_item_count() {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let mut rounds = VecDeque::new();
-    for ordinal in 1..=4 {
-        rounds.push_back(vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
-                id: format!("call_mcp_{ordinal}"),
-                name: "mcp__fixture__inspect".to_string(),
-                arguments: serde_json::json!({"value": format!("value-{ordinal}")}),
-            })),
-            Ok(ModelEvent::Completed),
-        ]);
-    }
-    rounds.push_back(vec![
-        Ok(ModelEvent::TextDelta("Finished four calls.".to_string())),
-        Ok(ModelEvent::Completed),
+    let calls = (1..=5)
+        .map(|ordinal| ModelToolCall {
+            id: format!("call_mcp_{ordinal}"),
+            name: "mcp__fixture__inspect".to_string(),
+            arguments: serde_json::json!({"value": format!("value-{ordinal}")}),
+        })
+        .collect::<Vec<_>>();
+    let rounds = VecDeque::from([
+        vec![Ok(model_event::tool_call_batch(calls))],
+        vec![
+            Ok(model_event::text_delta("Finished five calls.".to_string())),
+            Ok(model_event::COMPLETED),
+        ],
     ]);
     let provider = SequencedProvider {
         rounds: Mutex::new(rounds),
@@ -398,7 +397,7 @@ async fn four_approved_mcp_calls_are_sequentially_correlated_and_then_tools_are_
         .start_text_turn(
             CoreRequestId::new(2),
             thread_id.clone(),
-            Some("Use MCP four times".to_string()),
+            Some("Use MCP five times".to_string()),
         )
         .expect("turn");
     loop {
@@ -410,21 +409,27 @@ async fn four_approved_mcp_calls_are_sequentially_correlated_and_then_tools_are_
         }
     }
 
-    assert_eq!(executions.load(Ordering::Acquire), 4);
+    assert_eq!(executions.load(Ordering::Acquire), 5);
     let approvals = approvals.lock().expect("approvals");
-    assert_eq!(approvals.len(), 4);
+    assert_eq!(approvals.len(), 5);
     assert_eq!(
         approvals
             .iter()
             .map(|request| request.call_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["call_mcp_1", "call_mcp_2", "call_mcp_3", "call_mcp_4"]
+        vec![
+            "call_mcp_1",
+            "call_mcp_2",
+            "call_mcp_3",
+            "call_mcp_4",
+            "call_mcp_5"
+        ]
     );
     drop(approvals);
 
     let provider_requests = requests.lock().expect("provider requests");
-    assert_eq!(provider_requests.len(), 5);
-    assert!(provider_requests[..4].iter().all(|request| {
+    assert_eq!(provider_requests.len(), 2);
+    assert!(provider_requests.iter().all(|request| {
         request
             .tools
             .iter()
@@ -432,47 +437,29 @@ async fn four_approved_mcp_calls_are_sequentially_correlated_and_then_tools_are_
             .map(|tool| tool.name.as_str())
             .eq(["mcp__fixture__inspect"])
     }));
-    assert!(
-        provider_requests[4]
-            .tools
+    let messages = &provider_requests[1].messages;
+    assert!(matches!(
+        messages.iter().find(|message| matches!(message, ModelMessage::ToolCallBatch(_))),
+        Some(ModelMessage::ToolCallBatch(calls)) if calls.len() == 5
+    ));
+    assert_eq!(
+        messages
             .iter()
-            .all(|tool| !tool.name.starts_with("mcp__"))
+            .filter(|message| matches!(message, ModelMessage::ToolResult { .. }))
+            .count(),
+        5
     );
-    for request_index in 1..=4 {
-        let messages = &provider_requests[request_index].messages;
-        let expected_pairs = request_index;
-        assert_eq!(
-            messages
-                .iter()
-                .filter(|message| matches!(message, ModelMessage::ToolCall(_)))
-                .count(),
-            expected_pairs
-        );
-        assert_eq!(
-            messages
-                .iter()
-                .filter(|message| matches!(message, ModelMessage::ToolResult { .. }))
-                .count(),
-            expected_pairs
-        );
-        for ordinal in 1..=expected_pairs {
-            let call_id = format!("call_mcp_{ordinal}");
-            assert!(messages.iter().any(|message| {
-                matches!(
-                    message,
-                    ModelMessage::ToolCall(call) if call.id == call_id
-                )
-            }));
-            assert!(messages.iter().any(|message| {
-                matches!(
-                    message,
-                    ModelMessage::ToolResult {
-                        call_id: result_call_id,
-                        ..
-                    } if result_call_id == &call_id
-                )
-            }));
-        }
+    for ordinal in 1..=5 {
+        let call_id = format!("call_mcp_{ordinal}");
+        assert!(messages.iter().any(|message| {
+            matches!(
+                message,
+                ModelMessage::ToolResult {
+                    call_id: result_call_id,
+                    ..
+                } if result_call_id == &call_id
+            )
+        }));
     }
     drop(provider_requests);
 
@@ -486,7 +473,7 @@ async fn four_approved_mcp_calls_are_sequentially_correlated_and_then_tools_are_
                 sugarcode_state::DurableItemSnapshot::McpToolCall { .. }
             ))
             .count(),
-        4
+        5
     );
     assert_eq!(
         turn.items
@@ -496,7 +483,7 @@ async fn four_approved_mcp_calls_are_sequentially_correlated_and_then_tools_are_
                 sugarcode_state::DurableItemSnapshot::McpToolResult { .. }
             ))
             .count(),
-        4
+        5
     );
     let original_items = turn.items.clone();
     let fork = runtime.fork_thread(&thread_id).expect("fork");
@@ -511,7 +498,7 @@ async fn four_approved_mcp_calls_are_sequentially_correlated_and_then_tools_are_
                 sugarcode_state::DurableItemSnapshot::McpToolCall { .. }
             ))
             .count(),
-        4
+        5
     );
     for (original, remapped) in original_items.iter().zip(&fork.turns[0].items) {
         assert_ne!(original.id(), remapped.id());
@@ -524,16 +511,16 @@ async fn denied_mcp_call_never_crosses_attempt_or_executes() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_denied".to_string(),
                     name: "mcp__fixture__inspect".to_string(),
                     arguments: serde_json::json!({"value": "hello"}),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("Denied.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta("Denied.".to_string())),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: provider_requests.clone(),
@@ -608,12 +595,12 @@ async fn missing_client_capability_omits_mcp_definition_and_execution() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let provider = RecordedProvider {
         events: vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+            Ok(model_event::tool_call(ModelToolCall {
                 id: "call_hidden".to_string(),
                 name: "mcp__fixture__inspect".to_string(),
                 arguments: serde_json::json!({"value": "hello"}),
             })),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::COMPLETED),
         ],
         stay_open: false,
     };

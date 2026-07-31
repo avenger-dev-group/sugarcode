@@ -246,10 +246,10 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
                 "input": "failed private marker"
             }
         }),
-        8,
+        5,
     );
-    assert_eq!(failed[7]["params"]["turn"]["status"], "failed");
-    assert_eq!(failed[7]["params"]["turn"]["error"]["kind"], "disconnected");
+    assert_eq!(failed[4]["params"]["turn"]["status"], "failed");
+    assert_eq!(failed[4]["params"]["turn"]["error"]["kind"], "disconnected");
     let interrupted_opening = first.send(
         json!({
             "jsonrpc": "2.0",
@@ -260,7 +260,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
                 "input": "interrupted private marker"
             }
         }),
-        6,
+        4,
     );
     assert_eq!(
         interrupted_opening[0]["result"]["turn"]["status"],
@@ -276,7 +276,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
                 "turnId": "turn_0000000000000003"
             }
         }),
-        3,
+        2,
     );
     assert_eq!(
         interrupted

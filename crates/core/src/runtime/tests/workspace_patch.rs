@@ -88,7 +88,7 @@ async fn workspace_patch_persists_review_before_result_and_finishes_model_round(
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_patch".to_string(),
                     name: "workspace/apply-patch".to_string(),
                     arguments: serde_json::json!({
@@ -96,11 +96,11 @@ async fn workspace_patch_persists_review_before_result_and_finishes_model_round(
                         "patch": "@@ -1,3 +1,3 @@\n one\n-two\n+second\n three\n"
                     }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("Updated it.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta("Updated it.".to_string())),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: requests.clone(),
@@ -190,7 +190,7 @@ async fn workspace_patch_persists_review_before_result_and_finishes_model_round(
 async fn interruption_after_commit_barrier_records_result_before_interrupted_terminal() {
     let provider = RecordedProvider {
         events: vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+            Ok(model_event::tool_call(ModelToolCall {
                 id: "call_patch".to_string(),
                 name: "workspace/apply-patch".to_string(),
                 arguments: serde_json::json!({
@@ -198,7 +198,7 @@ async fn interruption_after_commit_barrier_records_result_before_interrupted_ter
                     "patch": "@@ -1,1 +1,1 @@\n-old\n+new\n"
                 }),
             })),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::COMPLETED),
         ],
         stay_open: false,
     };

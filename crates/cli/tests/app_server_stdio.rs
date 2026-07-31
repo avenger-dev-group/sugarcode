@@ -1015,18 +1015,12 @@ fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
         read_json(&mut stdout),
         read_json(&mut stdout),
         read_json(&mut stdout),
-        read_json(&mut stdout),
     ];
     assert_eq!(before_interrupt[0]["method"], "turn/started");
     assert_eq!(before_interrupt[1]["method"], "item/started");
     assert_eq!(before_interrupt[1]["params"]["item"]["type"], "userMessage");
     assert_eq!(before_interrupt[2]["method"], "item/completed");
-    assert_eq!(before_interrupt[3]["method"], "item/started");
-    assert_eq!(
-        before_interrupt[3]["params"]["item"]["type"],
-        "agentMessage"
-    );
-    assert_eq!(before_interrupt[4]["method"], "item/agentMessage/delta");
+    assert_eq!(before_interrupt[3]["method"], "turn/agentOutput/delta");
     provider.wait_until_delta_sent();
 
     send_json(
@@ -1052,11 +1046,7 @@ fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
             "params": {"threadId": thread_id, "turnId": turn_id}
         }),
     );
-    let after_interrupt = [
-        read_json(&mut stdout),
-        read_json(&mut stdout),
-        read_json(&mut stdout),
-    ];
+    let after_interrupt = [read_json(&mut stdout), read_json(&mut stdout)];
     assert_eq!(
         after_interrupt
             .iter()
@@ -1064,15 +1054,14 @@ fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
             .count(),
         1
     );
-    assert_eq!(after_interrupt[0]["method"], "item/completed");
-    assert_eq!(after_interrupt[1]["method"], "turn/completed");
-    assert_eq!(after_interrupt[2]["id"], "interrupt");
+    assert_eq!(after_interrupt[0]["method"], "turn/completed");
+    assert_eq!(after_interrupt[1]["id"], "interrupt");
     assert_eq!(
         after_interrupt
             .iter()
             .filter(|message| message["method"] == "item/completed")
             .count(),
-        1
+        0
     );
     let terminal = after_interrupt
         .iter()
@@ -1152,8 +1141,7 @@ fn stdin_eof_interrupts_active_stream_flushes_terminal_and_replays_it_once() {
         "turn/started",
         "item/started",
         "item/completed",
-        "item/started",
-        "item/agentMessage/delta",
+        "turn/agentOutput/delta",
     ] {
         assert_eq!(read_json(&mut stdout)["method"], expected);
     }
@@ -1168,11 +1156,10 @@ fn stdin_eof_interrupts_active_stream_flushes_terminal_and_replays_it_once() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("shutdown JSON"))
         .collect::<Vec<_>>();
-    assert_eq!(trailing.len(), 2);
-    assert_eq!(trailing[0]["method"], "item/completed");
-    assert_eq!(trailing[1]["method"], "turn/completed");
+    assert_eq!(trailing.len(), 1);
+    assert_eq!(trailing[0]["method"], "turn/completed");
     assert_eq!(
-        trailing[1]["params"]["turn"]["status"], "interrupted",
+        trailing[0]["params"]["turn"]["status"], "interrupted",
         "{trailing:?}"
     );
     provider.wait_until_connection_closed();
@@ -1382,11 +1369,7 @@ fn run_golden_with_options(
         if !expects_response {
             if input_index + 1 == input_lines.len() {
                 while expected_index < expected_values.len() {
-                    let mut line = String::new();
-                    assert!(
-                        stdout.read_line(&mut line).expect("read terminal output") > 0,
-                        "app-server closed before the golden terminal"
-                    );
+                    let line = read_legacy_golden_line(&mut stdout, "golden terminal");
                     actual.push_str(&line);
                     expected_index += 1;
                 }
@@ -1394,11 +1377,7 @@ fn run_golden_with_options(
             continue;
         }
         loop {
-            let mut line = String::new();
-            assert!(
-                stdout.read_line(&mut line).expect("read protocol output") > 0,
-                "app-server closed before the golden response"
-            );
+            let line = read_legacy_golden_line(&mut stdout, "golden response");
             actual.push_str(&line);
             expected_index += 1;
             if expected_index >= expected_values.len()
@@ -1732,10 +1711,32 @@ fn read_json(stdout: &mut impl BufRead) -> Value {
     serde_json::from_str(&line).expect("JSON-RPC output")
 }
 
+fn read_legacy_golden_line(stdout: &mut impl BufRead, expected: &str) -> String {
+    loop {
+        let mut line = String::new();
+        assert!(
+            stdout.read_line(&mut line).expect("read protocol output") > 0,
+            "app-server closed before the {expected}"
+        );
+        let value = serde_json::from_str::<Value>(&line).expect("protocol output JSON");
+        if value.get("method").and_then(Value::as_str) != Some("turn/agentOutput/delta") {
+            return line;
+        }
+    }
+}
+
 fn normalize_trace(output: &str) -> String {
     let mut normalized = String::new();
     for line in output.lines() {
         let mut value = serde_json::from_str::<Value>(line).expect("stdout line is JSON");
+        if value.get("method").and_then(Value::as_str) == Some("turn/agentOutput/delta") {
+            continue;
+        }
+        if value.get("method").and_then(Value::as_str) == Some("item/started") {
+            if let Some(params) = value.get_mut("params").and_then(Value::as_object_mut) {
+                params.remove("agentOutput");
+            }
+        }
         if let Some(platform) = value
             .get_mut("result")
             .and_then(|result| result.get_mut("platform"))

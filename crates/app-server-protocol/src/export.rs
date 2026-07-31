@@ -1,4 +1,6 @@
 use crate::AgentMessageDeltaNotification;
+use crate::AgentOutputDeltaNotification;
+use crate::AgentOutputRef;
 use crate::AgentTaskAccess;
 use crate::AgentTaskRole;
 use crate::AgentTaskStatus;
@@ -142,7 +144,9 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         AgentTaskAccess::decl(),
         AgentTaskStatus::decl(),
         Item::decl(),
+        AgentOutputRef::decl(),
         ItemStartedNotification::decl(),
+        AgentOutputDeltaNotification::decl(),
         AgentMessageDeltaNotification::decl(),
         ItemCompletedNotification::decl(),
         Thread::decl(),
@@ -349,8 +353,16 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     )?;
     write_schema(out_dir.join("Item.schema.json"), &schema_for!(Item))?;
     write_schema(
+        out_dir.join("AgentOutputRef.schema.json"),
+        &schema_for!(AgentOutputRef),
+    )?;
+    write_schema(
         out_dir.join("ItemStartedNotification.schema.json"),
         &schema_for!(ItemStartedNotification),
+    )?;
+    write_schema(
+        out_dir.join("AgentOutputDeltaNotification.schema.json"),
+        &schema_for!(AgentOutputDeltaNotification),
     )?;
     write_schema(
         out_dir.join("AgentMessageDeltaNotification.schema.json"),

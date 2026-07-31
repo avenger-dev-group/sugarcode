@@ -2,6 +2,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
+use std::collections::BTreeMap;
 use std::io;
 use sugarcode_agent_runtime::AgentSurfaceSession;
 use sugarcode_agent_runtime::PendingCommandApproval;
@@ -10,6 +11,7 @@ use sugarcode_core::CommandApprovalOutcome;
 use sugarcode_core::CoreRuntime;
 use sugarcode_core::McpToolApprovalOutcome;
 use sugarcode_core::TurnStartOutcome;
+use sugarcode_protocol::CoreAgentOutputRef;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreItemKind;
@@ -63,6 +65,7 @@ pub(crate) struct App {
     pub(crate) selected_thread: usize,
     pub(crate) current_thread: ThreadId,
     pub(crate) transcript: Vec<TranscriptEntry>,
+    pub(crate) pending_outputs: BTreeMap<CoreAgentOutputRef, String>,
     pub(crate) input: String,
     pub(crate) status: String,
     pub(crate) focus: Focus,
@@ -72,6 +75,7 @@ pub(crate) struct App {
     pub(crate) approval: Option<PendingApproval>,
     active_request: Option<CoreRequestId>,
     active_turn: Option<TurnId>,
+    resolved_agent_outputs: BTreeMap<ItemId, CoreAgentOutputRef>,
     quitting_after_turn: bool,
     quit: bool,
 }
@@ -95,6 +99,7 @@ impl App {
                     text: "Ready ✓".to_string(),
                 },
             ],
+            pending_outputs: BTreeMap::new(),
             input: String::new(),
             status: "Ready".to_string(),
             focus: Focus::Input,
@@ -107,6 +112,7 @@ impl App {
             approval: None,
             active_request: None,
             active_turn: None,
+            resolved_agent_outputs: BTreeMap::new(),
             quitting_after_turn: false,
             quit: false,
         }
@@ -150,6 +156,7 @@ impl App {
             selected_thread: 0,
             current_thread,
             transcript,
+            pending_outputs: BTreeMap::new(),
             input: String::new(),
             status,
             focus: Focus::Input,
@@ -159,6 +166,7 @@ impl App {
             approval: None,
             active_request: None,
             active_turn: None,
+            resolved_agent_outputs: BTreeMap::new(),
             quitting_after_turn: false,
             quit: false,
         })
@@ -284,7 +292,50 @@ impl App {
             CoreEventKind::ItemStarted { item, .. } | CoreEventKind::ItemCompleted { item, .. } => {
                 self.upsert_item(item.id, item.kind)
             }
+            CoreEventKind::AgentOutputDelta { output, delta, .. } => {
+                self.pending_outputs
+                    .entry(output)
+                    .or_default()
+                    .push_str(&delta);
+                self.scroll = 0;
+            }
+            CoreEventKind::AgentOutputResolved { output, item, .. } => {
+                let should_upsert = match &item.kind {
+                    CoreItemKind::AgentMessage { text } if text.is_empty() => {
+                        self.resolved_agent_outputs.insert(item.id.clone(), output);
+                        false
+                    }
+                    CoreItemKind::AgentCommentary { text } => {
+                        if self
+                            .pending_outputs
+                            .get(&output)
+                            .is_some_and(|preview| preview != text)
+                        {
+                            self.status = "Agent output preview mismatch".to_string();
+                        }
+                        self.pending_outputs.remove(&output);
+                        true
+                    }
+                    _ => {
+                        self.status = "Unsupported resolved Agent output".to_string();
+                        true
+                    }
+                };
+                if should_upsert {
+                    self.upsert_item(item.id, item.kind);
+                }
+            }
             CoreEventKind::AgentMessageDelta { item_id, delta, .. } => {
+                if let Some(output) = self.resolved_agent_outputs.remove(&item_id) {
+                    if self
+                        .pending_outputs
+                        .get(&output)
+                        .is_some_and(|preview| preview != &delta)
+                    {
+                        self.status = "Agent output preview mismatch".to_string();
+                    }
+                    self.pending_outputs.remove(&output);
+                }
                 if let Some(entry) = self
                     .transcript
                     .iter_mut()
@@ -433,6 +484,8 @@ impl App {
         self.status = status.to_string();
         self.active_request = None;
         self.active_turn = None;
+        self.pending_outputs.clear();
+        self.resolved_agent_outputs.clear();
         if self.quitting_after_turn {
             self.quit = true;
         }
@@ -475,6 +528,8 @@ impl App {
         self.selected_thread = 0;
         self.current_thread = thread_id;
         self.transcript.clear();
+        self.pending_outputs.clear();
+        self.resolved_agent_outputs.clear();
         self.latest_diff = None;
         self.status = "New thread".to_string();
         self.focus = Focus::Input;
@@ -498,6 +553,8 @@ impl App {
         let (transcript, diff) = transcript_from_snapshot(&snapshot);
         self.current_thread = thread_id;
         self.transcript = transcript;
+        self.pending_outputs.clear();
+        self.resolved_agent_outputs.clear();
         self.latest_diff = diff;
         self.scroll = 0;
         self.status = "Thread resumed".to_string();

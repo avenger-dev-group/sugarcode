@@ -356,6 +356,16 @@ export const toThreadViewModel = (
       )
         ? previousTurn.messages
         : messages;
+    const nextPendingAgentOutputs = turn.pendingAgentOutputs?.map((output) => ({
+      id: `agent-output:${turn.id}:${output.responseOrdinal}:${output.outputIndex}`,
+      text: output.text,
+      state: 'running' as const,
+    }));
+    const pendingAgentOutputs =
+      JSON.stringify(previousTurn?.pendingAgentOutputs) ===
+      JSON.stringify(nextPendingAgentOutputs)
+        ? previousTurn?.pendingAgentOutputs
+        : nextPendingAgentOutputs;
     const nextContextCompactions = turn.contextCompactions?.map((activity) => {
       const outcome = activity.outcome;
       return {
@@ -807,6 +817,7 @@ export const toThreadViewModel = (
     if (
       previousTurn?.status === turn.status &&
       previousTurn.messages === stableMessages &&
+      previousTurn.pendingAgentOutputs === pendingAgentOutputs &&
       previousTurn.contextCompactions === contextCompactions &&
       previousTurn.activities === activities &&
       previousTurn.workspaceRead === workspaceRead &&
@@ -825,6 +836,7 @@ export const toThreadViewModel = (
       id: turn.id,
       status: turn.status,
       messages: stableMessages,
+      ...(pendingAgentOutputs ? { pendingAgentOutputs } : {}),
       ...(contextCompactions ? { contextCompactions } : {}),
       ...(activities ? { activities } : {}),
       ...(workspaceRead ? { workspaceRead } : {}),

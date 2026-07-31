@@ -916,7 +916,6 @@ pub(super) fn validate_dispatch_shape(tasks: &[DispatchTask]) -> Result<(), Mode
             || task.task_markdown.len() > MAX_TASK_MARKDOWN_BYTES
             || !keys.insert(task.client_task_key.clone())
             || (task.role == AgentRole::Auditor && task.access != AgentAccess::ReadOnly)
-            || !required_markdown_sections(&task.task_markdown)
         {
             return Err(invalid_request());
         }
@@ -944,24 +943,6 @@ pub(super) fn validate_dispatch_shape(tasks: &[DispatchTask]) -> Result<(), Mode
 pub(super) fn validate_initial_dispatch(tasks: &[DispatchTask]) -> Result<(), ModelError> {
     validate_dispatch_shape(tasks)?;
     validate_dispatch_against_orchestration(None, tasks)
-}
-
-fn required_markdown_sections(markdown: &str) -> bool {
-    [
-        "Objective",
-        "Context",
-        "Scope",
-        "Constraints",
-        "Deliverables",
-        "Acceptance criteria",
-        "Report format",
-    ]
-    .iter()
-    .all(|heading| {
-        markdown
-            .lines()
-            .any(|line| line.trim_start_matches('#').trim() == *heading)
-    })
 }
 
 fn validate_dispatch_against_orchestration(

@@ -36,6 +36,18 @@ pub enum CoreEventKind {
         turn_id: TurnId,
         item: CoreItemSnapshot,
     },
+    AgentOutputDelta {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        output: CoreAgentOutputRef,
+        delta: String,
+    },
+    AgentOutputResolved {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        output: CoreAgentOutputRef,
+        item: CoreItemSnapshot,
+    },
     AgentMessageDelta {
         thread_id: ThreadId,
         turn_id: TurnId,
@@ -61,6 +73,12 @@ pub enum CoreEventKind {
         turn_id: TurnId,
     },
     RuntimeFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CoreAgentOutputRef {
+    pub response_ordinal: u64,
+    pub output_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

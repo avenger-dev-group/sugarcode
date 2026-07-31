@@ -38,6 +38,12 @@ export type ConversationCommentaryActivity = Readonly<{
   status: ConversationMessageStatus;
 }>;
 
+export type ConversationAgentOutput = Readonly<{
+  responseOrdinal: number;
+  outputIndex: number;
+  text: string;
+}>;
+
 export type ConversationContextCompactionActivity = Readonly<{
   id: string;
   strategy: 'modelGeneratedActiveTurnV1';
@@ -356,6 +362,7 @@ export type ConversationTurn = Readonly<{
   id: string;
   status: ConversationTurnStatus;
   messages: readonly ConversationMessage[];
+  pendingAgentOutputs?: readonly ConversationAgentOutput[];
   activities?: readonly ConversationActivity[];
   contextCompactions?: readonly ConversationContextCompactionActivity[];
   workspaceRead?: ConversationWorkspaceReadActivity;
@@ -1097,6 +1104,9 @@ const isMcpActivity = (value: unknown): value is ConversationMcpActivity => {
 };
 
 const isTurn = (value: unknown): value is ConversationTurn => {
+  const pendingAgentOutputs = isRecord(value)
+    ? value.pendingAgentOutputs
+    : undefined;
   if (
     !isRecord(value) ||
     !isId(value.id) ||
@@ -1104,6 +1114,20 @@ const isTurn = (value: unknown): value is ConversationTurn => {
     !TURN_STATUSES.has(value.status as ConversationTurnStatus) ||
     !Array.isArray(value.messages) ||
     !value.messages.every(isMessage) ||
+    (Object.hasOwn(value, 'pendingAgentOutputs') &&
+      (!Array.isArray(pendingAgentOutputs) ||
+        pendingAgentOutputs.length > 1 ||
+        !pendingAgentOutputs.every(
+          (output) =>
+            isRecord(output) &&
+            Number.isSafeInteger(output.responseOrdinal) &&
+            (output.responseOrdinal as number) >= 1 &&
+            Number.isSafeInteger(output.outputIndex) &&
+            (output.outputIndex as number) >= 0 &&
+            typeof output.text === 'string' &&
+            output.text.length > 0 &&
+            new TextEncoder().encode(output.text).byteLength <= 512 * 1024,
+        ))) ||
     (Object.hasOwn(value, 'workspaceRead') &&
       !isWorkspaceReadActivity(value.workspaceRead)) ||
     (Object.hasOwn(value, 'workspaceList') &&
@@ -1124,7 +1148,8 @@ const isTurn = (value: unknown): value is ConversationTurn => {
 
   if (
     value.status !== 'inProgress' &&
-    value.messages.some((message) => message.status !== 'completed')
+    (value.messages.some((message) => message.status !== 'completed') ||
+      (Array.isArray(pendingAgentOutputs) ? pendingAgentOutputs.length : 0) > 0)
   ) {
     return false;
   }

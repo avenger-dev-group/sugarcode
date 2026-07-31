@@ -3,6 +3,7 @@ use crate::ExecErrorCategoryV1;
 use crate::ExecOutputFormat;
 use crate::ExecRunModeV1;
 use crate::ExecRunStatusV1;
+use crate::belongs_to_exec_request;
 use crate::output::OutputEmitter;
 use crate::output::write_standalone_error;
 use sugarcode_protocol::CoreEvent;
@@ -95,4 +96,23 @@ fn machine_error_is_versioned_and_human_error_keeps_stdout_empty() {
     )
     .expect("human error");
     assert!(human.is_empty());
+}
+
+#[test]
+fn exec_request_filter_hides_internal_collaboration_events() {
+    let root_request = CoreRequestId::new(2);
+    let root = CoreEvent {
+        request_id: root_request,
+        kind: CoreEventKind::ThreadStarted {
+            thread_id: ThreadId::new("thr_0000000000000001"),
+        },
+    };
+    let child = CoreEvent {
+        request_id: CoreRequestId::new(1u64 << 63),
+        kind: CoreEventKind::ThreadStarted {
+            thread_id: ThreadId::new("thr_0000000000000002"),
+        },
+    };
+    assert!(belongs_to_exec_request(&root, root_request));
+    assert!(!belongs_to_exec_request(&child, root_request));
 }

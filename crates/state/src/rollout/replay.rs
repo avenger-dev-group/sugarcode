@@ -656,6 +656,18 @@ fn terminal_items_match(
                     super::DurableItemSnapshot::AgentCommentary { .. },
                 ) => started == terminal,
                 (
+                    super::DurableItemSnapshot::AgentTask { .. },
+                    super::DurableItemSnapshot::AgentTask { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::AgentTaskAmendment { .. },
+                    super::DurableItemSnapshot::AgentTaskAmendment { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::AgentTaskResult { .. },
+                    super::DurableItemSnapshot::AgentTaskResult { .. },
+                ) => started == terminal,
+                (
                     super::DurableItemSnapshot::ContextCompaction { id: started_id, .. },
                     super::DurableItemSnapshot::ContextCompaction {
                         id: terminal_id, ..

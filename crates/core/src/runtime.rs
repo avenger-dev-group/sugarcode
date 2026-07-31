@@ -18,7 +18,7 @@ use crate::TurnInterruptOutcome;
 use crate::TurnStartOutcome;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
-use futures_util::future::join_all;
+use futures_util::stream;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -33,12 +33,16 @@ use sugarcode_model_provider::ModelEvent;
 use sugarcode_model_provider::ModelInstruction;
 use sugarcode_model_provider::ModelInstructionSource;
 use sugarcode_model_provider::ModelMessage;
+use sugarcode_model_provider::ModelOutputItemKind;
 use sugarcode_model_provider::ModelProvider;
 use sugarcode_model_provider::ModelRequest;
+use sugarcode_model_provider::ModelResponse;
 use sugarcode_model_provider::ModelRole;
+use sugarcode_model_provider::ModelTextPhase;
 use sugarcode_model_provider::ModelToolCall;
 use sugarcode_model_provider::ModelToolDefinition;
 use sugarcode_model_provider::ModelUsage;
+use sugarcode_protocol::CoreAgentOutputRef;
 use sugarcode_protocol::CoreContextCompactionOutcome;
 use sugarcode_protocol::CoreContextCompactionStrategy;
 use sugarcode_protocol::CoreEvent;
@@ -113,6 +117,7 @@ use terminal::finish_interrupted;
 use terminal::finish_interrupted_and_emit;
 use terminal::finish_state_unavailable_and_emit;
 use terminal::send_event;
+use tool_dispatch::append_completed_agent_output_item;
 use tool_dispatch::append_completed_tool_item;
 use tool_dispatch::map_workspace_list_outcome;
 use tool_dispatch::map_workspace_patch_error;
@@ -130,6 +135,7 @@ use crate::agent_instructions::sugarcode_base_agent_instruction_v1;
 const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
 const MAX_ACTIVE_TURN_COMPACTION_BYTES: usize = 32 * 1024;
+const READ_ONLY_TOOL_CONCURRENCY: usize = 4;
 
 const CORE_EVENT_CAPACITY: usize = 64;
 
@@ -770,13 +776,10 @@ async fn run_turn(
         .map(prepared_model_message)
         .collect::<Vec<_>>();
     let mut usage = None;
-    let mut agent_item: Option<CoreItemSnapshot> = None;
-    let mut pending_tool_call = false;
-    let mut patch_commit_interrupted = false;
-    let mut non_whitespace_text_seen = false;
     let mut agent_loop = AgentLoopState::default();
     let mut compaction_ordinal = 0u64;
-    let mut terminal = 'rounds: loop {
+    let mut response_ordinal = 0u64;
+    let terminal = 'rounds: loop {
         messages.extend(
             runtime
                 .collaboration
@@ -826,6 +829,10 @@ async fn run_turn(
         if request.context_bytes() > crate::context::COMPACTION_TARGET_BYTES {
             break Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false));
         }
+        response_ordinal = match response_ordinal.checked_add(1) {
+            Some(value) => value,
+            None => break Terminal::Failed(output_too_large_error()),
+        };
         let stream = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break 'rounds Terminal::Interrupted,
@@ -835,8 +842,7 @@ async fn run_turn(
             Ok(stream) => stream,
             Err(error) => break 'rounds Terminal::Failed(error),
         };
-        let mut tool_calls = Vec::new();
-        let mut commentary_seen = false;
+        let mut preview_text = BTreeMap::<u32, String>::new();
         loop {
             let next = tokio::select! {
                 biased;
@@ -844,62 +850,30 @@ async fn run_turn(
                 next = stream.next() => next,
             };
             match next {
-                Some(Ok(ModelEvent::TextDelta(delta))) if !delta.is_empty() => {
-                    if commentary_seen {
-                        break 'rounds Terminal::Failed(ModelError::new(
-                            ModelErrorKind::UnsupportedOutput,
-                            false,
-                        ));
-                    }
-                    non_whitespace_text_seen |=
-                        delta.chars().any(|character| !character.is_whitespace());
-                    if agent_item.is_none() {
-                        let item = match runtime
-                            .lock_core()
-                            .and_then(|mut core| core.start_agent_message(&thread_id, &turn_id))
-                        {
-                            Ok(item) => item,
-                            Err(_) => break 'rounds Terminal::StateUnavailable,
-                        };
-                        agent_item = Some(item.clone());
-                        let durable_event = CancellationToken::new();
-                        if !send_event(
-                            &runtime,
-                            &durable_event,
-                            request_id,
-                            CoreEventKind::ItemStarted {
-                                thread_id: thread_id.clone(),
-                                turn_id: turn_id.clone(),
-                                item: item.clone(),
-                            },
-                        )
-                        .await
-                        {
-                            break 'rounds Terminal::StateUnavailable;
-                        }
-                    }
-                    let item_id = agent_item.as_ref().expect("agent item started").id.clone();
-                    match runtime
-                        .lock_core()
-                        .and_then(|mut core| core.append_text_delta(&thread_id, &turn_id, &delta))
+                Some(Ok(ModelEvent::OutputTextDelta {
+                    output_index,
+                    delta,
+                })) if !delta.is_empty() => {
+                    let preview = preview_text.entry(output_index).or_default();
+                    if preview
+                        .len()
+                        .checked_add(delta.len())
+                        .is_none_or(|bytes| bytes > crate::thread::MAX_AGENT_MESSAGE_BYTES)
                     {
-                        Ok(_) => {}
-                        Err(CoreError::OutputTooLarge) => {
-                            break 'rounds Terminal::Failed(ModelError::new(
-                                ModelErrorKind::OutputTooLarge,
-                                false,
-                            ));
-                        }
-                        Err(_) => break 'rounds Terminal::StateUnavailable,
+                        break 'rounds Terminal::Failed(output_too_large_error());
                     }
+                    preview.push_str(&delta);
                     if !send_event(
                         &runtime,
                         &cancellation,
                         request_id,
-                        CoreEventKind::AgentMessageDelta {
+                        CoreEventKind::AgentOutputDelta {
                             thread_id: thread_id.clone(),
                             turn_id: turn_id.clone(),
-                            item_id,
+                            output: CoreAgentOutputRef {
+                                response_ordinal,
+                                output_index,
+                            },
                             delta,
                         },
                     )
@@ -908,80 +882,104 @@ async fn run_turn(
                         break 'rounds Terminal::Interrupted;
                     }
                 }
-                Some(Ok(ModelEvent::TextDelta(_))) => {}
-                Some(Ok(ModelEvent::Commentary(text))) => {
-                    if commentary_seen
-                        || agent_item.is_some()
-                        || !tool_calls.is_empty()
-                        || text.is_empty()
-                        || text.len() > crate::thread::MAX_AGENT_COMMENTARY_BYTES
-                    {
+                Some(Ok(ModelEvent::OutputTextDelta { .. })) => {}
+                Some(Ok(ModelEvent::ResponseCompleted(response))) => {
+                    let trailing = tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => break 'rounds Terminal::Interrupted,
+                        trailing = stream.next() => trailing,
+                    };
+                    if trailing.is_some() {
                         break 'rounds Terminal::Failed(ModelError::new(
-                            ModelErrorKind::UnsupportedOutput,
+                            ModelErrorKind::Protocol,
                             false,
                         ));
                     }
-                    if append_completed_tool_item(
-                        &runtime,
-                        &prepared,
-                        CoreItemKind::AgentCommentary { text: text.clone() },
-                    )
-                    .await
-                    .is_none()
+                    if let Some(value) = response.usage
+                        && !accumulate_usage(&mut usage, value)
                     {
-                        break 'rounds Terminal::StateUnavailable;
+                        break 'rounds Terminal::Failed(output_too_large_error());
                     }
-                    messages.push(ModelMessage::Commentary { text });
-                    commentary_seen = true;
-                }
-                Some(Ok(ModelEvent::ToolCall(call))) => {
-                    if agent_item.is_some()
-                        || !tool_calls.is_empty()
-                        || !agent_loop.observe_call(&call)
-                    {
-                        break 'rounds Terminal::Failed(ModelError::new(
-                            ModelErrorKind::UnsupportedOutput,
-                            false,
-                        ));
-                    }
-                    tool_calls.push(call);
-                }
-                Some(Ok(ModelEvent::ToolCallBatch(calls))) => {
-                    if agent_item.is_some()
-                        || !tool_calls.is_empty()
-                        || calls.len() < 2
-                        || calls.len() > 4
-                        || calls.iter().any(|call| !agent_loop.observe_call(call))
-                    {
-                        break 'rounds Terminal::Failed(ModelError::new(
-                            ModelErrorKind::UnsupportedOutput,
-                            false,
-                        ));
-                    }
-                    tool_calls = calls;
-                }
-                Some(Ok(ModelEvent::Usage(value))) => {
-                    if !accumulate_usage(&mut usage, value) {
-                        break 'rounds Terminal::Failed(ModelError::new(
-                            ModelErrorKind::OutputTooLarge,
-                            false,
-                        ));
-                    }
-                }
-                Some(Ok(ModelEvent::Completed)) => {
+                    let round_output = match classify_model_response(response, &preview_text) {
+                        Ok(output) => output,
+                        Err(error) => break 'rounds Terminal::Failed(error),
+                    };
+                    let mut tool_calls = match round_output {
+                        CompletedRoundOutput::Final { output_index, text } => {
+                            let item = match runtime
+                                .lock_core()
+                                .and_then(|mut core| core.start_agent_message(&thread_id, &turn_id))
+                            {
+                                Ok(item) => item,
+                                Err(_) => break 'rounds Terminal::StateUnavailable,
+                            };
+                            let durable_event = CancellationToken::new();
+                            if !send_event(
+                                &runtime,
+                                &durable_event,
+                                request_id,
+                                CoreEventKind::AgentOutputResolved {
+                                    thread_id: thread_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                    output: CoreAgentOutputRef {
+                                        response_ordinal,
+                                        output_index,
+                                    },
+                                    item: item.clone(),
+                                },
+                            )
+                            .await
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            match runtime.lock_core().and_then(|mut core| {
+                                core.append_text_delta(&thread_id, &turn_id, &text)
+                            }) {
+                                Ok(_) => {}
+                                Err(CoreError::OutputTooLarge) => {
+                                    break 'rounds Terminal::Failed(output_too_large_error());
+                                }
+                                Err(_) => break 'rounds Terminal::StateUnavailable,
+                            }
+                            if !send_event(
+                                &runtime,
+                                &cancellation,
+                                request_id,
+                                CoreEventKind::AgentMessageDelta {
+                                    thread_id: thread_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                    item_id: item.id,
+                                    delta: text,
+                                },
+                            )
+                            .await
+                            {
+                                break 'rounds Terminal::Interrupted;
+                            }
+                            Vec::new()
+                        }
+                        CompletedRoundOutput::ToolUse { commentary, calls } => {
+                            if let Some((output_index, text)) = commentary {
+                                if append_completed_agent_output_item(
+                                    &runtime,
+                                    &prepared,
+                                    CoreAgentOutputRef {
+                                        response_ordinal,
+                                        output_index,
+                                    },
+                                    CoreItemKind::AgentCommentary { text: text.clone() },
+                                )
+                                .await
+                                .is_none()
+                                {
+                                    break 'rounds Terminal::StateUnavailable;
+                                }
+                                messages.push(ModelMessage::Commentary { text });
+                            }
+                            calls
+                        }
+                    };
                     if tool_calls.is_empty() {
-                        if commentary_seen {
-                            break 'rounds Terminal::Failed(ModelError::new(
-                                ModelErrorKind::UnsupportedOutput,
-                                false,
-                            ));
-                        }
-                        if !non_whitespace_text_seen {
-                            break 'rounds Terminal::Failed(ModelError::new(
-                                ModelErrorKind::Incomplete,
-                                false,
-                            ));
-                        }
                         if !runtime
                             .collaboration
                             .parent_can_complete(&thread_id, &turn_id)
@@ -992,6 +990,12 @@ async fn run_turn(
                             ));
                         }
                         break 'rounds Terminal::Completed;
+                    }
+                    if tool_calls.iter().any(|call| !agent_loop.observe_call(call)) {
+                        break 'rounds Terminal::Failed(ModelError::new(
+                            ModelErrorKind::UnsupportedOutput,
+                            false,
+                        ));
                     }
                     if let Err(error) = validate_tool_call_batch(&runtime, &tool_calls) {
                         break 'rounds Terminal::Failed(error);
@@ -1004,7 +1008,6 @@ async fn run_turn(
                             )
                         })
                     {
-                        pending_tool_call = true;
                         let contents = match execute_read_only_tool_batch(
                             &runtime,
                             &prepared,
@@ -1016,7 +1019,6 @@ async fn run_turn(
                             Ok(contents) => contents,
                             Err(error) => break 'rounds error,
                         };
-                        pending_tool_call = false;
                         messages.push(ModelMessage::ToolCallBatch(tool_calls.clone()));
                         messages.extend(tool_calls.drain(..).zip(contents).map(
                             |(call, content)| ModelMessage::ToolResult {
@@ -1087,7 +1089,6 @@ async fn run_turn(
                             {
                                 break 'rounds Terminal::StateUnavailable;
                             }
-                            pending_tool_call = true;
                             let coordinator = runtime.collaboration.clone();
                             let content = match call.name.as_str() {
                                 "collaboration/dispatch" => {
@@ -1139,7 +1140,6 @@ async fn run_turn(
                             {
                                 break 'rounds Terminal::StateUnavailable;
                             }
-                            pending_tool_call = false;
                             if record_executed_tool_call(
                                 &mut messages,
                                 &mut batch_results,
@@ -1201,7 +1201,6 @@ async fn run_turn(
                             {
                                 break 'rounds Terminal::StateUnavailable;
                             }
-                            pending_tool_call = true;
                             let approval_id =
                                 format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
                             if append_completed_tool_item(
@@ -1353,7 +1352,6 @@ async fn run_turn(
                             {
                                 break 'rounds Terminal::StateUnavailable;
                             }
-                            pending_tool_call = false;
                             if interrupted {
                                 break 'rounds Terminal::Interrupted;
                             }
@@ -1420,7 +1418,6 @@ async fn run_turn(
                             {
                                 break 'rounds Terminal::StateUnavailable;
                             }
-                            pending_tool_call = true;
                             let filesystem_policy =
                                 core_filesystem_policy(command_policy.filesystem);
                             let workspace_write_policy = command_policy
@@ -1600,7 +1597,6 @@ async fn run_turn(
                             {
                                 break 'rounds Terminal::StateUnavailable;
                             }
-                            pending_tool_call = false;
                             if matches!(approval, Some(CommandApprovalOutcome::Denied))
                                 && agent_loop.record_approval_denied()
                             {
@@ -1659,7 +1655,6 @@ async fn run_turn(
                         {
                             break 'rounds Terminal::StateUnavailable;
                         }
-                        pending_tool_call = true;
                         if call.name == "workspace/apply-patch" {
                             let prepare_outcome = runtime
                                 .workspace_patch
@@ -1810,9 +1805,7 @@ async fn run_turn(
                             {
                                 break 'rounds Terminal::StateUnavailable;
                             }
-                            pending_tool_call = false;
                             if interrupted_after_commit {
-                                patch_commit_interrupted = true;
                                 break 'rounds Terminal::Interrupted;
                             }
                             if record_executed_tool_call(
@@ -1923,7 +1916,6 @@ async fn run_turn(
                         {
                             break 'rounds Terminal::StateUnavailable;
                         }
-                        pending_tool_call = false;
                         if record_executed_tool_call(
                             &mut messages,
                             &mut batch_results,
@@ -1947,31 +1939,6 @@ async fn run_turn(
             }
         }
     };
-    if agent_item.is_none() && !pending_tool_call && !patch_commit_interrupted {
-        match runtime
-            .lock_core()
-            .and_then(|mut core| core.start_agent_message(&thread_id, &turn_id))
-        {
-            Ok(item) => {
-                if runtime
-                    .event_tx
-                    .send(CoreEvent {
-                        request_id,
-                        kind: CoreEventKind::ItemStarted {
-                            thread_id: thread_id.clone(),
-                            turn_id: turn_id.clone(),
-                            item: item.clone(),
-                        },
-                    })
-                    .await
-                    .is_err()
-                {
-                    terminal = Terminal::Interrupted;
-                }
-            }
-            Err(_) => terminal = Terminal::StateUnavailable,
-        }
-    }
     let terminal = claim_terminal(&terminal_state, terminal);
     match terminal {
         Terminal::Completed => finish_completed_and_emit(&runtime, &prepared, usage).await,
@@ -2049,6 +2016,128 @@ fn validate_tool_call_batch(
         }
     }
     Ok(())
+}
+
+enum CompletedRoundOutput {
+    Final {
+        output_index: u32,
+        text: String,
+    },
+    ToolUse {
+        commentary: Option<(u32, String)>,
+        calls: Vec<ModelToolCall>,
+    },
+}
+
+fn classify_model_response(
+    response: ModelResponse,
+    preview_text: &BTreeMap<u32, String>,
+) -> Result<CompletedRoundOutput, ModelError> {
+    if response
+        .output
+        .iter()
+        .enumerate()
+        .any(|(index, item)| u32::try_from(index).ok() != Some(item.output_index))
+    {
+        return Err(ModelError::new(ModelErrorKind::Protocol, false));
+    }
+    let mut output = response.output.into_iter();
+    let Some(first) = output.next() else {
+        return Err(ModelError::new(ModelErrorKind::Incomplete, false));
+    };
+    match first.kind {
+        ModelOutputItemKind::AssistantText {
+            phase: ModelTextPhase::Final,
+            text,
+        } => {
+            if output.next().is_some() {
+                return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
+            }
+            validate_completed_text(
+                first.output_index,
+                &text,
+                preview_text,
+                crate::thread::MAX_AGENT_MESSAGE_BYTES,
+            )?;
+            if !text.chars().any(|character| !character.is_whitespace()) {
+                return Err(ModelError::new(ModelErrorKind::Incomplete, false));
+            }
+            Ok(CompletedRoundOutput::Final {
+                output_index: first.output_index,
+                text,
+            })
+        }
+        ModelOutputItemKind::AssistantText {
+            phase: ModelTextPhase::Commentary,
+            text,
+        } => {
+            validate_completed_text(
+                first.output_index,
+                &text,
+                preview_text,
+                crate::thread::MAX_AGENT_COMMENTARY_BYTES,
+            )?;
+            if text.is_empty() {
+                return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
+            }
+            let calls = output
+                .map(|item| match item.kind {
+                    ModelOutputItemKind::ToolCall(call) => Ok(call),
+                    ModelOutputItemKind::AssistantText { .. } => {
+                        Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            validate_completed_tool_calls(&calls)?;
+            Ok(CompletedRoundOutput::ToolUse {
+                commentary: Some((first.output_index, text)),
+                calls,
+            })
+        }
+        ModelOutputItemKind::ToolCall(call) => {
+            if !preview_text.is_empty() {
+                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+            }
+            let mut calls = vec![call];
+            for item in output {
+                let ModelOutputItemKind::ToolCall(call) = item.kind else {
+                    return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
+                };
+                calls.push(call);
+            }
+            validate_completed_tool_calls(&calls)?;
+            Ok(CompletedRoundOutput::ToolUse {
+                commentary: None,
+                calls,
+            })
+        }
+    }
+}
+
+fn validate_completed_text(
+    output_index: u32,
+    text: &str,
+    preview_text: &BTreeMap<u32, String>,
+    max_bytes: usize,
+) -> Result<(), ModelError> {
+    if text.len() > max_bytes {
+        return Err(output_too_large_error());
+    }
+    if !preview_text.is_empty()
+        && (preview_text.len() != 1
+            || preview_text.get(&output_index).map(String::as_str) != Some(text))
+    {
+        return Err(ModelError::new(ModelErrorKind::Protocol, false));
+    }
+    Ok(())
+}
+
+fn validate_completed_tool_calls(calls: &[ModelToolCall]) -> Result<(), ModelError> {
+    if calls.is_empty() {
+        Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false))
+    } else {
+        Ok(())
+    }
 }
 
 async fn execute_read_only_tool_batch(
@@ -2183,7 +2272,10 @@ async fn execute_read_only_tool_batch(
                 (call, result, content, interrupted)
             }
         });
-    let outcomes = join_all(executions).await;
+    let outcomes = stream::iter(executions)
+        .buffered(READ_ONLY_TOOL_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
     if outcomes.iter().any(|(_, _, _, interrupted)| *interrupted) {
         return Err(Terminal::Interrupted);
     }
@@ -2469,9 +2561,8 @@ async fn compact_active_turn(
             return Err(Terminal::Failed(error));
         }
     };
-    let mut summary = String::new();
-    let mut completed = false;
-    loop {
+    let mut preview_text = BTreeMap::<u32, String>::new();
+    let summary = loop {
         let event = tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
@@ -2487,8 +2578,12 @@ async fn compact_active_turn(
             event = stream.next() => event,
         };
         match event {
-            Some(Ok(ModelEvent::TextDelta(delta))) => {
-                if summary
+            Some(Ok(ModelEvent::OutputTextDelta {
+                output_index,
+                delta,
+            })) => {
+                let preview = preview_text.entry(output_index).or_default();
+                if preview
                     .len()
                     .checked_add(delta.len())
                     .is_none_or(|bytes| bytes > MAX_ACTIVE_TURN_COMPACTION_BYTES)
@@ -2505,10 +2600,40 @@ async fn compact_active_turn(
                     .await?;
                     return Err(output_too_large());
                 }
-                summary.push_str(&delta);
+                preview.push_str(&delta);
             }
-            Some(Ok(ModelEvent::Usage(value))) => {
-                if !accumulate_usage(usage, value) {
+            Some(Ok(ModelEvent::ResponseCompleted(response))) => {
+                let trailing = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => {
+                        complete_compaction_item(
+                            runtime,
+                            prepared,
+                            &started,
+                            CoreContextCompactionOutcome::Interrupted,
+                            None,
+                        ).await?;
+                        return Err(Terminal::Interrupted);
+                    }
+                    trailing = stream.next() => trailing,
+                };
+                if trailing.is_some() {
+                    let error = ModelError::new(ModelErrorKind::Protocol, false);
+                    complete_compaction_item(
+                        runtime,
+                        prepared,
+                        &started,
+                        CoreContextCompactionOutcome::Failed {
+                            kind: "protocol".to_string(),
+                        },
+                        None,
+                    )
+                    .await?;
+                    return Err(Terminal::Failed(error));
+                }
+                if let Some(value) = response.usage
+                    && !accumulate_usage(usage, value)
+                {
                     complete_compaction_item(
                         runtime,
                         prepared,
@@ -2521,28 +2646,53 @@ async fn compact_active_turn(
                     .await?;
                     return Err(output_too_large());
                 }
-            }
-            Some(Ok(ModelEvent::Completed)) => {
-                completed = true;
-                break;
-            }
-            Some(Ok(
-                ModelEvent::Commentary(_) | ModelEvent::ToolCall(_) | ModelEvent::ToolCallBatch(_),
-            )) => {
-                complete_compaction_item(
-                    runtime,
-                    prepared,
-                    &started,
-                    CoreContextCompactionOutcome::Failed {
-                        kind: "unsupportedOutput".to_string(),
-                    },
-                    None,
-                )
-                .await?;
-                return Err(Terminal::Failed(ModelError::new(
-                    ModelErrorKind::UnsupportedOutput,
-                    false,
-                )));
+                match classify_model_response(response, &preview_text) {
+                    Ok(CompletedRoundOutput::Final { text, .. })
+                        if text.len() <= MAX_ACTIVE_TURN_COMPACTION_BYTES =>
+                    {
+                        break text;
+                    }
+                    Ok(CompletedRoundOutput::Final { .. }) => {
+                        complete_compaction_item(
+                            runtime,
+                            prepared,
+                            &started,
+                            CoreContextCompactionOutcome::Failed {
+                                kind: "outputTooLarge".to_string(),
+                            },
+                            None,
+                        )
+                        .await?;
+                        return Err(output_too_large());
+                    }
+                    Ok(CompletedRoundOutput::ToolUse { .. }) => {
+                        let error = ModelError::new(ModelErrorKind::UnsupportedOutput, false);
+                        complete_compaction_item(
+                            runtime,
+                            prepared,
+                            &started,
+                            CoreContextCompactionOutcome::Failed {
+                                kind: "unsupportedOutput".to_string(),
+                            },
+                            None,
+                        )
+                        .await?;
+                        return Err(Terminal::Failed(error));
+                    }
+                    Err(error) => {
+                        complete_compaction_item(
+                            runtime,
+                            prepared,
+                            &started,
+                            CoreContextCompactionOutcome::Failed {
+                                kind: model_error_kind_name(error.kind()).to_string(),
+                            },
+                            None,
+                        )
+                        .await?;
+                        return Err(Terminal::Failed(error));
+                    }
+                }
             }
             Some(Err(error)) => {
                 complete_compaction_item(
@@ -2557,25 +2707,24 @@ async fn compact_active_turn(
                 .await?;
                 return Err(Terminal::Failed(error));
             }
-            None => break,
+            None => {
+                complete_compaction_item(
+                    runtime,
+                    prepared,
+                    &started,
+                    CoreContextCompactionOutcome::Failed {
+                        kind: "disconnected".to_string(),
+                    },
+                    None,
+                )
+                .await?;
+                return Err(Terminal::Failed(ModelError::new(
+                    ModelErrorKind::Disconnected,
+                    true,
+                )));
+            }
         }
-    }
-    if !completed || summary.trim().is_empty() {
-        complete_compaction_item(
-            runtime,
-            prepared,
-            &started,
-            CoreContextCompactionOutcome::Failed {
-                kind: "incomplete".to_string(),
-            },
-            None,
-        )
-        .await?;
-        return Err(Terminal::Failed(ModelError::new(
-            ModelErrorKind::Incomplete,
-            false,
-        )));
-    }
+    };
 
     let summary_sha256 = sha256(summary.as_bytes());
     let mut compacted = Vec::with_capacity(1 + messages.len() - tail_start);
@@ -2737,7 +2886,11 @@ fn sha256(bytes: &[u8]) -> String {
 }
 
 fn output_too_large() -> Terminal {
-    Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false))
+    Terminal::Failed(output_too_large_error())
+}
+
+fn output_too_large_error() -> ModelError {
+    ModelError::new(ModelErrorKind::OutputTooLarge, false)
 }
 
 fn model_error_kind_name(kind: ModelErrorKind) -> &'static str {

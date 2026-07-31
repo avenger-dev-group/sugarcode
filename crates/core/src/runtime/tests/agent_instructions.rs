@@ -5,8 +5,8 @@ async fn base_agent_instruction_is_the_only_instruction_without_workspace_contex
     let requests = Arc::new(Mutex::new(Vec::new()));
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([vec![
-            Ok(ModelEvent::TextDelta("done".to_string())),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::text_delta("done".to_string())),
+            Ok(model_event::COMPLETED),
         ]])),
         requests: Arc::clone(&requests),
     };

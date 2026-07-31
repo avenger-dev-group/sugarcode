@@ -36,6 +36,11 @@ export type AgentCommentaryItem = Readonly<{
   text: string;
 }>;
 
+export type AgentOutputRef = Readonly<{
+  responseOrdinal: number;
+  outputIndex: number;
+}>;
+
 export type ContextCompactionItem = Readonly<{
   type: 'contextCompaction';
   id: string;
@@ -269,13 +274,23 @@ export type ConversationLifecycle =
     }>
   | Readonly<{
       type: 'itemStarted';
-      params: Omit<ItemStartedNotification, 'item'> & {
+      params: Omit<ItemStartedNotification, 'item' | 'agentOutput'> & {
         item: ConversationItem;
+        agentOutput?: AgentOutputRef;
       };
     }>
   | Readonly<{
       type: 'agentDelta';
       params: AgentMessageDeltaNotification;
+    }>
+  | Readonly<{
+      type: 'agentOutputDelta';
+      params: Readonly<{
+        threadId: string;
+        turnId: string;
+        output: AgentOutputRef;
+        delta: string;
+      }>;
     }>
   | Readonly<{
       type: 'itemCompleted';
@@ -1135,6 +1150,22 @@ const parseThreadAndTurn = (
   return { threadId: value.threadId, turnId: value.turnId };
 };
 
+const parseAgentOutputRef = (value: unknown): AgentOutputRef => {
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.responseOrdinal) ||
+    (value.responseOrdinal as number) < 1 ||
+    !Number.isSafeInteger(value.outputIndex) ||
+    (value.outputIndex as number) < 0
+  ) {
+    throw new Error('Invalid Agent output reference.');
+  }
+  return {
+    responseOrdinal: value.responseOrdinal as number,
+    outputIndex: value.outputIndex as number,
+  };
+};
+
 export const parseConversationLifecycle = (
   message: Extract<ServerMessage, { kind: 'notification' }>,
 ): ConversationLifecycle | null => {
@@ -1178,7 +1209,33 @@ export const parseConversationLifecycle = (
       return {
         type:
           message.method === 'item/started' ? 'itemStarted' : 'itemCompleted',
-        params: { ...correlation, item },
+        params: {
+          ...correlation,
+          item,
+          ...(message.method === 'item/started' &&
+          isRecord(params) &&
+          Object.hasOwn(params, 'agentOutput')
+            ? { agentOutput: parseAgentOutputRef(params.agentOutput) }
+            : {}),
+        },
+      };
+    }
+    case 'turn/agentOutput/delta': {
+      const correlation = parseThreadAndTurn(params);
+      if (
+        !isRecord(params) ||
+        typeof params.delta !== 'string' ||
+        params.delta.length === 0
+      ) {
+        throw new Error('Invalid Agent output delta notification.');
+      }
+      return {
+        type: 'agentOutputDelta',
+        params: {
+          ...correlation,
+          output: parseAgentOutputRef(params.output),
+          delta: params.delta,
+        },
       };
     }
     case 'item/agentMessage/delta': {

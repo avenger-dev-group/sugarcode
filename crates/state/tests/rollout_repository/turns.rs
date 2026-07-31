@@ -106,6 +106,98 @@ fn commentary_round_trips_through_the_jsonl_rollout() {
 }
 
 #[test]
+fn collaboration_items_round_trip_through_incremental_rollout_records() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let user = DurableItemSnapshot::UserMessage {
+        id: ItemId::new("item_0000000000000001"),
+        text: "Review the project.".to_string(),
+    };
+    let collaboration_items = vec![
+        DurableItemSnapshot::AgentTask {
+            id: ItemId::new("item_0000000000000002"),
+            orchestration_id: "orch/1".to_string(),
+            task_id: "orch/1/explore".to_string(),
+            client_task_key: "explore".to_string(),
+            child_thread_id: ThreadId::new("thr_0000000000000002"),
+            title: "Explore".to_string(),
+            role: "explorer".to_string(),
+            access: "readOnly".to_string(),
+            depends_on: Vec::new(),
+            task_markdown: "# Objective\nExplore.".to_string(),
+        },
+        DurableItemSnapshot::AgentTaskAmendment {
+            id: ItemId::new("item_0000000000000003"),
+            orchestration_id: "orch/1".to_string(),
+            task_id: "orch/1/explore".to_string(),
+            amendment_markdown: "Inspect tests too.".to_string(),
+        },
+        DurableItemSnapshot::AgentTaskResult {
+            id: ItemId::new("item_0000000000000004"),
+            orchestration_id: "orch/1".to_string(),
+            task_id: "orch/1/explore".to_string(),
+            status: "completed".to_string(),
+            summary_markdown: "Reviewed.".to_string(),
+            duration_ms: 12,
+        },
+    ];
+    let completed = DurableTurnSnapshot {
+        id: turn_id.clone(),
+        status: DurableTurnStatus::Completed,
+        items: std::iter::once(user.clone())
+            .chain(collaboration_items.clone())
+            .collect(),
+        context_compaction: None,
+        workspace_instructions: None,
+        workspace_skills: None,
+        error: None,
+        usage: None,
+    };
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(
+                &thread_id,
+                &DurableTurnSnapshot {
+                    id: turn_id.clone(),
+                    status: DurableTurnStatus::InProgress,
+                    items: vec![user],
+                    context_compaction: None,
+                    workspace_instructions: None,
+                    workspace_skills: None,
+                    error: None,
+                    usage: None,
+                },
+            )
+            .expect("turn start");
+        for item in &collaboration_items {
+            repository
+                .append_turn_item(&thread_id, &turn_id, item)
+                .expect("start collaboration item");
+            repository
+                .complete_turn_item(&thread_id, &turn_id, item)
+                .expect("complete collaboration item");
+        }
+        repository
+            .finish_turn(&thread_id, &completed)
+            .expect("finish turn");
+    }
+
+    let repository = RolloutRepository::open(&home).expect("reopen");
+    assert_eq!(
+        repository
+            .load_thread(&thread_id)
+            .expect("load")
+            .expect("thread")
+            .turns,
+        vec![completed]
+    );
+}
+
+#[test]
 fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);

@@ -5,11 +5,16 @@ use sugarcode_model_provider::ModelEvent;
 use sugarcode_model_provider::ModelInstruction;
 use sugarcode_model_provider::ModelInstructionSource;
 use sugarcode_model_provider::ModelMessage;
+use sugarcode_model_provider::ModelOutputItem;
+use sugarcode_model_provider::ModelOutputItemKind;
 use sugarcode_model_provider::ModelProvider;
 use sugarcode_model_provider::ModelRequest;
+use sugarcode_model_provider::ModelResponse;
 use sugarcode_model_provider::ModelRole;
+use sugarcode_model_provider::ModelTextPhase;
 use sugarcode_model_provider::ModelToolCall;
 use sugarcode_model_provider::ModelToolDefinition;
+use sugarcode_model_provider::ModelUsage;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
 use sugarcode_model_provider::WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX;
 use sugarcode_model_provider::WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX;
@@ -28,6 +33,117 @@ const MALFORMED: &str = include_str!("fixtures/malformed.sse");
 const DISCONNECT: &str = include_str!("fixtures/chat-completions-disconnect.sse");
 const CANCELLATION: &str = include_str!("fixtures/cancellable.sse");
 
+mod model_event {
+    use super::*;
+
+    pub const COMPLETED: ModelEvent = ModelEvent::ResponseCompleted(ModelResponse {
+        output: Vec::new(),
+        usage: None,
+    });
+
+    pub fn text_delta(delta: String) -> ModelEvent {
+        ModelEvent::OutputTextDelta {
+            output_index: 0,
+            delta,
+        }
+    }
+
+    pub fn commentary(text: String) -> ModelEvent {
+        text_delta(text)
+    }
+
+    pub fn tool_call(call: ModelToolCall) -> ModelEvent {
+        ModelEvent::ResponseCompleted(ModelResponse {
+            output: vec![ModelOutputItem {
+                output_index: 0,
+                kind: ModelOutputItemKind::ToolCall(call),
+            }],
+            usage: None,
+        })
+    }
+
+    pub fn tool_call_batch(calls: Vec<ModelToolCall>) -> ModelEvent {
+        ModelEvent::ResponseCompleted(ModelResponse {
+            output: calls
+                .into_iter()
+                .enumerate()
+                .map(|(index, call)| ModelOutputItem {
+                    output_index: u32::try_from(index).expect("test output index"),
+                    kind: ModelOutputItemKind::ToolCall(call),
+                })
+                .collect(),
+            usage: None,
+        })
+    }
+
+    pub fn usage(usage: sugarcode_model_provider::ModelUsage) -> ModelEvent {
+        ModelEvent::ResponseCompleted(ModelResponse {
+            output: Vec::new(),
+            usage: Some(usage),
+        })
+    }
+}
+
+fn normalize_expected_model_events(
+    events: Vec<Result<ModelEvent, sugarcode_model_provider::ModelError>>,
+) -> Vec<Result<ModelEvent, sugarcode_model_provider::ModelError>> {
+    let mut normalized = Vec::with_capacity(events.len());
+    let mut preview = String::new();
+    let mut response = None::<ModelResponse>;
+    let mut usage = None;
+    for event in events {
+        match event {
+            Ok(ModelEvent::OutputTextDelta {
+                output_index,
+                delta,
+            }) => {
+                preview.push_str(&delta);
+                normalized.push(Ok(ModelEvent::OutputTextDelta {
+                    output_index,
+                    delta,
+                }));
+            }
+            Ok(ModelEvent::ResponseCompleted(mut completed)) if completed.output.is_empty() => {
+                if let Some(value) = completed.usage.take() {
+                    usage = Some(value);
+                } else if let Some(mut pending) = response.take() {
+                    if !preview.is_empty() {
+                        for item in &mut pending.output {
+                            item.output_index += 1;
+                        }
+                        pending.output.insert(
+                            0,
+                            ModelOutputItem {
+                                output_index: 0,
+                                kind: ModelOutputItemKind::AssistantText {
+                                    phase: ModelTextPhase::Commentary,
+                                    text: std::mem::take(&mut preview),
+                                },
+                            },
+                        );
+                    }
+                    pending.usage = usage.take();
+                    normalized.push(Ok(ModelEvent::ResponseCompleted(pending)));
+                } else {
+                    normalized.push(Ok(ModelEvent::ResponseCompleted(ModelResponse {
+                        output: vec![ModelOutputItem {
+                            output_index: 0,
+                            kind: ModelOutputItemKind::AssistantText {
+                                phase: ModelTextPhase::Final,
+                                text: std::mem::take(&mut preview),
+                            },
+                        }],
+                        usage: usage.take(),
+                    })));
+                }
+            }
+            Ok(ModelEvent::ResponseCompleted(completed)) => response = Some(completed),
+            Err(error) => normalized.push(Err(error)),
+        }
+    }
+    normalized
+}
+
 #[tokio::test]
 async fn recorded_success_stream_normalizes_text_and_usage() {
     let (endpoint, server) = response_server(SUCCESS.as_bytes().to_vec(), Vec::new()).await;
@@ -42,18 +158,18 @@ async fn recorded_success_stream_normalizes_text_and_usage() {
 
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::TextDelta(
+        normalize_expected_model_events(vec![
+            Ok(model_event::text_delta(
                 "SugarCode deterministic response.".to_string()
             )),
-            Ok(ModelEvent::Usage(sugarcode_model_provider::ModelUsage {
+            Ok(model_event::usage(sugarcode_model_provider::ModelUsage {
                 input_tokens: Some(1),
                 output_tokens: Some(3),
                 total_tokens: Some(4),
                 ..Default::default()
             })),
-            Ok(ModelEvent::Completed),
-        ]
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
@@ -271,14 +387,14 @@ async fn fragmented_single_tool_call_is_assembled_into_one_typed_event() {
 
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+        normalize_expected_model_events(vec![
+            Ok(model_event::tool_call(ModelToolCall {
                 id: "call_1".to_string(),
                 name: "workspace/read".to_string(),
                 arguments: serde_json::json!({ "path": "README.txt" }),
             })),
-            Ok(ModelEvent::Completed),
-        ]
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
@@ -301,8 +417,8 @@ async fn interleaved_parallel_tool_fragments_are_sorted_and_assembled_as_one_bat
 
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::ToolCallBatch(vec![
+        normalize_expected_model_events(vec![
+            Ok(model_event::tool_call_batch(vec![
                 ModelToolCall {
                     id: "call_1".to_string(),
                     name: "workspace/read".to_string(),
@@ -314,8 +430,8 @@ async fn interleaved_parallel_tool_fragments_are_sorted_and_assembled_as_one_bat
                     arguments: serde_json::json!({ "path": "." }),
                 },
             ])),
-            Ok(ModelEvent::Completed),
-        ]
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
@@ -374,7 +490,7 @@ async fn consecutive_persisted_tool_calls_are_replayed_as_one_assistant_batch() 
 }
 
 #[tokio::test]
-async fn leading_whitespace_before_a_tool_call_is_ignored() {
+async fn leading_whitespace_before_a_tool_call_is_preserved_as_commentary() {
     let body = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n  \"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/list\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
@@ -392,14 +508,15 @@ async fn leading_whitespace_before_a_tool_call_is_ignored() {
 
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+        normalize_expected_model_events(vec![
+            Ok(model_event::commentary("\n  ".to_string())),
+            Ok(model_event::tool_call(ModelToolCall {
                 id: "call_1".to_string(),
                 name: "workspace/list".to_string(),
                 arguments: serde_json::json!({ "path": "." }),
             })),
-            Ok(ModelEvent::Completed),
-        ]
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
@@ -410,15 +527,17 @@ async fn whitespace_only_completed_response_is_non_retryable_incomplete() {
         "data: [DONE]\n\n"
     );
     let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
-    let error = provider(endpoint)
+    let events = provider(endpoint)
         .stream(request())
         .await
         .expect("stream starts")
-        .next()
-        .await
-        .expect("terminal event")
-        .expect_err("whitespace-only response must fail");
+        .collect::<Vec<_>>()
+        .await;
     server.await.expect("mock server");
+    let [Ok(ModelEvent::OutputTextDelta { delta, .. }), Err(error)] = events.as_slice() else {
+        panic!("whitespace-only response must preview then fail");
+    };
+    assert_eq!(delta, "\n  ");
     assert_eq!(error.kind(), ModelErrorKind::Incomplete);
     assert!(!error.retryable());
 }
@@ -429,6 +548,14 @@ async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
         (
             concat!(
                 "data: {\"choices\":[{\"index\":0,\"delta\":{\"function_call\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}},\"finish_reason\":\"function_call\"}]}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            ModelErrorKind::UnsupportedOutput,
+        ),
+        (
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_custom\",\"type\":\"custom\"}]},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
                 "data: [DONE]\n\n"
             ),
             ModelErrorKind::UnsupportedOutput,
@@ -563,11 +690,11 @@ async fn utf8_survives_arbitrary_network_chunk_boundaries() {
 
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::TextDelta("你".to_string())),
-            Ok(ModelEvent::TextDelta("好".to_string())),
-            Ok(ModelEvent::Completed),
-        ]
+        normalize_expected_model_events(vec![
+            Ok(model_event::text_delta("你".to_string())),
+            Ok(model_event::text_delta("好".to_string())),
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
@@ -652,7 +779,10 @@ async fn empty_token_sends_no_authorization_header() {
         .collect::<Vec<_>>()
         .await;
     server.await.expect("mock server");
-    assert!(matches!(events.last(), Some(Ok(ModelEvent::Completed))));
+    assert!(matches!(
+        events.last(),
+        Some(Ok(ModelEvent::ResponseCompleted(_)))
+    ));
 }
 
 #[tokio::test]
@@ -693,16 +823,16 @@ async fn usage_only_chunk_after_finish_reason_is_accepted_once() {
     server.await.expect("mock server");
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::TextDelta("done".to_string())),
-            Ok(ModelEvent::Usage(sugarcode_model_provider::ModelUsage {
+        normalize_expected_model_events(vec![
+            Ok(model_event::text_delta("done".to_string())),
+            Ok(model_event::usage(sugarcode_model_provider::ModelUsage {
                 input_tokens: Some(2),
                 output_tokens: Some(3),
                 total_tokens: Some(5),
                 ..Default::default()
             })),
-            Ok(ModelEvent::Completed),
-        ]
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
@@ -724,16 +854,100 @@ async fn usage_chunk_with_one_empty_choice_is_accepted() {
     server.await.expect("mock server");
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::TextDelta("done".to_string())),
-            Ok(ModelEvent::Usage(sugarcode_model_provider::ModelUsage {
+        normalize_expected_model_events(vec![
+            Ok(model_event::text_delta("done".to_string())),
+            Ok(model_event::usage(sugarcode_model_provider::ModelUsage {
                 input_tokens: Some(2),
                 output_tokens: Some(3),
                 total_tokens: Some(5),
                 ..Default::default()
             })),
-            Ok(ModelEvent::Completed),
-        ]
+            Ok(model_event::COMPLETED),
+        ])
+    );
+}
+
+#[tokio::test]
+async fn nullable_delta_and_identical_repeated_usage_are_accepted() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":null,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert_eq!(
+        events,
+        normalize_expected_model_events(vec![
+            Ok(model_event::text_delta("done".to_string())),
+            Ok(model_event::usage(sugarcode_model_provider::ModelUsage {
+                input_tokens: Some(2),
+                output_tokens: Some(3),
+                total_tokens: Some(5),
+                ..Default::default()
+            })),
+            Ok(model_event::COMPLETED),
+        ])
+    );
+}
+
+#[tokio::test]
+async fn conflicting_repeated_usage_remains_a_protocol_error() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":4,\"total_tokens\":6}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    let error = events
+        .last()
+        .expect("terminal event")
+        .as_ref()
+        .expect_err("conflicting usage must fail");
+    assert_eq!(error.kind(), ModelErrorKind::Protocol);
+    assert!(!error.retryable());
+}
+
+#[tokio::test]
+async fn repeated_identical_tool_id_and_stop_finish_are_normalized() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"arguments\":\"\\\"path\\\":\\\"README.md\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert_eq!(
+        events,
+        normalize_expected_model_events(vec![
+            Ok(model_event::tool_call(ModelToolCall {
+                id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({"path": "README.md"}),
+            })),
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
@@ -778,22 +992,22 @@ async fn empty_tool_call_arrays_on_text_deltas_are_ignored() {
 
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::TextDelta("你".to_string())),
-            Ok(ModelEvent::TextDelta("好".to_string())),
-            Ok(ModelEvent::Usage(sugarcode_model_provider::ModelUsage {
+        normalize_expected_model_events(vec![
+            Ok(model_event::text_delta("你".to_string())),
+            Ok(model_event::text_delta("好".to_string())),
+            Ok(model_event::usage(sugarcode_model_provider::ModelUsage {
                 input_tokens: Some(2),
                 output_tokens: Some(1),
                 total_tokens: Some(3),
                 ..Default::default()
             })),
-            Ok(ModelEvent::Completed),
-        ]
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
 #[tokio::test]
-async fn tool_capable_short_answer_waits_for_semantic_finish() {
+async fn tool_capable_answer_streams_every_chunk_without_a_time_heuristic() {
     let parts = vec![
         (
             std::time::Duration::ZERO,
@@ -827,11 +1041,128 @@ async fn tool_capable_short_answer_waits_for_semantic_finish() {
 
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::TextDelta("ABC".to_string())),
-            Ok(ModelEvent::Completed),
-        ]
+        normalize_expected_model_events(vec![
+            Ok(model_event::text_delta("A".to_string())),
+            Ok(model_event::text_delta("B".to_string())),
+            Ok(model_event::text_delta("C".to_string())),
+            Ok(model_event::COMPLETED),
+        ])
     );
+}
+
+#[tokio::test]
+async fn provider_reasoning_content_is_not_classified_as_assistant_output() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"private reasoning\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Reviewed.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+
+    assert_eq!(
+        events,
+        normalize_expected_model_events(vec![
+            Ok(model_event::text_delta("Reviewed.".to_string())),
+            Ok(model_event::COMPLETED),
+        ])
+    );
+}
+
+#[tokio::test]
+async fn tool_call_collection_is_not_limited_by_item_count() {
+    let tool_calls = (0..32)
+        .map(|index| {
+            serde_json::json!({
+                "index": index,
+                "id": format!("call_{index}"),
+                "type": "function",
+                "function": {
+                    "name": "workspace/read",
+                    "arguments": format!("{{\"path\":\"{index}.md\"}}"),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let first_chunk = format!(
+        "data: {}\n\n",
+        serde_json::json!({
+            "choices": [{
+                "index": 0,
+                "delta": {"tool_calls": tool_calls},
+                "finish_reason": null,
+            }]
+        })
+    )
+    .into_bytes();
+    let parts = vec![
+        (std::time::Duration::ZERO, first_chunk),
+        (
+            std::time::Duration::from_millis(200),
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":32,\"total_tokens\":42}}\n\n",
+                "data: [DONE]\n\n"
+            )
+            .as_bytes()
+            .to_vec(),
+        ),
+    ];
+    let (endpoint, server) = delayed_response_server(parts).await;
+    let mut events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts");
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), events.next())
+            .await
+            .is_err(),
+        "tool fragments must remain provisional until response completion"
+    );
+    let completed = events
+        .next()
+        .await
+        .expect("terminal event")
+        .expect("call count does not classify a completed response as unsupported");
+    let ModelEvent::ResponseCompleted(response) = completed else {
+        panic!("completed response");
+    };
+    assert_eq!(response.output.len(), 32);
+    for (index, item) in response.output.iter().enumerate() {
+        assert_eq!(
+            item.output_index,
+            u32::try_from(index).expect("output index")
+        );
+        let ModelOutputItemKind::ToolCall(call) = &item.kind else {
+            panic!("tool call output");
+        };
+        assert_eq!(call.id, format!("call_{index}"));
+        assert_eq!(call.name, "workspace/read");
+        assert_eq!(
+            call.arguments,
+            serde_json::json!({"path": format!("{index}.md")})
+        );
+    }
+    assert_eq!(
+        response.usage,
+        Some(ModelUsage {
+            input_tokens: Some(10),
+            cached_input_tokens: None,
+            output_tokens: Some(32),
+            reasoning_output_tokens: None,
+            total_tokens: Some(42),
+        })
+    );
+    assert!(events.next().await.is_none());
+    server.await.expect("mock server");
 }
 
 #[tokio::test]
@@ -864,17 +1195,51 @@ async fn delayed_short_commentary_before_a_tool_call_is_preserved() {
 
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::Commentary(
+        normalize_expected_model_events(vec![
+            Ok(model_event::commentary(
                 "I will inspect the workspace.".to_string()
             )),
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+            Ok(model_event::tool_call(ModelToolCall {
                 id: "call_1".to_string(),
                 name: "workspace/read".to_string(),
                 arguments: serde_json::json!({"path": "README.md"}),
             })),
-            Ok(ModelEvent::Completed),
-        ]
+            Ok(model_event::COMPLETED),
+        ])
+    );
+}
+
+#[tokio::test]
+async fn commentary_and_tool_fragments_may_interleave_without_changing_semantics() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I will \"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"inspect now.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"path\\\":\\\"README.md\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+
+    assert_eq!(
+        events,
+        normalize_expected_model_events(vec![
+            Ok(model_event::commentary("I will ".to_string())),
+            Ok(model_event::commentary("inspect now.".to_string())),
+            Ok(model_event::tool_call(ModelToolCall {
+                id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({"path": "README.md"}),
+            })),
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
@@ -896,27 +1261,28 @@ async fn short_commentary_before_a_tool_call_is_preserved_and_executed() {
     server.await.expect("mock server");
     assert_eq!(
         events,
-        vec![
-            Ok(ModelEvent::Commentary(
+        normalize_expected_model_events(vec![
+            Ok(model_event::commentary(
                 "I will inspect the workspace.".to_string()
             )),
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+            Ok(model_event::tool_call(ModelToolCall {
                 id: "call_1".to_string(),
                 name: "workspace/read".to_string(),
                 arguments: serde_json::json!({"path": "README.md"}),
             })),
-            Ok(ModelEvent::Completed),
-        ]
+            Ok(model_event::COMPLETED),
+        ])
     );
 }
 
 #[tokio::test]
-async fn long_committed_text_followed_by_a_tool_call_remains_unsupported() {
+async fn oversized_commentary_followed_by_a_tool_call_hits_the_output_limit() {
     let long_text = "x".repeat(513);
     let body = format!(
         concat!(
             "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{}\"}},\"finish_reason\":null}}]}}\n\n",
             "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{{\"name\":\"workspace/read\",\"arguments\":\"{{}}\"}}}}]}},\"finish_reason\":null}}]}}\n\n",
+            "data: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n",
             "data: [DONE]\n\n"
         ),
         long_text
@@ -931,13 +1297,15 @@ async fn long_committed_text_followed_by_a_tool_call_remains_unsupported() {
     server.await.expect("mock server");
     assert!(matches!(
         events.as_slice(),
-        [Ok(ModelEvent::TextDelta(text)), Err(error)]
-            if text.len() == 513 && error.kind() == ModelErrorKind::UnsupportedOutput
+        [
+            Ok(ModelEvent::OutputTextDelta { delta: text, .. }),
+            Err(error)
+        ] if text.len() == 513 && error.kind() == ModelErrorKind::OutputTooLarge
     ));
 }
 
 #[tokio::test]
-async fn unsupported_secondary_choice_is_rejected_before_primary_delta() {
+async fn secondary_choice_is_a_protocol_error_before_primary_delta() {
     let body = concat!(
         "data: {\"choices\":[",
         "{\"index\":0,\"delta\":{\"content\":\"must-not-emit\"},\"finish_reason\":null},",
@@ -954,8 +1322,8 @@ async fn unsupported_secondary_choice_is_rejected_before_primary_delta() {
         .await;
     server.await.expect("mock server");
     assert_eq!(events.len(), 1);
-    let error = events[0].as_ref().expect_err("unsupported output");
-    assert_eq!(error.kind(), ModelErrorKind::UnsupportedOutput);
+    let error = events[0].as_ref().expect_err("protocol error");
+    assert_eq!(error.kind(), ModelErrorKind::Protocol);
 }
 
 #[tokio::test]
@@ -1133,7 +1501,10 @@ async fn disconnect_before_done_is_retryable_transport_failure() {
         .await;
     server.await.expect("mock server");
 
-    assert_eq!(events[0], Ok(ModelEvent::TextDelta("partial".to_string())));
+    assert_eq!(
+        events[0],
+        Ok(model_event::text_delta("partial".to_string()))
+    );
     let error = *events[1].as_ref().expect_err("disconnect error");
     assert_eq!(error.kind(), ModelErrorKind::Disconnected);
     assert!(error.retryable());
@@ -1171,7 +1542,10 @@ async fn truncated_http_body_after_delta_is_retryable_disconnect_not_protocol() 
         .collect::<Vec<_>>()
         .await;
     server.await.expect("mock server");
-    assert_eq!(events[0], Ok(ModelEvent::TextDelta("partial".to_string())));
+    assert_eq!(
+        events[0],
+        Ok(model_event::text_delta("partial".to_string()))
+    );
     let error = events[1].as_ref().expect_err("disconnect");
     assert_eq!(error.kind(), ModelErrorKind::Disconnected);
     assert!(error.retryable());
@@ -1210,7 +1584,7 @@ async fn dropping_the_stream_closes_the_upstream_response_without_sleep() {
     let mut stream = provider.stream(request()).await.expect("stream starts");
     assert_eq!(
         stream.next().await.expect("delta").expect("valid delta"),
-        ModelEvent::TextDelta("partial".to_string())
+        model_event::text_delta("partial".to_string())
     );
     drop(stream);
 

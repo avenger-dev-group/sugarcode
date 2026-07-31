@@ -98,6 +98,7 @@ export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
   messages: readonly TranscriptMessageViewModel[];
+  pendingAgentOutputs?: readonly AgentCommentaryViewModel[];
   activities?: readonly TurnActivityViewModel[];
   contextCompactions?: readonly ContextCompactionActivityViewModel[];
   workspaceRead?: WorkspaceReadActivityViewModel;

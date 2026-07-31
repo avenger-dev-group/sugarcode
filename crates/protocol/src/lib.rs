@@ -3,6 +3,7 @@ mod item;
 mod thread;
 mod turn;
 
+pub use event::CoreAgentOutputRef;
 pub use event::CoreEvent;
 pub use event::CoreEventKind;
 pub use event::CoreRequestId;

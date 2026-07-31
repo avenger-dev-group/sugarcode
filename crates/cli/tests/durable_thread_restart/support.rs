@@ -181,10 +181,16 @@ impl RunningServer {
         self.stdin.flush().expect("flush request");
         (0..output_lines)
             .map(|_| {
-                let mut line = String::new();
-                let bytes = self.stdout.read_line(&mut line).expect("read response");
-                assert!(bytes > 0, "app-server closed before expected response");
-                serde_json::from_str(&line).expect("response JSON")
+                loop {
+                    let mut line = String::new();
+                    let bytes = self.stdout.read_line(&mut line).expect("read response");
+                    assert!(bytes > 0, "app-server closed before expected response");
+                    let value = serde_json::from_str::<Value>(&line).expect("response JSON");
+                    if value.get("method").and_then(Value::as_str) != Some("turn/agentOutput/delta")
+                    {
+                        break value;
+                    }
+                }
             })
             .collect()
     }

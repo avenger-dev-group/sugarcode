@@ -200,7 +200,9 @@ where
     }
 
     pub(crate) fn event(&mut self, event: &CoreEvent) -> io::Result<()> {
-        let mapped = map_core_event(event);
+        let Some(mapped) = map_core_event(event) else {
+            return Ok(());
+        };
         match self.format {
             ExecOutputFormat::Human => self.write_human_event(&mapped)?,
             ExecOutputFormat::JsonLines => {
@@ -357,8 +359,8 @@ where
     output.error(exit_code, category, message, None, None)
 }
 
-pub(crate) fn map_core_event(event: &CoreEvent) -> MappedExecEvent {
-    match &event.kind {
+pub(crate) fn map_core_event(event: &CoreEvent) -> Option<MappedExecEvent> {
+    Some(match &event.kind {
         CoreEventKind::ThreadStarted { thread_id } => MappedExecEvent {
             thread_id: Some(thread_id.as_str().to_string()),
             turn_id: None,
@@ -373,6 +375,19 @@ pub(crate) fn map_core_event(event: &CoreEvent) -> MappedExecEvent {
             thread_id,
             turn_id,
             item,
+        } => MappedExecEvent {
+            thread_id: Some(thread_id.as_str().to_string()),
+            turn_id: Some(turn_id.as_str().to_string()),
+            event: ExecEventV1::ItemStarted {
+                item: map_item(item),
+            },
+        },
+        CoreEventKind::AgentOutputDelta { .. } => return None,
+        CoreEventKind::AgentOutputResolved {
+            thread_id,
+            turn_id,
+            item,
+            ..
         } => MappedExecEvent {
             thread_id: Some(thread_id.as_str().to_string()),
             turn_id: Some(turn_id.as_str().to_string()),
@@ -431,7 +446,7 @@ pub(crate) fn map_core_event(event: &CoreEvent) -> MappedExecEvent {
             turn_id: None,
             event: ExecEventV1::RuntimeFailed,
         },
-    }
+    })
 }
 
 fn map_item(item: &CoreItemSnapshot) -> ExecItemV1 {

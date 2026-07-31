@@ -227,7 +227,7 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_shell_1".to_string(),
                     name: "shell/exec".to_string(),
                     arguments: serde_json::json!({
@@ -236,11 +236,11 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                         "cwd": "."
                     }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("Command completed.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta("Command completed.".to_string())),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: requests.clone(),
@@ -406,7 +406,7 @@ async fn failed_attempt_audit_never_calls_the_shell_executor() {
     };
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+            Ok(model_event::tool_call(ModelToolCall {
                 id: "call_shell_attempt_failure".to_string(),
                 name: "shell/exec".to_string(),
                 arguments: serde_json::json!({
@@ -415,7 +415,7 @@ async fn failed_attempt_audit_never_calls_the_shell_executor() {
                     "cwd": "."
                 }),
             })),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::COMPLETED),
         ]])),
         requests: Arc::new(Mutex::new(Vec::new())),
     };
@@ -467,7 +467,7 @@ async fn denied_shell_command_persists_decision_without_running_process() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_shell_denied".to_string(),
                     name: "shell/exec".to_string(),
                     arguments: serde_json::json!({
@@ -476,11 +476,11 @@ async fn denied_shell_command_persists_decision_without_running_process() {
                         "cwd": "."
                     }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("Command was denied.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta("Command was denied.".to_string())),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests,
@@ -535,7 +535,7 @@ async fn three_consecutive_explicit_denials_interrupt_the_turn() {
     let rounds = (1..=3)
         .map(|ordinal| {
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: format!("call_shell_denied_{ordinal}"),
                     name: "shell/exec".to_string(),
                     arguments: serde_json::json!({
@@ -544,7 +544,7 @@ async fn three_consecutive_explicit_denials_interrupt_the_turn() {
                         "cwd": "."
                     }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ]
         })
         .collect::<VecDeque<_>>();
@@ -603,7 +603,7 @@ async fn three_consecutive_explicit_denials_interrupt_the_turn() {
 async fn interrupt_while_awaiting_approval_persists_cancelled_without_tool_result() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+            Ok(model_event::tool_call(ModelToolCall {
                 id: "call_shell_interrupt".to_string(),
                 name: "shell/exec".to_string(),
                 arguments: serde_json::json!({
@@ -612,7 +612,7 @@ async fn interrupt_while_awaiting_approval_persists_cancelled_without_tool_resul
                     "cwd": "."
                 }),
             })),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::COMPLETED),
         ]])),
         requests: Arc::new(Mutex::new(Vec::new())),
     };

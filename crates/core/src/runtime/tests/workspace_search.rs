@@ -84,7 +84,7 @@ async fn workspace_search_persists_query_and_runs_one_bounded_tool_round() {
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_search".to_string(),
                     name: "workspace/search".to_string(),
                     arguments: serde_json::json!({
@@ -92,11 +92,11 @@ async fn workspace_search_persists_query_and_runs_one_bounded_tool_round() {
                         "query": "needle",
                     }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("I found it.".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta("I found it.".to_string())),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: Arc::clone(&requests),
@@ -212,12 +212,12 @@ async fn interrupting_workspace_search_keeps_only_the_durable_call() {
     let (entered_tx, entered_rx) = oneshot::channel();
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([vec![
-            Ok(ModelEvent::ToolCall(ModelToolCall {
+            Ok(model_event::tool_call(ModelToolCall {
                 id: "call_search_cancel".to_string(),
                 name: "workspace/search".to_string(),
                 arguments: serde_json::json!({"path": ".", "query": "needle"}),
             })),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::COMPLETED),
         ]])),
         requests: Arc::new(Mutex::new(Vec::new())),
     };

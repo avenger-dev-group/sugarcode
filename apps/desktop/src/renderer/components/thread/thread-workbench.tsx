@@ -178,6 +178,9 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
           turnStatus={turn.status}
         />
       ) : null}
+      {turn.pendingAgentOutputs?.map((output) => (
+        <AgentCommentary key={output.id} commentary={output} />
+      ))}
       {turn.messages
         .filter((entry) => entry.role === 'agent')
         .map((entry) => (

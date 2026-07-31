@@ -12,16 +12,16 @@ async fn one_workspace_snapshot_is_reused_across_all_provider_rounds_and_audited
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
             vec![
-                Ok(ModelEvent::ToolCall(ModelToolCall {
+                Ok(model_event::tool_call(ModelToolCall {
                     id: "call_1".to_string(),
                     name: "workspace/read".to_string(),
                     arguments: serde_json::json!({ "path": "README.txt" }),
                 })),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::COMPLETED),
             ],
             vec![
-                Ok(ModelEvent::TextDelta("done".to_string())),
-                Ok(ModelEvent::Completed),
+                Ok(model_event::text_delta("done".to_string())),
+                Ok(model_event::COMPLETED),
             ],
         ])),
         requests: Arc::clone(&requests),
@@ -127,8 +127,8 @@ async fn nested_workspace_hierarchy_is_one_ordered_instruction_and_one_aggregate
     let requests = Arc::new(Mutex::new(Vec::new()));
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([vec![
-            Ok(ModelEvent::TextDelta("done".to_string())),
-            Ok(ModelEvent::Completed),
+            Ok(model_event::text_delta("done".to_string())),
+            Ok(model_event::COMPLETED),
         ]])),
         requests: Arc::clone(&requests),
     };
