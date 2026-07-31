@@ -867,13 +867,11 @@ impl CollaborationCoordinator {
                 .orchestrations
                 .get_mut(&orchestration_id)
                 .and_then(|orchestration| orchestration.tasks.get_mut(&key))
+            && task.status != TaskStatus::Cancelled
         {
-            if task.status != TaskStatus::Cancelled {
-                task.status = status;
-                task.summary_markdown = truncate_utf8(summary, MAX_PUBLIC_SUMMARY_BYTES);
-                task.duration_ms =
-                    u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-            }
+            task.status = status;
+            task.summary_markdown = truncate_utf8(summary, MAX_PUBLIC_SUMMARY_BYTES);
+            task.duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
         }
         self.notify.notify_waiters();
     }

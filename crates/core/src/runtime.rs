@@ -947,12 +947,11 @@ async fn run_turn(
                         continue 'rounds;
                     }
                     let batch_calls_persisted = tool_calls.len() > 1;
-                    if batch_calls_persisted {
-                        if let Err(error) =
+                    if batch_calls_persisted
+                        && let Err(error) =
                             persist_mixed_batch_calls(&runtime, &prepared, &tool_calls).await
-                        {
-                            break 'rounds error;
-                        }
+                    {
+                        break 'rounds error;
                     }
                     let mut batch_results = Vec::new();
                     let mut pending_calls =
