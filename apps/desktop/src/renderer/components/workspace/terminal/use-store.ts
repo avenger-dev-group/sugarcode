@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useStore as useZustandStore } from 'zustand';
 
 import {
   createTerminal,
@@ -8,17 +9,13 @@ import {
   terminateTerminal,
   writeTerminalInput,
 } from '@/renderer/services/terminal';
-import {
-  getWorkspaceState,
-  onWorkspaceStateChanged,
-} from '@/renderer/services/workspace';
+import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 import type {
   TerminalActionResult,
   TerminalSessionRequest,
   TerminalStateSignal,
   TerminalStateSnapshot,
 } from '@/shared/terminal';
-import type { WorkspaceStateSnapshot } from '@/shared/workspace';
 
 import type { TerminalWorkbenchStore } from './types';
 
@@ -29,12 +26,6 @@ const INITIAL_TERMINAL_STATE: TerminalStateSnapshot = {
   acknowledgedThrough: 0,
   output: [],
 };
-const INITIAL_WORKSPACE_STATE: WorkspaceStateSnapshot = {
-  revision: 0,
-  generation: 0,
-  status: 'unselected',
-};
-
 const messageForResult = (
   result: TerminalActionResult,
 ): string | null => {
@@ -78,8 +69,9 @@ export const useStore = (): TerminalWorkbenchStore => {
   const [state, setState] = useState<TerminalStateSnapshot>(
     INITIAL_TERMINAL_STATE,
   );
-  const [workspace, setWorkspace] = useState<WorkspaceStateSnapshot>(
-    INITIAL_WORKSPACE_STATE,
+  const workspace = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot,
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -132,21 +124,7 @@ export const useStore = (): TerminalWorkbenchStore => {
 
   useEffect(() => {
     let active = true;
-    void getWorkspaceState()
-      .then((workspaceState) => {
-        if (!active) {
-          return;
-        }
-        workspaceRef.current = workspaceState;
-        setWorkspace(workspaceState);
-        targetRef.current = { generation: workspaceState.generation };
-        return pull();
-      })
-      .catch(() => {
-        if (active) {
-          setError('Workspace state is unavailable.');
-        }
-      });
+    void pull();
     const unsubscribeTerminal = onTerminalStateChanged(
       (signal: TerminalStateSignal) => {
         if (!active) {
@@ -162,24 +140,21 @@ export const useStore = (): TerminalWorkbenchStore => {
         void pull();
       },
     );
-    const unsubscribeWorkspace = onWorkspaceStateChanged((snapshot) => {
-      if (!active) {
-        return;
-      }
-      workspaceRef.current = snapshot;
-      setWorkspace(snapshot);
-      if (snapshot.generation !== targetRef.current.generation) {
-        acknowledgementRef.current = 0;
-        targetRef.current = { generation: snapshot.generation };
-        void pull();
-      }
-    });
     return () => {
       active = false;
       unsubscribeTerminal();
-      unsubscribeWorkspace();
     };
   }, []);
+
+  useEffect(() => {
+    workspaceRef.current = workspace;
+    if (workspace.generation === targetRef.current.generation) {
+      return;
+    }
+    acknowledgementRef.current = 0;
+    targetRef.current = { generation: workspace.generation };
+    void pull();
+  }, [workspace]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {

@@ -294,6 +294,76 @@ describe('ConversationController', () => {
     expect(onProtocolFailure).not.toHaveBeenCalled();
   });
 
+  it('drops the previous transcript when a replacement runtime has no preferred Thread', async () => {
+    const previousThreadId = 'thr_0000000000000001';
+    let rpc: ConversationRpc = {
+      listActiveThreads: vi.fn(async () => ({
+        data: [{ id: previousThreadId }],
+        nextCursor: null,
+      })),
+      findLatestActiveThread: vi.fn(async () => previousThreadId),
+      resumeThread: vi.fn(async (): Promise<ResumeSnapshot> => ({
+        threadId: previousThreadId,
+        turns: [
+          {
+            id: 'turn_0000000000000001',
+            status: 'completed',
+            items: [
+              {
+                type: 'agentMessage',
+                id: 'item_0000000000000001',
+                text: 'Previous workspace transcript.',
+              },
+            ],
+          },
+        ],
+      })),
+      startThread: vi.fn(),
+      startTurn: vi.fn(),
+      interruptTurn: vi.fn(),
+    };
+    const controller = new ConversationController({
+      getRpc: () => rpc,
+      onProtocolFailure: vi.fn(),
+    });
+
+    await expect(
+      controller.restoreForConnection(previousThreadId),
+    ).resolves.toBe(true);
+    controller.connectionReady();
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      threadId: previousThreadId,
+      turns: [{ id: 'turn_0000000000000001' }],
+    });
+
+    controller.connectionRestarting();
+    rpc = {
+      listActiveThreads: vi.fn(async () => ({
+        data: [{ id: 'thr_0000000000000002' }],
+        nextCursor: null,
+      })),
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(),
+      startTurn: vi.fn(),
+      interruptTurn: vi.fn(),
+    };
+
+    await expect(controller.restoreForConnection()).resolves.toBe(true);
+    controller.connectionReady();
+
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'idle',
+      turns: [],
+      navigator: {
+        status: 'ready',
+        activeThreadIds: ['thr_0000000000000002'],
+      },
+    });
+    expect(controller.getSnapshot()).not.toHaveProperty('threadId');
+  });
+
   it('starts idle for an empty home and fails closed on recovery RPC error', async () => {
     const emptyRpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),

@@ -21,6 +21,19 @@ import { WorkspaceController } from '../controller';
 
 const temporaryRoots: string[] = [];
 
+type Deferred<Value> = Readonly<{
+  promise: Promise<Value>;
+  resolve: (value: Value) => void;
+}>;
+
+const deferred = <Value>(): Deferred<Value> => {
+  let resolve!: (value: Value) => void;
+  const promise = new Promise<Value>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+};
+
 const createFixture = async () => {
   const temporaryRoot = await mkdtemp(
     path.join(tmpdir(), 'sugarcode-workspace-controller-'),
@@ -348,6 +361,96 @@ describe('WorkspaceController', () => {
       kind: 'project',
       name: 'selected-workspace',
       projectName: 'selected-workspace',
+    });
+  });
+
+  it('ignores the previous runtime index while a chat runtime replaces the project', async () => {
+    const fixture = await createFixture();
+    const projectThreadId = 'thr_0000000000000041';
+    const chatThreadId = 'thr_0000000000000042';
+    await fixture.controller.select();
+    fixture.controller.observeConversation({
+      revision: 1,
+      phase: 'ready',
+      threadId: projectThreadId,
+      turns: [],
+      navigator: {
+        status: 'ready',
+        activeThreadIds: [projectThreadId],
+        activeTruncated: false,
+        search: {
+          query: '',
+          status: 'idle',
+          threadIds: [],
+          truncated: false,
+        },
+      },
+    });
+    const switched = deferred<boolean>();
+    vi.mocked(fixture.supervisor.switchWorkspace).mockReturnValueOnce(
+      switched.promise,
+    );
+
+    const activation = fixture.controller.activateChat({
+      threadId: chatThreadId,
+    });
+    await vi.waitFor(() => {
+      expect(fixture.supervisor.switchWorkspace).toHaveBeenCalledWith(
+        expect.any(String),
+        'chat',
+        chatThreadId,
+      );
+    });
+
+    fixture.controller.observeConversation({
+      revision: 2,
+      phase: 'unavailable',
+      threadId: projectThreadId,
+      turns: [],
+      navigator: {
+        status: 'unavailable',
+        activeThreadIds: [projectThreadId],
+        activeTruncated: false,
+        search: {
+          query: '',
+          status: 'idle',
+          threadIds: [],
+          truncated: false,
+        },
+      },
+    });
+    expect(fixture.controller.getSnapshot()).toMatchObject({
+      status: 'selecting',
+      kind: 'chat',
+      projectThreadIds: [projectThreadId],
+      chatThreadIds: [],
+    });
+
+    fixture.controller.observeConversation({
+      revision: 3,
+      phase: 'ready',
+      threadId: chatThreadId,
+      turns: [],
+      navigator: {
+        status: 'ready',
+        activeThreadIds: [chatThreadId],
+        activeTruncated: false,
+        search: {
+          query: '',
+          status: 'idle',
+          threadIds: [],
+          truncated: false,
+        },
+      },
+    });
+    switched.resolve(true);
+    await expect(activation).resolves.toEqual({ accepted: true });
+
+    expect(fixture.controller.getSnapshot()).toMatchObject({
+      status: 'ready',
+      kind: 'chat',
+      projectThreadIds: [projectThreadId],
+      chatThreadIds: [chatThreadId],
     });
   });
 });

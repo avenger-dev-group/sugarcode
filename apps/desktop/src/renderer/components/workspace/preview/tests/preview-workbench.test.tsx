@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { DesktopApi } from '@/shared/desktop-api';
 import type { PreviewStateSnapshot } from '@/shared/preview';
+import { acceptWorkspaceSnapshot } from '@/renderer/stores/workspace-projection-store';
 
 import { PreviewWorkbench } from '../preview-workbench';
 
@@ -66,6 +67,12 @@ describe('PreviewWorkbench', () => {
         goForwardPreview: vi.fn(),
         closePreview,
       } as unknown as DesktopApi,
+    });
+    acceptWorkspaceSnapshot({
+      revision: 2,
+      generation: 6,
+      status: 'ready',
+      name: 'preview-project',
     });
 
     const container = document.createElement('div');

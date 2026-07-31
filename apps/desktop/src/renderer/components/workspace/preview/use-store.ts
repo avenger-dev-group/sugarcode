@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useStore as useZustandStore } from 'zustand';
 
 import {
   closePreview,
@@ -10,16 +11,12 @@ import {
   reloadPreview,
   showPreview,
 } from '@/renderer/services/preview';
-import {
-  getWorkspaceState,
-  onWorkspaceStateChanged,
-} from '@/renderer/services/workspace';
+import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 import type {
   PreviewActionResult,
   PreviewSessionRequest,
   PreviewStateSnapshot,
 } from '@/shared/preview';
-import type { WorkspaceStateSnapshot } from '@/shared/workspace';
 
 import type { PreviewWorkbenchStore } from './types';
 
@@ -27,12 +24,6 @@ const INITIAL_PREVIEW_STATE: PreviewStateSnapshot = {
   revision: 0,
   status: 'closed',
 };
-const INITIAL_WORKSPACE_STATE: WorkspaceStateSnapshot = {
-  revision: 0,
-  generation: 0,
-  status: 'unselected',
-};
-
 const messageForResult = (result: PreviewActionResult): string | null => {
   if (result.accepted || result.reason === 'cancelled') {
     return null;
@@ -59,19 +50,19 @@ export const useStore = (): PreviewWorkbenchStore => {
   const [state, setState] = useState<PreviewStateSnapshot>(
     INITIAL_PREVIEW_STATE,
   );
-  const [workspace, setWorkspace] = useState<WorkspaceStateSnapshot>(
-    INITIAL_WORKSPACE_STATE,
+  const workspace = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot,
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    void Promise.all([getPreviewState(), getWorkspaceState()])
-      .then(([preview, workspaceState]) => {
+    void getPreviewState()
+      .then((preview) => {
         if (active) {
           setState(preview);
-          setWorkspace(workspaceState);
         }
       })
       .catch(() => {
@@ -94,15 +85,9 @@ export const useStore = (): PreviewWorkbenchStore => {
         );
       }
     });
-    const unsubscribeWorkspace = onWorkspaceStateChanged((snapshot) => {
-      if (active) {
-        setWorkspace(snapshot);
-      }
-    });
     return () => {
       active = false;
       unsubscribePreview();
-      unsubscribeWorkspace();
     };
   }, []);
 

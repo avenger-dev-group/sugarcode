@@ -354,6 +354,7 @@ export class ConversationController {
         : false;
       this.navigator.status = 'ready';
       if (!preferredThreadId) {
+        this.clearSelectedConversation();
         return true;
       }
       const snapshot = await rpc.resumeThread(
@@ -2377,10 +2378,14 @@ export class ConversationController {
   };
 
   private clearSelectedThread = (): void => {
+    this.clearSelectedConversation();
+    this.phase = 'idle';
+  };
+
+  private clearSelectedConversation = (): void => {
     this.threadId = null;
     this.activeTurnId = null;
     this.turns = [];
-    this.phase = 'idle';
     this.notice = undefined;
   };
 

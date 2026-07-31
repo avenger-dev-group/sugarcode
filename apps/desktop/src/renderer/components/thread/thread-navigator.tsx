@@ -102,6 +102,7 @@ export const ThreadNavigator = ({
   const chatThreadIds =
     workspace.state.chatThreadIds ??
     (chatActive ? store.navigator.threadIds : []);
+
   const handleListKeyDown = (
     event: KeyboardEvent<HTMLDivElement>,
   ): void => {
@@ -145,8 +146,14 @@ export const ThreadNavigator = ({
     }
   };
 
+  const activateChat = async (threadId?: string): Promise<boolean> => {
+    return threadId
+      ? await workspace.activateChat(threadId)
+      : await workspace.activateChat();
+  };
+
   const startChat = async (): Promise<void> => {
-    if (await workspace.activateChat()) {
+    if (await activateChat()) {
       await store.startNewThread();
     }
   };
@@ -159,7 +166,7 @@ export const ThreadNavigator = ({
   };
 
   const selectChatThread = async (threadId: string): Promise<void> => {
-    await workspace.activateChat(threadId);
+    await activateChat(threadId);
   };
 
   const renderThreadList = (
@@ -168,62 +175,39 @@ export const ThreadNavigator = ({
     active: boolean,
     onSelect: (threadId: string) => Promise<void>,
   ): ReactNode => {
-    const currentOutsideList =
-      active &&
-      store.navigator.selectedThreadId &&
-      !threadIds.includes(store.navigator.selectedThreadId);
+    const displayedThreadId = active
+      ? store.navigator.pendingThreadId ??
+        store.navigator.selectedThreadId
+      : null;
     return (
-    <div className="space-y-0.5 pb-1 pl-5 pt-0.5">
-      {currentOutsideList ? (
-        <>
-          <p className="px-2 pb-1 pt-2 text-[11px] text-tertiary">
-            当前{kind === 'chat' ? '聊天' : '任务'}
-          </p>
+      <div className="space-y-0.5 pb-1 pl-5 pt-0.5">
+        {threadIds.map((threadId) => (
           <ThreadButton
-            threadId={store.navigator.selectedThreadId as string}
-            current
-            pending={false}
+            key={threadId}
+            threadId={threadId}
+            current={threadId === displayedThreadId}
+            pending={
+              active &&
+              threadId === store.navigator.pendingThreadId
+            }
             disabled={selectionDisabled}
             labelKind={kind}
-            actionsEnabled
+            actionsEnabled={active}
             onSelect={onSelect}
             onFork={store.forkThread}
             onArchive={store.archiveThread}
             onRequestDelete={setDeleteThreadId}
             pendingMutation={store.navigator.pendingMutation}
           />
-        </>
-      ) : null}
-      {threadIds.map((threadId) => (
-        <ThreadButton
-          key={threadId}
-          threadId={threadId}
-          current={
-            active &&
-            threadId === store.navigator.selectedThreadId
-          }
-          pending={
-            active &&
-            threadId === store.navigator.pendingThreadId
-          }
-          disabled={selectionDisabled}
-          labelKind={kind}
-          actionsEnabled={active}
-          onSelect={onSelect}
-          onFork={store.forkThread}
-          onArchive={store.archiveThread}
-          onRequestDelete={setDeleteThreadId}
-          pendingMutation={store.navigator.pendingMutation}
-        />
-      ))}
-      {threadIds.length === 0 ? (
-        <p className="px-2 py-2 text-xs leading-5 text-secondary">
-          {kind === 'chat'
-            ? '点击栏目右侧的 + 新建聊天。'
-            : '点击项目右侧的 + 新建任务。'}
-        </p>
-      ) : null}
-    </div>
+        ))}
+        {threadIds.length === 0 ? (
+          <p className="px-2 py-2 text-xs leading-5 text-secondary">
+            {kind === 'chat'
+              ? '点击栏目右侧的 + 新建聊天。'
+              : '点击项目右侧的 + 新建任务。'}
+          </p>
+        ) : null}
+      </div>
     );
   };
 
@@ -302,12 +286,34 @@ export const ThreadNavigator = ({
                     data-project-row
                     className="group flex items-center rounded-lg"
                   >
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      className="ml-1 shrink-0 bg-transparent text-tertiary hover:bg-transparent aria-expanded:bg-transparent dark:hover:bg-transparent"
+                      aria-label={
+                        projectExpanded
+                          ? `收起 ${projectName} 会话`
+                          : `展开 ${projectName} 会话`
+                      }
+                      aria-controls="project-thread-list"
+                      aria-expanded={projectExpanded}
+                      onClick={() =>
+                        setProjectExpanded((current) => !current)
+                      }
+                    >
+                      <ChevronDown
+                        className={`transition-transform ${
+                          projectExpanded ? '' : '-rotate-90'
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </Button>
                     <span
                       role="button"
                       tabIndex={workspace.busy ? -1 : 0}
                       aria-disabled={workspace.busy}
-                      className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      aria-expanded={projectExpanded}
+                      className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => {
                         if (workspace.busy) {
                           return;
@@ -334,12 +340,6 @@ export const ThreadNavigator = ({
                         )
                       }
                     >
-                      <ChevronDown
-                        className={`size-3.5 shrink-0 text-tertiary transition-transform ${
-                          projectExpanded ? '' : '-rotate-90'
-                        }`}
-                        aria-hidden="true"
-                      />
                       <Folder
                         className="size-4 shrink-0 text-secondary"
                         aria-hidden="true"
@@ -362,11 +362,15 @@ export const ThreadNavigator = ({
                     </Button>
                   </div>
                   {projectExpanded
-                    ? renderThreadList(
-                        projectThreadIds,
-                        'project',
-                        projectActive,
-                        selectProjectThread,
+                    ? (
+                        <div id="project-thread-list">
+                          {renderThreadList(
+                            projectThreadIds,
+                            'project',
+                            projectActive,
+                            selectProjectThread,
+                          )}
+                        </div>
                       )
                     : null}
                 </>
@@ -576,7 +580,7 @@ const ThreadButton = ({
   onRequestDelete,
 }: ThreadButtonProps) => (
   <div
-    className={`group/session flex min-w-0 items-stretch rounded-lg transition-colors ${
+    className={`group/session flex min-w-0 items-stretch rounded-lg ${
       current
         ? 'bg-surface-hover text-foreground'
         : 'text-secondary hover:bg-surface-hover hover:text-foreground'
@@ -587,6 +591,7 @@ const ThreadButton = ({
       tabIndex={disabled ? -1 : 0}
       data-thread-item
       aria-current={current ? 'page' : undefined}
+      aria-busy={pending}
       aria-label={`${current ? 'Current ' : ''}Thread ${threadId}`}
       aria-disabled={disabled}
       onClick={() => {
@@ -599,31 +604,12 @@ const ThreadButton = ({
           void onSelect(threadId);
         })
       }
-      className={`flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-default'
-      } ${
+      className={`flex h-9 min-w-0 flex-1 cursor-default items-center px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         actionsEnabled ? 'rounded-l-lg' : 'rounded-lg'
       }`}
     >
-      {pending ? (
-        <LoaderCircle
-          className="mt-0.5 size-3.5 shrink-0 animate-spin"
-          aria-hidden="true"
-        />
-      ) : (
-        <span
-          className={`size-1.5 shrink-0 rounded-full ${
-            current ? 'bg-primary' : 'bg-tertiary'
-          }`}
-          aria-hidden="true"
-        />
-      )}
       <span className="min-w-0 flex-1 truncate text-sm font-normal">
-        {current
-          ? labelKind === 'chat'
-            ? '当前聊天'
-            : '当前任务'
-          : `${labelKind === 'chat' ? '聊天' : '任务'} ${threadId.slice(-4)}`}
+        {`${labelKind === 'chat' ? '聊天' : '任务'} ${threadId.slice(-4)}`}
       </span>
     </span>
     {actionsEnabled ? (

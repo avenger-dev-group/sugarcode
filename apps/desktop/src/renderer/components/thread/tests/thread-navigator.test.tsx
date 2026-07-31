@@ -10,7 +10,7 @@ const workspaceNavigation = vi.hoisted(() => ({
     revision: 1,
     generation: 1,
     status: 'ready' as const,
-    kind: 'project' as const,
+    kind: 'project' as 'project' | 'chat',
     name: 'sugarcode',
     projectName: 'sugarcode',
     projectThreadIds: [
@@ -96,6 +96,13 @@ const createStore = (
 
 afterEach(() => {
   document.body.replaceChildren();
+  workspaceNavigation.state.kind = 'project';
+  workspaceNavigation.state.projectThreadIds = [
+    'thr_0000000000000002',
+    'thr_0000000000000001',
+  ];
+  workspaceNavigation.state.chatThreadIds = [];
+  workspaceNavigation.busy = false;
   vi.clearAllMocks();
 });
 
@@ -112,9 +119,12 @@ describe('ThreadNavigator', () => {
     expect(current?.getAttribute('aria-label')).toBe(
       'Current Thread thr_0000000000000002',
     );
+    expect(current?.textContent).toBe('任务 0002');
+    expect(current?.querySelector('[aria-hidden="true"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('当前任务');
     expect(
       document.querySelector('[aria-expanded="true"]')?.tagName,
-    ).toBe('SPAN');
+    ).toBe('BUTTON');
     expect(document.querySelector('#thread-search')).toBeNull();
     expect(
       document.querySelector('button[aria-label="Search Threads"]'),
@@ -129,6 +139,9 @@ describe('ThreadNavigator', () => {
     expect(
       current?.parentElement?.classList.contains('bg-surface-hover'),
     ).toBe(true);
+    expect(
+      current?.parentElement?.classList.contains('transition-colors'),
+    ).toBe(false);
     await act(async () => root.unmount());
   });
 
@@ -150,6 +163,13 @@ describe('ThreadNavigator', () => {
     expect(items).toHaveLength(2);
     expect(
       items.every((item) => item.getAttribute('aria-disabled') === 'true'),
+    ).toBe(true);
+    expect(
+      items.every(
+        (item) =>
+          item.classList.contains('cursor-default') &&
+          !item.classList.contains('cursor-not-allowed'),
+      ),
     ).toBe(true);
     items[0]?.dispatchEvent(
       new KeyboardEvent('keydown', {
@@ -179,10 +199,203 @@ describe('ThreadNavigator', () => {
     });
 
     await act(async () => root.render(<ThreadNavigator store={store} />));
-    expect(document.body.textContent).toContain('当前任务');
+    expect(document.body.textContent).toContain('任务 0002');
+    expect(document.body.textContent).not.toContain('当前任务');
     expect(
       document.querySelectorAll('[data-thread-item]'),
     ).toHaveLength(2);
+    expect(
+      Array.from(
+        document.querySelectorAll<HTMLElement>('[data-thread-item]'),
+      ).some((item) => item.classList.contains('opacity-60')),
+    ).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it('does not insert a synthetic current row outside the remembered index', async () => {
+    workspaceNavigation.state.projectThreadIds = [
+      'thr_0000000000000001',
+    ];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () =>
+      root.render(<ThreadNavigator store={createStore()} />),
+    );
+
+    expect(
+      document.querySelectorAll('[data-thread-item]'),
+    ).toHaveLength(1);
+    expect(document.querySelector('[aria-current="page"]')).toBeNull();
+    expect(document.body.textContent).toContain('任务 0001');
+    expect(document.body.textContent).not.toContain('当前任务');
+    await act(async () => root.unmount());
+  });
+
+  it('keeps row titles and DOM identity stable across a pending selection', async () => {
+    const thread18 = 'thr_0000000000000018';
+    const thread19 = 'thr_0000000000000019';
+    workspaceNavigation.state.projectThreadIds = [thread18, thread19];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const base = createStore();
+    const navigator = {
+      ...base.navigator,
+      threadIds: [thread18, thread19],
+      selectedThreadId: thread18,
+    };
+
+    await act(async () =>
+      root.render(
+        <ThreadNavigator
+          store={{
+            ...base,
+            navigator: { ...navigator, pendingThreadId: null },
+          }}
+        />,
+      ),
+    );
+    const initialRows = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-thread-item]'),
+    );
+    expect(initialRows.map((row) => row.textContent)).toEqual([
+      '任务 0018',
+      '任务 0019',
+    ]);
+    expect(
+      document.querySelector('[aria-current="page"]')?.textContent,
+    ).toBe('任务 0018');
+
+    await act(async () =>
+      root.render(
+        <ThreadNavigator
+          store={{
+            ...base,
+            navigator: { ...navigator, pendingThreadId: thread19 },
+          }}
+        />,
+      ),
+    );
+    const pendingRows = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-thread-item]'),
+    );
+    expect(pendingRows).toEqual(initialRows);
+    expect(pendingRows.map((row) => row.textContent)).toEqual([
+      '任务 0018',
+      '任务 0019',
+    ]);
+    expect(
+      document.querySelector('[aria-current="page"]')?.textContent,
+    ).toBe('任务 0019');
+
+    await act(async () =>
+      root.render(
+        <ThreadNavigator
+          store={{
+            ...base,
+            navigator: {
+              ...navigator,
+              selectedThreadId: thread19,
+              pendingThreadId: null,
+            },
+          }}
+        />,
+      ),
+    );
+    const completedRows = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-thread-item]'),
+    );
+    expect(completedRows).toEqual(initialRows);
+    expect(completedRows.map((row) => row.textContent)).toEqual([
+      '任务 0018',
+      '任务 0019',
+    ]);
+    expect(
+      document.querySelector('[aria-current="page"]')?.textContent,
+    ).toBe('任务 0019');
+    await act(async () => root.unmount());
+  });
+
+  it('keeps project disclosure under user control while activating Chat', async () => {
+    const chatThreadId = 'thr_0000000000000019';
+    workspaceNavigation.state.chatThreadIds = [chatThreadId];
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const base = createStore();
+    const store = createStore({
+      navigator: {
+        ...base.navigator,
+        selectedThreadId: chatThreadId,
+      },
+    });
+
+    await act(async () => root.render(<ThreadNavigator store={store} />));
+    expect(
+      document.querySelectorAll('[data-thread-item]'),
+    ).toHaveLength(3);
+
+    await act(async () => {
+      document
+        .querySelector<HTMLElement>(
+          `[aria-label="Thread ${chatThreadId}"]`,
+        )
+        ?.click();
+    });
+    expect(workspaceNavigation.activateChat).toHaveBeenCalledWith(
+      chatThreadId,
+    );
+    expect(
+      document.querySelector('#project-thread-list'),
+    ).not.toBeNull();
+    const collapse = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="收起 sugarcode 会话"]',
+    );
+    expect(
+      collapse?.classList.contains('aria-expanded:bg-transparent'),
+    ).toBe(true);
+    expect(collapse?.classList.contains('hover:bg-transparent')).toBe(
+      true,
+    );
+
+    workspaceNavigation.state.kind = 'chat';
+    await act(async () => root.render(<ThreadNavigator store={store} />));
+    expect(
+      document.querySelector('[aria-current="page"]')?.textContent,
+    ).toBe('聊天 0019');
+    expect(
+      document.querySelector('#project-thread-list'),
+    ).not.toBeNull();
+
+    await act(async () => collapse?.click());
+    expect(workspaceNavigation.resumeProject).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('#project-thread-list'),
+    ).toBeNull();
+    expect(
+      document
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="展开 sugarcode 会话"]',
+        )
+        ?.querySelector('svg')
+        ?.classList.contains('-rotate-90'),
+    ).toBe(true);
+    expect(
+      document.querySelector('[aria-current="page"]')?.textContent,
+    ).toBe('聊天 0019');
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="展开 sugarcode 会话"]',
+        )
+        ?.click();
+    });
+    expect(
+      document.querySelector('#project-thread-list'),
+    ).not.toBeNull();
     await act(async () => root.unmount());
   });
 

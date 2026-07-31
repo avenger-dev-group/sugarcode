@@ -1,47 +1,26 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useStore as useZustandStore } from 'zustand';
 
 import {
   activateWorkspaceChat,
-  getWorkspaceState,
-  onWorkspaceStateChanged,
   resumeWorkspaceProject,
   selectWorkspace,
 } from '@/renderer/services/workspace';
-import type { WorkspaceStateSnapshot } from '@/shared/workspace';
+import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 
 import type { WorkspaceNavigationStore } from './types';
 
-const INITIAL_STATE: WorkspaceStateSnapshot = {
-  revision: 0,
-  generation: 0,
-  status: 'unselected',
-};
-
 export const useStore = (): WorkspaceNavigationStore => {
-  const [state, setState] = useState<WorkspaceStateSnapshot>(INITIAL_STATE);
+  const state = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot,
+  );
+  const projectionError = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.loadError,
+  );
   const [pending, setPending] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    const update = (snapshot: WorkspaceStateSnapshot): void => {
-      if (!active) {
-        return;
-      }
-      setState(snapshot);
-      setError(snapshot.error ?? null);
-    };
-    const unsubscribe = onWorkspaceStateChanged(update);
-    void getWorkspaceState().then(update).catch(() => {
-      if (active) {
-        setError('无法读取当前项目状态。');
-      }
-    });
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, []);
 
   const runSelection = async (
     action: () => ReturnType<typeof selectWorkspace>,
@@ -70,7 +49,7 @@ export const useStore = (): WorkspaceNavigationStore => {
   return {
     state,
     busy: pending || state.status === 'selecting',
-    error,
+    error: error ?? projectionError,
     chooseProject: () =>
       runSelection(selectWorkspace, '无法打开所选项目。'),
     resumeProject: () =>

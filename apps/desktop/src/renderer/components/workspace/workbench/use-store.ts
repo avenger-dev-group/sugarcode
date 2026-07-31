@@ -1,29 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useStore as useZustandStore } from 'zustand';
 
 import {
-  getWorkspaceState,
   inspectWorkspace,
   listWorkspace,
-  onWorkspaceStateChanged,
   selectWorkspace,
 } from '@/renderer/services/workspace';
+import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 import type {
   WorkspaceEntry,
   WorkspaceInspectDocument,
-  WorkspaceStateSnapshot,
 } from '@/shared/workspace';
 
 import type { WorkspaceWorkbenchStore } from './types';
 
-const INITIAL_STATE: WorkspaceStateSnapshot = {
-  revision: 0,
-  generation: 0,
-  status: 'unselected',
-};
-
 export const useStore = (): WorkspaceWorkbenchStore => {
   const [open, setOpen] = useState(false);
-  const [state, setState] = useState(INITIAL_STATE);
+  const state = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot,
+  );
+  const projectionError = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.loadError,
+  );
   const [entries, setEntries] = useState<
     ReadonlyMap<string, readonly WorkspaceEntry[]>
   >(new Map());
@@ -35,6 +35,7 @@ export const useStore = (): WorkspaceWorkbenchStore => {
   const [document, setDocument] =
     useState<WorkspaceInspectDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const loadedGeneration = useRef<number | null>(null);
 
   const loadDirectory = async (
     path: string,
@@ -63,40 +64,20 @@ export const useStore = (): WorkspaceWorkbenchStore => {
   };
 
   useEffect(() => {
-    let active = true;
-    void getWorkspaceState()
-      .then((snapshot) => {
-        if (active) {
-          setState(snapshot);
-          if (snapshot.status === 'ready') {
-            void loadDirectory('', snapshot);
-          }
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setError('Workspace state is unavailable.');
-        }
-      });
-    const unsubscribe = onWorkspaceStateChanged((snapshot) => {
-      if (!active) {
-        return;
-      }
-      setState(snapshot);
-      setEntries(new Map());
-      setExpanded(new Set(['']));
-      setSelectedPath(null);
-      setDocument(null);
-      setError(snapshot.error ?? null);
-      if (snapshot.status === 'ready') {
-        void loadDirectory('', snapshot);
-      }
-    });
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, []);
+    if (
+      state.status !== 'ready' ||
+      loadedGeneration.current === state.generation
+    ) {
+      return;
+    }
+    loadedGeneration.current = state.generation;
+    setEntries(new Map());
+    setExpanded(new Set(['']));
+    setSelectedPath(null);
+    setDocument(null);
+    setError(null);
+    void loadDirectory('', state);
+  }, [state.generation, state.status]);
 
   const chooseWorkspace = async (): Promise<void> => {
     const result = await selectWorkspace().catch((): null => null);
@@ -159,7 +140,7 @@ export const useStore = (): WorkspaceWorkbenchStore => {
     loading,
     selectedPath,
     document,
-    error,
+    error: error ?? projectionError,
     setOpen,
     chooseWorkspace,
     toggleDirectory,

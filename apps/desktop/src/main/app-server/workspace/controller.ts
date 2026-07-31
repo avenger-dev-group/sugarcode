@@ -362,6 +362,12 @@ export class WorkspaceController {
     this.activateChat({});
 
   observeConversation = (conversation: ConversationStateSnapshot): void => {
+    if (
+      conversation.phase === 'unavailable' ||
+      conversation.navigator.status !== 'ready'
+    ) {
+      return;
+    }
     const nextIds = conversation.navigator.activeThreadIds;
     if (this.workspaceKind === 'project') {
       if (!sameIds(this.projectThreadIds, nextIds)) {
