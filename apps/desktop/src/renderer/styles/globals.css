@@ -108,6 +108,37 @@
   }
 }
 
+.panel-resizer {
+  position: relative;
+  z-index: 20;
+  width: 1px;
+  flex: 0 0 1px;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background-color 120ms ease;
+}
+
+.panel-resizer::after {
+  position: absolute;
+  inset-block: 0;
+  left: -4px;
+  width: 9px;
+  content: '';
+}
+
+.panel-resizer:hover,
+.panel-resizer:focus-visible,
+.panel-resizer--active {
+  background: rgb(from var(--primary) r g b / 42%);
+  outline: none;
+}
+
+.is-resizing-panel,
+.is-resizing-panel * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
 @utility workbench-grid {
   background-image:
     linear-gradient(to right, rgb(from var(--primary) r g b / 3%) 1px, transparent 1px),

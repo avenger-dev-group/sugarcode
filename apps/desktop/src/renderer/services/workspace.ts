@@ -17,6 +17,20 @@ export const onWorkspaceStateChanged = (
 export const selectWorkspace = (): Promise<WorkspaceSelectResult> =>
   window.sugarcode.selectWorkspace();
 
+export const resumeWorkspaceProject =
+  (): Promise<WorkspaceSelectResult> =>
+    window.sugarcode.resumeWorkspaceProject();
+
+export const activateWorkspaceChat = (
+  threadId?: string,
+): Promise<WorkspaceSelectResult> =>
+  window.sugarcode.activateWorkspaceChat(
+    threadId ? { threadId } : {},
+  );
+
+export const clearWorkspace = (): Promise<WorkspaceSelectResult> =>
+  window.sugarcode.clearWorkspace();
+
 export const listWorkspace = (
   request: WorkspaceListRequest,
 ): Promise<WorkspaceListResult> =>

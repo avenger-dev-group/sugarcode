@@ -4,6 +4,7 @@ export const CONVERSATION_SEND_CHANNEL = 'conversation:send';
 export const CONVERSATION_STOP_CHANNEL = 'conversation:stop';
 export const CONVERSATION_THREAD_SEARCH_CHANNEL = 'conversation-thread:search';
 export const CONVERSATION_THREAD_SELECT_CHANNEL = 'conversation-thread:select';
+export const CONVERSATION_THREAD_NEW_CHANNEL = 'conversation-thread:new';
 export const CONVERSATION_THREAD_FORK_CHANNEL = 'conversation-thread:fork';
 export const CONVERSATION_THREAD_ARCHIVE_CHANNEL =
   'conversation-thread:archive';
@@ -431,6 +432,7 @@ export type ConversationApi = Readonly<{
   selectConversationThread: (
     threadId: string,
   ) => Promise<ConversationActionResult>;
+  startNewConversationThread: () => Promise<ConversationActionResult>;
   forkConversationThread: (
     threadId: string,
   ) => Promise<ConversationActionResult>;

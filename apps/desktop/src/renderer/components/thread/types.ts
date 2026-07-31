@@ -18,6 +18,7 @@ import type { ContextCompactionActivityViewModel } from '../agent/context-compac
 import type { FileChangeReviewViewModel } from '../workspace/types';
 import type { McpActivityViewModel } from '../mcp/types';
 import type { OrchestrationActivityViewModel } from '../orchestration/types';
+import type { PanelResizeHandle } from '../foundation/types';
 
 export type UserMessageViewModel = Readonly<{
   id: string;
@@ -144,6 +145,7 @@ export type ThreadStore = Readonly<{
   actionError: string | null;
   setDraft: (value: string) => void;
   setNavigatorOpen: (open: boolean) => void;
+  startNewThread: () => Promise<void>;
   searchThreads: (query: string) => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
   forkThread: (threadId: string) => Promise<void>;
@@ -156,6 +158,8 @@ export type ThreadStore = Readonly<{
 
 export type ThreadWorkbenchViewProps = Readonly<{
   store: ThreadStore;
+  navigatorResize?: PanelResizeHandle;
+  contextRailResize?: PanelResizeHandle;
   navigationFooter?: ReactNode;
   contextRail?: ReactNode;
   contextRailOpen?: boolean;

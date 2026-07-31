@@ -48,6 +48,7 @@ import {
   CONVERSATION_THREAD_ARCHIVE_CHANNEL,
   CONVERSATION_THREAD_DELETE_CHANNEL,
   CONVERSATION_THREAD_FORK_CHANNEL,
+  CONVERSATION_THREAD_NEW_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
   CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
@@ -98,11 +99,15 @@ import {
   isWorkspaceListResult,
   isWorkspaceSelectResult,
   isWorkspaceStateSnapshot,
+  WORKSPACE_CHAT_ACTIVATE_CHANNEL,
   WORKSPACE_INSPECT_CHANNEL,
+  WORKSPACE_CLEAR_CHANNEL,
   WORKSPACE_LIST_CHANNEL,
+  WORKSPACE_PROJECT_RESUME_CHANNEL,
   WORKSPACE_SELECT_CHANNEL,
   WORKSPACE_STATE_CHANGED_CHANNEL,
   WORKSPACE_STATE_GET_CHANNEL,
+  type WorkspaceChatRequest,
   type WorkspaceInspectRequest,
   type WorkspaceInspectResult,
   type WorkspaceListRequest,
@@ -569,6 +574,16 @@ export const createDesktopApi = (
     }
     return result;
   },
+  startNewConversationThread:
+    async (): Promise<ConversationActionResult> => {
+      const result: unknown = await ipcRenderer.invoke(
+        CONVERSATION_THREAD_NEW_CHANNEL,
+      );
+      if (!isConversationActionResult(result)) {
+        throw new Error('Main returned an invalid new Thread result.');
+      }
+      return result;
+    },
   forkConversationThread: async (
     threadId: string,
   ): Promise<ConversationActionResult> =>
@@ -786,6 +801,37 @@ export const createDesktopApi = (
     );
     if (!isWorkspaceSelectResult(result)) {
       throw new Error('Main returned an invalid workspace selection result.');
+    }
+    return result;
+  },
+  resumeWorkspaceProject:
+    async (): Promise<WorkspaceSelectResult> => {
+      const result: unknown = await ipcRenderer.invoke(
+        WORKSPACE_PROJECT_RESUME_CHANNEL,
+      );
+      if (!isWorkspaceSelectResult(result)) {
+        throw new Error('Main returned an invalid project resume result.');
+      }
+      return result;
+    },
+  activateWorkspaceChat: async (
+    request: WorkspaceChatRequest,
+  ): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_CHAT_ACTIVATE_CHANNEL,
+      request,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid chat activation result.');
+    }
+    return result;
+  },
+  clearWorkspace: async (): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_CLEAR_CHANNEL,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid workspace clear result.');
     }
     return result;
   },

@@ -229,6 +229,8 @@ const TranscriptTurn = memo(TranscriptTurnView);
 
 export const ThreadWorkbenchView = ({
   store,
+  navigatorResize,
+  contextRailResize,
   navigationFooter,
   contextRail,
   contextRailOpen = false,
@@ -242,10 +244,29 @@ export const ThreadWorkbenchView = ({
   } = useTranscriptFollow(store.thread);
 
   return (
-    <div className="relative grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] md:grid-cols-[15.5rem_minmax(0,1fr)] xl:grid-cols-[15.5rem_minmax(0,1fr)_22rem]">
-      <aside className="hidden min-h-0 md:block">
+    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+      <aside
+        className="hidden min-h-0 shrink-0 md:block"
+        style={{ width: navigatorResize?.width ?? 248 }}
+      >
         <ThreadNavigator store={store} footer={navigationFooter} />
       </aside>
+      {navigatorResize ? (
+        <div
+          className={`panel-resizer hidden md:block ${
+            navigatorResize.dragging ? 'panel-resizer--active' : ''
+          }`}
+          role="separator"
+          aria-label="调整任务导航宽度"
+          aria-orientation="vertical"
+          aria-valuemin={navigatorResize.minWidth}
+          aria-valuemax={navigatorResize.maxWidth}
+          aria-valuenow={navigatorResize.width}
+          tabIndex={0}
+          onPointerDown={navigatorResize.onPointerDown}
+          onKeyDown={navigatorResize.onKeyDown}
+        />
+      ) : null}
       {store.navigatorOpen ? (
         <div className="absolute inset-x-0 top-0 z-20 h-[45vh] min-h-56 border-b shadow-xl md:hidden">
           <ThreadNavigator
@@ -255,8 +276,7 @@ export const ThreadWorkbenchView = ({
           />
         </div>
       ) : null}
-      <section className="relative flex min-h-0 min-w-0 flex-col xl:border-r">
-        <div className="pointer-events-none absolute inset-0 workbench-grid" />
+      <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <Button
           type="button"
           size="icon"
@@ -301,22 +321,23 @@ export const ThreadWorkbenchView = ({
         >
           <div
             ref={transcriptContent}
-            className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-10 pt-16 sm:px-10 md:pt-10"
+            className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-8 pt-16 sm:px-10 md:pt-10"
           >
             {store.thread.isEmpty ? (
-              <div className="my-auto max-w-xl py-16">
-                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-tertiary">
-                  Text Agent · local runtime
+              <div className="my-auto py-16 text-center">
+                <div className="mx-auto grid size-11 place-items-center rounded-2xl border bg-surface shadow-sm">
+                  <span className="text-lg text-secondary" aria-hidden="true">
+                    S
+                  </span>
+                </div>
+                <p className="mt-5 text-sm text-secondary">
+                  SugarCode · 本地 Agent
                 </p>
-                <h1 className="mt-4 max-w-lg text-[2rem] font-medium leading-[1.1] tracking-[-0.04em]">
-                  Start with the problem,
-                  <br />
-                  not the ceremony.
+                <h1 className="mt-3 text-[1.75rem] font-medium leading-[1.2] tracking-[-0.035em]">
+                  想让 SugarCode 做什么？
                 </h1>
-                <p className="mt-5 max-w-md text-sm font-normal leading-[22px] text-secondary">
-                  One durable Thread. Your message is recorded by Core before it
-                  appears here, and the response streams back from the local
-                  SugarCode runtime.
+                <p className="mx-auto mt-3 max-w-md text-sm font-normal leading-[22px] text-secondary">
+                  描述目标、问题或想完成的改动。项目任务使用项目工作区；聊天不绑定项目，并把需要生成的文件隔离到专属聊天目录。
                 </p>
               </div>
             ) : (
@@ -332,7 +353,7 @@ export const ThreadWorkbenchView = ({
 
         <div
           data-layout="conversation-composer"
-          className="relative z-10 shrink-0 border-t bg-background px-4 pb-3 pt-3 sm:px-8"
+          className="relative z-10 shrink-0 bg-background px-4 pb-4 pt-2 sm:px-8"
         >
           <div className="mx-auto max-w-3xl">
             {(store.actionError || store.thread.notice) && (
@@ -363,7 +384,7 @@ export const ThreadWorkbenchView = ({
                 }
                 aria-label="Message SugarCode"
                 aria-describedby="conversation-input-hint"
-                placeholder="Describe what you want to work through…"
+                placeholder="描述你想完成的任务…"
                 className="min-h-24 max-h-52 px-4 pt-3.5"
               />
               <div className="flex items-center justify-between gap-3 border-t px-3 py-2">
@@ -371,7 +392,7 @@ export const ThreadWorkbenchView = ({
                   <p className="truncate text-xs text-secondary">
                     {store.thread.statusLabel}
                   </p>
-                  <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[10px]">
+                  <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
                     <span
                       id="conversation-input-hint"
                       className={
@@ -381,21 +402,6 @@ export const ThreadWorkbenchView = ({
                       }
                     >
                       {store.inputHint}
-                    </span>
-                    <span className="text-tertiary" aria-hidden="true">
-                      ·
-                    </span>
-                    <span
-                      className="min-w-0 break-all text-tertiary"
-                      aria-label={
-                        store.thread.threadIdentity
-                          ? `Current durable Thread ${store.thread.threadIdentity}`
-                          : 'No durable Thread yet'
-                      }
-                    >
-                      {store.thread.threadIdentity
-                        ? `Thread ${store.thread.threadIdentity}`
-                        : 'Thread not created'}
                     </span>
                   </div>
                 </div>
@@ -427,23 +433,42 @@ export const ThreadWorkbenchView = ({
               </div>
             </div>
             <p className="mt-2 text-center text-[11px] text-tertiary">
-              Enter to send · Shift+Enter for a new line
+              Enter 发送 · Shift+Enter 换行
             </p>
           </div>
         </div>
       </section>
       {contextRail ? (
-        <aside
-          id="workspace-tools"
-          className={`fixed inset-y-0 right-0 z-30 min-h-0 w-[22rem] max-w-[92vw] overflow-y-auto border-l bg-background shadow-[-18px_0_50px_var(--shadow-soft)] transition-transform duration-150 motion-reduce:transition-none xl:static xl:z-auto xl:w-auto xl:visible xl:translate-x-0 xl:border-l-0 xl:shadow-none ${
-            contextRailOpen
-              ? 'visible translate-x-0'
-              : 'invisible translate-x-full'
-          }`}
-          aria-label="Workspace tools"
-        >
-          {contextRail}
-        </aside>
+        <>
+          {contextRailResize ? (
+            <div
+              className={`panel-resizer hidden xl:block ${
+                contextRailResize.dragging ? 'panel-resizer--active' : ''
+              }`}
+              role="separator"
+              aria-label="调整上下文栏宽度"
+              aria-orientation="vertical"
+              aria-valuemin={contextRailResize.minWidth}
+              aria-valuemax={contextRailResize.maxWidth}
+              aria-valuenow={contextRailResize.width}
+              tabIndex={0}
+              onPointerDown={contextRailResize.onPointerDown}
+              onKeyDown={contextRailResize.onKeyDown}
+            />
+          ) : null}
+          <aside
+            id="workspace-tools"
+            className={`fixed inset-y-0 right-0 z-30 min-h-0 max-w-[92vw] overflow-hidden border-l bg-background shadow-[-18px_0_50px_var(--shadow-soft)] transition-transform duration-150 motion-reduce:transition-none xl:static xl:z-auto xl:visible xl:shrink-0 xl:translate-x-0 xl:border-l-0 xl:shadow-none ${
+              contextRailOpen
+                ? 'visible translate-x-0'
+                : 'invisible translate-x-full'
+            }`}
+            style={{ width: contextRailResize?.width ?? 352 }}
+            aria-label="Workspace tools"
+          >
+            {contextRail}
+          </aside>
+        </>
       ) : null}
     </div>
   );

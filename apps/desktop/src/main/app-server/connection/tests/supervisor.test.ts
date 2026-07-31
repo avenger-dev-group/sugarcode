@@ -260,6 +260,38 @@ describe('ConnectionSupervisor', () => {
     supervisor.shutdown();
   });
 
+  it('exposes a chat directory while keeping its durable Threads unbound', async () => {
+    const child = new FakeChild();
+    const { spawnProcess, supervisor } = createSupervisor(child, {
+      workspace: true,
+    });
+    expect(
+      supervisor.configureInitialWorkspace(
+        '/Users/simon/Documents/SugarCode/2026-07-31/chat-140509',
+        undefined,
+        'chat',
+      ),
+    ).toBe(true);
+
+    await supervisor.start();
+
+    expect(spawnProcess).toHaveBeenCalledWith(
+      '/workspace/target/debug/sugarcode',
+      [
+        'app-server',
+        '--stdio',
+        '--workspace',
+        '/Users/simon/Documents/SugarCode/2026-07-31/chat-140509',
+        '--unbound-threads',
+      ],
+      expect.objectContaining({
+        cwd: '/Users/simon/Documents/SugarCode/2026-07-31/chat-140509',
+        shell: false,
+      }),
+    );
+    supervisor.shutdown();
+  });
+
   it('loads the active durable Thread index without selecting a transcript', async () => {
     const child = new FakeChild();
     const { supervisor } = createSupervisor(child, {

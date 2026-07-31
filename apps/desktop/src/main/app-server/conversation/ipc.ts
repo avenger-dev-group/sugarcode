@@ -8,6 +8,7 @@ import {
   CONVERSATION_THREAD_ARCHIVE_CHANNEL,
   CONVERSATION_THREAD_DELETE_CHANNEL,
   CONVERSATION_THREAD_FORK_CHANNEL,
+  CONVERSATION_THREAD_NEW_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
   CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
@@ -74,6 +75,13 @@ export const registerConversationIpc = (
     },
   );
 
+  ipcMain.handle(CONVERSATION_THREAD_NEW_CHANNEL, async (event) => {
+    if (!isTrustedIpcSender(event, options)) {
+      throw new Error('New Thread request came from an untrusted frame.');
+    }
+    return options.controller.startNewThread();
+  });
+
   for (const [channel, action] of [
     [CONVERSATION_THREAD_FORK_CHANNEL, options.controller.forkThread],
     [CONVERSATION_THREAD_ARCHIVE_CHANNEL, options.controller.archiveThread],
@@ -103,6 +111,7 @@ export const registerConversationIpc = (
     ipcMain.removeHandler(CONVERSATION_STOP_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SEARCH_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SELECT_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_THREAD_NEW_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_FORK_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_ARCHIVE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_UNARCHIVE_CHANNEL);

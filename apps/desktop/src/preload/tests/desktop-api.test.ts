@@ -22,9 +22,17 @@ import {
   CONVERSATION_THREAD_ARCHIVE_CHANNEL,
   CONVERSATION_THREAD_DELETE_CHANNEL,
   CONVERSATION_THREAD_FORK_CHANNEL,
+  CONVERSATION_THREAD_NEW_CHANNEL,
   CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
   type ConversationStateSnapshot,
 } from '@/shared/conversation';
+import {
+  WORKSPACE_CHAT_ACTIVATE_CHANNEL,
+  WORKSPACE_CLEAR_CHANNEL,
+  WORKSPACE_PROJECT_RESUME_CHANNEL,
+  WORKSPACE_SELECT_CHANNEL,
+  WORKSPACE_STATE_GET_CHANNEL,
+} from '@/shared/workspace';
 import {
   MCP_CONFIG_GET_CHANNEL,
   MCP_CONFIG_SAVE_CHANNEL,
@@ -516,6 +524,7 @@ describe('createDesktopApi', () => {
         if (
           channel === CONVERSATION_THREAD_SEARCH_CHANNEL ||
           channel === CONVERSATION_THREAD_SELECT_CHANNEL ||
+          channel === CONVERSATION_THREAD_NEW_CHANNEL ||
           channel === CONVERSATION_THREAD_FORK_CHANNEL ||
           channel === CONVERSATION_THREAD_ARCHIVE_CHANNEL ||
           channel === CONVERSATION_THREAD_UNARCHIVE_CHANNEL ||
@@ -541,6 +550,10 @@ describe('createDesktopApi', () => {
     await expect(
       api.selectConversationThread('thr_0000000000000001'),
     ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    await expect(api.startNewConversationThread()).resolves.toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
     await expect(
       api.forkConversationThread('thr_0000000000000001'),
     ).resolves.toEqual({ accepted: true, reason: 'accepted' });
@@ -565,6 +578,9 @@ describe('createDesktopApi', () => {
     expect(boundary.invoke).toHaveBeenCalledWith(
       CONVERSATION_THREAD_SELECT_CHANNEL,
       'thr_0000000000000001',
+    );
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      CONVERSATION_THREAD_NEW_CHANNEL,
     );
     for (const channel of [
       CONVERSATION_THREAD_FORK_CHANNEL,
@@ -748,5 +764,54 @@ describe('createDesktopApi', () => {
       phase: 'unavailable',
       activeTurnId: 'turn_0000000000000002',
     });
+  });
+
+  it('validates project and chat workspace actions', async () => {
+    const boundary = createIpcBoundary();
+    const api = createDesktopApi(boundary.ipc);
+    boundary.invoke.mockImplementation(async (channel: string) => {
+      if (channel === WORKSPACE_STATE_GET_CHANNEL) {
+        return {
+          revision: 1,
+          generation: 1,
+          status: 'ready',
+          kind: 'project',
+          name: 'sugarcode',
+          projectName: 'sugarcode',
+          projectThreadIds: [],
+          chatThreadIds: ['thr_0000000000000001'],
+        };
+      }
+      return { accepted: true };
+    });
+
+    await expect(api.getWorkspaceState()).resolves.toMatchObject({
+      status: 'ready',
+      name: 'sugarcode',
+    });
+    await expect(api.selectWorkspace()).resolves.toEqual({ accepted: true });
+    await expect(api.resumeWorkspaceProject()).resolves.toEqual({
+      accepted: true,
+    });
+    await expect(
+      api.activateWorkspaceChat({
+        threadId: 'thr_0000000000000001',
+      }),
+    ).resolves.toEqual({ accepted: true });
+    await expect(api.clearWorkspace()).resolves.toEqual({ accepted: true });
+    expect(boundary.invoke).toHaveBeenCalledWith(WORKSPACE_SELECT_CHANNEL);
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      WORKSPACE_PROJECT_RESUME_CHANNEL,
+    );
+    expect(boundary.invoke).toHaveBeenCalledWith(
+      WORKSPACE_CHAT_ACTIVATE_CHANNEL,
+      { threadId: 'thr_0000000000000001' },
+    );
+    expect(boundary.invoke).toHaveBeenCalledWith(WORKSPACE_CLEAR_CHANNEL);
+
+    boundary.invoke.mockResolvedValue({ accepted: true, reason: 'unknown' });
+    await expect(api.clearWorkspace()).rejects.toThrow(
+      'invalid workspace clear result',
+    );
   });
 });

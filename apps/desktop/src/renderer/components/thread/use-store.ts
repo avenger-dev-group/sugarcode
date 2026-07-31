@@ -17,6 +17,7 @@ import {
   searchConversationThreads,
   selectConversationThread,
   sendConversationMessage,
+  startNewConversationThread,
   stopConversationTurn,
   unarchiveConversationThread,
 } from '@/renderer/services/conversation';
@@ -1149,6 +1150,24 @@ export const useStore = (): ThreadStore => {
     }
   };
 
+  const startNewThread = async (): Promise<void> => {
+    setActionError(null);
+    try {
+      const result = await startNewConversationThread();
+      if (result.accepted) {
+        setNavigatorOpen(false);
+        return;
+      }
+      setActionError(
+        result.reason === 'turnActive'
+          ? 'Stop the active Turn before starting a new task.'
+          : 'A new task could not be started right now.',
+      );
+    } catch {
+      setActionError('Desktop could not start a new task safely.');
+    }
+  };
+
   const runThreadMutation = async (
     action: (threadId: string) => Promise<ConversationActionResult>,
     threadId: string,
@@ -1225,6 +1244,7 @@ export const useStore = (): ThreadStore => {
     actionError,
     setDraft,
     setNavigatorOpen,
+    startNewThread,
     searchThreads,
     selectThread,
     forkThread,

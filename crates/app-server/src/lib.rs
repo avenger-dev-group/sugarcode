@@ -11,12 +11,14 @@ pub use stdio::serve_with_session;
 use std::io;
 use sugarcode_agent_runtime::AgentSurfaceLaunchOptions;
 use sugarcode_agent_runtime::AgentSurfaceRuntime;
+use sugarcode_agent_runtime::ThreadWorkspaceBinding;
 use sugarcode_state::EffectiveConfig;
 
 pub async fn run_stdio(
     config: EffectiveConfig,
     workspace: Option<std::path::PathBuf>,
     workspace_scope: Option<String>,
+    unbound_threads: bool,
     allow_workspace_write: bool,
     allow_command_workspace_write: bool,
     mcp_servers: Vec<String>,
@@ -26,6 +28,11 @@ pub async fn run_stdio(
         config,
         workspace,
         workspace_scope,
+        thread_workspace_binding: if unbound_threads {
+            ThreadWorkspaceBinding::Unbound
+        } else {
+            ThreadWorkspaceBinding::Workspace
+        },
         allow_workspace_write,
         allow_command_workspace_write,
         mcp_servers,

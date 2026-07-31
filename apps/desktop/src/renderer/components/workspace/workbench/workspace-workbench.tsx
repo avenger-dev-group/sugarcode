@@ -1,4 +1,4 @@
-import { FolderCog, RefreshCw, X } from 'lucide-react';
+import { FolderOpen, RefreshCw } from 'lucide-react';
 
 import { Button } from '@/renderer/components/ui/button';
 
@@ -14,94 +14,89 @@ export const WorkspaceWorkbench = () => {
       : 'Choose workspace';
 
   return (
-    <>
-      <Button
-        type="button"
-        variant="outline"
-        className="min-w-0 max-w-44"
-        onClick={() => store.setOpen(true)}
-        aria-haspopup="dialog"
-        aria-expanded={store.open}
-        title={label}
-      >
-        <FolderCog aria-hidden="true" />
-        <span className="truncate">{label}</span>
-      </Button>
-      {store.open ? (
-        <aside
-          className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[42rem] flex-col border-l bg-background shadow-[-24px_0_70px_var(--shadow-soft)] sm:inset-y-3 sm:right-3 sm:rounded-2xl sm:border"
-          role="dialog"
-          aria-modal="false"
-          aria-label="Workspace explorer"
+    <section
+      className="flex h-full min-h-0 flex-col"
+      aria-label="Workspace explorer"
+    >
+      <header className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
+        <FolderOpen
+          className="size-4 shrink-0 text-tertiary"
+          aria-hidden="true"
+        />
+        <p className="min-w-0 flex-1 truncate text-sm" title={store.state.name}>
+          {label}
+        </p>
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          disabled={store.state.status !== 'ready'}
+          onClick={() => void store.refresh()}
+          aria-label="刷新工作区文件"
         >
-          <header className="flex min-w-0 items-center gap-3 border-b px-4 py-3">
-            <div className="min-w-0 flex-1">
-              <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-tertiary">
-                Workspace dossier
-              </p>
-              <p className="truncate text-sm font-medium" title={store.state.name}>
-                {label}
-              </p>
-            </div>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              disabled={store.state.status !== 'ready'}
-              onClick={() => void store.refresh()}
-              aria-label="Refresh workspace"
-            >
-              <RefreshCw aria-hidden="true" />
-            </Button>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              onClick={() => store.setOpen(false)}
-              aria-label="Close workspace explorer"
-            >
-              <X aria-hidden="true" />
-            </Button>
-          </header>
+          <RefreshCw aria-hidden="true" />
+        </Button>
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          disabled={store.state.status === 'selecting'}
+          onClick={() => void store.chooseWorkspace()}
+          aria-label={
+            store.state.kind === 'chat'
+              ? '打开项目'
+              : store.state.status === 'ready'
+                ? '切换项目'
+                : '打开项目'
+          }
+        >
+          <FolderOpen aria-hidden="true" />
+        </Button>
+      </header>
 
-          {store.state.status !== 'ready' ? (
-            <div className="flex flex-1 flex-col items-start justify-center px-8">
-              <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-tertiary">
-                Local authority
-              </p>
-              <h2 className="mt-3 text-2xl font-medium tracking-[-0.035em]">
-                Bind a project directory.
-              </h2>
-              <p className="mt-3 max-w-md text-sm leading-[22px] text-secondary">
-                SugarCode opens one local folder without following links. Agent tools, commands, Instructions, Skills, and this explorer then share that root.
-              </p>
-              {store.error ? (
-                <p className="mt-4 text-xs text-destructive" role="alert">
-                  {store.error}
-                </p>
-              ) : null}
-              <Button
-                type="button"
-                className="mt-6"
-                disabled={store.state.status === 'selecting'}
-                onClick={() => void store.chooseWorkspace()}
-              >
-                <FolderCog aria-hidden="true" />
-                {store.state.status === 'selecting'
-                  ? 'Opening workspace…'
-                  : 'Choose local folder'}
-              </Button>
-            </div>
-          ) : (
-            <div className="grid min-h-0 flex-1 grid-rows-[minmax(10rem,38%)_minmax(0,1fr)]">
-              <section className="min-h-0 overflow-auto border-b px-2 py-2" aria-label="Workspace file tree">
-                <FileTree store={store} />
-              </section>
-              <FileInspector document={store.document} />
-            </div>
-          )}
-        </aside>
-      ) : null}
-    </>
+      {store.state.status !== 'ready' ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-8 text-center">
+          <div className="grid size-10 place-items-center rounded-xl border bg-surface text-tertiary">
+            <FolderOpen className="size-4" aria-hidden="true" />
+          </div>
+          <h2 className="mt-4 text-sm font-medium">打开项目文件夹</h2>
+          <p className="mt-2 max-w-56 text-xs leading-5 text-secondary">
+            项目文件与聊天生成文件都会在各自受约束的目录中显示。
+          </p>
+          {store.error ? (
+            <p className="mt-3 text-xs text-destructive" role="alert">
+              {store.error}
+            </p>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-5"
+            disabled={store.state.status === 'selecting'}
+            onClick={() => void store.chooseWorkspace()}
+          >
+            <FolderOpen aria-hidden="true" />
+            {store.state.status === 'selecting' ? '正在打开…' : '选择文件夹'}
+          </Button>
+        </div>
+      ) : store.document ? (
+        <div className="grid min-h-0 flex-1 grid-rows-[minmax(11rem,42%)_minmax(0,1fr)]">
+          <section
+            className="min-h-0 overflow-auto border-b px-1.5 py-2"
+            aria-label="Workspace file tree"
+          >
+            <FileTree store={store} />
+          </section>
+          <FileInspector document={store.document} />
+        </div>
+      ) : (
+        <section
+          className="min-h-0 flex-1 overflow-auto px-1.5 py-2"
+          aria-label="Workspace file tree"
+        >
+          <FileTree store={store} />
+        </section>
+      )}
+    </section>
   );
 };

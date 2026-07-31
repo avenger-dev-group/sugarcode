@@ -28,6 +28,7 @@ let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
 let disposeWorkspaceIpc: (() => void) | null = null;
+let disposeWorkspaceConversationSubscription: (() => void) | null = null;
 let disposeGitIpc: (() => void) | null = null;
 let previewController: PreviewController | null = null;
 let disposePreviewIpc: (() => void) | null = null;
@@ -127,12 +128,17 @@ const startApplication = async (): Promise<void> => {
     dialog,
     getMainWindow: () => mainWindow,
     sessionPath: path.join(app.getPath('userData'), 'workspace-session-v1.json'),
+    chatRootPath: path.join(app.getPath('documents'), 'SugarCode'),
     beforeWorkspaceSwitch: async () => {
       await terminalController?.closeForWorkspaceChange();
       await previewController?.closeForWorkspaceChange();
     },
   });
   await workspaceController.restore();
+  disposeWorkspaceConversationSubscription =
+    supervisor.conversation.subscribe(
+      workspaceController.observeConversation,
+    );
   terminalController = new TerminalController({
     dialog,
     getMainWindow: () => mainWindow,
@@ -268,6 +274,8 @@ if (started) {
     disposeModelConfigIpc = null;
     disposeWorkspaceIpc?.();
     disposeWorkspaceIpc = null;
+    disposeWorkspaceConversationSubscription?.();
+    disposeWorkspaceConversationSubscription = null;
     disposeGitIpc?.();
     disposeGitIpc = null;
     disposePreviewIpc?.();

@@ -44,6 +44,51 @@ const createHarness = (rpc: ConversationRpc) => {
 };
 
 describe('ConversationController', () => {
+  it('starts a fresh durable Thread after clearing the current selection', async () => {
+    const startThread = vi.fn(async (): Promise<ThreadStartResponse> => ({
+      thread: { id: 'thr_0000000000000002' },
+    }));
+    const startTurn = vi.fn(async (): Promise<TurnStartResponse> => ({
+      turn: { id: 'turn_0000000000000002', status: 'inProgress' },
+    }));
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => 'thr_0000000000000001'),
+      resumeThread: vi.fn(async (): Promise<ResumeSnapshot> => ({
+        threadId: 'thr_0000000000000001',
+        turns: [],
+      })),
+      startThread,
+      startTurn,
+      interruptTurn: vi.fn(),
+    };
+    const controllerWithIndex = new ConversationController({
+      getRpc: () => rpc,
+      onProtocolFailure: vi.fn(),
+    });
+    await expect(controllerWithIndex.loadThreadIndex()).resolves.toBe(true);
+    controllerWithIndex.connectionReady();
+    await expect(
+      controllerWithIndex.selectThread('thr_0000000000000001'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+
+    expect(controllerWithIndex.startNewThread()).toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
+    expect(controllerWithIndex.getSnapshot()).not.toHaveProperty('threadId');
+    expect(controllerWithIndex.getSnapshot().turns).toEqual([]);
+
+    await expect(
+      controllerWithIndex.startTurn('Begin a separate task.'),
+    ).resolves.toEqual({ accepted: true, reason: 'accepted' });
+    expect(startThread).toHaveBeenCalledOnce();
+    expect(startTurn).toHaveBeenCalledWith(
+      'thr_0000000000000002',
+      'Begin a separate task.',
+      expect.any(AbortSignal),
+    );
+  });
+
   it('projects completed Agent commentary before later tool activity', async () => {
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),

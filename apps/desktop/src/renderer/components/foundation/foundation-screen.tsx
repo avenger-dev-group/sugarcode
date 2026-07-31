@@ -24,6 +24,8 @@ export const FoundationScreen = () => {
         <main className="flex h-screen min-h-[30rem] min-w-0 flex-col overflow-hidden bg-background text-foreground">
           <ThreadWorkbenchView
             store={threadStore}
+            navigatorResize={foundation.navigatorResize}
+            contextRailResize={foundation.contextRailResize}
             contextRailOpen={foundation.contextRailOpen}
             setContextRailOpen={foundation.setContextRailOpen}
             navigationFooter={

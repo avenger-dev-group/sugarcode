@@ -237,6 +237,9 @@ struct AppServerArgs {
     /// Active workspace scope relative to the explicit workspace root.
     #[arg(long, value_name = "RELATIVE_DIR", requires = "workspace")]
     workspace_scope: Option<String>,
+    /// Keep durable Threads workspace-free while exposing an isolated Desktop chat directory.
+    #[arg(long, hide = true, requires = "workspace")]
+    unbound_threads: bool,
     /// Enable bounded workspace/apply-patch writes for this process only.
     #[arg(long, requires = "workspace")]
     allow_workspace_write: bool,
@@ -567,6 +570,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
             args.command,
             args.workspace,
             args.workspace_scope,
+            args.unbound_threads,
             args.allow_workspace_write,
             args.allow_command_workspace_write,
             args.mcp_server,
@@ -576,6 +580,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                 None,
                 workspace,
                 workspace_scope,
+                unbound_threads,
                 allow_workspace_write,
                 allow_command_workspace_write,
                 mcp_server,
@@ -585,6 +590,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                     effective_config,
                     workspace,
                     workspace_scope,
+                    unbound_threads,
                     allow_workspace_write,
                     allow_command_workspace_write,
                     mcp_server,
@@ -598,6 +604,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                 None,
                 false,
                 false,
+                false,
                 mcp_servers,
             ) if mcp_servers.is_empty() => {
                 sugarcode_app_server::generate_typescript(&args.out)?;
@@ -607,6 +614,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                 Some(AppServerCommand::GenerateJsonSchema(args)),
                 None,
                 None,
+                false,
                 false,
                 false,
                 mcp_servers,

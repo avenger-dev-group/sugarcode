@@ -627,6 +627,32 @@ export class ConversationController {
     }
   };
 
+  startNewThread = (): ConversationActionResult => {
+    if (
+      this.getActionBlocked() ||
+      this.phase === 'starting' ||
+      this.phase === 'inProgress' ||
+      this.phase === 'stopping' ||
+      this.navigator.pendingThreadId ||
+      this.navigator.pendingMutation ||
+      this.navigator.search.status === 'loading'
+    ) {
+      return rejected('turnActive');
+    }
+    if (!this.getRpc() || this.phase === 'unavailable') {
+      return rejected('unavailable');
+    }
+    this.selectionAbortController?.abort();
+    this.selectionGeneration += 1;
+    this.navigator.pendingThreadId = undefined;
+    this.navigator.selectionNotice = undefined;
+    this.navigator.archivedUndoThreadId = undefined;
+    resetThreadSearch(this.navigator);
+    this.clearSelectedThread();
+    this.publish();
+    return accepted();
+  };
+
   archiveThread = async (
     threadId: unknown,
   ): Promise<ConversationActionResult> => {

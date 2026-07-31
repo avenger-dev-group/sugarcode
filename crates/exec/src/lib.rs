@@ -24,6 +24,7 @@ use sugarcode_agent_runtime::AgentSurfaceLaunchOptions;
 use sugarcode_agent_runtime::AgentSurfaceRuntime;
 use sugarcode_agent_runtime::AgentSurfaceRuntimeParts;
 use sugarcode_agent_runtime::AgentSurfaceSession;
+use sugarcode_agent_runtime::ThreadWorkspaceBinding;
 use sugarcode_core::CommandApprovalOutcome;
 use sugarcode_core::CoreError;
 use sugarcode_core::CoreRuntime;
@@ -110,6 +111,7 @@ where
         config,
         workspace: request.workspace,
         workspace_scope: request.workspace_scope,
+        thread_workspace_binding: ThreadWorkspaceBinding::Workspace,
         allow_workspace_write: request.allow_workspace_write,
         allow_command_workspace_write: request.allow_command_workspace_write,
         mcp_servers: request.mcp_servers,

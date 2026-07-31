@@ -22,7 +22,7 @@ const RailAction = ({
   children: ReactNode;
 }>) => (
   <div
-    className="rounded-lg px-1 py-0.5 transition-colors hover:bg-surface [&>button]:h-8 [&>button]:w-full [&>button]:max-w-none [&>button]:justify-start [&>button]:border-0 [&>button]:bg-transparent [&>button]:px-2 [&>button]:shadow-none"
+    className="min-w-0 flex-1 rounded-lg px-0.5 transition-colors hover:bg-surface [&>button]:h-8 [&>button]:w-full [&>button]:max-w-none [&>button]:justify-center [&>button]:border-0 [&>button]:bg-transparent [&>button]:px-1.5 [&>button]:shadow-none"
     aria-label={label}
   >
     {children}
@@ -34,8 +34,8 @@ export const ContextRail = ({ onClose }: ContextRailProps) => {
     useOrchestrationStore();
 
   return (
-    <div className="flex min-h-full flex-col">
-      <div className="flex h-14 shrink-0 items-center border-b px-3">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-11 shrink-0 items-center border-b px-3">
         <div
           className="flex h-8 items-center rounded-lg bg-surface p-0.5"
           role="tablist"
@@ -54,7 +54,7 @@ export const ContextRail = ({ onClose }: ContextRailProps) => {
               }`}
               onClick={() => setActiveTab(tab)}
             >
-              {tab === 'workspace' ? 'Workspace' : 'Agent'}
+              {tab === 'workspace' ? '文件' : 'Agent'}
             </button>
           ))}
         </div>
@@ -72,24 +72,11 @@ export const ContextRail = ({ onClose }: ContextRailProps) => {
 
       {activeTab === 'workspace' ? (
         <>
-          <div className="border-b p-3">
-            <ConnectionStatus />
+          <div className="min-h-0 flex-1">
+            <WorkspaceWorkbench />
           </div>
-
-          <section
-            className="px-2 py-3"
-            aria-labelledby="workspace-actions-title"
-          >
-            <p
-              id="workspace-actions-title"
-              className="px-2 pb-2 font-mono text-[9px] uppercase tracking-[0.16em] text-tertiary"
-            >
-              Tools
-            </p>
-            <div className="space-y-1">
-              <RailAction label="Workspace explorer">
-                <WorkspaceWorkbench />
-              </RailAction>
+          <section className="shrink-0 border-t p-2" aria-label="项目工具">
+            <div className="flex gap-1">
               <RailAction label="Git changes">
                 <GitWorkbench />
               </RailAction>
@@ -101,11 +88,9 @@ export const ContextRail = ({ onClose }: ContextRailProps) => {
               </RailAction>
             </div>
           </section>
-
-          <p className="mt-auto border-t px-4 py-3 text-[11px] leading-4 text-tertiary">
-            Files, Git, preview, and terminal remain local to the selected
-            workspace.
-          </p>
+          <div className="shrink-0 border-t px-3 py-2">
+            <ConnectionStatus />
+          </div>
         </>
       ) : (
         <AgentDetail task={selectedTask} />

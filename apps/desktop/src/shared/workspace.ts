@@ -1,6 +1,9 @@
 export const WORKSPACE_STATE_GET_CHANNEL = 'workspace-state:get';
 export const WORKSPACE_STATE_CHANGED_CHANNEL = 'workspace-state:changed';
 export const WORKSPACE_SELECT_CHANNEL = 'workspace:select';
+export const WORKSPACE_PROJECT_RESUME_CHANNEL = 'workspace:project-resume';
+export const WORKSPACE_CHAT_ACTIVATE_CHANNEL = 'workspace:chat-activate';
+export const WORKSPACE_CLEAR_CHANNEL = 'workspace:clear';
 export const WORKSPACE_LIST_CHANNEL = 'workspace:list';
 export const WORKSPACE_INSPECT_CHANNEL = 'workspace:inspect';
 
@@ -10,12 +13,22 @@ export type WorkspaceStatus =
   | 'ready'
   | 'failed';
 
+export type WorkspaceKind = 'project' | 'chat';
+
 export type WorkspaceStateSnapshot = Readonly<{
   revision: number;
   generation: number;
   status: WorkspaceStatus;
+  kind?: WorkspaceKind;
   name?: string;
+  projectName?: string;
+  projectThreadIds?: readonly string[];
+  chatThreadIds?: readonly string[];
   error?: string;
+}>;
+
+export type WorkspaceChatRequest = Readonly<{
+  threadId?: string;
 }>;
 
 export type WorkspaceEntryKind =
@@ -109,6 +122,11 @@ export type WorkspaceApi = Readonly<{
     listener: (snapshot: WorkspaceStateSnapshot) => void,
   ) => () => void;
   selectWorkspace: () => Promise<WorkspaceSelectResult>;
+  resumeWorkspaceProject: () => Promise<WorkspaceSelectResult>;
+  activateWorkspaceChat: (
+    request: WorkspaceChatRequest,
+  ) => Promise<WorkspaceSelectResult>;
+  clearWorkspace: () => Promise<WorkspaceSelectResult>;
   listWorkspace: (
     request: WorkspaceListRequest,
   ) => Promise<WorkspaceListResult>;
@@ -149,6 +167,11 @@ const isSafeRelativePath = (
         return code <= 0x1f || code === 0x7f;
       })));
 
+const isThreadId = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.length <= 128 &&
+  /^thr_[A-Za-z0-9_-]+$/u.test(value);
+
 export const isWorkspaceStateSnapshot = (
   value: unknown,
 ): value is WorkspaceStateSnapshot =>
@@ -157,7 +180,11 @@ export const isWorkspaceStateSnapshot = (
     'revision',
     'generation',
     'status',
+    'kind',
     'name',
+    'projectName',
+    'projectThreadIds',
+    'chatThreadIds',
     'error',
   ]) &&
   Number.isSafeInteger(value.revision) &&
@@ -167,9 +194,29 @@ export const isWorkspaceStateSnapshot = (
   ['unselected', 'selecting', 'ready', 'failed'].includes(
     value.status as string,
   ) &&
+  (value.kind === undefined ||
+    ['project', 'chat'].includes(value.kind as string)) &&
   (value.name === undefined ||
     (typeof value.name === 'string' && value.name.length > 0)) &&
+  (value.projectName === undefined ||
+    (typeof value.projectName === 'string' &&
+      value.projectName.length > 0)) &&
+  (value.projectThreadIds === undefined ||
+    (Array.isArray(value.projectThreadIds) &&
+      value.projectThreadIds.length <= 1_000 &&
+      value.projectThreadIds.every(isThreadId))) &&
+  (value.chatThreadIds === undefined ||
+    (Array.isArray(value.chatThreadIds) &&
+      value.chatThreadIds.length <= 1_000 &&
+      value.chatThreadIds.every(isThreadId))) &&
   (value.error === undefined || typeof value.error === 'string');
+
+export const isWorkspaceChatRequest = (
+  value: unknown,
+): value is WorkspaceChatRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['threadId']) &&
+  (value.threadId === undefined || isThreadId(value.threadId));
 
 export const isWorkspaceListRequest = (
   value: unknown,

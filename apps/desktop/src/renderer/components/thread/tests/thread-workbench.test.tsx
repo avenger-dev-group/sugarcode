@@ -5,6 +5,29 @@ import { createRoot } from 'react-dom/client';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock(
+  '@/renderer/components/workspace/navigation/use-store',
+  () => ({
+    useStore: () => ({
+      state: {
+        revision: 1,
+        generation: 1,
+        status: 'ready',
+        kind: 'project',
+        name: 'sugarcode',
+        projectName: 'sugarcode',
+        projectThreadIds: [] as string[],
+        chatThreadIds: [] as string[],
+      },
+      busy: false,
+      error: null as string | null,
+      chooseProject: vi.fn(async () => true),
+      resumeProject: vi.fn(async () => true),
+      activateChat: vi.fn(async () => true),
+    }),
+  }),
+);
+
 import { ThreadWorkbenchView } from '../thread-workbench';
 import type { ThreadStore } from '../types';
 import { toThreadViewModel } from '../use-store';
@@ -83,6 +106,7 @@ const createStore = (overrides: Partial<ThreadStore> = {}): ThreadStore => ({
   actionError: null,
   setDraft: vi.fn(),
   setNavigatorOpen: vi.fn(),
+  startNewThread: vi.fn(async () => undefined),
   searchThreads: vi.fn(async () => undefined),
   selectThread: vi.fn(async () => undefined),
   forkThread: vi.fn(async () => undefined),
@@ -393,12 +417,14 @@ describe('ThreadWorkbenchView', () => {
     expect(agentResponse?.textContent).not.toContain('SugarCode');
     expect(agentResponse?.textContent).not.toContain('SC');
     expect(agentResponse?.className).not.toContain('grid-cols');
-    expect(document.body.textContent).toContain('Thread thr_0000000000000001');
+    expect(document.body.textContent).not.toContain(
+      'Thread thr_0000000000000001',
+    );
     expect(
       document.querySelector(
         '[aria-label="Current durable Thread thr_0000000000000001"]',
       ),
-    ).not.toBeNull();
+    ).toBeNull();
     expect(
       document.querySelector('[aria-label="Conversation transcript"]'),
     ).not.toBeNull();
@@ -425,10 +451,10 @@ describe('ThreadWorkbenchView', () => {
     await act(async () => {
       root.render(<ThreadWorkbenchView store={store} />);
     });
-    expect(document.body.textContent).toContain('Thread not created');
+    expect(document.body.textContent).not.toContain('Thread not created');
     expect(
       document.querySelector('[aria-label="No durable Thread yet"]'),
-    ).not.toBeNull();
+    ).toBeNull();
     expect(document.querySelector('[aria-label^="Durable Turn "]')).toBeNull();
     expect(document.querySelector('[aria-label^="Durable Item "]')).toBeNull();
     const textarea = document.querySelector('textarea');

@@ -96,6 +96,8 @@ export type ModelConfigRestartBlock =
   | 'reconnectPending'
   | 'unavailable';
 
+export type WorkspaceRuntimeKind = 'project' | 'chat';
+
 const DIAGNOSTIC_SUMMARIES: Record<ConnectionDiagnosticCode, string> = {
   'development-cli-missing':
     'The development CLI is unavailable. Build it before starting SugarCode.',
@@ -165,6 +167,7 @@ export class ConnectionSupervisor {
   private workspaceTransaction = false;
   private gitTransaction = false;
   private workspacePath: string | null = null;
+  private workspaceRuntimeKind: WorkspaceRuntimeKind = 'project';
   private workspaceBindingId: string | null = null;
   private preferredInitialThreadId: string | undefined;
 
@@ -255,11 +258,13 @@ export class ConnectionSupervisor {
   configureInitialWorkspace = (
     workspacePath: string | null,
     preferredThreadId?: string,
+    runtimeKind: WorkspaceRuntimeKind = 'project',
   ): boolean => {
     if (this.snapshot.status !== 'idle' || this.startPromise) {
       return false;
     }
     this.workspacePath = workspacePath;
+    this.workspaceRuntimeKind = runtimeKind;
     this.preferredInitialThreadId = preferredThreadId;
     return true;
   };
@@ -267,7 +272,11 @@ export class ConnectionSupervisor {
   getWorkspaceSwitchBlock = (): ModelConfigRestartBlock | null =>
     this.getModelConfigRestartBlock();
 
-  switchWorkspace = async (workspacePath: string): Promise<boolean> => {
+  switchWorkspace = async (
+    workspacePath: string | null,
+    runtimeKind: WorkspaceRuntimeKind = 'project',
+    preferredThreadId?: string,
+  ): Promise<boolean> => {
     const target = getCliTarget(this.options.platform, this.options.arch);
     const lease = this.beginWorkspaceTransaction();
     if (
@@ -279,26 +288,28 @@ export class ConnectionSupervisor {
       return false;
     }
     const previousPath = this.workspacePath;
+    const previousRuntimeKind = this.workspaceRuntimeKind;
     const previousThreadId = this.conversation.getSnapshot().threadId ?? undefined;
     try {
       if (!(await this.closeForRestart())) {
         return false;
       }
       this.workspacePath = workspacePath;
+      this.workspaceRuntimeKind = runtimeKind;
       this.workspaceBindingId = null;
       this.mcpSession.initialize(this.mcpSession.getSnapshot().servers);
       this.transition('connecting');
       const connected = await this.connect(
         [],
-        undefined,
+        preferredThreadId,
         target.expectedPlatform,
-        false,
       );
       if (connected) {
         return true;
       }
       this.workspacePath = previousPath;
-      if (previousPath && !this.shuttingDown) {
+      this.workspaceRuntimeKind = previousRuntimeKind;
+      if (!this.shuttingDown) {
         await this.closeForRestart();
         this.transition('connecting');
         await this.connect(
@@ -590,6 +601,9 @@ export class ConnectionSupervisor {
           '--stdio',
           ...(this.workspacePath
             ? ['--workspace', this.workspacePath]
+            : []),
+          ...(this.workspacePath && this.workspaceRuntimeKind === 'chat'
+            ? ['--unbound-threads']
             : []),
           ...mcpServerIds.flatMap((serverId) => [
             '--mcp-server',

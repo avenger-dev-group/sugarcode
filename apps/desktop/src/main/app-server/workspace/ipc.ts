@@ -2,9 +2,13 @@ import { ipcMain, type BrowserWindow } from 'electron';
 
 import {
   isWorkspaceInspectRequest,
+  isWorkspaceChatRequest,
   isWorkspaceListRequest,
+  WORKSPACE_CHAT_ACTIVATE_CHANNEL,
+  WORKSPACE_CLEAR_CHANNEL,
   WORKSPACE_INSPECT_CHANNEL,
   WORKSPACE_LIST_CHANNEL,
+  WORKSPACE_PROJECT_RESUME_CHANNEL,
   WORKSPACE_SELECT_CHANNEL,
   WORKSPACE_STATE_CHANGED_CHANNEL,
   WORKSPACE_STATE_GET_CHANNEL,
@@ -40,6 +44,27 @@ export const registerWorkspaceIpc = (
     }
     return options.controller.select();
   });
+  ipcMain.handle(WORKSPACE_PROJECT_RESUME_CHANNEL, (event) => {
+    if (!trusted(event)) {
+      throw new Error('Workspace resume came from an untrusted frame.');
+    }
+    return options.controller.resumeProject();
+  });
+  ipcMain.handle(
+    WORKSPACE_CHAT_ACTIVATE_CHANNEL,
+    (event, request: unknown) => {
+      if (!trusted(event) || !isWorkspaceChatRequest(request)) {
+        return { accepted: false, reason: 'invalid' };
+      }
+      return options.controller.activateChat(request);
+    },
+  );
+  ipcMain.handle(WORKSPACE_CLEAR_CHANNEL, (event) => {
+    if (!trusted(event)) {
+      throw new Error('Workspace clear came from an untrusted frame.');
+    }
+    return options.controller.clear();
+  });
   ipcMain.handle(WORKSPACE_LIST_CHANNEL, (event, request: unknown) => {
     if (!trusted(event) || !isWorkspaceListRequest(request)) {
       return { accepted: false, reason: 'invalid' };
@@ -63,6 +88,9 @@ export const registerWorkspaceIpc = (
     unsubscribe();
     ipcMain.removeHandler(WORKSPACE_STATE_GET_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_SELECT_CHANNEL);
+    ipcMain.removeHandler(WORKSPACE_PROJECT_RESUME_CHANNEL);
+    ipcMain.removeHandler(WORKSPACE_CHAT_ACTIVATE_CHANNEL);
+    ipcMain.removeHandler(WORKSPACE_CLEAR_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_LIST_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_INSPECT_CHANNEL);
   };

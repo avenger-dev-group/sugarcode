@@ -33,6 +33,10 @@ export const selectConversationThread = (
 ): Promise<ConversationActionResult> =>
   desktopApi().selectConversationThread(threadId);
 
+export const startNewConversationThread =
+  (): Promise<ConversationActionResult> =>
+    desktopApi().startNewConversationThread();
+
 export const forkConversationThread = (
   threadId: string,
 ): Promise<ConversationActionResult> =>

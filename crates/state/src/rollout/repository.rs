@@ -3,7 +3,6 @@ use super::DurableThreadLifecycle;
 use super::DurableThreadOrigin;
 use super::DurableThreadPage;
 use super::DurableThreadSnapshot;
-use super::DurableThreadSummary;
 use super::DurableTurnSnapshot;
 use super::DurableTurnStatus;
 use super::IdSequences;
@@ -106,11 +105,9 @@ impl RolloutRepository {
             ThreadDiscoveryProjection::open(home, &replay.threads, replay.record_count)?;
         let search_projection =
             ThreadSearchProjection::open(home, &replay.threads, replay.record_count);
-        if let Some(binding_id) = active_workspace_binding_id {
-            replay
-                .threads
-                .retain(|_, thread| thread.workspace_binding_id.as_deref() == Some(binding_id));
-        }
+        replay.threads.retain(|_, thread| {
+            thread.workspace_binding_id.as_deref() == active_workspace_binding_id
+        });
         Ok(Self {
             root,
             _writer_lock: writer_lock,

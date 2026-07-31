@@ -32,11 +32,18 @@ use zeroize::Zeroizing;
 
 pub const IN_PROCESS_AGENT_SURFACE_RUNTIME_VERSION: u32 = 1;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThreadWorkspaceBinding {
+    Workspace,
+    Unbound,
+}
+
 #[derive(Debug)]
 pub struct AgentSurfaceLaunchOptions {
     pub config: EffectiveConfig,
     pub workspace: Option<PathBuf>,
     pub workspace_scope: Option<String>,
+    pub thread_workspace_binding: ThreadWorkspaceBinding,
     pub allow_workspace_write: bool,
     pub allow_command_workspace_write: bool,
     pub mcp_servers: Vec<String>,
@@ -144,9 +151,15 @@ impl AgentSurfaceRuntime {
             .and_then(|model| model.credential_reference())
             .map(|reference| load_model_token(options.config.home().path(), reference))
             .transpose();
+        let active_workspace_binding = match options.thread_workspace_binding {
+            ThreadWorkspaceBinding::Workspace => {
+                workspace.as_ref().map(|workspace| workspace.binding_id())
+            }
+            ThreadWorkspaceBinding::Unbound => None,
+        };
         let repository = RolloutRepository::open_with_workspace_binding(
             options.config.home(),
-            workspace.as_ref().map(|workspace| workspace.binding_id()),
+            active_workspace_binding,
         )
         .map_err(io::Error::other)?;
         let mut diagnostics = repository

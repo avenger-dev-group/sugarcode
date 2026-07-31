@@ -831,33 +831,35 @@ impl ThreadRepository for RolloutRepository {
         limit: usize,
     ) -> Result<DurableThreadPage, RolloutError> {
         self.ensure_available()?;
-        if self.active_workspace_binding_id.is_some() {
-            let mut matching = self
-                .threads
-                .values()
-                .rev()
-                .filter(|thread| {
-                    thread.snapshot.lifecycle == DurableThreadLifecycle::Active
-                        && thread.snapshot.origin.is_none()
-                        && cursor.is_none_or(|cursor| thread.snapshot.id < *cursor)
-                })
-                .map(|thread| DurableThreadSummary {
-                    id: thread.snapshot.id.clone(),
-                })
-                .take(limit.saturating_add(1))
-                .collect::<Vec<_>>();
-            let has_more = matching.len() > limit;
-            matching.truncate(limit);
-            let next_cursor = has_more
-                .then(|| matching.last().map(|thread| thread.id.clone()))
-                .flatten();
-            return Ok(DurableThreadPage {
-                data: matching,
-                next_cursor,
-            });
+        let mut matching = Vec::with_capacity(limit.saturating_add(1));
+        let mut projection_cursor = cursor.cloned();
+        loop {
+            let page = self.projection.list_threads(
+                &self.threads,
+                self.total_records,
+                projection_cursor.as_ref(),
+                100,
+            )?;
+            matching.extend(
+                page.data
+                    .into_iter()
+                    .filter(|thread| self.threads.contains_key(&thread.id))
+                    .take(limit.saturating_add(1).saturating_sub(matching.len())),
+            );
+            if matching.len() > limit || page.next_cursor.is_none() {
+                break;
+            }
+            projection_cursor = page.next_cursor;
         }
-        self.projection
-            .list_threads(&self.threads, self.total_records, cursor, limit)
+        let has_more = matching.len() > limit;
+        matching.truncate(limit);
+        let next_cursor = has_more
+            .then(|| matching.last().map(|thread| thread.id.clone()))
+            .flatten();
+        Ok(DurableThreadPage {
+            data: matching,
+            next_cursor,
+        })
     }
 
     fn search_threads(
@@ -867,44 +869,35 @@ impl ThreadRepository for RolloutRepository {
         limit: usize,
     ) -> Result<DurableThreadPage, RolloutError> {
         self.ensure_available()?;
-        if self.active_workspace_binding_id.is_some() {
-            let mut results = Vec::with_capacity(limit.saturating_add(1));
-            let mut projection_cursor = cursor.cloned();
-            loop {
-                let page = self.search_projection.search_threads(
-                    &self.threads,
-                    self.total_records,
-                    query,
-                    projection_cursor.as_ref(),
-                    100,
-                )?;
-                results.extend(
-                    page.data
-                        .into_iter()
-                        .filter(|thread| self.threads.contains_key(&thread.id))
-                        .take(limit.saturating_add(1).saturating_sub(results.len())),
-                );
-                if results.len() > limit || page.next_cursor.is_none() {
-                    break;
-                }
-                projection_cursor = page.next_cursor;
+        let mut results = Vec::with_capacity(limit.saturating_add(1));
+        let mut projection_cursor = cursor.cloned();
+        loop {
+            let page = self.search_projection.search_threads(
+                &self.threads,
+                self.total_records,
+                query,
+                projection_cursor.as_ref(),
+                100,
+            )?;
+            results.extend(
+                page.data
+                    .into_iter()
+                    .filter(|thread| self.threads.contains_key(&thread.id))
+                    .take(limit.saturating_add(1).saturating_sub(results.len())),
+            );
+            if results.len() > limit || page.next_cursor.is_none() {
+                break;
             }
-            let has_more = results.len() > limit;
-            results.truncate(limit);
-            let next_cursor = has_more
-                .then(|| results.last().map(|thread| thread.id.clone()))
-                .flatten();
-            return Ok(DurableThreadPage {
-                data: results,
-                next_cursor,
-            });
+            projection_cursor = page.next_cursor;
         }
-        self.search_projection.search_threads(
-            &self.threads,
-            self.total_records,
-            query,
-            cursor,
-            limit,
-        )
+        let has_more = results.len() > limit;
+        results.truncate(limit);
+        let next_cursor = has_more
+            .then(|| results.last().map(|thread| thread.id.clone()))
+            .flatten();
+        Ok(DurableThreadPage {
+            data: results,
+            next_cursor,
+        })
     }
 }

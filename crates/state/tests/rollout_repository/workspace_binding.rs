@@ -49,3 +49,41 @@ fn workspace_bound_repositories_never_resume_foreign_or_unbound_threads() {
     .expect("rollout");
     assert!(record.contains(&format!("\"workspaceBindingId\":\"{binding_a}\"")));
 }
+
+#[test]
+fn workspace_free_repositories_only_resume_independent_threads() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let binding = "a".repeat(64);
+    let project_thread = ThreadId::new("thr_0000000000000001");
+    let independent_thread = ThreadId::new("thr_0000000000000002");
+
+    {
+        let mut repository = RolloutRepository::open_with_workspace_binding(&home, Some(&binding))
+            .expect("project repository");
+        repository
+            .create_thread(&project_thread)
+            .expect("project thread");
+    }
+    {
+        let mut repository = RolloutRepository::open(&home).expect("independent repository");
+        assert!(
+            repository
+                .load_thread(&project_thread)
+                .expect("load project thread")
+                .is_none()
+        );
+        repository
+            .create_thread(&independent_thread)
+            .expect("independent thread");
+        assert_eq!(
+            repository
+                .list_threads(None, 50)
+                .expect("independent list")
+                .data,
+            vec![sugarcode_state::DurableThreadSummary {
+                id: independent_thread,
+            }]
+        );
+    }
+}
