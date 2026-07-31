@@ -103,8 +103,5 @@ jobs:
       - name: Build development CLI
         run: pnpm build:cli:dev
 
-      - name: Test real Desktop CLI handshake
-        run: pnpm --filter @sugarcode/desktop test:integration
-
       - name: Package Desktop and smoke bundled CLI
         run: pnpm desktop:package

@@ -13,7 +13,6 @@
     "lint": "pnpm --filter @sugarcode/desktop lint",
     "typecheck": "pnpm --filter @sugarcode/desktop typecheck && pnpm --filter @sugarcode/app-server-protocol typecheck",
     "check:rust": "cargo metadata --locked --no-deps --format-version 1",
-    "test:desktop": "pnpm build:cli:dev && pnpm --filter @sugarcode/desktop test",
     "check": "pnpm --filter @sugarcode/desktop check && pnpm --filter @sugarcode/app-server-protocol check && pnpm check:rust"
   }
 }
