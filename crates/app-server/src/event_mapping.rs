@@ -1,5 +1,8 @@
 use serde_json::to_value;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
+use sugarcode_app_server_protocol::AgentTaskAccess;
+use sugarcode_app_server_protocol::AgentTaskRole;
+use sugarcode_app_server_protocol::AgentTaskStatus;
 use sugarcode_app_server_protocol::ContextCompactionOutcome as PublicContextCompactionOutcome;
 use sugarcode_app_server_protocol::ContextCompactionStrategy as PublicContextCompactionStrategy;
 use sugarcode_app_server_protocol::Item as PublicItem;
@@ -225,6 +228,15 @@ fn map_snapshot_parts(
     (
         sugarcode_app_server_protocol::Thread {
             id: snapshot.id.into_string(),
+            origin: snapshot.origin.map(|origin| {
+                sugarcode_app_server_protocol::ThreadOrigin::Subagent {
+                    parent_thread_id: origin.parent_thread_id.into_string(),
+                    parent_turn_id: origin.parent_turn_id.into_string(),
+                    orchestration_id: origin.orchestration_id,
+                    task_id: origin.task_id,
+                    role: agent_task_role(&origin.role),
+                }
+            }),
         },
         snapshot
             .turns
@@ -251,6 +263,61 @@ fn map_snapshot_parts(
                                 text,
                             }
                         }
+                        DurableItemSnapshot::AgentCommentary { id, text } => {
+                            PublicItem::AgentCommentary {
+                                id: id.into_string(),
+                                text,
+                            }
+                        }
+                        DurableItemSnapshot::AgentTask {
+                            id,
+                            orchestration_id,
+                            task_id,
+                            client_task_key,
+                            child_thread_id,
+                            title,
+                            role,
+                            access,
+                            depends_on,
+                            task_markdown,
+                        } => PublicItem::AgentTask {
+                            id: id.into_string(),
+                            orchestration_id,
+                            task_id,
+                            client_task_key,
+                            child_thread_id: child_thread_id.into_string(),
+                            title,
+                            role: agent_task_role(&role),
+                            access: agent_task_access(&access),
+                            depends_on,
+                            task_markdown,
+                        },
+                        DurableItemSnapshot::AgentTaskAmendment {
+                            id,
+                            orchestration_id,
+                            task_id,
+                            amendment_markdown,
+                        } => PublicItem::AgentTaskAmendment {
+                            id: id.into_string(),
+                            orchestration_id,
+                            task_id,
+                            amendment_markdown,
+                        },
+                        DurableItemSnapshot::AgentTaskResult {
+                            id,
+                            orchestration_id,
+                            task_id,
+                            status,
+                            summary_markdown,
+                            duration_ms,
+                        } => PublicItem::AgentTaskResult {
+                            id: id.into_string(),
+                            orchestration_id,
+                            task_id,
+                            status: agent_task_status(&status),
+                            summary_markdown,
+                            duration_ms,
+                        },
                         DurableItemSnapshot::ContextCompaction {
                             id,
                             ordinal,
@@ -564,6 +631,56 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             id: item.id.into_string(),
             text,
         },
+        CoreItemKind::AgentCommentary { text } => PublicItem::AgentCommentary {
+            id: item.id.into_string(),
+            text,
+        },
+        CoreItemKind::AgentTask {
+            orchestration_id,
+            task_id,
+            client_task_key,
+            child_thread_id,
+            title,
+            role,
+            access,
+            depends_on,
+            task_markdown,
+        } => PublicItem::AgentTask {
+            id: item.id.into_string(),
+            orchestration_id,
+            task_id,
+            client_task_key,
+            child_thread_id: child_thread_id.into_string(),
+            title,
+            role: agent_task_role(&role),
+            access: agent_task_access(&access),
+            depends_on,
+            task_markdown,
+        },
+        CoreItemKind::AgentTaskAmendment {
+            orchestration_id,
+            task_id,
+            amendment_markdown,
+        } => PublicItem::AgentTaskAmendment {
+            id: item.id.into_string(),
+            orchestration_id,
+            task_id,
+            amendment_markdown,
+        },
+        CoreItemKind::AgentTaskResult {
+            orchestration_id,
+            task_id,
+            status,
+            summary_markdown,
+            duration_ms,
+        } => PublicItem::AgentTaskResult {
+            id: item.id.into_string(),
+            orchestration_id,
+            task_id,
+            status: agent_task_status(&status),
+            summary_markdown,
+            duration_ms,
+        },
         CoreItemKind::ContextCompaction {
             ordinal,
             pre_context_bytes,
@@ -812,6 +929,33 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
                 },
             },
         },
+    }
+}
+
+fn agent_task_role(value: &str) -> AgentTaskRole {
+    match value {
+        "explorer" => AgentTaskRole::Explorer,
+        "auditor" => AgentTaskRole::Auditor,
+        _ => AgentTaskRole::Worker,
+    }
+}
+
+fn agent_task_access(value: &str) -> AgentTaskAccess {
+    match value {
+        "workspaceWrite" => AgentTaskAccess::WorkspaceWrite,
+        _ => AgentTaskAccess::ReadOnly,
+    }
+}
+
+fn agent_task_status(value: &str) -> AgentTaskStatus {
+    match value {
+        "running" => AgentTaskStatus::Running,
+        "waitingApproval" => AgentTaskStatus::WaitingApproval,
+        "completed" => AgentTaskStatus::Completed,
+        "failed" => AgentTaskStatus::Failed,
+        "interrupted" => AgentTaskStatus::Interrupted,
+        "cancelled" => AgentTaskStatus::Cancelled,
+        _ => AgentTaskStatus::Queued,
     }
 }
 

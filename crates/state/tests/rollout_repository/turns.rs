@@ -33,6 +33,79 @@ fn persists_and_replays_completed_thread_history() {
 }
 
 #[test]
+fn commentary_round_trips_through_the_jsonl_rollout() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn = DurableTurnSnapshot {
+        id: TurnId::new("turn_0000000000000001"),
+        status: DurableTurnStatus::Completed,
+        items: vec![
+            DurableItemSnapshot::UserMessage {
+                id: ItemId::new("item_0000000000000001"),
+                text: "Inspect the workspace.".to_string(),
+            },
+            DurableItemSnapshot::AgentCommentary {
+                id: ItemId::new("item_0000000000000002"),
+                text: "I will inspect the workspace first.".to_string(),
+            },
+            DurableItemSnapshot::ToolCall {
+                id: ItemId::new("item_0000000000000003"),
+                call_id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                path: "README.md".to_string(),
+                query: None,
+                patch: None,
+                command: None,
+                arguments: None,
+            },
+            DurableItemSnapshot::ToolResult {
+                id: ItemId::new("item_0000000000000004"),
+                call_id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                result: DurableToolResult::Success {
+                    content: "workspace".to_string(),
+                    bytes: 9,
+                },
+            },
+            DurableItemSnapshot::AgentMessage {
+                id: ItemId::new("item_0000000000000005"),
+                text: "Done.".to_string(),
+            },
+        ],
+        context_compaction: None,
+        workspace_instructions: None,
+        workspace_skills: None,
+        error: None,
+        usage: None,
+    };
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .append_completed_turn(&thread_id, &turn)
+            .expect("commentary turn");
+    }
+
+    let rollout = fs::read_to_string(
+        directory
+            .path()
+            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+    )
+    .expect("rollout");
+    assert!(rollout.contains("\"type\":\"agentCommentary\""));
+    let repository = RolloutRepository::open(&home).expect("replay");
+    assert_eq!(
+        repository
+            .load_thread(&thread_id)
+            .expect("load")
+            .expect("thread")
+            .turns,
+        vec![turn]
+    );
+}
+
+#[test]
 fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
@@ -1095,6 +1168,7 @@ fn active_turn_rejects_lifecycle_records_and_non_terminal_fork_snapshots() {
                 id: ThreadId::new("thr_0000000000000002"),
                 turns: vec![in_progress],
                 lifecycle: DurableThreadLifecycle::Active,
+                origin: None,
             })
             .expect_err("in-progress fork"),
         RolloutError::InvalidRecord {

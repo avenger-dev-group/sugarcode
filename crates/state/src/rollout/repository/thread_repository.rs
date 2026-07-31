@@ -1,11 +1,11 @@
 use super::*;
 
-impl ThreadRepository for RolloutRepository {
-    fn id_sequences(&self) -> IdSequences {
-        self.sequences
-    }
-
-    fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+impl RolloutRepository {
+    fn create_thread_record(
+        &mut self,
+        thread_id: &ThreadId,
+        origin: Option<&DurableThreadOrigin>,
+    ) -> Result<(), RolloutError> {
         self.ensure_available()?;
         let thread_sequence = parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
         if self.threads.contains_key(thread_id) || thread_sequence <= self.sequences.thread {
@@ -18,8 +18,12 @@ impl ThreadRepository for RolloutRepository {
             });
         }
         let path = self.thread_path(thread_id)?;
-        let bytes =
-            encode_thread_created(1, thread_id, self.active_workspace_binding_id.as_deref())?;
+        let bytes = encode_thread_created(
+            1,
+            thread_id,
+            self.active_workspace_binding_id.as_deref(),
+            origin,
+        )?;
         self.append_record(&path, &bytes, true, 1)?;
         self.threads.insert(
             thread_id.clone(),
@@ -28,6 +32,7 @@ impl ThreadRepository for RolloutRepository {
                     id: thread_id.clone(),
                     turns: Vec::new(),
                     lifecycle: DurableThreadLifecycle::Active,
+                    origin: origin.cloned(),
                 },
                 workspace_binding_id: self.active_workspace_binding_id.clone(),
                 last_record_sequence: 1,
@@ -35,9 +40,29 @@ impl ThreadRepository for RolloutRepository {
             },
         );
         self.sequences.thread = thread_sequence;
-        let _ = self.projection.record_thread_created(thread_id);
-        let _ = self.search_projection.record_thread_created(thread_id);
+        if origin.is_none() {
+            let _ = self.projection.record_thread_created(thread_id);
+            let _ = self.search_projection.record_thread_created(thread_id);
+        }
         Ok(())
+    }
+}
+
+impl ThreadRepository for RolloutRepository {
+    fn id_sequences(&self) -> IdSequences {
+        self.sequences
+    }
+
+    fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
+        self.create_thread_record(thread_id, None)
+    }
+
+    fn create_thread_with_origin(
+        &mut self,
+        thread_id: &ThreadId,
+        origin: &DurableThreadOrigin,
+    ) -> Result<(), RolloutError> {
+        self.create_thread_record(thread_id, Some(origin))
     }
 
     fn create_thread_snapshot(
@@ -106,6 +131,7 @@ impl ThreadRepository for RolloutRepository {
             1,
             &snapshot.id,
             self.active_workspace_binding_id.as_deref(),
+            snapshot.origin.as_ref(),
         )?);
         let mut turn_sequence = self.sequences.turn;
         let mut item_sequence = self.sequences.item;
@@ -780,6 +806,25 @@ impl ThreadRepository for RolloutRepository {
             .map(|thread| thread.snapshot.clone()))
     }
 
+    fn list_descendants(
+        &self,
+        parent_thread_id: &ThreadId,
+    ) -> Result<Vec<DurableThreadSnapshot>, RolloutError> {
+        self.ensure_available()?;
+        Ok(self
+            .threads
+            .values()
+            .filter(|thread| {
+                thread
+                    .snapshot
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| &origin.parent_thread_id == parent_thread_id)
+            })
+            .map(|thread| thread.snapshot.clone())
+            .collect())
+    }
+
     fn list_threads(
         &mut self,
         cursor: Option<&ThreadId>,
@@ -793,6 +838,7 @@ impl ThreadRepository for RolloutRepository {
                 .rev()
                 .filter(|thread| {
                     thread.snapshot.lifecycle == DurableThreadLifecycle::Active
+                        && thread.snapshot.origin.is_none()
                         && cursor.is_none_or(|cursor| thread.snapshot.id < *cursor)
                 })
                 .map(|thread| DurableThreadSummary {

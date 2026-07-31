@@ -4,6 +4,56 @@ impl<C> Session<C>
 where
     C: CoreApi,
 {
+    pub(in crate::session) fn list_thread_descendants(
+        &mut self,
+        id: RequestId,
+        params: Option<Value>,
+    ) -> Vec<JsonRpcMessage> {
+        let Ok(params) = params.ok_or(()).and_then(|value| {
+            serde_json::from_value::<ThreadDescendantsListParams>(value).map_err(|_| ())
+        }) else {
+            return vec![error(
+                Some(id),
+                ERROR_INVALID_PARAMS,
+                "Invalid params",
+                None,
+            )];
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+        let thread_id = ThreadId::new(params.thread_id.clone());
+        let descendants = match self.agent.list_descendants(&thread_id) {
+            Ok(descendants) => descendants,
+            Err(CoreError::StateUnavailable) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )];
+            }
+            Err(_) => {
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
+        self.accepted_request_ids.insert(id.clone());
+        let response = ThreadDescendantsListResponse {
+            data: descendants.into_iter().map(map_thread_snapshot).collect(),
+        };
+        vec![JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: JsonRpcVersion::V2,
+            id,
+            result: serde_json::to_value(response)
+                .expect("thread/descendants/list response must serialize"),
+        })]
+    }
+
     pub(in crate::session) fn start_thread(
         &mut self,
         id: RequestId,
@@ -54,6 +104,7 @@ where
         };
         let thread = PublicThread {
             id: thread_id.into_string(),
+            origin: None,
         };
         let response = ThreadStartResponse {
             thread: thread.clone(),

@@ -1,5 +1,6 @@
 use super::DurableItemSnapshot;
 use super::DurableThreadLifecycle;
+use super::DurableThreadOrigin;
 use super::DurableThreadPage;
 use super::DurableThreadSnapshot;
 use super::DurableThreadSummary;
@@ -348,6 +349,10 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                         id: terminal_id, ..
                     },
                 ) => started_id == terminal_id,
+                (
+                    DurableItemSnapshot::AgentCommentary { .. },
+                    DurableItemSnapshot::AgentCommentary { .. },
+                ) => started == terminal,
                 (
                     DurableItemSnapshot::ContextCompaction { id: started_id, .. },
                     DurableItemSnapshot::ContextCompaction {

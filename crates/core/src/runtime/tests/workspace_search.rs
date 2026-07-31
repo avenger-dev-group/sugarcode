@@ -142,6 +142,7 @@ async fn workspace_search_persists_query_and_runs_one_bounded_tool_round() {
         requests[0]
             .tools
             .iter()
+            .filter(|definition| definition.name.starts_with("workspace/"))
             .map(|definition| definition.name.as_str())
             .collect::<Vec<_>>(),
         vec!["workspace/read", "workspace/list", "workspace/search"]

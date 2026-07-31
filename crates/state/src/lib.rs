@@ -41,6 +41,7 @@ pub use rollout::DurableMcpToolResult;
 pub use rollout::DurableProcessOutcome;
 pub use rollout::DurableProcessResult;
 pub use rollout::DurableThreadLifecycle;
+pub use rollout::DurableThreadOrigin;
 pub use rollout::DurableThreadPage;
 pub use rollout::DurableThreadSnapshot;
 pub use rollout::DurableThreadSummary;

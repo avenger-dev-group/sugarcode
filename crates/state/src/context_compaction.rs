@@ -38,6 +38,11 @@ pub fn build_context_compaction(
                     source_messages = source_messages.checked_add(1)?;
                 }
                 DurableItemSnapshot::AgentMessage { .. } => {}
+                DurableItemSnapshot::AgentCommentary { text, .. } if !text.is_empty() => {
+                    push_text_entry(&mut canonical, "assistant_commentary", text);
+                    source_messages = source_messages.checked_add(1)?;
+                }
+                DurableItemSnapshot::AgentCommentary { .. } => {}
                 DurableItemSnapshot::ContextCompaction { .. } => {}
                 call @ DurableItemSnapshot::ToolCall { call_id, .. } => {
                     let result_index = ((index + 1)..turn.items.len()).find(|candidate| {
@@ -46,6 +51,7 @@ pub fn build_context_compaction(
                             DurableItemSnapshot::ToolResult { .. }
                                 | DurableItemSnapshot::UserMessage { .. }
                                 | DurableItemSnapshot::AgentMessage { .. }
+                                | DurableItemSnapshot::AgentCommentary { .. }
                                 | DurableItemSnapshot::ToolCall { .. }
                         )
                     })?;
@@ -77,6 +83,7 @@ pub fn build_context_compaction(
                             DurableItemSnapshot::McpToolResult { .. }
                                 | DurableItemSnapshot::UserMessage { .. }
                                 | DurableItemSnapshot::AgentMessage { .. }
+                                | DurableItemSnapshot::AgentCommentary { .. }
                                 | DurableItemSnapshot::ToolCall { .. }
                                 | DurableItemSnapshot::McpToolCall { .. }
                         )
@@ -102,6 +109,9 @@ pub fn build_context_compaction(
                 }
                 DurableItemSnapshot::McpToolResult { .. } => return None,
                 DurableItemSnapshot::FileChange { .. }
+                | DurableItemSnapshot::AgentTask { .. }
+                | DurableItemSnapshot::AgentTaskAmendment { .. }
+                | DurableItemSnapshot::AgentTaskResult { .. }
                 | DurableItemSnapshot::CommandApprovalRequest { .. }
                 | DurableItemSnapshot::CommandApprovalDecision { .. }
                 | DurableItemSnapshot::CommandExecutionAttempt { .. }

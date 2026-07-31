@@ -1,4 +1,5 @@
 import type {
+  ThreadDescendantsListResponse,
   ThreadListResponse,
   ThreadSearchResponse,
 } from '@sugarcode/app-server-protocol';
@@ -54,6 +55,31 @@ export const parseThreadSearchResponse = (
 export const parseThreadForkResponse = (
   value: unknown,
 ): ResumeSnapshot => parseThreadResumeResponse(value);
+
+export const parseThreadDescendantsListResponse = (
+  value: unknown,
+): readonly ResumeSnapshot[] => {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.data) ||
+    value.data.length > 12
+  ) {
+    throw new Error('Invalid thread/descendants/list response.');
+  }
+  const data = value.data.map(parseThreadResumeResponse);
+  const response: ThreadDescendantsListResponse = {
+    data: value.data as ThreadDescendantsListResponse['data'],
+  };
+  if (
+    new Set(data.map((thread) => thread.threadId)).size !==
+      response.data.length
+  ) {
+    throw new Error(
+      'Duplicate Thread in thread/descendants/list response.',
+    );
+  }
+  return data;
+};
 
 export const parseThreadEmptyResponse = (
   value: unknown,

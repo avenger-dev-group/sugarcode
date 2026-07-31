@@ -26,9 +26,23 @@ impl ThreadRepository for MemoryThreadRepository {
                 id: thread_id.clone(),
                 turns: Vec::new(),
                 lifecycle: DurableThreadLifecycle::Active,
+                origin: None,
             },
         );
         self.sequences.thread = sequence;
+        Ok(())
+    }
+
+    fn create_thread_with_origin(
+        &mut self,
+        thread_id: &ThreadId,
+        origin: &sugarcode_state::DurableThreadOrigin,
+    ) -> Result<(), RolloutError> {
+        self.create_thread(thread_id)?;
+        self.threads
+            .get_mut(thread_id)
+            .expect("created thread")
+            .origin = Some(origin.clone());
         Ok(())
     }
 
@@ -196,6 +210,23 @@ impl ThreadRepository for MemoryThreadRepository {
         Ok(self.threads.get(thread_id).cloned())
     }
 
+    fn list_descendants(
+        &self,
+        parent_thread_id: &ThreadId,
+    ) -> Result<Vec<DurableThreadSnapshot>, RolloutError> {
+        Ok(self
+            .threads
+            .values()
+            .filter(|thread| {
+                thread
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| &origin.parent_thread_id == parent_thread_id)
+            })
+            .cloned()
+            .collect())
+    }
+
     fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
         let thread = self
             .threads
@@ -259,7 +290,9 @@ impl ThreadRepository for MemoryThreadRepository {
         let mut threads = self
             .threads
             .values()
-            .filter(|thread| thread.lifecycle == DurableThreadLifecycle::Active)
+            .filter(|thread| {
+                thread.lifecycle == DurableThreadLifecycle::Active && thread.origin.is_none()
+            })
             .map(|thread| Ok((parse_thread_sequence(&thread.id)?, thread.id.clone())))
             .collect::<Result<Vec<_>, RolloutError>>()?;
         threads.sort_unstable_by_key(|thread| Reverse(thread.0));
@@ -296,7 +329,9 @@ impl ThreadRepository for MemoryThreadRepository {
         let mut matches = self
             .threads
             .values()
-            .filter(|thread| thread.lifecycle == DurableThreadLifecycle::Active)
+            .filter(|thread| {
+                thread.lifecycle == DurableThreadLifecycle::Active && thread.origin.is_none()
+            })
             .filter(|thread| {
                 thread
                     .turns
@@ -308,8 +343,12 @@ impl ThreadRepository for MemoryThreadRepository {
                             let text = text.to_lowercase();
                             terms.iter().all(|term| text.contains(term))
                         }
-                        DurableItemSnapshot::UserMessage { .. } => false,
+                        DurableItemSnapshot::UserMessage { .. }
+                        | DurableItemSnapshot::AgentCommentary { .. } => false,
                         DurableItemSnapshot::ContextCompaction { .. }
+                        | DurableItemSnapshot::AgentTask { .. }
+                        | DurableItemSnapshot::AgentTaskAmendment { .. }
+                        | DurableItemSnapshot::AgentTaskResult { .. }
                         | DurableItemSnapshot::ToolCall { .. }
                         | DurableItemSnapshot::FileChange { .. }
                         | DurableItemSnapshot::CommandApprovalRequest { .. }

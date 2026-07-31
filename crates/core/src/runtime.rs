@@ -13,10 +13,12 @@ use crate::McpToolExecutor;
 use crate::McpToolPrepareError;
 use crate::PreparedMessage;
 use crate::PreparedMessageRole;
+use crate::PreparedTextTurn;
 use crate::TurnInterruptOutcome;
 use crate::TurnStartOutcome;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
+use futures_util::future::join_all;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -53,6 +55,7 @@ use sugarcode_protocol::CoreTurnError;
 use sugarcode_protocol::CoreTurnErrorKind;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
+use sugarcode_state::DurableThreadOrigin;
 use sugarcode_state::DurableThreadPage;
 use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableTurnError;
@@ -94,10 +97,13 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 mod agent_loop;
+mod collaboration;
 mod terminal;
 mod tool_dispatch;
 
 use agent_loop::AgentLoopState;
+use collaboration::AgentAccess;
+use collaboration::CollaborationCoordinator;
 use terminal::Terminal;
 use terminal::claim_terminal;
 use terminal::clear_active;
@@ -143,6 +149,7 @@ pub struct CoreRuntime {
     mcp_approval_requester: Option<Arc<dyn McpToolApprovalRequester>>,
     mcp_capability: McpToolCapability,
     mcp_execution_lease: Arc<tokio::sync::Semaphore>,
+    collaboration: Arc<CollaborationCoordinator>,
     event_tx: mpsc::Sender<CoreEvent>,
     active: Arc<Mutex<BTreeMap<ThreadId, ActiveTurn>>>,
 }
@@ -249,6 +256,7 @@ impl CoreRuntime {
                 mcp_approval_requester: None,
                 mcp_capability: McpToolCapability::default(),
                 mcp_execution_lease: Arc::new(tokio::sync::Semaphore::new(1)),
+                collaboration: Arc::new(CollaborationCoordinator::default()),
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -334,6 +342,7 @@ impl CoreRuntime {
                 mcp_approval_requester: None,
                 mcp_capability: McpToolCapability::default(),
                 mcp_execution_lease: Arc::new(tokio::sync::Semaphore::new(1)),
+                collaboration: Arc::new(CollaborationCoordinator::default()),
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
             },
@@ -399,6 +408,13 @@ impl CoreApi for CoreRuntime {
         self.lock_core()?.resume_thread(thread_id)
     }
 
+    fn list_descendants(
+        &mut self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<DurableThreadSnapshot>, CoreError> {
+        self.lock_core()?.list_descendants(thread_id)
+    }
+
     fn start_turn(
         &mut self,
         _request_id: CoreRequestId,
@@ -453,7 +469,8 @@ impl CoreApi for CoreRuntime {
             .map(ModelInstruction::context_bytes)
             .try_fold(0usize, usize::checked_add)
             .ok_or(CoreError::ContextTooLarge)?;
-        let tool_context_bytes = workspace_tool_definitions(self)
+        let tool_context_bytes = AgentLoopState::default()
+            .tools_for_round(self, &thread_id)
             .iter()
             .map(sugarcode_model_provider::ModelToolDefinition::context_bytes)
             .try_fold(0usize, usize::checked_add)
@@ -531,6 +548,14 @@ impl CoreApi for CoreRuntime {
         thread_id: &ThreadId,
         turn_id: &TurnId,
     ) -> Result<TurnInterruptOutcome, CoreError> {
+        let descendants = self.collaboration.cancel_descendants(thread_id, turn_id);
+        if let Ok(active) = self.active.lock() {
+            for child_thread_id in descendants {
+                if let Some(child) = active.get(&child_thread_id) {
+                    child.cancellation.cancel();
+                }
+            }
+        }
         let active = self
             .active
             .lock()
@@ -613,6 +638,12 @@ async fn run_turn(
     let request_id = prepared.request_id;
     let thread_id = prepared.thread_id.clone();
     let turn_id = prepared.turn_id.clone();
+    let _workspace_collaboration_permit =
+        if let Some(access) = runtime.collaboration.access_for_child(&thread_id) {
+            Some(runtime.collaboration.acquire_workspace(access).await)
+        } else {
+            None
+        };
     let mut opening = vec![CoreEventKind::TurnStarted {
         thread_id: thread_id.clone(),
         turn_id: turn_id.clone(),
@@ -666,7 +697,17 @@ async fn run_turn(
     let mut agent_loop = AgentLoopState::default();
     let mut compaction_ordinal = 0u64;
     let mut terminal = 'rounds: loop {
-        let tools = agent_loop.tools_for_round(&runtime);
+        messages.extend(
+            runtime
+                .collaboration
+                .take_amendments(&thread_id)
+                .into_iter()
+                .map(|amendment| ModelMessage::Text {
+                    role: ModelRole::User,
+                    text: format!("# Task amendment\n\n{amendment}"),
+                }),
+        );
+        let tools = agent_loop.tools_for_round(&runtime, &thread_id);
         let initial_request = ModelRequest {
             model: model_gateway.model.to_string(),
             instructions: prepared.instructions.clone(),
@@ -714,7 +755,8 @@ async fn run_turn(
             Ok(stream) => stream,
             Err(error) => break 'rounds Terminal::Failed(error),
         };
-        let mut tool_call = None;
+        let mut tool_calls = Vec::new();
+        let mut commentary_seen = false;
         loop {
             let next = tokio::select! {
                 biased;
@@ -723,6 +765,12 @@ async fn run_turn(
             };
             match next {
                 Some(Ok(ModelEvent::TextDelta(delta))) if !delta.is_empty() => {
+                    if commentary_seen {
+                        break 'rounds Terminal::Failed(ModelError::new(
+                            ModelErrorKind::UnsupportedOutput,
+                            false,
+                        ));
+                    }
                     non_whitespace_text_seen |=
                         delta.chars().any(|character| !character.is_whitespace());
                     if agent_item.is_none() {
@@ -781,9 +829,34 @@ async fn run_turn(
                     }
                 }
                 Some(Ok(ModelEvent::TextDelta(_))) => {}
+                Some(Ok(ModelEvent::Commentary(text))) => {
+                    if commentary_seen
+                        || agent_item.is_some()
+                        || !tool_calls.is_empty()
+                        || text.is_empty()
+                        || text.len() > crate::thread::MAX_AGENT_COMMENTARY_BYTES
+                    {
+                        break 'rounds Terminal::Failed(ModelError::new(
+                            ModelErrorKind::UnsupportedOutput,
+                            false,
+                        ));
+                    }
+                    if append_completed_tool_item(
+                        &runtime,
+                        &prepared,
+                        CoreItemKind::AgentCommentary { text: text.clone() },
+                    )
+                    .await
+                    .is_none()
+                    {
+                        break 'rounds Terminal::StateUnavailable;
+                    }
+                    messages.push(ModelMessage::Commentary { text });
+                    commentary_seen = true;
+                }
                 Some(Ok(ModelEvent::ToolCall(call))) => {
                     if agent_item.is_some()
-                        || tool_call.is_some()
+                        || !tool_calls.is_empty()
                         || !agent_loop.observe_call(&call)
                     {
                         break 'rounds Terminal::Failed(ModelError::new(
@@ -791,7 +864,21 @@ async fn run_turn(
                             false,
                         ));
                     }
-                    tool_call = Some(call);
+                    tool_calls.push(call);
+                }
+                Some(Ok(ModelEvent::ToolCallBatch(calls))) => {
+                    if agent_item.is_some()
+                        || !tool_calls.is_empty()
+                        || calls.len() < 2
+                        || calls.len() > 4
+                        || calls.iter().any(|call| !agent_loop.observe_call(call))
+                    {
+                        break 'rounds Terminal::Failed(ModelError::new(
+                            ModelErrorKind::UnsupportedOutput,
+                            false,
+                        ));
+                    }
+                    tool_calls = calls;
                 }
                 Some(Ok(ModelEvent::Usage(value))) => {
                     if !accumulate_usage(&mut usage, value) {
@@ -802,133 +889,284 @@ async fn run_turn(
                     }
                 }
                 Some(Ok(ModelEvent::Completed)) => {
-                    let Some(call) = tool_call else {
+                    if tool_calls.is_empty() {
+                        if commentary_seen {
+                            break 'rounds Terminal::Failed(ModelError::new(
+                                ModelErrorKind::UnsupportedOutput,
+                                false,
+                            ));
+                        }
                         if !non_whitespace_text_seen {
                             break 'rounds Terminal::Failed(ModelError::new(
                                 ModelErrorKind::Incomplete,
                                 false,
                             ));
                         }
-                        break 'rounds Terminal::Completed;
-                    };
-                    let tool_available = match call.name.as_str() {
-                        "workspace/read" => runtime.workspace_read.is_some(),
-                        "workspace/list" => runtime.workspace_list.is_some(),
-                        "workspace/search" => runtime.workspace_search.is_some(),
-                        "workspace/apply-patch" => runtime.workspace_patch.is_some(),
-                        "shell/exec" => {
-                            runtime.shell_executor.is_some() && runtime.approval_requester.is_some()
-                        }
-                        name if name.starts_with("mcp__") => {
-                            runtime.mcp_capability.is_enabled()
-                                && runtime.mcp_approval_requester.is_some()
-                                && runtime.mcp_executor.as_ref().is_some_and(|executor| {
-                                    executor
-                                        .definitions()
-                                        .iter()
-                                        .any(|definition| definition.name == name)
-                                })
-                        }
-                        _ => false,
-                    };
-                    if !tool_available {
-                        break 'rounds Terminal::Failed(ModelError::new(
-                            ModelErrorKind::UnsupportedOutput,
-                            false,
-                        ));
-                    }
-                    if call.name.starts_with("mcp__") {
-                        let prepared_call = match runtime
-                            .mcp_executor
-                            .as_ref()
-                            .expect("validated MCP executor")
-                            .prepare(&call.name, call.arguments.clone())
+                        if !runtime
+                            .collaboration
+                            .parent_can_complete(&thread_id, &turn_id)
                         {
-                            Ok(call) => call,
-                            Err(McpToolPrepareError::ArgumentTooLarge) => {
+                            break 'rounds Terminal::Failed(ModelError::new(
+                                ModelErrorKind::Incomplete,
+                                false,
+                            ));
+                        }
+                        break 'rounds Terminal::Completed;
+                    }
+                    if let Err(error) = validate_tool_call_batch(&runtime, &tool_calls) {
+                        break 'rounds Terminal::Failed(error);
+                    }
+                    if tool_calls.len() > 1
+                        && tool_calls.iter().all(|call| {
+                            matches!(
+                                call.name.as_str(),
+                                "workspace/read" | "workspace/list" | "workspace/search"
+                            )
+                        })
+                    {
+                        pending_tool_call = true;
+                        let contents = match execute_read_only_tool_batch(
+                            &runtime,
+                            &prepared,
+                            &tool_calls,
+                            &cancellation,
+                        )
+                        .await
+                        {
+                            Ok(contents) => contents,
+                            Err(error) => break 'rounds error,
+                        };
+                        pending_tool_call = false;
+                        messages.push(ModelMessage::ToolCallBatch(tool_calls.clone()));
+                        messages.extend(tool_calls.drain(..).zip(contents).map(
+                            |(call, content)| ModelMessage::ToolResult {
+                                call_id: call.id,
+                                content,
+                            },
+                        ));
+                        continue 'rounds;
+                    }
+                    let batch_calls_persisted = tool_calls.len() > 1;
+                    if batch_calls_persisted {
+                        if let Err(error) =
+                            persist_mixed_batch_calls(&runtime, &prepared, &tool_calls).await
+                        {
+                            break 'rounds error;
+                        }
+                    }
+                    let mut batch_results = Vec::new();
+                    let mut pending_calls =
+                        std::collections::VecDeque::from(std::mem::take(&mut tool_calls));
+                    'tool_batch: while let Some(call) = pending_calls.pop_front() {
+                        let tool_available = match call.name.as_str() {
+                            name if name.starts_with("collaboration/") => {
+                                !runtime.collaboration.is_child_thread(&thread_id)
+                            }
+                            "workspace/read" => runtime.workspace_read.is_some(),
+                            "workspace/list" => runtime.workspace_list.is_some(),
+                            "workspace/search" => runtime.workspace_search.is_some(),
+                            "workspace/apply-patch" => runtime.workspace_patch.is_some(),
+                            "shell/exec" => {
+                                runtime.shell_executor.is_some()
+                                    && runtime.approval_requester.is_some()
+                            }
+                            name if name.starts_with("mcp__") => {
+                                runtime.mcp_capability.is_enabled()
+                                    && runtime.mcp_approval_requester.is_some()
+                                    && runtime.mcp_executor.as_ref().is_some_and(|executor| {
+                                        executor
+                                            .definitions()
+                                            .iter()
+                                            .any(|definition| definition.name == name)
+                                    })
+                            }
+                            _ => false,
+                        };
+                        if !tool_available {
+                            break 'rounds Terminal::Failed(ModelError::new(
+                                ModelErrorKind::UnsupportedOutput,
+                                false,
+                            ));
+                        }
+                        if call.name.starts_with("collaboration/") {
+                            if !batch_calls_persisted
+                                && append_completed_tool_item(
+                                    &runtime,
+                                    &prepared,
+                                    CoreItemKind::ToolCall {
+                                        call_id: call.id.clone(),
+                                        name: call.name.clone(),
+                                        path: String::new(),
+                                        query: None,
+                                        patch: None,
+                                        command: None,
+                                        arguments: None,
+                                    },
+                                )
+                                .await
+                                .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            pending_tool_call = true;
+                            let coordinator = runtime.collaboration.clone();
+                            let content = match call.name.as_str() {
+                                "collaboration/dispatch" => {
+                                    coordinator.dispatch(&runtime, &prepared, &call).await
+                                }
+                                "collaboration/amend" => {
+                                    coordinator.amend(&runtime, &prepared, &call).await
+                                }
+                                "collaboration/wait" => {
+                                    coordinator
+                                        .wait(&runtime, &prepared, &call, &cancellation)
+                                        .await
+                                }
+                                "collaboration/interrupt" => {
+                                    coordinator.interrupt(&runtime, &prepared, &call)
+                                }
+                                _ => Err(Terminal::Failed(ModelError::new(
+                                    ModelErrorKind::UnsupportedOutput,
+                                    false,
+                                ))),
+                            };
+                            let content = match content {
+                                Ok(content) => content,
+                                Err(error) => break 'rounds error,
+                            };
+                            let result = CoreToolResult::Success {
+                                bytes: u64::try_from(content.len()).unwrap_or(u64::MAX),
+                                content: content.clone(),
+                            };
+                            if serialized_tool_result_bytes(&result)
+                                > MAX_SERIALIZED_TOOL_RESULT_BYTES
+                            {
                                 break 'rounds Terminal::Failed(ModelError::new(
                                     ModelErrorKind::OutputTooLarge,
                                     false,
                                 ));
                             }
-                            Err(
-                                McpToolPrepareError::InvalidArguments
-                                | McpToolPrepareError::ValueTooComplex
-                                | McpToolPrepareError::InputSchemaMismatch,
-                            ) => {
-                                break 'rounds Terminal::Failed(ModelError::new(
-                                    ModelErrorKind::InvalidRequest,
-                                    false,
-                                ));
+                            if append_completed_tool_item(
+                                &runtime,
+                                &prepared,
+                                CoreItemKind::ToolResult {
+                                    call_id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    result,
+                                },
+                            )
+                            .await
+                            .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
                             }
-                            Err(McpToolPrepareError::Unavailable) => {
-                                break 'rounds Terminal::Failed(ModelError::new(
-                                    ModelErrorKind::UnsupportedOutput,
-                                    false,
-                                ));
+                            pending_tool_call = false;
+                            if record_executed_tool_call(
+                                &mut messages,
+                                &mut batch_results,
+                                batch_calls_persisted,
+                                call,
+                                content,
+                                pending_calls.is_empty(),
+                            ) {
+                                continue 'rounds;
                             }
-                        };
-                        if append_completed_tool_item(
-                            &runtime,
-                            &prepared,
-                            CoreItemKind::McpToolCall {
-                                call_id: call.id.clone(),
-                                name: call.name.clone(),
-                                arguments: prepared_call.arguments.clone(),
-                                arguments_bytes: prepared_call.arguments_bytes,
-                                arguments_sha256: prepared_call.arguments_sha256.clone(),
-                                inventory_sha256: prepared_call.inventory_sha256.clone(),
-                            },
-                        )
-                        .await
-                        .is_none()
-                        {
-                            break 'rounds Terminal::StateUnavailable;
+                            continue 'tool_batch;
                         }
-                        pending_tool_call = true;
-                        let approval_id = format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
-                        if append_completed_tool_item(
-                            &runtime,
-                            &prepared,
-                            CoreItemKind::McpToolCallApprovalRequest {
-                                approval_id: approval_id.clone(),
-                                call_id: call.id.clone(),
-                                name: call.name.clone(),
-                                arguments: prepared_call.arguments.clone(),
-                                arguments_bytes: prepared_call.arguments_bytes,
-                                arguments_sha256: prepared_call.arguments_sha256.clone(),
-                                inventory_sha256: prepared_call.inventory_sha256.clone(),
-                            },
-                        )
-                        .await
-                        .is_none()
-                        {
-                            break 'rounds Terminal::StateUnavailable;
-                        }
-                        let approval = runtime
-                            .mcp_approval_requester
-                            .as_ref()
-                            .expect("validated MCP approval requester")
-                            .request(McpToolApprovalRequest {
-                                approval_id: approval_id.clone(),
-                                thread_id: thread_id.clone(),
-                                turn_id: turn_id.clone(),
-                                call_id: call.id.clone(),
-                                name: call.name.clone(),
-                                arguments: prepared_call.arguments.clone(),
-                                arguments_bytes: prepared_call.arguments_bytes,
-                                arguments_sha256: prepared_call.arguments_sha256.clone(),
-                                inventory_sha256: prepared_call.inventory_sha256.clone(),
-                            });
-                        let approval = tokio::select! {
-                            biased;
-                            _ = cancellation.cancelled() => None,
-                            result = tokio::time::timeout(
-                                std::time::Duration::from_secs(120),
-                                approval,
-                            ) => Some(result.unwrap_or(McpToolApprovalOutcome::TimedOut)),
-                        };
-                        let decision = match approval {
+                        if call.name.starts_with("mcp__") {
+                            let prepared_call = match runtime
+                                .mcp_executor
+                                .as_ref()
+                                .expect("validated MCP executor")
+                                .prepare(&call.name, call.arguments.clone())
+                            {
+                                Ok(call) => call,
+                                Err(McpToolPrepareError::ArgumentTooLarge) => {
+                                    break 'rounds Terminal::Failed(ModelError::new(
+                                        ModelErrorKind::OutputTooLarge,
+                                        false,
+                                    ));
+                                }
+                                Err(
+                                    McpToolPrepareError::InvalidArguments
+                                    | McpToolPrepareError::ValueTooComplex
+                                    | McpToolPrepareError::InputSchemaMismatch,
+                                ) => {
+                                    break 'rounds Terminal::Failed(ModelError::new(
+                                        ModelErrorKind::InvalidRequest,
+                                        false,
+                                    ));
+                                }
+                                Err(McpToolPrepareError::Unavailable) => {
+                                    break 'rounds Terminal::Failed(ModelError::new(
+                                        ModelErrorKind::UnsupportedOutput,
+                                        false,
+                                    ));
+                                }
+                            };
+                            if !batch_calls_persisted
+                                && append_completed_tool_item(
+                                    &runtime,
+                                    &prepared,
+                                    CoreItemKind::McpToolCall {
+                                        call_id: call.id.clone(),
+                                        name: call.name.clone(),
+                                        arguments: prepared_call.arguments.clone(),
+                                        arguments_bytes: prepared_call.arguments_bytes,
+                                        arguments_sha256: prepared_call.arguments_sha256.clone(),
+                                        inventory_sha256: prepared_call.inventory_sha256.clone(),
+                                    },
+                                )
+                                .await
+                                .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            pending_tool_call = true;
+                            let approval_id =
+                                format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
+                            if append_completed_tool_item(
+                                &runtime,
+                                &prepared,
+                                CoreItemKind::McpToolCallApprovalRequest {
+                                    approval_id: approval_id.clone(),
+                                    call_id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    arguments: prepared_call.arguments.clone(),
+                                    arguments_bytes: prepared_call.arguments_bytes,
+                                    arguments_sha256: prepared_call.arguments_sha256.clone(),
+                                    inventory_sha256: prepared_call.inventory_sha256.clone(),
+                                },
+                            )
+                            .await
+                            .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            let approval = runtime
+                                .mcp_approval_requester
+                                .as_ref()
+                                .expect("validated MCP approval requester")
+                                .request(McpToolApprovalRequest {
+                                    approval_id: approval_id.clone(),
+                                    thread_id: thread_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                    call_id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    arguments: prepared_call.arguments.clone(),
+                                    arguments_bytes: prepared_call.arguments_bytes,
+                                    arguments_sha256: prepared_call.arguments_sha256.clone(),
+                                    inventory_sha256: prepared_call.inventory_sha256.clone(),
+                                });
+                            let approval = tokio::select! {
+                                biased;
+                                _ = cancellation.cancelled() => None,
+                                result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(120),
+                                    approval,
+                                ) => Some(result.unwrap_or(McpToolApprovalOutcome::TimedOut)),
+                            };
+                            let decision = match approval {
                             Some(McpToolApprovalOutcome::Approved) => {
                                 sugarcode_protocol::CoreCommandApprovalDecision::Approved
                             }
@@ -946,197 +1184,225 @@ async fn run_turn(
                             }
                             None => sugarcode_protocol::CoreCommandApprovalDecision::Cancelled,
                         };
-                        if append_completed_tool_item(
-                            &runtime,
-                            &prepared,
-                            CoreItemKind::McpToolCallApprovalDecision {
-                                approval_id: approval_id.clone(),
-                                decision,
-                            },
-                        )
-                        .await
-                        .is_none()
-                        {
-                            break 'rounds Terminal::StateUnavailable;
-                        }
-                        let (mut result, mut content, interrupted) = match approval {
-                            Some(McpToolApprovalOutcome::Approved) => {
-                                agent_loop.reset_approval_denials();
-                                match runtime.mcp_execution_lease.clone().try_acquire_owned() {
-                                    Ok(_lease) => {
-                                        if append_completed_tool_item(
-                                            &runtime,
-                                            &prepared,
-                                            CoreItemKind::McpToolExecutionAttempt {
-                                                approval_id,
-                                                call_id: call.id.clone(),
-                                                inventory_sha256: prepared_call
-                                                    .inventory_sha256
-                                                    .clone(),
-                                            },
-                                        )
-                                        .await
-                                        .is_none()
-                                        {
-                                            break 'rounds Terminal::StateUnavailable;
+                            if append_completed_tool_item(
+                                &runtime,
+                                &prepared,
+                                CoreItemKind::McpToolCallApprovalDecision {
+                                    approval_id: approval_id.clone(),
+                                    decision,
+                                },
+                            )
+                            .await
+                            .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            let (mut result, mut content, interrupted) = match approval {
+                                Some(McpToolApprovalOutcome::Approved) => {
+                                    agent_loop.reset_approval_denials();
+                                    match runtime.mcp_execution_lease.clone().try_acquire_owned() {
+                                        Ok(_lease) => {
+                                            if append_completed_tool_item(
+                                                &runtime,
+                                                &prepared,
+                                                CoreItemKind::McpToolExecutionAttempt {
+                                                    approval_id,
+                                                    call_id: call.id.clone(),
+                                                    inventory_sha256: prepared_call
+                                                        .inventory_sha256
+                                                        .clone(),
+                                                },
+                                            )
+                                            .await
+                                            .is_none()
+                                            {
+                                                break 'rounds Terminal::StateUnavailable;
+                                            }
+                                            let outcome = runtime
+                                                .mcp_executor
+                                                .as_ref()
+                                                .expect("validated MCP executor")
+                                                .execute(
+                                                    prepared_call.clone(),
+                                                    cancellation.clone(),
+                                                )
+                                                .await;
+                                            mcp_execution_result(outcome)
                                         }
-                                        let outcome = runtime
-                                            .mcp_executor
-                                            .as_ref()
-                                            .expect("validated MCP executor")
-                                            .execute(prepared_call.clone(), cancellation.clone())
-                                            .await;
-                                        mcp_execution_result(outcome)
-                                    }
-                                    Err(_) => {
-                                        mcp_error_result("concurrencyDenied", "notSent", false)
+                                        Err(_) => {
+                                            mcp_error_result("concurrencyDenied", "notSent", false)
+                                        }
                                     }
                                 }
+                                Some(McpToolApprovalOutcome::Denied) => {
+                                    mcp_error_result("approvalDenied", "notSent", false)
+                                }
+                                Some(McpToolApprovalOutcome::TimedOut) => {
+                                    mcp_error_result("approvalTimedOut", "notSent", false)
+                                }
+                                Some(McpToolApprovalOutcome::Unsupported) => {
+                                    mcp_error_result("approvalUnsupported", "notSent", false)
+                                }
+                                Some(McpToolApprovalOutcome::ClientDisconnected) => {
+                                    mcp_error_result("clientDisconnected", "notSent", true)
+                                }
+                                None => mcp_error_result("cancelled", "notSent", true),
+                            };
+                            fit_mcp_result_to_budget(
+                                &mut result,
+                                &mut content,
+                                MAX_SERIALIZED_TOOL_RESULT_BYTES,
+                            );
+                            let result_bytes = serialized_mcp_result_bytes(&result);
+                            if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
+                                break 'rounds Terminal::Failed(ModelError::new(
+                                    ModelErrorKind::OutputTooLarge,
+                                    false,
+                                ));
                             }
-                            Some(McpToolApprovalOutcome::Denied) => {
-                                mcp_error_result("approvalDenied", "notSent", false)
+                            if append_completed_tool_item(
+                                &runtime,
+                                &prepared,
+                                CoreItemKind::McpToolResult {
+                                    call_id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    result,
+                                },
+                            )
+                            .await
+                            .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
                             }
-                            Some(McpToolApprovalOutcome::TimedOut) => {
-                                mcp_error_result("approvalTimedOut", "notSent", false)
+                            pending_tool_call = false;
+                            if interrupted {
+                                break 'rounds Terminal::Interrupted;
                             }
-                            Some(McpToolApprovalOutcome::Unsupported) => {
-                                mcp_error_result("approvalUnsupported", "notSent", false)
+                            if matches!(approval, Some(McpToolApprovalOutcome::Denied))
+                                && agent_loop.record_approval_denied()
+                            {
+                                break 'rounds Terminal::Interrupted;
                             }
-                            Some(McpToolApprovalOutcome::ClientDisconnected) => {
-                                mcp_error_result("clientDisconnected", "notSent", true)
+                            if record_executed_tool_call(
+                                &mut messages,
+                                &mut batch_results,
+                                batch_calls_persisted,
+                                call,
+                                content,
+                                pending_calls.is_empty(),
+                            ) {
+                                continue 'rounds;
                             }
-                            None => mcp_error_result("cancelled", "notSent", true),
-                        };
-                        fit_mcp_result_to_budget(
-                            &mut result,
-                            &mut content,
-                            MAX_SERIALIZED_TOOL_RESULT_BYTES,
-                        );
-                        let result_bytes = serialized_mcp_result_bytes(&result);
-                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
-                            break 'rounds Terminal::Failed(ModelError::new(
-                                ModelErrorKind::OutputTooLarge,
-                                false,
-                            ));
+                            continue 'tool_batch;
                         }
-                        if append_completed_tool_item(
-                            &runtime,
-                            &prepared,
-                            CoreItemKind::McpToolResult {
-                                call_id: call.id.clone(),
-                                name: call.name.clone(),
-                                result,
-                            },
-                        )
-                        .await
-                        .is_none()
-                        {
-                            break 'rounds Terminal::StateUnavailable;
-                        }
-                        pending_tool_call = false;
-                        if interrupted {
-                            break 'rounds Terminal::Interrupted;
-                        }
-                        if matches!(approval, Some(McpToolApprovalOutcome::Denied))
-                            && agent_loop.record_approval_denied()
-                        {
-                            break 'rounds Terminal::Interrupted;
-                        }
-                        messages.push(ModelMessage::ToolCall(call.clone()));
-                        messages.push(ModelMessage::ToolResult {
-                            call_id: call.id,
-                            content,
-                        });
-                        continue 'rounds;
-                    }
-                    if call.name == "shell/exec" {
-                        let arguments = match shell_tool_arguments(&call) {
-                            Ok(arguments) => arguments,
-                            Err(error) => break 'rounds Terminal::Failed(error),
-                        };
-                        if append_completed_tool_item(
-                            &runtime,
-                            &prepared,
-                            CoreItemKind::ToolCall {
-                                call_id: call.id.clone(),
-                                name: call.name.clone(),
-                                path: arguments.cwd.clone(),
-                                query: None,
-                                patch: None,
-                                command: Some(arguments.command.clone()),
-                                arguments: Some(arguments.arguments.clone()),
-                            },
-                        )
-                        .await
-                        .is_none()
-                        {
-                            break 'rounds Terminal::StateUnavailable;
-                        }
-                        pending_tool_call = true;
-                        let command_policy = runtime
-                            .shell_executor
-                            .as_ref()
-                            .expect("validated shell executor")
-                            .sandbox_policy();
-                        let filesystem_policy = core_filesystem_policy(command_policy.filesystem);
-                        let workspace_write_policy = command_policy
-                            .workspace_write
-                            .map(core_workspace_write_policy);
-                        let workspace_write_risk = workspace_write_policy.map(|_| {
+                        if call.name == "shell/exec" {
+                            let arguments = match shell_tool_arguments(&call) {
+                                Ok(arguments) => arguments,
+                                Err(error) => break 'rounds Terminal::Failed(error),
+                            };
+                            let command_policy = runtime
+                                .shell_executor
+                                .as_ref()
+                                .expect("validated shell executor")
+                                .sandbox_policy();
+                            let _root_workspace_permit =
+                                if runtime.collaboration.access_for_child(&thread_id).is_none() {
+                                    Some(
+                                        runtime
+                                            .collaboration
+                                            .acquire_workspace(
+                                                if command_policy.workspace_write.is_some() {
+                                                    AgentAccess::WorkspaceWrite
+                                                } else {
+                                                    AgentAccess::ReadOnly
+                                                },
+                                            )
+                                            .await,
+                                    )
+                                } else {
+                                    None
+                                };
+                            if !batch_calls_persisted
+                                && append_completed_tool_item(
+                                    &runtime,
+                                    &prepared,
+                                    CoreItemKind::ToolCall {
+                                        call_id: call.id.clone(),
+                                        name: call.name.clone(),
+                                        path: arguments.cwd.clone(),
+                                        query: None,
+                                        patch: None,
+                                        command: Some(arguments.command.clone()),
+                                        arguments: Some(arguments.arguments.clone()),
+                                    },
+                                )
+                                .await
+                                .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            pending_tool_call = true;
+                            let filesystem_policy =
+                                core_filesystem_policy(command_policy.filesystem);
+                            let workspace_write_policy = command_policy
+                                .workspace_write
+                                .map(core_workspace_write_policy);
+                            let workspace_write_risk = workspace_write_policy.map(|_| {
                             sugarcode_protocol::CoreCommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1
                         });
-                        let network_policy = core_network_policy(command_policy.network);
-                        let approval_id = format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
-                        if append_completed_tool_item(
-                            &runtime,
-                            &prepared,
-                            CoreItemKind::CommandApprovalRequest {
-                                approval_id: approval_id.clone(),
-                                call_id: call.id.clone(),
-                                command: arguments.command.clone(),
-                                arguments: arguments.arguments.clone(),
-                                cwd: arguments.cwd.clone(),
-                                environment_policy: "minimalV1".to_string(),
-                                sandboxed: true,
-                                sandbox_policy: Some(filesystem_policy),
-                                workspace_write_policy,
-                                workspace_write_risk,
-                                network_policy: Some(network_policy),
-                            },
-                        )
-                        .await
-                        .is_none()
-                        {
-                            break 'rounds Terminal::StateUnavailable;
-                        }
-                        let approval = runtime
-                            .approval_requester
-                            .as_ref()
-                            .expect("validated approval requester")
-                            .request(CommandApprovalRequest {
-                                approval_id: approval_id.clone(),
-                                thread_id: thread_id.clone(),
-                                turn_id: turn_id.clone(),
-                                call_id: call.id.clone(),
-                                command: arguments.command.clone(),
-                                arguments: arguments.arguments.clone(),
-                                cwd: arguments.cwd.clone(),
-                                environment_policy: "minimalV1".to_string(),
-                                sandboxed: true,
-                                sandbox_policy: filesystem_policy,
-                                workspace_write_policy,
-                                workspace_write_risk,
-                                network_policy,
-                            });
-                        let approval = tokio::select! {
-                            biased;
-                            _ = cancellation.cancelled() => None,
-                            result = tokio::time::timeout(
-                                std::time::Duration::from_secs(120),
-                                approval,
-                            ) => Some(result.unwrap_or(CommandApprovalOutcome::TimedOut)),
-                        };
-                        let decision = match approval {
+                            let network_policy = core_network_policy(command_policy.network);
+                            let approval_id =
+                                format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
+                            if append_completed_tool_item(
+                                &runtime,
+                                &prepared,
+                                CoreItemKind::CommandApprovalRequest {
+                                    approval_id: approval_id.clone(),
+                                    call_id: call.id.clone(),
+                                    command: arguments.command.clone(),
+                                    arguments: arguments.arguments.clone(),
+                                    cwd: arguments.cwd.clone(),
+                                    environment_policy: "minimalV1".to_string(),
+                                    sandboxed: true,
+                                    sandbox_policy: Some(filesystem_policy),
+                                    workspace_write_policy,
+                                    workspace_write_risk,
+                                    network_policy: Some(network_policy),
+                                },
+                            )
+                            .await
+                            .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            let approval = runtime
+                                .approval_requester
+                                .as_ref()
+                                .expect("validated approval requester")
+                                .request(CommandApprovalRequest {
+                                    approval_id: approval_id.clone(),
+                                    thread_id: thread_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                    call_id: call.id.clone(),
+                                    command: arguments.command.clone(),
+                                    arguments: arguments.arguments.clone(),
+                                    cwd: arguments.cwd.clone(),
+                                    environment_policy: "minimalV1".to_string(),
+                                    sandboxed: true,
+                                    sandbox_policy: filesystem_policy,
+                                    workspace_write_policy,
+                                    workspace_write_risk,
+                                    network_policy,
+                                });
+                            let approval = tokio::select! {
+                                biased;
+                                _ = cancellation.cancelled() => None,
+                                result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(120),
+                                    approval,
+                                ) => Some(result.unwrap_or(CommandApprovalOutcome::TimedOut)),
+                            };
+                            let decision = match approval {
                             Some(CommandApprovalOutcome::Approved) => {
                                 sugarcode_protocol::CoreCommandApprovalDecision::Approved
                             }
@@ -1154,272 +1420,413 @@ async fn run_turn(
                             }
                             None => sugarcode_protocol::CoreCommandApprovalDecision::Cancelled,
                         };
-                        if append_completed_tool_item(
-                            &runtime,
-                            &prepared,
-                            CoreItemKind::CommandApprovalDecision {
-                                approval_id: approval_id.clone(),
-                                decision,
-                                workspace_write_risk_acknowledgement: matches!(
+                            if append_completed_tool_item(
+                                &runtime,
+                                &prepared,
+                                CoreItemKind::CommandApprovalDecision {
+                                    approval_id: approval_id.clone(),
                                     decision,
-                                    sugarcode_protocol::CoreCommandApprovalDecision::Approved
-                                )
-                                .then_some(workspace_write_risk)
-                                .flatten(),
-                            },
-                        )
-                        .await
-                        .is_none()
-                        {
-                            break 'rounds Terminal::StateUnavailable;
-                        }
-                        let (mut result, mut content) = match approval {
-                            None | Some(CommandApprovalOutcome::ClientDisconnected) => {
-                                break 'rounds Terminal::Interrupted;
-                            }
-                            Some(CommandApprovalOutcome::Denied) => {
-                                let result = CoreToolResult::Error {
-                                    kind: CoreToolErrorKind::ApprovalDenied,
-                                };
-                                let content = "shell/exec error: approvalDenied".to_string();
-                                (result, content)
-                            }
-                            Some(CommandApprovalOutcome::TimedOut) => {
-                                let result = CoreToolResult::Error {
-                                    kind: CoreToolErrorKind::ApprovalTimedOut,
-                                };
-                                let content = "shell/exec error: approvalTimedOut".to_string();
-                                (result, content)
-                            }
-                            Some(CommandApprovalOutcome::Unsupported) => {
-                                let result = CoreToolResult::Error {
-                                    kind: CoreToolErrorKind::ApprovalUnsupported,
-                                };
-                                let content = "shell/exec error: approvalUnsupported".to_string();
-                                (result, content)
-                            }
-                            Some(CommandApprovalOutcome::Approved) => {
-                                agent_loop.reset_approval_denials();
-                                if append_completed_tool_item(
-                                    &runtime,
-                                    &prepared,
-                                    CoreItemKind::CommandExecutionAttempt {
-                                        approval_id: approval_id.clone(),
-                                        call_id: call.id.clone(),
-                                    },
-                                )
-                                .await
-                                .is_none()
-                                {
-                                    break 'rounds Terminal::StateUnavailable;
-                                }
-                                let execution = runtime
-                                    .shell_executor
-                                    .as_ref()
-                                    .expect("validated shell executor")
-                                    .execute(
-                                        ShellCommandArguments {
-                                            command: arguments.command.clone(),
-                                            arguments: arguments.arguments.clone(),
-                                        },
-                                        cancellation.clone(),
+                                    workspace_write_risk_acknowledgement: matches!(
+                                        decision,
+                                        sugarcode_protocol::CoreCommandApprovalDecision::Approved
                                     )
-                                    .await;
-                                match shell_execution_result(execution) {
-                                    Some(result) => result,
-                                    None => break 'rounds Terminal::Interrupted,
-                                }
-                            }
-                        };
-                        let mut result_bytes = serialized_tool_result_bytes(&result);
-                        if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
-                            result = CoreToolResult::Error {
-                                kind: CoreToolErrorKind::ResultTooLarge,
-                            };
-                            content = "shell/exec error: resultTooLarge".to_string();
-                            result_bytes = serialized_tool_result_bytes(&result);
-                        }
-                        debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
-                        if append_completed_tool_item(
-                            &runtime,
-                            &prepared,
-                            CoreItemKind::ToolResult {
-                                call_id: call.id.clone(),
-                                name: call.name.clone(),
-                                result,
-                            },
-                        )
-                        .await
-                        .is_none()
-                        {
-                            break 'rounds Terminal::StateUnavailable;
-                        }
-                        pending_tool_call = false;
-                        if matches!(approval, Some(CommandApprovalOutcome::Denied))
-                            && agent_loop.record_approval_denied()
-                        {
-                            break 'rounds Terminal::Interrupted;
-                        }
-                        messages.push(ModelMessage::ToolCall(call.clone()));
-                        messages.push(ModelMessage::ToolResult {
-                            call_id: call.id,
-                            content,
-                        });
-                        continue 'rounds;
-                    }
-                    let arguments = match workspace_tool_arguments(&call) {
-                        Ok(arguments) => arguments,
-                        Err(error) => break 'rounds Terminal::Failed(error),
-                    };
-                    agent_loop.reset_approval_denials();
-                    if append_completed_tool_item(
-                        &runtime,
-                        &prepared,
-                        CoreItemKind::ToolCall {
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            path: arguments.path.clone(),
-                            query: arguments.query.clone(),
-                            patch: arguments.patch.clone(),
-                            command: None,
-                            arguments: None,
-                        },
-                    )
-                    .await
-                    .is_none()
-                    {
-                        break 'rounds Terminal::StateUnavailable;
-                    }
-                    pending_tool_call = true;
-                    if call.name == "workspace/apply-patch" {
-                        let prepare_outcome = runtime
-                            .workspace_patch
-                            .as_ref()
-                            .expect("validated workspace/apply-patch executor")
-                            .prepare(
-                                &WorkspacePatchArguments {
-                                    path: arguments.path.clone(),
-                                    patch: arguments
-                                        .patch
-                                        .clone()
-                                        .expect("validated workspace/apply-patch input"),
+                                    .then_some(workspace_write_risk)
+                                    .flatten(),
                                 },
-                                &cancellation,
                             )
-                            .await;
-                        let (mut result, mut content, interrupted_after_commit) =
-                            match prepare_outcome {
-                                WorkspacePatchPrepareOutcome::Error {
-                                    kind: WorkspacePatchErrorKind::Cancelled,
-                                } => break 'rounds Terminal::Interrupted,
-                                WorkspacePatchPrepareOutcome::Error { kind } => {
-                                    let kind = map_workspace_patch_error(kind);
-                                    (
-                                        CoreToolResult::Error { kind },
-                                        format!("workspace/apply-patch error: {kind}"),
-                                        false,
-                                    )
+                            .await
+                            .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            let (mut result, mut content) = match approval {
+                                None | Some(CommandApprovalOutcome::ClientDisconnected) => {
+                                    break 'rounds Terminal::Interrupted;
                                 }
-                                WorkspacePatchPrepareOutcome::Prepared(proposal) => {
-                                    let file_change = CoreItemKind::FileChange {
-                                        call_id: call.id.clone(),
-                                        path: proposal.path().to_string(),
-                                        kind: CoreFileChangeKind::Update,
-                                        diff: proposal.diff().to_string(),
-                                        before_sha256: proposal.before_sha256().to_string(),
-                                        after_sha256: proposal.after_sha256().to_string(),
-                                        before_bytes: proposal.before_bytes(),
-                                        after_bytes: proposal.after_bytes(),
-                                        newline_style: match proposal.newline() {
-                                            sugarcode_tools::WorkspaceNewlineStyle::Lf => {
-                                                CoreFileChangeNewlineStyle::Lf
-                                            }
-                                            sugarcode_tools::WorkspaceNewlineStyle::CrLf => {
-                                                CoreFileChangeNewlineStyle::CrLf
-                                            }
-                                        },
-                                        final_newline: proposal.final_newline(),
+                                Some(CommandApprovalOutcome::Denied) => {
+                                    let result = CoreToolResult::Error {
+                                        kind: CoreToolErrorKind::ApprovalDenied,
                                     };
-                                    let change_bytes = serialized_file_change_bytes(&file_change);
-                                    if change_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES {
-                                        if append_completed_tool_item(
-                                            &runtime,
-                                            &prepared,
-                                            file_change,
-                                        )
-                                        .await
-                                        .is_none()
-                                        {
-                                            break 'rounds Terminal::StateUnavailable;
-                                        }
-                                        if cancellation.is_cancelled() {
-                                            break 'rounds Terminal::Interrupted;
-                                        }
-                                        // Crossing this barrier means cancellation may no longer abandon
-                                        // the filesystem commit. The durable result is recorded first.
-                                        let outcome = runtime
-                                            .workspace_patch
-                                            .as_ref()
-                                            .expect("validated workspace/apply-patch executor")
-                                            .commit(*proposal, &CancellationToken::new())
-                                            .await;
-                                        let interrupted = cancellation.is_cancelled();
-                                        match outcome {
-                                            WorkspacePatchCommitOutcome::Applied {
-                                                path,
-                                                before_sha256,
-                                                after_sha256,
-                                                before_bytes,
-                                                after_bytes,
-                                            } => {
-                                                let content =
-                                                    serde_json::to_string(&serde_json::json!({
-                                                        "path": path,
-                                                        "kind": "update",
-                                                        "beforeSha256": before_sha256,
-                                                        "afterSha256": after_sha256,
-                                                        "beforeBytes": before_bytes,
-                                                        "afterBytes": after_bytes,
-                                                    }))
-                                                    .expect(
-                                                        "workspace/apply-patch result serializes",
-                                                    );
-                                                (
-                                                    CoreToolResult::Success {
-                                                        bytes: content.len() as u64,
-                                                        content: content.clone(),
-                                                    },
-                                                    content,
-                                                    interrupted,
-                                                )
-                                            }
-                                            WorkspacePatchCommitOutcome::Error { kind } => {
-                                                let kind = map_workspace_patch_error(kind);
-                                                (
-                                                    CoreToolResult::Error { kind },
-                                                    format!("workspace/apply-patch error: {kind}"),
-                                                    interrupted,
-                                                )
-                                            }
-                                        }
-                                    } else {
-                                        (
-                                            CoreToolResult::Error {
-                                                kind: CoreToolErrorKind::ResultTooLarge,
+                                    let content = "shell/exec error: approvalDenied".to_string();
+                                    (result, content)
+                                }
+                                Some(CommandApprovalOutcome::TimedOut) => {
+                                    let result = CoreToolResult::Error {
+                                        kind: CoreToolErrorKind::ApprovalTimedOut,
+                                    };
+                                    let content = "shell/exec error: approvalTimedOut".to_string();
+                                    (result, content)
+                                }
+                                Some(CommandApprovalOutcome::Unsupported) => {
+                                    let result = CoreToolResult::Error {
+                                        kind: CoreToolErrorKind::ApprovalUnsupported,
+                                    };
+                                    let content =
+                                        "shell/exec error: approvalUnsupported".to_string();
+                                    (result, content)
+                                }
+                                Some(CommandApprovalOutcome::Approved) => {
+                                    agent_loop.reset_approval_denials();
+                                    if append_completed_tool_item(
+                                        &runtime,
+                                        &prepared,
+                                        CoreItemKind::CommandExecutionAttempt {
+                                            approval_id: approval_id.clone(),
+                                            call_id: call.id.clone(),
+                                        },
+                                    )
+                                    .await
+                                    .is_none()
+                                    {
+                                        break 'rounds Terminal::StateUnavailable;
+                                    }
+                                    let execution = runtime
+                                        .shell_executor
+                                        .as_ref()
+                                        .expect("validated shell executor")
+                                        .execute(
+                                            ShellCommandArguments {
+                                                command: arguments.command.clone(),
+                                                arguments: arguments.arguments.clone(),
                                             },
-                                            "workspace/apply-patch error: resultTooLarge"
-                                                .to_string(),
-                                            false,
+                                            cancellation.clone(),
                                         )
+                                        .await;
+                                    match shell_execution_result(execution) {
+                                        Some(result) => result,
+                                        None => break 'rounds Terminal::Interrupted,
                                     }
                                 }
                             };
+                            let mut result_bytes = serialized_tool_result_bytes(&result);
+                            if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
+                                result = CoreToolResult::Error {
+                                    kind: CoreToolErrorKind::ResultTooLarge,
+                                };
+                                content = "shell/exec error: resultTooLarge".to_string();
+                                result_bytes = serialized_tool_result_bytes(&result);
+                            }
+                            debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
+                            if append_completed_tool_item(
+                                &runtime,
+                                &prepared,
+                                CoreItemKind::ToolResult {
+                                    call_id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    result,
+                                },
+                            )
+                            .await
+                            .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            pending_tool_call = false;
+                            if matches!(approval, Some(CommandApprovalOutcome::Denied))
+                                && agent_loop.record_approval_denied()
+                            {
+                                break 'rounds Terminal::Interrupted;
+                            }
+                            if record_executed_tool_call(
+                                &mut messages,
+                                &mut batch_results,
+                                batch_calls_persisted,
+                                call,
+                                content,
+                                pending_calls.is_empty(),
+                            ) {
+                                continue 'rounds;
+                            }
+                            continue 'tool_batch;
+                        }
+                        let arguments = match workspace_tool_arguments(&call) {
+                            Ok(arguments) => arguments,
+                            Err(error) => break 'rounds Terminal::Failed(error),
+                        };
+                        let _root_workspace_permit =
+                            if runtime.collaboration.access_for_child(&thread_id).is_none() {
+                                Some(
+                                    runtime
+                                        .collaboration
+                                        .acquire_workspace(
+                                            if call.name == "workspace/apply-patch" {
+                                                AgentAccess::WorkspaceWrite
+                                            } else {
+                                                AgentAccess::ReadOnly
+                                            },
+                                        )
+                                        .await,
+                                )
+                            } else {
+                                None
+                            };
+                        agent_loop.reset_approval_denials();
+                        if !batch_calls_persisted
+                            && append_completed_tool_item(
+                                &runtime,
+                                &prepared,
+                                CoreItemKind::ToolCall {
+                                    call_id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    path: arguments.path.clone(),
+                                    query: arguments.query.clone(),
+                                    patch: arguments.patch.clone(),
+                                    command: None,
+                                    arguments: None,
+                                },
+                            )
+                            .await
+                            .is_none()
+                        {
+                            break 'rounds Terminal::StateUnavailable;
+                        }
+                        pending_tool_call = true;
+                        if call.name == "workspace/apply-patch" {
+                            let prepare_outcome = runtime
+                                .workspace_patch
+                                .as_ref()
+                                .expect("validated workspace/apply-patch executor")
+                                .prepare(
+                                    &WorkspacePatchArguments {
+                                        path: arguments.path.clone(),
+                                        patch: arguments
+                                            .patch
+                                            .clone()
+                                            .expect("validated workspace/apply-patch input"),
+                                    },
+                                    &cancellation,
+                                )
+                                .await;
+                            let (mut result, mut content, interrupted_after_commit) =
+                                match prepare_outcome {
+                                    WorkspacePatchPrepareOutcome::Error {
+                                        kind: WorkspacePatchErrorKind::Cancelled,
+                                    } => break 'rounds Terminal::Interrupted,
+                                    WorkspacePatchPrepareOutcome::Error { kind } => {
+                                        let kind = map_workspace_patch_error(kind);
+                                        (
+                                            CoreToolResult::Error { kind },
+                                            format!("workspace/apply-patch error: {kind}"),
+                                            false,
+                                        )
+                                    }
+                                    WorkspacePatchPrepareOutcome::Prepared(proposal) => {
+                                        let file_change = CoreItemKind::FileChange {
+                                            call_id: call.id.clone(),
+                                            path: proposal.path().to_string(),
+                                            kind: CoreFileChangeKind::Update,
+                                            diff: proposal.diff().to_string(),
+                                            before_sha256: proposal.before_sha256().to_string(),
+                                            after_sha256: proposal.after_sha256().to_string(),
+                                            before_bytes: proposal.before_bytes(),
+                                            after_bytes: proposal.after_bytes(),
+                                            newline_style: match proposal.newline() {
+                                                sugarcode_tools::WorkspaceNewlineStyle::Lf => {
+                                                    CoreFileChangeNewlineStyle::Lf
+                                                }
+                                                sugarcode_tools::WorkspaceNewlineStyle::CrLf => {
+                                                    CoreFileChangeNewlineStyle::CrLf
+                                                }
+                                            },
+                                            final_newline: proposal.final_newline(),
+                                        };
+                                        let change_bytes =
+                                            serialized_file_change_bytes(&file_change);
+                                        if change_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES {
+                                            if append_completed_tool_item(
+                                                &runtime,
+                                                &prepared,
+                                                file_change,
+                                            )
+                                            .await
+                                            .is_none()
+                                            {
+                                                break 'rounds Terminal::StateUnavailable;
+                                            }
+                                            if cancellation.is_cancelled() {
+                                                break 'rounds Terminal::Interrupted;
+                                            }
+                                            // Crossing this barrier means cancellation may no longer abandon
+                                            // the filesystem commit. The durable result is recorded first.
+                                            let outcome = runtime
+                                                .workspace_patch
+                                                .as_ref()
+                                                .expect("validated workspace/apply-patch executor")
+                                                .commit(*proposal, &CancellationToken::new())
+                                                .await;
+                                            let interrupted = cancellation.is_cancelled();
+                                            match outcome {
+                                                WorkspacePatchCommitOutcome::Applied {
+                                                    path,
+                                                    before_sha256,
+                                                    after_sha256,
+                                                    before_bytes,
+                                                    after_bytes,
+                                                } => {
+                                                    let content = serde_json::to_string(
+                                                        &serde_json::json!({
+                                                            "path": path,
+                                                            "kind": "update",
+                                                            "beforeSha256": before_sha256,
+                                                            "afterSha256": after_sha256,
+                                                            "beforeBytes": before_bytes,
+                                                            "afterBytes": after_bytes,
+                                                        }),
+                                                    )
+                                                    .expect(
+                                                        "workspace/apply-patch result serializes",
+                                                    );
+                                                    (
+                                                        CoreToolResult::Success {
+                                                            bytes: content.len() as u64,
+                                                            content: content.clone(),
+                                                        },
+                                                        content,
+                                                        interrupted,
+                                                    )
+                                                }
+                                                WorkspacePatchCommitOutcome::Error { kind } => {
+                                                    let kind = map_workspace_patch_error(kind);
+                                                    (
+                                                        CoreToolResult::Error { kind },
+                                                        format!(
+                                                            "workspace/apply-patch error: {kind}"
+                                                        ),
+                                                        interrupted,
+                                                    )
+                                                }
+                                            }
+                                        } else {
+                                            (
+                                                CoreToolResult::Error {
+                                                    kind: CoreToolErrorKind::ResultTooLarge,
+                                                },
+                                                "workspace/apply-patch error: resultTooLarge"
+                                                    .to_string(),
+                                                false,
+                                            )
+                                        }
+                                    }
+                                };
+                            let mut result_bytes = serialized_tool_result_bytes(&result);
+                            if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
+                                result = CoreToolResult::Error {
+                                    kind: CoreToolErrorKind::ResultTooLarge,
+                                };
+                                content = "workspace/apply-patch error: resultTooLarge".to_string();
+                                result_bytes = serialized_tool_result_bytes(&result);
+                            }
+                            debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
+                            if append_completed_tool_item(
+                                &runtime,
+                                &prepared,
+                                CoreItemKind::ToolResult {
+                                    call_id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    result,
+                                },
+                            )
+                            .await
+                            .is_none()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            pending_tool_call = false;
+                            if interrupted_after_commit {
+                                patch_commit_interrupted = true;
+                                break 'rounds Terminal::Interrupted;
+                            }
+                            if record_executed_tool_call(
+                                &mut messages,
+                                &mut batch_results,
+                                batch_calls_persisted,
+                                call,
+                                content,
+                                pending_calls.is_empty(),
+                            ) {
+                                continue 'rounds;
+                            }
+                            continue 'tool_batch;
+                        }
+                        let (mut result, mut content) = match call.name.as_str() {
+                            "workspace/read" => {
+                                let outcome = runtime
+                                    .workspace_read
+                                    .as_ref()
+                                    .expect("validated workspace/read executor")
+                                    .read(
+                                        &WorkspaceReadArguments {
+                                            path: arguments.path.clone(),
+                                        },
+                                        &cancellation,
+                                    )
+                                    .await;
+                                if matches!(
+                                    outcome,
+                                    WorkspaceReadOutcome::Error {
+                                        kind: WorkspaceReadErrorKind::Cancelled
+                                    }
+                                ) {
+                                    break 'rounds Terminal::Interrupted;
+                                }
+                                map_workspace_read_outcome(outcome)
+                            }
+                            "workspace/list" => {
+                                let outcome = runtime
+                                    .workspace_list
+                                    .as_ref()
+                                    .expect("validated workspace/list executor")
+                                    .list(
+                                        &WorkspaceListArguments {
+                                            path: arguments.path.clone(),
+                                        },
+                                        &cancellation,
+                                    )
+                                    .await;
+                                if matches!(
+                                    outcome,
+                                    WorkspaceListOutcome::Error {
+                                        kind: WorkspaceListErrorKind::Cancelled
+                                    }
+                                ) {
+                                    break 'rounds Terminal::Interrupted;
+                                }
+                                map_workspace_list_outcome(outcome)
+                            }
+                            "workspace/search" => {
+                                let outcome = runtime
+                                    .workspace_search
+                                    .as_ref()
+                                    .expect("validated workspace/search executor")
+                                    .search(
+                                        &WorkspaceSearchArguments {
+                                            path: arguments.path.clone(),
+                                            query: arguments
+                                                .query
+                                                .clone()
+                                                .expect("validated workspace/search query"),
+                                        },
+                                        &cancellation,
+                                    )
+                                    .await;
+                                if matches!(
+                                    outcome,
+                                    WorkspaceSearchOutcome::Error {
+                                        kind: WorkspaceSearchErrorKind::Cancelled
+                                    }
+                                ) {
+                                    break 'rounds Terminal::Interrupted;
+                                }
+                                map_workspace_search_outcome(outcome)
+                            }
+                            _ => unreachable!("tool availability was validated"),
+                        };
                         let mut result_bytes = serialized_tool_result_bytes(&result);
                         if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
                             result = CoreToolResult::Error {
                                 kind: CoreToolErrorKind::ResultTooLarge,
                             };
-                            content = "workspace/apply-patch error: resultTooLarge".to_string();
+                            content = format!("{} error: resultTooLarge", call.name);
                             result_bytes = serialized_tool_result_bytes(&result);
                         }
                         debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
@@ -1438,120 +1845,18 @@ async fn run_turn(
                             break 'rounds Terminal::StateUnavailable;
                         }
                         pending_tool_call = false;
-                        if interrupted_after_commit {
-                            patch_commit_interrupted = true;
-                            break 'rounds Terminal::Interrupted;
-                        }
-                        messages.push(ModelMessage::ToolCall(call.clone()));
-                        messages.push(ModelMessage::ToolResult {
-                            call_id: call.id,
+                        if record_executed_tool_call(
+                            &mut messages,
+                            &mut batch_results,
+                            batch_calls_persisted,
+                            call,
                             content,
-                        });
-                        continue 'rounds;
-                    }
-                    let (mut result, mut content) = match call.name.as_str() {
-                        "workspace/read" => {
-                            let outcome = runtime
-                                .workspace_read
-                                .as_ref()
-                                .expect("validated workspace/read executor")
-                                .read(
-                                    &WorkspaceReadArguments {
-                                        path: arguments.path.clone(),
-                                    },
-                                    &cancellation,
-                                )
-                                .await;
-                            if matches!(
-                                outcome,
-                                WorkspaceReadOutcome::Error {
-                                    kind: WorkspaceReadErrorKind::Cancelled
-                                }
-                            ) {
-                                break 'rounds Terminal::Interrupted;
-                            }
-                            map_workspace_read_outcome(outcome)
+                            pending_calls.is_empty(),
+                        ) {
+                            continue 'rounds;
                         }
-                        "workspace/list" => {
-                            let outcome = runtime
-                                .workspace_list
-                                .as_ref()
-                                .expect("validated workspace/list executor")
-                                .list(
-                                    &WorkspaceListArguments {
-                                        path: arguments.path.clone(),
-                                    },
-                                    &cancellation,
-                                )
-                                .await;
-                            if matches!(
-                                outcome,
-                                WorkspaceListOutcome::Error {
-                                    kind: WorkspaceListErrorKind::Cancelled
-                                }
-                            ) {
-                                break 'rounds Terminal::Interrupted;
-                            }
-                            map_workspace_list_outcome(outcome)
-                        }
-                        "workspace/search" => {
-                            let outcome = runtime
-                                .workspace_search
-                                .as_ref()
-                                .expect("validated workspace/search executor")
-                                .search(
-                                    &WorkspaceSearchArguments {
-                                        path: arguments.path.clone(),
-                                        query: arguments
-                                            .query
-                                            .clone()
-                                            .expect("validated workspace/search query"),
-                                    },
-                                    &cancellation,
-                                )
-                                .await;
-                            if matches!(
-                                outcome,
-                                WorkspaceSearchOutcome::Error {
-                                    kind: WorkspaceSearchErrorKind::Cancelled
-                                }
-                            ) {
-                                break 'rounds Terminal::Interrupted;
-                            }
-                            map_workspace_search_outcome(outcome)
-                        }
-                        _ => unreachable!("tool availability was validated"),
-                    };
-                    let mut result_bytes = serialized_tool_result_bytes(&result);
-                    if result_bytes > MAX_SERIALIZED_TOOL_RESULT_BYTES {
-                        result = CoreToolResult::Error {
-                            kind: CoreToolErrorKind::ResultTooLarge,
-                        };
-                        content = format!("{} error: resultTooLarge", call.name);
-                        result_bytes = serialized_tool_result_bytes(&result);
+                        continue 'tool_batch;
                     }
-                    debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
-                    if append_completed_tool_item(
-                        &runtime,
-                        &prepared,
-                        CoreItemKind::ToolResult {
-                            call_id: call.id.clone(),
-                            name: call.name.clone(),
-                            result,
-                        },
-                    )
-                    .await
-                    .is_none()
-                    {
-                        break 'rounds Terminal::StateUnavailable;
-                    }
-                    pending_tool_call = false;
-                    messages.push(ModelMessage::ToolCall(call.clone()));
-                    messages.push(ModelMessage::ToolResult {
-                        call_id: call.id,
-                        content,
-                    });
-                    continue 'rounds;
                 }
                 Some(Err(error)) => break 'rounds Terminal::Failed(error),
                 None => {
@@ -1600,6 +1905,341 @@ async fn run_turn(
         }
     }
     clear_active(&runtime, &thread_id, &turn_id);
+}
+
+fn validate_tool_call_batch(
+    runtime: &CoreRuntime,
+    calls: &[ModelToolCall],
+) -> Result<(), ModelError> {
+    let mut call_ids = std::collections::BTreeSet::new();
+    for call in calls {
+        if !call_ids.insert(call.id.as_str()) {
+            return Err(ModelError::new(ModelErrorKind::Protocol, false));
+        }
+        match call.name.as_str() {
+            name if name.starts_with("collaboration/") => {
+                runtime.collaboration.validate_call(call)?;
+            }
+            "workspace/read" if runtime.workspace_read.is_some() => {
+                workspace_tool_arguments(call)?;
+            }
+            "workspace/list" if runtime.workspace_list.is_some() => {
+                workspace_tool_arguments(call)?;
+            }
+            "workspace/search" if runtime.workspace_search.is_some() => {
+                workspace_tool_arguments(call)?;
+            }
+            "workspace/apply-patch" if runtime.workspace_patch.is_some() => {
+                workspace_tool_arguments(call)?;
+            }
+            "shell/exec"
+                if runtime.shell_executor.is_some() && runtime.approval_requester.is_some() =>
+            {
+                shell_tool_arguments(call)?;
+            }
+            name if name.starts_with("mcp__")
+                && runtime.mcp_capability.is_enabled()
+                && runtime.mcp_approval_requester.is_some()
+                && runtime.mcp_executor.as_ref().is_some_and(|executor| {
+                    executor
+                        .definitions()
+                        .iter()
+                        .any(|definition| definition.name == name)
+                }) =>
+            {
+                runtime
+                    .mcp_executor
+                    .as_ref()
+                    .expect("validated MCP executor")
+                    .prepare(&call.name, call.arguments.clone())
+                    .map_err(|error| match error {
+                        McpToolPrepareError::ArgumentTooLarge => {
+                            ModelError::new(ModelErrorKind::OutputTooLarge, false)
+                        }
+                        McpToolPrepareError::InvalidArguments
+                        | McpToolPrepareError::ValueTooComplex
+                        | McpToolPrepareError::InputSchemaMismatch => {
+                            ModelError::new(ModelErrorKind::InvalidRequest, false)
+                        }
+                        McpToolPrepareError::Unavailable => {
+                            ModelError::new(ModelErrorKind::UnsupportedOutput, false)
+                        }
+                    })?;
+            }
+            _ => return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false)),
+        }
+    }
+    Ok(())
+}
+
+async fn execute_read_only_tool_batch(
+    runtime: &CoreRuntime,
+    prepared: &PreparedTextTurn,
+    calls: &[ModelToolCall],
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>, Terminal> {
+    let _root_workspace_permit = if runtime
+        .collaboration
+        .access_for_child(&prepared.thread_id)
+        .is_none()
+    {
+        Some(
+            runtime
+                .collaboration
+                .acquire_workspace(AgentAccess::ReadOnly)
+                .await,
+        )
+    } else {
+        None
+    };
+    let arguments = calls
+        .iter()
+        .map(workspace_tool_arguments)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Terminal::Failed)?;
+    for (call, arguments) in calls.iter().zip(&arguments) {
+        if append_completed_tool_item(
+            runtime,
+            prepared,
+            CoreItemKind::ToolCall {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                path: arguments.path.clone(),
+                query: arguments.query.clone(),
+                patch: None,
+                command: None,
+                arguments: None,
+            },
+        )
+        .await
+        .is_none()
+        {
+            return Err(Terminal::StateUnavailable);
+        }
+    }
+
+    let executions = calls
+        .iter()
+        .cloned()
+        .zip(arguments)
+        .map(|(call, arguments)| {
+            let runtime = runtime.clone();
+            let cancellation = cancellation.clone();
+            async move {
+                let (mut result, mut content, interrupted) = match call.name.as_str() {
+                    "workspace/read" => {
+                        let outcome = runtime
+                            .workspace_read
+                            .as_ref()
+                            .expect("validated workspace/read executor")
+                            .read(
+                                &WorkspaceReadArguments {
+                                    path: arguments.path,
+                                },
+                                &cancellation,
+                            )
+                            .await;
+                        let interrupted = matches!(
+                            outcome,
+                            WorkspaceReadOutcome::Error {
+                                kind: WorkspaceReadErrorKind::Cancelled
+                            }
+                        );
+                        let (result, content) = map_workspace_read_outcome(outcome);
+                        (result, content, interrupted)
+                    }
+                    "workspace/list" => {
+                        let outcome = runtime
+                            .workspace_list
+                            .as_ref()
+                            .expect("validated workspace/list executor")
+                            .list(
+                                &WorkspaceListArguments {
+                                    path: arguments.path,
+                                },
+                                &cancellation,
+                            )
+                            .await;
+                        let interrupted = matches!(
+                            outcome,
+                            WorkspaceListOutcome::Error {
+                                kind: WorkspaceListErrorKind::Cancelled
+                            }
+                        );
+                        let (result, content) = map_workspace_list_outcome(outcome);
+                        (result, content, interrupted)
+                    }
+                    "workspace/search" => {
+                        let outcome = runtime
+                            .workspace_search
+                            .as_ref()
+                            .expect("validated workspace/search executor")
+                            .search(
+                                &WorkspaceSearchArguments {
+                                    path: arguments.path,
+                                    query: arguments
+                                        .query
+                                        .expect("validated workspace/search query"),
+                                },
+                                &cancellation,
+                            )
+                            .await;
+                        let interrupted = matches!(
+                            outcome,
+                            WorkspaceSearchOutcome::Error {
+                                kind: WorkspaceSearchErrorKind::Cancelled
+                            }
+                        );
+                        let (result, content) = map_workspace_search_outcome(outcome);
+                        (result, content, interrupted)
+                    }
+                    _ => unreachable!("read-only batch was validated"),
+                };
+                if serialized_tool_result_bytes(&result) > MAX_SERIALIZED_TOOL_RESULT_BYTES {
+                    result = CoreToolResult::Error {
+                        kind: CoreToolErrorKind::ResultTooLarge,
+                    };
+                    content = format!("{} error: resultTooLarge", call.name);
+                }
+                (call, result, content, interrupted)
+            }
+        });
+    let outcomes = join_all(executions).await;
+    if outcomes.iter().any(|(_, _, _, interrupted)| *interrupted) {
+        return Err(Terminal::Interrupted);
+    }
+
+    let mut contents = Vec::with_capacity(outcomes.len());
+    for (call, result, content, _) in outcomes {
+        if append_completed_tool_item(
+            runtime,
+            prepared,
+            CoreItemKind::ToolResult {
+                call_id: call.id,
+                name: call.name,
+                result,
+            },
+        )
+        .await
+        .is_none()
+        {
+            return Err(Terminal::StateUnavailable);
+        }
+        contents.push(content);
+    }
+    Ok(contents)
+}
+
+async fn persist_mixed_batch_calls(
+    runtime: &CoreRuntime,
+    prepared: &PreparedTextTurn,
+    calls: &[ModelToolCall],
+) -> Result<(), Terminal> {
+    for call in calls {
+        let item = if call.name.starts_with("collaboration/") {
+            CoreItemKind::ToolCall {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                path: String::new(),
+                query: None,
+                patch: None,
+                command: None,
+                arguments: None,
+            }
+        } else if call.name.starts_with("mcp__") {
+            let prepared_call = runtime
+                .mcp_executor
+                .as_ref()
+                .expect("validated MCP executor")
+                .prepare(&call.name, call.arguments.clone())
+                .map_err(|error| {
+                    Terminal::Failed(match error {
+                        McpToolPrepareError::ArgumentTooLarge => {
+                            ModelError::new(ModelErrorKind::OutputTooLarge, false)
+                        }
+                        McpToolPrepareError::InvalidArguments
+                        | McpToolPrepareError::ValueTooComplex
+                        | McpToolPrepareError::InputSchemaMismatch => {
+                            ModelError::new(ModelErrorKind::InvalidRequest, false)
+                        }
+                        McpToolPrepareError::Unavailable => {
+                            ModelError::new(ModelErrorKind::UnsupportedOutput, false)
+                        }
+                    })
+                })?;
+            CoreItemKind::McpToolCall {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: prepared_call.arguments,
+                arguments_bytes: prepared_call.arguments_bytes,
+                arguments_sha256: prepared_call.arguments_sha256,
+                inventory_sha256: prepared_call.inventory_sha256,
+            }
+        } else if call.name == "shell/exec" {
+            let arguments = shell_tool_arguments(call).map_err(Terminal::Failed)?;
+            CoreItemKind::ToolCall {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                path: arguments.cwd,
+                query: None,
+                patch: None,
+                command: Some(arguments.command),
+                arguments: Some(arguments.arguments),
+            }
+        } else {
+            let arguments = workspace_tool_arguments(call).map_err(Terminal::Failed)?;
+            CoreItemKind::ToolCall {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                path: arguments.path,
+                query: arguments.query,
+                patch: arguments.patch,
+                command: None,
+                arguments: None,
+            }
+        };
+        if append_completed_tool_item(runtime, prepared, item)
+            .await
+            .is_none()
+        {
+            return Err(Terminal::StateUnavailable);
+        }
+    }
+    Ok(())
+}
+
+fn record_executed_tool_call(
+    messages: &mut Vec<ModelMessage>,
+    batch_results: &mut Vec<(ModelToolCall, String)>,
+    is_batch: bool,
+    call: ModelToolCall,
+    content: String,
+    is_last: bool,
+) -> bool {
+    if !is_batch {
+        messages.push(ModelMessage::ToolCall(call.clone()));
+        messages.push(ModelMessage::ToolResult {
+            call_id: call.id,
+            content,
+        });
+        return is_last;
+    }
+    batch_results.push((call, content));
+    if !is_last {
+        return false;
+    }
+    messages.push(ModelMessage::ToolCallBatch(
+        batch_results.iter().map(|(call, _)| call.clone()).collect(),
+    ));
+    messages.extend(
+        batch_results
+            .drain(..)
+            .map(|(call, content)| ModelMessage::ToolResult {
+                call_id: call.id,
+                content,
+            }),
+    );
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1807,7 +2447,9 @@ async fn compact_active_turn(
                 completed = true;
                 break;
             }
-            Some(Ok(ModelEvent::ToolCall(_))) => {
+            Some(Ok(
+                ModelEvent::Commentary(_) | ModelEvent::ToolCall(_) | ModelEvent::ToolCallBatch(_),
+            )) => {
                 complete_compaction_item(
                     runtime,
                     prepared,
@@ -1973,6 +2615,10 @@ fn model_messages_sha256(messages: &[ModelMessage]) -> String {
                 });
                 hasher.update(text.as_bytes());
             }
+            ModelMessage::Commentary { text } => {
+                hasher.update(b"commentary");
+                hasher.update(text.as_bytes());
+            }
             ModelMessage::ContextCompaction { content } => {
                 hasher.update(b"contextCompaction");
                 hasher.update(content.as_bytes());
@@ -1983,6 +2629,17 @@ fn model_messages_sha256(messages: &[ModelMessage]) -> String {
                 hasher.update(call.name.as_bytes());
                 if let Ok(arguments) = serde_json::to_vec(&call.arguments) {
                     hasher.update(arguments);
+                }
+            }
+            ModelMessage::ToolCallBatch(calls) => {
+                hasher.update(b"toolCallBatch");
+                for call in calls {
+                    hasher.update(call.id.as_bytes());
+                    hasher.update(call.name.as_bytes());
+                    if let Ok(arguments) = serde_json::to_vec(&call.arguments) {
+                        hasher.update(arguments);
+                    }
+                    hasher.update(b"\0");
                 }
             }
             ModelMessage::ToolResult { call_id, content } => {
@@ -2360,6 +3017,7 @@ fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {
             },
             text: text.clone(),
         },
+        PreparedMessage::Commentary { text } => ModelMessage::Commentary { text: text.clone() },
         PreparedMessage::ContextCompaction { content } => ModelMessage::ContextCompaction {
             content: content.clone(),
         },

@@ -1,7 +1,19 @@
 use super::*;
 
-impl CoreApi for Core {
-    fn start_thread(&mut self, request_id: CoreRequestId) -> Result<CoreEvent, CoreError> {
+impl Core {
+    pub fn start_subagent_thread(
+        &mut self,
+        request_id: CoreRequestId,
+        origin: DurableThreadOrigin,
+    ) -> Result<CoreEvent, CoreError> {
+        self.start_thread_with_origin(request_id, Some(origin))
+    }
+
+    fn start_thread_with_origin(
+        &mut self,
+        request_id: CoreRequestId,
+        origin: Option<DurableThreadOrigin>,
+    ) -> Result<CoreEvent, CoreError> {
         let sequence = self
             .last_thread_sequence
             .checked_add(1)
@@ -9,14 +21,19 @@ impl CoreApi for Core {
         let thread_id = ThreadId::new(format!("thr_{sequence:016}"));
         let thread = Thread {
             id: thread_id.clone(),
+            origin: origin.clone(),
             turns: BTreeMap::new(),
             active_turn_id: None,
             lifecycle: DurableThreadLifecycle::Active,
         };
 
-        self.repository
-            .create_thread(&thread_id)
-            .map_err(map_repository_error)?;
+        match origin.as_ref() {
+            Some(origin) => self
+                .repository
+                .create_thread_with_origin(&thread_id, origin),
+            None => self.repository.create_thread(&thread_id),
+        }
+        .map_err(map_repository_error)?;
         self.threads.insert(thread_id.clone(), thread);
         self.last_thread_sequence = sequence;
 
@@ -24,6 +41,12 @@ impl CoreApi for Core {
             request_id,
             kind: CoreEventKind::ThreadStarted { thread_id },
         })
+    }
+}
+
+impl CoreApi for Core {
+    fn start_thread(&mut self, request_id: CoreRequestId) -> Result<CoreEvent, CoreError> {
+        self.start_thread_with_origin(request_id, None)
     }
 
     fn contains_thread(&self, thread_id: &ThreadId) -> bool {
@@ -227,6 +250,61 @@ impl CoreApi for Core {
                             text: text.clone(),
                         }
                     }
+                    DurableItemSnapshot::AgentCommentary { text, .. } => {
+                        DurableItemSnapshot::AgentCommentary {
+                            id: ItemId::new(format!("item_{item_sequence:016}")),
+                            text: text.clone(),
+                        }
+                    }
+                    DurableItemSnapshot::AgentTask {
+                        orchestration_id,
+                        task_id,
+                        client_task_key,
+                        child_thread_id,
+                        title,
+                        role,
+                        access,
+                        depends_on,
+                        task_markdown,
+                        ..
+                    } => DurableItemSnapshot::AgentTask {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        orchestration_id: orchestration_id.clone(),
+                        task_id: task_id.clone(),
+                        client_task_key: client_task_key.clone(),
+                        child_thread_id: child_thread_id.clone(),
+                        title: title.clone(),
+                        role: role.clone(),
+                        access: access.clone(),
+                        depends_on: depends_on.clone(),
+                        task_markdown: task_markdown.clone(),
+                    },
+                    DurableItemSnapshot::AgentTaskAmendment {
+                        orchestration_id,
+                        task_id,
+                        amendment_markdown,
+                        ..
+                    } => DurableItemSnapshot::AgentTaskAmendment {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        orchestration_id: orchestration_id.clone(),
+                        task_id: task_id.clone(),
+                        amendment_markdown: amendment_markdown.clone(),
+                    },
+                    DurableItemSnapshot::AgentTaskResult {
+                        orchestration_id,
+                        task_id,
+                        status,
+                        summary_markdown,
+                        duration_ms,
+                        ..
+                    } => DurableItemSnapshot::AgentTaskResult {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        orchestration_id: orchestration_id.clone(),
+                        task_id: task_id.clone(),
+                        status: status.clone(),
+                        summary_markdown: summary_markdown.clone(),
+                        duration_ms: *duration_ms,
+                    },
                     DurableItemSnapshot::ContextCompaction {
                         strategy,
                         ordinal,
@@ -437,6 +515,7 @@ impl CoreApi for Core {
             id: ThreadId::new(format!("thr_{thread_sequence:016}")),
             turns,
             lifecycle: DurableThreadLifecycle::Active,
+            origin: None,
         };
         self.repository
             .create_thread_snapshot(&snapshot)
@@ -465,6 +544,15 @@ impl CoreApi for Core {
         }
         self.materialize_snapshot(&snapshot);
         Ok(snapshot)
+    }
+
+    fn list_descendants(
+        &mut self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<DurableThreadSnapshot>, CoreError> {
+        self.repository
+            .list_descendants(thread_id)
+            .map_err(map_repository_error)
     }
 
     fn start_turn(

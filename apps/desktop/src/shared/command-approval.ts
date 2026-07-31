@@ -29,6 +29,10 @@ export type CommandApprovalViewModel = Readonly<{
   sandboxed: true;
   sandboxPolicy: 'filesystemReadOnlyV1';
   networkPolicy: 'networkDeniedV1';
+  sourceAgent?: Readonly<{
+    taskId: string;
+    role: 'explorer' | 'worker' | 'auditor';
+  }>;
   localExpiresAtMs: number;
   actionState: CommandApprovalActionState;
 }>;
@@ -101,19 +105,23 @@ const hasOnlyKeys = (
 
 const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
   isRecord(value) &&
-  hasOnlyKeys(value, [
-    'presentationId',
-    'command',
-    'arguments',
-    'cwd',
-    'approvalScope',
-    'environmentPolicy',
-    'sandboxed',
-    'sandboxPolicy',
-    'networkPolicy',
-    'localExpiresAtMs',
-    'actionState',
-  ]) &&
+  hasOnlyKeys(
+    value,
+    [
+      'presentationId',
+      'command',
+      'arguments',
+      'cwd',
+      'approvalScope',
+      'environmentPolicy',
+      'sandboxed',
+      'sandboxPolicy',
+      'networkPolicy',
+      'localExpiresAtMs',
+      'actionState',
+    ],
+    ['sourceAgent'],
+  ) &&
   typeof value.presentationId === 'string' &&
   value.presentationId.length > 0 &&
   typeof value.command === 'string' &&
@@ -130,7 +138,15 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
   Number.isSafeInteger(value.localExpiresAtMs) &&
   value.localExpiresAtMs >= 0 &&
   typeof value.actionState === 'string' &&
-  ACTION_STATES.has(value.actionState as CommandApprovalActionState);
+  ACTION_STATES.has(value.actionState as CommandApprovalActionState) &&
+  (value.sourceAgent === undefined ||
+    (isRecord(value.sourceAgent) &&
+      hasOnlyKeys(value.sourceAgent, ['taskId', 'role']) &&
+      typeof value.sourceAgent.taskId === 'string' &&
+      value.sourceAgent.taskId.length > 0 &&
+      (value.sourceAgent.role === 'explorer' ||
+        value.sourceAgent.role === 'worker' ||
+        value.sourceAgent.role === 'auditor')));
 
 export const isCommandApprovalStateSnapshot = (
   value: unknown,

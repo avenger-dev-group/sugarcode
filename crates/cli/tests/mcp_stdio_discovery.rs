@@ -595,13 +595,24 @@ fn approved_model_driven_call_completes_real_cli_round_trip() {
 
     let requests = provider.finish();
     assert_eq!(requests.len(), 3);
-    assert_eq!(requests[0]["tools"].as_array().map(Vec::len), Some(1));
-    assert_eq!(
-        requests[0]["tools"][0]["function"]["name"],
-        "mcp__fixture__inspect"
-    );
-    assert_eq!(requests[1]["tools"].as_array().map(Vec::len), Some(1));
-    assert_eq!(requests[2]["tools"].as_array().map(Vec::len), Some(1));
+    let expected_tool_names = [
+        "mcp__fixture__inspect",
+        "collaboration/dispatch",
+        "collaboration/amend",
+        "collaboration/wait",
+        "collaboration/interrupt",
+    ];
+    for request in &requests {
+        assert_eq!(
+            request["tools"]
+                .as_array()
+                .expect("MCP and collaboration tools")
+                .iter()
+                .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
+                .collect::<Vec<_>>(),
+            expected_tool_names
+        );
+    }
     for (request_index, expected_results) in [(1, 1), (2, 2)] {
         let messages = requests[request_index]["messages"]
             .as_array()
@@ -812,7 +823,14 @@ fn multiple_selected_servers_complete_one_cross_server_turn() {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            ["mcp__alpha__inspect", "mcp__beta__inspect"],
+            [
+                "mcp__alpha__inspect",
+                "mcp__beta__inspect",
+                "collaboration/dispatch",
+                "collaboration/amend",
+                "collaboration/wait",
+                "collaboration/interrupt",
+            ],
             "built-in-free MCP definitions must sort by raw ASCII server ID"
         );
     }
@@ -973,7 +991,23 @@ fn selected_server_failure_never_falls_back_to_another_server() {
         );
         let requests = provider.finish();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0]["tools"].as_array().map(Vec::len), Some(2));
+        let expected_tool_names = [
+            "mcp__alpha__inspect",
+            "mcp__beta__inspect",
+            "collaboration/dispatch",
+            "collaboration/amend",
+            "collaboration/wait",
+            "collaboration/interrupt",
+        ];
+        assert_eq!(
+            requests[0]["tools"]
+                .as_array()
+                .expect("MCP and collaboration tools")
+                .iter()
+                .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
+                .collect::<Vec<_>>(),
+            expected_tool_names
+        );
         let second_round_names = requests[1]["tools"]
             .as_array()
             .expect("recoverable MCP failure keeps tools available")
@@ -981,8 +1015,7 @@ fn selected_server_failure_never_falls_back_to_another_server() {
             .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>();
         assert_eq!(
-            second_round_names,
-            ["mcp__alpha__inspect", "mcp__beta__inspect"],
+            second_round_names, expected_tool_names,
             "a recoverable selected-server failure returns to the model without invoking another server"
         );
     }

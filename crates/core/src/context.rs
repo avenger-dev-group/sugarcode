@@ -6,6 +6,7 @@ pub const COMPACTION_TARGET_BYTES: usize = 3 * 1024 * 1024;
 pub(crate) fn prepared_message_bytes(message: &PreparedMessage) -> usize {
     match message {
         PreparedMessage::Text { text, .. } => text.len(),
+        PreparedMessage::Commentary { text } => text.len(),
         PreparedMessage::ContextCompaction { content } => content.len(),
         PreparedMessage::ToolCall {
             call_id,

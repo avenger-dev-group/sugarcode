@@ -10,6 +10,56 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             id: item.id.clone(),
             text: text.clone(),
         },
+        CoreItemKind::AgentCommentary { text } => DurableItemSnapshot::AgentCommentary {
+            id: item.id.clone(),
+            text: text.clone(),
+        },
+        CoreItemKind::AgentTask {
+            orchestration_id,
+            task_id,
+            client_task_key,
+            child_thread_id,
+            title,
+            role,
+            access,
+            depends_on,
+            task_markdown,
+        } => DurableItemSnapshot::AgentTask {
+            id: item.id.clone(),
+            orchestration_id: orchestration_id.clone(),
+            task_id: task_id.clone(),
+            client_task_key: client_task_key.clone(),
+            child_thread_id: child_thread_id.clone(),
+            title: title.clone(),
+            role: role.clone(),
+            access: access.clone(),
+            depends_on: depends_on.clone(),
+            task_markdown: task_markdown.clone(),
+        },
+        CoreItemKind::AgentTaskAmendment {
+            orchestration_id,
+            task_id,
+            amendment_markdown,
+        } => DurableItemSnapshot::AgentTaskAmendment {
+            id: item.id.clone(),
+            orchestration_id: orchestration_id.clone(),
+            task_id: task_id.clone(),
+            amendment_markdown: amendment_markdown.clone(),
+        },
+        CoreItemKind::AgentTaskResult {
+            orchestration_id,
+            task_id,
+            status,
+            summary_markdown,
+            duration_ms,
+        } => DurableItemSnapshot::AgentTaskResult {
+            id: item.id.clone(),
+            orchestration_id: orchestration_id.clone(),
+            task_id: task_id.clone(),
+            status: status.clone(),
+            summary_markdown: summary_markdown.clone(),
+            duration_ms: *duration_ms,
+        },
         CoreItemKind::ContextCompaction {
             strategy,
             ordinal,
@@ -204,6 +254,50 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
     let kind = match &snapshot.kind {
         CoreItemKind::UserMessage { text } => ItemKind::UserMessage { text: text.clone() },
         CoreItemKind::AgentMessage { text } => ItemKind::AgentMessage { text: text.clone() },
+        CoreItemKind::AgentCommentary { text } => ItemKind::AgentCommentary { text: text.clone() },
+        CoreItemKind::AgentTask {
+            orchestration_id,
+            task_id,
+            client_task_key,
+            child_thread_id,
+            title,
+            role,
+            access,
+            depends_on,
+            task_markdown,
+        } => ItemKind::AgentTask {
+            orchestration_id: orchestration_id.clone(),
+            task_id: task_id.clone(),
+            client_task_key: client_task_key.clone(),
+            child_thread_id: child_thread_id.clone(),
+            title: title.clone(),
+            role: role.clone(),
+            access: access.clone(),
+            depends_on: depends_on.clone(),
+            task_markdown: task_markdown.clone(),
+        },
+        CoreItemKind::AgentTaskAmendment {
+            orchestration_id,
+            task_id,
+            amendment_markdown,
+        } => ItemKind::AgentTaskAmendment {
+            orchestration_id: orchestration_id.clone(),
+            task_id: task_id.clone(),
+            amendment_markdown: amendment_markdown.clone(),
+        },
+        CoreItemKind::AgentTaskResult {
+            orchestration_id,
+            task_id,
+            status,
+            summary_markdown,
+            duration_ms,
+        } => ItemKind::AgentTaskResult {
+            orchestration_id: orchestration_id.clone(),
+            task_id: task_id.clone(),
+            status: status.clone(),
+            summary_markdown: summary_markdown.clone(),
+            duration_ms: *duration_ms,
+        },
         CoreItemKind::ContextCompaction {
             strategy,
             ordinal,
@@ -608,6 +702,7 @@ pub(super) fn durable_thread_snapshot(thread: &Thread) -> DurableThreadSnapshot 
     DurableThreadSnapshot {
         id: thread.id.clone(),
         lifecycle: thread.lifecycle,
+        origin: thread.origin.clone(),
         turns: thread
             .turns
             .values()

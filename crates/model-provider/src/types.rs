@@ -111,8 +111,10 @@ impl ModelInstructionSource {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ModelMessage {
     Text { role: ModelRole, text: String },
+    Commentary { text: String },
     ContextCompaction { content: String },
     ToolCall(ModelToolCall),
+    ToolCallBatch(Vec<ModelToolCall>),
     ToolResult { call_id: String, content: String },
 }
 
@@ -124,11 +126,19 @@ impl fmt::Debug for ModelMessage {
                 .field("role", role)
                 .field("text", &"<redacted>")
                 .finish(),
+            Self::Commentary { .. } => formatter
+                .debug_struct("Commentary")
+                .field("text", &"<redacted>")
+                .finish(),
             Self::ContextCompaction { .. } => formatter
                 .debug_struct("ContextCompaction")
                 .field("content", &"<redacted>")
                 .finish(),
             Self::ToolCall(call) => formatter.debug_tuple("ToolCall").field(call).finish(),
+            Self::ToolCallBatch(calls) => formatter
+                .debug_tuple("ToolCallBatch")
+                .field(&calls.len())
+                .finish(),
             Self::ToolResult { call_id, .. } => formatter
                 .debug_struct("ToolResult")
                 .field("call_id", call_id)
@@ -142,6 +152,7 @@ impl ModelMessage {
     pub fn context_bytes(&self) -> usize {
         match self {
             Self::Text { text, .. } => text.len(),
+            Self::Commentary { text } => text.len(),
             Self::ContextCompaction { content } => content.len(),
             Self::ToolCall(call) => call
                 .id
@@ -152,6 +163,21 @@ impl ModelMessage {
                         .ok()
                         .and_then(|arguments| total.checked_add(arguments.len()))
                 })
+                .unwrap_or(usize::MAX),
+            Self::ToolCallBatch(calls) => calls
+                .iter()
+                .map(|call| {
+                    call.id
+                        .len()
+                        .checked_add(call.name.len())
+                        .and_then(|total| {
+                            serde_json::to_vec(&call.arguments)
+                                .ok()
+                                .and_then(|arguments| total.checked_add(arguments.len()))
+                        })
+                        .unwrap_or(usize::MAX)
+                })
+                .try_fold(0usize, usize::checked_add)
                 .unwrap_or(usize::MAX),
             Self::ToolResult { call_id, content } => call_id.len().saturating_add(content.len()),
         }
@@ -167,7 +193,9 @@ pub enum ModelRole {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ModelEvent {
     TextDelta(String),
+    Commentary(String),
     ToolCall(ModelToolCall),
+    ToolCallBatch(Vec<ModelToolCall>),
     Usage(ModelUsage),
     Completed,
 }
@@ -179,7 +207,15 @@ impl fmt::Debug for ModelEvent {
                 .debug_tuple("TextDelta")
                 .field(&format_args!("{} bytes", delta.len()))
                 .finish(),
+            Self::Commentary(text) => formatter
+                .debug_tuple("Commentary")
+                .field(&format_args!("{} bytes", text.len()))
+                .finish(),
             Self::ToolCall(call) => formatter.debug_tuple("ToolCall").field(call).finish(),
+            Self::ToolCallBatch(calls) => formatter
+                .debug_tuple("ToolCallBatch")
+                .field(&calls.len())
+                .finish(),
             Self::Usage(usage) => formatter.debug_tuple("Usage").field(usage).finish(),
             Self::Completed => formatter.write_str("Completed"),
         }

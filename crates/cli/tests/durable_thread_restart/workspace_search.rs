@@ -199,5 +199,11 @@ fn expected_workspace_tools() -> Vec<&'static str> {
     if !cfg!(windows) {
         tools.push("shell/exec");
     }
+    tools.extend([
+        "collaboration/dispatch",
+        "collaboration/amend",
+        "collaboration/wait",
+        "collaboration/interrupt",
+    ]);
     tools
 }

@@ -55,6 +55,7 @@ where
                 .into_iter()
                 .map(|summary| PublicThread {
                     id: summary.id.into_string(),
+                    origin: None,
                 })
                 .collect(),
             next_cursor: page.next_cursor.map(ThreadId::into_string),
@@ -120,6 +121,7 @@ where
                 .into_iter()
                 .map(|summary| PublicThread {
                     id: summary.id.into_string(),
+                    origin: None,
                 })
                 .collect(),
             next_cursor: page.next_cursor.map(ThreadId::into_string),

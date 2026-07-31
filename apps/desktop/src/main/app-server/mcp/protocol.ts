@@ -16,8 +16,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const hasOnlyKeys = (
   value: Record<string, unknown>,
   required: readonly string[],
+  optional: readonly string[] = [],
 ): boolean => {
-  const allowed = new Set(required);
+  const allowed = new Set([...required, ...optional]);
   return (
     required.every((key) => Object.hasOwn(value, key)) &&
     Object.keys(value).every((key) => allowed.has(key))
@@ -103,17 +104,21 @@ export const parseMcpApprovalRequest = (
   if (
     typeof id !== 'string' ||
     !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      'approvalId',
-      'threadId',
-      'turnId',
-      'callId',
-      'name',
-      'arguments',
-      'argumentsBytes',
-      'argumentsSha256',
-      'inventorySha256',
-    ]) ||
+    !hasOnlyKeys(
+      value,
+      [
+        'approvalId',
+        'threadId',
+        'turnId',
+        'callId',
+        'name',
+        'arguments',
+        'argumentsBytes',
+        'argumentsSha256',
+        'inventorySha256',
+      ],
+      ['sourceAgent'],
+    ) ||
     value.approvalId !== id ||
     !isIdentifier(value.approvalId) ||
     !isIdentifier(value.threadId) ||
@@ -130,6 +135,27 @@ export const parseMcpApprovalRequest = (
   ) {
     return null;
   }
+  const sourceAgent = value.sourceAgent;
+  if (
+    sourceAgent !== undefined &&
+    (!isRecord(sourceAgent) ||
+      !hasOnlyKeys(sourceAgent, ['taskId', 'role']) ||
+      !isIdentifier(sourceAgent.taskId) ||
+      (sourceAgent.role !== 'explorer' &&
+        sourceAgent.role !== 'worker' &&
+        sourceAgent.role !== 'auditor'))
+  ) {
+    return null;
+  }
+  const normalizedSourceAgent = sourceAgent
+    ? {
+        taskId: (sourceAgent as Record<string, unknown>).taskId as string,
+        role: (sourceAgent as Record<string, unknown>).role as
+          | 'explorer'
+          | 'worker'
+          | 'auditor',
+      }
+    : undefined;
   const serverId = activeServerIds.find((server) =>
     (value.name as string).startsWith(`mcp__${server}__`),
   );
@@ -151,6 +177,9 @@ export const parseMcpApprovalRequest = (
       argumentsBytes: BigInt(value.argumentsBytes as number),
       argumentsSha256: value.argumentsSha256,
       inventorySha256: value.inventorySha256,
+      ...(normalizedSourceAgent
+        ? { sourceAgent: normalizedSourceAgent }
+        : {}),
     },
     serverId,
     argumentsJson,

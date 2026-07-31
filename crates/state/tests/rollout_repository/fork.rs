@@ -10,6 +10,7 @@ fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
         id: fork_id.clone(),
         turns: vec![completed_turn(2), completed_turn(3)],
         lifecycle: DurableThreadLifecycle::Active,
+        origin: None,
     };
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
@@ -30,6 +31,7 @@ fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
                 id: source_id.clone(),
                 turns: vec![completed_turn(1)],
                 lifecycle: DurableThreadLifecycle::Active,
+                origin: None,
             }
         );
         assert_eq!(
@@ -130,6 +132,7 @@ fn fork_temp_collision_leaves_no_visible_thread_and_poisoned_state_recovers_on_r
             id: fork_id.clone(),
             turns: vec![completed_turn(2)],
             lifecycle: DurableThreadLifecycle::Active,
+            origin: None,
         })
         .expect_err("temp collision");
     assert!(matches!(
@@ -194,6 +197,7 @@ fn fork_discovery_update_failure_never_rolls_back_the_durable_snapshot() {
             id: fork_id.clone(),
             turns: vec![completed_turn(2)],
             lifecycle: DurableThreadLifecycle::Active,
+            origin: None,
         })
         .expect("durable snapshot remains successful");
     assert_eq!(

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentTaskStatus",
+  "type": "string",
+  "enum": [
+    "queued",
+    "running",
+    "waitingApproval",
+    "completed",
+    "failed",
+    "interrupted",
+    "cancelled"
+  ]
+}

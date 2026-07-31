@@ -17,6 +17,9 @@ pub struct McpToolCallApprovalParams {
     pub arguments_bytes: u64,
     pub arguments_sha256: String,
     pub inventory_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source_agent: Option<crate::ApprovalSourceAgent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

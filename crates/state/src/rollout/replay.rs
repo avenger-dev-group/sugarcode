@@ -187,6 +187,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     thread_id,
                     sequence: _,
                     workspace_binding_id: binding,
+                    origin,
                 } => {
                     if expected_sequence != 1
                         || thread_id != expected_thread_id
@@ -194,7 +195,9 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     {
                         return Err(corrupt(&path, offset as u64, "invalidThreadCreated"));
                     }
-                    snapshot = Some(empty_thread(thread_id));
+                    let mut created = empty_thread(thread_id);
+                    created.origin = origin;
+                    snapshot = Some(created);
                     workspace_binding_id = binding;
                 }
                 DecodedRecord::TurnStarted {
@@ -648,6 +651,10 @@ fn terminal_items_match(
                         id: terminal_id, ..
                     },
                 ) => started_id == terminal_id,
+                (
+                    super::DurableItemSnapshot::AgentCommentary { .. },
+                    super::DurableItemSnapshot::AgentCommentary { .. },
+                ) => started == terminal,
                 (
                     super::DurableItemSnapshot::ContextCompaction { id: started_id, .. },
                     super::DurableItemSnapshot::ContextCompaction {

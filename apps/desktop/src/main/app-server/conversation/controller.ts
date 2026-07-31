@@ -3,7 +3,9 @@ import type { ThreadListResponse } from '@sugarcode/app-server-protocol';
 import type {
   ConversationActionResult,
   ConversationActivity,
+  ConversationAgentTaskStatus,
   ConversationCommandApprovalDecision,
+  ConversationCommentaryActivity,
   ConversationCommandExecutionResultOutcome,
   ConversationContextCompactionActivity,
   ConversationFileChangeActivity,
@@ -38,10 +40,7 @@ import type {
   WorkspacePatchChangeItem,
   WorkspacePatchResultItem,
 } from './file-change-protocol';
-import {
-  recoverConversation,
-  type RecoveredConversation,
-} from './recovery';
+import { recoverConversation, type RecoveredConversation } from './recovery';
 import type { ConversationRpc } from './rpc-client';
 import {
   createThreadNavigator,
@@ -67,18 +66,47 @@ type MutableMessage = {
 };
 
 type MutableContextCompactionActivity = {
-  -readonly [Key in keyof ConversationContextCompactionActivity]:
-    ConversationContextCompactionActivity[Key];
+  -readonly [
+    Key in keyof ConversationContextCompactionActivity
+  ]: ConversationContextCompactionActivity[Key];
+};
+
+type MutableCommentaryActivity = {
+  -readonly [
+    Key in keyof ConversationCommentaryActivity
+  ]: ConversationCommentaryActivity[Key];
 };
 
 type MutableConversationActivity =
+  | { type: 'commentary'; activity: MutableCommentaryActivity }
   | { type: 'contextCompaction'; activity: MutableContextCompactionActivity }
   | { type: 'workspaceRead'; activity: MutableWorkspaceReadActivity }
   | { type: 'workspaceList'; activity: MutableWorkspaceListActivity }
   | { type: 'workspaceSearch'; activity: MutableWorkspaceSearchActivity }
   | { type: 'fileChange'; activity: MutableFileChangeActivity }
   | { type: 'commandApproval'; activity: MutableCommandApprovalActivity }
-  | { type: 'mcp'; activity: MutableMcpActivity };
+  | { type: 'mcp'; activity: MutableMcpActivity }
+  | { type: 'orchestration'; activity: MutableOrchestrationActivity };
+
+type MutableAgentTask = {
+  id: string;
+  taskId: string;
+  clientTaskKey: string;
+  childThreadId: string;
+  title: string;
+  role: 'explorer' | 'worker' | 'auditor';
+  access: 'readOnly' | 'workspaceWrite';
+  dependsOn: readonly string[];
+  taskMarkdown: string;
+  status: ConversationAgentTaskStatus;
+  amendments: Array<{ id: string; markdown: string }>;
+  result?: { id: string; summaryMarkdown: string; durationMs: number };
+};
+
+type MutableOrchestrationActivity = {
+  id: string;
+  tasks: MutableAgentTask[];
+};
 
 type MutableWorkspaceReadActivity = {
   id: string;
@@ -217,6 +245,7 @@ type MutableTurn = {
   commandApproval?: MutableCommandApprovalActivity;
   pendingMcpCall?: MutableMcpCall;
   mcpActivities?: MutableMcpActivity[];
+  orchestration?: MutableOrchestrationActivity;
   error?: ConversationTurnError;
 };
 
@@ -254,8 +283,7 @@ export class ConversationController {
   private mutationAbortController: AbortController | null = null;
   private searchGeneration = 0;
   private selectionGeneration = 0;
-  private readonly navigator: MutableThreadNavigator =
-    createThreadNavigator();
+  private readonly navigator: MutableThreadNavigator = createThreadNavigator();
 
   constructor(options: ConversationControllerOptions) {
     this.getRpc = options.getRpc;
@@ -268,6 +296,31 @@ export class ConversationController {
   subscribe = (listener: ConversationStateListener): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  };
+
+  setAgentApprovalTasks = (waitingTaskIds: ReadonlySet<string>): void => {
+    let changed = false;
+    for (const turn of this.turns) {
+      const orchestration = turn.orchestration;
+      if (!orchestration) {
+        continue;
+      }
+      for (const task of orchestration.tasks) {
+        if (task.status !== 'running' && task.status !== 'waitingApproval') {
+          continue;
+        }
+        const nextStatus = waitingTaskIds.has(task.taskId)
+          ? 'waitingApproval'
+          : 'running';
+        if (task.status !== nextStatus) {
+          task.status = nextStatus;
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      this.publish();
+    }
   };
 
   loadThreadIndex = async (): Promise<boolean> => {
@@ -373,9 +426,7 @@ export class ConversationController {
     this.publish();
   };
 
-  searchThreads = async (
-    query: unknown,
-  ): Promise<ConversationActionResult> => {
+  searchThreads = async (query: unknown): Promise<ConversationActionResult> => {
     if (!isValidThreadSearchInput(query)) {
       return rejected('invalidSearch');
     }
@@ -500,10 +551,7 @@ export class ConversationController {
     this.navigator.selectionNotice = undefined;
     this.publish();
     try {
-      const snapshot = await rpc.resumeThread(
-        threadId,
-        abortController.signal,
-      );
+      const snapshot = await rpc.resumeThread(threadId, abortController.signal);
       const recovered = recoverConversation(threadId, snapshot);
       if (generation !== this.selectionGeneration) {
         return accepted();
@@ -538,9 +586,7 @@ export class ConversationController {
     }
   };
 
-  forkThread = async (
-    threadId: unknown,
-  ): Promise<ConversationActionResult> => {
+  forkThread = async (threadId: unknown): Promise<ConversationActionResult> => {
     const blocked = this.getThreadMutationBlock(threadId);
     if (blocked) {
       return rejected(blocked);
@@ -572,8 +618,7 @@ export class ConversationController {
       recordActiveThread(this.navigator, recovered.threadId);
       resetThreadSearch(this.navigator);
       this.navigator.archivedUndoThreadId = undefined;
-      this.navigator.mutationNotice =
-        `Forked and selected Thread ${recovered.threadId}.`;
+      this.navigator.mutationNotice = `Forked and selected Thread ${recovered.threadId}.`;
       return accepted();
     } catch (error) {
       return this.handleThreadMutationFailure(error, false);
@@ -594,10 +639,7 @@ export class ConversationController {
       return rejected('unavailable');
     }
     const exactThreadId = threadId as string;
-    const abortController = this.beginThreadMutation(
-      'archive',
-      exactThreadId,
-    );
+    const abortController = this.beginThreadMutation('archive', exactThreadId);
     let committed = false;
     try {
       await rpc.archiveThread(exactThreadId, abortController.signal);
@@ -613,8 +655,7 @@ export class ConversationController {
         exactThreadId,
         removedCurrent,
       );
-      this.navigator.mutationNotice =
-        `Archived Thread ${exactThreadId}. Undo is available until another lifecycle action or reconnect.`;
+      this.navigator.mutationNotice = `Archived Thread ${exactThreadId}. Undo is available until another lifecycle action or reconnect.`;
       return accepted();
     } catch (error) {
       return this.handleThreadMutationFailure(error, committed);
@@ -640,35 +681,25 @@ export class ConversationController {
     if (!rpc?.unarchiveThread) {
       return rejected('unavailable');
     }
-    const abortController = this.beginThreadMutation(
-      'unarchive',
-      threadId,
-    );
+    const abortController = this.beginThreadMutation('unarchive', threadId);
     let committed = false;
     try {
       await rpc.unarchiveThread(threadId, abortController.signal);
       committed = true;
       this.navigator.archivedUndoThreadId = undefined;
-      const listed = await this.listActiveThreads(
-        rpc,
-        abortController.signal,
-      );
+      const listed = await this.listActiveThreads(rpc, abortController.signal);
       if (!listed.data.some((thread) => thread.id === threadId)) {
         throw new Error(
           'thread/unarchive did not restore the Thread to the active index.',
         );
       }
-      const snapshot = await rpc.resumeThread(
-        threadId,
-        abortController.signal,
-      );
+      const snapshot = await rpc.resumeThread(threadId, abortController.signal);
       const recovered = recoverConversation(threadId, snapshot);
       this.applyActiveThreadList(listed);
       this.replaceRecoveredConversation(recovered);
       this.phase = 'ready';
       recordActiveThread(this.navigator, threadId);
-      this.navigator.mutationNotice =
-        `Restored and selected Thread ${threadId}.`;
+      this.navigator.mutationNotice = `Restored and selected Thread ${threadId}.`;
       return accepted();
     } catch (error) {
       return this.handleThreadMutationFailure(error, committed);
@@ -689,10 +720,7 @@ export class ConversationController {
       return rejected('unavailable');
     }
     const exactThreadId = threadId as string;
-    const abortController = this.beginThreadMutation(
-      'delete',
-      exactThreadId,
-    );
+    const abortController = this.beginThreadMutation('delete', exactThreadId);
     let committed = false;
     try {
       await rpc.deleteThread(exactThreadId, abortController.signal);
@@ -708,8 +736,7 @@ export class ConversationController {
         exactThreadId,
         removedCurrent,
       );
-      this.navigator.mutationNotice =
-        `Deleted Thread ${exactThreadId}.`;
+      this.navigator.mutationNotice = `Deleted Thread ${exactThreadId}.`;
       return accepted();
     } catch (error) {
       return this.handleThreadMutationFailure(error, committed);
@@ -799,11 +826,7 @@ export class ConversationController {
   };
 
   stopTurn = async (): Promise<ConversationActionResult> => {
-    if (
-      this.phase !== 'inProgress' ||
-      !this.threadId ||
-      !this.activeTurnId
-    ) {
+    if (this.phase !== 'inProgress' || !this.threadId || !this.activeTurnId) {
       return rejected(
         this.phase === 'unavailable' ? 'unavailable' : 'noActiveTurn',
       );
@@ -923,6 +946,83 @@ export class ConversationController {
             text: lifecycle.params.item.text,
             status: 'inProgress',
           });
+        } else if (lifecycle.params.item.type === 'agentCommentary') {
+          turn.activities.push({
+            type: 'commentary',
+            activity: {
+              id: lifecycle.params.item.id,
+              text: lifecycle.params.item.text,
+              status: 'inProgress',
+            },
+          });
+        } else if (lifecycle.params.item.type === 'agentTask') {
+          const item = lifecycle.params.item;
+          if (
+            turn.orchestration &&
+            turn.orchestration.id !== item.orchestrationId
+          ) {
+            throw new Error('A Turn cannot contain multiple orchestrations.');
+          }
+          turn.orchestration ??= {
+            id: item.orchestrationId,
+            tasks: [],
+          };
+          if (
+            turn.orchestration.tasks.some(
+              (task) =>
+                task.taskId === item.taskId ||
+                task.clientTaskKey === item.clientTaskKey,
+            )
+          ) {
+            throw new Error('Duplicate agent task.');
+          }
+          turn.orchestration.tasks.push({
+            id: item.id,
+            taskId: item.taskId,
+            clientTaskKey: item.clientTaskKey,
+            childThreadId: item.childThreadId,
+            title: item.title,
+            role: item.role,
+            access: item.access,
+            dependsOn: [...item.dependsOn],
+            taskMarkdown: item.taskMarkdown,
+            status: item.dependsOn.length === 0 ? 'running' : 'queued',
+            amendments: [],
+          });
+          if (
+            !turn.activities.some((entry) => entry.type === 'orchestration')
+          ) {
+            turn.activities.push({
+              type: 'orchestration',
+              activity: turn.orchestration,
+            });
+          }
+        } else if (lifecycle.params.item.type === 'agentTaskAmendment') {
+          const task = this.requireAgentTask(
+            turn,
+            lifecycle.params.item.orchestrationId,
+            lifecycle.params.item.taskId,
+          );
+          task.amendments.push({
+            id: lifecycle.params.item.id,
+            markdown: lifecycle.params.item.amendmentMarkdown,
+          });
+        } else if (lifecycle.params.item.type === 'agentTaskResult') {
+          const task = this.requireAgentTask(
+            turn,
+            lifecycle.params.item.orchestrationId,
+            lifecycle.params.item.taskId,
+          );
+          if (task.result) {
+            throw new Error('Duplicate agent task result.');
+          }
+          task.status = lifecycle.params.item.status;
+          task.result = {
+            id: lifecycle.params.item.id,
+            summaryMarkdown: lifecycle.params.item.summaryMarkdown,
+            durationMs: lifecycle.params.item.durationMs,
+          };
+          this.activateReadyAgentTasks(turn);
         } else if (lifecycle.params.item.type === 'contextCompaction') {
           const item = lifecycle.params.item;
           turn.contextCompactions ??= [];
@@ -947,10 +1047,7 @@ export class ConversationController {
           turn.contextCompactions.push(activity);
           turn.activities.push({ type: 'contextCompaction', activity });
         } else if (lifecycle.params.item.type === 'workspaceReadCall') {
-          if (
-            turn.workspaceRead &&
-            !turn.workspaceRead.result
-          ) {
+          if (turn.workspaceRead && !turn.workspaceRead.result) {
             throw new Error('Duplicate workspace/read activity.');
           }
           const activity: MutableWorkspaceReadActivity = {
@@ -961,9 +1058,7 @@ export class ConversationController {
           };
           turn.workspaceRead = activity;
           turn.activities.push({ type: 'workspaceRead', activity });
-        } else if (
-          lifecycle.params.item.type === 'workspaceReadResult'
-        ) {
+        } else if (lifecycle.params.item.type === 'workspaceReadResult') {
           const workspaceRead = this.requireWorkspaceRead(
             turn,
             lifecycle.params.item.callId,
@@ -980,10 +1075,7 @@ export class ConversationController {
             outcome: { ...lifecycle.params.item.outcome },
           };
         } else if (lifecycle.params.item.type === 'workspaceListCall') {
-          if (
-            turn.workspaceList &&
-            !turn.workspaceList.result
-          ) {
+          if (turn.workspaceList && !turn.workspaceList.result) {
             throw new Error('Duplicate workspace/list activity.');
           }
           const activity: MutableWorkspaceListActivity = {
@@ -1011,10 +1103,7 @@ export class ConversationController {
             outcome: { ...lifecycle.params.item.outcome },
           };
         } else if (lifecycle.params.item.type === 'workspaceSearchCall') {
-          if (
-            turn.workspaceSearch &&
-            !turn.workspaceSearch.result
-          ) {
+          if (turn.workspaceSearch && !turn.workspaceSearch.result) {
             throw new Error('Duplicate workspace/search activity.');
           }
           const activity: MutableWorkspaceSearchActivity = {
@@ -1043,10 +1132,7 @@ export class ConversationController {
             outcome: { ...lifecycle.params.item.outcome },
           };
         } else if (lifecycle.params.item.type === 'workspacePatchCall') {
-          if (
-            turn.fileChange &&
-            !turn.fileChange.result
-          ) {
+          if (turn.fileChange && !turn.fileChange.result) {
             throw new Error('Duplicate workspace/apply-patch activity.');
           }
           const activity: MutableFileChangeActivity = {
@@ -1099,7 +1185,9 @@ export class ConversationController {
             (turn.mcpActivities?.length ?? 0) >= 4 ||
             turn.mcpActivities?.some((activity) => !activity.result)
           ) {
-            throw new Error('MCP call started outside the sequential boundary.');
+            throw new Error(
+              'MCP call started outside the sequential boundary.',
+            );
           }
           turn.pendingMcpCall = {
             id: lifecycle.params.item.id,
@@ -1201,10 +1289,7 @@ export class ConversationController {
             receipt: { ...lifecycle.params.item.receipt },
           };
         } else if (lifecycle.params.item.type === 'commandCall') {
-          if (
-            turn.pendingCommandCall ||
-            turn.pendingMcpCall
-          ) {
+          if (turn.pendingCommandCall || turn.pendingMcpCall) {
             throw new Error('Duplicate command approval activity.');
           }
           turn.pendingCommandCall = {
@@ -1214,9 +1299,7 @@ export class ConversationController {
             arguments: [...lifecycle.params.item.arguments],
             status: 'inProgress',
           };
-        } else if (
-          lifecycle.params.item.type === 'commandApprovalRequest'
-        ) {
+        } else if (lifecycle.params.item.type === 'commandApprovalRequest') {
           const call = turn.pendingCommandCall;
           if (
             !call ||
@@ -1241,9 +1324,7 @@ export class ConversationController {
           turn.commandApproval = activity;
           turn.activities.push({ type: 'commandApproval', activity });
           turn.pendingCommandCall = undefined;
-        } else if (
-          lifecycle.params.item.type === 'commandApprovalDecision'
-        ) {
+        } else if (lifecycle.params.item.type === 'commandApprovalDecision') {
           const activity = turn.commandApproval;
           if (!activity) {
             return;
@@ -1260,9 +1341,7 @@ export class ConversationController {
             status: 'inProgress',
             value: lifecycle.params.item.decision,
           };
-        } else if (
-          lifecycle.params.item.type === 'commandExecutionAttempt'
-        ) {
+        } else if (lifecycle.params.item.type === 'commandExecutionAttempt') {
           if (!turn.commandApproval) {
             const ignoredCall = turn.pendingCommandCall;
             if (
@@ -1357,6 +1436,24 @@ export class ConversationController {
           }
           message.text = lifecycle.params.item.text;
           message.status = 'completed';
+        } else if (lifecycle.params.item.type === 'agentCommentary') {
+          const commentary = turn.activities.find(
+            (
+              entry,
+            ): entry is Extract<
+              MutableConversationActivity,
+              { type: 'commentary' }
+            > =>
+              entry.type === 'commentary' &&
+              entry.activity.id === lifecycle.params.item.id,
+          );
+          if (!commentary || commentary.activity.status !== 'inProgress') {
+            throw new Error(
+              'Completed Commentary did not match its started Item.',
+            );
+          }
+          commentary.activity.text = lifecycle.params.item.text;
+          commentary.activity.status = 'completed';
         } else if (lifecycle.params.item.type === 'contextCompaction') {
           const activity = turn.contextCompactions?.find(
             (candidate) => candidate.id === lifecycle.params.item.id,
@@ -1393,9 +1490,7 @@ export class ConversationController {
             );
           }
           workspaceRead.callStatus = 'completed';
-        } else if (
-          lifecycle.params.item.type === 'workspaceReadResult'
-        ) {
+        } else if (lifecycle.params.item.type === 'workspaceReadResult') {
           const workspaceRead = this.requireWorkspaceRead(
             turn,
             lifecycle.params.item.callId,
@@ -1437,10 +1532,7 @@ export class ConversationController {
             !result ||
             result.id !== lifecycle.params.item.id ||
             result.status !== 'inProgress' ||
-            !listOutcomesEqual(
-              result.outcome,
-              lifecycle.params.item.outcome,
-            )
+            !listOutcomesEqual(result.outcome, lifecycle.params.item.outcome)
           ) {
             throw new Error(
               'Completed workspace/list result did not match its started Item.',
@@ -1473,10 +1565,7 @@ export class ConversationController {
             !result ||
             result.id !== lifecycle.params.item.id ||
             result.status !== 'inProgress' ||
-            !searchOutcomesEqual(
-              result.outcome,
-              lifecycle.params.item.outcome,
-            )
+            !searchOutcomesEqual(result.outcome, lifecycle.params.item.outcome)
           ) {
             throw new Error(
               'Completed workspace/search result did not match its started Item.',
@@ -1549,10 +1638,13 @@ export class ConversationController {
             call.argumentsBytes !== lifecycle.params.item.argumentsBytes ||
             call.argumentsSha256 !== lifecycle.params.item.argumentsSha256 ||
             call.inventorySha256 !== lifecycle.params.item.inventorySha256 ||
-            call.argumentSignature !== lifecycle.params.item.argumentSignature ||
+            call.argumentSignature !==
+              lifecycle.params.item.argumentSignature ||
             call.status !== 'inProgress'
           ) {
-            throw new Error('Completed MCP call did not match its started Item.');
+            throw new Error(
+              'Completed MCP call did not match its started Item.',
+            );
           }
           call.status = 'completed';
         } else if (lifecycle.params.item.type === 'mcpApprovalRequest') {
@@ -1633,6 +1725,13 @@ export class ConversationController {
             );
           }
           result.status = 'completed';
+        } else if (
+          lifecycle.params.item.type === 'agentTask' ||
+          lifecycle.params.item.type === 'agentTaskAmendment' ||
+          lifecycle.params.item.type === 'agentTaskResult'
+        ) {
+          // Collaboration records are append-only and become visible on
+          // item/started. Completion carries the same immutable payload.
         } else if (lifecycle.params.item.type === 'commandCall') {
           const call = turn.pendingCommandCall;
           if (
@@ -1644,12 +1743,12 @@ export class ConversationController {
               JSON.stringify(lifecycle.params.item.arguments) ||
             call.status !== 'inProgress'
           ) {
-            throw new Error('Completed command call did not match its started Item.');
+            throw new Error(
+              'Completed command call did not match its started Item.',
+            );
           }
           call.status = 'completed';
-        } else if (
-          lifecycle.params.item.type === 'commandApprovalRequest'
-        ) {
+        } else if (lifecycle.params.item.type === 'commandApprovalRequest') {
           const activity = this.requireCommandApproval(
             turn,
             lifecycle.params.item.approvalId,
@@ -1662,12 +1761,12 @@ export class ConversationController {
               JSON.stringify(lifecycle.params.item.arguments) ||
             activity.requestStatus !== 'inProgress'
           ) {
-            throw new Error('Completed command approval request did not match its started Item.');
+            throw new Error(
+              'Completed command approval request did not match its started Item.',
+            );
           }
           activity.requestStatus = 'completed';
-        } else if (
-          lifecycle.params.item.type === 'commandApprovalDecision'
-        ) {
+        } else if (lifecycle.params.item.type === 'commandApprovalDecision') {
           const activity = turn.commandApproval;
           if (!activity) {
             return;
@@ -1680,12 +1779,12 @@ export class ConversationController {
             decision.status !== 'inProgress' ||
             decision.value !== lifecycle.params.item.decision
           ) {
-            throw new Error('Completed command approval decision did not match its started Item.');
+            throw new Error(
+              'Completed command approval decision did not match its started Item.',
+            );
           }
           decision.status = 'completed';
-        } else if (
-          lifecycle.params.item.type === 'commandExecutionAttempt'
-        ) {
+        } else if (lifecycle.params.item.type === 'commandExecutionAttempt') {
           if (!turn.commandApproval) {
             const ignoredCall = turn.pendingCommandCall;
             if (
@@ -1761,8 +1860,7 @@ export class ConversationController {
         }
         if (
           turn.contextCompactions?.some(
-            (activity) =>
-              activity.status !== 'completed' || !activity.outcome,
+            (activity) => activity.status !== 'completed' || !activity.outcome,
           )
         ) {
           throw new Error(
@@ -1844,8 +1942,7 @@ export class ConversationController {
             (activity) =>
               activity.callStatus !== 'completed' ||
               activity.requestStatus !== 'completed' ||
-              (activity.decision &&
-                activity.decision.status !== 'completed') ||
+              (activity.decision && activity.decision.status !== 'completed') ||
               (activity.executionAttempt &&
                 activity.executionAttempt.status !== 'completed') ||
               (activity.result && activity.result.status !== 'completed') ||
@@ -1982,34 +2079,92 @@ export class ConversationController {
     return activity;
   };
 
+  private requireAgentTask = (
+    turn: MutableTurn,
+    orchestrationId: string,
+    taskId: string,
+  ): MutableAgentTask => {
+    if (turn.orchestration?.id !== orchestrationId) {
+      throw new Error('Agent task lifecycle referenced another orchestration.');
+    }
+    const task = turn.orchestration.tasks.find(
+      (candidate) => candidate.taskId === taskId,
+    );
+    if (!task) {
+      throw new Error('Agent task lifecycle referenced another task.');
+    }
+    return task;
+  };
+
+  private activateReadyAgentTasks = (turn: MutableTurn): void => {
+    if (!turn.orchestration) {
+      return;
+    }
+    const byKey = new Map(
+      turn.orchestration.tasks.map((task) => [task.clientTaskKey, task]),
+    );
+    for (const task of turn.orchestration.tasks) {
+      if (task.status !== 'queued') {
+        continue;
+      }
+      const dependencies = task.dependsOn
+        .map((dependency) => byKey.get(dependency))
+        .filter((dependency): dependency is MutableAgentTask =>
+          Boolean(dependency),
+        );
+      if (
+        task.role === 'auditor'
+          ? dependencies.every((dependency) =>
+              ['completed', 'failed', 'interrupted', 'cancelled'].includes(
+                dependency.status,
+              ),
+            )
+          : dependencies.every(
+              (dependency) => dependency.status === 'completed',
+            )
+      ) {
+        task.status = 'running';
+      }
+    }
+  };
+
   private hasItemId = (turn: MutableTurn, itemId: string): boolean =>
     Boolean(
       turn.messages.some((message) => message.id === itemId) ||
-        turn.contextCompactions?.some((activity) => activity.id === itemId) ||
-        turn.workspaceRead?.id === itemId ||
-        turn.workspaceRead?.result?.id === itemId ||
-        turn.workspaceList?.id === itemId ||
-        turn.workspaceList?.result?.id === itemId ||
-        turn.workspaceSearch?.id === itemId ||
-        turn.workspaceSearch?.result?.id === itemId ||
-        turn.fileChange?.id === itemId ||
-        turn.fileChange?.change?.id === itemId ||
-        turn.fileChange?.result?.id === itemId ||
-        turn.pendingCommandCall?.id === itemId ||
-        turn.commandApproval?.callItemId === itemId ||
-        turn.commandApproval?.id === itemId ||
-        turn.commandApproval?.decision?.id === itemId ||
-        turn.commandApproval?.executionAttempt?.id === itemId ||
-        turn.commandApproval?.executionResult?.id === itemId ||
-        turn.pendingMcpCall?.id === itemId ||
-        turn.mcpActivities?.some(
-          (activity) =>
-            activity.callItemId === itemId ||
-            activity.id === itemId ||
-            activity.decision?.id === itemId ||
-            activity.executionAttempt?.id === itemId ||
-            activity.result?.id === itemId,
-        ),
+      turn.activities.some(
+        (entry) => entry.type === 'commentary' && entry.activity.id === itemId,
+      ) ||
+      turn.contextCompactions?.some((activity) => activity.id === itemId) ||
+      turn.workspaceRead?.id === itemId ||
+      turn.workspaceRead?.result?.id === itemId ||
+      turn.workspaceList?.id === itemId ||
+      turn.workspaceList?.result?.id === itemId ||
+      turn.workspaceSearch?.id === itemId ||
+      turn.workspaceSearch?.result?.id === itemId ||
+      turn.fileChange?.id === itemId ||
+      turn.fileChange?.change?.id === itemId ||
+      turn.fileChange?.result?.id === itemId ||
+      turn.pendingCommandCall?.id === itemId ||
+      turn.commandApproval?.callItemId === itemId ||
+      turn.commandApproval?.id === itemId ||
+      turn.commandApproval?.decision?.id === itemId ||
+      turn.commandApproval?.executionAttempt?.id === itemId ||
+      turn.commandApproval?.executionResult?.id === itemId ||
+      turn.pendingMcpCall?.id === itemId ||
+      turn.orchestration?.tasks.some(
+        (task) =>
+          task.id === itemId ||
+          task.amendments.some((amendment) => amendment.id === itemId) ||
+          task.result?.id === itemId,
+      ) ||
+      turn.mcpActivities?.some(
+        (activity) =>
+          activity.callItemId === itemId ||
+          activity.id === itemId ||
+          activity.decision?.id === itemId ||
+          activity.executionAttempt?.id === itemId ||
+          activity.result?.id === itemId,
+      ),
     );
 
   private getThreadMutationBlock = (
@@ -2018,8 +2173,7 @@ export class ConversationController {
   ): Exclude<ConversationActionResult['reason'], 'accepted'> | null => {
     if (
       typeof threadId !== 'string' ||
-      (!archivedUndo &&
-        !isKnownThread(this.navigator, this.threadId, threadId))
+      (!archivedUndo && !isKnownThread(this.navigator, this.threadId, threadId))
     ) {
       return 'unknownThread';
     }
@@ -2056,9 +2210,7 @@ export class ConversationController {
     return abortController;
   };
 
-  private finishThreadMutation = (
-    abortController: AbortController,
-  ): void => {
+  private finishThreadMutation = (abortController: AbortController): void => {
     if (this.mutationAbortController !== abortController) {
       return;
     }
@@ -2077,12 +2229,8 @@ export class ConversationController {
     return rpc.listActiveThreads(signal);
   };
 
-  private applyActiveThreadList = (
-    listed: ThreadListResponse,
-  ): void => {
-    this.navigator.activeThreadIds = listed.data.map(
-      (thread) => thread.id,
-    );
+  private applyActiveThreadList = (listed: ThreadListResponse): void => {
+    this.navigator.activeThreadIds = listed.data.map((thread) => thread.id);
     this.navigator.activeTruncated = listed.nextCursor !== null;
     this.navigator.status = 'ready';
     this.navigator.selectionNotice = undefined;
@@ -2097,9 +2245,7 @@ export class ConversationController {
   ): Promise<void> => {
     const listed = await this.listActiveThreads(rpc, signal);
     if (listed.data.some((thread) => thread.id === removedThreadId)) {
-      throw new Error(
-        'A removed Thread remained present in the active index.',
-      );
+      throw new Error('A removed Thread remained present in the active index.');
     }
     if (
       !selectFallback &&
@@ -2118,10 +2264,7 @@ export class ConversationController {
     if (!fallbackThreadId) {
       return;
     }
-    const snapshot = await rpc.resumeThread(
-      fallbackThreadId,
-      signal,
-    );
+    const snapshot = await rpc.resumeThread(fallbackThreadId, signal);
     const recovered = recoverConversation(fallbackThreadId, snapshot);
     this.replaceRecoveredConversation(recovered);
     this.phase = 'ready';
@@ -2168,9 +2311,7 @@ export class ConversationController {
         ? {
             contextCompactions: turn.contextCompactions.map((activity) => ({
               ...activity,
-              ...(activity.outcome
-                ? { outcome: { ...activity.outcome } }
-                : {}),
+              ...(activity.outcome ? { outcome: { ...activity.outcome } } : {}),
             })),
           }
         : {}),
@@ -2285,154 +2426,151 @@ export class ConversationController {
     phase: this.phase,
     ...(this.threadId ? { threadId: this.threadId } : {}),
     ...(this.activeTurnId ? { activeTurnId: this.activeTurnId } : {}),
-    turns: this.turns.map(
-      (turn): ConversationTurn => ({
-        id: turn.id,
-        status: turn.status,
-        messages: turn.messages.map((message) => ({ ...message })),
-        ...(turn.activities.length > 0
-          ? {
-              activities: turn.activities.map(
-                (activity): ConversationActivity =>
-                  toConversationActivity(activity),
-              ),
-            }
-          : {}),
-        ...(turn.contextCompactions
-          ? {
-              contextCompactions: turn.contextCompactions.map(
-                (activity): ConversationContextCompactionActivity => ({
-                  ...activity,
-                  ...(activity.outcome
-                    ? { outcome: { ...activity.outcome } }
-                    : {}),
-                }),
-              ),
-            }
-          : {}),
-        ...(turn.workspaceRead
-          ? {
-              workspaceRead: {
-                ...turn.workspaceRead,
-                ...(turn.workspaceRead.result
-                  ? {
-                      result: {
-                        ...turn.workspaceRead.result,
-                        outcome: { ...turn.workspaceRead.result.outcome },
+    turns: this.turns.map((turn): ConversationTurn => ({
+      id: turn.id,
+      status: turn.status,
+      messages: turn.messages.map((message) => ({ ...message })),
+      ...(turn.activities.length > 0
+        ? {
+            activities: turn.activities.map((activity): ConversationActivity =>
+              toConversationActivity(activity),
+            ),
+          }
+        : {}),
+      ...(turn.contextCompactions
+        ? {
+            contextCompactions: turn.contextCompactions.map(
+              (activity): ConversationContextCompactionActivity => ({
+                ...activity,
+                ...(activity.outcome
+                  ? { outcome: { ...activity.outcome } }
+                  : {}),
+              }),
+            ),
+          }
+        : {}),
+      ...(turn.workspaceRead
+        ? {
+            workspaceRead: {
+              ...turn.workspaceRead,
+              ...(turn.workspaceRead.result
+                ? {
+                    result: {
+                      ...turn.workspaceRead.result,
+                      outcome: { ...turn.workspaceRead.result.outcome },
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(turn.workspaceList
+        ? {
+            workspaceList: {
+              ...turn.workspaceList,
+              ...(turn.workspaceList.result
+                ? {
+                    result: {
+                      ...turn.workspaceList.result,
+                      outcome: { ...turn.workspaceList.result.outcome },
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(turn.workspaceSearch
+        ? {
+            workspaceSearch: {
+              ...turn.workspaceSearch,
+              ...(turn.workspaceSearch.result
+                ? {
+                    result: {
+                      ...turn.workspaceSearch.result,
+                      outcome: { ...turn.workspaceSearch.result.outcome },
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(turn.fileChange
+        ? {
+            fileChange: cloneFileChangeActivity(turn.fileChange),
+          }
+        : {}),
+      ...(turn.commandApproval
+        ? {
+            commandApproval: {
+              callItemId: turn.commandApproval.callItemId,
+              id: turn.commandApproval.id,
+              callId: turn.commandApproval.callId,
+              approvalId: turn.commandApproval.approvalId,
+              command: turn.commandApproval.command,
+              argumentCount: turn.commandApproval.argumentCount,
+              requestStatus: turn.commandApproval.requestStatus,
+              ...(turn.commandApproval.decision
+                ? { decision: { ...turn.commandApproval.decision } }
+                : {}),
+              ...(turn.commandApproval.executionAttempt
+                ? {
+                    executionAttempt: {
+                      ...turn.commandApproval.executionAttempt,
+                    },
+                  }
+                : {}),
+              ...(turn.commandApproval.executionResult
+                ? {
+                    executionResult: {
+                      ...turn.commandApproval.executionResult,
+                      outcome: {
+                        ...turn.commandApproval.executionResult.outcome,
                       },
-                    }
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(turn.mcpActivities
+        ? {
+            mcpActivities: turn.mcpActivities.map(
+              (activity): ConversationMcpActivity => ({
+                callItemId: activity.callItemId,
+                id: activity.id,
+                callId: activity.callId,
+                approvalId: activity.approvalId,
+                serverId: activity.serverId,
+                name: activity.name,
+                argumentsBytes: activity.argumentsBytes,
+                argumentsSha256: activity.argumentsSha256,
+                inventorySha256: activity.inventorySha256,
+                callStatus: activity.callStatus,
+                requestStatus: activity.requestStatus,
+                ...(activity.decision
+                  ? { decision: { ...activity.decision } }
                   : {}),
-              },
-            }
-          : {}),
-        ...(turn.workspaceList
-          ? {
-              workspaceList: {
-                ...turn.workspaceList,
-                ...(turn.workspaceList.result
-                  ? {
-                      result: {
-                        ...turn.workspaceList.result,
-                        outcome: { ...turn.workspaceList.result.outcome },
-                      },
-                    }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(turn.workspaceSearch
-          ? {
-              workspaceSearch: {
-                ...turn.workspaceSearch,
-                ...(turn.workspaceSearch.result
-                  ? {
-                      result: {
-                        ...turn.workspaceSearch.result,
-                        outcome: { ...turn.workspaceSearch.result.outcome },
-                      },
-                    }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(turn.fileChange
-          ? {
-              fileChange: cloneFileChangeActivity(turn.fileChange),
-            }
-          : {}),
-        ...(turn.commandApproval
-          ? {
-              commandApproval: {
-                callItemId: turn.commandApproval.callItemId,
-                id: turn.commandApproval.id,
-                callId: turn.commandApproval.callId,
-                approvalId: turn.commandApproval.approvalId,
-                command: turn.commandApproval.command,
-                argumentCount: turn.commandApproval.argumentCount,
-                requestStatus: turn.commandApproval.requestStatus,
-                ...(turn.commandApproval.decision
-                  ? { decision: { ...turn.commandApproval.decision } }
-                  : {}),
-                ...(turn.commandApproval.executionAttempt
+                ...(activity.executionAttempt
                   ? {
                       executionAttempt: {
-                        ...turn.commandApproval.executionAttempt,
+                        ...activity.executionAttempt,
                       },
                     }
                   : {}),
-                ...(turn.commandApproval.executionResult
+                ...(activity.result
                   ? {
-                      executionResult: {
-                        ...turn.commandApproval.executionResult,
-                        outcome: {
-                          ...turn.commandApproval.executionResult.outcome,
-                        },
+                      result: {
+                        ...activity.result,
+                        receipt: { ...activity.result.receipt },
                       },
                     }
                   : {}),
-              },
-            }
-          : {}),
-        ...(turn.mcpActivities
-          ? {
-              mcpActivities: turn.mcpActivities.map(
-                (activity): ConversationMcpActivity => ({
-                  callItemId: activity.callItemId,
-                  id: activity.id,
-                  callId: activity.callId,
-                  approvalId: activity.approvalId,
-                  serverId: activity.serverId,
-                  name: activity.name,
-                  argumentsBytes: activity.argumentsBytes,
-                  argumentsSha256: activity.argumentsSha256,
-                  inventorySha256: activity.inventorySha256,
-                  callStatus: activity.callStatus,
-                  requestStatus: activity.requestStatus,
-                  ...(activity.decision
-                    ? { decision: { ...activity.decision } }
-                    : {}),
-                  ...(activity.executionAttempt
-                    ? {
-                        executionAttempt: {
-                          ...activity.executionAttempt,
-                        },
-                      }
-                    : {}),
-                  ...(activity.result
-                    ? {
-                        result: {
-                          ...activity.result,
-                          receipt: { ...activity.result.receipt },
-                        },
-                      }
-                    : {}),
-                }),
-              ),
-            }
-          : {}),
-        ...(turn.error ? { error: { ...turn.error } } : {}),
-      }),
-    ),
+              }),
+            ),
+          }
+        : {}),
+      ...(turn.error ? { error: { ...turn.error } } : {}),
+    })),
     navigator: snapshotThreadNavigator(this.navigator),
     ...(this.notice ? { notice: { ...this.notice } } : {}),
   });
@@ -2472,11 +2610,11 @@ const patchResultMatchesChange = (
   outcome.type === 'error' ||
   Boolean(
     change?.status === 'completed' &&
-      outcome.path === change.path &&
-      outcome.beforeSha256 === change.beforeSha256 &&
-      outcome.afterSha256 === change.afterSha256 &&
-      outcome.beforeBytes === change.beforeBytes &&
-      outcome.afterBytes === change.afterBytes,
+    outcome.path === change.path &&
+    outcome.beforeSha256 === change.beforeSha256 &&
+    outcome.afterSha256 === change.afterSha256 &&
+    outcome.beforeBytes === change.beforeBytes &&
+    outcome.afterBytes === change.afterBytes,
   );
 
 const fileChangeProposalsEqual = (
@@ -2515,6 +2653,11 @@ const toConversationActivity = (
   entry: MutableConversationActivity,
 ): ConversationActivity => {
   switch (entry.type) {
+    case 'commentary':
+      return {
+        type: entry.type,
+        activity: { ...entry.activity },
+      };
     case 'contextCompaction':
       return {
         type: entry.type,
@@ -2554,9 +2697,7 @@ const toConversationActivity = (
         type: entry.type,
         activity: {
           ...activity,
-          ...(activity.decision
-            ? { decision: { ...activity.decision } }
-            : {}),
+          ...(activity.decision ? { decision: { ...activity.decision } } : {}),
           ...(activity.executionAttempt
             ? { executionAttempt: { ...activity.executionAttempt } }
             : {}),
@@ -2578,9 +2719,7 @@ const toConversationActivity = (
         type: entry.type,
         activity: {
           ...activity,
-          ...(activity.decision
-            ? { decision: { ...activity.decision } }
-            : {}),
+          ...(activity.decision ? { decision: { ...activity.decision } } : {}),
           ...(activity.executionAttempt
             ? { executionAttempt: { ...activity.executionAttempt } }
             : {}),
@@ -2595,6 +2734,21 @@ const toConversationActivity = (
         },
       };
     }
+    case 'orchestration':
+      return {
+        type: entry.type,
+        activity: {
+          id: entry.activity.id,
+          tasks: entry.activity.tasks.map((task) => ({
+            ...task,
+            dependsOn: [...task.dependsOn],
+            amendments: task.amendments.map((amendment) => ({
+              ...amendment,
+            })),
+            ...(task.result ? { result: { ...task.result } } : {}),
+          })),
+        },
+      };
   }
 };
 
@@ -2602,6 +2756,11 @@ const toMutableConversationActivity = (
   entry: ConversationActivity,
 ): MutableConversationActivity => {
   switch (entry.type) {
+    case 'commentary':
+      return {
+        type: entry.type,
+        activity: { ...entry.activity },
+      };
     case 'contextCompaction':
       return {
         type: entry.type,
@@ -2660,7 +2819,9 @@ const toMutableConversationActivity = (
     case 'fileChange':
       return {
         type: entry.type,
-        activity: cloneFileChangeActivity(entry.activity) as MutableFileChangeActivity,
+        activity: cloneFileChangeActivity(
+          entry.activity,
+        ) as MutableFileChangeActivity,
       };
     case 'commandApproval':
       return {
@@ -2676,6 +2837,21 @@ const toMutableConversationActivity = (
         activity: {
           ...entry.activity,
           argumentSignature: '',
+        },
+      };
+    case 'orchestration':
+      return {
+        type: entry.type,
+        activity: {
+          id: entry.activity.id,
+          tasks: entry.activity.tasks.map((task) => ({
+            ...task,
+            dependsOn: [...task.dependsOn],
+            amendments: task.amendments.map((amendment) => ({
+              ...amendment,
+            })),
+            ...(task.result ? { result: { ...task.result } } : {}),
+          })),
         },
       };
   }

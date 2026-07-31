@@ -455,7 +455,29 @@ fn map_item(item: &CoreItemSnapshot) -> ExecItemV1 {
         summary_sha256: None,
     };
     match &item.kind {
-        CoreItemKind::UserMessage { .. } | CoreItemKind::AgentMessage { .. } => {}
+        CoreItemKind::UserMessage { .. }
+        | CoreItemKind::AgentMessage { .. }
+        | CoreItemKind::AgentCommentary { .. } => {}
+        CoreItemKind::AgentTask {
+            task_id,
+            title,
+            role,
+            ..
+        } => {
+            mapped.call_id = Some(task_id.clone());
+            mapped.name = Some(title.clone());
+            mapped.result = Some(role.clone());
+        }
+        CoreItemKind::AgentTaskAmendment { task_id, .. } => {
+            mapped.call_id = Some(task_id.clone());
+            mapped.result = Some("amended".to_string());
+        }
+        CoreItemKind::AgentTaskResult {
+            task_id, status, ..
+        } => {
+            mapped.call_id = Some(task_id.clone());
+            mapped.result = Some(status.clone());
+        }
         CoreItemKind::ContextCompaction {
             strategy,
             ordinal,
@@ -595,6 +617,10 @@ fn item_kind(kind: &CoreItemKind) -> &'static str {
     match kind {
         CoreItemKind::UserMessage { .. } => "userMessage",
         CoreItemKind::AgentMessage { .. } => "agentMessage",
+        CoreItemKind::AgentCommentary { .. } => "agentCommentary",
+        CoreItemKind::AgentTask { .. } => "agentTask",
+        CoreItemKind::AgentTaskAmendment { .. } => "agentTaskAmendment",
+        CoreItemKind::AgentTaskResult { .. } => "agentTaskResult",
         CoreItemKind::ContextCompaction { .. } => "contextCompaction",
         CoreItemKind::ToolCall { .. } => "toolCall",
         CoreItemKind::FileChange { .. } => "fileChange",

@@ -116,6 +116,53 @@
   mask-image: linear-gradient(to bottom, black, transparent 72%);
 }
 
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-node-border-radius: 0.75rem;
+  --xy-edge-stroke: rgb(from var(--primary) r g b / 20%);
+  --xy-edge-stroke-width: 1.25;
+}
+
+.react-flow__node:focus,
+.react-flow__node:focus-visible {
+  outline: none;
+}
+
+.orchestration-edge {
+  stroke: rgb(from var(--primary) r g b / 22%);
+  stroke-width: 1.25;
+}
+
+.orchestration-edge--active {
+  stroke: rgb(from var(--primary) r g b / 52%);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 7;
+  animation: orchestration-edge-flow 0.8s linear infinite;
+}
+
+[data-agent-status='running'],
+[data-agent-status='waitingApproval'] {
+  border-color: rgb(from var(--primary) r g b / 32%);
+}
+
+[data-agent-status='failed'] {
+  border-color: rgb(from var(--destructive) r g b / 38%);
+  color: var(--destructive);
+}
+
+@keyframes orchestration-edge-flow {
+  to {
+    stroke-dashoffset: -22;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orchestration-edge--active {
+    animation: none;
+    stroke-dasharray: none;
+  }
+}
+
 @keyframes agent-markdown-enter {
   from {
     opacity: 0;

@@ -205,6 +205,9 @@ export const CommandApprovalView = ({
                     <AlertDialogDescription className="mt-1">
                       Review the exact argv and enforced policies. Approval
                       applies only to this command request.
+                      {request.sourceAgent
+                        ? ` Requested by ${request.sourceAgent.role} Agent ${request.sourceAgent.taskId}.`
+                        : ''}
                     </AlertDialogDescription>
                   </div>
                   <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full border bg-surface px-2.5 py-1 font-mono text-xs font-normal text-secondary">

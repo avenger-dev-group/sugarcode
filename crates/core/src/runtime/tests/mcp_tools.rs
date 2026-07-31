@@ -271,6 +271,7 @@ async fn approved_mcp_call_crosses_attempt_before_one_execution_and_second_round
         provider_requests[0]
             .tools
             .iter()
+            .filter(|tool| tool.name.starts_with("mcp__"))
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
         vec!["mcp__fixture__inspect"]
@@ -279,6 +280,7 @@ async fn approved_mcp_call_crosses_attempt_before_one_execution_and_second_round
         provider_requests[1]
             .tools
             .iter()
+            .filter(|tool| tool.name.starts_with("mcp__"))
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
         vec!["mcp__fixture__inspect"]
@@ -422,10 +424,20 @@ async fn four_approved_mcp_calls_are_sequentially_correlated_and_then_tools_are_
 
     let provider_requests = requests.lock().expect("provider requests");
     assert_eq!(provider_requests.len(), 5);
-    assert!(provider_requests[..4].iter().all(
-        |request| request.tools.len() == 1 && request.tools[0].name == "mcp__fixture__inspect"
-    ));
-    assert!(provider_requests[4].tools.is_empty());
+    assert!(provider_requests[..4].iter().all(|request| {
+        request
+            .tools
+            .iter()
+            .filter(|tool| tool.name.starts_with("mcp__"))
+            .map(|tool| tool.name.as_str())
+            .eq(["mcp__fixture__inspect"])
+    }));
+    assert!(
+        provider_requests[4]
+            .tools
+            .iter()
+            .all(|tool| !tool.name.starts_with("mcp__"))
+    );
     for request_index in 1..=4 {
         let messages = &provider_requests[request_index].messages;
         let expected_pairs = request_index;

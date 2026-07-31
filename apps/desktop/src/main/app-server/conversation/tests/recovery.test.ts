@@ -38,6 +38,84 @@ const approvedReadOnlyCommandItems = () => [
 ];
 
 describe('conversation recovery', () => {
+  it('recovers the orchestration DAG, amendments, and audit result', () => {
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          items: [
+            {
+              type: 'agentTask',
+              id: 'item_task',
+              orchestrationId: 'orch/root/turn',
+              taskId: 'task_audit',
+              clientTaskKey: 'audit',
+              childThreadId: 'thr_0000000000000002',
+              title: 'Audit the writer',
+              role: 'auditor',
+              access: 'readOnly',
+              dependsOn: ['writer'],
+              taskMarkdown: '# Objective\nAudit.',
+            },
+            {
+              type: 'agentTaskAmendment',
+              id: 'item_amendment',
+              orchestrationId: 'orch/root/turn',
+              taskId: 'task_audit',
+              amendmentMarkdown: 'Check the dark theme too.',
+            },
+            {
+              type: 'agentTaskResult',
+              id: 'item_result',
+              orchestrationId: 'orch/root/turn',
+              taskId: 'task_audit',
+              status: 'completed',
+              summaryMarkdown: '## Verdict\nPass.',
+              durationMs: 750,
+            },
+          ],
+        },
+      ],
+    });
+
+    const recovered = recoverConversation('thr_0000000000000001', resumed);
+    expect(recovered.turns[0]?.activities).toEqual([
+      {
+        type: 'orchestration',
+        activity: {
+          id: 'orch/root/turn',
+          tasks: [
+            {
+              id: 'item_task',
+              taskId: 'task_audit',
+              clientTaskKey: 'audit',
+              childThreadId: 'thr_0000000000000002',
+              title: 'Audit the writer',
+              role: 'auditor',
+              access: 'readOnly',
+              dependsOn: ['writer'],
+              taskMarkdown: '# Objective\nAudit.',
+              status: 'completed',
+              amendments: [
+                {
+                  id: 'item_amendment',
+                  markdown: 'Check the dark theme too.',
+                },
+              ],
+              result: {
+                id: 'item_result',
+                summaryMarkdown: '## Verdict\nPass.',
+                durationMs: 750,
+              },
+            },
+          ],
+        },
+      },
+    ]);
+  });
+
   it('parses one latest active Thread and projects text plus workspace read activity', () => {
     const listed = parseThreadListResponse({
       data: [{ id: 'thr_0000000000000002' }],
@@ -56,6 +134,11 @@ describe('conversation recovery', () => {
               type: 'userMessage',
               id: 'item_0000000000000004',
               text: 'Persist this.',
+            },
+            {
+              type: 'agentCommentary',
+              id: 'item_commentary',
+              text: 'I will read the durable workspace state.',
             },
             {
               type: 'toolCall',
@@ -96,9 +179,7 @@ describe('conversation recovery', () => {
       ],
     });
 
-    expect(
-      recoverConversation('thr_0000000000000002', resumed),
-    ).toEqual({
+    expect(recoverConversation('thr_0000000000000002', resumed)).toEqual({
       threadId: 'thr_0000000000000002',
       turns: [
         {
@@ -130,6 +211,14 @@ describe('conversation recovery', () => {
             },
           },
           activities: [
+            {
+              type: 'commentary',
+              activity: {
+                id: 'item_commentary',
+                text: 'I will read the durable workspace state.',
+                status: 'completed',
+              },
+            },
             {
               type: 'workspaceRead',
               activity: {
@@ -223,27 +312,23 @@ describe('conversation recovery', () => {
       ],
     });
 
-    const recovered = recoverConversation(
-      'thr_0000000000000001',
-      resumed,
-    );
+    const recovered = recoverConversation('thr_0000000000000001', resumed);
     expect(recovered.turns[0].activities?.map((entry) => entry.type)).toEqual([
       'workspaceRead',
       'contextCompaction',
       'workspaceRead',
     ]);
-    expect(
-      recovered.turns[0].activities?.[2]?.activity,
-    ).toMatchObject({
+    expect(recovered.turns[0].activities?.[2]?.activity).toMatchObject({
       callId: 'call_read_2',
       result: { outcome: { type: 'error', kind: 'notFound' } },
     });
   });
 
   it('accepts an empty discovery page', () => {
-    expect(
-      parseThreadListResponse({ data: [], nextCursor: null }),
-    ).toEqual({ data: [], nextCursor: null });
+    expect(parseThreadListResponse({ data: [], nextCursor: null })).toEqual({
+      data: [],
+      nextCursor: null,
+    });
   });
 
   it('recovers an interrupted workspace read without fabricating a result', () => {
@@ -266,9 +351,7 @@ describe('conversation recovery', () => {
       ],
     });
 
-    expect(
-      recoverConversation('thr_0000000000000001', resumed),
-    ).toMatchObject({
+    expect(recoverConversation('thr_0000000000000001', resumed)).toMatchObject({
       turns: [
         {
           status: 'interrupted',
@@ -322,10 +405,7 @@ describe('conversation recovery', () => {
       ],
     });
 
-    const recovered = recoverConversation(
-      'thr_0000000000000001',
-      resumed,
-    );
+    const recovered = recoverConversation('thr_0000000000000001', resumed);
     expect(recovered.turns[0]?.workspaceList).toMatchObject({
       path: '.',
       result: { outcome: { type: 'success', entries: 2 } },
@@ -370,10 +450,7 @@ describe('conversation recovery', () => {
       ],
     });
 
-    const recovered = recoverConversation(
-      'thr_0000000000000001',
-      resumed,
-    );
+    const recovered = recoverConversation('thr_0000000000000001', resumed);
     expect(recovered.turns[0]?.workspaceSearch).toMatchObject({
       path: 'src',
       query: 'needle',
@@ -511,9 +588,9 @@ describe('conversation recovery', () => {
         },
       ],
     });
-    expect(() =>
-      recoverConversation('thr_0000000000000001', resumed),
-    ).toThrow('without a result');
+    expect(() => recoverConversation('thr_0000000000000001', resumed)).toThrow(
+      'without a result',
+    );
   });
 
   it('rejects a command execution result before its attempt', () => {
@@ -536,9 +613,9 @@ describe('conversation recovery', () => {
         },
       ],
     });
-    expect(() =>
-      recoverConversation('thr_0000000000000001', resumed),
-    ).toThrow('command execution result');
+    expect(() => recoverConversation('thr_0000000000000001', resumed)).toThrow(
+      'command execution result',
+    );
   });
 
   it('rejects a shell result that claims workspace-write policy', () => {
@@ -631,9 +708,9 @@ describe('conversation recovery', () => {
         },
       ],
     });
-    expect(() =>
-      recoverConversation('thr_0000000000000001', resumed),
-    ).toThrow('command execution attempt');
+    expect(() => recoverConversation('thr_0000000000000001', resumed)).toThrow(
+      'command execution attempt',
+    );
   });
 
   it('leaves workspace-write command approvals outside the projection', () => {
@@ -703,9 +780,7 @@ describe('conversation recovery', () => {
     { data: [{ id: '' }], nextCursor: null },
     { data: [], nextCursor: 1 },
   ])('rejects an invalid bounded discovery response', (response) => {
-    expect(() => parseThreadListResponse(response)).toThrow(
-      'Invalid',
-    );
+    expect(() => parseThreadListResponse(response)).toThrow('Invalid');
   });
 
   it('rejects mismatched, active and duplicate durable snapshots', () => {
@@ -719,9 +794,9 @@ describe('conversation recovery', () => {
         },
       ],
     });
-    expect(() =>
-      recoverConversation('thr_0000000000000001', active),
-    ).toThrow('in-progress Turn');
+    expect(() => recoverConversation('thr_0000000000000001', active)).toThrow(
+      'in-progress Turn',
+    );
     expect(() =>
       recoverConversation('thr_0000000000000002', {
         threadId: 'thr_0000000000000001',
@@ -808,8 +883,6 @@ describe('conversation recovery', () => {
       ],
     },
   ])('rejects malformed known resume data', (response) => {
-    expect(() => parseThreadResumeResponse(response)).toThrow(
-      'Invalid',
-    );
+    expect(() => parseThreadResumeResponse(response)).toThrow('Invalid');
   });
 });

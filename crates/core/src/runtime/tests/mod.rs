@@ -133,6 +133,7 @@ fn runtime(provider: RecordedProvider) -> (CoreRuntime, mpsc::Receiver<CoreEvent
 }
 
 mod agent_instructions;
+mod collaboration;
 mod interruption;
 mod lifecycle;
 mod mcp_tools;

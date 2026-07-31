@@ -3,6 +3,7 @@ import type {
   ConversationMessage,
   ConversationContextCompactionActivity,
   ConversationMcpActivity,
+  ConversationOrchestrationActivity,
   ConversationCommandApprovalActivity,
   ConversationFileChangeActivity,
   ConversationTurn,
@@ -65,11 +66,102 @@ export const recoverConversation = (
         }>
       | undefined;
     const mcpActivities: ConversationMcpActivity[] = [];
+    let orchestration:
+      | {
+          id: string;
+          tasks: Array<{
+            id: string;
+            taskId: string;
+            clientTaskKey: string;
+            childThreadId: string;
+            title: string;
+            role: 'explorer' | 'worker' | 'auditor';
+            access: 'readOnly' | 'workspaceWrite';
+            dependsOn: readonly string[];
+            taskMarkdown: string;
+            status:
+              | 'queued'
+              | 'running'
+              | 'waitingApproval'
+              | 'completed'
+              | 'failed'
+              | 'interrupted'
+              | 'cancelled';
+            amendments: Array<{ id: string; markdown: string }>;
+            result?: {
+              id: string;
+              summaryMarkdown: string;
+              durationMs: number;
+            };
+          }>;
+        }
+      | undefined;
     for (const item of turn.items) {
       if (itemIds.has(item.id)) {
         throw new Error('thread/resume returned a duplicate Item ID.');
       }
       itemIds.add(item.id);
+      if (item.type === 'agentCommentary') {
+        activities.push({
+          type: 'commentary',
+          activity: {
+            id: item.id,
+            text: item.text,
+            status: 'completed',
+          },
+        });
+      } else if (item.type === 'agentTask') {
+        if (orchestration && orchestration.id !== item.orchestrationId) {
+          throw new Error('thread/resume returned multiple orchestrations.');
+        }
+        orchestration ??= { id: item.orchestrationId, tasks: [] };
+        orchestration.tasks.push({
+          id: item.id,
+          taskId: item.taskId,
+          clientTaskKey: item.clientTaskKey,
+          childThreadId: item.childThreadId,
+          title: item.title,
+          role: item.role,
+          access: item.access,
+          dependsOn: [...item.dependsOn],
+          taskMarkdown: item.taskMarkdown,
+          status: item.dependsOn.length === 0 ? 'running' : 'queued',
+          amendments: [],
+        });
+        continue;
+      }
+      if (item.type === 'agentTaskAmendment') {
+        const task = orchestration?.tasks.find(
+          (candidate) =>
+            candidate.taskId === item.taskId &&
+            orchestration?.id === item.orchestrationId,
+        );
+        if (!task) {
+          throw new Error('thread/resume returned an orphan task amendment.');
+        }
+        task.amendments.push({
+          id: item.id,
+          markdown: item.amendmentMarkdown,
+        });
+        continue;
+      }
+      if (item.type === 'agentTaskResult') {
+        const task = orchestration?.tasks.find(
+          (candidate) =>
+            candidate.taskId === item.taskId &&
+            orchestration?.id === item.orchestrationId,
+        );
+        if (!task || task.result) {
+          throw new Error('thread/resume returned an orphan task result.');
+        }
+        task.status = item.status;
+        task.result = {
+          id: item.id,
+          summaryMarkdown: item.summaryMarkdown,
+          durationMs: item.durationMs,
+        };
+        continue;
+      }
       if (item.type === 'contextCompaction') {
         const outcome =
           item.outcome ??
@@ -96,10 +188,7 @@ export const recoverConversation = (
           type: 'contextCompaction',
           activity: contextCompactions[contextCompactions.length - 1],
         });
-      } else if (
-        item.type === 'userMessage' ||
-        item.type === 'agentMessage'
-      ) {
+      } else if (item.type === 'userMessage' || item.type === 'agentMessage') {
         messages.push({
           id: item.id,
           role: item.type === 'userMessage' ? 'user' : 'agent',
@@ -294,8 +383,7 @@ export const recoverConversation = (
           (item.outcome.type === 'success' &&
             (!fileChange.change ||
               fileChange.change.path !== item.outcome.path ||
-              fileChange.change.beforeSha256 !==
-                item.outcome.beforeSha256 ||
+              fileChange.change.beforeSha256 !== item.outcome.beforeSha256 ||
               fileChange.change.afterSha256 !== item.outcome.afterSha256 ||
               fileChange.change.beforeBytes !== item.outcome.beforeBytes ||
               fileChange.change.afterBytes !== item.outcome.afterBytes))
@@ -326,9 +414,7 @@ export const recoverConversation = (
           mcpActivities.length >= 4 ||
           mcpActivities.some((activity) => !activity.result)
         ) {
-          throw new Error(
-            'thread/resume returned a non-sequential MCP call.',
-          );
+          throw new Error('thread/resume returned a non-sequential MCP call.');
         }
         mcpCall = {
           id: item.id,
@@ -500,7 +586,8 @@ export const recoverConversation = (
           commandApproval ||
           commandCall.callId !== item.callId ||
           commandCall.command !== item.command ||
-          JSON.stringify(commandCall.arguments) !== JSON.stringify(item.arguments)
+          JSON.stringify(commandCall.arguments) !==
+            JSON.stringify(item.arguments)
         ) {
           throw new Error(
             'thread/resume returned an unmatched command approval request.',
@@ -554,10 +641,7 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'commandExecutionAttempt') {
-        if (
-          !commandApproval &&
-          commandCall?.callId === item.callId
-        ) {
+        if (!commandApproval && commandCall?.callId === item.callId) {
           continue;
         }
         if (
@@ -633,6 +717,19 @@ export const recoverConversation = (
         };
       }
     }
+    if (orchestration) {
+      if (turn.status === 'interrupted') {
+        for (const task of orchestration.tasks) {
+          if (!task.result) {
+            task.status = 'interrupted';
+          }
+        }
+      }
+      activities.push({
+        type: 'orchestration',
+        activity: orchestration as ConversationOrchestrationActivity,
+      });
+    }
 
     if (
       workspaceRead &&
@@ -661,11 +758,7 @@ export const recoverConversation = (
         'thread/resume returned terminal workspace/search activity without a result.',
       );
     }
-    if (
-      fileChange &&
-      turn.status !== 'interrupted' &&
-      !fileChange.result
-    ) {
+    if (fileChange && turn.status !== 'interrupted' && !fileChange.result) {
       throw new Error(
         'thread/resume returned terminal workspace/apply-patch activity without a result.',
       );

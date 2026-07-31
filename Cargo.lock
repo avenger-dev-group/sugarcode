@@ -3165,6 +3165,7 @@ name = "sugarcode-core"
 version = "1.0.0"
 dependencies = [
  "futures-util",
+ "serde",
  "serde_json",
  "sha2",
  "sugarcode-model-provider",

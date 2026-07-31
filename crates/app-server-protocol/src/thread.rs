@@ -22,6 +22,38 @@ pub const MAX_THREAD_SEARCH_QUERY_TERMS: usize = 16;
 #[ts(rename_all = "camelCase")]
 pub struct Thread {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub origin: Option<ThreadOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(tag = "type", rename_all = "camelCase")]
+pub enum ThreadOrigin {
+    Subagent {
+        #[serde(rename = "parentThreadId")]
+        #[ts(rename = "parentThreadId")]
+        parent_thread_id: String,
+        #[serde(rename = "parentTurnId")]
+        #[ts(rename = "parentTurnId")]
+        parent_turn_id: String,
+        #[serde(rename = "orchestrationId")]
+        #[ts(rename = "orchestrationId")]
+        orchestration_id: String,
+        #[serde(rename = "taskId")]
+        #[ts(rename = "taskId")]
+        task_id: String,
+        role: crate::AgentTaskRole,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadDescendantsListParams {
+    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    pub thread_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, TS)]
@@ -396,6 +428,13 @@ pub struct TurnSnapshot {
 pub struct ThreadResumeResponse {
     pub thread: Thread,
     pub turns: Vec<TurnSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ThreadDescendantsListResponse {
+    pub data: Vec<ThreadResumeResponse>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

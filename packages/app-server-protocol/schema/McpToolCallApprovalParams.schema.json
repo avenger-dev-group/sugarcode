@@ -24,6 +24,16 @@
     "name": {
       "type": "string"
     },
+    "sourceAgent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApprovalSourceAgent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "threadId": {
       "type": "string"
     },
@@ -42,5 +52,31 @@
     "argumentsBytes",
     "argumentsSha256",
     "inventorySha256"
-  ]
+  ],
+  "$defs": {
+    "AgentTaskRole": {
+      "type": "string",
+      "enum": [
+        "explorer",
+        "worker",
+        "auditor"
+      ]
+    },
+    "ApprovalSourceAgent": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/AgentTaskRole"
+        },
+        "taskId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "role"
+      ]
+    }
+  }
 }

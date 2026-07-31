@@ -206,6 +206,7 @@ fn indexes_a_materialized_thread_snapshot_in_one_rebuildable_update() {
             turn(3, "second copied message"),
         ],
         lifecycle: DurableThreadLifecycle::Active,
+        origin: None,
     };
     repository
         .create_thread_snapshot(&fork)
@@ -258,6 +259,7 @@ fn fork_search_update_failure_never_rolls_back_the_durable_snapshot() {
             id: thread(2),
             turns: vec![turn(2, "copied private history")],
             lifecycle: DurableThreadLifecycle::Active,
+            origin: None,
         })
         .expect("durable snapshot remains successful");
     assert_eq!(

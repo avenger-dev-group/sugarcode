@@ -36,6 +36,16 @@
     "sandboxed": {
       "type": "boolean"
     },
+    "sourceAgent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ApprovalSourceAgent"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "threadId": {
       "type": "string"
     },
@@ -79,6 +89,30 @@
     "networkPolicy"
   ],
   "$defs": {
+    "AgentTaskRole": {
+      "type": "string",
+      "enum": [
+        "explorer",
+        "worker",
+        "auditor"
+      ]
+    },
+    "ApprovalSourceAgent": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/AgentTaskRole"
+        },
+        "taskId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "role"
+      ]
+    },
     "CommandNetworkPolicy": {
       "type": "string",
       "enum": [

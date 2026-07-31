@@ -66,6 +66,13 @@ where
         self.core.resume_thread(thread_id)
     }
 
+    pub fn list_descendants(
+        &mut self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<DurableThreadSnapshot>, CoreError> {
+        self.core.list_descendants(thread_id)
+    }
+
     pub fn archive_thread(&mut self, thread_id: &ThreadId) -> Result<(), CoreError> {
         self.core.archive_thread(thread_id)
     }

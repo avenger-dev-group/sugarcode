@@ -1,8 +1,5 @@
 export type AgentMessagePresentationState =
-  | 'streaming'
-  | 'stopping'
-  | 'uncertain'
-  | 'completed';
+  'streaming' | 'stopping' | 'uncertain' | 'completed';
 
 export type AgentMessageViewModel = Readonly<{
   id: string;
@@ -14,13 +11,18 @@ export type AgentMessageProps = Readonly<{
   message: AgentMessageViewModel;
 }>;
 
+export type AgentCommentaryViewModel = Readonly<{
+  id: string;
+  text: string;
+  state: 'running' | 'completed';
+}>;
+
+export type AgentCommentaryProps = Readonly<{
+  commentary: AgentCommentaryViewModel;
+}>;
+
 export type WorkspaceReadPresentationState =
-  | 'running'
-  | 'stopping'
-  | 'uncertain'
-  | 'succeeded'
-  | 'failed'
-  | 'interrupted';
+  'running' | 'stopping' | 'uncertain' | 'succeeded' | 'failed' | 'interrupted';
 
 export type WorkspaceReadActivityViewModel = Readonly<{
   id: string;
@@ -35,12 +37,7 @@ export type WorkspaceReadActivityProps = Readonly<{
 }>;
 
 export type WorkspaceListPresentationState =
-  | 'running'
-  | 'stopping'
-  | 'uncertain'
-  | 'succeeded'
-  | 'failed'
-  | 'interrupted';
+  'running' | 'stopping' | 'uncertain' | 'succeeded' | 'failed' | 'interrupted';
 
 export type WorkspaceListActivityViewModel = Readonly<{
   id: string;
@@ -55,12 +52,7 @@ export type WorkspaceListActivityProps = Readonly<{
 }>;
 
 export type WorkspaceSearchPresentationState =
-  | 'running'
-  | 'stopping'
-  | 'uncertain'
-  | 'succeeded'
-  | 'failed'
-  | 'interrupted';
+  'running' | 'stopping' | 'uncertain' | 'succeeded' | 'failed' | 'interrupted';
 
 export type WorkspaceSearchActivityViewModel = Readonly<{
   id: string;
@@ -89,16 +81,10 @@ export type CommandApprovalPresentationState =
   | 'clientDisconnected';
 
 export type CommandExecutionAttemptPresentationState =
-  | 'observed'
-  | 'stopping'
-  | 'uncertain'
-  | 'recorded';
+  'observed' | 'stopping' | 'uncertain' | 'recorded';
 
 export type CommandExecutionResultPresentationState =
-  | 'observed'
-  | 'stopping'
-  | 'uncertain'
-  | 'recorded';
+  'observed' | 'stopping' | 'uncertain' | 'recorded';
 
 export type CommandExecutionResultViewModel = Readonly<{
   id: string;

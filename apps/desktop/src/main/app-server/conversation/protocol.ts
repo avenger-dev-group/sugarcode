@@ -30,6 +30,12 @@ type TextItem = Extract<
   { type: 'userMessage' | 'agentMessage' }
 >;
 
+export type AgentCommentaryItem = Readonly<{
+  type: 'agentCommentary';
+  id: string;
+  text: string;
+}>;
+
 export type ContextCompactionItem = Readonly<{
   type: 'contextCompaction';
   id: string;
@@ -165,8 +171,48 @@ export type CommandExecutionResultItem = Readonly<{
   outcome: CommandExecutionResultOutcome;
 }>;
 
+export type AgentTaskItem = Readonly<{
+  type: 'agentTask';
+  id: string;
+  orchestrationId: string;
+  taskId: string;
+  clientTaskKey: string;
+  childThreadId: string;
+  title: string;
+  role: 'explorer' | 'worker' | 'auditor';
+  access: 'readOnly' | 'workspaceWrite';
+  dependsOn: readonly string[];
+  taskMarkdown: string;
+}>;
+
+export type AgentTaskAmendmentItem = Readonly<{
+  type: 'agentTaskAmendment';
+  id: string;
+  orchestrationId: string;
+  taskId: string;
+  amendmentMarkdown: string;
+}>;
+
+export type AgentTaskResultItem = Readonly<{
+  type: 'agentTaskResult';
+  id: string;
+  orchestrationId: string;
+  taskId: string;
+  status:
+    | 'queued'
+    | 'running'
+    | 'waitingApproval'
+    | 'completed'
+    | 'failed'
+    | 'interrupted'
+    | 'cancelled';
+  summaryMarkdown: string;
+  durationMs: number;
+}>;
+
 type ConversationItem =
   | TextItem
+  | AgentCommentaryItem
   | ContextCompactionItem
   | WorkspaceReadCallItem
   | WorkspaceReadResultItem
@@ -180,6 +226,9 @@ type ConversationItem =
   | CommandApprovalDecisionItem
   | CommandExecutionAttemptItem
   | CommandExecutionResultItem
+  | AgentTaskItem
+  | AgentTaskAmendmentItem
+  | AgentTaskResultItem
   | McpConversationItem;
 
 export type ResumeItem =
@@ -198,6 +247,14 @@ export type ResumeTurn = Readonly<{
 
 export type ResumeSnapshot = Readonly<{
   threadId: string;
+  origin?: Readonly<{
+    type: 'subagent';
+    parentThreadId: string;
+    parentTurnId: string;
+    orchestrationId: string;
+    taskId: string;
+    role: 'explorer' | 'worker' | 'auditor';
+  }>;
   turns: readonly ResumeTurn[];
 }>;
 
@@ -301,7 +358,10 @@ const validateCommandPayload = (
   const argumentsList = parseCommandArguments(argumentsValue);
   if (
     utf8Bytes(command) +
-      argumentsList.reduce((total, argument) => total + utf8Bytes(argument), 0) >
+      argumentsList.reduce(
+        (total, argument) => total + utf8Bytes(argument),
+        0,
+      ) >
     MAX_COMMAND_TOTAL_BYTES
   ) {
     throw new Error('Invalid shell/exec command size.');
@@ -363,8 +423,7 @@ const parseWorkspaceSearchResult = (
     !Array.isArray(parsed.matches) ||
     parsed.matches.length > MAX_WORKSPACE_SEARCH_MATCHES ||
     typeof parsed.truncated !== 'boolean' ||
-    (parsed.truncated &&
-      parsed.matches.length !== MAX_WORKSPACE_SEARCH_MATCHES)
+    (parsed.truncated && parsed.matches.length !== MAX_WORKSPACE_SEARCH_MATCHES)
   ) {
     throw new Error('Invalid workspace/search success content.');
   }
@@ -438,9 +497,7 @@ const parseTurnError = (value: unknown): TurnError | undefined => {
   };
 };
 
-const parseTurn = (
-  value: unknown,
-): TurnStartResponse['turn'] => {
+const parseTurn = (value: unknown): TurnStartResponse['turn'] => {
   if (
     !isRecord(value) ||
     !isId(value.id) ||
@@ -466,11 +523,7 @@ const parseTurn = (
 export const parseThreadStartResponse = (
   value: unknown,
 ): ThreadStartResponse => {
-  if (
-    !isRecord(value) ||
-    !isRecord(value.thread) ||
-    !isId(value.thread.id)
-  ) {
+  if (!isRecord(value) || !isRecord(value.thread) || !isId(value.thread.id)) {
     throw new Error('Invalid thread/start response.');
   }
   return { thread: { id: value.thread.id } };
@@ -483,9 +536,7 @@ const parseResumeItem = (value: unknown): ResumeItem => {
   return parseConversationItem(value) ?? { type: 'other', id: value.id };
 };
 
-export const parseThreadResumeResponse = (
-  value: unknown,
-): ResumeSnapshot => {
+export const parseThreadResumeResponse = (value: unknown): ResumeSnapshot => {
   if (
     !isRecord(value) ||
     !isRecord(value.thread) ||
@@ -506,15 +557,39 @@ export const parseThreadResumeResponse = (
       ...(parsedTurn.error ? { error: parsedTurn.error } : {}),
     };
   });
+  let origin: ResumeSnapshot['origin'];
+  if (value.thread.origin !== undefined) {
+    const candidate = value.thread.origin;
+    if (
+      !isRecord(candidate) ||
+      candidate.type !== 'subagent' ||
+      !isId(candidate.parentThreadId) ||
+      !isId(candidate.parentTurnId) ||
+      !isId(candidate.orchestrationId) ||
+      !isId(candidate.taskId) ||
+      (candidate.role !== 'explorer' &&
+        candidate.role !== 'worker' &&
+        candidate.role !== 'auditor')
+    ) {
+      throw new Error('Invalid subagent Thread origin.');
+    }
+    origin = {
+      type: 'subagent',
+      parentThreadId: candidate.parentThreadId,
+      parentTurnId: candidate.parentTurnId,
+      orchestrationId: candidate.orchestrationId,
+      taskId: candidate.taskId,
+      role: candidate.role,
+    };
+  }
   return {
     threadId: value.thread.id,
+    ...(origin ? { origin } : {}),
     turns,
   };
 };
 
-export const parseTurnStartResponse = (
-  value: unknown,
-): TurnStartResponse => {
+export const parseTurnStartResponse = (value: unknown): TurnStartResponse => {
   if (!isRecord(value)) {
     throw new Error('Invalid turn/start response.');
   }
@@ -544,6 +619,20 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
     }
     return {
       type: value.type,
+      id: value.id,
+      text: value.text,
+    };
+  }
+  if (value.type === 'agentCommentary') {
+    if (
+      typeof value.text !== 'string' ||
+      value.text.length === 0 ||
+      utf8Bytes(value.text) > 4 * 1024
+    ) {
+      throw new Error('Invalid agentCommentary Item.');
+    }
+    return {
+      type: 'agentCommentary',
       id: value.id,
       text: value.text,
     };
@@ -617,6 +706,90 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       sourceBytes: value.sourceBytes as number,
       sourceSha256: value.sourceSha256,
       ...(outcome ? { outcome } : {}),
+    };
+  }
+  if (value.type === 'agentTask') {
+    const roles = new Set(['explorer', 'worker', 'auditor']);
+    const accesses = new Set(['readOnly', 'workspaceWrite']);
+    if (
+      !isId(value.orchestrationId) ||
+      !isId(value.taskId) ||
+      !isId(value.clientTaskKey) ||
+      !isId(value.childThreadId) ||
+      typeof value.title !== 'string' ||
+      value.title.length === 0 ||
+      typeof value.role !== 'string' ||
+      !roles.has(value.role) ||
+      typeof value.access !== 'string' ||
+      !accesses.has(value.access) ||
+      !Array.isArray(value.dependsOn) ||
+      value.dependsOn.some((dependency) => !isId(dependency)) ||
+      typeof value.taskMarkdown !== 'string' ||
+      value.taskMarkdown.length === 0
+    ) {
+      throw new Error('Invalid agentTask Item.');
+    }
+    return {
+      type: 'agentTask',
+      id: value.id,
+      orchestrationId: value.orchestrationId,
+      taskId: value.taskId,
+      clientTaskKey: value.clientTaskKey,
+      childThreadId: value.childThreadId,
+      title: value.title,
+      role: value.role as AgentTaskItem['role'],
+      access: value.access as AgentTaskItem['access'],
+      dependsOn: [...(value.dependsOn as string[])],
+      taskMarkdown: value.taskMarkdown,
+    };
+  }
+  if (value.type === 'agentTaskAmendment') {
+    if (
+      !isId(value.orchestrationId) ||
+      !isId(value.taskId) ||
+      typeof value.amendmentMarkdown !== 'string' ||
+      value.amendmentMarkdown.length === 0
+    ) {
+      throw new Error('Invalid agentTaskAmendment Item.');
+    }
+    return {
+      type: 'agentTaskAmendment',
+      id: value.id,
+      orchestrationId: value.orchestrationId,
+      taskId: value.taskId,
+      amendmentMarkdown: value.amendmentMarkdown,
+    };
+  }
+  if (value.type === 'agentTaskResult') {
+    const statuses = new Set([
+      'queued',
+      'running',
+      'waitingApproval',
+      'completed',
+      'failed',
+      'interrupted',
+      'cancelled',
+    ]);
+    if (
+      !isId(value.orchestrationId) ||
+      !isId(value.taskId) ||
+      typeof value.status !== 'string' ||
+      !statuses.has(value.status) ||
+      typeof value.summaryMarkdown !== 'string' ||
+      typeof value.durationMs !== 'number' ||
+      !Number.isSafeInteger(value.durationMs) ||
+      value.durationMs < 0
+    ) {
+      throw new Error('Invalid agentTaskResult Item.');
+    }
+    return {
+      type: 'agentTaskResult',
+      id: value.id,
+      orchestrationId: value.orchestrationId,
+      taskId: value.taskId,
+      status: value.status as AgentTaskResultItem['status'],
+      summaryMarkdown: value.summaryMarkdown,
+      durationMs: value.durationMs,
     };
   }
   const workspacePatch = parseWorkspacePatchItem(value);
@@ -1004,9 +1177,7 @@ export const parseConversationLifecycle = (
       }
       return {
         type:
-          message.method === 'item/started'
-            ? 'itemStarted'
-            : 'itemCompleted',
+          message.method === 'item/started' ? 'itemStarted' : 'itemCompleted',
         params: { ...correlation, item },
       };
     }

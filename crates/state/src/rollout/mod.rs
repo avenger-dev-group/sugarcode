@@ -32,6 +32,16 @@ pub struct DurableThreadSnapshot {
     pub id: ThreadId,
     pub turns: Vec<DurableTurnSnapshot>,
     pub lifecycle: DurableThreadLifecycle,
+    pub origin: Option<DurableThreadOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableThreadOrigin {
+    pub parent_thread_id: ThreadId,
+    pub parent_turn_id: TurnId,
+    pub orchestration_id: String,
+    pub task_id: String,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +196,36 @@ pub enum DurableItemSnapshot {
     AgentMessage {
         id: ItemId,
         text: String,
+    },
+    AgentCommentary {
+        id: ItemId,
+        text: String,
+    },
+    AgentTask {
+        id: ItemId,
+        orchestration_id: String,
+        task_id: String,
+        client_task_key: String,
+        child_thread_id: ThreadId,
+        title: String,
+        role: String,
+        access: String,
+        depends_on: Vec<String>,
+        task_markdown: String,
+    },
+    AgentTaskAmendment {
+        id: ItemId,
+        orchestration_id: String,
+        task_id: String,
+        amendment_markdown: String,
+    },
+    AgentTaskResult {
+        id: ItemId,
+        orchestration_id: String,
+        task_id: String,
+        status: String,
+        summary_markdown: String,
+        duration_ms: u64,
     },
     ContextCompaction {
         id: ItemId,
@@ -394,6 +434,10 @@ impl DurableItemSnapshot {
         match self {
             Self::UserMessage { id, .. }
             | Self::AgentMessage { id, .. }
+            | Self::AgentCommentary { id, .. }
+            | Self::AgentTask { id, .. }
+            | Self::AgentTaskAmendment { id, .. }
+            | Self::AgentTaskResult { id, .. }
             | Self::ContextCompaction { id, .. }
             | Self::ToolCall { id, .. }
             | Self::FileChange { id, .. }
@@ -1029,6 +1073,13 @@ fn valid_sha256(value: &str) -> bool {
 pub trait ThreadRepository: fmt::Debug + Send {
     fn id_sequences(&self) -> IdSequences;
     fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
+    fn create_thread_with_origin(
+        &mut self,
+        thread_id: &ThreadId,
+        _origin: &DurableThreadOrigin,
+    ) -> Result<(), RolloutError> {
+        self.create_thread(thread_id)
+    }
     fn create_thread_snapshot(
         &mut self,
         snapshot: &DurableThreadSnapshot,
@@ -1081,6 +1132,14 @@ pub trait ThreadRepository: fmt::Debug + Send {
         &self,
         thread_id: &ThreadId,
     ) -> Result<Option<DurableThreadSnapshot>, RolloutError>;
+    fn list_descendants(
+        &self,
+        _parent_thread_id: &ThreadId,
+    ) -> Result<Vec<DurableThreadSnapshot>, RolloutError> {
+        Err(RolloutError::InvalidRecord {
+            kind: "descendantsUnsupported",
+        })
+    }
     fn list_threads(
         &mut self,
         cursor: Option<&ThreadId>,

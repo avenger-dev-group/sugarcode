@@ -1,6 +1,7 @@
 import { ArrowUp, PanelLeft, PanelRight, Square } from 'lucide-react';
 import { memo } from 'react';
 
+import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
 import { CommandApprovalActivity } from '@/renderer/components/agent/command-approval-activity';
 import { ContextCompactionActivity } from '@/renderer/components/agent/context-compaction-activity';
@@ -12,6 +13,7 @@ import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { Textarea } from '@/renderer/components/ui/textarea';
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline';
+import { OrchestrationActivity } from '@/renderer/components/orchestration/orchestration-activity';
 
 import type {
   ThreadWorkbenchViewProps,
@@ -48,6 +50,8 @@ const TurnActivity = ({
   turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
 }>) => {
   switch (entry.type) {
+    case 'commentary':
+      return <AgentCommentary commentary={entry.activity} />;
     case 'contextCompaction':
       return <ContextCompactionActivity activity={entry.activity} />;
     case 'workspaceRead':
@@ -67,6 +71,8 @@ const TurnActivity = ({
           turnStatus={turnStatus}
         />
       );
+    case 'orchestration':
+      return <OrchestrationActivity activity={entry.activity} />;
   }
 };
 
@@ -91,10 +97,8 @@ const TurnActivityTimeline = ({
       if (activities[index - 1]?.type === 'fileChange') {
         return null;
       }
-      const changes: Extract<
-        TurnActivityViewModel,
-        { type: 'fileChange' }
-      >[] = [];
+      const changes: Extract<TurnActivityViewModel, { type: 'fileChange' }>[] =
+        [];
       for (
         let cursor = index;
         activities[cursor]?.type === 'fileChange';
@@ -157,9 +161,10 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
           turnStatus={turn.status}
         />
       ) : null}
-      {!turn.activities && turn.contextCompactions?.map((activity) => (
-        <ContextCompactionActivity key={activity.id} activity={activity} />
-      ))}
+      {!turn.activities &&
+        turn.contextCompactions?.map((activity) => (
+          <ContextCompactionActivity key={activity.id} activity={activity} />
+        ))}
       {!turn.activities && turn.workspaceRead ? (
         <WorkspaceReadActivity activity={turn.workspaceRead} />
       ) : null}
@@ -245,7 +250,7 @@ export const ThreadWorkbenchView = ({
   } = useTranscriptFollow(store.thread);
 
   return (
-    <div className="relative grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] md:grid-cols-[15.5rem_minmax(0,1fr)] xl:grid-cols-[15.5rem_minmax(0,1fr)_17.5rem]">
+    <div className="relative grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] md:grid-cols-[15.5rem_minmax(0,1fr)] xl:grid-cols-[15.5rem_minmax(0,1fr)_22rem]">
       <aside className="hidden min-h-0 md:block">
         <ThreadNavigator store={store} footer={navigationFooter} />
       </aside>
@@ -259,186 +264,186 @@ export const ThreadWorkbenchView = ({
         </div>
       ) : null}
       <section className="relative flex min-h-0 min-w-0 flex-col xl:border-r">
-      <div className="pointer-events-none absolute inset-0 workbench-grid" />
-      <Button
-        type="button"
-        size="icon"
-        variant="outline"
-        className="absolute left-3 top-3 z-10 bg-background/90 shadow-sm md:hidden"
-        aria-label={
-          store.navigatorOpen
-            ? 'Hide Thread navigator'
-            : 'Show Thread navigator'
-        }
-        aria-controls="thread-navigator"
-        aria-expanded={store.navigatorOpen}
-        onClick={() => store.setNavigatorOpen(!store.navigatorOpen)}
-      >
-        <PanelLeft aria-hidden="true" />
-      </Button>
-      {contextRail ? (
+        <div className="pointer-events-none absolute inset-0 workbench-grid" />
         <Button
           type="button"
           size="icon"
           variant="outline"
-          className="absolute right-3 top-3 z-10 bg-background/90 shadow-sm xl:hidden"
+          className="absolute left-3 top-3 z-10 bg-background/90 shadow-sm md:hidden"
           aria-label={
-            contextRailOpen ? 'Hide workspace tools' : 'Show workspace tools'
+            store.navigatorOpen
+              ? 'Hide Thread navigator'
+              : 'Show Thread navigator'
           }
-          aria-controls="workspace-tools"
-          aria-expanded={contextRailOpen}
-          onClick={() => setContextRailOpen?.(!contextRailOpen)}
+          aria-controls="thread-navigator"
+          aria-expanded={store.navigatorOpen}
+          onClick={() => store.setNavigatorOpen(!store.navigatorOpen)}
         >
-          <PanelRight aria-hidden="true" />
+          <PanelLeft aria-hidden="true" />
         </Button>
-      ) : null}
-      <ScrollArea
-        data-layout="conversation-scroll"
-        className="relative min-h-0 min-w-0 flex-1"
-        viewportProps={{
-          'aria-label': 'Conversation transcript',
-          tabIndex: 0,
-          ref: transcriptViewport,
-          onScroll: recordScrollPosition,
-        }}
-      >
-        <div
-          ref={transcriptContent}
-          className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-10 pt-16 sm:px-10 md:pt-10"
+        {contextRail ? (
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            className="absolute right-3 top-3 z-10 bg-background/90 shadow-sm xl:hidden"
+            aria-label={
+              contextRailOpen ? 'Hide workspace tools' : 'Show workspace tools'
+            }
+            aria-controls="workspace-tools"
+            aria-expanded={contextRailOpen}
+            onClick={() => setContextRailOpen?.(!contextRailOpen)}
+          >
+            <PanelRight aria-hidden="true" />
+          </Button>
+        ) : null}
+        <ScrollArea
+          data-layout="conversation-scroll"
+          className="relative min-h-0 min-w-0 flex-1"
+          viewportProps={{
+            'aria-label': 'Conversation transcript',
+            tabIndex: 0,
+            ref: transcriptViewport,
+            onScroll: recordScrollPosition,
+          }}
         >
-          {store.thread.isEmpty ? (
-            <div className="my-auto max-w-xl py-16">
-              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-tertiary">
-                Text Agent · local runtime
-              </p>
-              <h1 className="mt-4 max-w-lg text-[2rem] font-medium leading-[1.1] tracking-[-0.04em]">
-                Start with the problem,
-                <br />
-                not the ceremony.
-              </h1>
-              <p className="mt-5 max-w-md text-sm font-normal leading-[22px] text-secondary">
-                One durable Thread. Your message is recorded by Core before it
-                appears here, and the response streams back from the local
-                SugarCode runtime.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-10">
-              {store.thread.turns.map((turn) => (
-                <TranscriptTurn key={turn.id} turn={turn} />
-              ))}
-            </div>
-          )}
-          <div ref={transcriptEnd} />
-        </div>
-      </ScrollArea>
-
-      <div
-        data-layout="conversation-composer"
-        className="relative z-10 shrink-0 border-t bg-background px-4 pb-3 pt-3 sm:px-8"
-      >
-        <div className="mx-auto max-w-3xl">
-          {(store.actionError || store.thread.notice) && (
-            <p
-              className="mb-2 px-1 text-xs text-destructive"
-              role="alert"
-            >
-              {store.actionError ?? store.thread.notice}
-            </p>
-          )}
-          <div className="overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)]">
-            <Textarea
-              value={store.draft}
-              onChange={(event) => store.setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (
-                  event.key === 'Enter' &&
-                  !event.shiftKey &&
-                  !event.nativeEvent.isComposing
-                ) {
-                  event.preventDefault();
-                  void store.send();
-                }
-              }}
-              disabled={
-                store.thread.phase === 'inProgress' ||
-                store.thread.phase === 'stopping' ||
-                store.thread.phase === 'starting' ||
-                store.thread.phase === 'unavailable' ||
-                store.navigator.pendingThreadId !== null
-              }
-              aria-label="Message SugarCode"
-              aria-describedby="conversation-input-hint"
-              placeholder="Describe what you want to work through…"
-              className="min-h-24 max-h-52 px-4 pt-3.5"
-            />
-            <div className="flex items-center justify-between gap-3 border-t px-3 py-2">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xs text-secondary">
-                  {store.thread.statusLabel}
+          <div
+            ref={transcriptContent}
+            className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-10 pt-16 sm:px-10 md:pt-10"
+          >
+            {store.thread.isEmpty ? (
+              <div className="my-auto max-w-xl py-16">
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-tertiary">
+                  Text Agent · local runtime
                 </p>
-                <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[10px]">
-                  <span
-                    id="conversation-input-hint"
-                    className={
-                      store.inputBytes > store.inputLimitBytes
-                        ? 'text-destructive'
-                        : 'text-tertiary'
-                    }
-                  >
-                    {store.inputHint}
-                  </span>
-                  <span className="text-tertiary" aria-hidden="true">
-                    ·
-                  </span>
-                  <span
-                    className="min-w-0 break-all text-tertiary"
-                    aria-label={
-                      store.thread.threadIdentity
-                        ? `Current durable Thread ${store.thread.threadIdentity}`
-                        : 'No durable Thread yet'
-                    }
-                  >
-                    {store.thread.threadIdentity
-                      ? `Thread ${store.thread.threadIdentity}`
-                      : 'Thread not created'}
-                  </span>
-                </div>
+                <h1 className="mt-4 max-w-lg text-[2rem] font-medium leading-[1.1] tracking-[-0.04em]">
+                  Start with the problem,
+                  <br />
+                  not the ceremony.
+                </h1>
+                <p className="mt-5 max-w-md text-sm font-normal leading-[22px] text-secondary">
+                  One durable Thread. Your message is recorded by Core before it
+                  appears here, and the response streams back from the local
+                  SugarCode runtime.
+                </p>
               </div>
-              {store.canStop ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => void store.stop()}
-                  disabled={store.thread.phase === 'stopping'}
-                  aria-label="Stop current turn"
-                >
-                  <Square className="size-3 fill-current" aria-hidden="true" />
-                  {store.thread.phase === 'stopping' ? 'Stopping' : 'Stop'}
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  size="icon"
-                  onClick={() => void store.send()}
-                  disabled={!store.canSend}
-                  aria-label="Send message"
-                >
-                  <ArrowUp aria-hidden="true" />
-                </Button>
-              )}
-            </div>
+            ) : (
+              <div className="space-y-10">
+                {store.thread.turns.map((turn) => (
+                  <TranscriptTurn key={turn.id} turn={turn} />
+                ))}
+              </div>
+            )}
+            <div ref={transcriptEnd} />
           </div>
-          <p className="mt-2 text-center text-[11px] text-tertiary">
-            Enter to send · Shift+Enter for a new line
-          </p>
+        </ScrollArea>
+
+        <div
+          data-layout="conversation-composer"
+          className="relative z-10 shrink-0 border-t bg-background px-4 pb-3 pt-3 sm:px-8"
+        >
+          <div className="mx-auto max-w-3xl">
+            {(store.actionError || store.thread.notice) && (
+              <p className="mb-2 px-1 text-xs text-destructive" role="alert">
+                {store.actionError ?? store.thread.notice}
+              </p>
+            )}
+            <div className="overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)]">
+              <Textarea
+                value={store.draft}
+                onChange={(event) => store.setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === 'Enter' &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault();
+                    void store.send();
+                  }
+                }}
+                disabled={
+                  store.thread.phase === 'inProgress' ||
+                  store.thread.phase === 'stopping' ||
+                  store.thread.phase === 'starting' ||
+                  store.thread.phase === 'unavailable' ||
+                  store.navigator.pendingThreadId !== null
+                }
+                aria-label="Message SugarCode"
+                aria-describedby="conversation-input-hint"
+                placeholder="Describe what you want to work through…"
+                className="min-h-24 max-h-52 px-4 pt-3.5"
+              />
+              <div className="flex items-center justify-between gap-3 border-t px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs text-secondary">
+                    {store.thread.statusLabel}
+                  </p>
+                  <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[10px]">
+                    <span
+                      id="conversation-input-hint"
+                      className={
+                        store.inputBytes > store.inputLimitBytes
+                          ? 'text-destructive'
+                          : 'text-tertiary'
+                      }
+                    >
+                      {store.inputHint}
+                    </span>
+                    <span className="text-tertiary" aria-hidden="true">
+                      ·
+                    </span>
+                    <span
+                      className="min-w-0 break-all text-tertiary"
+                      aria-label={
+                        store.thread.threadIdentity
+                          ? `Current durable Thread ${store.thread.threadIdentity}`
+                          : 'No durable Thread yet'
+                      }
+                    >
+                      {store.thread.threadIdentity
+                        ? `Thread ${store.thread.threadIdentity}`
+                        : 'Thread not created'}
+                    </span>
+                  </div>
+                </div>
+                {store.canStop ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void store.stop()}
+                    disabled={store.thread.phase === 'stopping'}
+                    aria-label="Stop current turn"
+                  >
+                    <Square
+                      className="size-3 fill-current"
+                      aria-hidden="true"
+                    />
+                    {store.thread.phase === 'stopping' ? 'Stopping' : 'Stop'}
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    size="icon"
+                    onClick={() => void store.send()}
+                    disabled={!store.canSend}
+                    aria-label="Send message"
+                  >
+                    <ArrowUp aria-hidden="true" />
+                  </Button>
+                )}
+              </div>
+            </div>
+            <p className="mt-2 text-center text-[11px] text-tertiary">
+              Enter to send · Shift+Enter for a new line
+            </p>
+          </div>
         </div>
-      </div>
       </section>
       {contextRail ? (
         <aside
           id="workspace-tools"
-          className={`fixed inset-y-0 right-0 z-30 min-h-0 w-[17.5rem] overflow-y-auto border-l bg-background shadow-[-18px_0_50px_var(--shadow-soft)] transition-transform duration-150 motion-reduce:transition-none xl:static xl:z-auto xl:w-auto xl:visible xl:translate-x-0 xl:border-l-0 xl:shadow-none ${
+          className={`fixed inset-y-0 right-0 z-30 min-h-0 w-[22rem] max-w-[92vw] overflow-y-auto border-l bg-background shadow-[-18px_0_50px_var(--shadow-soft)] transition-transform duration-150 motion-reduce:transition-none xl:static xl:z-auto xl:w-auto xl:visible xl:translate-x-0 xl:border-l-0 xl:shadow-none ${
             contextRailOpen
               ? 'visible translate-x-0'
               : 'invisible translate-x-full'

@@ -258,6 +258,9 @@ export class McpApprovalController {
     argumentsBytes: active.parsed.argumentsBytes,
     argumentsSha256: active.parsed.params.argumentsSha256,
     inventorySha256: active.parsed.params.inventorySha256,
+    ...(active.parsed.params.sourceAgent
+      ? { sourceAgent: { ...active.parsed.params.sourceAgent } }
+      : {}),
     localExpiresAtMs: active.localExpiresAtMs,
     actionState: active.actionState,
   });

@@ -179,6 +179,7 @@ async fn workspace_patch_persists_review_before_result_and_finishes_model_round(
         requests[0]
             .tools
             .iter()
+            .filter(|tool| tool.name.starts_with("workspace/"))
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
         vec!["workspace/apply-patch"]

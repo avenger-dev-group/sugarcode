@@ -42,17 +42,129 @@ const createHarness = (rpc: ConversationRpc) => {
 };
 
 describe('ConversationController', () => {
-  it('loads the active Thread index without selecting until the user chooses', async () => {
-    const startThread = vi.fn();
-    const startTurn = vi.fn(
-      async (): Promise<TurnStartResponse> => ({
-        turn: { id: 'turn_0000000000000002', status: 'inProgress' },
+  it('projects completed Agent commentary before later tool activity', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async (): Promise<ThreadStartResponse> => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await expect(controller.startTurn('Inspect it.')).resolves.toMatchObject({
+      accepted: true,
+    });
+
+    for (const method of ['item/started', 'item/completed']) {
+      controller.handleNotification(
+        notification(method, {
+          threadId: 'thr_0000000000000001',
+          turnId: 'turn_0000000000000001',
+          item: {
+            type: 'agentCommentary',
+            id: 'item_commentary',
+            text: 'I will inspect the workspace first.',
+          },
+        }),
+      );
+    }
+    controller.handleNotification(
+      notification('item/started', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: {
+          type: 'toolCall',
+          id: 'item_tool',
+          callId: 'call_1',
+          name: 'workspace/read',
+          path: 'README.md',
+        },
       }),
     );
+
+    expect(controller.getSnapshot().turns[0]?.activities).toMatchObject([
+      {
+        type: 'commentary',
+        activity: {
+          id: 'item_commentary',
+          text: 'I will inspect the workspace first.',
+          status: 'completed',
+        },
+      },
+      {
+        type: 'workspaceRead',
+        activity: { id: 'item_tool', path: 'README.md' },
+      },
+    ]);
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+  });
+
+  it('projects approval wait state onto the originating Agent task', async () => {
     const rpc: ConversationRpc = {
-      findLatestActiveThread: vi.fn(
-        async () => 'thr_0000000000000001',
-      ),
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async (): Promise<ThreadStartResponse> => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await expect(controller.startTurn('Delegate this task.')).resolves.toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
+    controller.handleNotification(
+      notification('item/started', {
+        threadId: 'thr_0000000000000001',
+        turnId: 'turn_0000000000000001',
+        item: {
+          type: 'agentTask',
+          id: 'item_task',
+          orchestrationId: 'orch/root/turn',
+          taskId: 'task_worker',
+          clientTaskKey: 'worker',
+          childThreadId: 'thr_0000000000000002',
+          title: 'Implement the change',
+          role: 'worker',
+          access: 'workspaceWrite',
+          dependsOn: [],
+          taskMarkdown: '# Objective\nImplement.',
+        },
+      }),
+    );
+
+    controller.setAgentApprovalTasks(new Set(['task_worker']));
+    expect(controller.getSnapshot().turns[0]?.activities?.[0]).toMatchObject({
+      type: 'orchestration',
+      activity: {
+        tasks: [{ taskId: 'task_worker', status: 'waitingApproval' }],
+      },
+    });
+
+    controller.setAgentApprovalTasks(new Set());
+    expect(controller.getSnapshot().turns[0]?.activities?.[0]).toMatchObject({
+      type: 'orchestration',
+      activity: {
+        tasks: [{ taskId: 'task_worker', status: 'running' }],
+      },
+    });
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+  });
+
+  it('loads the active Thread index without selecting until the user chooses', async () => {
+    const startThread = vi.fn();
+    const startTurn = vi.fn(async (): Promise<TurnStartResponse> => ({
+      turn: { id: 'turn_0000000000000002', status: 'inProgress' },
+    }));
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => 'thr_0000000000000001'),
       resumeThread: vi.fn(async (): Promise<ResumeSnapshot> => ({
         threadId: 'thr_0000000000000001',
         turns: [
@@ -84,9 +196,7 @@ describe('ConversationController', () => {
       onProtocolFailure,
     });
 
-    await expect(
-      controller.loadThreadIndex(),
-    ).resolves.toBe(true);
+    await expect(controller.loadThreadIndex()).resolves.toBe(true);
     expect(controller.getSnapshot().phase).toBe('unavailable');
     controller.connectionReady();
     expect(controller.getSnapshot()).toMatchObject({
@@ -337,11 +447,9 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(() => interruptResponse.promise),
     };
     const { controller } = createHarness(rpc);
@@ -401,20 +509,19 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(),
     };
     const { controller, onProtocolFailure } = createHarness(rpc);
 
-    await expect(controller.startTurn('Reach a durable failure.')).resolves
-      .toEqual({
-        accepted: true,
-        reason: 'accepted',
-      });
+    await expect(
+      controller.startTurn('Reach a durable failure.'),
+    ).resolves.toEqual({
+      accepted: true,
+      reason: 'accepted',
+    });
     controller.handleNotification(
       notification('turn/completed', {
         threadId: 'thr_0000000000000001',
@@ -457,11 +564,9 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(),
     };
     const { controller } = createHarness(rpc);
@@ -525,11 +630,9 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(),
     };
     const { controller, onProtocolFailure } = createHarness(rpc);
@@ -628,11 +731,9 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(),
     };
     const { controller, onProtocolFailure } = createHarness(rpc);
@@ -715,11 +816,9 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(),
     };
     const { controller, onProtocolFailure } = createHarness(rpc);
@@ -809,11 +908,9 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(),
     };
     const { controller, onProtocolFailure } = createHarness(rpc);
@@ -845,11 +942,9 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(),
     };
     const { controller, onProtocolFailure } = createHarness(rpc);
@@ -882,11 +977,9 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(),
     };
     const { controller, onProtocolFailure } = createHarness(rpc);
@@ -938,11 +1031,9 @@ describe('ConversationController', () => {
       startThread: vi.fn(async () => ({
         thread: { id: 'thr_0000000000000001' },
       })),
-      startTurn: vi.fn(
-        async (): Promise<TurnStartResponse> => ({
-          turn: { id: 'turn_0000000000000001', status: 'inProgress' },
-        }),
-      ),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
       interruptTurn: vi.fn(async () => ({})),
     };
     const { controller, onProtocolFailure } = createHarness(rpc);

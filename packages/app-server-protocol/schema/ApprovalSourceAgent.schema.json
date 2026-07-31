@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApprovalSourceAgent",
+  "type": "object",
+  "properties": {
+    "role": {
+      "$ref": "#/$defs/AgentTaskRole"
+    },
+    "taskId": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "taskId",
+    "role"
+  ],
+  "$defs": {
+    "AgentTaskRole": {
+      "type": "string",
+      "enum": [
+        "explorer",
+        "worker",
+        "auditor"
+      ]
+    }
+  }
+}

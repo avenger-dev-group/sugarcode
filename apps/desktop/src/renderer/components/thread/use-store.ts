@@ -49,10 +49,7 @@ import type {
   WorkspaceSearchPresentationState,
 } from '../agent/types';
 import { toFileChangeReviewViewModel } from '../workspace/use-store';
-import type {
-  McpActivityState,
-  McpActivityViewModel,
-} from '../mcp/types';
+import type { McpActivityState, McpActivityViewModel } from '../mcp/types';
 import type {
   ThreadStore,
   ThreadNavigatorViewModel,
@@ -86,10 +83,7 @@ type ConversationProjectionSnapshot = Omit<
 > &
   Readonly<{ navigator?: ConversationThreadNavigatorSnapshot }>;
 
-const TERMINAL_LABELS: Record<
-  ConversationTurnStatus,
-  string | undefined
-> = {
+const TERMINAL_LABELS: Record<ConversationTurnStatus, string | undefined> = {
   completed: undefined,
   failed: 'Turn failed',
   interrupted: 'Turn stopped',
@@ -123,9 +117,7 @@ const toWorkspaceReadPresentationState = (
   activity: ConversationWorkspaceReadActivity,
 ): WorkspaceReadPresentationState => {
   if (activity.result?.status === 'completed') {
-    return activity.result.outcome.type === 'success'
-      ? 'succeeded'
-      : 'failed';
+    return activity.result.outcome.type === 'success' ? 'succeeded' : 'failed';
   }
   if (turnStatus === 'interrupted') {
     return 'interrupted';
@@ -151,9 +143,7 @@ const toWorkspaceListPresentationState = (
   activity: ConversationWorkspaceListActivity,
 ): WorkspaceListPresentationState => {
   if (activity.result?.status === 'completed') {
-    return activity.result.outcome.type === 'success'
-      ? 'succeeded'
-      : 'failed';
+    return activity.result.outcome.type === 'success' ? 'succeeded' : 'failed';
   }
   if (turnStatus === 'interrupted') {
     return 'interrupted';
@@ -179,9 +169,7 @@ const toWorkspaceSearchPresentationState = (
   activity: ConversationWorkspaceSearchActivity,
 ): WorkspaceSearchPresentationState => {
   if (activity.result?.status === 'completed') {
-    return activity.result.outcome.type === 'success'
-      ? 'succeeded'
-      : 'failed';
+    return activity.result.outcome.type === 'success' ? 'succeeded' : 'failed';
   }
   if (turnStatus === 'interrupted') {
     return 'interrupted';
@@ -197,7 +185,9 @@ const toWorkspaceSearchPresentationState = (
     case 'unavailable':
       return 'uncertain';
     default:
-      throw new Error('Workspace search activity did not match its Turn phase.');
+      throw new Error(
+        'Workspace search activity did not match its Turn phase.',
+      );
   }
 };
 
@@ -223,7 +213,9 @@ const toCommandApprovalPresentationState = (
     case 'unavailable':
       return 'uncertain';
     default:
-      throw new Error('Command approval activity did not match its Turn phase.');
+      throw new Error(
+        'Command approval activity did not match its Turn phase.',
+      );
   }
 };
 
@@ -287,9 +279,7 @@ const toCommandExecutionResultPresentationState = (
     case 'unavailable':
       return 'uncertain';
     default:
-      throw new Error(
-        'Command execution result did not match its Turn phase.',
-      );
+      throw new Error('Command execution result did not match its Turn phase.');
   }
 };
 
@@ -300,527 +290,536 @@ export const toThreadViewModel = (
   const previousTurns = new Map(
     previous?.turns.map((turn) => [turn.id, turn]) ?? [],
   );
-  const turns = snapshot.turns.map(
-    (turn): TurnViewModel => {
-      const previousTurn = previousTurns.get(turn.id);
-      const messages = turn.messages.map(
-        (message): TranscriptMessageViewModel => {
-          const previousMessage = previousTurn?.messages.find(
-            (entry) => entry.message.id === message.id,
-          );
-          if (message.role === 'user') {
-            if (
-              previousMessage?.role === 'user' &&
-              previousMessage.message.text === message.text
-            ) {
-              return previousMessage;
-            }
-            return {
-              role: 'user',
-              message: { id: message.id, text: message.text },
-            };
-          }
-          const state = toAgentMessagePresentationState(
-            snapshot.phase,
-            message.status,
-          );
+  const turns = snapshot.turns.map((turn): TurnViewModel => {
+    const previousTurn = previousTurns.get(turn.id);
+    const messages = turn.messages.map(
+      (message): TranscriptMessageViewModel => {
+        const previousMessage = previousTurn?.messages.find(
+          (entry) => entry.message.id === message.id,
+        );
+        if (message.role === 'user') {
           if (
-            previousMessage?.role === 'agent' &&
-            previousMessage.message.text === message.text &&
-            previousMessage.message.state === state
+            previousMessage?.role === 'user' &&
+            previousMessage.message.text === message.text
           ) {
             return previousMessage;
           }
           return {
-            role: 'agent',
-            message: {
-              id: message.id,
-              text: message.text,
-              state,
-            },
+            role: 'user',
+            message: { id: message.id, text: message.text },
           };
-        },
-      );
-      const stableMessages =
-        previousTurn &&
-        previousTurn.messages.length === messages.length &&
-        previousTurn.messages.every(
-          (message, index) => message === messages[index],
-        )
-          ? previousTurn.messages
-          : messages;
-      const nextContextCompactions = turn.contextCompactions?.map(
-        (activity) => {
-          const outcome = activity.outcome;
+        }
+        const state = toAgentMessagePresentationState(
+          snapshot.phase,
+          message.status,
+        );
+        if (
+          previousMessage?.role === 'agent' &&
+          previousMessage.message.text === message.text &&
+          previousMessage.message.state === state
+        ) {
+          return previousMessage;
+        }
+        return {
+          role: 'agent',
+          message: {
+            id: message.id,
+            text: message.text,
+            state,
+          },
+        };
+      },
+    );
+    const stableMessages =
+      previousTurn &&
+      previousTurn.messages.length === messages.length &&
+      previousTurn.messages.every(
+        (message, index) => message === messages[index],
+      )
+        ? previousTurn.messages
+        : messages;
+    const nextContextCompactions = turn.contextCompactions?.map((activity) => {
+      const outcome = activity.outcome;
+      return {
+        id: activity.id,
+        ordinal: activity.ordinal,
+        state:
+          activity.status === 'inProgress'
+            ? ('compacting' as const)
+            : outcome?.type === 'completed'
+              ? ('completed' as const)
+              : outcome?.type === 'failed'
+                ? ('failed' as const)
+                : ('interrupted' as const),
+        preContextBytes: activity.preContextBytes,
+        sourceMessages: activity.sourceMessages,
+        sourceBytes: activity.sourceBytes,
+        sourceSha256: activity.sourceSha256,
+        ...(outcome?.type === 'completed'
+          ? {
+              postContextBytes: outcome.postContextBytes,
+              summaryBytes: outcome.summaryBytes,
+              summarySha256: outcome.summarySha256,
+            }
+          : {}),
+        ...(outcome?.type === 'failed' ? { errorKind: outcome.kind } : {}),
+      };
+    });
+    const contextCompactions =
+      nextContextCompactions &&
+      JSON.stringify(previousTurn?.contextCompactions) ===
+        JSON.stringify(nextContextCompactions)
+        ? previousTurn?.contextCompactions
+        : nextContextCompactions;
+    const nextWorkspaceRead = turn.workspaceRead
+      ? (() => {
+          const state = toWorkspaceReadPresentationState(
+            snapshot.phase,
+            turn.status,
+            turn.workspaceRead,
+          );
+          const outcome = turn.workspaceRead.result?.outcome;
           return {
-            id: activity.id,
-            ordinal: activity.ordinal,
-            state:
-              activity.status === 'inProgress'
-                ? ('compacting' as const)
-                : outcome?.type === 'completed'
-                  ? ('completed' as const)
-                  : outcome?.type === 'failed'
-                    ? ('failed' as const)
-                    : ('interrupted' as const),
-            preContextBytes: activity.preContextBytes,
-            sourceMessages: activity.sourceMessages,
-            sourceBytes: activity.sourceBytes,
-            sourceSha256: activity.sourceSha256,
-            ...(outcome?.type === 'completed'
+            id: turn.workspaceRead.id,
+            path: turn.workspaceRead.path,
+            state,
+            ...(outcome?.type === 'success' ? { bytes: outcome.bytes } : {}),
+            ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
+          } satisfies WorkspaceReadActivityViewModel;
+        })()
+      : undefined;
+    const workspaceRead =
+      nextWorkspaceRead &&
+      previousTurn?.workspaceRead?.id === nextWorkspaceRead.id &&
+      previousTurn.workspaceRead.path === nextWorkspaceRead.path &&
+      previousTurn.workspaceRead.state === nextWorkspaceRead.state &&
+      previousTurn.workspaceRead.bytes === nextWorkspaceRead.bytes &&
+      previousTurn.workspaceRead.errorKind === nextWorkspaceRead.errorKind
+        ? previousTurn.workspaceRead
+        : nextWorkspaceRead;
+    const nextWorkspaceList = turn.workspaceList
+      ? (() => {
+          const state = toWorkspaceListPresentationState(
+            snapshot.phase,
+            turn.status,
+            turn.workspaceList,
+          );
+          const outcome = turn.workspaceList.result?.outcome;
+          return {
+            id: turn.workspaceList.id,
+            path: turn.workspaceList.path,
+            state,
+            ...(outcome?.type === 'success'
+              ? { entries: outcome.entries }
+              : {}),
+            ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
+          } satisfies WorkspaceListActivityViewModel;
+        })()
+      : undefined;
+    const workspaceList =
+      nextWorkspaceList &&
+      previousTurn?.workspaceList?.id === nextWorkspaceList.id &&
+      previousTurn.workspaceList.path === nextWorkspaceList.path &&
+      previousTurn.workspaceList.state === nextWorkspaceList.state &&
+      previousTurn.workspaceList.entries === nextWorkspaceList.entries &&
+      previousTurn.workspaceList.errorKind === nextWorkspaceList.errorKind
+        ? previousTurn.workspaceList
+        : nextWorkspaceList;
+    const nextWorkspaceSearch = turn.workspaceSearch
+      ? (() => {
+          const state = toWorkspaceSearchPresentationState(
+            snapshot.phase,
+            turn.status,
+            turn.workspaceSearch,
+          );
+          const outcome = turn.workspaceSearch.result?.outcome;
+          return {
+            id: turn.workspaceSearch.id,
+            path: turn.workspaceSearch.path,
+            query: turn.workspaceSearch.query,
+            state,
+            ...(outcome?.type === 'success'
               ? {
-                  postContextBytes: outcome.postContextBytes,
-                  summaryBytes: outcome.summaryBytes,
-                  summarySha256: outcome.summarySha256,
+                  matches: outcome.matches,
+                  truncated: outcome.truncated,
                 }
               : {}),
-            ...(outcome?.type === 'failed'
-              ? { errorKind: outcome.kind }
-              : {}),
-          };
-        },
-      );
-      const contextCompactions =
-        nextContextCompactions &&
-        JSON.stringify(previousTurn?.contextCompactions) ===
-          JSON.stringify(nextContextCompactions)
-          ? previousTurn?.contextCompactions
-          : nextContextCompactions;
-      const nextWorkspaceRead = turn.workspaceRead
-        ? (() => {
-            const state = toWorkspaceReadPresentationState(
-              snapshot.phase,
-              turn.status,
-              turn.workspaceRead,
-            );
-            const outcome = turn.workspaceRead.result?.outcome;
-            return {
-              id: turn.workspaceRead.id,
-              path: turn.workspaceRead.path,
-              state,
-              ...(outcome?.type === 'success'
-                ? { bytes: outcome.bytes }
+            ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
+          } satisfies WorkspaceSearchActivityViewModel;
+        })()
+      : undefined;
+    const workspaceSearch =
+      nextWorkspaceSearch &&
+      previousTurn?.workspaceSearch?.id === nextWorkspaceSearch.id &&
+      previousTurn.workspaceSearch.path === nextWorkspaceSearch.path &&
+      previousTurn.workspaceSearch.query === nextWorkspaceSearch.query &&
+      previousTurn.workspaceSearch.state === nextWorkspaceSearch.state &&
+      previousTurn.workspaceSearch.matches === nextWorkspaceSearch.matches &&
+      previousTurn.workspaceSearch.truncated ===
+        nextWorkspaceSearch.truncated &&
+      previousTurn.workspaceSearch.errorKind === nextWorkspaceSearch.errorKind
+        ? previousTurn.workspaceSearch
+        : nextWorkspaceSearch;
+    const nextFileChange = turn.fileChange
+      ? toFileChangeReviewViewModel(
+          snapshot.phase,
+          turn.status,
+          turn.fileChange,
+        )
+      : undefined;
+    const fileChange =
+      nextFileChange &&
+      previousTurn?.fileChange?.id === nextFileChange.id &&
+      previousTurn.fileChange.path === nextFileChange.path &&
+      previousTurn.fileChange.state === nextFileChange.state &&
+      previousTurn.fileChange.errorKind === nextFileChange.errorKind &&
+      JSON.stringify(previousTurn.fileChange.change) ===
+        JSON.stringify(nextFileChange.change)
+        ? previousTurn.fileChange
+        : nextFileChange;
+    const nextCommandApproval = turn.commandApproval
+      ? ({
+          id: turn.commandApproval.id,
+          command: turn.commandApproval.command,
+          argumentCount: turn.commandApproval.argumentCount,
+          state: toCommandApprovalPresentationState(
+            snapshot.phase,
+            turn.status,
+            turn.commandApproval,
+          ),
+          ...(turn.commandApproval.executionAttempt
+            ? {
+                executionAttempt: {
+                  id: turn.commandApproval.executionAttempt.id,
+                  state: toCommandExecutionAttemptPresentationState(
+                    snapshot.phase,
+                    turn.commandApproval.executionAttempt.status,
+                  ),
+                },
+              }
+            : {}),
+          ...(turn.commandApproval.executionResult
+            ? {
+                executionResult: {
+                  id: turn.commandApproval.executionResult.id,
+                  state: toCommandExecutionResultPresentationState(
+                    snapshot.phase,
+                    turn.commandApproval.executionResult.status,
+                  ),
+                  outcome: {
+                    ...turn.commandApproval.executionResult.outcome,
+                  },
+                },
+              }
+            : {}),
+        } satisfies CommandApprovalActivityViewModel)
+      : undefined;
+    const commandApproval =
+      nextCommandApproval &&
+      previousTurn?.commandApproval?.id === nextCommandApproval.id &&
+      previousTurn.commandApproval.command === nextCommandApproval.command &&
+      previousTurn.commandApproval.argumentCount ===
+        nextCommandApproval.argumentCount &&
+      previousTurn.commandApproval.state === nextCommandApproval.state &&
+      previousTurn.commandApproval.executionAttempt?.id ===
+        nextCommandApproval.executionAttempt?.id &&
+      previousTurn.commandApproval.executionAttempt?.state ===
+        nextCommandApproval.executionAttempt?.state &&
+      previousTurn.commandApproval.executionResult?.id ===
+        nextCommandApproval.executionResult?.id &&
+      previousTurn.commandApproval.executionResult?.state ===
+        nextCommandApproval.executionResult?.state &&
+      JSON.stringify(previousTurn.commandApproval.executionResult?.outcome) ===
+        JSON.stringify(nextCommandApproval.executionResult?.outcome)
+        ? previousTurn.commandApproval
+        : nextCommandApproval;
+    const nextMcpActivities = turn.mcpActivities?.map(
+      (activity): McpActivityViewModel => ({
+        id: activity.id,
+        serverId: activity.serverId,
+        name: activity.name,
+        argumentsBytes: activity.argumentsBytes,
+        argumentsSha256: activity.argumentsSha256,
+        inventorySha256: activity.inventorySha256,
+        state: toMcpActivityState(snapshot.phase, turn.status, activity),
+        ...(activity.decision ? { decision: activity.decision.value } : {}),
+        ...(activity.executionAttempt
+          ? { attemptId: activity.executionAttempt.id }
+          : {}),
+        ...(activity.result
+          ? {
+              resultId: activity.result.id,
+              receipt: { ...activity.result.receipt },
+            }
+          : {}),
+      }),
+    );
+    const mcpActivities =
+      nextMcpActivities &&
+      JSON.stringify(previousTurn?.mcpActivities) ===
+        JSON.stringify(nextMcpActivities)
+        ? previousTurn?.mcpActivities
+        : nextMcpActivities;
+    const nextActivities = turn.activities?.map((entry) => {
+      switch (entry.type) {
+        case 'commentary':
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              text: entry.activity.text,
+              state:
+                entry.activity.status === 'completed'
+                  ? ('completed' as const)
+                  : ('running' as const),
+            },
+          } as const;
+        case 'contextCompaction': {
+          const outcome = entry.activity.outcome;
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              ordinal: entry.activity.ordinal,
+              state:
+                entry.activity.status === 'inProgress'
+                  ? ('compacting' as const)
+                  : outcome?.type === 'completed'
+                    ? ('completed' as const)
+                    : outcome?.type === 'failed'
+                      ? ('failed' as const)
+                      : ('interrupted' as const),
+              preContextBytes: entry.activity.preContextBytes,
+              sourceMessages: entry.activity.sourceMessages,
+              sourceBytes: entry.activity.sourceBytes,
+              sourceSha256: entry.activity.sourceSha256,
+              ...(outcome?.type === 'completed'
+                ? {
+                    postContextBytes: outcome.postContextBytes,
+                    summaryBytes: outcome.summaryBytes,
+                    summarySha256: outcome.summarySha256,
+                  }
                 : {}),
-              ...(outcome?.type === 'error'
+              ...(outcome?.type === 'failed'
                 ? { errorKind: outcome.kind }
                 : {}),
-            } satisfies WorkspaceReadActivityViewModel;
-          })()
-        : undefined;
-      const workspaceRead =
-        nextWorkspaceRead &&
-        previousTurn?.workspaceRead?.id === nextWorkspaceRead.id &&
-        previousTurn.workspaceRead.path === nextWorkspaceRead.path &&
-        previousTurn.workspaceRead.state === nextWorkspaceRead.state &&
-        previousTurn.workspaceRead.bytes === nextWorkspaceRead.bytes &&
-        previousTurn.workspaceRead.errorKind === nextWorkspaceRead.errorKind
-          ? previousTurn.workspaceRead
-          : nextWorkspaceRead;
-      const nextWorkspaceList = turn.workspaceList
-        ? (() => {
-            const state = toWorkspaceListPresentationState(
-              snapshot.phase,
-              turn.status,
-              turn.workspaceList,
-            );
-            const outcome = turn.workspaceList.result?.outcome;
-            return {
-              id: turn.workspaceList.id,
-              path: turn.workspaceList.path,
-              state,
+            },
+          } as const;
+        }
+        case 'workspaceRead': {
+          const outcome = entry.activity.result?.outcome;
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              path: entry.activity.path,
+              state: toWorkspaceReadPresentationState(
+                snapshot.phase,
+                turn.status,
+                entry.activity,
+              ),
+              ...(outcome?.type === 'success' ? { bytes: outcome.bytes } : {}),
+              ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
+            },
+          } as const;
+        }
+        case 'workspaceList': {
+          const outcome = entry.activity.result?.outcome;
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              path: entry.activity.path,
+              state: toWorkspaceListPresentationState(
+                snapshot.phase,
+                turn.status,
+                entry.activity,
+              ),
               ...(outcome?.type === 'success'
                 ? { entries: outcome.entries }
                 : {}),
-              ...(outcome?.type === 'error'
-                ? { errorKind: outcome.kind }
-                : {}),
-            } satisfies WorkspaceListActivityViewModel;
-          })()
-        : undefined;
-      const workspaceList =
-        nextWorkspaceList &&
-        previousTurn?.workspaceList?.id === nextWorkspaceList.id &&
-        previousTurn.workspaceList.path === nextWorkspaceList.path &&
-        previousTurn.workspaceList.state === nextWorkspaceList.state &&
-        previousTurn.workspaceList.entries === nextWorkspaceList.entries &&
-        previousTurn.workspaceList.errorKind === nextWorkspaceList.errorKind
-          ? previousTurn.workspaceList
-          : nextWorkspaceList;
-      const nextWorkspaceSearch = turn.workspaceSearch
-        ? (() => {
-            const state = toWorkspaceSearchPresentationState(
-              snapshot.phase,
-              turn.status,
-              turn.workspaceSearch,
-            );
-            const outcome = turn.workspaceSearch.result?.outcome;
-            return {
-              id: turn.workspaceSearch.id,
-              path: turn.workspaceSearch.path,
-              query: turn.workspaceSearch.query,
-              state,
+              ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
+            },
+          } as const;
+        }
+        case 'workspaceSearch': {
+          const outcome = entry.activity.result?.outcome;
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              path: entry.activity.path,
+              query: entry.activity.query,
+              state: toWorkspaceSearchPresentationState(
+                snapshot.phase,
+                turn.status,
+                entry.activity,
+              ),
               ...(outcome?.type === 'success'
                 ? {
                     matches: outcome.matches,
                     truncated: outcome.truncated,
                   }
                 : {}),
-              ...(outcome?.type === 'error'
-                ? { errorKind: outcome.kind }
-                : {}),
-            } satisfies WorkspaceSearchActivityViewModel;
-          })()
-        : undefined;
-      const workspaceSearch =
-        nextWorkspaceSearch &&
-        previousTurn?.workspaceSearch?.id === nextWorkspaceSearch.id &&
-        previousTurn.workspaceSearch.path === nextWorkspaceSearch.path &&
-        previousTurn.workspaceSearch.query === nextWorkspaceSearch.query &&
-        previousTurn.workspaceSearch.state === nextWorkspaceSearch.state &&
-        previousTurn.workspaceSearch.matches === nextWorkspaceSearch.matches &&
-        previousTurn.workspaceSearch.truncated ===
-          nextWorkspaceSearch.truncated &&
-        previousTurn.workspaceSearch.errorKind ===
-          nextWorkspaceSearch.errorKind
-          ? previousTurn.workspaceSearch
-          : nextWorkspaceSearch;
-      const nextFileChange = turn.fileChange
-        ? toFileChangeReviewViewModel(
-            snapshot.phase,
-            turn.status,
-            turn.fileChange,
-          )
-        : undefined;
-      const fileChange =
-        nextFileChange &&
-        previousTurn?.fileChange?.id === nextFileChange.id &&
-        previousTurn.fileChange.path === nextFileChange.path &&
-        previousTurn.fileChange.state === nextFileChange.state &&
-        previousTurn.fileChange.errorKind === nextFileChange.errorKind &&
-        JSON.stringify(previousTurn.fileChange.change) ===
-          JSON.stringify(nextFileChange.change)
-          ? previousTurn.fileChange
-          : nextFileChange;
-      const nextCommandApproval = turn.commandApproval
-        ? {
-            id: turn.commandApproval.id,
-            command: turn.commandApproval.command,
-            argumentCount: turn.commandApproval.argumentCount,
-            state: toCommandApprovalPresentationState(
+              ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
+            },
+          } as const;
+        }
+        case 'fileChange':
+          return {
+            type: entry.type,
+            activity: toFileChangeReviewViewModel(
               snapshot.phase,
               turn.status,
-              turn.commandApproval,
+              entry.activity,
             ),
-            ...(turn.commandApproval.executionAttempt
-              ? {
-                  executionAttempt: {
-                    id: turn.commandApproval.executionAttempt.id,
-                    state: toCommandExecutionAttemptPresentationState(
-                      snapshot.phase,
-                      turn.commandApproval.executionAttempt.status,
-                    ),
-                  },
-                }
-              : {}),
-            ...(turn.commandApproval.executionResult
-              ? {
-                  executionResult: {
-                    id: turn.commandApproval.executionResult.id,
-                    state: toCommandExecutionResultPresentationState(
-                      snapshot.phase,
-                      turn.commandApproval.executionResult.status,
-                    ),
-                    outcome: {
-                      ...turn.commandApproval.executionResult.outcome,
-                    },
-                  },
-                }
-              : {}),
-          } satisfies CommandApprovalActivityViewModel
-        : undefined;
-      const commandApproval =
-        nextCommandApproval &&
-        previousTurn?.commandApproval?.id === nextCommandApproval.id &&
-        previousTurn.commandApproval.command === nextCommandApproval.command &&
-        previousTurn.commandApproval.argumentCount ===
-          nextCommandApproval.argumentCount &&
-        previousTurn.commandApproval.state === nextCommandApproval.state &&
-        previousTurn.commandApproval.executionAttempt?.id ===
-          nextCommandApproval.executionAttempt?.id &&
-        previousTurn.commandApproval.executionAttempt?.state ===
-          nextCommandApproval.executionAttempt?.state &&
-        previousTurn.commandApproval.executionResult?.id ===
-          nextCommandApproval.executionResult?.id &&
-        previousTurn.commandApproval.executionResult?.state ===
-          nextCommandApproval.executionResult?.state &&
-        JSON.stringify(
-          previousTurn.commandApproval.executionResult?.outcome,
-        ) === JSON.stringify(nextCommandApproval.executionResult?.outcome)
-          ? previousTurn.commandApproval
-          : nextCommandApproval;
-      const nextMcpActivities = turn.mcpActivities?.map(
-        (activity): McpActivityViewModel => ({
-          id: activity.id,
-          serverId: activity.serverId,
-          name: activity.name,
-          argumentsBytes: activity.argumentsBytes,
-          argumentsSha256: activity.argumentsSha256,
-          inventorySha256: activity.inventorySha256,
-          state: toMcpActivityState(snapshot.phase, turn.status, activity),
-          ...(activity.decision
-            ? { decision: activity.decision.value }
-            : {}),
-          ...(activity.executionAttempt
-            ? { attemptId: activity.executionAttempt.id }
-            : {}),
-          ...(activity.result
-            ? {
-                resultId: activity.result.id,
-                receipt: { ...activity.result.receipt },
-              }
-            : {}),
-        }),
-      );
-      const mcpActivities =
-        nextMcpActivities &&
-        JSON.stringify(previousTurn?.mcpActivities) ===
-          JSON.stringify(nextMcpActivities)
-          ? previousTurn?.mcpActivities
-          : nextMcpActivities;
-      const nextActivities = turn.activities?.map((entry) => {
-        switch (entry.type) {
-          case 'contextCompaction': {
-            const outcome = entry.activity.outcome;
-            return {
-              type: entry.type,
-              activity: {
-                id: entry.activity.id,
-                ordinal: entry.activity.ordinal,
-                state:
-                  entry.activity.status === 'inProgress'
-                    ? ('compacting' as const)
-                    : outcome?.type === 'completed'
-                      ? ('completed' as const)
-                      : outcome?.type === 'failed'
-                        ? ('failed' as const)
-                        : ('interrupted' as const),
-                preContextBytes: entry.activity.preContextBytes,
-                sourceMessages: entry.activity.sourceMessages,
-                sourceBytes: entry.activity.sourceBytes,
-                sourceSha256: entry.activity.sourceSha256,
-                ...(outcome?.type === 'completed'
-                  ? {
-                      postContextBytes: outcome.postContextBytes,
-                      summaryBytes: outcome.summaryBytes,
-                      summarySha256: outcome.summarySha256,
-                    }
-                  : {}),
-                ...(outcome?.type === 'failed'
-                  ? { errorKind: outcome.kind }
-                  : {}),
-              },
-            } as const;
-          }
-          case 'workspaceRead': {
-            const outcome = entry.activity.result?.outcome;
-            return {
-              type: entry.type,
-              activity: {
-                id: entry.activity.id,
-                path: entry.activity.path,
-                state: toWorkspaceReadPresentationState(
-                  snapshot.phase,
-                  turn.status,
-                  entry.activity,
-                ),
-                ...(outcome?.type === 'success'
-                  ? { bytes: outcome.bytes }
-                  : {}),
-                ...(outcome?.type === 'error'
-                  ? { errorKind: outcome.kind }
-                  : {}),
-              },
-            } as const;
-          }
-          case 'workspaceList': {
-            const outcome = entry.activity.result?.outcome;
-            return {
-              type: entry.type,
-              activity: {
-                id: entry.activity.id,
-                path: entry.activity.path,
-                state: toWorkspaceListPresentationState(
-                  snapshot.phase,
-                  turn.status,
-                  entry.activity,
-                ),
-                ...(outcome?.type === 'success'
-                  ? { entries: outcome.entries }
-                  : {}),
-                ...(outcome?.type === 'error'
-                  ? { errorKind: outcome.kind }
-                  : {}),
-              },
-            } as const;
-          }
-          case 'workspaceSearch': {
-            const outcome = entry.activity.result?.outcome;
-            return {
-              type: entry.type,
-              activity: {
-                id: entry.activity.id,
-                path: entry.activity.path,
-                query: entry.activity.query,
-                state: toWorkspaceSearchPresentationState(
-                  snapshot.phase,
-                  turn.status,
-                  entry.activity,
-                ),
-                ...(outcome?.type === 'success'
-                  ? {
-                      matches: outcome.matches,
-                      truncated: outcome.truncated,
-                    }
-                  : {}),
-                ...(outcome?.type === 'error'
-                  ? { errorKind: outcome.kind }
-                  : {}),
-              },
-            } as const;
-          }
-          case 'fileChange':
-            return {
-              type: entry.type,
-              activity: toFileChangeReviewViewModel(
+          } as const;
+        case 'commandApproval':
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              command: entry.activity.command,
+              argumentCount: entry.activity.argumentCount,
+              state: toCommandApprovalPresentationState(
                 snapshot.phase,
                 turn.status,
                 entry.activity,
               ),
-            } as const;
-          case 'commandApproval':
-            return {
-              type: entry.type,
-              activity: {
-                id: entry.activity.id,
-                command: entry.activity.command,
-                argumentCount: entry.activity.argumentCount,
-                state: toCommandApprovalPresentationState(
-                  snapshot.phase,
-                  turn.status,
-                  entry.activity,
-                ),
-                ...(entry.activity.executionAttempt
-                  ? {
-                      executionAttempt: {
-                        id: entry.activity.executionAttempt.id,
-                        state: toCommandExecutionAttemptPresentationState(
-                          snapshot.phase,
-                          entry.activity.executionAttempt.status,
-                        ),
+              ...(entry.activity.executionAttempt
+                ? {
+                    executionAttempt: {
+                      id: entry.activity.executionAttempt.id,
+                      state: toCommandExecutionAttemptPresentationState(
+                        snapshot.phase,
+                        entry.activity.executionAttempt.status,
+                      ),
+                    },
+                  }
+                : {}),
+              ...(entry.activity.executionResult
+                ? {
+                    executionResult: {
+                      id: entry.activity.executionResult.id,
+                      state: toCommandExecutionResultPresentationState(
+                        snapshot.phase,
+                        entry.activity.executionResult.status,
+                      ),
+                      outcome: {
+                        ...entry.activity.executionResult.outcome,
                       },
-                    }
-                  : {}),
-                ...(entry.activity.executionResult
-                  ? {
-                      executionResult: {
-                        id: entry.activity.executionResult.id,
-                        state: toCommandExecutionResultPresentationState(
-                          snapshot.phase,
-                          entry.activity.executionResult.status,
-                        ),
-                        outcome: {
-                          ...entry.activity.executionResult.outcome,
-                        },
-                      },
-                    }
-                  : {}),
-              },
-            } as const;
-          case 'mcp':
-            return {
-              type: entry.type,
-              activity: {
-                id: entry.activity.id,
-                serverId: entry.activity.serverId,
-                name: entry.activity.name,
-                argumentsBytes: entry.activity.argumentsBytes,
-                argumentsSha256: entry.activity.argumentsSha256,
-                inventorySha256: entry.activity.inventorySha256,
-                state: toMcpActivityState(
-                  snapshot.phase,
-                  turn.status,
-                  entry.activity,
-                ),
-                ...(entry.activity.decision
-                  ? { decision: entry.activity.decision.value }
-                  : {}),
-                ...(entry.activity.executionAttempt
-                  ? { attemptId: entry.activity.executionAttempt.id }
-                  : {}),
-                ...(entry.activity.result
-                  ? {
-                      resultId: entry.activity.result.id,
-                      receipt: { ...entry.activity.result.receipt },
-                    }
-                  : {}),
-              },
-            } as const;
-        }
-      });
-      const activities =
-        nextActivities &&
-        JSON.stringify(previousTurn?.activities) ===
-          JSON.stringify(nextActivities)
-          ? previousTurn?.activities
-          : nextActivities;
-      const nextFailure = turn.error
-        ? toTurnFailureViewModel(turn.error)
-        : undefined;
-      const failure =
-        nextFailure &&
-        previousTurn?.failure?.kind === nextFailure.kind &&
-        previousTurn?.failure?.summary === nextFailure.summary &&
-        previousTurn.failure.guidance === nextFailure.guidance &&
-        previousTurn.failure.retryable === nextFailure.retryable
-          ? previousTurn.failure
-          : nextFailure;
-      const terminalLabel = TERMINAL_LABELS[turn.status];
-      const isError = turn.status === 'failed';
-      if (
-        previousTurn?.status === turn.status &&
-        previousTurn.messages === stableMessages &&
-        previousTurn.contextCompactions === contextCompactions &&
-        previousTurn.activities === activities &&
-        previousTurn.workspaceRead === workspaceRead &&
-        previousTurn.workspaceList === workspaceList &&
-        previousTurn.workspaceSearch === workspaceSearch &&
-        previousTurn.fileChange === fileChange &&
-        previousTurn.commandApproval === commandApproval &&
-        previousTurn.mcpActivities === mcpActivities &&
-        previousTurn.terminalLabel === terminalLabel &&
-        previousTurn.failure === failure &&
-        previousTurn.isError === isError
-      ) {
-        return previousTurn;
+                    },
+                  }
+                : {}),
+            },
+          } as const;
+        case 'mcp':
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              serverId: entry.activity.serverId,
+              name: entry.activity.name,
+              argumentsBytes: entry.activity.argumentsBytes,
+              argumentsSha256: entry.activity.argumentsSha256,
+              inventorySha256: entry.activity.inventorySha256,
+              state: toMcpActivityState(
+                snapshot.phase,
+                turn.status,
+                entry.activity,
+              ),
+              ...(entry.activity.decision
+                ? { decision: entry.activity.decision.value }
+                : {}),
+              ...(entry.activity.executionAttempt
+                ? { attemptId: entry.activity.executionAttempt.id }
+                : {}),
+              ...(entry.activity.result
+                ? {
+                    resultId: entry.activity.result.id,
+                    receipt: { ...entry.activity.result.receipt },
+                  }
+                : {}),
+            },
+          } as const;
+        case 'orchestration':
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              tasks: entry.activity.tasks.map((task) => ({
+                id: task.id,
+                taskId: task.taskId,
+                clientTaskKey: task.clientTaskKey,
+                childThreadId: task.childThreadId,
+                title: task.title,
+                role: task.role,
+                access: task.access,
+                dependsOn: [...task.dependsOn],
+                taskMarkdown: task.taskMarkdown,
+                status: task.status,
+                amendments: task.amendments.map((amendment) => ({
+                  ...amendment,
+                })),
+                ...(task.result ? { result: { ...task.result } } : {}),
+              })),
+            },
+          } as const;
       }
-      return {
-        id: turn.id,
-        status: turn.status,
-        messages: stableMessages,
-        ...(contextCompactions ? { contextCompactions } : {}),
-        ...(activities ? { activities } : {}),
-        ...(workspaceRead ? { workspaceRead } : {}),
-        ...(workspaceList ? { workspaceList } : {}),
-        ...(workspaceSearch ? { workspaceSearch } : {}),
-        ...(fileChange ? { fileChange } : {}),
-        ...(commandApproval ? { commandApproval } : {}),
-        ...(mcpActivities ? { mcpActivities } : {}),
-        ...(terminalLabel ? { terminalLabel } : {}),
-        ...(failure ? { failure } : {}),
-        isError,
-      };
-    },
-  );
+    });
+    const activities =
+      nextActivities &&
+      JSON.stringify(previousTurn?.activities) ===
+        JSON.stringify(nextActivities)
+        ? previousTurn?.activities
+        : nextActivities;
+    const nextFailure = turn.error
+      ? toTurnFailureViewModel(turn.error)
+      : undefined;
+    const failure =
+      nextFailure &&
+      previousTurn?.failure?.kind === nextFailure.kind &&
+      previousTurn?.failure?.summary === nextFailure.summary &&
+      previousTurn.failure.guidance === nextFailure.guidance &&
+      previousTurn.failure.retryable === nextFailure.retryable
+        ? previousTurn.failure
+        : nextFailure;
+    const terminalLabel = TERMINAL_LABELS[turn.status];
+    const isError = turn.status === 'failed';
+    if (
+      previousTurn?.status === turn.status &&
+      previousTurn.messages === stableMessages &&
+      previousTurn.contextCompactions === contextCompactions &&
+      previousTurn.activities === activities &&
+      previousTurn.workspaceRead === workspaceRead &&
+      previousTurn.workspaceList === workspaceList &&
+      previousTurn.workspaceSearch === workspaceSearch &&
+      previousTurn.fileChange === fileChange &&
+      previousTurn.commandApproval === commandApproval &&
+      previousTurn.mcpActivities === mcpActivities &&
+      previousTurn.terminalLabel === terminalLabel &&
+      previousTurn.failure === failure &&
+      previousTurn.isError === isError
+    ) {
+      return previousTurn;
+    }
+    return {
+      id: turn.id,
+      status: turn.status,
+      messages: stableMessages,
+      ...(contextCompactions ? { contextCompactions } : {}),
+      ...(activities ? { activities } : {}),
+      ...(workspaceRead ? { workspaceRead } : {}),
+      ...(workspaceList ? { workspaceList } : {}),
+      ...(workspaceSearch ? { workspaceSearch } : {}),
+      ...(fileChange ? { fileChange } : {}),
+      ...(commandApproval ? { commandApproval } : {}),
+      ...(mcpActivities ? { mcpActivities } : {}),
+      ...(terminalLabel ? { terminalLabel } : {}),
+      ...(failure ? { failure } : {}),
+      isError,
+    };
+  });
   const stableTurns =
     previous &&
     previous.turns.length === turns.length &&
@@ -873,8 +872,7 @@ export const toThreadNavigatorViewModel = (
         return `No Threads match ${snapshot.navigator.search.query}`;
       case 'error':
         return (
-          snapshot.navigator.search.summary ??
-          'Thread search is unavailable'
+          snapshot.navigator.search.summary ?? 'Thread search is unavailable'
         );
       case 'ready':
         return `${threadIds.length} matching Threads`;
@@ -899,8 +897,7 @@ export const toThreadNavigatorViewModel = (
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
     pendingMutation: snapshot.navigator.pendingMutation ?? null,
-    archivedUndoThreadId:
-      snapshot.navigator.archivedUndoThreadId ?? null,
+    archivedUndoThreadId: snapshot.navigator.archivedUndoThreadId ?? null,
     truncated: searchActive
       ? snapshot.navigator.search.truncated
       : snapshot.navigator.activeTruncated,
@@ -930,9 +927,7 @@ export const useTranscriptFollow = (
   const transcriptViewport = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscript = useRef<boolean>(true);
   const previousScrollTop = useRef<number>(0);
-  const previousThreadIdentity = useRef<string | null>(
-    thread.threadIdentity,
-  );
+  const previousThreadIdentity = useRef<string | null>(thread.threadIdentity);
   const latestUserMessageId = (() => {
     for (
       let turnIndex = thread.turns.length - 1;
@@ -953,9 +948,7 @@ export const useTranscriptFollow = (
     }
     return null;
   })();
-  const previousUserMessageId = useRef<string | null>(
-    latestUserMessageId,
-  );
+  const previousUserMessageId = useRef<string | null>(latestUserMessageId);
 
   const scrollTranscriptToEnd = useCallback((): void => {
     if (!shouldFollowTranscript.current) {
@@ -998,9 +991,7 @@ export const useTranscriptFollow = (
 
     if (shouldFollowTranscript.current) {
       scrollTranscriptToEnd();
-      const animationFrame = requestAnimationFrame(
-        scrollTranscriptToEnd,
-      );
+      const animationFrame = requestAnimationFrame(scrollTranscriptToEnd);
       return () => cancelAnimationFrame(animationFrame);
     }
     return undefined;
@@ -1049,11 +1040,13 @@ export const useStore = (): ThreadStore => {
       }
     };
     const unsubscribe = onConversationStateChanged(acceptSnapshot);
-    void getConversationState().then(acceptSnapshot).catch(() => {
-      if (active) {
-        setActionError('Desktop could not read the current conversation.');
-      }
-    });
+    void getConversationState()
+      .then(acceptSnapshot)
+      .catch(() => {
+        if (active) {
+          setActionError('Desktop could not read the current conversation.');
+        }
+      });
     return () => {
       active = false;
       unsubscribe();
@@ -1117,9 +1110,7 @@ export const useStore = (): ThreadStore => {
     try {
       const result = await searchConversationThreads(query);
       if (!result.accepted && result.reason === 'invalidSearch') {
-        setActionError(
-          'Search is limited to 16 terms and 256 UTF-8 bytes.',
-        );
+        setActionError('Search is limited to 16 terms and 256 UTF-8 bytes.');
       } else if (!result.accepted) {
         setActionError('Thread search is not available right now.');
       }
@@ -1135,9 +1126,7 @@ export const useStore = (): ThreadStore => {
       if (result.accepted) {
         setNavigatorOpen(false);
       } else if (result.reason === 'turnActive') {
-        setActionError(
-          'Stop the active Turn before switching Threads.',
-        );
+        setActionError('Stop the active Turn before switching Threads.');
       } else {
         setActionError('That durable Thread could not be selected.');
       }
@@ -1147,9 +1136,7 @@ export const useStore = (): ThreadStore => {
   };
 
   const runThreadMutation = async (
-    action: (
-      threadId: string,
-    ) => Promise<ConversationActionResult>,
+    action: (threadId: string) => Promise<ConversationActionResult>,
     threadId: string,
     failure: string,
   ): Promise<void> => {

@@ -20,15 +20,69 @@
     "data"
   ],
   "$defs": {
+    "AgentTaskRole": {
+      "type": "string",
+      "enum": [
+        "explorer",
+        "worker",
+        "auditor"
+      ]
+    },
     "Thread": {
       "type": "object",
       "properties": {
         "id": {
           "type": "string"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "id"
+      ]
+    },
+    "ThreadOrigin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "orchestrationId": {
+              "type": "string"
+            },
+            "parentThreadId": {
+              "type": "string"
+            },
+            "parentTurnId": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/$defs/AgentTaskRole"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "subagent"
+            }
+          },
+          "required": [
+            "type",
+            "parentThreadId",
+            "parentTurnId",
+            "orchestrationId",
+            "taskId",
+            "role"
+          ]
+        }
       ]
     }
   }

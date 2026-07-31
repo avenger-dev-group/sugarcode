@@ -29,6 +29,26 @@ describe('Thread lifecycle RPC', () => {
             ],
           };
         }
+        if (method === 'thread/descendants/list') {
+          return {
+            data: [
+              {
+                thread: {
+                  id: 'thr_0000000000000003',
+                  origin: {
+                    type: 'subagent',
+                    parentThreadId: THREAD_A,
+                    parentTurnId: 'turn_0000000000000001',
+                    orchestrationId: 'orch/root/turn',
+                    taskId: 'task_explore',
+                    role: 'explorer',
+                  },
+                },
+                turns: [],
+              },
+            ],
+          };
+        }
         return {};
       },
     );
@@ -45,6 +65,16 @@ describe('Thread lifecycle RPC', () => {
       client.unarchiveThread(THREAD_A),
     ).resolves.toBeUndefined();
     await expect(client.deleteThread(THREAD_A)).resolves.toBeUndefined();
+    await expect(client.listDescendants(THREAD_A)).resolves.toMatchObject([
+      {
+        threadId: 'thr_0000000000000003',
+        origin: {
+          type: 'subagent',
+          parentThreadId: THREAD_A,
+          role: 'explorer',
+        },
+      },
+    ]);
 
     expect(requestReady.mock.calls.map(([method, params]) => [
       method,
@@ -54,6 +84,7 @@ describe('Thread lifecycle RPC', () => {
       ['thread/archive', { threadId: THREAD_A }],
       ['thread/unarchive', { threadId: THREAD_A }],
       ['thread/delete', { threadId: THREAD_A }],
+      ['thread/descendants/list', { threadId: THREAD_A }],
     ]);
   });
 

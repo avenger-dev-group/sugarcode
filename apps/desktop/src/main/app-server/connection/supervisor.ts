@@ -215,6 +215,31 @@ export class ConnectionSupervisor {
       onSurfaceFailure: () =>
         this.failAndTerminate('approval-ui-unavailable'),
     });
+    let commandApprovalTaskId: string | null = null;
+    let mcpApprovalTaskId: string | null = null;
+    const updateAgentApprovalTasks = (): void => {
+      this.conversation.setAgentApprovalTasks(
+        new Set(
+          [commandApprovalTaskId, mcpApprovalTaskId].filter(
+            (taskId): taskId is string => taskId !== null,
+          ),
+        ),
+      );
+    };
+    this.commandApprovals.subscribe((snapshot) => {
+      commandApprovalTaskId =
+        snapshot.status === 'pending'
+          ? (snapshot.request?.sourceAgent?.taskId ?? null)
+          : null;
+      updateAgentApprovalTasks();
+    });
+    this.mcpApprovals.subscribe((snapshot) => {
+      mcpApprovalTaskId =
+        snapshot.status === 'pending'
+          ? (snapshot.request?.sourceAgent?.taskId ?? null)
+          : null;
+      updateAgentApprovalTasks();
+    });
   }
 
   getSnapshot = (): ConnectionStateSnapshot => this.snapshot;

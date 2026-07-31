@@ -8,6 +8,36 @@ use crate::CommandSandboxPolicy;
 use crate::CommandWorkspaceWritePolicy;
 use crate::CommandWorkspaceWriteRisk;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum AgentTaskRole {
+    Explorer,
+    Worker,
+    Auditor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum AgentTaskAccess {
+    ReadOnly,
+    WorkspaceWrite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum AgentTaskStatus {
+    Queued,
+    Running,
+    WaitingApproval,
+    Completed,
+    Failed,
+    Interrupted,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type", rename_all = "camelCase")]
@@ -19,6 +49,62 @@ pub enum Item {
     AgentMessage {
         id: String,
         text: String,
+    },
+    AgentCommentary {
+        id: String,
+        text: String,
+    },
+    AgentTask {
+        id: String,
+        #[serde(rename = "orchestrationId")]
+        #[ts(rename = "orchestrationId")]
+        orchestration_id: String,
+        #[serde(rename = "taskId")]
+        #[ts(rename = "taskId")]
+        task_id: String,
+        #[serde(rename = "clientTaskKey")]
+        #[ts(rename = "clientTaskKey")]
+        client_task_key: String,
+        #[serde(rename = "childThreadId")]
+        #[ts(rename = "childThreadId")]
+        child_thread_id: String,
+        title: String,
+        role: AgentTaskRole,
+        access: AgentTaskAccess,
+        #[serde(rename = "dependsOn")]
+        #[ts(rename = "dependsOn")]
+        depends_on: Vec<String>,
+        #[serde(rename = "taskMarkdown")]
+        #[ts(rename = "taskMarkdown")]
+        task_markdown: String,
+    },
+    AgentTaskAmendment {
+        id: String,
+        #[serde(rename = "orchestrationId")]
+        #[ts(rename = "orchestrationId")]
+        orchestration_id: String,
+        #[serde(rename = "taskId")]
+        #[ts(rename = "taskId")]
+        task_id: String,
+        #[serde(rename = "amendmentMarkdown")]
+        #[ts(rename = "amendmentMarkdown")]
+        amendment_markdown: String,
+    },
+    AgentTaskResult {
+        id: String,
+        #[serde(rename = "orchestrationId")]
+        #[ts(rename = "orchestrationId")]
+        orchestration_id: String,
+        #[serde(rename = "taskId")]
+        #[ts(rename = "taskId")]
+        task_id: String,
+        status: AgentTaskStatus,
+        #[serde(rename = "summaryMarkdown")]
+        #[ts(rename = "summaryMarkdown")]
+        summary_markdown: String,
+        #[serde(rename = "durationMs")]
+        #[ts(rename = "durationMs")]
+        duration_ms: u64,
     },
     ContextCompaction {
         id: String,

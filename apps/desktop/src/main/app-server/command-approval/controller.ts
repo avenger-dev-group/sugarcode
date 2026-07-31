@@ -288,6 +288,9 @@ export class CommandApprovalController {
     sandboxed: true,
     sandboxPolicy: 'filesystemReadOnlyV1',
     networkPolicy: 'networkDeniedV1',
+    ...(active.params.sourceAgent
+      ? { sourceAgent: { ...active.params.sourceAgent } }
+      : {}),
     localExpiresAtMs: active.localExpiresAtMs,
     actionState: active.actionState,
   });

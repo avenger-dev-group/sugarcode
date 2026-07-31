@@ -1,3 +1,4 @@
+use crate::ThreadId;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,6 +37,32 @@ pub enum CoreItemKind {
     },
     AgentMessage {
         text: String,
+    },
+    AgentCommentary {
+        text: String,
+    },
+    AgentTask {
+        orchestration_id: String,
+        task_id: String,
+        client_task_key: String,
+        child_thread_id: ThreadId,
+        title: String,
+        role: String,
+        access: String,
+        depends_on: Vec<String>,
+        task_markdown: String,
+    },
+    AgentTaskAmendment {
+        orchestration_id: String,
+        task_id: String,
+        amendment_markdown: String,
+    },
+    AgentTaskResult {
+        orchestration_id: String,
+        task_id: String,
+        status: String,
+        summary_markdown: String,
+        duration_ms: u64,
     },
     ContextCompaction {
         strategy: CoreContextCompactionStrategy,

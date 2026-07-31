@@ -12,8 +12,24 @@ pub(super) struct AgentLoopState {
 }
 
 impl AgentLoopState {
-    pub(super) fn tools_for_round(&self, runtime: &CoreRuntime) -> Vec<ModelToolDefinition> {
+    pub(super) fn tools_for_round(
+        &self,
+        runtime: &CoreRuntime,
+        thread_id: &ThreadId,
+    ) -> Vec<ModelToolDefinition> {
         let mut tools = workspace_tool_definitions(runtime);
+        if runtime.collaboration.is_child_thread(thread_id) {
+            if runtime.collaboration.access_for_child(thread_id) == Some(AgentAccess::ReadOnly) {
+                tools.retain(|tool| {
+                    matches!(
+                        tool.name.as_str(),
+                        "workspace/read" | "workspace/list" | "workspace/search"
+                    )
+                });
+            }
+        } else {
+            tools.extend(runtime.collaboration.tool_definitions());
+        }
         if self.mcp_calls >= MAX_MCP_TOOL_CALLS_PER_TURN {
             tools.retain(|tool| !tool.name.starts_with("mcp__"));
         }

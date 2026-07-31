@@ -11,6 +11,8 @@ use std::sync::Arc;
 use sugarcode_agent_runtime::AgentSurfaceSession;
 use sugarcode_agent_runtime::PendingCommandApproval;
 use sugarcode_agent_runtime::PendingMcpToolApproval;
+use sugarcode_app_server_protocol::AgentTaskRole;
+use sugarcode_app_server_protocol::ApprovalSourceAgent;
 use sugarcode_app_server_protocol::CommandApprovalParams;
 use sugarcode_app_server_protocol::CommandApprovalResponse;
 use sugarcode_app_server_protocol::CommandApprovalResponseDecision;
@@ -55,6 +57,8 @@ use sugarcode_app_server_protocol::ThreadArchiveParams;
 use sugarcode_app_server_protocol::ThreadArchiveResponse;
 use sugarcode_app_server_protocol::ThreadDeleteParams;
 use sugarcode_app_server_protocol::ThreadDeleteResponse;
+use sugarcode_app_server_protocol::ThreadDescendantsListParams;
+use sugarcode_app_server_protocol::ThreadDescendantsListResponse;
 use sugarcode_app_server_protocol::ThreadForkParams;
 use sugarcode_app_server_protocol::ThreadListParams;
 use sugarcode_app_server_protocol::ThreadListResponse;
@@ -138,6 +142,7 @@ pub struct Session<C = Core> {
     accepted_request_ids: HashSet<RequestId>,
     pending_interrupts: HashMap<(String, String), RequestId>,
     pending_approvals: HashMap<RequestId, PendingApprovalResponse>,
+    hidden_subagent_threads: HashSet<ThreadId>,
     command_approvals: bool,
     command_workspace_write_approvals: bool,
     mcp_tool_call_approvals: bool,
@@ -172,6 +177,7 @@ where
             accepted_request_ids: HashSet::new(),
             pending_interrupts: HashMap::new(),
             pending_approvals: HashMap::new(),
+            hidden_subagent_threads: HashSet::new(),
             command_approvals: false,
             command_workspace_write_approvals: false,
             mcp_tool_call_approvals: false,
@@ -229,6 +235,17 @@ where
         &mut self,
         event: sugarcode_protocol::CoreEvent,
     ) -> Result<Vec<JsonRpcMessage>, EventMappingError> {
+        if let Some(thread_id) = core_event_thread_id(&event.kind) {
+            let hidden = self.hidden_subagent_threads.contains(thread_id)
+                || self
+                    .agent
+                    .resume_thread(thread_id)
+                    .is_ok_and(|thread| thread.origin.is_some());
+            if hidden {
+                self.hidden_subagent_threads.insert(thread_id.clone());
+                return Ok(Vec::new());
+            }
+        }
         let interrupted = match &event.kind {
             CoreEventKind::TurnInterrupted { thread_id, turn_id } => {
                 Some((thread_id.as_str().to_string(), turn_id.as_str().to_string()))
@@ -283,6 +300,7 @@ where
             let _ = pending.response.send(CommandApprovalOutcome::Unsupported);
             return None;
         }
+        let source_agent = approval_source_agent(&mut self.agent, &pending.request.thread_id);
         let params = CommandApprovalParams {
             approval_id: pending.request.approval_id,
             thread_id: pending.request.thread_id.into_string(),
@@ -299,6 +317,7 @@ where
                     sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
                 }
             },
+            source_agent,
             workspace_write_policy: pending.request.workspace_write_policy.map(|policy| {
                 match policy {
                     sugarcode_protocol::CoreCommandWorkspaceWritePolicy::CommandWorkspaceWriteV1 => {
@@ -341,6 +360,7 @@ where
             let _ = pending.response.send(McpToolApprovalOutcome::Unsupported);
             return None;
         }
+        let source_agent = approval_source_agent(&mut self.agent, &pending.request.thread_id);
         let params = McpToolCallApprovalParams {
             approval_id: pending.request.approval_id,
             thread_id: pending.request.thread_id.into_string(),
@@ -351,6 +371,7 @@ where
             arguments_bytes: pending.request.arguments_bytes,
             arguments_sha256: pending.request.arguments_sha256,
             inventory_sha256: pending.request.inventory_sha256,
+            source_agent,
         };
         self.pending_approvals.insert(
             id.clone(),
@@ -446,6 +467,20 @@ where
                     )];
                 }
                 self.list_threads(id, object.get("params").cloned())
+            }
+            "thread/descendants/list" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.list_thread_descendants(id, object.get("params").cloned())
             }
             "thread/archive" => {
                 let Some(id) = request_id else {
@@ -727,6 +762,38 @@ where
             }
         }
     }
+}
+
+fn core_event_thread_id(kind: &CoreEventKind) -> Option<&ThreadId> {
+    match kind {
+        CoreEventKind::ThreadStarted { thread_id }
+        | CoreEventKind::TurnStarted { thread_id, .. }
+        | CoreEventKind::ItemStarted { thread_id, .. }
+        | CoreEventKind::AgentMessageDelta { thread_id, .. }
+        | CoreEventKind::ItemCompleted { thread_id, .. }
+        | CoreEventKind::TurnCompleted { thread_id, .. }
+        | CoreEventKind::TurnFailed { thread_id, .. }
+        | CoreEventKind::TurnInterrupted { thread_id, .. } => Some(thread_id),
+        CoreEventKind::RuntimeFailed => None,
+    }
+}
+
+fn approval_source_agent<C>(
+    agent: &mut AgentSurfaceSession<C>,
+    thread_id: &ThreadId,
+) -> Option<ApprovalSourceAgent>
+where
+    C: CoreApi,
+{
+    let origin = agent.resume_thread(thread_id).ok()?.origin?;
+    Some(ApprovalSourceAgent {
+        task_id: origin.task_id,
+        role: match origin.role.as_str() {
+            "explorer" => AgentTaskRole::Explorer,
+            "auditor" => AgentTaskRole::Auditor,
+            _ => AgentTaskRole::Worker,
+        },
+    })
 }
 
 fn parse_request_id(value: Option<&Value>) -> Option<RequestId> {

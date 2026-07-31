@@ -114,6 +114,10 @@ export type McpApprovalViewModel = Readonly<{
   argumentsBytes: number;
   argumentsSha256: string;
   inventorySha256: string;
+  sourceAgent?: Readonly<{
+    taskId: string;
+    role: 'explorer' | 'worker' | 'auditor';
+  }>;
   localExpiresAtMs: number;
   actionState: McpApprovalActionState;
 }>;
@@ -426,17 +430,21 @@ export const isMcpApprovalStateSnapshot = (
   const request = value.request;
   return (
     isRecord(request) &&
-    hasOnlyKeys(request, [
-      'presentationId',
-      'serverId',
-      'name',
-      'argumentsJson',
-      'argumentsBytes',
-      'argumentsSha256',
-      'inventorySha256',
-      'localExpiresAtMs',
-      'actionState',
-    ]) &&
+    hasOnlyKeys(
+      request,
+      [
+        'presentationId',
+        'serverId',
+        'name',
+        'argumentsJson',
+        'argumentsBytes',
+        'argumentsSha256',
+        'inventorySha256',
+        'localExpiresAtMs',
+        'actionState',
+      ],
+      ['sourceAgent'],
+    ) &&
     typeof request.presentationId === 'string' &&
     request.presentationId.length > 0 &&
     isId(request.serverId) &&
@@ -452,7 +460,14 @@ export const isMcpApprovalStateSnapshot = (
     typeof request.actionState === 'string' &&
     APPROVAL_ACTION_STATES.has(
       request.actionState as McpApprovalActionState,
-    )
+    ) &&
+    (request.sourceAgent === undefined ||
+      (isRecord(request.sourceAgent) &&
+        hasOnlyKeys(request.sourceAgent, ['taskId', 'role']) &&
+        isId(request.sourceAgent.taskId) &&
+        (request.sourceAgent.role === 'explorer' ||
+          request.sourceAgent.role === 'worker' ||
+          request.sourceAgent.role === 'auditor')))
   );
 };
 

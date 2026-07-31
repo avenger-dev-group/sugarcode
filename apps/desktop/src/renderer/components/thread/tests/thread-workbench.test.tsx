@@ -34,9 +34,7 @@ class ResizeObserverStub {
 vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 Element.prototype.scrollIntoView = vi.fn();
 
-const createStore = (
-  overrides: Partial<ThreadStore> = {},
-): ThreadStore => ({
+const createStore = (overrides: Partial<ThreadStore> = {}): ThreadStore => ({
   thread: toThreadViewModel({
     revision: 4,
     phase: 'ready',
@@ -103,6 +101,71 @@ afterEach(() => {
 });
 
 describe('ThreadWorkbenchView', () => {
+  it('renders process commentary before the tool activity it introduces', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const thread = toThreadViewModel({
+      revision: 5,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          messages: [],
+          activities: [
+            {
+              type: 'commentary',
+              activity: {
+                id: 'item_commentary',
+                text: 'I will inspect the workspace first.',
+                status: 'completed',
+              },
+            },
+            {
+              type: 'workspaceRead',
+              activity: {
+                id: 'item_tool',
+                callId: 'call_1',
+                path: 'README.md',
+                callStatus: 'completed',
+                result: {
+                  id: 'item_result',
+                  status: 'completed',
+                  outcome: { type: 'success', bytes: 12 },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={createStore({ thread })} />);
+    });
+
+    const commentary = document.querySelector(
+      '[aria-label="Agent progress update"]',
+    );
+    const tool = document.querySelector(
+      '[aria-label="Workspace read complete: README.md"]',
+    );
+    expect(commentary?.textContent).toBe('I will inspect the workspace first.');
+    expect(commentary).not.toBeNull();
+    expect(tool).not.toBeNull();
+    if (!commentary || !tool) {
+      throw new Error('Expected commentary and tool activity.');
+    }
+    expect(
+      commentary.compareDocumentPosition(tool) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await act(async () => root.unmount());
+  });
+
   it('keeps the composer in flow after the scrollable transcript', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -218,32 +281,20 @@ describe('ThreadWorkbenchView', () => {
     expect(document.body.textContent).not.toContain(
       'Turn turn_0000000000000001',
     );
-    expect(
-      document.querySelector('[aria-label^="Durable Turn "]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[aria-label^="Durable Item "]'),
-    ).toBeNull();
-    const userMessage = document.querySelector(
-      '[aria-label="Your message"]',
-    );
+    expect(document.querySelector('[aria-label^="Durable Turn "]')).toBeNull();
+    expect(document.querySelector('[aria-label^="Durable Item "]')).toBeNull();
+    const userMessage = document.querySelector('[aria-label="Your message"]');
     expect(userMessage?.className).toContain('bg-user-message');
-    expect(userMessage?.className).toContain(
-      'text-user-message-foreground',
-    );
+    expect(userMessage?.className).toContain('text-user-message-foreground');
     expect(userMessage?.parentElement?.className).toContain('w-fit');
-    expect(userMessage?.parentElement?.className).toContain(
-      'max-w-[82%]',
-    );
+    expect(userMessage?.parentElement?.className).toContain('max-w-[82%]');
     const agentResponse = document.querySelector(
       '[aria-label="Agent response"]',
     );
     expect(agentResponse?.textContent).not.toContain('SugarCode');
     expect(agentResponse?.textContent).not.toContain('SC');
     expect(agentResponse?.className).not.toContain('grid-cols');
-    expect(document.body.textContent).toContain(
-      'Thread thr_0000000000000001',
-    );
+    expect(document.body.textContent).toContain('Thread thr_0000000000000001');
     expect(
       document.querySelector(
         '[aria-label="Current durable Thread thr_0000000000000001"]',
@@ -279,12 +330,8 @@ describe('ThreadWorkbenchView', () => {
     expect(
       document.querySelector('[aria-label="No durable Thread yet"]'),
     ).not.toBeNull();
-    expect(
-      document.querySelector('[aria-label^="Durable Turn "]'),
-    ).toBeNull();
-    expect(
-      document.querySelector('[aria-label^="Durable Item "]'),
-    ).toBeNull();
+    expect(document.querySelector('[aria-label^="Durable Turn "]')).toBeNull();
+    expect(document.querySelector('[aria-label^="Durable Item "]')).toBeNull();
     const textarea = document.querySelector('textarea');
     expect(textarea?.value).toBe('Exact input\n雪');
 
@@ -356,9 +403,7 @@ describe('ThreadWorkbenchView', () => {
         '[aria-label="Durable Item item_0000000000000003"]',
       ),
     ).toBeNull();
-    expect(document.body.textContent).toContain(
-      'Thinking through the turn',
-    );
+    expect(document.body.textContent).toContain('Thinking through the turn');
     expect(document.querySelector('textarea')?.disabled).toBe(true);
     const stop = document.querySelector(
       '[aria-label="Stop current turn"]',
@@ -822,9 +867,7 @@ describe('ThreadWorkbenchView', () => {
     expect(document.body.textContent).not.toContain(
       'Thinking through the turn',
     );
-    expect(
-      document.querySelector('[aria-label="Agent response"]'),
-    ).toBeNull();
+    expect(document.querySelector('[aria-label="Agent response"]')).toBeNull();
 
     await act(async () => root.unmount());
   });
@@ -921,16 +964,16 @@ describe('ThreadWorkbenchView', () => {
     };
 
     expect(
-      toThreadViewModel({ ...activeSnapshot, phase: 'inProgress' })
-        .turns[0]?.workspaceRead?.state,
+      toThreadViewModel({ ...activeSnapshot, phase: 'inProgress' }).turns[0]
+        ?.workspaceRead?.state,
     ).toBe('running');
     expect(
-      toThreadViewModel({ ...activeSnapshot, phase: 'stopping' })
-        .turns[0]?.workspaceRead?.state,
+      toThreadViewModel({ ...activeSnapshot, phase: 'stopping' }).turns[0]
+        ?.workspaceRead?.state,
     ).toBe('stopping');
     expect(
-      toThreadViewModel({ ...activeSnapshot, phase: 'unavailable' })
-        .turns[0]?.workspaceRead?.state,
+      toThreadViewModel({ ...activeSnapshot, phase: 'unavailable' }).turns[0]
+        ?.workspaceRead?.state,
     ).toBe('uncertain');
     expect(
       toThreadViewModel({
@@ -1045,16 +1088,16 @@ describe('ThreadWorkbenchView', () => {
     };
 
     expect(
-      toThreadViewModel({ ...activeSnapshot, phase: 'inProgress' })
-        .turns[0]?.workspaceList?.state,
+      toThreadViewModel({ ...activeSnapshot, phase: 'inProgress' }).turns[0]
+        ?.workspaceList?.state,
     ).toBe('running');
     expect(
-      toThreadViewModel({ ...activeSnapshot, phase: 'stopping' })
-        .turns[0]?.workspaceList?.state,
+      toThreadViewModel({ ...activeSnapshot, phase: 'stopping' }).turns[0]
+        ?.workspaceList?.state,
     ).toBe('stopping');
     expect(
-      toThreadViewModel({ ...activeSnapshot, phase: 'unavailable' })
-        .turns[0]?.workspaceList?.state,
+      toThreadViewModel({ ...activeSnapshot, phase: 'unavailable' }).turns[0]
+        ?.workspaceList?.state,
     ).toBe('uncertain');
     expect(
       toThreadViewModel({
@@ -1171,16 +1214,16 @@ describe('ThreadWorkbenchView', () => {
     };
 
     expect(
-      toThreadViewModel({ ...activeSnapshot, phase: 'inProgress' })
-        .turns[0]?.workspaceSearch?.state,
+      toThreadViewModel({ ...activeSnapshot, phase: 'inProgress' }).turns[0]
+        ?.workspaceSearch?.state,
     ).toBe('running');
     expect(
-      toThreadViewModel({ ...activeSnapshot, phase: 'stopping' })
-        .turns[0]?.workspaceSearch?.state,
+      toThreadViewModel({ ...activeSnapshot, phase: 'stopping' }).turns[0]
+        ?.workspaceSearch?.state,
     ).toBe('stopping');
     expect(
-      toThreadViewModel({ ...activeSnapshot, phase: 'unavailable' })
-        .turns[0]?.workspaceSearch?.state,
+      toThreadViewModel({ ...activeSnapshot, phase: 'unavailable' }).turns[0]
+        ?.workspaceSearch?.state,
     ).toBe('uncertain');
     expect(
       toThreadViewModel({
@@ -1318,46 +1361,49 @@ describe('ThreadWorkbenchView', () => {
     ['inProgress', 'observed'],
     ['stopping', 'stopping'],
     ['unavailable', 'uncertain'],
-  ] as const)('derives command execution result %s state', (phase, expected) => {
-    expect(
-      toThreadViewModel({
-        revision: 26,
-        phase,
-        threadId: 'thr_0000000000000001',
-        activeTurnId: 'turn_0000000000000018',
-        turns: [
-          {
-            id: 'turn_0000000000000018',
-            status: 'inProgress',
-            messages: [],
-            commandApproval: {
-              callItemId: 'item_command',
-              id: 'item_request',
-              callId: 'call_command',
-              approvalId: 'approval_command',
-              command: '/usr/bin/true',
-              argumentCount: 0,
-              requestStatus: 'completed',
-              decision: {
-                id: 'item_decision',
-                status: 'completed',
-                value: 'approved',
-              },
-              executionAttempt: {
-                id: 'item_attempt',
-                status: 'completed',
-              },
-              executionResult: {
-                id: 'item_result',
-                status: 'inProgress',
-                outcome: { type: 'error', kind: 'spawnFailed' },
+  ] as const)(
+    'derives command execution result %s state',
+    (phase, expected) => {
+      expect(
+        toThreadViewModel({
+          revision: 26,
+          phase,
+          threadId: 'thr_0000000000000001',
+          activeTurnId: 'turn_0000000000000018',
+          turns: [
+            {
+              id: 'turn_0000000000000018',
+              status: 'inProgress',
+              messages: [],
+              commandApproval: {
+                callItemId: 'item_command',
+                id: 'item_request',
+                callId: 'call_command',
+                approvalId: 'approval_command',
+                command: '/usr/bin/true',
+                argumentCount: 0,
+                requestStatus: 'completed',
+                decision: {
+                  id: 'item_decision',
+                  status: 'completed',
+                  value: 'approved',
+                },
+                executionAttempt: {
+                  id: 'item_attempt',
+                  status: 'completed',
+                },
+                executionResult: {
+                  id: 'item_result',
+                  status: 'inProgress',
+                  outcome: { type: 'error', kind: 'spawnFailed' },
+                },
               },
             },
-          },
-        ],
-      }).turns[0]?.commandApproval?.executionResult?.state,
-    ).toBe(expected);
-  });
+          ],
+        }).turns[0]?.commandApproval?.executionResult?.state,
+      ).toBe(expected);
+    },
+  );
 
   it('keeps a completed execution result recorded across a failed Turn', () => {
     const result = toThreadViewModel({
@@ -1411,41 +1457,44 @@ describe('ThreadWorkbenchView', () => {
     ['inProgress', 'observed'],
     ['stopping', 'stopping'],
     ['unavailable', 'uncertain'],
-  ] as const)('derives command execution attempt %s state', (phase, expected) => {
-    expect(
-      toThreadViewModel({
-        revision: 25,
-        phase,
-        threadId: 'thr_0000000000000001',
-        activeTurnId: 'turn_0000000000000017',
-        turns: [
-          {
-            id: 'turn_0000000000000017',
-            status: 'inProgress',
-            messages: [],
-            commandApproval: {
-              callItemId: 'item_command',
-              id: 'item_request',
-              callId: 'call_command',
-              approvalId: 'approval_command',
-              command: '/usr/bin/true',
-              argumentCount: 0,
-              requestStatus: 'completed',
-              decision: {
-                id: 'item_decision',
-                status: 'completed',
-                value: 'approved',
-              },
-              executionAttempt: {
-                id: 'item_attempt',
-                status: 'inProgress',
+  ] as const)(
+    'derives command execution attempt %s state',
+    (phase, expected) => {
+      expect(
+        toThreadViewModel({
+          revision: 25,
+          phase,
+          threadId: 'thr_0000000000000001',
+          activeTurnId: 'turn_0000000000000017',
+          turns: [
+            {
+              id: 'turn_0000000000000017',
+              status: 'inProgress',
+              messages: [],
+              commandApproval: {
+                callItemId: 'item_command',
+                id: 'item_request',
+                callId: 'call_command',
+                approvalId: 'approval_command',
+                command: '/usr/bin/true',
+                argumentCount: 0,
+                requestStatus: 'completed',
+                decision: {
+                  id: 'item_decision',
+                  status: 'completed',
+                  value: 'approved',
+                },
+                executionAttempt: {
+                  id: 'item_attempt',
+                  status: 'inProgress',
+                },
               },
             },
-          },
-        ],
-      }).turns[0]?.commandApproval?.executionAttempt?.state,
-    ).toBe(expected);
-  });
+          ],
+        }).turns[0]?.commandApproval?.executionAttempt?.state,
+      ).toBe(expected);
+    },
+  );
 
   it.each([
     ['inProgress', 'awaiting'],

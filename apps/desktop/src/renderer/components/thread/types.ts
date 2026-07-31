@@ -8,6 +8,7 @@ import type {
 
 import type {
   AgentMessageViewModel,
+  AgentCommentaryViewModel,
   CommandApprovalActivityViewModel,
   WorkspaceListActivityViewModel,
   WorkspaceReadActivityViewModel,
@@ -16,6 +17,7 @@ import type {
 import type { ContextCompactionActivityViewModel } from '../agent/context-compaction-activity';
 import type { FileChangeReviewViewModel } from '../workspace/types';
 import type { McpActivityViewModel } from '../mcp/types';
+import type { OrchestrationActivityViewModel } from '../orchestration/types';
 
 export type UserMessageViewModel = Readonly<{
   id: string;
@@ -41,11 +43,21 @@ export type TurnFailureViewModel = Readonly<{
 
 export type TurnActivityViewModel =
   | Readonly<{
+      type: 'commentary';
+      activity: AgentCommentaryViewModel;
+    }>
+  | Readonly<{
       type: 'contextCompaction';
       activity: ContextCompactionActivityViewModel;
     }>
-  | Readonly<{ type: 'workspaceRead'; activity: WorkspaceReadActivityViewModel }>
-  | Readonly<{ type: 'workspaceList'; activity: WorkspaceListActivityViewModel }>
+  | Readonly<{
+      type: 'workspaceRead';
+      activity: WorkspaceReadActivityViewModel;
+    }>
+  | Readonly<{
+      type: 'workspaceList';
+      activity: WorkspaceListActivityViewModel;
+    }>
   | Readonly<{
       type: 'workspaceSearch';
       activity: WorkspaceSearchActivityViewModel;
@@ -55,7 +67,11 @@ export type TurnActivityViewModel =
       type: 'commandApproval';
       activity: CommandApprovalActivityViewModel;
     }>
-  | Readonly<{ type: 'mcp'; activity: McpActivityViewModel }>;
+  | Readonly<{ type: 'mcp'; activity: McpActivityViewModel }>
+  | Readonly<{
+      type: 'orchestration';
+      activity: OrchestrationActivityViewModel;
+    }>;
 
 export type TurnViewModel = Readonly<{
   id: string;

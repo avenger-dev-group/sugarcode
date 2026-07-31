@@ -16,6 +16,7 @@ import {
 } from './protocol';
 import {
   parseThreadEmptyResponse,
+  parseThreadDescendantsListResponse,
   parseThreadForkResponse,
   parseThreadListResponse,
   parseThreadSearchResponse,
@@ -36,6 +37,10 @@ export type ConversationRpc = Readonly<{
     threadId: string,
     signal?: AbortSignal,
   ) => Promise<ResumeSnapshot>;
+  listDescendants?: (
+    threadId: string,
+    signal?: AbortSignal,
+  ) => Promise<readonly ResumeSnapshot[]>;
   forkThread?: (
     threadId: string,
     signal?: AbortSignal,
@@ -105,6 +110,18 @@ export class ConversationRpcClient implements ConversationRpc {
     parseThreadResumeResponse(
       await this.client.requestReady(
         'thread/resume',
+        { threadId },
+        signal,
+      ),
+    );
+
+  listDescendants = async (
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<readonly ResumeSnapshot[]> =>
+    parseThreadDescendantsListResponse(
+      await this.client.requestReady(
+        'thread/descendants/list',
         { threadId },
         signal,
       ),

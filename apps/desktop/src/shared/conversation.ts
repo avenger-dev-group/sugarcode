@@ -2,18 +2,14 @@ export const CONVERSATION_STATE_GET_CHANNEL = 'conversation-state:get';
 export const CONVERSATION_STATE_CHANGED_CHANNEL = 'conversation-state:changed';
 export const CONVERSATION_SEND_CHANNEL = 'conversation:send';
 export const CONVERSATION_STOP_CHANNEL = 'conversation:stop';
-export const CONVERSATION_THREAD_SEARCH_CHANNEL =
-  'conversation-thread:search';
-export const CONVERSATION_THREAD_SELECT_CHANNEL =
-  'conversation-thread:select';
-export const CONVERSATION_THREAD_FORK_CHANNEL =
-  'conversation-thread:fork';
+export const CONVERSATION_THREAD_SEARCH_CHANNEL = 'conversation-thread:search';
+export const CONVERSATION_THREAD_SELECT_CHANNEL = 'conversation-thread:select';
+export const CONVERSATION_THREAD_FORK_CHANNEL = 'conversation-thread:fork';
 export const CONVERSATION_THREAD_ARCHIVE_CHANNEL =
   'conversation-thread:archive';
 export const CONVERSATION_THREAD_UNARCHIVE_CHANNEL =
   'conversation-thread:unarchive';
-export const CONVERSATION_THREAD_DELETE_CHANNEL =
-  'conversation-thread:delete';
+export const CONVERSATION_THREAD_DELETE_CHANNEL = 'conversation-thread:delete';
 
 export const MAX_CONVERSATION_INPUT_BYTES = 64 * 1024;
 export const MAX_THREAD_SEARCH_BYTES = 256;
@@ -21,24 +17,22 @@ export const MAX_FILE_CHANGE_DIFF_BYTES = 192 * 1024;
 export const MAX_FILE_CHANGE_DIFF_LINES = 5_000;
 
 export type ConversationPhase =
-  | 'idle'
-  | 'starting'
-  | 'inProgress'
-  | 'stopping'
-  | 'ready'
-  | 'unavailable';
+  'idle' | 'starting' | 'inProgress' | 'stopping' | 'ready' | 'unavailable';
 
 export type ConversationTurnStatus =
-  | 'inProgress'
-  | 'completed'
-  | 'failed'
-  | 'interrupted';
+  'inProgress' | 'completed' | 'failed' | 'interrupted';
 
 export type ConversationMessageStatus = 'inProgress' | 'completed';
 
 export type ConversationMessage = Readonly<{
   id: string;
   role: 'user' | 'agent';
+  text: string;
+  status: ConversationMessageStatus;
+}>;
+
+export type ConversationCommentaryActivity = Readonly<{
+  id: string;
   text: string;
   status: ConversationMessageStatus;
 }>;
@@ -265,7 +259,47 @@ export type ConversationMcpActivity = Readonly<{
   }>;
 }>;
 
+export type ConversationAgentTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'waitingApproval'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled';
+
+export type ConversationAgentTask = Readonly<{
+  id: string;
+  taskId: string;
+  clientTaskKey: string;
+  childThreadId: string;
+  title: string;
+  role: 'explorer' | 'worker' | 'auditor';
+  access: 'readOnly' | 'workspaceWrite';
+  dependsOn: readonly string[];
+  taskMarkdown: string;
+  status: ConversationAgentTaskStatus;
+  amendments: readonly Readonly<{
+    id: string;
+    markdown: string;
+  }>[];
+  result?: Readonly<{
+    id: string;
+    summaryMarkdown: string;
+    durationMs: number;
+  }>;
+}>;
+
+export type ConversationOrchestrationActivity = Readonly<{
+  id: string;
+  tasks: readonly ConversationAgentTask[];
+}>;
+
 export type ConversationActivity =
+  | Readonly<{
+      type: 'commentary';
+      activity: ConversationCommentaryActivity;
+    }>
   | Readonly<{
       type: 'contextCompaction';
       activity: ConversationContextCompactionActivity;
@@ -293,6 +327,10 @@ export type ConversationActivity =
   | Readonly<{
       type: 'mcp';
       activity: ConversationMcpActivity;
+    }>
+  | Readonly<{
+      type: 'orchestration';
+      activity: ConversationOrchestrationActivity;
     }>;
 
 export type ConversationTurnError = Readonly<{
@@ -385,9 +423,7 @@ export type ConversationApi = Readonly<{
   onConversationStateChanged: (
     listener: ConversationStateListener,
   ) => () => void;
-  sendConversationMessage: (
-    input: string,
-  ) => Promise<ConversationActionResult>;
+  sendConversationMessage: (input: string) => Promise<ConversationActionResult>;
   stopConversationTurn: () => Promise<ConversationActionResult>;
   searchConversationThreads: (
     query: string,
@@ -446,14 +482,16 @@ const ERROR_KINDS = new Set<ConversationTurnError['kind']>([
   'stateUnavailable',
 ]);
 
-const COMMAND_APPROVAL_DECISIONS = new Set<ConversationCommandApprovalDecision>([
-  'approved',
-  'denied',
-  'timedOut',
-  'unsupported',
-  'cancelled',
-  'clientDisconnected',
-]);
+const COMMAND_APPROVAL_DECISIONS = new Set<ConversationCommandApprovalDecision>(
+  [
+    'approved',
+    'denied',
+    'timedOut',
+    'unsupported',
+    'cancelled',
+    'clientDisconnected',
+  ],
+);
 
 const ACTION_REASONS = new Set<ConversationActionResult['reason']>([
   'accepted',
@@ -624,9 +662,7 @@ const isWorkspaceReadActivity = (
     isId(value.result.id) &&
     value.result.id !== value.id &&
     typeof value.result.status === 'string' &&
-    MESSAGE_STATUSES.has(
-      value.result.status as ConversationMessageStatus,
-    ) &&
+    MESSAGE_STATUSES.has(value.result.status as ConversationMessageStatus) &&
     isWorkspaceReadOutcome(value.result.outcome)
   );
 };
@@ -675,9 +711,7 @@ const isWorkspaceListActivity = (
     isId(value.result.id) &&
     value.result.id !== value.id &&
     typeof value.result.status === 'string' &&
-    MESSAGE_STATUSES.has(
-      value.result.status as ConversationMessageStatus,
-    ) &&
+    MESSAGE_STATUSES.has(value.result.status as ConversationMessageStatus) &&
     isWorkspaceListOutcome(value.result.outcome)
   );
 };
@@ -731,9 +765,7 @@ const isWorkspaceSearchActivity = (
     isId(value.result.id) &&
     value.result.id !== value.id &&
     typeof value.result.status === 'string' &&
-    MESSAGE_STATUSES.has(
-      value.result.status as ConversationMessageStatus,
-    ) &&
+    MESSAGE_STATUSES.has(value.result.status as ConversationMessageStatus) &&
     isWorkspaceSearchOutcome(value.result.outcome)
   );
 };
@@ -813,7 +845,8 @@ const isFileChangeActivity = (
     (!isRecord(result) ||
       !isId(result.id) ||
       result.id === value.id ||
-      result.id === (change as ConversationFileChangeProposal | undefined)?.id ||
+      result.id ===
+        (change as ConversationFileChangeProposal | undefined)?.id ||
       typeof result.status !== 'string' ||
       !MESSAGE_STATUSES.has(result.status as ConversationMessageStatus) ||
       !isFileChangeResultOutcome(result.outcome))
@@ -821,8 +854,7 @@ const isFileChangeActivity = (
     return false;
   }
   const parsedResult = result as
-    | ConversationFileChangeActivity['result']
-    | undefined;
+    ConversationFileChangeActivity['result'] | undefined;
   const parsedChange = change as ConversationFileChangeProposal | undefined;
   if (
     parsedResult?.outcome.type === 'success' &&
@@ -926,9 +958,7 @@ const isCommandApprovalActivity = (
     value.decision.id !== value.id &&
     value.decision.id !== value.callItemId &&
     typeof value.decision.status === 'string' &&
-    MESSAGE_STATUSES.has(
-      value.decision.status as ConversationMessageStatus,
-    ) &&
+    MESSAGE_STATUSES.has(value.decision.status as ConversationMessageStatus) &&
     typeof value.decision.value === 'string' &&
     COMMAND_APPROVAL_DECISIONS.has(
       value.decision.value as ConversationCommandApprovalDecision,
@@ -992,9 +1022,7 @@ const isMcpResultReceipt = (
     typeof value.isError === 'boolean' &&
     [value.observedBytes, value.canonicalBytes, value.retainedBytes].every(
       (count) =>
-        typeof count === 'number' &&
-        Number.isSafeInteger(count) &&
-        count >= 0,
+        typeof count === 'number' && Number.isSafeInteger(count) && count >= 0,
     ) &&
     typeof value.truncated === 'boolean' &&
     isValidSha256(value.sha256) &&
@@ -1061,9 +1089,7 @@ const isMcpActivity = (value: unknown): value is ConversationMcpActivity => {
     (isRecord(value.result) &&
       isId(value.result.id) &&
       typeof value.result.status === 'string' &&
-      MESSAGE_STATUSES.has(
-        value.result.status as ConversationMessageStatus,
-      ) &&
+      MESSAGE_STATUSES.has(value.result.status as ConversationMessageStatus) &&
       isMcpResultReceipt(value.result.receipt))
   );
 };
@@ -1110,14 +1136,12 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   }
 
   const workspaceRead = value.workspaceRead as
-    | ConversationWorkspaceReadActivity
-    | undefined;
+    ConversationWorkspaceReadActivity | undefined;
   if (
     value.status !== 'inProgress' &&
     workspaceRead &&
     (workspaceRead.callStatus !== 'completed' ||
-      (workspaceRead.result &&
-        workspaceRead.result.status !== 'completed') ||
+      (workspaceRead.result && workspaceRead.result.status !== 'completed') ||
       (value.status !== 'interrupted' &&
         workspaceRead.result?.status !== 'completed'))
   ) {
@@ -1125,14 +1149,12 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   }
 
   const workspaceList = value.workspaceList as
-    | ConversationWorkspaceListActivity
-    | undefined;
+    ConversationWorkspaceListActivity | undefined;
   if (
     value.status !== 'inProgress' &&
     workspaceList &&
     (workspaceList.callStatus !== 'completed' ||
-      (workspaceList.result &&
-        workspaceList.result.status !== 'completed') ||
+      (workspaceList.result && workspaceList.result.status !== 'completed') ||
       (value.status !== 'interrupted' &&
         workspaceList.result?.status !== 'completed'))
   ) {
@@ -1140,8 +1162,7 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   }
 
   const workspaceSearch = value.workspaceSearch as
-    | ConversationWorkspaceSearchActivity
-    | undefined;
+    ConversationWorkspaceSearchActivity | undefined;
   if (
     value.status !== 'inProgress' &&
     workspaceSearch &&
@@ -1155,8 +1176,7 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   }
 
   const fileChange = value.fileChange as
-    | ConversationFileChangeActivity
-    | undefined;
+    ConversationFileChangeActivity | undefined;
   if (
     value.status !== 'inProgress' &&
     fileChange &&
@@ -1170,8 +1190,7 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   }
 
   const commandApproval = value.commandApproval as
-    | ConversationCommandApprovalActivity
-    | undefined;
+    ConversationCommandApprovalActivity | undefined;
   if (
     value.status !== 'inProgress' &&
     commandApproval &&
@@ -1191,16 +1210,14 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   }
 
   const mcpActivities = value.mcpActivities as
-    | readonly ConversationMcpActivity[]
-    | undefined;
+    readonly ConversationMcpActivity[] | undefined;
   if (
     value.status !== 'inProgress' &&
     mcpActivities?.some(
       (activity) =>
         activity.callStatus !== 'completed' ||
         activity.requestStatus !== 'completed' ||
-        (activity.decision &&
-          activity.decision.status !== 'completed') ||
+        (activity.decision && activity.decision.status !== 'completed') ||
         (activity.executionAttempt &&
           activity.executionAttempt.status !== 'completed') ||
         (activity.result && activity.result.status !== 'completed') ||
@@ -1226,9 +1243,10 @@ const isNotice = (value: unknown): value is ConversationNotice =>
 const isThreadNavigator = (
   value: unknown,
 ): value is ConversationThreadNavigatorSnapshot => {
-  const pendingMutation = value && typeof value === 'object'
-    ? (value as Record<string, unknown>).pendingMutation
-    : undefined;
+  const pendingMutation =
+    value && typeof value === 'object'
+      ? (value as Record<string, unknown>).pendingMutation
+      : undefined;
   if (
     !isRecord(value) ||
     !['loading', 'ready', 'error', 'unavailable'].includes(
@@ -1252,8 +1270,7 @@ const isThreadNavigator = (
     (Object.hasOwn(value.search, 'summary') &&
       (typeof value.search.summary !== 'string' ||
         value.search.summary.length === 0)) ||
-    (Object.hasOwn(value, 'pendingThreadId') &&
-      !isId(value.pendingThreadId)) ||
+    (Object.hasOwn(value, 'pendingThreadId') && !isId(value.pendingThreadId)) ||
     (Object.hasOwn(value, 'pendingMutation') &&
       (!isRecord(pendingMutation) ||
         !['fork', 'archive', 'unarchive', 'delete'].includes(
@@ -1319,10 +1336,7 @@ export const isConversationStateSnapshot = (
     );
   }
   if (value.phase === 'unavailable' && activeTurns.length === 1) {
-    return (
-      activeTurnId === activeTurns[0]?.id &&
-      isId(value.threadId)
-    );
+    return activeTurnId === activeTurns[0]?.id && isId(value.threadId);
   }
   return activeTurns.length === 0 && activeTurnId === undefined;
 };
@@ -1341,9 +1355,7 @@ export const isValidConversationInput = (value: unknown): value is string =>
   value.trim().length > 0 &&
   new TextEncoder().encode(value).byteLength <= MAX_CONVERSATION_INPUT_BYTES;
 
-export const isValidThreadSearchInput = (
-  value: unknown,
-): value is string => {
+export const isValidThreadSearchInput = (value: unknown): value is string => {
   if (
     typeof value !== 'string' ||
     new TextEncoder().encode(value).byteLength > MAX_THREAD_SEARCH_BYTES ||

@@ -17,6 +17,7 @@ use sugarcode_protocol::TurnId;
 use sugarcode_state::DurableContextCompaction;
 use sugarcode_state::DurableItemSnapshot;
 use sugarcode_state::DurableThreadLifecycle;
+use sugarcode_state::DurableThreadOrigin;
 use sugarcode_state::DurableThreadPage;
 use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableThreadSummary;
@@ -45,6 +46,7 @@ use snapshots::{
 
 const DETERMINISTIC_AGENT_MESSAGE: &str = "SugarCode deterministic response.";
 pub const MAX_AGENT_MESSAGE_BYTES: usize = 512 * 1024;
+pub const MAX_AGENT_COMMENTARY_BYTES: usize = 4 * 1024;
 pub const MAX_PROVIDER_HISTORY_BYTES: usize = crate::context::MAX_PROVIDER_CONTEXT_BYTES;
 pub const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
 
@@ -64,6 +66,9 @@ pub struct PreparedTextTurn {
 pub enum PreparedMessage {
     Text {
         role: PreparedMessageRole,
+        text: String,
+    },
+    Commentary {
         text: String,
     },
     ContextCompaction {
@@ -114,6 +119,7 @@ pub enum TurnInterruptOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Thread {
     id: ThreadId,
+    origin: Option<DurableThreadOrigin>,
     turns: BTreeMap<TurnId, Turn>,
     active_turn_id: Option<TurnId>,
     lifecycle: DurableThreadLifecycle,
@@ -215,6 +221,32 @@ enum ItemKind {
     },
     AgentMessage {
         text: String,
+    },
+    AgentCommentary {
+        text: String,
+    },
+    AgentTask {
+        orchestration_id: String,
+        task_id: String,
+        client_task_key: String,
+        child_thread_id: ThreadId,
+        title: String,
+        role: String,
+        access: String,
+        depends_on: Vec<String>,
+        task_markdown: String,
+    },
+    AgentTaskAmendment {
+        orchestration_id: String,
+        task_id: String,
+        amendment_markdown: String,
+    },
+    AgentTaskResult {
+        orchestration_id: String,
+        task_id: String,
+        status: String,
+        summary_markdown: String,
+        duration_ms: u64,
     },
     ContextCompaction {
         strategy: sugarcode_protocol::CoreContextCompactionStrategy,
@@ -355,7 +387,11 @@ impl Item {
             ItemKind::UserMessage { .. } => Err(CoreError::Internal(
                 "cannot append an agent delta to a user message".to_string(),
             )),
-            ItemKind::ContextCompaction { .. }
+            ItemKind::AgentCommentary { .. }
+            | ItemKind::ContextCompaction { .. }
+            | ItemKind::AgentTask { .. }
+            | ItemKind::AgentTaskAmendment { .. }
+            | ItemKind::AgentTaskResult { .. }
             | ItemKind::ToolCall { .. }
             | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
@@ -384,6 +420,52 @@ impl Item {
         let kind = match &self.kind {
             ItemKind::UserMessage { text } => CoreItemKind::UserMessage { text: text.clone() },
             ItemKind::AgentMessage { text } => CoreItemKind::AgentMessage { text: text.clone() },
+            ItemKind::AgentCommentary { text } => {
+                CoreItemKind::AgentCommentary { text: text.clone() }
+            }
+            ItemKind::AgentTask {
+                orchestration_id,
+                task_id,
+                client_task_key,
+                child_thread_id,
+                title,
+                role,
+                access,
+                depends_on,
+                task_markdown,
+            } => CoreItemKind::AgentTask {
+                orchestration_id: orchestration_id.clone(),
+                task_id: task_id.clone(),
+                client_task_key: client_task_key.clone(),
+                child_thread_id: child_thread_id.clone(),
+                title: title.clone(),
+                role: role.clone(),
+                access: access.clone(),
+                depends_on: depends_on.clone(),
+                task_markdown: task_markdown.clone(),
+            },
+            ItemKind::AgentTaskAmendment {
+                orchestration_id,
+                task_id,
+                amendment_markdown,
+            } => CoreItemKind::AgentTaskAmendment {
+                orchestration_id: orchestration_id.clone(),
+                task_id: task_id.clone(),
+                amendment_markdown: amendment_markdown.clone(),
+            },
+            ItemKind::AgentTaskResult {
+                orchestration_id,
+                task_id,
+                status,
+                summary_markdown,
+                duration_ms,
+            } => CoreItemKind::AgentTaskResult {
+                orchestration_id: orchestration_id.clone(),
+                task_id: task_id.clone(),
+                status: status.clone(),
+                summary_markdown: summary_markdown.clone(),
+                duration_ms: *duration_ms,
+            },
             ItemKind::ContextCompaction {
                 strategy,
                 ordinal,
@@ -639,6 +721,12 @@ pub trait CoreApi {
         Err(CoreError::StateUnavailable)
     }
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError>;
+    fn list_descendants(
+        &mut self,
+        _thread_id: &ThreadId,
+    ) -> Result<Vec<DurableThreadSnapshot>, CoreError> {
+        Err(CoreError::StateUnavailable)
+    }
     fn start_turn(
         &mut self,
         request_id: CoreRequestId,
@@ -728,6 +816,69 @@ impl Core {
                         id: id.clone(),
                         state: ItemState::Completed,
                         kind: ItemKind::AgentMessage { text: text.clone() },
+                    },
+                    DurableItemSnapshot::AgentCommentary { id, text } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::AgentCommentary { text: text.clone() },
+                    },
+                    DurableItemSnapshot::AgentTask {
+                        id,
+                        orchestration_id,
+                        task_id,
+                        client_task_key,
+                        child_thread_id,
+                        title,
+                        role,
+                        access,
+                        depends_on,
+                        task_markdown,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::AgentTask {
+                            orchestration_id: orchestration_id.clone(),
+                            task_id: task_id.clone(),
+                            client_task_key: client_task_key.clone(),
+                            child_thread_id: child_thread_id.clone(),
+                            title: title.clone(),
+                            role: role.clone(),
+                            access: access.clone(),
+                            depends_on: depends_on.clone(),
+                            task_markdown: task_markdown.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::AgentTaskAmendment {
+                        id,
+                        orchestration_id,
+                        task_id,
+                        amendment_markdown,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::AgentTaskAmendment {
+                            orchestration_id: orchestration_id.clone(),
+                            task_id: task_id.clone(),
+                            amendment_markdown: amendment_markdown.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::AgentTaskResult {
+                        id,
+                        orchestration_id,
+                        task_id,
+                        status,
+                        summary_markdown,
+                        duration_ms,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::AgentTaskResult {
+                            orchestration_id: orchestration_id.clone(),
+                            task_id: task_id.clone(),
+                            status: status.clone(),
+                            summary_markdown: summary_markdown.clone(),
+                            duration_ms: *duration_ms,
+                        },
                     },
                     DurableItemSnapshot::ContextCompaction {
                         id,
@@ -1016,6 +1167,7 @@ impl Core {
             snapshot.id.clone(),
             Thread {
                 id: snapshot.id.clone(),
+                origin: snapshot.origin.clone(),
                 turns,
                 active_turn_id: None,
                 lifecycle: snapshot.lifecycle,
@@ -1303,7 +1455,11 @@ impl Core {
     ) -> Result<CoreItemSnapshot, CoreError> {
         if !matches!(
             kind,
-            CoreItemKind::ContextCompaction { .. }
+            CoreItemKind::AgentCommentary { .. }
+                | CoreItemKind::ContextCompaction { .. }
+                | CoreItemKind::AgentTask { .. }
+                | CoreItemKind::AgentTaskAmendment { .. }
+                | CoreItemKind::AgentTaskResult { .. }
                 | CoreItemKind::ToolCall { .. }
                 | CoreItemKind::FileChange { .. }
                 | CoreItemKind::CommandApprovalRequest { .. }
@@ -1425,7 +1581,11 @@ impl Core {
         let current_len = match &item.kind {
             ItemKind::AgentMessage { text } => text.len(),
             ItemKind::UserMessage { .. }
+            | ItemKind::AgentCommentary { .. }
             | ItemKind::ContextCompaction { .. }
+            | ItemKind::AgentTask { .. }
+            | ItemKind::AgentTaskAmendment { .. }
+            | ItemKind::AgentTaskResult { .. }
             | ItemKind::ToolCall { .. }
             | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
@@ -1625,7 +1785,14 @@ fn prepared_message_for_item(item: &Item) -> Option<PreparedMessage> {
             text: text.clone(),
         }),
         ItemKind::AgentMessage { .. } => None,
+        ItemKind::AgentCommentary { text } if !text.is_empty() => {
+            Some(PreparedMessage::Commentary { text: text.clone() })
+        }
+        ItemKind::AgentCommentary { .. } => None,
         ItemKind::ContextCompaction { .. } => None,
+        ItemKind::AgentTask { .. }
+        | ItemKind::AgentTaskAmendment { .. }
+        | ItemKind::AgentTaskResult { .. } => None,
         ItemKind::ToolCall {
             call_id,
             name,

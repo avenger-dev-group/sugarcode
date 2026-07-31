@@ -617,6 +617,9 @@ fn durable_item(item: &DurableItemSnapshot) -> (ItemId, String, String, Option<(
         DurableItemSnapshot::AgentMessage { id, text } => {
             (id.clone(), "Agent".to_string(), text.clone(), None)
         }
+        DurableItemSnapshot::AgentCommentary { id, text } => {
+            (id.clone(), "Progress".to_string(), text.clone(), None)
+        }
         DurableItemSnapshot::ContextCompaction {
             id,
             ordinal,
@@ -716,6 +719,10 @@ fn durable_item_id(item: &DurableItemSnapshot) -> ItemId {
     match item {
         DurableItemSnapshot::UserMessage { id, .. }
         | DurableItemSnapshot::AgentMessage { id, .. }
+        | DurableItemSnapshot::AgentCommentary { id, .. }
+        | DurableItemSnapshot::AgentTask { id, .. }
+        | DurableItemSnapshot::AgentTaskAmendment { id, .. }
+        | DurableItemSnapshot::AgentTaskResult { id, .. }
         | DurableItemSnapshot::ContextCompaction { id, .. }
         | DurableItemSnapshot::ToolCall { id, .. }
         | DurableItemSnapshot::FileChange { id, .. }
@@ -735,6 +742,7 @@ fn live_item(kind: CoreItemKind) -> (String, String, Option<(String, String)>) {
     match kind {
         CoreItemKind::UserMessage { text } => ("You".to_string(), text, None),
         CoreItemKind::AgentMessage { text } => ("Agent".to_string(), text, None),
+        CoreItemKind::AgentCommentary { text } => ("Progress".to_string(), text, None),
         CoreItemKind::ContextCompaction {
             ordinal,
             pre_context_bytes,

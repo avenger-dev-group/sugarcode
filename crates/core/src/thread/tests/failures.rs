@@ -62,6 +62,7 @@ fn failed_unarchive_write_does_not_restore_the_thread_in_memory() {
             id: thread_id.clone(),
             turns: Vec::new(),
             lifecycle: DurableThreadLifecycle::Archived,
+            origin: None,
         },
     );
     let mut core = Core::with_repository(Box::new(FailingRepository {
@@ -113,6 +114,7 @@ fn failed_fork_write_does_not_materialize_or_advance_ids() {
             usage: None,
         }],
         lifecycle: DurableThreadLifecycle::Active,
+        origin: None,
     };
     let mut threads = BTreeMap::new();
     threads.insert(source_id.clone(), source);
@@ -160,6 +162,7 @@ impl ThreadRepository for FailingRepository {
                 id: thread_id.clone(),
                 turns: Vec::new(),
                 lifecycle: DurableThreadLifecycle::Active,
+                origin: None,
             },
         );
         Ok(())

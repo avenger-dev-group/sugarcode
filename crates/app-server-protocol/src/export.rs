@@ -1,4 +1,8 @@
 use crate::AgentMessageDeltaNotification;
+use crate::AgentTaskAccess;
+use crate::AgentTaskRole;
+use crate::AgentTaskStatus;
+use crate::ApprovalSourceAgent;
 use crate::ClientInfo;
 use crate::CommandApprovalParams;
 use crate::CommandApprovalResponse;
@@ -38,10 +42,13 @@ use crate::ThreadArchiveParams;
 use crate::ThreadArchiveResponse;
 use crate::ThreadDeleteParams;
 use crate::ThreadDeleteResponse;
+use crate::ThreadDescendantsListParams;
+use crate::ThreadDescendantsListResponse;
 use crate::ThreadForkParams;
 use crate::ThreadForkResponse;
 use crate::ThreadListParams;
 use crate::ThreadListResponse;
+use crate::ThreadOrigin;
 use crate::ThreadResumeParams;
 use crate::ThreadResumeResponse;
 use crate::ThreadSearchParams;
@@ -118,6 +125,7 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         CommandSandboxPolicy::decl(),
         CommandWorkspaceWritePolicy::decl(),
         CommandWorkspaceWriteRisk::decl(),
+        ApprovalSourceAgent::decl(),
         CommandApprovalParams::decl(),
         CommandApprovalResponse::decl(),
         McpToolCallApprovalResponseDecision::decl(),
@@ -130,15 +138,21 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         McpToolResult::decl(),
         ContextCompactionStrategy::decl(),
         ContextCompactionOutcome::decl(),
+        AgentTaskRole::decl(),
+        AgentTaskAccess::decl(),
+        AgentTaskStatus::decl(),
         Item::decl(),
         ItemStartedNotification::decl(),
         AgentMessageDeltaNotification::decl(),
         ItemCompletedNotification::decl(),
         Thread::decl(),
+        ThreadOrigin::decl(),
         ThreadArchiveParams::decl(),
         ThreadArchiveResponse::decl(),
         ThreadDeleteParams::decl(),
         ThreadDeleteResponse::decl(),
+        ThreadDescendantsListParams::decl(),
+        ThreadDescendantsListResponse::decl(),
         ThreadForkParams::decl(),
         ThreadForkResponse::decl(),
         ThreadUnarchiveParams::decl(),
@@ -282,6 +296,10 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
         &schema_for!(CommandApprovalParams),
     )?;
     write_schema(
+        out_dir.join("ApprovalSourceAgent.schema.json"),
+        &schema_for!(ApprovalSourceAgent),
+    )?;
+    write_schema(
         out_dir.join("CommandApprovalResponse.schema.json"),
         &schema_for!(CommandApprovalResponse),
     )?;
@@ -317,6 +335,18 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
         out_dir.join("ContextCompactionOutcome.schema.json"),
         &schema_for!(ContextCompactionOutcome),
     )?;
+    write_schema(
+        out_dir.join("AgentTaskRole.schema.json"),
+        &schema_for!(AgentTaskRole),
+    )?;
+    write_schema(
+        out_dir.join("AgentTaskAccess.schema.json"),
+        &schema_for!(AgentTaskAccess),
+    )?;
+    write_schema(
+        out_dir.join("AgentTaskStatus.schema.json"),
+        &schema_for!(AgentTaskStatus),
+    )?;
     write_schema(out_dir.join("Item.schema.json"), &schema_for!(Item))?;
     write_schema(
         out_dir.join("ItemStartedNotification.schema.json"),
@@ -332,6 +362,10 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     )?;
     write_schema(out_dir.join("Thread.schema.json"), &schema_for!(Thread))?;
     write_schema(
+        out_dir.join("ThreadOrigin.schema.json"),
+        &schema_for!(ThreadOrigin),
+    )?;
+    write_schema(
         out_dir.join("ThreadArchiveParams.schema.json"),
         &schema_for!(ThreadArchiveParams),
     )?;
@@ -346,6 +380,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("ThreadDeleteResponse.schema.json"),
         &schema_for!(ThreadDeleteResponse),
+    )?;
+    write_schema(
+        out_dir.join("ThreadDescendantsListParams.schema.json"),
+        &schema_for!(ThreadDescendantsListParams),
+    )?;
+    write_schema(
+        out_dir.join("ThreadDescendantsListResponse.schema.json"),
+        &schema_for!(ThreadDescendantsListResponse),
     )?;
     write_schema(
         out_dir.join("ThreadForkParams.schema.json"),

@@ -82,7 +82,20 @@ fn resumes_completed_history_across_two_cli_processes() {
         "item_0000000000000004"
     );
     let second_requests = second.provider_requests();
-    assert!(second_requests[0].get("tools").is_none());
+    assert_eq!(
+        second_requests[0]["tools"]
+            .as_array()
+            .expect("collaboration tools")
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>(),
+        vec![
+            "collaboration/dispatch",
+            "collaboration/amend",
+            "collaboration/wait",
+            "collaboration/interrupt",
+        ]
+    );
     let messages = provider_messages_after_base_agent(&second_requests[0]);
     assert_eq!(
         messages,

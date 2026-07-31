@@ -34,7 +34,7 @@ export type ServerInfo = { name: string, version: string, };
 
 export type PlatformInfo = { family: string, os: string, arch: string, };
 
-export type ServerCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals: boolean, mcpToolCallApprovals?: boolean, workspaceBrowser?: boolean, workspaceGit?: boolean, };
+export type ServerCapabilities = { commandApprovals: boolean, commandWorkspaceWriteApprovals: boolean, mcpToolCallApprovals?: boolean, workspaceBrowser?: boolean, workspaceGit?: boolean, subagents?: boolean, };
 
 export type WorkspaceBinding = { id: string, };
 
@@ -50,13 +50,15 @@ export type CommandWorkspaceWritePolicy = "commandWorkspaceWriteV1";
 
 export type CommandWorkspaceWriteRisk = "nonTransactionalWorkspaceTreeV1";
 
-export type CommandApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy: CommandSandboxPolicy, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy: CommandNetworkPolicy, };
+export type ApprovalSourceAgent = { taskId: string, role: AgentTaskRole, };
+
+export type CommandApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy: CommandSandboxPolicy, sourceAgent?: ApprovalSourceAgent, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy: CommandNetworkPolicy, };
 
 export type CommandApprovalResponse = { decision: CommandApprovalResponseDecision, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, };
 
 export type McpToolCallApprovalResponseDecision = "approved" | "denied";
 
-export type McpToolCallApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, };
+export type McpToolCallApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, sourceAgent?: ApprovalSourceAgent, };
 
 export type McpToolCallApprovalResponse = { decision: McpToolCallApprovalResponseDecision, };
 
@@ -74,7 +76,13 @@ export type ContextCompactionStrategy = "modelGeneratedActiveTurnV1";
 
 export type ContextCompactionOutcome = { "type": "completed", postContextBytes: bigint, summaryBytes: bigint, summarySha256: string, } | { "type": "failed", kind: string, } | { "type": "interrupted" };
 
-export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "contextCompaction", id: string, strategy: ContextCompactionStrategy, ordinal: bigint, preContextBytes: bigint, sourceMessages: bigint, sourceBytes: bigint, sourceSha256: string, outcome?: ContextCompactionOutcome, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, command?: string, arguments?: Array<string>, } | { "type": "fileChange", id: string, callId: string, path: string, kind: FileChangeKind, diff: string, beforeSha256: string, afterSha256: string, beforeBytes: bigint, afterBytes: bigint, newlineStyle: FileChangeNewlineStyle, finalNewline: boolean, } | { "type": "commandApprovalRequest", id: string, approvalId: string, callId: string, command: string, arguments: Array<string>, cwd: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy?: CommandSandboxPolicy, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy?: CommandNetworkPolicy, } | { "type": "commandApprovalDecision", id: string, approvalId: string, decision: string, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, } | { "type": "commandExecutionAttempt", id: string, approvalId: string, callId: string, } | { "type": "mcpToolCall", id: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalRequest", id: string, approvalId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalDecision", id: string, approvalId: string, decision: string, } | { "type": "mcpToolExecutionAttempt", id: string, approvalId: string, callId: string, inventorySha256: string, } | { "type": "mcpToolResult", id: string, callId: string, name: string, result: McpToolResult, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
+export type AgentTaskRole = "explorer" | "worker" | "auditor";
+
+export type AgentTaskAccess = "readOnly" | "workspaceWrite";
+
+export type AgentTaskStatus = "queued" | "running" | "waitingApproval" | "completed" | "failed" | "interrupted" | "cancelled";
+
+export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "agentCommentary", id: string, text: string, } | { "type": "agentTask", id: string, orchestrationId: string, taskId: string, clientTaskKey: string, childThreadId: string, title: string, role: AgentTaskRole, access: AgentTaskAccess, dependsOn: Array<string>, taskMarkdown: string, } | { "type": "agentTaskAmendment", id: string, orchestrationId: string, taskId: string, amendmentMarkdown: string, } | { "type": "agentTaskResult", id: string, orchestrationId: string, taskId: string, status: AgentTaskStatus, summaryMarkdown: string, durationMs: bigint, } | { "type": "contextCompaction", id: string, strategy: ContextCompactionStrategy, ordinal: bigint, preContextBytes: bigint, sourceMessages: bigint, sourceBytes: bigint, sourceSha256: string, outcome?: ContextCompactionOutcome, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, command?: string, arguments?: Array<string>, } | { "type": "fileChange", id: string, callId: string, path: string, kind: FileChangeKind, diff: string, beforeSha256: string, afterSha256: string, beforeBytes: bigint, afterBytes: bigint, newlineStyle: FileChangeNewlineStyle, finalNewline: boolean, } | { "type": "commandApprovalRequest", id: string, approvalId: string, callId: string, command: string, arguments: Array<string>, cwd: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy?: CommandSandboxPolicy, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy?: CommandNetworkPolicy, } | { "type": "commandApprovalDecision", id: string, approvalId: string, decision: string, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, } | { "type": "commandExecutionAttempt", id: string, approvalId: string, callId: string, } | { "type": "mcpToolCall", id: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalRequest", id: string, approvalId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalDecision", id: string, approvalId: string, decision: string, } | { "type": "mcpToolExecutionAttempt", id: string, approvalId: string, callId: string, inventorySha256: string, } | { "type": "mcpToolResult", id: string, callId: string, name: string, result: McpToolResult, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
 
 export type ItemStartedNotification = { threadId: string, turnId: string, item: Item, };
 
@@ -82,7 +90,9 @@ export type AgentMessageDeltaNotification = { threadId: string, turnId: string, 
 
 export type ItemCompletedNotification = { threadId: string, turnId: string, item: Item, };
 
-export type Thread = { id: string, };
+export type Thread = { id: string, origin?: ThreadOrigin, };
+
+export type ThreadOrigin = { "type": "subagent", parentThreadId: string, parentTurnId: string, orchestrationId: string, taskId: string, role: AgentTaskRole, };
 
 export type ThreadArchiveParams = { threadId: string, };
 
@@ -91,6 +101,10 @@ export type ThreadArchiveResponse = Record<string, never>;
 export type ThreadDeleteParams = { threadId: string, };
 
 export type ThreadDeleteResponse = Record<string, never>;
+
+export type ThreadDescendantsListParams = { threadId: string, };
+
+export type ThreadDescendantsListResponse = { data: Array<ThreadResumeResponse>, };
 
 export type ThreadForkParams = { threadId: string, };
 

@@ -1,5 +1,126 @@
 use super::*;
 
+#[derive(Debug)]
+struct ConcurrentWorkspaceRead {
+    barrier: Arc<tokio::sync::Barrier>,
+    active: AtomicUsize,
+    maximum: AtomicUsize,
+}
+
+impl WorkspaceReadExecutor for ConcurrentWorkspaceRead {
+    fn read<'a>(
+        &'a self,
+        arguments: &'a WorkspaceReadArguments,
+        _cancellation: &'a CancellationToken,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = WorkspaceReadOutcome> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+            self.maximum.fetch_max(active, Ordering::AcqRel);
+            self.barrier.wait().await;
+            self.active.fetch_sub(1, Ordering::AcqRel);
+            WorkspaceReadOutcome::Content {
+                content: arguments.path.clone(),
+                bytes: arguments.path.len(),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn three_workspace_reads_execute_concurrently_and_replay_in_call_order() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![
+                Ok(ModelEvent::ToolCallBatch(vec![
+                    ModelToolCall {
+                        id: "call_a".to_string(),
+                        name: "workspace/read".to_string(),
+                        arguments: serde_json::json!({ "path": "a.md" }),
+                    },
+                    ModelToolCall {
+                        id: "call_b".to_string(),
+                        name: "workspace/read".to_string(),
+                        arguments: serde_json::json!({ "path": "b.md" }),
+                    },
+                    ModelToolCall {
+                        id: "call_c".to_string(),
+                        name: "workspace/read".to_string(),
+                        arguments: serde_json::json!({ "path": "c.md" }),
+                    },
+                ])),
+                Ok(ModelEvent::Completed),
+            ],
+            vec![
+                Ok(ModelEvent::TextDelta("Done.".to_string())),
+                Ok(ModelEvent::Completed),
+            ],
+        ])),
+        requests: requests.clone(),
+    };
+    let mut core = Core::new();
+    let started = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread");
+    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+        panic!("thread event");
+    };
+    let read = Arc::new(ConcurrentWorkspaceRead {
+        barrier: Arc::new(tokio::sync::Barrier::new(3)),
+        active: AtomicUsize::new(0),
+        maximum: AtomicUsize::new(0),
+    });
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(read.clone()),
+        None,
+    );
+    runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id,
+            Some("Read three files".to_string()),
+        )
+        .expect("start batch turn");
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !matches!(
+            events.recv().await.expect("terminal event").kind,
+            CoreEventKind::TurnCompleted { .. }
+        ) {}
+    })
+    .await
+    .expect("parallel reads must not deadlock");
+    assert_eq!(read.maximum.load(Ordering::Acquire), 3);
+
+    let requests = requests.lock().expect("requests");
+    assert!(matches!(
+        requests[1].messages.as_slice(),
+        [
+            ModelMessage::Text { .. },
+            ModelMessage::ToolCallBatch(calls),
+            ModelMessage::ToolResult {
+                call_id: call_a,
+                content: content_a
+            },
+            ModelMessage::ToolResult {
+                call_id: call_b,
+                content: content_b
+            },
+            ModelMessage::ToolResult {
+                call_id: call_c,
+                content: content_c
+            }
+        ] if calls.len() == 3
+            && call_a == "call_a" && content_a == "a.md"
+            && call_b == "call_b" && content_b == "b.md"
+            && call_c == "call_c" && content_c == "c.md"
+    ));
+}
+
 #[tokio::test]
 async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
     let directory = tempfile::tempdir().expect("workspace");
@@ -100,7 +221,14 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
 
     let requests = requests.lock().expect("requests");
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].tools.len(), 1);
+    assert_eq!(
+        requests[0]
+            .tools
+            .iter()
+            .filter(|tool| tool.name.starts_with("workspace/"))
+            .count(),
+        1
+    );
     assert!(
         requests[1]
             .tools
@@ -145,6 +273,96 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
             },
             sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
         ] if content == "bounded context" && text == "I read it."
+    ));
+}
+
+#[tokio::test]
+async fn commentary_is_durable_and_replayed_before_its_tool_call() {
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("README.txt"), "bounded context")
+        .expect("workspace fixture");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![
+                Ok(ModelEvent::Commentary(
+                    "I will inspect the workspace first.".to_string(),
+                )),
+                Ok(ModelEvent::ToolCall(ModelToolCall {
+                    id: "call_commentary".to_string(),
+                    name: "workspace/read".to_string(),
+                    arguments: serde_json::json!({ "path": "README.txt" }),
+                })),
+                Ok(ModelEvent::Completed),
+            ],
+            vec![
+                Ok(ModelEvent::TextDelta("The workspace is ready.".to_string())),
+                Ok(ModelEvent::Completed),
+            ],
+        ])),
+        requests: requests.clone(),
+    };
+    let mut core = Core::new();
+    let started = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread");
+    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(tool),
+        None,
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Inspect the workspace".to_string()),
+        )
+        .expect("start commentary turn")
+    else {
+        panic!("asynchronous turn");
+    };
+
+    while !matches!(
+        events.recv().await.expect("core event").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    let requests = requests.lock().expect("requests");
+    assert!(matches!(
+        requests[1].messages.as_slice(),
+        [
+            ModelMessage::Text { .. },
+            ModelMessage::Commentary { text },
+            ModelMessage::ToolCall(call),
+            ModelMessage::ToolResult { call_id, content }
+        ] if text == "I will inspect the workspace first."
+            && call.id == "call_commentary"
+            && call_id == "call_commentary"
+            && content == "bounded context"
+    ));
+    drop(requests);
+
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    let turn = snapshot
+        .turns
+        .iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("persisted commentary turn");
+    assert!(matches!(
+        turn.items.as_slice(),
+        [
+            sugarcode_state::DurableItemSnapshot::UserMessage { .. },
+            sugarcode_state::DurableItemSnapshot::AgentCommentary { text, .. },
+            sugarcode_state::DurableItemSnapshot::ToolCall { .. },
+            sugarcode_state::DurableItemSnapshot::ToolResult { .. },
+            sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
+        ] if text == "I will inspect the workspace first."
     ));
 }
 
@@ -219,6 +437,7 @@ async fn workspace_list_uses_the_shared_authority_and_one_durable_tool_round() {
         requests[0]
             .tools
             .iter()
+            .filter(|definition| definition.name.starts_with("workspace/"))
             .map(|definition| definition.name.as_str())
             .collect::<Vec<_>>(),
         vec!["workspace/read", "workspace/list"]

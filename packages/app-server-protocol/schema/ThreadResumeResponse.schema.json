@@ -18,6 +18,33 @@
     "turns"
   ],
   "$defs": {
+    "AgentTaskAccess": {
+      "type": "string",
+      "enum": [
+        "readOnly",
+        "workspaceWrite"
+      ]
+    },
+    "AgentTaskRole": {
+      "type": "string",
+      "enum": [
+        "explorer",
+        "worker",
+        "auditor"
+      ]
+    },
+    "AgentTaskStatus": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "waitingApproval",
+        "completed",
+        "failed",
+        "interrupted",
+        "cancelled"
+      ]
+    },
     "CommandNetworkPolicy": {
       "type": "string",
       "enum": [
@@ -161,6 +188,147 @@
             "type",
             "id",
             "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "agentCommentary"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "access": {
+              "$ref": "#/$defs/AgentTaskAccess"
+            },
+            "childThreadId": {
+              "type": "string"
+            },
+            "clientTaskKey": {
+              "type": "string"
+            },
+            "dependsOn": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "id": {
+              "type": "string"
+            },
+            "orchestrationId": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/$defs/AgentTaskRole"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "taskMarkdown": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "agentTask"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "orchestrationId",
+            "taskId",
+            "clientTaskKey",
+            "childThreadId",
+            "title",
+            "role",
+            "access",
+            "dependsOn",
+            "taskMarkdown"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "amendmentMarkdown": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "orchestrationId": {
+              "type": "string"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "agentTaskAmendment"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "orchestrationId",
+            "taskId",
+            "amendmentMarkdown"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "durationMs": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "id": {
+              "type": "string"
+            },
+            "orchestrationId": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/AgentTaskStatus"
+            },
+            "summaryMarkdown": {
+              "type": "string"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "agentTaskResult"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "orchestrationId",
+            "taskId",
+            "status",
+            "summaryMarkdown",
+            "durationMs"
           ]
         },
         {
@@ -804,10 +972,56 @@
       "properties": {
         "id": {
           "type": "string"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "id"
+      ]
+    },
+    "ThreadOrigin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "orchestrationId": {
+              "type": "string"
+            },
+            "parentThreadId": {
+              "type": "string"
+            },
+            "parentTurnId": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/$defs/AgentTaskRole"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "subagent"
+            }
+          },
+          "required": [
+            "type",
+            "parentThreadId",
+            "parentTurnId",
+            "orchestrationId",
+            "taskId",
+            "role"
+          ]
+        }
       ]
     },
     "ToolResult": {

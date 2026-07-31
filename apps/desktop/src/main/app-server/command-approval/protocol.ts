@@ -81,7 +81,7 @@ export const parseCommandApprovalRequest = (
         'sandboxPolicy',
         'networkPolicy',
       ],
-      ['workspaceWritePolicy', 'workspaceWriteRisk'],
+      ['workspaceWritePolicy', 'workspaceWriteRisk', 'sourceAgent'],
     ) ||
     typeof id !== 'string' ||
     !isBoundedIdentifier(value.approvalId) ||
@@ -114,6 +114,27 @@ export const parseCommandApprovalRequest = (
   ) {
     return null;
   }
+  const sourceAgent = value.sourceAgent;
+  if (
+    sourceAgent !== undefined &&
+    (!isRecord(sourceAgent) ||
+      !hasOnlyKeys(sourceAgent, ['taskId', 'role']) ||
+      !isBoundedIdentifier(sourceAgent.taskId) ||
+      (sourceAgent.role !== 'explorer' &&
+        sourceAgent.role !== 'worker' &&
+        sourceAgent.role !== 'auditor'))
+  ) {
+    return null;
+  }
+  const normalizedSourceAgent = sourceAgent
+    ? {
+        taskId: (sourceAgent as Record<string, unknown>).taskId as string,
+        role: (sourceAgent as Record<string, unknown>).role as
+          | 'explorer'
+          | 'worker'
+          | 'auditor',
+      }
+    : undefined;
 
   const argumentsList = value.arguments as string[];
   const totalBytes = argumentsList.reduce(
@@ -136,6 +157,9 @@ export const parseCommandApprovalRequest = (
     environmentPolicy: 'minimalV1',
     sandboxed: true,
     sandboxPolicy: 'filesystemReadOnlyV1',
+    ...(normalizedSourceAgent
+      ? { sourceAgent: normalizedSourceAgent }
+      : {}),
     ...(value.workspaceWritePolicy === 'commandWorkspaceWriteV1'
       ? {
           workspaceWritePolicy: 'commandWorkspaceWriteV1' as const,

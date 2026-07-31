@@ -203,6 +203,8 @@ export const parseInitializeResponse = (
       typeof value.capabilities.workspaceBrowser !== 'boolean') ||
     (value.capabilities.workspaceGit !== undefined &&
       typeof value.capabilities.workspaceGit !== 'boolean') ||
+    (value.capabilities.subagents !== undefined &&
+      typeof value.capabilities.subagents !== 'boolean') ||
     (value.workspace !== undefined &&
       (!isRecord(value.workspace) ||
         !isNonEmptyString(value.workspace.id)))
@@ -241,6 +243,11 @@ export const parseInitializeResponse = (
         ? {
             workspaceGit:
               value.capabilities.workspaceGit as boolean,
+          }
+        : {}),
+      ...(value.capabilities.subagents !== undefined
+        ? {
+            subagents: value.capabilities.subagents as boolean,
           }
         : {}),
     },

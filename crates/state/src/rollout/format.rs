@@ -2,6 +2,7 @@ use super::CURRENT_ROLLOUT_SCHEMA_VERSION;
 use super::DurableContextCompaction;
 use super::DurableContextCompactionStrategy;
 use super::DurableItemSnapshot;
+use super::DurableThreadOrigin;
 use super::DurableThreadSnapshot;
 use super::DurableToolResult;
 use super::DurableTurnError;
@@ -33,6 +34,18 @@ pub(super) struct ThreadCreatedRecord<'a> {
     pub thread_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_binding_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<StoredThreadOriginRef<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredThreadOriginRef<'a> {
+    pub parent_thread_id: &'a str,
+    pub parent_turn_id: &'a str,
+    pub orchestration_id: &'a str,
+    pub task_id: &'a str,
+    pub role: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,6 +183,36 @@ pub(super) enum StoredItemRef<'a> {
     AgentMessage {
         id: &'a str,
         text: &'a str,
+    },
+    AgentCommentary {
+        id: &'a str,
+        text: &'a str,
+    },
+    AgentTask {
+        id: &'a str,
+        orchestration_id: &'a str,
+        task_id: &'a str,
+        client_task_key: &'a str,
+        child_thread_id: &'a str,
+        title: &'a str,
+        role: &'a str,
+        access: &'a str,
+        depends_on: &'a [String],
+        task_markdown: &'a str,
+    },
+    AgentTaskAmendment {
+        id: &'a str,
+        orchestration_id: &'a str,
+        task_id: &'a str,
+        amendment_markdown: &'a str,
+    },
+    AgentTaskResult {
+        id: &'a str,
+        orchestration_id: &'a str,
+        task_id: &'a str,
+        status: &'a str,
+        summary_markdown: &'a str,
+        duration_ms: u64,
     },
     ContextCompaction {
         id: &'a str,
@@ -366,6 +409,59 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
             DurableItemSnapshot::AgentMessage { id, text } => Self::AgentMessage {
                 id: id.as_str(),
                 text,
+            },
+            DurableItemSnapshot::AgentCommentary { id, text } => Self::AgentCommentary {
+                id: id.as_str(),
+                text,
+            },
+            DurableItemSnapshot::AgentTask {
+                id,
+                orchestration_id,
+                task_id,
+                client_task_key,
+                child_thread_id,
+                title,
+                role,
+                access,
+                depends_on,
+                task_markdown,
+            } => Self::AgentTask {
+                id: id.as_str(),
+                orchestration_id,
+                task_id,
+                client_task_key,
+                child_thread_id: child_thread_id.as_str(),
+                title,
+                role,
+                access,
+                depends_on,
+                task_markdown,
+            },
+            DurableItemSnapshot::AgentTaskAmendment {
+                id,
+                orchestration_id,
+                task_id,
+                amendment_markdown,
+            } => Self::AgentTaskAmendment {
+                id: id.as_str(),
+                orchestration_id,
+                task_id,
+                amendment_markdown,
+            },
+            DurableItemSnapshot::AgentTaskResult {
+                id,
+                orchestration_id,
+                task_id,
+                status,
+                summary_markdown,
+                duration_ms,
+            } => Self::AgentTaskResult {
+                id: id.as_str(),
+                orchestration_id,
+                task_id,
+                status,
+                summary_markdown,
+                duration_ms: *duration_ms,
             },
             DurableItemSnapshot::ContextCompaction {
                 id,
@@ -769,6 +865,18 @@ struct StoredThreadCreated {
     thread_id: String,
     #[serde(default)]
     workspace_binding_id: Option<String>,
+    #[serde(default)]
+    origin: Option<StoredThreadOrigin>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredThreadOrigin {
+    parent_thread_id: String,
+    parent_turn_id: String,
+    orchestration_id: String,
+    task_id: String,
+    role: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1009,6 +1117,36 @@ enum StoredItem {
         id: String,
         text: String,
     },
+    AgentCommentary {
+        id: String,
+        text: String,
+    },
+    AgentTask {
+        id: String,
+        orchestration_id: String,
+        task_id: String,
+        client_task_key: String,
+        child_thread_id: String,
+        title: String,
+        role: String,
+        access: String,
+        depends_on: Vec<String>,
+        task_markdown: String,
+    },
+    AgentTaskAmendment {
+        id: String,
+        orchestration_id: String,
+        task_id: String,
+        amendment_markdown: String,
+    },
+    AgentTaskResult {
+        id: String,
+        orchestration_id: String,
+        task_id: String,
+        status: String,
+        summary_markdown: String,
+        duration_ms: u64,
+    },
     ContextCompaction {
         id: String,
         strategy: String,
@@ -1239,6 +1377,7 @@ pub(super) enum DecodedRecord {
         sequence: u64,
         thread_id: ThreadId,
         workspace_binding_id: Option<String>,
+        origin: Option<DurableThreadOrigin>,
     },
     TurnStarted {
         sequence: u64,
@@ -1363,6 +1502,7 @@ pub(super) fn decode_record(
                 sequence,
                 thread_id,
                 workspace_binding_id,
+                origin,
                 record_type: ThreadCreatedType::ThreadCreated,
             } = record;
             debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
@@ -1370,6 +1510,13 @@ pub(super) fn decode_record(
                 sequence,
                 thread_id: ThreadId::new(thread_id),
                 workspace_binding_id,
+                origin: origin.map(|origin| DurableThreadOrigin {
+                    parent_thread_id: ThreadId::new(origin.parent_thread_id),
+                    parent_turn_id: TurnId::new(origin.parent_turn_id),
+                    orchestration_id: origin.orchestration_id,
+                    task_id: origin.task_id,
+                    role: origin.role,
+                }),
             })
         }
         "turnCompleted" => {
@@ -1602,6 +1749,59 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
         StoredItem::AgentMessage { id, text } => DurableItemSnapshot::AgentMessage {
             id: ItemId::new(id),
             text,
+        },
+        StoredItem::AgentCommentary { id, text } => DurableItemSnapshot::AgentCommentary {
+            id: ItemId::new(id),
+            text,
+        },
+        StoredItem::AgentTask {
+            id,
+            orchestration_id,
+            task_id,
+            client_task_key,
+            child_thread_id,
+            title,
+            role,
+            access,
+            depends_on,
+            task_markdown,
+        } => DurableItemSnapshot::AgentTask {
+            id: ItemId::new(id),
+            orchestration_id,
+            task_id,
+            client_task_key,
+            child_thread_id: ThreadId::new(child_thread_id),
+            title,
+            role,
+            access,
+            depends_on,
+            task_markdown,
+        },
+        StoredItem::AgentTaskAmendment {
+            id,
+            orchestration_id,
+            task_id,
+            amendment_markdown,
+        } => DurableItemSnapshot::AgentTaskAmendment {
+            id: ItemId::new(id),
+            orchestration_id,
+            task_id,
+            amendment_markdown,
+        },
+        StoredItem::AgentTaskResult {
+            id,
+            orchestration_id,
+            task_id,
+            status,
+            summary_markdown,
+            duration_ms,
+        } => DurableItemSnapshot::AgentTaskResult {
+            id: ItemId::new(id),
+            orchestration_id,
+            task_id,
+            status,
+            summary_markdown,
+            duration_ms,
         },
         StoredItem::ContextCompaction {
             id,
@@ -1981,6 +2181,7 @@ pub(super) fn encode_thread_created(
     sequence: u64,
     thread_id: &ThreadId,
     workspace_binding_id: Option<&str>,
+    origin: Option<&DurableThreadOrigin>,
 ) -> Result<Vec<u8>, RolloutError> {
     serde_json::to_vec(&ThreadCreatedRecord {
         schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
@@ -1988,6 +2189,13 @@ pub(super) fn encode_thread_created(
         record_type: "threadCreated",
         thread_id: thread_id.as_str(),
         workspace_binding_id,
+        origin: origin.map(|origin| StoredThreadOriginRef {
+            parent_thread_id: origin.parent_thread_id.as_str(),
+            parent_turn_id: origin.parent_turn_id.as_str(),
+            orchestration_id: &origin.orchestration_id,
+            task_id: &origin.task_id,
+            role: &origin.role,
+        }),
     })
     .map_err(|_| RolloutError::Poisoned)
 }
@@ -2110,5 +2318,6 @@ pub(super) fn empty_thread(thread_id: ThreadId) -> DurableThreadSnapshot {
         id: thread_id,
         turns: Vec::new(),
         lifecycle: super::DurableThreadLifecycle::Active,
+        origin: None,
     }
 }

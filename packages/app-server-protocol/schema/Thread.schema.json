@@ -5,9 +5,65 @@
   "properties": {
     "id": {
       "type": "string"
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThreadOrigin"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
     "id"
-  ]
+  ],
+  "$defs": {
+    "AgentTaskRole": {
+      "type": "string",
+      "enum": [
+        "explorer",
+        "worker",
+        "auditor"
+      ]
+    },
+    "ThreadOrigin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "orchestrationId": {
+              "type": "string"
+            },
+            "parentThreadId": {
+              "type": "string"
+            },
+            "parentTurnId": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/$defs/AgentTaskRole"
+            },
+            "taskId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "subagent"
+            }
+          },
+          "required": [
+            "type",
+            "parentThreadId",
+            "parentTurnId",
+            "orchestrationId",
+            "taskId",
+            "role"
+          ]
+        }
+      ]
+    }
+  }
 }

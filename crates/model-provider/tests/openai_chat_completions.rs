@@ -283,6 +283,97 @@ async fn fragmented_single_tool_call_is_assembled_into_one_typed_event() {
 }
 
 #[tokio::test]
+async fn interleaved_parallel_tool_fragments_are_sorted_and_assembled_as_one_batch() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":1,\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"workspace/list\",\"arguments\":\"{\\\"path\\\":\"}},{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\\\"path\\\":\\\"REA\"}},{\"index\":1,\"function\":{\"arguments\":\"\\\".\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"DME.md\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+
+    assert_eq!(
+        events,
+        vec![
+            Ok(ModelEvent::ToolCallBatch(vec![
+                ModelToolCall {
+                    id: "call_1".to_string(),
+                    name: "workspace/read".to_string(),
+                    arguments: serde_json::json!({ "path": "README.md" }),
+                },
+                ModelToolCall {
+                    id: "call_2".to_string(),
+                    name: "workspace/list".to_string(),
+                    arguments: serde_json::json!({ "path": "." }),
+                },
+            ])),
+            Ok(ModelEvent::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn consecutive_persisted_tool_calls_are_replayed_as_one_assistant_batch() {
+    let (endpoint, server, request_rx) =
+        capturing_response_server(SUCCESS.as_bytes().to_vec()).await;
+    let mut request = request();
+    request.messages = vec![
+        ModelMessage::Commentary {
+            text: "I will inspect the workspace.".to_string(),
+        },
+        ModelMessage::ToolCall(ModelToolCall {
+            id: "call_1".to_string(),
+            name: "workspace/read".to_string(),
+            arguments: serde_json::json!({ "path": "README.md" }),
+        }),
+        ModelMessage::ToolCall(ModelToolCall {
+            id: "call_2".to_string(),
+            name: "workspace/list".to_string(),
+            arguments: serde_json::json!({ "path": "." }),
+        }),
+        ModelMessage::ToolResult {
+            call_id: "call_1".to_string(),
+            content: "read result".to_string(),
+        },
+        ModelMessage::ToolResult {
+            call_id: "call_2".to_string(),
+            content: "list result".to_string(),
+        },
+    ];
+    let events = provider(endpoint)
+        .stream(request)
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+    server.await.expect("mock server");
+    let body = request_rx.await.expect("captured request");
+
+    assert_eq!(body["messages"][0]["role"], "assistant");
+    assert_eq!(
+        body["messages"][0]["content"],
+        "I will inspect the workspace."
+    );
+    assert_eq!(
+        body["messages"][0]["tool_calls"]
+            .as_array()
+            .expect("assistant tool calls")
+            .len(),
+        2
+    );
+    assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
+    assert_eq!(body["messages"][2]["tool_call_id"], "call_2");
+}
+
+#[tokio::test]
 async fn leading_whitespace_before_a_tool_call_is_ignored() {
     let body = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n  \"},\"finish_reason\":null}]}\n\n",
@@ -363,14 +454,14 @@ async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
                 "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
                 "data: [DONE]\n\n"
             ),
-            ModelErrorKind::UnsupportedOutput,
+            ModelErrorKind::Protocol,
         ),
         (
             concat!(
                 "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0},{\"index\":1}]},\"finish_reason\":null}]}\n\n",
                 "data: [DONE]\n\n"
             ),
-            ModelErrorKind::UnsupportedOutput,
+            ModelErrorKind::Protocol,
         ),
         (
             concat!(
@@ -396,7 +487,7 @@ async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
             ModelErrorKind::Protocol,
         ),
     ];
-    for (body, expected) in cases {
+    for (case_index, (body, expected)) in cases.into_iter().enumerate() {
         let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
         let events = provider(endpoint)
             .stream(tool_request())
@@ -410,7 +501,7 @@ async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
             .as_ref()
             .expect_err("invalid tool output");
         server.await.expect("mock server");
-        assert_eq!(error.kind(), expected);
+        assert_eq!(error.kind(), expected, "case {case_index}");
         assert!(!error.retryable());
     }
 }
@@ -702,9 +793,11 @@ async fn empty_tool_call_arrays_on_text_deltas_are_ignored() {
 }
 
 #[tokio::test]
-async fn mixed_content_and_tool_output_is_rejected_before_any_delta() {
+async fn short_commentary_before_a_tool_call_is_preserved_and_executed() {
     let body = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"must-not-emit\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I will inspect the workspace.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n"
     );
     let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
@@ -715,9 +808,46 @@ async fn mixed_content_and_tool_output_is_rejected_before_any_delta() {
         .collect::<Vec<_>>()
         .await;
     server.await.expect("mock server");
-    assert_eq!(events.len(), 1);
-    let error = events[0].as_ref().expect_err("unsupported output");
-    assert_eq!(error.kind(), ModelErrorKind::UnsupportedOutput);
+    assert_eq!(
+        events,
+        vec![
+            Ok(ModelEvent::Commentary(
+                "I will inspect the workspace.".to_string()
+            )),
+            Ok(ModelEvent::ToolCall(ModelToolCall {
+                id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({"path": "README.md"}),
+            })),
+            Ok(ModelEvent::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn long_committed_text_followed_by_a_tool_call_remains_unsupported() {
+    let long_text = "x".repeat(513);
+    let body = format!(
+        concat!(
+            "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"{}\"}},\"finish_reason\":null}}]}}\n\n",
+            "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{{\"name\":\"workspace/read\",\"arguments\":\"{{}}\"}}}}]}},\"finish_reason\":null}}]}}\n\n",
+            "data: [DONE]\n\n"
+        ),
+        long_text
+    );
+    let (endpoint, server) = response_server(body.into_bytes(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert!(matches!(
+        events.as_slice(),
+        [Ok(ModelEvent::TextDelta(text)), Err(error)]
+            if text.len() == 513 && error.kind() == ModelErrorKind::UnsupportedOutput
+    ));
 }
 
 #[tokio::test]
@@ -1254,7 +1384,7 @@ async fn read_request(socket: &mut TcpStream, expect_auth: bool) -> serde_json::
         expected.insert("parallel_tool_calls");
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "workspace/read");
-        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["parallel_tool_calls"], true);
     }
     assert_eq!(keys, expected);
     assert_eq!(body["stream_options"]["include_usage"], true);

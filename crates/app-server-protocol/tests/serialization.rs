@@ -1,5 +1,8 @@
 use serde_json::json;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
+use sugarcode_app_server_protocol::AgentTaskAccess;
+use sugarcode_app_server_protocol::AgentTaskRole;
+use sugarcode_app_server_protocol::AgentTaskStatus;
 use sugarcode_app_server_protocol::CommandNetworkPolicy;
 use sugarcode_app_server_protocol::CommandSandboxPolicy;
 use sugarcode_app_server_protocol::CommandWorkspaceWritePolicy;
@@ -22,10 +25,13 @@ use sugarcode_app_server_protocol::ThreadArchiveParams;
 use sugarcode_app_server_protocol::ThreadArchiveResponse;
 use sugarcode_app_server_protocol::ThreadDeleteParams;
 use sugarcode_app_server_protocol::ThreadDeleteResponse;
+use sugarcode_app_server_protocol::ThreadDescendantsListParams;
+use sugarcode_app_server_protocol::ThreadDescendantsListResponse;
 use sugarcode_app_server_protocol::ThreadForkParams;
 use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadListParams;
 use sugarcode_app_server_protocol::ThreadListResponse;
+use sugarcode_app_server_protocol::ThreadOrigin;
 use sugarcode_app_server_protocol::ThreadResumeParams;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
 use sugarcode_app_server_protocol::ThreadSearchParams;
@@ -98,6 +104,7 @@ fn mcp_approval_protocol_is_provider_neutral_strict_and_json_capable() {
         arguments_bytes: 52,
         arguments_sha256: "a".repeat(64),
         inventory_sha256: "b".repeat(64),
+        source_agent: None,
     };
     let value = serde_json::to_value(&params).expect("params serialize");
     assert_eq!(value["name"], "mcp__fixture__inspect");
@@ -278,9 +285,115 @@ fn context_compaction_item_exposes_receipts_without_summary_text() {
 }
 
 #[test]
+fn collaboration_items_and_descendant_origin_are_provider_neutral() {
+    let orchestration_id = "orch/thr_0000000000000001/turn_0000000000000001".to_string();
+    let task_id = format!("{orchestration_id}/writer");
+    let items = vec![
+        Item::AgentTask {
+            id: "item_0000000000000010".to_string(),
+            orchestration_id: orchestration_id.clone(),
+            task_id: task_id.clone(),
+            client_task_key: "writer".to_string(),
+            child_thread_id: "thr_0000000000000002".to_string(),
+            title: "Implement the slice".to_string(),
+            role: AgentTaskRole::Worker,
+            access: AgentTaskAccess::WorkspaceWrite,
+            depends_on: vec!["explore".to_string()],
+            task_markdown: "# Objective\nImplement.".to_string(),
+        },
+        Item::AgentTaskAmendment {
+            id: "item_0000000000000011".to_string(),
+            orchestration_id: orchestration_id.clone(),
+            task_id: task_id.clone(),
+            amendment_markdown: "Preserve the public boundary.".to_string(),
+        },
+        Item::AgentTaskResult {
+            id: "item_0000000000000012".to_string(),
+            orchestration_id: orchestration_id.clone(),
+            task_id: task_id.clone(),
+            status: AgentTaskStatus::Completed,
+            summary_markdown: "Implemented and verified.".to_string(),
+            duration_ms: 1_250,
+        },
+    ];
+    let descendant = ThreadResumeResponse {
+        thread: Thread {
+            id: "thr_0000000000000002".to_string(),
+            origin: Some(ThreadOrigin::Subagent {
+                parent_thread_id: "thr_0000000000000001".to_string(),
+                parent_turn_id: "turn_0000000000000001".to_string(),
+                orchestration_id: orchestration_id.clone(),
+                task_id: task_id.clone(),
+                role: AgentTaskRole::Worker,
+            }),
+        },
+        turns: vec![TurnSnapshot {
+            id: "turn_0000000000000002".to_string(),
+            status: TurnSnapshotStatus::Completed,
+            items: items.clone(),
+            error: None,
+        }],
+    };
+    let value = serde_json::to_value(ThreadDescendantsListResponse {
+        data: vec![descendant],
+    })
+    .expect("descendants serialize");
+    assert_eq!(value["data"][0]["thread"]["origin"]["type"], "subagent");
+    assert_eq!(value["data"][0]["thread"]["origin"]["role"], "worker");
+    assert_eq!(
+        value["data"][0]["turns"][0]["items"][0]["type"],
+        "agentTask"
+    );
+    assert_eq!(
+        serde_json::from_value::<ThreadDescendantsListResponse>(value)
+            .expect("descendants round trip")
+            .data
+            .len(),
+        1
+    );
+    assert_eq!(
+        serde_json::from_value::<ThreadDescendantsListParams>(json!({
+            "threadId": "thr_0000000000000001"
+        }))
+        .expect("canonical descendant params")
+        .thread_id,
+        "thr_0000000000000001"
+    );
+}
+
+#[test]
+fn descendant_list_bidirectional_fixtures_match_public_types() {
+    let request: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../protocol-fixtures/app-server/v1/thread-descendants-list.request.json"
+    ))
+    .expect("descendants request fixture");
+    assert_eq!(request["method"], "thread/descendants/list");
+    serde_json::from_value::<ThreadDescendantsListParams>(request["params"].clone())
+        .expect("descendants request params");
+
+    let response: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../protocol-fixtures/app-server/v1/thread-descendants-list.response.json"
+    ))
+    .expect("descendants response fixture");
+    assert_eq!(response["id"], request["id"]);
+    let descendants =
+        serde_json::from_value::<ThreadDescendantsListResponse>(response["result"].clone())
+            .expect("descendants response");
+    assert_eq!(descendants.data.len(), 1);
+    assert!(matches!(
+        descendants.data[0].thread.origin,
+        Some(ThreadOrigin::Subagent {
+            role: AgentTaskRole::Explorer,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn thread_start_types_use_the_public_thread_dto() {
     let thread = Thread {
         id: "thr_0000000000000001".to_string(),
+        origin: None,
     };
 
     assert_eq!(
@@ -416,6 +529,7 @@ fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
     let response = ThreadForkResponse {
         thread: Thread {
             id: "thr_0000000000000002".to_string(),
+            origin: None,
         },
         turns: vec![TurnSnapshot {
             id: "turn_0000000000000002".to_string(),
@@ -490,6 +604,7 @@ fn thread_list_response_contains_only_durable_identity_and_cursor() {
         serde_json::to_value(ThreadListResponse {
             data: vec![Thread {
                 id: "thr_0000000000000010".to_string(),
+                origin: None,
             }],
             next_cursor: Some("thr_0000000000000010".to_string()),
         })
@@ -539,6 +654,7 @@ fn thread_search_response_exposes_only_thread_identity_and_cursor() {
         serde_json::to_value(ThreadSearchResponse {
             data: vec![Thread {
                 id: "thr_0000000000000010".to_string(),
+                origin: None,
             }],
             next_cursor: Some("thr_0000000000000010".to_string()),
         })
@@ -664,6 +780,39 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
                 "status": "completed"
             }
         })
+    );
+}
+
+#[test]
+fn agent_commentary_item_lifecycle_preserves_process_text() {
+    let item = Item::AgentCommentary {
+        id: "item_0000000000000002".to_string(),
+        text: "I will inspect the workspace first.".to_string(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(ItemStartedNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn_id: "turn_0000000000000001".to_string(),
+            item: item.clone(),
+        })
+        .expect("commentary item/started serializes"),
+        json!({
+            "threadId": "thr_0000000000000001",
+            "turnId": "turn_0000000000000001",
+            "item": {
+                "type": "agentCommentary",
+                "id": "item_0000000000000002",
+                "text": "I will inspect the workspace first."
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<Item>(
+            serde_json::to_value(item.clone()).expect("commentary serializes")
+        )
+        .expect("commentary round trip"),
+        item
     );
 }
 
@@ -931,6 +1080,7 @@ fn thread_resume_returns_a_complete_snapshot() {
     let response = ThreadResumeResponse {
         thread: Thread {
             id: "thr_0000000000000001".to_string(),
+            origin: None,
         },
         turns: vec![TurnSnapshot {
             id: "turn_0000000000000001".to_string(),

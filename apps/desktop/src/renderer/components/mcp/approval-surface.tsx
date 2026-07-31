@@ -50,6 +50,9 @@ const McpApprovalSurfaceContent = () => {
                   <AlertDialogDescription className="mt-1">
                     The selected local server will receive exactly one approved
                     call. This decision is not remembered.
+                    {request.sourceAgent
+                      ? ` Requested by ${request.sourceAgent.role} Agent ${request.sourceAgent.taskId}.`
+                      : ''}
                   </AlertDialogDescription>
                 </div>
                 <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border bg-surface px-2.5 py-1 font-mono text-xs text-secondary">
