@@ -85,7 +85,19 @@ src/renderer/
 --process
 --tertiary
 --background
+--user-message
+--user-message-foreground
 ```
+
+用户消息气泡固定使用 `--user-message: #C7D7FD`。气泡文字必须使用
+`--user-message-foreground`，在浅色和深色主题下都保持深色对比文字；不得
+直接继承深色主题的白色 `--primary`。
+
+## 对话呈现
+
+- 对话正文不显示内部 Item ID、Turn ID 或正常完成标签。
+- Agent 正文不显示头像和名称。
+- 中断、停止、失败和状态不确定等需要用户理解或处理的状态必须继续显示。
 
 ## 排版
 

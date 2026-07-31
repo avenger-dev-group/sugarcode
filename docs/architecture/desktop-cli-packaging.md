@@ -170,6 +170,9 @@ checks on native hosts. Packaging acceptance must not be replaced by
 cross-compilation alone because executable format, credential backend,
 sandboxing, PTY/ConPTY and Electron resource layout are platform-specific.
 
+CI does not execute Desktop TypeScript tests. Desktop lint, type checks, Rust
+workspace tests and native Forge package smoke remain acceptance gates.
+
 The final Phase 7/8 native delivery is green in Actions run `30531423818`.
 
 ## 10. Release work still deferred
