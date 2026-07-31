@@ -51,6 +51,7 @@ import type {
 import { toFileChangeReviewViewModel } from '../workspace/use-store';
 import type { McpActivityState, McpActivityViewModel } from '../mcp/types';
 import type {
+  ActivityDisclosureStore,
   ThreadStore,
   ThreadNavigatorViewModel,
   ThreadViewModel,
@@ -59,6 +60,19 @@ import type {
   TurnViewModel,
 } from './types';
 import { toTurnFailureViewModel } from './turn-failure';
+
+export const useActivityDisclosureStore = (
+  groupId: string,
+  initiallyExpanded = false,
+): ActivityDisclosureStore => {
+  const [expanded, setExpanded] = useState<boolean>(initiallyExpanded);
+
+  useEffect(() => {
+    setExpanded(initiallyExpanded);
+  }, [groupId, initiallyExpanded]);
+
+  return { expanded, setExpanded };
+};
 
 const INITIAL_SNAPSHOT: ConversationStateSnapshot = {
   revision: 0,

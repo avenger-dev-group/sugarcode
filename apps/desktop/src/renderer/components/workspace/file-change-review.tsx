@@ -111,14 +111,183 @@ const lineClass = (line: UnifiedDiffLine): string => {
   }
 };
 
-export const FileChangeReview = ({ review }: FileChangeReviewProps) => {
-  const store = useStore(review.id);
+const DiffPanel = ({
+  compact,
+  review,
+}: Readonly<{
+  compact: boolean;
+  review: FileChangeReviewProps['review'];
+}>) => {
+  const change = review.change;
+  if (!change) {
+    return null;
+  }
+
+  return (
+    <div
+      id={`file-change-${change.id}`}
+      className={
+        compact
+          ? 'mt-2 max-w-full min-w-0 overflow-hidden rounded-lg border bg-background/50'
+          : 'max-w-full min-w-0 overflow-hidden border-t'
+      }
+    >
+      <div
+        className="max-h-96 max-w-full min-w-0 overflow-auto font-mono text-xs font-normal leading-5"
+        tabIndex={0}
+        role="region"
+        aria-label={`Unified diff for ${review.path}`}
+      >
+        {change.hunks.map((hunk) => (
+          <div key={hunk.header}>
+            <div className="sticky top-0 border-y bg-background px-3 py-1 text-[10px] text-tertiary">
+              {hunk.header}
+            </div>
+            {hunk.lines.map((line, index) => (
+              <div
+                key={`${hunk.header}:${index}`}
+                className={`grid min-w-max grid-cols-[3rem_3rem_1fr] ${lineClass(
+                  line,
+                )}`}
+              >
+                <span className="select-none border-r px-2 text-right text-tertiary">
+                  {line.oldLine ?? ''}
+                </span>
+                <span className="select-none border-r px-2 text-right text-tertiary">
+                  {line.newLine ?? ''}
+                </span>
+                <code className="whitespace-pre px-3">
+                  {line.kind === 'addition'
+                    ? '+'
+                    : line.kind === 'deletion'
+                      ? '-'
+                      : ' '}
+                  {line.text}
+                </code>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <dl className="grid gap-x-4 gap-y-2 border-t px-3.5 py-3 font-mono text-[10px] text-tertiary sm:grid-cols-2">
+        <div className="min-w-0">
+          <dt className="uppercase tracking-[0.12em]">Before</dt>
+          <dd className="mt-0.5 break-all">
+            {change.beforeBytes.toLocaleString('en-US')} bytes ·{' '}
+            {change.beforeSha256}
+          </dd>
+        </div>
+        <div className="min-w-0">
+          <dt className="uppercase tracking-[0.12em]">After</dt>
+          <dd className="mt-0.5 break-all">
+            {change.afterBytes.toLocaleString('en-US')} bytes ·{' '}
+            {change.afterSha256}
+          </dd>
+        </div>
+        <div>
+          <dt className="uppercase tracking-[0.12em]">Newlines</dt>
+          <dd className="mt-0.5">
+            {change.newlineStyle === 'lf' ? 'LF' : 'CRLF'} ·{' '}
+            {change.finalNewline ? 'final newline' : 'no final newline'}
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
+};
+
+export const FileChangeReview = ({
+  review,
+  variant = 'card',
+}: FileChangeReviewProps) => {
+  const compact = variant === 'compact';
+  const store = useStore(review.id, !compact);
   const copy = STATE_COPY[review.state];
   const detail =
     review.state === 'failed' && review.errorKind
       ? `Failure kind ${review.errorKind}`
       : copy.detail;
   const change = review.change;
+
+  if (compact) {
+    const action =
+      review.state === 'applied'
+        ? 'Edited'
+        : review.state === 'failed'
+          ? 'Failed to edit'
+          : review.state === 'preparing'
+            ? 'Preparing'
+            : review.state === 'interrupted'
+              ? 'Stopped editing'
+              : 'Editing';
+    return (
+      <section
+        className="min-w-0 py-1"
+        role={
+          review.state === 'failed' || review.state === 'outcomeUnknown'
+            ? 'alert'
+            : 'status'
+        }
+        aria-label={`${copy.label}: ${review.path}`}
+        data-state={review.state}
+      >
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span
+            className={`mt-0.5 flex size-4 shrink-0 items-center justify-center ${stateColor(
+              review.state,
+            )}`}
+          >
+            <StateIcon state={review.state} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm leading-5">
+              <span className={stateColor(review.state)}>{action}</span>
+              <code className="min-w-0 break-all font-mono text-[12px] text-secondary underline decoration-border underline-offset-2">
+                {review.path}
+              </code>
+              {change ? (
+                <>
+                  <span className="ml-auto font-mono text-[10px] text-tertiary">
+                    <span className="text-emerald-700 dark:text-emerald-300">
+                      +{change.additions}
+                    </span>{' '}
+                    <span className="text-destructive">
+                      −{change.deletions}
+                    </span>
+                  </span>
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    aria-expanded={store.expanded}
+                    aria-controls={`file-change-${change.id}`}
+                    onClick={store.toggleExpanded}
+                  >
+                    {store.expanded ? (
+                      <ChevronDown aria-hidden="true" />
+                    ) : (
+                      <ChevronRight aria-hidden="true" />
+                    )}
+                    {store.expanded ? 'Hide diff' : 'Review diff'}
+                  </Button>
+                </>
+              ) : null}
+            </div>
+            {review.state === 'failed' || review.state === 'outcomeUnknown' ? (
+              <p className={`mt-0.5 text-xs ${stateColor(review.state)}`}>
+                {detail}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        {change && store.expanded ? (
+          <div className="pl-6">
+            <DiffPanel compact review={review} />
+          </div>
+        ) : null}
+      </section>
+    );
+  }
 
   return (
     <section
@@ -186,71 +355,7 @@ export const FileChangeReview = ({ review }: FileChangeReviewProps) => {
       </div>
 
       {change && store.expanded ? (
-        <div
-          id={`file-change-${change.id}`}
-          className="max-w-full min-w-0 overflow-hidden border-t"
-        >
-          <div
-            className="max-h-96 max-w-full min-w-0 overflow-auto font-mono text-xs font-normal leading-5"
-            tabIndex={0}
-            role="region"
-            aria-label={`Unified diff for ${review.path}`}
-          >
-            {change.hunks.map((hunk) => (
-              <div key={hunk.header}>
-                <div className="sticky top-0 border-y bg-background px-3 py-1 text-[10px] text-tertiary">
-                  {hunk.header}
-                </div>
-                {hunk.lines.map((line, index) => (
-                  <div
-                    key={`${hunk.header}:${index}`}
-                    className={`grid min-w-max grid-cols-[3rem_3rem_1fr] ${lineClass(
-                      line,
-                    )}`}
-                  >
-                    <span className="select-none border-r px-2 text-right text-tertiary">
-                      {line.oldLine ?? ''}
-                    </span>
-                    <span className="select-none border-r px-2 text-right text-tertiary">
-                      {line.newLine ?? ''}
-                    </span>
-                    <code className="whitespace-pre px-3">
-                      {line.kind === 'addition'
-                        ? '+'
-                        : line.kind === 'deletion'
-                          ? '-'
-                          : ' '}
-                      {line.text}
-                    </code>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-          <dl className="grid gap-x-4 gap-y-2 border-t px-3.5 py-3 font-mono text-[10px] text-tertiary sm:grid-cols-2">
-            <div className="min-w-0">
-              <dt className="uppercase tracking-[0.12em]">Before</dt>
-              <dd className="mt-0.5 break-all">
-                {change.beforeBytes.toLocaleString('en-US')} bytes ·{' '}
-                {change.beforeSha256}
-              </dd>
-            </div>
-            <div className="min-w-0">
-              <dt className="uppercase tracking-[0.12em]">After</dt>
-              <dd className="mt-0.5 break-all">
-                {change.afterBytes.toLocaleString('en-US')} bytes ·{' '}
-                {change.afterSha256}
-              </dd>
-            </div>
-            <div>
-              <dt className="uppercase tracking-[0.12em]">Newlines</dt>
-              <dd className="mt-0.5">
-                {change.newlineStyle === 'lf' ? 'LF' : 'CRLF'} ·{' '}
-                {change.finalNewline ? 'final newline' : 'no final newline'}
-              </dd>
-            </div>
-          </dl>
-        </div>
+        <DiffPanel compact={false} review={review} />
       ) : null}
     </section>
   );

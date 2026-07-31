@@ -67,12 +67,15 @@ export const toFileChangeReviewViewModel = (
   };
 };
 
-export const useStore = (reviewId: string): FileChangeReviewStore => {
-  const [expanded, setExpanded] = useState<boolean>(true);
+export const useStore = (
+  reviewId: string,
+  initiallyExpanded = true,
+): FileChangeReviewStore => {
+  const [expanded, setExpanded] = useState<boolean>(initiallyExpanded);
 
   useEffect(() => {
-    setExpanded(true);
-  }, [reviewId]);
+    setExpanded(initiallyExpanded);
+  }, [initiallyExpanded, reviewId]);
 
   return {
     expanded,

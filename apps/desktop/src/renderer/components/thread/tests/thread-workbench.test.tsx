@@ -149,9 +149,13 @@ describe('ThreadWorkbenchView', () => {
     const commentary = document.querySelector(
       '[aria-label="Agent progress update"]',
     );
+    const process = document.querySelector(
+      'details[aria-label="Processed activity"]',
+    );
     const tool = document.querySelector(
       '[aria-label="Workspace read complete: README.md"]',
     );
+    expect(process?.hasAttribute('open')).toBe(false);
     expect(commentary?.textContent).toBe('I will inspect the workspace first.');
     expect(commentary).not.toBeNull();
     expect(tool).not.toBeNull();
@@ -162,6 +166,101 @@ describe('ThreadWorkbenchView', () => {
       commentary.compareDocumentPosition(tool) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+
+    await act(async () => root.unmount());
+  });
+
+  it('groups consecutive workspace activity into a compact collapsible process log', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const thread = toThreadViewModel({
+      revision: 6,
+      phase: 'ready',
+      threadId: 'thr_0000000000000001',
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'completed',
+          messages: [],
+          activities: [
+            {
+              type: 'workspaceList',
+              activity: {
+                id: 'item_list',
+                callId: 'call_list',
+                path: '.',
+                callStatus: 'completed',
+                result: {
+                  id: 'item_list_result',
+                  status: 'completed',
+                  outcome: { type: 'success', entries: 3 },
+                },
+              },
+            },
+            {
+              type: 'workspaceRead',
+              activity: {
+                id: 'item_read',
+                callId: 'call_read',
+                path: 'src/main.ts',
+                callStatus: 'completed',
+                result: {
+                  id: 'item_read_result',
+                  status: 'completed',
+                  outcome: { type: 'success', bytes: 13_312 },
+                },
+              },
+            },
+            {
+              type: 'workspaceSearch',
+              activity: {
+                id: 'item_search',
+                callId: 'call_search',
+                path: 'src',
+                query: 'render',
+                callStatus: 'completed',
+                result: {
+                  id: 'item_search_result',
+                  status: 'completed',
+                  outcome: {
+                    type: 'success',
+                    matches: 17,
+                    truncated: false,
+                  },
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<ThreadWorkbenchView store={createStore({ thread })} />);
+    });
+
+    const group = document.querySelector(
+      'details[aria-label="3 tool activities"]',
+    );
+    const process = document.querySelector(
+      'details[aria-label="Processed activity"]',
+    );
+    expect(group).not.toBeNull();
+    expect(group?.hasAttribute('open')).toBe(false);
+    expect(process?.hasAttribute('open')).toBe(false);
+    expect(group?.className).not.toContain('rounded-xl');
+    expect(group?.textContent).toContain(
+      'Listed a directory, read 1 file and searched the workspace',
+    );
+    expect(group?.textContent).toContain('13 KB');
+    expect(group?.textContent).toContain('3 entries');
+    expect(group?.textContent).toContain('17 matches');
+    expect(
+      group?.querySelectorAll(
+        '[aria-label^="Workspace list"], [aria-label^="Workspace read"], [aria-label^="Workspace search"]',
+      ),
+    ).toHaveLength(3);
 
     await act(async () => root.unmount());
   });

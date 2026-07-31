@@ -166,4 +166,48 @@ describe('FileChangeReview', () => {
       }).state,
     ).toBe('interrupted');
   });
+
+  it('renders the compact review as a collapsed process row by default', async () => {
+    const review = toFileChangeReviewViewModel('ready', 'completed', {
+      ...activity(),
+      result: {
+        id: 'item_result',
+        status: 'completed',
+        outcome: {
+          type: 'success',
+          path: 'notes.txt',
+          beforeSha256: BEFORE_SHA256,
+          afterSha256: AFTER_SHA256,
+          beforeBytes: 14,
+          afterBytes: 17,
+        },
+      },
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<FileChangeReview review={review} variant="compact" />);
+    });
+
+    const reviewRow = document.querySelector(
+      '[aria-label="File change applied: notes.txt"]',
+    );
+    expect(reviewRow?.className).not.toContain('rounded-xl');
+    expect(document.body.textContent).toContain('Edited');
+    expect(document.body.textContent).toContain('notes.txt');
+    expect(document.body.textContent).not.toContain('@@ -1,3 +1,3 @@');
+    const toggle = document.querySelector('button');
+    expect(toggle?.textContent).toContain('Review diff');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => {
+      toggle?.click();
+    });
+    expect(document.body.textContent).toContain('@@ -1,3 +1,3 @@');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+
+    await act(async () => root.unmount());
+  });
 });

@@ -1,0 +1,467 @@
+import {
+  BookOpen,
+  ChevronDown,
+  CircleHelp,
+  FolderOpen,
+  ListChecks,
+  LoaderCircle,
+  Plug,
+  Search,
+  Square,
+  SquareTerminal,
+  X,
+} from 'lucide-react';
+
+import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
+
+import type { CompactToolActivity } from './types';
+import { useActivityDisclosureStore } from './use-store';
+
+type WorkspaceActivity = Extract<
+  CompactToolActivity,
+  { type: 'workspaceRead' | 'workspaceList' | 'workspaceSearch' }
+>;
+
+type CommandActivity = Extract<
+  CompactToolActivity,
+  { type: 'commandApproval' }
+>;
+
+type McpActivity = Extract<CompactToolActivity, { type: 'mcp' }>;
+
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1_000) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1_000_000) {
+    return `${(bytes / 1_000).toFixed(bytes < 10_000 ? 1 : 0)} KB`;
+  }
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
+};
+
+const stateTone = (state: WorkspaceActivity['activity']['state']): string => {
+  switch (state) {
+    case 'running':
+    case 'stopping':
+      return 'text-process';
+    case 'failed':
+      return 'text-destructive';
+    case 'uncertain':
+      return 'text-tertiary';
+    case 'interrupted':
+      return 'text-secondary';
+    case 'succeeded':
+      return 'text-secondary';
+  }
+};
+
+const StateIcon = ({
+  state,
+  type,
+}: Readonly<{
+  state: WorkspaceActivity['activity']['state'];
+  type: WorkspaceActivity['type'];
+}>) => {
+  if (state === 'running' || state === 'stopping') {
+    return (
+      <LoaderCircle
+        className="size-3.5 animate-spin motion-reduce:animate-none"
+        aria-hidden="true"
+      />
+    );
+  }
+  if (state === 'failed') {
+    return <X className="size-3.5" aria-hidden="true" />;
+  }
+  if (state === 'uncertain') {
+    return <CircleHelp className="size-3.5" aria-hidden="true" />;
+  }
+  if (state === 'interrupted') {
+    return <Square className="size-3.5" aria-hidden="true" />;
+  }
+  if (type === 'workspaceRead') {
+    return <BookOpen className="size-3.5" aria-hidden="true" />;
+  }
+  if (type === 'workspaceList') {
+    return <FolderOpen className="size-3.5" aria-hidden="true" />;
+  }
+  return <Search className="size-3.5" aria-hidden="true" />;
+};
+
+const actionCopy = (entry: WorkspaceActivity): string => {
+  const { state } = entry.activity;
+  const active = state === 'running' || state === 'stopping';
+  const failed = state === 'failed';
+  switch (entry.type) {
+    case 'workspaceRead':
+      return failed ? 'Failed to read' : active ? 'Reading' : 'Read';
+    case 'workspaceList':
+      return failed ? 'Failed to list' : active ? 'Listing' : 'Listed';
+    case 'workspaceSearch':
+      return failed ? 'Search failed' : active ? 'Searching' : 'Searched';
+  }
+};
+
+const ariaLabel = (entry: WorkspaceActivity): string => {
+  const { state } = entry.activity;
+  const stateLabel =
+    state === 'succeeded'
+      ? 'complete'
+      : state === 'running'
+        ? 'in progress'
+        : state;
+  switch (entry.type) {
+    case 'workspaceRead':
+      return `Workspace read ${stateLabel}: ${entry.activity.path}`;
+    case 'workspaceList':
+      return `Workspace list ${stateLabel}: ${entry.activity.path}`;
+    case 'workspaceSearch':
+      return `Workspace search ${stateLabel}: ${entry.activity.query}`;
+  }
+};
+
+const metadata = (entry: WorkspaceActivity): string | null => {
+  switch (entry.type) {
+    case 'workspaceRead':
+      return entry.activity.bytes === undefined
+        ? null
+        : formatBytes(entry.activity.bytes);
+    case 'workspaceList':
+      return entry.activity.entries === undefined
+        ? null
+        : `${entry.activity.entries.toLocaleString('en-US')} ${
+            entry.activity.entries === 1 ? 'entry' : 'entries'
+          }`;
+    case 'workspaceSearch':
+      return entry.activity.matches === undefined
+        ? null
+        : `${entry.activity.matches.toLocaleString('en-US')}${
+            entry.activity.truncated ? '+' : ''
+          } matches`;
+  }
+};
+
+const WorkspaceRow = ({ entry }: Readonly<{ entry: WorkspaceActivity }>) => {
+  const detail =
+    entry.type === 'workspaceSearch'
+      ? `“${entry.activity.query}” in ${entry.activity.path}`
+      : entry.activity.path;
+  const meta = metadata(entry);
+  return (
+    <div
+      className="flex min-w-0 items-start gap-2.5 py-1"
+      role={entry.activity.state === 'failed' ? 'alert' : 'status'}
+      aria-label={ariaLabel(entry)}
+      data-state={entry.activity.state}
+    >
+      <span
+        className={`mt-0.5 flex size-4 shrink-0 items-center justify-center ${stateTone(
+          entry.activity.state,
+        )}`}
+      >
+        <StateIcon state={entry.activity.state} type={entry.type} />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm leading-5">
+        <span className={stateTone(entry.activity.state)}>
+          {actionCopy(entry)}
+        </span>
+        <code className="min-w-0 break-all font-mono text-[12px] text-secondary underline decoration-border underline-offset-2">
+          {detail}
+        </code>
+        {meta ? (
+          <span className="ml-auto whitespace-nowrap font-mono text-[10px] text-tertiary">
+            {meta}
+          </span>
+        ) : null}
+        {entry.activity.errorKind ? (
+          <span className="w-full break-all pl-0 font-mono text-[10px] text-destructive">
+            {entry.activity.errorKind}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+};
+
+const commandFailed = (entry: CommandActivity): boolean => {
+  const result = entry.activity.executionResult;
+  if (
+    entry.activity.state === 'denied' ||
+    entry.activity.state === 'timedOut' ||
+    entry.activity.state === 'unsupported'
+  ) {
+    return true;
+  }
+  if (!result) {
+    return false;
+  }
+  return (
+    result.outcome.type === 'error' ||
+    result.outcome.outcome.type !== 'exitCode' ||
+    result.outcome.outcome.code !== 0
+  );
+};
+
+const commandAction = (
+  entry: CommandActivity,
+  failed: boolean,
+  active: boolean,
+): string => {
+  switch (entry.activity.state) {
+    case 'denied':
+      return 'Denied';
+    case 'timedOut':
+      return 'Approval timed out';
+    case 'unsupported':
+      return 'Approval unsupported';
+    default:
+      if (failed) {
+        return 'Command failed';
+      }
+      if (active) {
+        return 'Running';
+      }
+      if (entry.activity.executionResult) {
+        return 'Ran';
+      }
+      return entry.activity.state === 'approved'
+        ? 'Approved'
+        : 'Command stopped';
+  }
+};
+
+const CommandRow = ({ entry }: Readonly<{ entry: CommandActivity }>) => {
+  const failed = commandFailed(entry);
+  const result = entry.activity.executionResult;
+  const active =
+    entry.activity.state === 'approved' &&
+    entry.activity.executionAttempt !== undefined &&
+    result === undefined;
+  const action = commandAction(entry, failed, active);
+  const metadata =
+    result?.outcome.type === 'process'
+      ? `${result.outcome.durationMs.toLocaleString('en-US')} ms`
+      : null;
+  const tone = failed
+    ? 'text-destructive'
+    : active
+      ? 'text-process'
+      : 'text-secondary';
+  return (
+    <div
+      className="flex min-w-0 items-start gap-2.5 py-1"
+      role={failed ? 'alert' : 'status'}
+      aria-label={`${action}: ${entry.activity.command}`}
+      data-state={entry.activity.state}
+    >
+      <span
+        className={`mt-0.5 flex size-4 shrink-0 items-center justify-center ${tone}`}
+      >
+        {active ? (
+          <LoaderCircle
+            className="size-3.5 animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+        ) : failed ? (
+          <X className="size-3.5" aria-hidden="true" />
+        ) : (
+          <SquareTerminal className="size-3.5" aria-hidden="true" />
+        )}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm leading-5">
+        <span className={tone}>{action}</span>
+        <code className="min-w-0 break-all font-mono text-[12px] text-secondary underline decoration-border underline-offset-2">
+          {entry.activity.command}
+        </code>
+        {metadata ? (
+          <span className="ml-auto whitespace-nowrap font-mono text-[10px] text-tertiary">
+            {metadata}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+};
+
+const McpRow = ({ entry }: Readonly<{ entry: McpActivity }>) => {
+  const failed =
+    entry.activity.state === 'toolError' ||
+    entry.activity.state === 'failed' ||
+    entry.activity.state === 'uncertain';
+  const active =
+    entry.activity.state === 'approved' || entry.activity.state === 'attempted';
+  const action = failed
+    ? 'Tool call failed'
+    : active
+      ? 'Calling'
+      : entry.activity.state === 'succeeded'
+        ? 'Called'
+        : entry.activity.state === 'denied'
+          ? 'Denied'
+          : 'Tool call stopped';
+  const metadata =
+    entry.activity.receipt?.type === 'completed'
+      ? formatBytes(entry.activity.receipt.retainedBytes)
+      : null;
+  const tone = failed
+    ? 'text-destructive'
+    : active
+      ? 'text-process'
+      : 'text-secondary';
+  return (
+    <div
+      className="flex min-w-0 items-start gap-2.5 py-1"
+      role={failed ? 'alert' : 'status'}
+      aria-label={`${action}: ${entry.activity.name}`}
+      data-state={entry.activity.state}
+    >
+      <span
+        className={`mt-0.5 flex size-4 shrink-0 items-center justify-center ${tone}`}
+      >
+        {active ? (
+          <LoaderCircle
+            className="size-3.5 animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+        ) : failed ? (
+          <X className="size-3.5" aria-hidden="true" />
+        ) : (
+          <Plug className="size-3.5" aria-hidden="true" />
+        )}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm leading-5">
+        <span className={tone}>{action}</span>
+        <code className="min-w-0 break-all font-mono text-[12px] text-secondary underline decoration-border underline-offset-2">
+          {entry.activity.name}
+        </code>
+        {metadata ? (
+          <span className="ml-auto whitespace-nowrap font-mono text-[10px] text-tertiary">
+            {metadata}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+};
+
+const countByType = (
+  activities: readonly CompactToolActivity[],
+  type: CompactToolActivity['type'],
+): number => activities.filter((entry) => entry.type === type).length;
+
+const groupSummary = (activities: readonly CompactToolActivity[]): string => {
+  const parts: string[] = [];
+  const listCount = countByType(activities, 'workspaceList');
+  const readCount = countByType(activities, 'workspaceRead');
+  const searchCount = countByType(activities, 'workspaceSearch');
+  const editCount = countByType(activities, 'fileChange');
+  const ranCommandCount = activities.filter(
+    (entry) =>
+      entry.type === 'commandApproval' &&
+      entry.activity.executionResult !== undefined,
+  ).length;
+  const reviewedCommandCount =
+    countByType(activities, 'commandApproval') - ranCommandCount;
+  const calledMcpCount = activities.filter(
+    (entry) => entry.type === 'mcp' && entry.activity.state !== 'denied',
+  ).length;
+  const reviewedMcpCount = countByType(activities, 'mcp') - calledMcpCount;
+  if (listCount > 0) {
+    parts.push(
+      listCount === 1
+        ? 'listed a directory'
+        : `listed ${listCount} directories`,
+    );
+  }
+  if (readCount > 0) {
+    parts.push(`read ${readCount} ${readCount === 1 ? 'file' : 'files'}`);
+  }
+  if (searchCount > 0) {
+    parts.push(
+      searchCount === 1
+        ? 'searched the workspace'
+        : `ran ${searchCount} searches`,
+    );
+  }
+  if (editCount > 0) {
+    parts.push(`edited ${editCount} ${editCount === 1 ? 'file' : 'files'}`);
+  }
+  if (ranCommandCount > 0) {
+    parts.push(
+      `ran ${ranCommandCount} ${
+        ranCommandCount === 1 ? 'command' : 'commands'
+      }`,
+    );
+  }
+  if (reviewedCommandCount > 0) {
+    parts.push(
+      `reviewed ${reviewedCommandCount} ${
+        reviewedCommandCount === 1 ? 'command' : 'commands'
+      }`,
+    );
+  }
+  if (calledMcpCount > 0) {
+    parts.push(
+      `called ${calledMcpCount} ${
+        calledMcpCount === 1 ? 'tool' : 'tools'
+      }`,
+    );
+  }
+  if (reviewedMcpCount > 0) {
+    parts.push(
+      `reviewed ${reviewedMcpCount} ${
+        reviewedMcpCount === 1 ? 'tool call' : 'tool calls'
+      }`,
+    );
+  }
+  if (parts.length === 0) {
+    return 'Worked in the workspace';
+  }
+  const sentence =
+    parts.length === 1
+      ? parts[0]
+      : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+};
+
+export const ToolActivityGroup = ({
+  activities,
+}: Readonly<{ activities: readonly CompactToolActivity[] }>) => {
+  const store = useActivityDisclosureStore(activities[0]?.activity.id ?? '');
+
+  return (
+    <details
+      open={store.expanded}
+      onToggle={(event) => store.setExpanded(event.currentTarget.open)}
+      className="group/process min-w-0"
+      aria-label={`${activities.length} tool activities`}
+    >
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 rounded-md py-1 pr-1 text-sm text-secondary outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+        <ListChecks
+          className="size-3.5 shrink-0 text-tertiary"
+          aria-hidden="true"
+        />
+        <span className="min-w-0">{groupSummary(activities)}</span>
+        <ChevronDown
+          className="size-3.5 shrink-0 text-tertiary transition-transform motion-reduce:transition-none group-open/process:rotate-180"
+          aria-hidden="true"
+        />
+      </summary>
+      <ol className="relative ml-1.5 mt-0.5 border-l border-border/70 pl-3">
+        {activities.map((entry) => (
+          <li key={`${entry.type}:${entry.activity.id}`} className="min-w-0">
+            {entry.type === 'fileChange' ? (
+              <FileChangeReview review={entry.activity} variant="compact" />
+            ) : entry.type === 'commandApproval' ? (
+              <CommandRow entry={entry} />
+            ) : entry.type === 'mcp' ? (
+              <McpRow entry={entry} />
+            ) : (
+              <WorkspaceRow entry={entry} />
+            )}
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+};

@@ -73,6 +73,19 @@ export type TurnActivityViewModel =
       activity: OrchestrationActivityViewModel;
     }>;
 
+export type CompactToolActivity = Extract<
+  TurnActivityViewModel,
+  {
+    type:
+      | 'workspaceRead'
+      | 'workspaceList'
+      | 'workspaceSearch'
+      | 'fileChange'
+      | 'commandApproval'
+      | 'mcp';
+  }
+>;
+
 export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
@@ -151,6 +164,18 @@ export type ThreadWorkbenchViewProps = Readonly<{
 
 export type TranscriptTurnProps = Readonly<{
   turn: TurnViewModel;
+}>;
+
+export type ActivityDisclosureStore = Readonly<{
+  expanded: boolean;
+  setExpanded: (expanded: boolean) => void;
+}>;
+
+export type ProcessActivityGroupProps = Readonly<{
+  groupId: string;
+  status: ConversationTurnStatus;
+  requiresAttention: boolean;
+  children: ReactNode;
 }>;
 
 export type TranscriptFollow = Readonly<{

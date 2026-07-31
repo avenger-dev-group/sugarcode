@@ -6,7 +6,7 @@ const AgentCommentaryView = ({
   commentary,
 }: AgentCommentaryProps): ReactElement => (
   <p
-    className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-process"
+    className="whitespace-pre-wrap break-words text-sm font-normal leading-normal text-process"
     aria-label={
       commentary.state === 'running'
         ? 'Agent progress'

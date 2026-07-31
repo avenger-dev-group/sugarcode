@@ -16,12 +16,16 @@ import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline
 import { OrchestrationActivity } from '@/renderer/components/orchestration/orchestration-activity';
 
 import type {
+  CompactToolActivity,
   ThreadWorkbenchViewProps,
   TurnActivityViewModel,
   TranscriptMessageViewModel,
   TranscriptTurnProps,
 } from './types';
+import { ProcessActivityGroup } from './process-activity-group';
 import { ThreadNavigator } from './thread-navigator';
+import { isCompactToolActivity } from './tool-activity';
+import { ToolActivityGroup } from './tool-activity-group';
 import { useStore, useTranscriptFollow } from './use-store';
 
 const TranscriptMessage = ({
@@ -82,64 +86,52 @@ const TurnActivityTimeline = ({
 }: Readonly<{
   activities: readonly TurnActivityViewModel[];
   turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
-}>) => (
-  <>
-    {activities.map((entry, index) => {
-      if (entry.type !== 'fileChange') {
+}>) => {
+  const requiresAttention = activities.some(
+    (entry) =>
+      (entry.type === 'commandApproval' &&
+        (entry.activity.state === 'awaiting' ||
+          entry.activity.state === 'stopping')) ||
+      (entry.type === 'mcp' && entry.activity.state === 'awaiting'),
+  );
+
+  return (
+    <ProcessActivityGroup
+      groupId={activities[0]?.activity.id ?? 'empty-process'}
+      status={turnStatus}
+      requiresAttention={requiresAttention}
+    >
+      {activities.map((entry, index) => {
+        if (!isCompactToolActivity(entry)) {
+          return (
+            <TurnActivity
+              key={`${entry.type}:${entry.activity.id}`}
+              entry={entry}
+              turnStatus={turnStatus}
+            />
+          );
+        }
+        if (isCompactToolActivity(activities[index - 1])) {
+          return null;
+        }
+        const group: CompactToolActivity[] = [];
+        for (let cursor = index; cursor < activities.length; cursor += 1) {
+          const candidate = activities[cursor];
+          if (!isCompactToolActivity(candidate)) {
+            break;
+          }
+          group.push(candidate);
+        }
         return (
-          <TurnActivity
-            key={`${entry.type}:${entry.activity.id}`}
-            entry={entry}
-            turnStatus={turnStatus}
+          <ToolActivityGroup
+            key={`toolActivities:${group[0].activity.id}`}
+            activities={group}
           />
         );
-      }
-      if (activities[index - 1]?.type === 'fileChange') {
-        return null;
-      }
-      const changes: Extract<TurnActivityViewModel, { type: 'fileChange' }>[] =
-        [];
-      for (
-        let cursor = index;
-        activities[cursor]?.type === 'fileChange';
-        cursor += 1
-      ) {
-        changes.push(
-          activities[cursor] as Extract<
-            TurnActivityViewModel,
-            { type: 'fileChange' }
-          >,
-        );
-      }
-      if (changes.length === 1) {
-        return (
-          <FileChangeReview
-            key={changes[0].activity.id}
-            review={changes[0].activity}
-          />
-        );
-      }
-      return (
-        <details
-          key={`fileChanges:${changes[0].activity.id}`}
-          className="ml-10 rounded-xl border border-border/70 bg-surface/60 px-3 py-2"
-        >
-          <summary className="cursor-pointer text-sm text-secondary">
-            Edited {changes.length} files
-          </summary>
-          <div className="mt-3 space-y-4 border-t border-border/60 pt-3">
-            {changes.map((change) => (
-              <FileChangeReview
-                key={change.activity.id}
-                review={change.activity}
-              />
-            ))}
-          </div>
-        </details>
-      );
-    })}
-  </>
-);
+      })}
+    </ProcessActivityGroup>
+  );
+};
 
 const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
   <section
