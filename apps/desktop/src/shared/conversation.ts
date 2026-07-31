@@ -1115,15 +1115,7 @@ const isTurn = (value: unknown): value is ConversationTurn => {
     (Object.hasOwn(value, 'mcpActivities') &&
       (!Array.isArray(value.mcpActivities) ||
         value.mcpActivities.length > 4 ||
-        !value.mcpActivities.every(isMcpActivity))) ||
-    [
-      Object.hasOwn(value, 'workspaceRead'),
-      Object.hasOwn(value, 'workspaceList'),
-      Object.hasOwn(value, 'workspaceSearch'),
-      Object.hasOwn(value, 'fileChange'),
-      Object.hasOwn(value, 'commandApproval'),
-      Object.hasOwn(value, 'mcpActivities'),
-    ].filter(Boolean).length > 1
+        !value.mcpActivities.every(isMcpActivity)))
   ) {
     return false;
   }

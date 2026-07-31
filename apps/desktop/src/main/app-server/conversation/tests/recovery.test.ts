@@ -368,6 +368,41 @@ describe('conversation recovery', () => {
     ).toBeUndefined();
   });
 
+  it('recovers an interrupted parallel workspace read batch', () => {
+    const resumed = parseThreadResumeResponse({
+      thread: { id: 'thr_0000000000000001' },
+      turns: [
+        {
+          id: 'turn_0000000000000001',
+          status: 'interrupted',
+          items: ['package.json', 'src/main.ts', 'index.html'].map(
+            (path, index) => ({
+              type: 'toolCall',
+              id: `item_read_${index}`,
+              callId: `call_read_${index}`,
+              name: 'workspace/read',
+              path,
+            }),
+          ),
+        },
+      ],
+    });
+
+    const recovered = recoverConversation(
+      'thr_0000000000000001',
+      resumed,
+    );
+    expect(
+      recovered.turns[0]?.activities?.filter(
+        (entry) => entry.type === 'workspaceRead',
+      ),
+    ).toHaveLength(3);
+    expect(recovered.turns[0]?.workspaceRead).toMatchObject({
+      callId: 'call_read_2',
+      path: 'index.html',
+    });
+  });
+
   it('recovers a workspace list count and discards durable entry names', () => {
     const content = JSON.stringify({
       entries: [

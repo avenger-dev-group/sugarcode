@@ -793,6 +793,49 @@ async fn empty_tool_call_arrays_on_text_deltas_are_ignored() {
 }
 
 #[tokio::test]
+async fn tool_capable_answer_streams_after_one_total_commentary_grace() {
+    let parts = vec![
+        (
+            std::time::Duration::ZERO,
+            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"A\"},\"finish_reason\":null}]}\n\n"
+                .to_vec(),
+        ),
+        (
+            std::time::Duration::from_millis(150),
+            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"B\"},\"finish_reason\":null}]}\n\n"
+                .to_vec(),
+        ),
+        (
+            std::time::Duration::from_millis(150),
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"C\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n"
+            )
+            .as_bytes()
+            .to_vec(),
+        ),
+    ];
+    let (endpoint, server) = delayed_response_server(parts).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+
+    assert_eq!(
+        events,
+        vec![
+            Ok(ModelEvent::TextDelta("AB".to_string())),
+            Ok(ModelEvent::TextDelta("C".to_string())),
+            Ok(ModelEvent::Completed),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn short_commentary_before_a_tool_call_is_preserved_and_executed() {
     let body = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"I will inspect the workspace.\"},\"finish_reason\":null}]}\n\n",
@@ -1268,6 +1311,38 @@ async fn response_server_with_options(
             start = end;
         }
         socket.flush().await.expect("flush response");
+    });
+    (
+        Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint"),
+        server,
+    )
+}
+
+async fn delayed_response_server(
+    parts: Vec<(std::time::Duration, Vec<u8>)>,
+) -> (Url, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind delayed mock server");
+    let address = listener.local_addr().expect("delayed mock server address");
+    let content_length = parts.iter().map(|(_, part)| part.len()).sum::<usize>();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept request");
+        read_request(&mut socket, true).await;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write response headers");
+        for (delay, part) in parts {
+            tokio::time::sleep(delay).await;
+            socket.write_all(&part).await.expect("write delayed chunk");
+            socket.flush().await.expect("flush delayed chunk");
+        }
     });
     (
         Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint"),

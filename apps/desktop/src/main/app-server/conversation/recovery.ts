@@ -41,6 +41,9 @@ export const recoverConversation = (
     const messages: ConversationMessage[] = [];
     const contextCompactions: ConversationContextCompactionActivity[] = [];
     const activities: ConversationActivity[] = [];
+    const workspaceReads: ConversationWorkspaceReadActivity[] = [];
+    const workspaceLists: ConversationWorkspaceListActivity[] = [];
+    const workspaceSearches: ConversationWorkspaceSearchActivity[] = [];
     let workspaceRead: ConversationWorkspaceReadActivity | undefined;
     let workspaceList: ConversationWorkspaceListActivity | undefined;
     let workspaceSearch: ConversationWorkspaceSearchActivity | undefined;
@@ -198,9 +201,11 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspaceReadCall') {
-        if (workspaceRead && !workspaceRead.result) {
+        if (
+          workspaceReads.some((activity) => activity.callId === item.callId)
+        ) {
           throw new Error(
-            'thread/resume returned overlapping workspace/read activity.',
+            'thread/resume returned a duplicate workspace/read call.',
           );
         }
         workspaceRead = {
@@ -209,39 +214,49 @@ export const recoverConversation = (
           path: item.path,
           callStatus: 'completed',
         };
+        workspaceReads.push(workspaceRead);
         activities.push({ type: 'workspaceRead', activity: workspaceRead });
         continue;
       }
       if (item.type === 'workspaceReadResult') {
-        if (
-          !workspaceRead ||
-          workspaceRead.callId !== item.callId ||
-          workspaceRead.result
-        ) {
+        const readIndex = workspaceReads.findIndex(
+          (activity) => activity.callId === item.callId,
+        );
+        const matchingRead = workspaceReads[readIndex];
+        if (!matchingRead || matchingRead.result) {
           throw new Error(
             'thread/resume returned an unmatched workspace/read result.',
           );
         }
-        workspaceRead = {
-          ...workspaceRead,
+        const completedRead: ConversationWorkspaceReadActivity = {
+          ...matchingRead,
           result: {
             id: item.id,
             status: 'completed',
             outcome: { ...item.outcome },
           },
         };
+        workspaceReads[readIndex] = completedRead;
+        if (workspaceRead?.callId === item.callId) {
+          workspaceRead = completedRead;
+        }
         const index = activities.findIndex(
           (entry) =>
             entry.type === 'workspaceRead' &&
             entry.activity.callId === item.callId,
         );
-        activities[index] = { type: 'workspaceRead', activity: workspaceRead };
+        activities[index] = {
+          type: 'workspaceRead',
+          activity: completedRead,
+        };
         continue;
       }
       if (item.type === 'workspaceListCall') {
-        if (workspaceList && !workspaceList.result) {
+        if (
+          workspaceLists.some((activity) => activity.callId === item.callId)
+        ) {
           throw new Error(
-            'thread/resume returned overlapping workspace/list activity.',
+            'thread/resume returned a duplicate workspace/list call.',
           );
         }
         workspaceList = {
@@ -250,39 +265,51 @@ export const recoverConversation = (
           path: item.path,
           callStatus: 'completed',
         };
+        workspaceLists.push(workspaceList);
         activities.push({ type: 'workspaceList', activity: workspaceList });
         continue;
       }
       if (item.type === 'workspaceListResult') {
-        if (
-          !workspaceList ||
-          workspaceList.callId !== item.callId ||
-          workspaceList.result
-        ) {
+        const listIndex = workspaceLists.findIndex(
+          (activity) => activity.callId === item.callId,
+        );
+        const matchingList = workspaceLists[listIndex];
+        if (!matchingList || matchingList.result) {
           throw new Error(
             'thread/resume returned an unmatched workspace/list result.',
           );
         }
-        workspaceList = {
-          ...workspaceList,
+        const completedList: ConversationWorkspaceListActivity = {
+          ...matchingList,
           result: {
             id: item.id,
             status: 'completed',
             outcome: { ...item.outcome },
           },
         };
+        workspaceLists[listIndex] = completedList;
+        if (workspaceList?.callId === item.callId) {
+          workspaceList = completedList;
+        }
         const index = activities.findIndex(
           (entry) =>
             entry.type === 'workspaceList' &&
             entry.activity.callId === item.callId,
         );
-        activities[index] = { type: 'workspaceList', activity: workspaceList };
+        activities[index] = {
+          type: 'workspaceList',
+          activity: completedList,
+        };
         continue;
       }
       if (item.type === 'workspaceSearchCall') {
-        if (workspaceSearch && !workspaceSearch.result) {
+        if (
+          workspaceSearches.some(
+            (activity) => activity.callId === item.callId,
+          )
+        ) {
           throw new Error(
-            'thread/resume returned overlapping workspace/search activity.',
+            'thread/resume returned a duplicate workspace/search call.',
           );
         }
         workspaceSearch = {
@@ -292,27 +319,32 @@ export const recoverConversation = (
           query: item.query,
           callStatus: 'completed',
         };
+        workspaceSearches.push(workspaceSearch);
         activities.push({ type: 'workspaceSearch', activity: workspaceSearch });
         continue;
       }
       if (item.type === 'workspaceSearchResult') {
-        if (
-          !workspaceSearch ||
-          workspaceSearch.callId !== item.callId ||
-          workspaceSearch.result
-        ) {
+        const searchIndex = workspaceSearches.findIndex(
+          (activity) => activity.callId === item.callId,
+        );
+        const matchingSearch = workspaceSearches[searchIndex];
+        if (!matchingSearch || matchingSearch.result) {
           throw new Error(
             'thread/resume returned an unmatched workspace/search result.',
           );
         }
-        workspaceSearch = {
-          ...workspaceSearch,
+        const completedSearch: ConversationWorkspaceSearchActivity = {
+          ...matchingSearch,
           result: {
             id: item.id,
             status: 'completed',
             outcome: { ...item.outcome },
           },
         };
+        workspaceSearches[searchIndex] = completedSearch;
+        if (workspaceSearch?.callId === item.callId) {
+          workspaceSearch = completedSearch;
+        }
         const index = activities.findIndex(
           (entry) =>
             entry.type === 'workspaceSearch' &&
@@ -320,7 +352,7 @@ export const recoverConversation = (
         );
         activities[index] = {
           type: 'workspaceSearch',
-          activity: workspaceSearch,
+          activity: completedSearch,
         };
         continue;
       }
@@ -732,27 +764,24 @@ export const recoverConversation = (
     }
 
     if (
-      workspaceRead &&
       turn.status !== 'interrupted' &&
-      !workspaceRead.result
+      workspaceReads.some((activity) => !activity.result)
     ) {
       throw new Error(
         'thread/resume returned terminal workspace/read activity without a result.',
       );
     }
     if (
-      workspaceList &&
       turn.status !== 'interrupted' &&
-      !workspaceList.result
+      workspaceLists.some((activity) => !activity.result)
     ) {
       throw new Error(
         'thread/resume returned terminal workspace/list activity without a result.',
       );
     }
     if (
-      workspaceSearch &&
       turn.status !== 'interrupted' &&
-      !workspaceSearch.result
+      workspaceSearches.some((activity) => !activity.result)
     ) {
       throw new Error(
         'thread/resume returned terminal workspace/search activity without a result.',

@@ -1047,8 +1047,15 @@ export class ConversationController {
           turn.contextCompactions.push(activity);
           turn.activities.push({ type: 'contextCompaction', activity });
         } else if (lifecycle.params.item.type === 'workspaceReadCall') {
-          if (turn.workspaceRead && !turn.workspaceRead.result) {
-            throw new Error('Duplicate workspace/read activity.');
+          const callId = lifecycle.params.item.callId;
+          if (
+            turn.activities.some(
+              (entry) =>
+                entry.type === 'workspaceRead' &&
+                entry.activity.callId === callId,
+            )
+          ) {
+            throw new Error('Duplicate workspace/read call.');
           }
           const activity: MutableWorkspaceReadActivity = {
             id: lifecycle.params.item.id,
@@ -1075,8 +1082,15 @@ export class ConversationController {
             outcome: { ...lifecycle.params.item.outcome },
           };
         } else if (lifecycle.params.item.type === 'workspaceListCall') {
-          if (turn.workspaceList && !turn.workspaceList.result) {
-            throw new Error('Duplicate workspace/list activity.');
+          const callId = lifecycle.params.item.callId;
+          if (
+            turn.activities.some(
+              (entry) =>
+                entry.type === 'workspaceList' &&
+                entry.activity.callId === callId,
+            )
+          ) {
+            throw new Error('Duplicate workspace/list call.');
           }
           const activity: MutableWorkspaceListActivity = {
             id: lifecycle.params.item.id,
@@ -1103,8 +1117,15 @@ export class ConversationController {
             outcome: { ...lifecycle.params.item.outcome },
           };
         } else if (lifecycle.params.item.type === 'workspaceSearchCall') {
-          if (turn.workspaceSearch && !turn.workspaceSearch.result) {
-            throw new Error('Duplicate workspace/search activity.');
+          const callId = lifecycle.params.item.callId;
+          if (
+            turn.activities.some(
+              (entry) =>
+                entry.type === 'workspaceSearch' &&
+                entry.activity.callId === callId,
+            )
+          ) {
+            throw new Error('Duplicate workspace/search call.');
           }
           const activity: MutableWorkspaceSearchActivity = {
             id: lifecycle.params.item.id,
@@ -1868,36 +1889,45 @@ export class ConversationController {
           );
         }
         if (
-          turn.workspaceRead &&
-          (turn.workspaceRead.callStatus !== 'completed' ||
-            (lifecycle.params.turn.status !== 'interrupted' &&
-              turn.workspaceRead.result?.status !== 'completed') ||
-            (turn.workspaceRead.result &&
-              turn.workspaceRead.result.status !== 'completed'))
+          turn.activities.some(
+            (entry) =>
+              entry.type === 'workspaceRead' &&
+              (entry.activity.callStatus !== 'completed' ||
+                (lifecycle.params.turn.status !== 'interrupted' &&
+                  entry.activity.result?.status !== 'completed') ||
+                (entry.activity.result &&
+                  entry.activity.result.status !== 'completed')),
+          )
         ) {
           throw new Error(
             'Turn completed before workspace/read activity completed.',
           );
         }
         if (
-          turn.workspaceList &&
-          (turn.workspaceList.callStatus !== 'completed' ||
-            (lifecycle.params.turn.status !== 'interrupted' &&
-              turn.workspaceList.result?.status !== 'completed') ||
-            (turn.workspaceList.result &&
-              turn.workspaceList.result.status !== 'completed'))
+          turn.activities.some(
+            (entry) =>
+              entry.type === 'workspaceList' &&
+              (entry.activity.callStatus !== 'completed' ||
+                (lifecycle.params.turn.status !== 'interrupted' &&
+                  entry.activity.result?.status !== 'completed') ||
+                (entry.activity.result &&
+                  entry.activity.result.status !== 'completed')),
+          )
         ) {
           throw new Error(
             'Turn completed before workspace/list activity completed.',
           );
         }
         if (
-          turn.workspaceSearch &&
-          (turn.workspaceSearch.callStatus !== 'completed' ||
-            (lifecycle.params.turn.status !== 'interrupted' &&
-              turn.workspaceSearch.result?.status !== 'completed') ||
-            (turn.workspaceSearch.result &&
-              turn.workspaceSearch.result.status !== 'completed'))
+          turn.activities.some(
+            (entry) =>
+              entry.type === 'workspaceSearch' &&
+              (entry.activity.callStatus !== 'completed' ||
+                (lifecycle.params.turn.status !== 'interrupted' &&
+                  entry.activity.result?.status !== 'completed') ||
+                (entry.activity.result &&
+                  entry.activity.result.status !== 'completed')),
+          )
         ) {
           throw new Error(
             'Turn completed before workspace/search activity completed.',
@@ -2002,30 +2032,54 @@ export class ConversationController {
     turn: MutableTurn,
     callId: string,
   ): MutableWorkspaceReadActivity => {
-    if (!turn.workspaceRead || turn.workspaceRead.callId !== callId) {
+    const activity = turn.activities.find(
+      (
+        entry,
+      ): entry is Extract<
+        MutableConversationActivity,
+        { type: 'workspaceRead' }
+      > => entry.type === 'workspaceRead' && entry.activity.callId === callId,
+    )?.activity;
+    if (!activity) {
       throw new Error('Workspace read lifecycle referenced another call.');
     }
-    return turn.workspaceRead;
+    return activity;
   };
 
   private requireWorkspaceList = (
     turn: MutableTurn,
     callId: string,
   ): MutableWorkspaceListActivity => {
-    if (!turn.workspaceList || turn.workspaceList.callId !== callId) {
+    const activity = turn.activities.find(
+      (
+        entry,
+      ): entry is Extract<
+        MutableConversationActivity,
+        { type: 'workspaceList' }
+      > => entry.type === 'workspaceList' && entry.activity.callId === callId,
+    )?.activity;
+    if (!activity) {
       throw new Error('Workspace list lifecycle referenced another call.');
     }
-    return turn.workspaceList;
+    return activity;
   };
 
   private requireWorkspaceSearch = (
     turn: MutableTurn,
     callId: string,
   ): MutableWorkspaceSearchActivity => {
-    if (!turn.workspaceSearch || turn.workspaceSearch.callId !== callId) {
+    const activity = turn.activities.find(
+      (
+        entry,
+      ): entry is Extract<
+        MutableConversationActivity,
+        { type: 'workspaceSearch' }
+      > => entry.type === 'workspaceSearch' && entry.activity.callId === callId,
+    )?.activity;
+    if (!activity) {
       throw new Error('Workspace search lifecycle referenced another call.');
     }
-    return turn.workspaceSearch;
+    return activity;
   };
 
   private requireFileChange = (
@@ -2133,6 +2187,14 @@ export class ConversationController {
       turn.messages.some((message) => message.id === itemId) ||
       turn.activities.some(
         (entry) => entry.type === 'commentary' && entry.activity.id === itemId,
+      ) ||
+      turn.activities.some(
+        (entry) =>
+          (entry.type === 'workspaceRead' ||
+            entry.type === 'workspaceList' ||
+            entry.type === 'workspaceSearch') &&
+          (entry.activity.id === itemId ||
+            entry.activity.result?.id === itemId),
       ) ||
       turn.contextCompactions?.some((activity) => activity.id === itemId) ||
       turn.workspaceRead?.id === itemId ||

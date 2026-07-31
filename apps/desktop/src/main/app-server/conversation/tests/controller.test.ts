@@ -6,6 +6,8 @@ import type {
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { isConversationStateSnapshot } from '@/shared/conversation';
+
 import { ConversationController } from '../controller';
 import type { ResumeSnapshot } from '../protocol';
 import type { ConversationRpc } from '../rpc-client';
@@ -721,6 +723,119 @@ describe('ConversationController', () => {
       ],
     });
     expect(JSON.stringify(snapshot)).not.toContain('private file contents');
+    expect(onProtocolFailure).not.toHaveBeenCalled();
+  });
+
+  it('projects a read-only batch with repeated workspace reads', async () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(async () => ({
+        thread: { id: 'thr_0000000000000001' },
+      })),
+      startTurn: vi.fn(async (): Promise<TurnStartResponse> => ({
+        turn: { id: 'turn_0000000000000001', status: 'inProgress' },
+      })),
+      interruptTurn: vi.fn(),
+    };
+    const { controller, onProtocolFailure } = createHarness(rpc);
+    await controller.startTurn('Inspect this project.');
+
+    const listCall = {
+      type: 'toolCall',
+      id: 'item_list_call',
+      callId: 'call_list',
+      name: 'workspace/list',
+      path: '.',
+    };
+    const listContent = JSON.stringify({ entries: [] });
+    const listResult = {
+      type: 'toolResult',
+      id: 'item_list_result',
+      callId: 'call_list',
+      name: 'workspace/list',
+      result: {
+        type: 'success',
+        content: listContent,
+        bytes: new TextEncoder().encode(listContent).byteLength,
+      },
+    };
+    for (const item of [listCall, listResult]) {
+      for (const method of ['item/started', 'item/completed']) {
+        controller.handleNotification(
+          notification(method, {
+            threadId: 'thr_0000000000000001',
+            turnId: 'turn_0000000000000001',
+            item,
+          }),
+        );
+      }
+    }
+
+    const calls = ['package.json', 'src/main.ts', 'index.html'].map(
+      (path, index) => ({
+        type: 'toolCall',
+        id: `item_read_call_${index}`,
+        callId: `call_read_${index}`,
+        name: 'workspace/read',
+        path,
+      }),
+    );
+    for (const item of calls) {
+      for (const method of ['item/started', 'item/completed']) {
+        controller.handleNotification(
+          notification(method, {
+            threadId: 'thr_0000000000000001',
+            turnId: 'turn_0000000000000001',
+            item,
+          }),
+        );
+      }
+    }
+    for (const [index, call] of calls.entries()) {
+      const item = {
+        type: 'toolResult',
+        id: `item_read_result_${index}`,
+        callId: call.callId,
+        name: 'workspace/read',
+        result: {
+          type: 'success',
+          content: `private content ${index}`,
+          bytes: 17,
+        },
+      };
+      for (const method of ['item/started', 'item/completed']) {
+        controller.handleNotification(
+          notification(method, {
+            threadId: 'thr_0000000000000001',
+            turnId: 'turn_0000000000000001',
+            item,
+          }),
+        );
+      }
+    }
+    controller.handleNotification(
+      notification('turn/completed', {
+        threadId: 'thr_0000000000000001',
+        turn: { id: 'turn_0000000000000001', status: 'completed' },
+      }),
+    );
+
+    const snapshot = controller.getSnapshot();
+    expect(
+      snapshot.turns[0]?.activities?.filter(
+        (entry) => entry.type === 'workspaceRead',
+      ),
+    ).toHaveLength(3);
+    expect(snapshot.turns[0]).toMatchObject({
+      status: 'completed',
+      workspaceList: { callId: 'call_list' },
+      workspaceRead: {
+        callId: 'call_read_2',
+        result: { status: 'completed' },
+      },
+    });
+    expect(isConversationStateSnapshot(snapshot)).toBe(true);
     expect(onProtocolFailure).not.toHaveBeenCalled();
   });
 
