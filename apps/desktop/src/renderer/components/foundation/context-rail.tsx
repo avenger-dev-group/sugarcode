@@ -1,7 +1,6 @@
 import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
 
-import { ConnectionStatus } from '@/renderer/components/connection/connection-status';
 import { AgentDetail } from '@/renderer/components/orchestration/agent-detail';
 import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
 import { Button } from '@/renderer/components/ui/button';
@@ -88,9 +87,6 @@ export const ContextRail = ({ onClose }: ContextRailProps) => {
               </RailAction>
             </div>
           </section>
-          <div className="shrink-0 border-t px-3 py-2">
-            <ConnectionStatus />
-          </div>
         </>
       ) : (
         <AgentDetail task={selectedTask} />

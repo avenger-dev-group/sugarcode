@@ -1,4 +1,5 @@
 import { CommandApprovalSurface } from '@/renderer/components/command-approval/command-approval-surface';
+import { ConnectionStatusBar } from '@/renderer/components/connection/connection-status';
 import { McpApprovalSurface } from '@/renderer/components/mcp/approval-surface';
 import { SettingsDialog } from '@/renderer/components/settings/settings-dialog';
 import { ThreadWorkbenchView } from '@/renderer/components/thread/thread-workbench';
@@ -17,17 +18,29 @@ export const FoundationScreen = () => {
     threadStore.thread.phase === 'stopping';
 
   return (
-    <div className={foundation.isDark ? 'dark' : undefined}>
+    <div
+      className={`flex h-screen min-h-[30rem] flex-col overflow-hidden bg-background text-foreground ${
+        foundation.isDark ? 'dark' : ''
+      }`}
+    >
+      <div className="window-drag-region" aria-hidden="true" />
       <OrchestrationStoreProvider
-        onTaskSelected={() => foundation.setContextRailOpen(true)}
+        onTaskSelected={() => {
+          foundation.setContextRailOpen(true);
+          foundation.setContextRailVisible(true);
+        }}
       >
-        <main className="flex h-screen min-h-[30rem] min-w-0 flex-col overflow-hidden bg-background text-foreground">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ThreadWorkbenchView
             store={threadStore}
             navigatorResize={foundation.navigatorResize}
             contextRailResize={foundation.contextRailResize}
+            navigatorVisible={foundation.navigatorVisible}
+            setNavigatorVisible={foundation.setNavigatorVisible}
             contextRailOpen={foundation.contextRailOpen}
             setContextRailOpen={foundation.setContextRailOpen}
+            contextRailVisible={foundation.contextRailVisible}
+            setContextRailVisible={foundation.setContextRailVisible}
             navigationFooter={
               <SettingsDialog
                 isDark={foundation.isDark}
@@ -38,12 +51,16 @@ export const FoundationScreen = () => {
             }
             contextRail={
               <ContextRail
-                onClose={() => foundation.setContextRailOpen(false)}
+                onClose={() => {
+                  foundation.setContextRailOpen(false);
+                  foundation.setContextRailVisible(false);
+                }}
               />
             }
           />
         </main>
       </OrchestrationStoreProvider>
+      <ConnectionStatusBar />
       <CommandApprovalSurface />
       <McpApprovalSurface />
     </div>

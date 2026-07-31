@@ -85,8 +85,6 @@ const createStore = (overrides: Partial<ThreadStore> = {}): ThreadStore => ({
   }),
   navigator: {
     status: 'ready',
-    query: '',
-    searchStatus: 'idle',
     threadIds: ['thr_0000000000000001'],
     selectedThreadId: 'thr_0000000000000001',
     pendingThreadId: null,
@@ -107,7 +105,6 @@ const createStore = (overrides: Partial<ThreadStore> = {}): ThreadStore => ({
   setDraft: vi.fn(),
   setNavigatorOpen: vi.fn(),
   startNewThread: vi.fn(async () => undefined),
-  searchThreads: vi.fn(async () => undefined),
   selectThread: vi.fn(async () => undefined),
   forkThread: vi.fn(async () => undefined),
   archiveThread: vi.fn(async () => undefined),
@@ -125,6 +122,44 @@ afterEach(() => {
 });
 
 describe('ThreadWorkbenchView', () => {
+  it('exposes independent wide-layout controls for both side panels', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const setNavigatorVisible = vi.fn();
+    const setContextRailVisible = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <ThreadWorkbenchView
+          store={createStore()}
+          navigatorVisible={false}
+          setNavigatorVisible={setNavigatorVisible}
+          contextRail={<div>Workspace tools</div>}
+          contextRailVisible={true}
+          setContextRailVisible={setContextRailVisible}
+        />,
+      );
+    });
+
+    await act(async () => {
+      document
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Expand Thread navigator"]',
+        )
+        ?.click();
+      document
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Collapse workspace tools"]',
+        )
+        ?.click();
+    });
+    expect(setNavigatorVisible).toHaveBeenCalledWith(true);
+    expect(setContextRailVisible).toHaveBeenCalledWith(false);
+
+    await act(async () => root.unmount());
+  });
+
   it('renders process commentary before the tool activity it introduces', async () => {
     const container = document.createElement('div');
     document.body.append(container);

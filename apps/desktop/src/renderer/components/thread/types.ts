@@ -115,8 +115,6 @@ export type ThreadViewModel = Readonly<{
 
 export type ThreadNavigatorViewModel = Readonly<{
   status: 'loading' | 'ready' | 'error' | 'unavailable';
-  query: string;
-  searchStatus: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
   threadIds: readonly string[];
   selectedThreadId: string | null;
   pendingThreadId: string | null;
@@ -146,7 +144,6 @@ export type ThreadStore = Readonly<{
   setDraft: (value: string) => void;
   setNavigatorOpen: (open: boolean) => void;
   startNewThread: () => Promise<void>;
-  searchThreads: (query: string) => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
   forkThread: (threadId: string) => Promise<void>;
   archiveThread: (threadId: string) => Promise<void>;
@@ -164,6 +161,10 @@ export type ThreadWorkbenchViewProps = Readonly<{
   contextRail?: ReactNode;
   contextRailOpen?: boolean;
   setContextRailOpen?: (open: boolean) => void;
+  navigatorVisible?: boolean;
+  setNavigatorVisible?: (visible: boolean) => void;
+  contextRailVisible?: boolean;
+  setContextRailVisible?: (visible: boolean) => void;
 }>;
 
 export type TranscriptTurnProps = Readonly<{

@@ -517,6 +517,12 @@ describe('ConnectionSupervisor', () => {
       accepted: true,
       reason: 'accepted',
     });
+    const conversationSnapshots: ReturnType<
+      typeof supervisor.conversation.getSnapshot
+    >[] = [];
+    const unsubscribeConversation = supervisor.conversation.subscribe(
+      (snapshot) => conversationSnapshots.push(snapshot),
+    );
     supervisor.mcpApprovals.markSurfaceReady();
     expect(supervisor.mcpSession.toggle('alpha').accepted).toBe(true);
     await expect(supervisor.mcpSession.enable()).resolves.toEqual({
@@ -545,6 +551,12 @@ describe('ConnectionSupervisor', () => {
         },
       ],
     });
+    expect(
+      conversationSnapshots.every(
+        (snapshot) => snapshot.notice?.kind !== 'connectionLost',
+      ),
+    ).toBe(true);
+    unsubscribeConversation();
     supervisor.shutdown();
   });
 

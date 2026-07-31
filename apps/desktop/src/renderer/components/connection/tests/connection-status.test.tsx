@@ -2,7 +2,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import { describe, expect, it } from 'vitest';
 
-import { ConnectionStatusView } from '../connection-status';
+import {
+  ConnectionStatusBarView,
+  ConnectionStatusView,
+} from '../connection-status';
 import { toConnectionViewModel } from '../use-store';
 
 describe('ConnectionStatusView', () => {
@@ -41,5 +44,20 @@ describe('ConnectionStatusView', () => {
 
     expect(markup).toContain('SugarCode could not start its local CLI.');
     expect(markup).toContain('role="alert"');
+  });
+
+  it('renders the CLI state in the global compact status bar', () => {
+    const connection = toConnectionViewModel({
+      revision: 3,
+      status: 'connecting',
+    });
+    const markup = renderToStaticMarkup(
+      <ConnectionStatusBarView connection={connection} />,
+    );
+
+    expect(markup).toContain('<footer');
+    expect(markup).toContain('Connecting');
+    expect(markup).toContain('CLI / JSONL');
+    expect(markup).toContain('Local runtime: Connecting');
   });
 });

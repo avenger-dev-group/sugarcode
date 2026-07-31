@@ -11,7 +11,12 @@ const CONTEXT_RAIL_WIDTH = { default: 360, min: 300, max: 560 } as const;
 type StoredLayout = Readonly<{
   navigatorWidth: number;
   contextRailWidth: number;
+  navigatorVisible: boolean;
+  contextRailVisible: boolean;
 }>;
+
+const validVisibility = (value: unknown): boolean =>
+  typeof value === 'boolean' ? value : true;
 
 const validWidth = (
   value: unknown,
@@ -39,11 +44,15 @@ const loadLayout = (): StoredLayout => {
         candidate.contextRailWidth,
         CONTEXT_RAIL_WIDTH,
       ),
+      navigatorVisible: validVisibility(candidate.navigatorVisible),
+      contextRailVisible: validVisibility(candidate.contextRailVisible),
     };
   } catch {
     return {
       navigatorWidth: NAVIGATOR_WIDTH.default,
       contextRailWidth: CONTEXT_RAIL_WIDTH.default,
+      navigatorVisible: true,
+      contextRailVisible: true,
     };
   }
 };
@@ -73,6 +82,12 @@ export const useStore = (): FoundationStore => {
   const setContextRailWidth = (width: number): void => {
     setLayout((current) => ({ ...current, contextRailWidth: width }));
   };
+  const setNavigatorVisible = (navigatorVisible: boolean): void => {
+    setLayout((current) => ({ ...current, navigatorVisible }));
+  };
+  const setContextRailVisible = (contextRailVisible: boolean): void => {
+    setLayout((current) => ({ ...current, contextRailVisible }));
+  };
   const navigatorResize = usePanelResize({
     width: layout.navigatorWidth,
     minWidth: NAVIGATOR_WIDTH.min,
@@ -96,10 +111,14 @@ export const useStore = (): FoundationStore => {
   return {
     isDark,
     contextRailOpen,
+    navigatorVisible: layout.navigatorVisible,
+    contextRailVisible: layout.contextRailVisible,
     navigatorResize,
     contextRailResize,
     themeLabel: isDark ? 'Use light theme' : 'Use dark theme',
     setContextRailOpen,
+    setNavigatorVisible,
+    setContextRailVisible,
     toggleTheme,
   };
 };

@@ -841,7 +841,11 @@ export class ConnectionSupervisor {
     this.client?.close();
     this.commandApprovals.transportClosed();
     this.mcpApprovals.transportClosed();
-    this.conversation.transportClosed();
+    if (this.restarting) {
+      this.conversation.connectionRestarting();
+    } else {
+      this.conversation.transportClosed();
+    }
     this.child = null;
     this.client = null;
     this.conversationRpc = null;
@@ -1034,7 +1038,7 @@ export class ConnectionSupervisor {
     this.client?.close();
     this.commandApprovals.transportClosed();
     this.mcpApprovals.transportClosed();
-    this.conversation.transportClosed();
+    this.conversation.connectionRestarting();
     if (!child) {
       this.restarting = false;
       return true;

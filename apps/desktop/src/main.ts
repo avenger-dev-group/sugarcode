@@ -65,6 +65,16 @@ const createWindow = (): void => {
     minWidth: 360,
     minHeight: 480,
     icon: appIconPath,
+    titleBarStyle: 'hidden',
+    ...(process.platform === 'darwin'
+      ? { trafficLightPosition: { x: 12, y: 12 } }
+      : {
+          titleBarOverlay: {
+            color: '#00000000',
+            symbolColor: '#808080',
+            height: 36,
+          },
+        }),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

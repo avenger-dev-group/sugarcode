@@ -17,9 +17,13 @@ export type PanelResizeHandle = Readonly<{
 export type FoundationStore = {
   isDark: boolean;
   contextRailOpen: boolean;
+  navigatorVisible: boolean;
+  contextRailVisible: boolean;
   navigatorResize: PanelResizeHandle;
   contextRailResize: PanelResizeHandle;
   themeLabel: string;
   setContextRailOpen: (open: boolean) => void;
+  setNavigatorVisible: (visible: boolean) => void;
+  setContextRailVisible: (visible: boolean) => void;
   toggleTheme: () => void;
 };

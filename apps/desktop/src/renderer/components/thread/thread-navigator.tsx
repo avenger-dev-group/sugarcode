@@ -8,15 +8,11 @@ import {
   LoaderCircle,
   Plus,
   RotateCcw,
-  Search,
   Trash2,
-  X,
 } from 'lucide-react';
 import {
-  type FormEvent,
   type KeyboardEvent,
   type ReactNode,
-  useEffect,
   useRef,
   useState,
 } from 'react';
@@ -32,7 +28,6 @@ import {
   AlertDialogTitle,
 } from '@/renderer/components/ui/alert-dialog';
 import { Button } from '@/renderer/components/ui/button';
-import { Input } from '@/renderer/components/ui/input';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
 
@@ -52,10 +47,22 @@ const focusThreadAt = (
   container: HTMLElement,
   index: number,
 ): void => {
-  const buttons = Array.from(
-    container.querySelectorAll<HTMLButtonElement>('[data-thread-button]'),
+  const items = Array.from(
+    container.querySelectorAll<HTMLElement>('[data-thread-item]'),
   );
-  buttons.at(index)?.focus();
+  items.at(index)?.focus();
+};
+
+const activateNavigationItem = (
+  event: KeyboardEvent<HTMLElement>,
+  disabled: boolean,
+  activate: () => void,
+): void => {
+  if (disabled || (event.key !== 'Enter' && event.key !== ' ')) {
+    return;
+  }
+  event.preventDefault();
+  activate();
 };
 
 export const ThreadNavigator = ({
@@ -63,7 +70,6 @@ export const ThreadNavigator = ({
   id,
   footer,
 }: ThreadNavigatorProps) => {
-  const [query, setQuery] = useState<string>(store.navigator.query);
   const [projectExpanded, setProjectExpanded] = useState<boolean>(true);
   const [deleteThreadId, setDeleteThreadId] = useState<string | null>(
     null,
@@ -71,13 +77,12 @@ export const ThreadNavigator = ({
   const listRef = useRef<HTMLDivElement | null>(null);
   const cancelDeleteRef = useRef<HTMLButtonElement | null>(null);
   const workspace = useWorkspaceNavigationStore();
-  const searchDisabled =
+  const navigationDisabled =
     store.navigator.status === 'unavailable' ||
     store.navigator.status === 'loading' ||
     Boolean(store.navigator.pendingMutation);
   const selectionDisabled =
-    searchDisabled ||
-    store.navigator.searchStatus === 'loading' ||
+    navigationDisabled ||
     store.thread.phase === 'starting' ||
     store.thread.phase === 'inProgress' ||
     store.thread.phase === 'stopping' ||
@@ -91,48 +96,34 @@ export const ThreadNavigator = ({
   const projectName =
     workspace.state.projectName ??
     (projectActive ? workspace.state.name : undefined);
-  const projectThreadIds = projectActive
-    ? store.navigator.threadIds
-    : workspace.state.projectThreadIds ?? [];
-  const chatThreadIds = chatActive
-    ? store.navigator.threadIds
-    : workspace.state.chatThreadIds ?? [];
-  const activeLabelKind: ThreadLabelKind = chatActive ? 'chat' : 'project';
-  const currentOutsideResults =
-    store.navigator.selectedThreadId &&
-    !store.navigator.threadIds.includes(store.navigator.selectedThreadId);
-
-  useEffect(() => {
-    setQuery(store.navigator.query);
-  }, [store.navigator.query]);
-
-  const submit = (event: FormEvent): void => {
-    event.preventDefault();
-    void store.searchThreads(query);
-  };
-
+  const projectThreadIds =
+    workspace.state.projectThreadIds ??
+    (projectActive ? store.navigator.threadIds : []);
+  const chatThreadIds =
+    workspace.state.chatThreadIds ??
+    (chatActive ? store.navigator.threadIds : []);
   const handleListKeyDown = (
     event: KeyboardEvent<HTMLDivElement>,
   ): void => {
-    const buttons = Array.from(
-      event.currentTarget.querySelectorAll<HTMLButtonElement>(
-        '[data-thread-button]',
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(
+        '[data-thread-item]',
       ),
     );
-    const current = buttons.indexOf(
-      document.activeElement as HTMLButtonElement,
+    const current = items.indexOf(
+      document.activeElement as HTMLElement,
     );
-    if (buttons.length === 0) {
+    if (items.length === 0) {
       return;
     }
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      focusThreadAt(event.currentTarget, (current + 1) % buttons.length);
+      focusThreadAt(event.currentTarget, (current + 1) % items.length);
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
       focusThreadAt(
         event.currentTarget,
-        (current - 1 + buttons.length) % buttons.length,
+        (current - 1 + items.length) % items.length,
       );
     } else if (event.key === 'Home') {
       event.preventDefault();
@@ -176,9 +167,14 @@ export const ThreadNavigator = ({
     kind: ThreadLabelKind,
     active: boolean,
     onSelect: (threadId: string) => Promise<void>,
-  ): ReactNode => (
+  ): ReactNode => {
+    const currentOutsideList =
+      active &&
+      store.navigator.selectedThreadId &&
+      !threadIds.includes(store.navigator.selectedThreadId);
+    return (
     <div className="space-y-0.5 pb-1 pl-5 pt-0.5">
-      {active && currentOutsideResults ? (
+      {currentOutsideList ? (
         <>
           <p className="px-2 pb-1 pt-2 text-[11px] text-tertiary">
             当前{kind === 'chat' ? '聊天' : '任务'}
@@ -220,18 +216,16 @@ export const ThreadNavigator = ({
           pendingMutation={store.navigator.pendingMutation}
         />
       ))}
-      {threadIds.length === 0 &&
-      (!active || store.navigator.searchStatus !== 'loading') ? (
+      {threadIds.length === 0 ? (
         <p className="px-2 py-2 text-xs leading-5 text-secondary">
-          {active && store.navigator.searchStatus === 'empty'
-            ? `没有匹配的${kind === 'chat' ? '聊天' : '任务'}。`
-            : kind === 'chat'
-              ? '点击栏目右侧的 + 新建聊天。'
-              : '点击项目右侧的 + 新建任务。'}
+          {kind === 'chat'
+            ? '点击栏目右侧的 + 新建聊天。'
+            : '点击项目右侧的 + 新建任务。'}
         </p>
       ) : null}
     </div>
-  );
+    );
+  };
 
   return (
     <>
@@ -250,8 +244,8 @@ export const ThreadNavigator = ({
           }
         }}
       >
-        <div className="shrink-0 px-3 pb-2 pt-3">
-          <div className="mb-3 flex h-8 items-center gap-2 px-1">
+        <div className="shrink-0 px-3 pb-2 pt-10">
+          <div className="flex h-8 items-center gap-2 px-1">
             <img
               src={appIcon}
               alt=""
@@ -262,65 +256,11 @@ export const ThreadNavigator = ({
               SugarCode
             </p>
           </div>
-          <form className="flex gap-1.5" onSubmit={submit}>
-            <label htmlFor="thread-search" className="sr-only">
-              Search Threads
-            </label>
-            <div className="relative min-w-0 flex-1">
-              <Search
-                className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-tertiary"
-                aria-hidden="true"
-              />
-              <Input
-                id="thread-search"
-                type="search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                disabled={searchDisabled}
-                maxLength={256}
-                placeholder={`搜索${activeLabelKind === 'chat' ? '聊天' : '任务'}`}
-                className="h-8 border-transparent bg-surface-hover pl-8 pr-8 shadow-none focus-visible:border-border"
-              />
-              {query ? (
-                <button
-                  type="button"
-                  className="absolute right-2 top-2 rounded p-0.5 text-tertiary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label="Clear Thread search"
-                  onClick={() => {
-                    setQuery('');
-                    void store.searchThreads('');
-                  }}
-                >
-                  <X className="size-4" aria-hidden="true" />
-                </button>
-              ) : null}
-            </div>
-            <Button
-              type="submit"
-              size="icon-sm"
-              variant="ghost"
-              disabled={searchDisabled || query.trim().length === 0}
-              aria-label="Search Threads"
-            >
-              {store.navigator.searchStatus === 'loading' ? (
-                <LoaderCircle
-                  className="animate-spin"
-                  aria-hidden="true"
-                />
-              ) : (
-                <Search aria-hidden="true" />
-              )}
-            </Button>
-          </form>
         </div>
 
         <p
           className="sr-only"
-          role={
-            store.navigator.searchStatus === 'error'
-              ? 'alert'
-              : 'status'
-          }
+          role={store.navigator.status === 'error' ? 'alert' : 'status'}
           aria-live="polite"
         >
           {store.navigator.statusLabel}
@@ -359,23 +299,40 @@ export const ThreadNavigator = ({
               {projectName ? (
                 <>
                   <div
-                    className={`group flex items-center rounded-lg ${
-                      projectActive
-                        ? 'bg-surface-hover/70'
-                        : 'hover:bg-surface-hover'
-                    }`}
+                    data-project-row
+                    className="group flex items-center rounded-lg"
                   >
-                    <button
-                      type="button"
+                    <span
+                      role="button"
+                      tabIndex={workspace.busy ? -1 : 0}
+                      aria-disabled={workspace.busy}
                       className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       aria-expanded={projectExpanded}
                       onClick={() => {
+                        if (workspace.busy) {
+                          return;
+                        }
                         if (!projectActive) {
                           void workspace.resumeProject();
                         } else {
                           setProjectExpanded((current) => !current);
                         }
                       }}
+                      onKeyDown={(event) =>
+                        activateNavigationItem(
+                          event,
+                          workspace.busy,
+                          () => {
+                            if (!projectActive) {
+                              void workspace.resumeProject();
+                            } else {
+                              setProjectExpanded(
+                                (current) => !current,
+                              );
+                            }
+                          },
+                        )
+                      }
                     >
                       <ChevronDown
                         className={`size-3.5 shrink-0 text-tertiary transition-transform ${
@@ -390,7 +347,7 @@ export const ThreadNavigator = ({
                       <span className="min-w-0 flex-1 truncate text-sm">
                         {projectName}
                       </span>
-                    </button>
+                    </span>
                     <Button
                       type="button"
                       size="icon-xs"
@@ -625,14 +582,26 @@ const ThreadButton = ({
         : 'text-secondary hover:bg-surface-hover hover:text-foreground'
     }`}
   >
-    <button
-      type="button"
-      data-thread-button
+    <span
+      role="link"
+      tabIndex={disabled ? -1 : 0}
+      data-thread-item
       aria-current={current ? 'page' : undefined}
       aria-label={`${current ? 'Current ' : ''}Thread ${threadId}`}
-      disabled={disabled}
-      onClick={() => void onSelect(threadId)}
-      className={`flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
+      aria-disabled={disabled}
+      onClick={() => {
+        if (!disabled) {
+          void onSelect(threadId);
+        }
+      }}
+      onKeyDown={(event) =>
+        activateNavigationItem(event, disabled, () => {
+          void onSelect(threadId);
+        })
+      }
+      className={`flex h-9 min-w-0 flex-1 items-center gap-2 px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-default'
+      } ${
         actionsEnabled ? 'rounded-l-lg' : 'rounded-lg'
       }`}
     >
@@ -656,7 +625,7 @@ const ThreadButton = ({
             : '当前任务'
           : `${labelKind === 'chat' ? '聊天' : '任务'} ${threadId.slice(-4)}`}
       </span>
-    </button>
+    </span>
     {actionsEnabled ? (
       <div className="flex shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
         <ThreadActionButton

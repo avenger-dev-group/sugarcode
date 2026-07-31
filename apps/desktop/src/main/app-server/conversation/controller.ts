@@ -397,7 +397,15 @@ export class ConversationController {
     this.publish();
   };
 
+  connectionRestarting = (): void => {
+    this.setTransportUnavailable(false);
+  };
+
   transportClosed = (): void => {
+    this.setTransportUnavailable(true);
+  };
+
+  private setTransportUnavailable = (showConnectionLost: boolean): void => {
     this.actionAbortController?.abort();
     this.actionAbortController = null;
     this.searchAbortController?.abort();
@@ -415,15 +423,24 @@ export class ConversationController {
     this.navigator.mutationNotice = undefined;
     this.awaitingTurnResponse = false;
     this.bufferedLifecycle = [];
-    if (this.phase === 'unavailable') {
+    const alreadyUnavailable = this.phase === 'unavailable';
+    this.phase = 'unavailable';
+    if (showConnectionLost) {
+      const alreadyReported = this.notice?.kind === 'connectionLost';
+      this.notice = {
+        kind: 'connectionLost',
+        summary: 'The local Agent connection is unavailable.',
+      };
+      if (!alreadyUnavailable || !alreadyReported) {
+        this.publish();
+      }
       return;
     }
-    this.phase = 'unavailable';
-    this.notice = {
-      kind: 'connectionLost',
-      summary: 'The local Agent connection is unavailable.',
-    };
-    this.publish();
+    const hadNotice = this.notice !== undefined;
+    this.notice = undefined;
+    if (!alreadyUnavailable || hadNotice) {
+      this.publish();
+    }
   };
 
   searchThreads = async (query: unknown): Promise<ConversationActionResult> => {

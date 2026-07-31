@@ -14,7 +14,6 @@ import {
   forkConversationThread,
   getConversationState,
   onConversationStateChanged,
-  searchConversationThreads,
   selectConversationThread,
   sendConversationMessage,
   startNewConversationThread,
@@ -872,50 +871,30 @@ export const toThreadViewModel = (
 export const toThreadNavigatorViewModel = (
   snapshot: ConversationStateSnapshot,
 ): ThreadNavigatorViewModel => {
-  const searchActive = snapshot.navigator.search.status !== 'idle';
-  const threadIds = searchActive
-    ? snapshot.navigator.search.threadIds
-    : snapshot.navigator.activeThreadIds;
+  const threadIds = snapshot.navigator.activeThreadIds;
   const statusLabel = (() => {
     if (snapshot.navigator.pendingThreadId) {
       return `Loading Thread ${snapshot.navigator.pendingThreadId}`;
     }
-    switch (snapshot.navigator.search.status) {
-      case 'loading':
-        return 'Searching durable Threads';
-      case 'empty':
-        return `No Threads match ${snapshot.navigator.search.query}`;
-      case 'error':
-        return (
-          snapshot.navigator.search.summary ?? 'Thread search is unavailable'
-        );
-      case 'ready':
-        return `${threadIds.length} matching Threads`;
-      default:
-        if (snapshot.navigator.status === 'loading') {
-          return 'Loading active Threads';
-        }
-        if (snapshot.navigator.status === 'unavailable') {
-          return 'Thread navigation unavailable';
-        }
-        if (snapshot.navigator.status === 'error') {
-          return 'Active Threads could not be loaded';
-        }
-        return `${threadIds.length} active Threads`;
+    if (snapshot.navigator.status === 'loading') {
+      return 'Loading active Threads';
     }
+    if (snapshot.navigator.status === 'unavailable') {
+      return 'Thread navigation unavailable';
+    }
+    if (snapshot.navigator.status === 'error') {
+      return 'Active Threads could not be loaded';
+    }
+    return `${threadIds.length} active Threads`;
   })();
   return {
     status: snapshot.navigator.status,
-    query: snapshot.navigator.search.query,
-    searchStatus: snapshot.navigator.search.status,
     threadIds,
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
     pendingMutation: snapshot.navigator.pendingMutation ?? null,
     archivedUndoThreadId: snapshot.navigator.archivedUndoThreadId ?? null,
-    truncated: searchActive
-      ? snapshot.navigator.search.truncated
-      : snapshot.navigator.activeTruncated,
+    truncated: snapshot.navigator.activeTruncated,
     statusLabel,
     ...(snapshot.navigator.selectionNotice
       ? { selectionNotice: snapshot.navigator.selectionNotice }
@@ -1120,20 +1099,6 @@ export const useStore = (): ThreadStore => {
     }
   };
 
-  const searchThreads = async (query: string): Promise<void> => {
-    setActionError(null);
-    try {
-      const result = await searchConversationThreads(query);
-      if (!result.accepted && result.reason === 'invalidSearch') {
-        setActionError('Search is limited to 16 terms and 256 UTF-8 bytes.');
-      } else if (!result.accepted) {
-        setActionError('Thread search is not available right now.');
-      }
-    } catch {
-      setActionError('Desktop could not search durable Threads safely.');
-    }
-  };
-
   const selectThread = async (threadId: string): Promise<void> => {
     setActionError(null);
     try {
@@ -1245,7 +1210,6 @@ export const useStore = (): ThreadStore => {
     setDraft,
     setNavigatorOpen,
     startNewThread,
-    searchThreads,
     selectThread,
     forkThread,
     archiveThread,

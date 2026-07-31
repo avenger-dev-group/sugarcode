@@ -61,8 +61,6 @@ const createStore = (
   }),
   navigator: {
     status: 'ready',
-    query: '',
-    searchStatus: 'idle',
     threadIds: [
       'thr_0000000000000002',
       'thr_0000000000000001',
@@ -86,7 +84,6 @@ const createStore = (
   setDraft: vi.fn(),
   setNavigatorOpen: vi.fn(),
   startNewThread: vi.fn(async () => undefined),
-  searchThreads: vi.fn(async () => undefined),
   selectThread: vi.fn(async () => undefined),
   forkThread: vi.fn(async () => undefined),
   archiveThread: vi.fn(async () => undefined),
@@ -103,39 +100,35 @@ afterEach(() => {
 });
 
 describe('ThreadNavigator', () => {
-  it('exposes the current Thread and submits bounded search text', async () => {
+  it('renders project and Thread navigation as spans without search controls', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
-    const searchThreads = vi.fn(async () => undefined);
-    const store = createStore({ searchThreads });
+    const store = createStore();
 
     await act(async () => root.render(<ThreadNavigator store={store} />));
+    const current = document.querySelector('[aria-current="page"]');
+    expect(current?.tagName).toBe('SPAN');
+    expect(current?.getAttribute('aria-label')).toBe(
+      'Current Thread thr_0000000000000002',
+    );
     expect(
-      document.querySelector('[aria-current="page"]')?.getAttribute(
-        'aria-label',
-      ),
-    ).toBe('Current Thread thr_0000000000000002');
-
-    const input = document.querySelector(
-      '#thread-search',
-    ) as HTMLInputElement;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
-        'value',
-      )?.set;
-      setter?.call(input, 'durable truth');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await act(async () => {
-      document
-        .querySelector<HTMLButtonElement>(
-          'button[aria-label="Search Threads"]',
-        )
-        ?.click();
-    });
-    expect(searchThreads).toHaveBeenCalledWith('durable truth');
+      document.querySelector('[aria-expanded="true"]')?.tagName,
+    ).toBe('SPAN');
+    expect(document.querySelector('#thread-search')).toBeNull();
+    expect(
+      document.querySelector('button[aria-label="Search Threads"]'),
+    ).toBeNull();
+    const projectRow = document.querySelector('[data-project-row]');
+    expect(projectRow?.classList.contains('bg-surface-hover/70')).toBe(
+      false,
+    );
+    expect(projectRow?.classList.contains('hover:bg-surface-hover')).toBe(
+      false,
+    );
+    expect(
+      current?.parentElement?.classList.contains('bg-surface-hover'),
+    ).toBe(true);
     await act(async () => root.unmount());
   });
 
@@ -151,12 +144,14 @@ describe('ThreadNavigator', () => {
     });
 
     await act(async () => root.render(<ThreadNavigator store={store} />));
-    const buttons = Array.from(
-      document.querySelectorAll<HTMLButtonElement>('[data-thread-button]'),
+    const items = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-thread-item]'),
     );
-    expect(buttons).toHaveLength(2);
-    expect(buttons.every((button) => button.disabled)).toBe(true);
-    buttons[0]?.dispatchEvent(
+    expect(items).toHaveLength(2);
+    expect(
+      items.every((item) => item.getAttribute('aria-disabled') === 'true'),
+    ).toBe(true);
+    items[0]?.dispatchEvent(
       new KeyboardEvent('keydown', {
         key: 'ArrowDown',
         bubbles: true,
@@ -166,30 +161,27 @@ describe('ThreadNavigator', () => {
     await act(async () => root.unmount());
   });
 
-  it('keeps the current Thread visible outside bounded search results', async () => {
+  it('keeps the remembered project list stable while the runtime reconnects', async () => {
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
     const store = createStore({
       navigator: {
-        status: 'ready',
-        query: 'historical',
-        searchStatus: 'ready',
+        status: 'loading',
         threadIds: ['thr_0000000000000001'],
         selectedThreadId: 'thr_0000000000000002',
         pendingThreadId: null,
         pendingMutation: null,
         archivedUndoThreadId: null,
-        truncated: true,
-        statusLabel: '1 matching Thread',
+        truncated: false,
+        statusLabel: 'Loading active Threads',
       },
     });
 
     await act(async () => root.render(<ThreadNavigator store={store} />));
     expect(document.body.textContent).toContain('当前任务');
-    expect(document.body.textContent).toContain('First 50 shown');
     expect(
-      document.querySelectorAll('[data-thread-button]'),
+      document.querySelectorAll('[data-thread-item]'),
     ).toHaveLength(2);
     await act(async () => root.unmount());
   });

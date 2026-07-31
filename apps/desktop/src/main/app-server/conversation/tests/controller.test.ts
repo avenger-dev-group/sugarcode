@@ -670,6 +670,32 @@ describe('ConversationController', () => {
     });
   });
 
+  it('suppresses connection-loss copy during an intentional runtime restart', () => {
+    const rpc: ConversationRpc = {
+      findLatestActiveThread: vi.fn(async () => null),
+      resumeThread: vi.fn(),
+      startThread: vi.fn(),
+      startTurn: vi.fn(),
+      interruptTurn: vi.fn(),
+    };
+    const { controller } = createHarness(rpc);
+
+    controller.connectionRestarting();
+    expect(controller.getSnapshot()).toMatchObject({
+      phase: 'unavailable',
+      navigator: { status: 'unavailable' },
+    });
+    expect(controller.getSnapshot()).not.toHaveProperty('notice');
+
+    controller.transportClosed();
+    expect(controller.getSnapshot()).toMatchObject({
+      notice: {
+        kind: 'connectionLost',
+        summary: 'The local Agent connection is unavailable.',
+      },
+    });
+  });
+
   it('projects one durable workspace read without exposing result content', async () => {
     const rpc: ConversationRpc = {
       findLatestActiveThread: vi.fn(async () => null),

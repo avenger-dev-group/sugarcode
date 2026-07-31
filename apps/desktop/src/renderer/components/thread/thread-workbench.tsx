@@ -235,6 +235,10 @@ export const ThreadWorkbenchView = ({
   contextRail,
   contextRailOpen = false,
   setContextRailOpen,
+  navigatorVisible = true,
+  setNavigatorVisible,
+  contextRailVisible = true,
+  setContextRailVisible,
 }: ThreadWorkbenchViewProps) => {
   const {
     transcriptContent,
@@ -246,12 +250,16 @@ export const ThreadWorkbenchView = ({
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
       <aside
-        className="hidden min-h-0 shrink-0 md:block"
+        className={
+          navigatorVisible
+            ? 'hidden min-h-0 shrink-0 md:block'
+            : 'hidden'
+        }
         style={{ width: navigatorResize?.width ?? 248 }}
       >
         <ThreadNavigator store={store} footer={navigationFooter} />
       </aside>
-      {navigatorResize ? (
+      {navigatorResize && navigatorVisible ? (
         <div
           className={`panel-resizer hidden md:block ${
             navigatorResize.dragging ? 'panel-resizer--active' : ''
@@ -293,21 +301,57 @@ export const ThreadWorkbenchView = ({
         >
           <PanelLeft aria-hidden="true" />
         </Button>
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          className="absolute left-3 top-3 z-10 hidden bg-background/90 shadow-sm md:inline-flex"
+          aria-label={
+            navigatorVisible
+              ? 'Collapse Thread navigator'
+              : 'Expand Thread navigator'
+          }
+          aria-pressed={navigatorVisible}
+          onClick={() => setNavigatorVisible?.(!navigatorVisible)}
+        >
+          <PanelLeft aria-hidden="true" />
+        </Button>
         {contextRail ? (
-          <Button
-            type="button"
-            size="icon"
-            variant="outline"
-            className="absolute right-3 top-3 z-10 bg-background/90 shadow-sm xl:hidden"
-            aria-label={
-              contextRailOpen ? 'Hide workspace tools' : 'Show workspace tools'
-            }
-            aria-controls="workspace-tools"
-            aria-expanded={contextRailOpen}
-            onClick={() => setContextRailOpen?.(!contextRailOpen)}
-          >
-            <PanelRight aria-hidden="true" />
-          </Button>
+          <>
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              className="absolute right-3 top-3 z-10 bg-background/90 shadow-sm xl:hidden"
+              aria-label={
+                contextRailOpen
+                  ? 'Hide workspace tools'
+                  : 'Show workspace tools'
+              }
+              aria-controls="workspace-tools"
+              aria-expanded={contextRailOpen}
+              onClick={() => setContextRailOpen?.(!contextRailOpen)}
+            >
+              <PanelRight aria-hidden="true" />
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              className="absolute right-3 top-3 z-10 hidden bg-background/90 shadow-sm xl:inline-flex"
+              aria-label={
+                contextRailVisible
+                  ? 'Collapse workspace tools'
+                  : 'Expand workspace tools'
+              }
+              aria-pressed={contextRailVisible}
+              onClick={() =>
+                setContextRailVisible?.(!contextRailVisible)
+              }
+            >
+              <PanelRight aria-hidden="true" />
+            </Button>
+          </>
         ) : null}
         <ScrollArea
           data-layout="conversation-scroll"
@@ -440,7 +484,7 @@ export const ThreadWorkbenchView = ({
       </section>
       {contextRail ? (
         <>
-          {contextRailResize ? (
+          {contextRailResize && contextRailVisible ? (
             <div
               className={`panel-resizer hidden xl:block ${
                 contextRailResize.dragging ? 'panel-resizer--active' : ''
@@ -462,6 +506,10 @@ export const ThreadWorkbenchView = ({
               contextRailOpen
                 ? 'visible translate-x-0'
                 : 'invisible translate-x-full'
+            } ${
+              contextRailVisible
+                ? 'xl:visible xl:block xl:translate-x-0'
+                : 'xl:hidden'
             }`}
             style={{ width: contextRailResize?.width ?? 352 }}
             aria-label="Workspace tools"
