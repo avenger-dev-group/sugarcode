@@ -102,7 +102,7 @@ fn denied_call_blocks_its_attempt_but_a_later_call_can_recover() {
 }
 
 #[test]
-fn four_completed_calls_are_valid_but_duplicate_and_fifth_calls_are_rejected() {
+fn completed_call_count_is_unbounded_but_duplicate_call_ids_are_rejected() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
     let thread_id = ThreadId::new("thr_0000000000000001");
@@ -111,7 +111,7 @@ fn four_completed_calls_are_valid_but_duplicate_and_fifth_calls_are_rejected() {
     repository.create_thread(&thread_id).expect("thread");
     begin_mcp_turn(&mut repository, &thread_id);
 
-    for ordinal in 1..=4 {
+    for ordinal in 1..=8 {
         for item in completed_call_items(ordinal) {
             repository
                 .append_turn_item(&thread_id, &turn_id, &item)
@@ -123,16 +123,9 @@ fn four_completed_calls_are_valid_but_duplicate_and_fifth_calls_are_rejected() {
         .path()
         .join("rollouts/v1/thr_0000000000000001.jsonl");
     let before = fs::read(&rollout).expect("before invalid call");
-    let fifth = completed_call_items(5).remove(0);
-    assert!(matches!(
-        repository.append_turn_item(&thread_id, &turn_id, &fifth),
-        Err(RolloutError::InvalidRecord {
-            kind: "invalidMcpToolItem"
-        })
-    ));
-    let mut duplicate = completed_call_items(5).remove(0);
+    let mut duplicate = completed_call_items(9).remove(0);
     if let DurableItemSnapshot::McpToolCall { call_id, .. } = &mut duplicate {
-        *call_id = "call_mcp_4".to_string();
+        *call_id = "call_mcp_8".to_string();
     }
     assert!(matches!(
         repository.append_turn_item(&thread_id, &turn_id, &duplicate),
