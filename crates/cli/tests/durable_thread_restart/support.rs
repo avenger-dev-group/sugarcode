@@ -310,12 +310,21 @@ impl MockProvider {
                         write_recorded_response(&mut stream, body);
                     }
                     MockResponse::HoldOpen(body) => {
-                        write!(
+                        let write_result = write!(
                             stream,
                             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: keep-alive\r\n\r\n{body}"
                         )
-                        .expect("write held provider response");
-                        stream.flush().expect("flush held provider response");
+                        .and_then(|()| stream.flush());
+                        if let Err(error) = write_result
+                            && !matches!(
+                                error.kind(),
+                                std::io::ErrorKind::BrokenPipe
+                                    | std::io::ErrorKind::ConnectionReset
+                                    | std::io::ErrorKind::ConnectionAborted
+                            )
+                        {
+                            panic!("write held provider response: {error}");
+                        }
                         while !thread_stop.load(Ordering::Acquire) {
                             thread::sleep(std::time::Duration::from_millis(10));
                         }
