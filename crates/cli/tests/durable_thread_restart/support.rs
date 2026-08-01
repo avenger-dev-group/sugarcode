@@ -295,6 +295,9 @@ impl MockProvider {
                 if thread_stop.load(Ordering::Acquire) {
                     break;
                 }
+                let Some(request) = read_recorded_request(&mut stream) else {
+                    continue;
+                };
                 let response = responses.as_mut().map_or_else(
                     || {
                         MockResponse::Complete(include_str!(
@@ -303,7 +306,6 @@ impl MockProvider {
                     },
                     |responses| responses.pop_front().expect("recorded provider response"),
                 );
-                let request = read_recorded_request(&mut stream);
                 thread_requests.lock().expect("request lock").push(request);
                 match response {
                     MockResponse::Complete(body) => {
@@ -418,12 +420,15 @@ impl Drop for MockProvider {
     }
 }
 
-pub(super) fn read_recorded_request(stream: &mut TcpStream) -> Value {
+pub(super) fn read_recorded_request(stream: &mut TcpStream) -> Option<Value> {
     let mut request = Vec::new();
     let mut buffer = [0u8; 4096];
     let header_end = loop {
         let read = stream.read(&mut buffer).expect("read provider request");
-        assert!(read > 0, "provider request ended before headers");
+        if read == 0 && request.is_empty() {
+            return None;
+        }
+        assert!(read > 0, "provider request ended during headers");
         request.extend_from_slice(&buffer[..read]);
         if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
             break position + 4;
@@ -460,7 +465,7 @@ pub(super) fn read_recorded_request(stream: &mut TcpStream) -> Value {
     for forbidden in ["response_format", "modalities", "audio"] {
         assert!(request_body.get(forbidden).is_none(), "{forbidden}");
     }
-    request_body
+    Some(request_body)
 }
 
 pub(super) fn write_recorded_response(stream: &mut TcpStream, body: &str) {
