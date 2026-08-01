@@ -120,16 +120,22 @@ Renderer cannot provide an arbitrary executable, argv, cwd or environment.
 
 ## 6. Environment
 
-The sidecar receives an allowlisted environment sufficient for platform runtime,
-temporary storage and OS credential access.
+The sidecar receives an allowlisted environment sufficient for platform runtime
+and temporary storage.
 
 - `SUGARCODE_HOME` may point to the resolved SugarCode state directory.
 - Windows receives required system and temporary-directory variables.
 - macOS receives required home, locale and temporary-directory variables.
-- Linux may additionally receive the session values needed by Secret Service.
 
 Provider tokens are never forwarded through environment variables, command
-arguments, package resources or the sidecar manifest.
+arguments, package resources or the sidecar manifest. New model API keys are
+read from the permission-restricted local SugarCode configuration.
+
+The sidecar resolves model configuration only when a Turn starts. Model
+configuration and provider authentication failures therefore do not prevent
+the packaged CLI from completing its protocol handshake or binding a selected
+workspace. Model settings remain available for repair without replacing the
+sidecar process.
 
 ## 7. Workspace and capability launch
 
@@ -167,8 +173,8 @@ contact an external model provider.
 
 Ubuntu, macOS and Windows CI run the relevant Rust, Desktop, Electron and Forge
 checks on native hosts. Packaging acceptance must not be replaced by
-cross-compilation alone because executable format, credential backend,
-sandboxing, PTY/ConPTY and Electron resource layout are platform-specific.
+cross-compilation alone because executable format, sandboxing, PTY/ConPTY and
+Electron resource layout are platform-specific.
 
 CI does not execute Desktop TypeScript tests. Desktop lint, type checks, Rust
 workspace tests and native Forge package smoke remain acceptance gates.

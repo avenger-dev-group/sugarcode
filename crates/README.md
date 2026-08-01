@@ -14,7 +14,6 @@ crates/
 ├── agent-runtime/        shared in-process application/session composition
 ├── app-server/           local Desktop/IDE JSON-RPC mapping server
 ├── app-server-protocol/  public JSON-RPC types
-├── credential-store/     OS-backed secret storage boundary
 ├── model-provider/       normalized model interface
 ├── state/                durable threads and configuration
 ├── tools/                coding tools
@@ -27,10 +26,14 @@ Each Cargo package uses the `sugarcode-` name prefix. The `cli` package builds
 the user-facing `sugarcode` binary.
 
 The CLI also owns the `contractVersion:1` model configuration control plane
-used by packaged Desktop: inspect, validate and revision-guarded non-secret set
-operations, plus separate bounded-stdin model credential set/status/delete
-operations. `state` remains authoritative for config validation and atomic
-TOML persistence; `credential-store` remains authoritative for secrets.
+used by packaged Desktop: inspect, validate and revision-guarded atomic set
+operations. `state` remains authoritative for config validation and atomic TOML
+persistence of the connection/profile catalog, including optional per-
+connection API keys. Inspect receipts expose only per-connection API-key
+status. Discovery reads provider model metadata without mutating configuration.
+`sugarcode config model delete-api-key` is connection- and revision-bound and
+preserves the catalog and MCP configuration. The former OS credential-store
+crate and CLI commands are not part of the runtime.
 
 `tools` also owns the bounded workspace Git engine used by Desktop. It opens
 only the exact already-authorized workspace root, uses vendored `libgit2` and

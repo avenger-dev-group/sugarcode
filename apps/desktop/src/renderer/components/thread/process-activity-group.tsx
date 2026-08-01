@@ -1,6 +1,7 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react';
 
 import type { ProcessActivityGroupProps } from './types';
+import { shouldAutoExpandActivityGroup } from './activity-disclosure';
 import { useActivityDisclosureStore } from './use-store';
 
 const processLabel = (
@@ -26,7 +27,10 @@ export const ProcessActivityGroup = ({
   requiresAttention,
   children,
 }: ProcessActivityGroupProps) => {
-  const store = useActivityDisclosureStore(groupId, requiresAttention);
+  const store = useActivityDisclosureStore(
+    groupId,
+    shouldAutoExpandActivityGroup(status, requiresAttention),
+  );
   const label = processLabel(status, requiresAttention);
   const active = status === 'inProgress' && !requiresAttention;
 

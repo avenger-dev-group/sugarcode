@@ -27,8 +27,8 @@ sugarcode
 
 `crates/agent-runtime` owns surface-neutral composition:
 
-- configuration and credential resolution;
-- provider construction;
+- Turn-scoped local model configuration resolution;
+- Turn-scoped provider construction;
 - workspace, tool, sandbox and MCP composition;
 - durable repository and Core startup;
 - one in-process session over provider-neutral Core events and approvals;
@@ -36,6 +36,16 @@ sugarcode
 
 `crates/app-server` maps that session to public JSON-RPC. It does not become the
 application boundary for exec or TUI.
+
+App-server startup deliberately loads only process-wide runtime configuration.
+It does not parse or construct the text-model provider before the initialize
+handshake. A missing or invalid model section therefore cannot make the CLI,
+workspace binding, Thread history, settings or other local capabilities appear
+offline. Each accepted Turn resolves one model snapshot and provider before its
+first provider round, then keeps that snapshot for every round in the Turn.
+Authentication and provider failures are Turn failures, not CLI or workspace
+connection failures. The saved connection/profile catalog and per-Turn
+selection use this boundary; see `model-catalog.md`.
 
 ### Built-in Agent instructions
 
@@ -49,10 +59,12 @@ The built-in instruction owns SugarCode identity, truthful capability use,
 approval and safety boundaries, engineering workflow and final reporting. It
 also states the current runtime facts: a provider round contains final assistant
 text or an ordered tool-call batch, a tool-call batch may have one bounded
-process-text preamble, and recoverable tool errors return to the model. One Turn
-may continuously alternate the actual workspace, shell, MCP and collaboration
-tools until final text or a terminal boundary. MCP retains a separate maximum
-of four calls per Turn.
+process-text preamble, and recoverable tool errors return to the model. A round
+may contain one or more tool calls; Provider and Core do not classify a
+completed response by an arbitrary call-count quota. One Turn may continuously
+alternate the actual workspace, shell, MCP and collaboration tools until final
+text or a terminal boundary. Byte budgets, bounded execution concurrency,
+approval policy and each tool domain's own safety constraints remain enforced.
 
 Root-to-scope `AGENTS.md`, Skill inventory and selected Skill bodies follow the
 built-in instruction. They may customize repository and task behavior but
@@ -60,18 +72,40 @@ cannot redefine product identity, actual tool availability, approval
 requirements, security boundaries or permissions. Compaction, completed
 history and current input follow all developer instructions.
 
-The exact built-in prompt bytes participate in the 3 MiB compaction target and
-4 MiB provider hard limit. The prompt is neither configurable nor durable: it
-does not enter rollout, projections, public DTOs, protocol fixtures or Desktop
-state.
+Collaboration task Markdown is instructed to include Objective, Context, Scope,
+Constraints, Deliverables, Acceptance criteria and Report format. The runtime
+treats that heading structure as advisory and hard-validates that the task text
+is non-empty and bounded. A provider's Markdown formatting choices therefore do
+not terminate an otherwise valid dispatch; write access, dependency, auditor,
+role, count and graph invariants remain mandatory.
+
+The default provider context window is 128K tokens. Because OpenAI-compatible
+endpoints do not expose one portable tokenizer or context-metadata contract,
+Core uses a conservative provider-neutral estimate of three UTF-8 bytes per
+token. It reserves 16K tokens for model output and proactively compacts near an
+estimated 112K input tokens. The exact built-in prompt bytes participate in
+that budget. The 4 MiB absolute safety limit remains a separate bound for one
+compaction input. The prompt is neither configurable nor durable: it does not
+enter rollout, projections, public DTOs, protocol fixtures or Desktop state.
 
 Before every provider round, Core counts instructions, effective messages and
-the currently exposed tools. Above 3 MiB it sends an internal no-tools request
-using fixed `SUGARCODE_ACTIVE_TURN_COMPACTION_PROMPT_V1`. The same model
-produces a bounded semantic checkpoint, recent complete ToolCall/ToolResult
-pairs remain verbatim where possible, usage accumulates into the original Turn
-and execution continues in-process. A request above 4 MiB, a summary above
-32 KiB or a result that cannot return below 3 MiB fails with `outputTooLarge`.
+the currently exposed tools. Above the estimated 112K-token input target it
+sends an internal no-tools request using fixed
+`SUGARCODE_ACTIVE_TURN_COMPACTION_PROMPT_V1`. The same model produces a bounded
+semantic checkpoint, recent complete ToolCall/ToolResult pairs remain verbatim
+where possible, usage accumulates into the original Turn and execution
+continues in-process.
+
+An endpoint may enforce a smaller window than the 128K default. HTTP 413 and
+bounded 400/422 error bodies that identify context length are classified as an
+internal context rejection. Core automatically compacts and retries the same
+Turn instead of surfacing that rejection. A later generic `invalidRequest` is
+also eligible for one recovery when the rejected request grew beyond the last
+accepted provider request; this covers compatible gateways that discard their
+context-specific error code without repeatedly masking unrelated invalid
+requests. A compaction input above 4 MiB, a summary above 32 KiB or fixed
+instructions and tools that cannot fit after compaction still fail with
+`outputTooLarge`.
 
 The checkpoint summary is private rollout state. Public `contextCompaction`
 Items contain only strategy, ordinal, byte counts, SHA-256 values and outcome.
@@ -147,6 +181,12 @@ persist turnStarted
 Replay reconstructs the Turn from the incremental Item records. Fork writes the
 same lifecycle shape atomically with remapped IDs. Development-era rollout v1
 files using the former terminal-snapshot shape are intentionally incompatible.
+Canonical Turn and Item IDs are globally unique and their persisted numeric
+sequence advances when records are appended. Replay processes rollout files in
+stable Thread filename order, which is not creation order once parent and child
+Threads interleave. It therefore validates global ID uniqueness across files
+and restores each next sequence from the maximum observed ID; it never treats a
+smaller unique ID in a later file as corruption.
 
 `turn/interrupt` remains pending until the active task has stopped and persisted
 its terminal state. Terminal notifications are written before the empty
@@ -173,17 +213,48 @@ four; mixed, shell, approval, write or unknown-effect batches execute in model
 order. Results always return in model order, while one independent read failure
 does not cancel its siblings.
 
-On tool-capable rounds the adapter temporarily buffers no more than 512 bytes
-of initial assistant text for one total window of no more than 250 ms; arriving
-text fragments do not renew that deadline. When a tool call follows within that
-boundary, Core persists the text as an `AgentCommentary` Item immediately
-before the call and Desktop renders it as process text. Historical replay
-reconstructs commentary and its consecutive calls as one provider assistant
-message with `content` plus `tool_calls`. Commentary is included in provider
-context and compaction input, but excluded from Thread search. When no tool
-follows within the byte or time boundary, the buffer begins streaming as
-ordinary assistant text. Once text has been committed as an answer, a later
-tool call remains unsupported rather than being reclassified.
+Provider streams expose provisional text deltas followed by exactly one typed
+completed response, which must be the terminal stream event; EOF before it,
+duplicate completion or any later event is a protocol error. A provisional
+delta has an output index but no final phase:
+Core forwards it as transient `AgentOutputDelta` state and never writes it to
+rollout, SQLite projections, history or search. The completed response contains
+ordered provider-neutral output items and classifies its optional assistant
+text as `Final` or `Commentary`; Core validates that any accumulated preview is
+byte-for-byte identical before creating a durable Item. Network timing and the
+arrival order of content and tool-call fragments never classify the text.
+
+The Chat Completions adapter assembles content and indexed tool fragments
+independently until `finish_reason`. `stop` completes one non-empty final text
+item. `tool_calls` completes optional commentary of at most 512 bytes followed
+by one or more calls. The provider adapter preserves that typed batch without
+guessing tool effects or imposing a call-count quota. Accumulated semantic
+output remains subject to a byte budget so an unbounded stream cannot consume
+unbounded memory. A `stop` finish after complete indexed tool fragments is
+normalized as a tool-call completion for compatible endpoints; a finish with
+no matching semantic output is a protocol error. A complete but unsupported
+item shape is `unsupportedOutput`. Provider-specific
+`reasoning_content` is bounded by the SSE event limit and ignored as private
+metadata; it never becomes preview, Commentary, history or durable output.
+Unsupported semantic fields are recorded while streaming but classified only
+after the terminal finish and `[DONE]`, so fragment timing cannot produce
+`unsupportedOutput`. Commentary is persisted
+immediately before its calls, included in provider context and compaction input,
+excluded from Thread search, and replayed with its calls as one assistant
+message. Tools are validated and executed only after the complete response has
+passed these checks.
+
+App-server maps preview deltas to additive
+`turn/agentOutput/delta` notifications keyed by Turn, response ordinal and
+output index. The resolving `item/started` carries the same optional
+`agentOutput` reference. Desktop and TUI render the preview as neutral process
+text, then replace it atomically with the canonical AgentMessage or Commentary.
+Exec ignores previews and receives the final answer once through its existing
+AgentMessage delta contract. Failure, interruption, disconnect and surface
+replacement discard unresolved previews; restart and historical resume never
+replay them. Internal collaboration child events share the Core channel but are
+filtered by request identity at the exec boundary; exec exposes only the root
+lifecycle and its durable AgentTask/AgentTaskResult items.
 
 ## 5. Thread and projection boundary
 
@@ -209,9 +280,12 @@ context.
 Subagent Threads carry optional durable origin metadata naming the parent
 Thread, parent Turn, orchestration, task and role. They are excluded from
 ordinary list/search navigation and their lifecycle events are not projected as
-independent conversations. `thread/descendants/list` is the only public
-discovery path for restoring a parent's hidden execution graph. Existing
-rollout v1 Threads without origin remain root Threads and require no migration.
+independent conversations. The RolloutRepository revalidates origin metadata
+after every discovery or FTS projection page, so rebuilding a projection can
+never promote a child into root navigation. `thread/descendants/list` is the
+only public discovery path for restoring a parent's hidden execution graph.
+Existing rollout v1 Threads without origin remain root Threads and require no
+migration.
 
 ## 6. Workspace authority
 
@@ -346,10 +420,10 @@ Supported selections are:
 - one literal-loopback Streamable HTTP server.
 
 Startup freezes and hashes each bounded inventory. Each approved call reconnects
-or revalidates against that inventory before `tools/call`. The Agent loop allows
-one call per provider round and at most four sequential calls per Turn. At the
-four-call boundary Core removes MCP definitions only; workspace and shell tools
-may continue.
+or revalidates against that inventory before `tools/call`. A completed provider
+round may contain multiple MCP calls; Core validates the full batch first, then
+processes approvals and execution sequentially in model order. MCP definitions
+remain available while the capability and frozen inventory remain valid.
 
 Desktop Main owns enablement, restart, approval correlation and rollback of a
 failed session transition. Renderer sees server ID, transport, callable
@@ -398,20 +472,32 @@ Interrupted and never replays, resumes or retries their operations.
 
 ## 10. Desktop workbench boundary
 
-OpenAI-compatible model endpoints accept explicit HTTP or HTTPS URLs ending in
-`/chat/completions`. Desktop shows an inline plaintext-transport warning for
-HTTP but does not override the selected scheme. It exposes one optional API-key
-input, uses the internal `model-api-token` reference for newly entered keys and
-never reveals a stored key. An empty input preserves an existing key or selects
-an unauthenticated endpoint when no key is configured. The streaming adapter
-accepts usage events with either an empty `choices` array or one index-zero
-choice whose delta and finish reason are empty; any content in that post-finish
-choice remains a protocol error.
+Desktop edits a connection/profile model catalog and warns when any base URL
+uses plaintext HTTP. Each connection owns its endpoint, enabled state, wire API,
+and optional API key; multiple model profiles may share it. The API key never
+round-trips through inspection. Empty credential input preserves the stored
+value, and explicit deletion is revision guarded per connection.
+
+Model inspection and replacement treat the obsolete `[model]` section as an
+empty repairable catalog while retaining a valid MCP section. No legacy model
+fields are read or migrated. Saving the first `[models]` catalog overwrites the
+old model area. Saving, discovery, or credential deletion does not restart
+app-server, change the active Turn's frozen model, disable MCP, or rebind the
+workspace.
+
+The composer selects a profile for the next Turn. New Threads use the global
+default; existing Threads use their last durable selection. The selector locks
+while a Turn runs. Removed or disabled sticky profiles remain visibly
+unavailable and block send instead of silently selecting another provider.
+
+The streaming adapter accepts usage events with either an empty `choices` array
+or one index-zero choice whose delta and finish reason are empty; any content in
+that post-finish choice remains a protocol error.
 
 Main owns all native or process authority:
 
 - app-server process and conversation projection;
-- model configuration and OS credential commands;
+- local model configuration commands;
 - MCP registry and session replacement;
 - workspace picker and replacement;
 - Git status/diff/stage/unstage/commit;
@@ -479,7 +565,9 @@ Selecting a Thread positions its independent conversation viewport at the
 latest durable content. Subsequent streaming continues to follow the tail only
 while the reader remains near the bottom; manually scrolling upward preserves
 the reader's position until a new user message or Thread selection resumes
-following.
+following. Browser scroll-position clamping caused by completed process regions
+collapsing is not treated as manual intent and keeps the latest durable content
+in view.
 
 Desktop projects every read-only call in an ordered parallel batch as an
 independent in-flow activity, including repeated calls to the same workspace
@@ -558,6 +646,7 @@ Ctrl+Q and termination signals.
 - Renderer receives no raw native authority.
 - Durable transitions precede corresponding public lifecycle.
 - External operations are never replayed after uncertain recovery.
-- Secrets never enter configuration, rollout, public protocol or diagnostics.
+- Model API keys may enter only the permission-restricted local model
+  configuration; no secret enters rollout, public protocol or diagnostics.
 - Workspace, command, Git, MCP, preview and terminal authorities remain
   distinct.
