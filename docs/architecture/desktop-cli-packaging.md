@@ -171,8 +171,9 @@ contact an external model provider.
 
 ## 9. Native delivery
 
-Ubuntu, macOS and Windows CI run the relevant Rust, Desktop, Electron and Forge
-checks on native hosts. Packaging acceptance must not be replaced by
+macOS and Windows CI run the relevant Rust, Desktop, Electron and Forge checks
+on native hosts. Ubuntu/Linux is not currently a supported CI or packaging
+acceptance target. Packaging acceptance must not be replaced by
 cross-compilation alone because executable format, sandboxing, PTY/ConPTY and
 Electron resource layout are platform-specific.
 

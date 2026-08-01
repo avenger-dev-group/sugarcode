@@ -20,7 +20,9 @@ types are provider-neutral and protocol version remains 1.
 
 `turn/start` accepts ordered content parts and may omit text when attachments
 exist. `asset/import` accepts bounded Base64, validates through the state content
-store and returns a descriptor for later Turn input.
+store and returns a descriptor for later Turn input. Imported payloads are
+flushed before publication on every platform; directory metadata is additionally
+synchronized on Unix, where directory handles support that durability boundary.
 
 ToolCall contains call ID, SugarCode tool name and JSON arguments. Validation
 failure is its own `toolValidationRejected` Item. `FileChange`, approvals,
@@ -42,6 +44,7 @@ Electron Main owns:
 - workspace and native file pickers;
 - attachment reads and `asset/import`;
 - MCP session replacement and approvals;
+- command-approval policy and its current Thread/workspace scope;
 - Git, preview window and PTY/ConPTY terminal.
 
 Preload exposes fixed validated operations and minimized snapshots. Renderer
@@ -52,6 +55,20 @@ Desktop starts project and isolated chat roots with bounded structured file
 writes. Shell workspace write remains a separate explicitly approved policy.
 Runtime replacement is Main-owned and cannot let events from the old scope
 update the new projection.
+
+Public `Thread` values may carry a bounded optional title derived by Core from
+durable user content. Main validates and projects that title; Renderer uses the
+canonical ID fallback only until a content title exists.
+
+Command approval has three Desktop modes: ask every time, automatically approve
+later requests in the current Thread, or automatically approve later requests
+in the current workspace. The mode can be chosen in the composer or atomically
+with an approval decision. Main owns and enforces the scope, binds a pre-Thread
+selection to the next started Thread, and resets the policy when the workspace
+changes. Automatic approval only answers the existing app-server request; it
+does not relax the read-only/no-network command sandbox or authorize shell
+workspace writes. Normal terminal approval states close without a persistent
+completion toast.
 
 ## Composer and transcript
 
@@ -73,7 +90,8 @@ single structural source; Desktop adds semantic bounds needed by its view
 model. Node tests cover these boundary validators and run under
 `pnpm check` with lint and TypeScript checking.
 
-Native package smoke runs on macOS, Linux and Windows and uses the copied
-sidecar. It verifies version pairing, handshake and isolated local capabilities
+Native package smoke runs on macOS and Windows and uses the copied sidecar.
+Ubuntu/Linux is not currently a supported CI or packaging acceptance target.
+The smoke verifies version pairing, handshake and isolated local capabilities
 without contacting a provider. See `desktop-cli-packaging.md` for package and
 release boundaries.

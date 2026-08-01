@@ -16,6 +16,12 @@ configuration resolution, tools, provider construction and shutdown.
 App-server, exec and TUI are presentation/transport surfaces, not alternate
 state machines.
 
+An accepted Turn has no wall-clock execution deadline. It remains active until
+the model reaches a terminal result, the user interrupts it, the consumer
+closes, shutdown begins or a typed provider/transport/durable-state failure is
+observed. Long-running model and tool activity must not be converted into a
+synthetic timeout merely because the Turn crossed a fixed duration.
+
 Provider configuration is resolved when a Turn starts. Initialization,
 workspace binding, settings and Thread history therefore remain available when
 model configuration or authentication is broken.
@@ -54,6 +60,12 @@ rollout-only; the public `contextCompaction` Item contains byte counts, hashes
 and outcome. Tool receipts retain argument/result hashes rather than raw
 content when compacted.
 
+The active Agent loop compacts before reaching the maximum provider input
+budget. In addition to the normal output allowance, it preserves a separate
+recovery reserve so that a tool-producing response and its results cannot leave
+the following compaction request without context space. Provider requests that
+generate checkpoints remain within the normal input budget.
+
 ## Content store
 
 `SugarCodeHome/content/v1` is a content-addressed asset store. Import verifies
@@ -86,3 +98,10 @@ errors, Desktop protocol errors and durable-state failures remain distinct.
 Thread search indexes completed user/final assistant text only. Attachments,
 commentary, tool payloads, provider context, compaction bodies and diagnostics
 are excluded.
+
+Thread list, search, resume and fork responses expose an optional display title
+derived deterministically from durable user content. The first task-bearing
+prompt wins, generic greetings are skipped when later content exists, and an
+attachment-only prompt uses its original file name. Titles are bounded to 48
+Unicode characters and remain a rollout-derived projection: they require no
+model call and introduce no second persistence authority.

@@ -13,7 +13,8 @@ unsupported file types and observed identity changes.
 
 ## Read tools
 
-- `workspace/read` reads one stable bounded regular UTF-8 file.
+- `workspace/read` reads one stable bounded regular UTF-8 file and returns a
+  JSON object containing `content`, `bytes` and the exact content `sha256`.
 - `workspace/list` lists one directory level.
 - `workspace/search` performs bounded literal UTF-8 content search without
   shell, Git, host `rg` or ignore-file authority.
@@ -39,6 +40,10 @@ All edits target the same original revision, are strictly ascending and do not
 overlap. EOF insertion uses `lineCount + 1` with zero deletion. The base SHA and
 exact expected text prevent stale or ambiguous writes. LF, CRLF and missing
 final newline are preserved intentionally.
+
+The model must pass the `sha256` returned by `workspace/read` directly as
+`baseSha256`. It must not invoke a platform utility or synthesize a placeholder
+hash. A revision mismatch still fails closed and requires a fresh read/rebase.
 
 ## Unified diff compatibility
 
@@ -74,7 +79,10 @@ activity only and does not claim isolation from the user or another process.
 
 `shell/exec` is a separate authority. It requires an absolute executable,
 bounded argv, fixed workspace-relative cwd, minimal environment, no shell
-string or `PATH` lookup, one-time approval and platform sandbox support.
+string or `PATH` lookup, an app-server approval decision and platform sandbox
+support. Desktop may remember the user's approval mode for the current Thread
+or workspace and answer later approval requests automatically; this does not
+expand filesystem, network, executable or workspace-write authority.
 Attempt-without-result means writes may have occurred. Shell executable rules
 are not weakened by model-relative file paths.
 

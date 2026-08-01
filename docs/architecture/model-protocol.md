@@ -58,6 +58,12 @@ one typed completion. EOF before completion, duplicate completion or semantic
 events after completion are protocol errors. SSE record size and accumulated
 semantic output have independent limits.
 
+Generation requests do not impose response-header or stream-idle deadlines.
+Once connected, an adapter waits for provider output or a real transport/server
+terminal while Core retains explicit interruption authority. Connection setup
+remains bounded, and an HTTP 408 returned by the provider remains a typed,
+retryable provider timeout.
+
 Terminal metadata normalizes:
 
 - finish reason;
