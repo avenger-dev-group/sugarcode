@@ -131,6 +131,7 @@ struct Orchestration {
     id: String,
     parent_thread_id: ThreadId,
     parent_turn_id: TurnId,
+    model_gateway: ModelGateway,
     tasks: BTreeMap<String, TaskRecord>,
 }
 
@@ -326,6 +327,7 @@ impl CollaborationCoordinator {
         self: &Arc<Self>,
         runtime: &CoreRuntime,
         prepared: &PreparedTextTurn,
+        model_gateway: &ModelGateway,
         call: &ModelToolCall,
     ) -> Result<String, Terminal> {
         let arguments: DispatchArguments = parse_arguments(call).map_err(Terminal::Failed)?;
@@ -387,6 +389,7 @@ impl CollaborationCoordinator {
                     id: orchestration_id.clone(),
                     parent_thread_id: prepared.thread_id.clone(),
                     parent_turn_id: prepared.turn_id.clone(),
+                    model_gateway: model_gateway.clone(),
                     tasks: BTreeMap::new(),
                 });
             for (task, child_thread_id) in &created {
@@ -753,7 +756,7 @@ impl CollaborationCoordinator {
         orchestration_id: String,
         key: String,
     ) {
-        let (task, dependency_context) = {
+        let (task, dependency_context, model_gateway) = {
             let Ok(state) = self.state.lock() else {
                 return;
             };
@@ -778,7 +781,11 @@ impl CollaborationCoordinator {
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            (task, dependency_context)
+            (
+                task,
+                dependency_context,
+                orchestration.model_gateway.clone(),
+            )
         };
         let _slot = match self.execution_slots.clone().acquire_owned().await {
             Ok(slot) => slot,
@@ -817,7 +824,13 @@ impl CollaborationCoordinator {
         }
         let started_at = Instant::now();
         let request_id = CoreRequestId::new(self.next_request_id.fetch_add(1, Ordering::AcqRel));
-        let start = runtime.start_text_turn(request_id, task.child_thread_id.clone(), Some(input));
+        runtime.model_gateway = Some(ModelGatewaySource::Fixed(model_gateway.clone()));
+        let start = runtime.start_text_turn_with_model(
+            request_id,
+            task.child_thread_id.clone(),
+            Some(input),
+            Some(model_gateway.profile_id.to_string()),
+        );
         let status = match start {
             Ok(TurnStartOutcome::Accepted { .. }) => {
                 let done = runtime.active.lock().ok().and_then(|active| {

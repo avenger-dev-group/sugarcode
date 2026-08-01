@@ -30,6 +30,7 @@ pub enum TurnErrorKind {
     Incomplete,
     Filtered,
     UnsupportedOutput,
+    UnsupportedToolArguments,
     OutputTooLarge,
     StateUnavailable,
 }
@@ -42,12 +43,37 @@ pub struct TurnError {
     pub retryable: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum ModelProviderKind {
+    Openai,
+    Anthropic,
+    Gemini,
+    Metallm,
+    OpenaiCompatible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ModelSelectionSnapshot {
+    pub profile_id: String,
+    pub provider_kind: ModelProviderKind,
+    pub model_id: String,
+    pub display_name: String,
+    pub context_window_tokens: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct Turn {
     pub id: String,
     pub status: TurnStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<ModelSelectionSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<TurnError>,
@@ -61,6 +87,9 @@ pub struct TurnStartParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_profile_id: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for TurnStartParams {
@@ -80,9 +109,19 @@ impl<'de> Deserialize<'de> for TurnStartParams {
                 return Err(de::Error::custom("input is too large"));
             }
         }
+        if params.model_profile_id.as_ref().is_some_and(|profile_id| {
+            profile_id.is_empty()
+                || profile_id.len() > 64
+                || !profile_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        }) {
+            return Err(de::Error::custom("modelProfileId is invalid"));
+        }
         Ok(Self {
             thread_id: params.thread_id,
             input: params.input,
+            model_profile_id: params.model_profile_id,
         })
     }
 }
@@ -92,6 +131,7 @@ impl<'de> Deserialize<'de> for TurnStartParams {
 struct TurnStartParamsWire {
     thread_id: String,
     input: Option<String>,
+    model_profile_id: Option<String>,
 }
 
 pub const MAX_TURN_INPUT_BYTES: usize = 64 * 1024;

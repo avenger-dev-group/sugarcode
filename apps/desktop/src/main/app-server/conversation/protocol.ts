@@ -2,6 +2,7 @@ import type {
   AgentMessageDeltaNotification,
   ItemCompletedNotification,
   ItemStartedNotification,
+  ModelSelectionSnapshot,
   ThreadStartResponse,
   ThreadStartedNotification,
   TurnSnapshotStatus,
@@ -246,6 +247,7 @@ export type ResumeItem =
 export type ResumeTurn = Readonly<{
   id: string;
   status: TurnSnapshotStatus;
+  model?: ModelSelectionSnapshot;
   items: readonly ResumeItem[];
   error?: TurnError;
 }>;
@@ -490,6 +492,7 @@ const TURN_ERROR_KINDS = new Set([
   'incomplete',
   'filtered',
   'unsupportedOutput',
+  'unsupportedToolArguments',
   'outputTooLarge',
   'stateUnavailable',
 ]);
@@ -512,6 +515,41 @@ const parseTurnError = (value: unknown): TurnError | undefined => {
   };
 };
 
+const parseModelSelection = (
+  value: unknown,
+): ModelSelectionSnapshot | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !isRecord(value) ||
+    typeof value.profileId !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,64}$/u.test(value.profileId) ||
+    ![
+      'openai',
+      'anthropic',
+      'gemini',
+      'metallm',
+      'openaiCompatible',
+    ].includes(value.providerKind as string) ||
+    typeof value.modelId !== 'string' ||
+    typeof value.displayName !== 'string' ||
+    !Number.isInteger(value.contextWindowTokens) ||
+    (value.contextWindowTokens as number) < 4_096 ||
+    (value.contextWindowTokens as number) > 2_097_152
+  ) {
+    throw new Error('Invalid Turn model selection.');
+  }
+  return {
+    profileId: value.profileId,
+    providerKind:
+      value.providerKind as ModelSelectionSnapshot['providerKind'],
+    modelId: value.modelId,
+    displayName: value.displayName,
+    contextWindowTokens: value.contextWindowTokens as number,
+  };
+};
+
 const parseTurn = (value: unknown): TurnStartResponse['turn'] => {
   if (
     !isRecord(value) ||
@@ -528,9 +566,11 @@ const parseTurn = (value: unknown): TurnStartResponse['turn'] => {
   ) {
     throw new Error('Invalid Turn terminal error.');
   }
+  const model = parseModelSelection(value.model);
   return {
     id: value.id,
     status: value.status as TurnStartResponse['turn']['status'],
+    ...(model ? { model } : {}),
     ...(error ? { error } : {}),
   };
 };
@@ -568,6 +608,7 @@ export const parseThreadResumeResponse = (value: unknown): ResumeSnapshot => {
     return {
       id: parsedTurn.id,
       status: parsedTurn.status,
+      ...(parsedTurn.model ? { model: parsedTurn.model } : {}),
       items: turn.items.map(parseResumeItem),
       ...(parsedTurn.error ? { error: parsedTurn.error } : {}),
     };

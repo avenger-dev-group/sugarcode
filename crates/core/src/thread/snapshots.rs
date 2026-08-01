@@ -634,6 +634,9 @@ pub(super) fn core_tool_error_kind(kind: &str) -> sugarcode_protocol::CoreToolEr
     use sugarcode_protocol::CoreToolErrorKind;
 
     match kind {
+        "invalidArguments" => CoreToolErrorKind::InvalidArguments,
+        "unknownTool" => CoreToolErrorKind::UnknownTool,
+        "batchRejected" => CoreToolErrorKind::BatchRejected,
         "invalidPath" => CoreToolErrorKind::InvalidPath,
         "invalidQuery" => CoreToolErrorKind::InvalidQuery,
         "notFound" => CoreToolErrorKind::NotFound,
@@ -715,6 +718,7 @@ pub(super) fn durable_thread_snapshot(thread: &Thread) -> DurableThreadSnapshot 
                     TurnState::Failed => DurableTurnStatus::Failed,
                 },
                 items: turn.items.values().map(durable_item_from_item).collect(),
+                model: turn.model.clone(),
                 context_compaction: turn.context_compaction.clone(),
                 workspace_instructions: turn.workspace_instructions.clone(),
                 workspace_skills: turn.workspace_skills.clone(),

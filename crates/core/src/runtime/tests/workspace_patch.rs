@@ -80,6 +80,105 @@ impl WorkspacePatchExecutor for RecordedPatchExecutor {
 }
 
 #[tokio::test]
+async fn invalid_apply_patch_arguments_are_returned_to_the_model_for_retry() {
+    let directory = tempfile::tempdir().expect("workspace");
+    let target = directory.path().join("notes.txt");
+    std::fs::write(&target, "old\n").expect("workspace fixture");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![Ok(model_event::tool_call(ModelToolCall {
+                id: "call_patch_invalid".to_string(),
+                name: "workspace/apply-patch".to_string(),
+                arguments: serde_json::json!({
+                    "patch": "@@ -1,1 +1,1 @@\n-old\n+new\n"
+                }),
+            }))],
+            vec![Ok(model_event::tool_call(ModelToolCall {
+                id: "call_patch_retry".to_string(),
+                name: "workspace/apply-patch".to_string(),
+                arguments: serde_json::json!({
+                    "path": "notes.txt",
+                    "patch": "@@ -1,1 +1,1 @@\n-old\n+new\n"
+                }),
+            }))],
+            vec![
+                Ok(model_event::text_delta("Patch applied.".to_string())),
+                Ok(model_event::COMPLETED),
+            ],
+        ])),
+        requests: Arc::clone(&requests),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let workspace_patch: Arc<dyn WorkspacePatchExecutor> = tool;
+    let (runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        None,
+        None,
+    );
+    let mut runtime = runtime.with_workspace_patch(Some(workspace_patch));
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Apply the patch".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("async turn");
+    };
+    while !matches!(
+        events.recv().await.expect("terminal").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    assert_eq!(
+        std::fs::read_to_string(target).expect("patched file"),
+        "new\n"
+    );
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 3);
+    assert!(matches!(
+        requests[1].messages.last(),
+        Some(ModelMessage::ToolResult { content, .. })
+            if content.contains("invalidArguments")
+                && content.contains("argumentsBytes=")
+                && content.contains("argumentsSha256=")
+                && !content.contains("\"patch\"")
+    ));
+    drop(requests);
+    let turn = runtime
+        .resume_thread(&thread_id)
+        .expect("resume")
+        .turns
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert_eq!(turn.status, DurableTurnStatus::Completed);
+    assert!(turn.items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::ToolResult {
+            result: sugarcode_state::DurableToolResult::Error { kind },
+            ..
+        } if kind == "invalidArguments"
+    )));
+    assert!(turn.items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::FileChange { .. }
+    )));
+}
+
+#[tokio::test]
 async fn workspace_patch_persists_review_before_result_and_finishes_model_round() {
     let directory = tempfile::tempdir().expect("workspace");
     let target = directory.path().join("notes.txt");

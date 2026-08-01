@@ -75,11 +75,21 @@ pub struct DurableTurnSnapshot {
     pub id: TurnId,
     pub status: DurableTurnStatus,
     pub items: Vec<DurableItemSnapshot>,
+    pub model: Option<DurableModelSelectionSnapshot>,
     pub context_compaction: Option<DurableContextCompaction>,
     pub workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
     pub workspace_skills: Option<DurableWorkspaceSkillsAudit>,
     pub error: Option<DurableTurnError>,
     pub usage: Option<DurableUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableModelSelectionSnapshot {
+    pub profile_id: String,
+    pub provider_kind: String,
+    pub model_id: String,
+    pub display_name: String,
+    pub context_window_tokens: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +178,7 @@ pub enum DurableTurnErrorKind {
     Incomplete,
     Filtered,
     UnsupportedOutput,
+    UnsupportedToolArguments,
     OutputTooLarge,
     StateUnavailable,
 }

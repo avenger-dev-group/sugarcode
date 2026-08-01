@@ -59,6 +59,7 @@ use sugarcode_protocol::CoreTurnError;
 use sugarcode_protocol::CoreTurnErrorKind;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
+use sugarcode_state::DurableModelSelectionSnapshot;
 use sugarcode_state::DurableThreadOrigin;
 use sugarcode_state::DurableThreadPage;
 use sugarcode_state::DurableThreadSnapshot;
@@ -136,6 +137,8 @@ const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
 const MAX_ACTIVE_TURN_COMPACTION_BYTES: usize = 32 * 1024;
 const READ_ONLY_TOOL_CONCURRENCY: usize = 4;
+const MAX_AMBIGUOUS_CONTEXT_RECOVERIES: usize = 1;
+const MAX_EXPLICIT_CONTEXT_RECOVERIES: usize = 2;
 
 const CORE_EVENT_CAPACITY: usize = 64;
 
@@ -163,10 +166,50 @@ pub struct CoreRuntime {
 pub struct ResolvedModel {
     pub provider: Arc<dyn ModelProvider>,
     pub model: String,
+    pub profile_id: String,
+    pub provider_kind: String,
+    pub display_name: String,
+    pub capabilities: ModelCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelCapabilities {
+    pub context_window_tokens: u32,
+    pub output_reserve_tokens: u32,
+    pub strict_tool_schema: bool,
+    pub parallel_tool_calls: bool,
+}
+
+impl ModelCapabilities {
+    pub fn new(
+        context_window_tokens: u32,
+        strict_tool_schema: bool,
+        parallel_tool_calls: bool,
+    ) -> Self {
+        let output_reserve_tokens = 16_384_u32.min(4_096_u32.max(context_window_tokens / 4));
+        Self {
+            context_window_tokens,
+            output_reserve_tokens,
+            strict_tool_schema,
+            parallel_tool_calls,
+        }
+    }
+
+    pub fn input_compaction_target_tokens(self) -> u32 {
+        self.context_window_tokens
+            .saturating_sub(self.output_reserve_tokens)
+    }
+
+    fn input_compaction_target_bytes(self) -> usize {
+        usize::try_from(self.input_compaction_target_tokens())
+            .unwrap_or(usize::MAX)
+            .saturating_mul(3)
+            .min(crate::context::MAX_PROVIDER_CONTEXT_BYTES)
+    }
 }
 
 pub trait ModelResolver: Send + Sync {
-    fn resolve(&self) -> Result<ResolvedModel, ModelError>;
+    fn resolve(&self, profile_id: Option<&str>) -> Result<ResolvedModel, ModelError>;
 }
 
 #[derive(Clone)]
@@ -176,14 +219,18 @@ enum ModelGatewaySource {
 }
 
 impl ModelGatewaySource {
-    fn resolve(&self) -> Result<ModelGateway, ModelError> {
+    fn resolve(&self, profile_id: Option<&str>) -> Result<ModelGateway, ModelError> {
         match self {
             Self::Fixed(gateway) => Ok(gateway.clone()),
             Self::Resolver(resolver) => {
-                let resolved = resolver.resolve()?;
+                let resolved = resolver.resolve(profile_id)?;
                 Ok(ModelGateway {
                     provider: resolved.provider,
                     model: Arc::from(resolved.model),
+                    profile_id: Arc::from(resolved.profile_id),
+                    provider_kind: Arc::from(resolved.provider_kind),
+                    display_name: Arc::from(resolved.display_name),
+                    capabilities: resolved.capabilities,
                 })
             }
         }
@@ -194,6 +241,23 @@ impl ModelGatewaySource {
 struct ModelGateway {
     provider: Arc<dyn ModelProvider>,
     model: Arc<str>,
+    profile_id: Arc<str>,
+    provider_kind: Arc<str>,
+    display_name: Arc<str>,
+    capabilities: ModelCapabilities,
+}
+
+impl fmt::Debug for ModelGateway {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModelGateway")
+            .field("model", &self.model)
+            .field("profile_id", &self.profile_id)
+            .field("provider_kind", &self.provider_kind)
+            .field("display_name", &self.display_name)
+            .field("capabilities", &self.capabilities)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone)]
@@ -279,6 +343,10 @@ impl CoreRuntime {
                 model_gateway: Some(ModelGatewaySource::Fixed(ModelGateway {
                     provider,
                     model: Arc::from(model),
+                    profile_id: Arc::from("fixed"),
+                    provider_kind: Arc::from("fixed"),
+                    display_name: Arc::from("Fixed model"),
+                    capabilities: ModelCapabilities::new(131_072, false, false),
                 })),
                 workspace_read,
                 workspace_list,
@@ -509,9 +577,26 @@ impl CoreApi for CoreRuntime {
         thread_id: ThreadId,
         input: Option<String>,
     ) -> Result<TurnStartOutcome, CoreError> {
-        if self.model_gateway.is_none() {
-            return Err(CoreError::ModelUnavailable);
-        }
+        self.start_text_turn_with_model(request_id, thread_id, input, None)
+    }
+
+    fn start_text_turn_with_model(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+        input: Option<String>,
+        model_profile_id: Option<String>,
+    ) -> Result<TurnStartOutcome, CoreError> {
+        let selected_profile_id = match model_profile_id {
+            Some(profile_id) => Some(profile_id),
+            None => self.lock_core()?.latest_model_profile_id(&thread_id),
+        };
+        let model_gateway = self
+            .model_gateway
+            .as_ref()
+            .ok_or(CoreError::ModelUnavailable)?
+            .resolve(selected_profile_id.as_deref())
+            .map_err(|_| CoreError::ModelUnavailable)?;
         let workspace_instructions = self
             .workspace_instructions
             .as_deref()
@@ -553,7 +638,14 @@ impl CoreApi for CoreRuntime {
             .map(sugarcode_model_provider::ModelToolDefinition::context_bytes)
             .try_fold(0usize, usize::checked_add)
             .ok_or(CoreError::ContextTooLarge)?;
-        let mut prepared = self.lock_core()?.prepare_text_turn_with_context(
+        let model_snapshot = DurableModelSelectionSnapshot {
+            profile_id: model_gateway.profile_id.to_string(),
+            provider_kind: model_gateway.provider_kind.to_string(),
+            model_id: model_gateway.model.to_string(),
+            display_name: model_gateway.display_name.to_string(),
+            context_window_tokens: model_gateway.capabilities.context_window_tokens,
+        };
+        let mut prepared = self.lock_core()?.prepare_text_turn_with_model_context(
             request_id,
             thread_id.clone(),
             input,
@@ -561,6 +653,8 @@ impl CoreApi for CoreRuntime {
             workspace_skills,
             instruction_context_bytes,
             tool_context_bytes,
+            Some(model_snapshot),
+            model_gateway.capabilities.input_compaction_target_bytes(),
         )?;
         prepared.instructions = instructions;
         let cancellation = CancellationToken::new();
@@ -587,7 +681,13 @@ impl CoreApi for CoreRuntime {
             let timeout_terminal_state = terminal_state.clone();
             if tokio::time::timeout(
                 TURN_TIMEOUT,
-                run_turn(runtime, prepared, cancellation, terminal_state),
+                run_turn(
+                    runtime,
+                    prepared,
+                    model_gateway,
+                    cancellation,
+                    terminal_state,
+                ),
             )
             .await
             .is_err()
@@ -710,6 +810,7 @@ impl CoreRuntime {
 async fn run_turn(
     runtime: CoreRuntime,
     prepared: crate::PreparedTextTurn,
+    model_gateway: ModelGateway,
     cancellation: CancellationToken,
     terminal_state: Arc<Mutex<TurnPhase>>,
 ) {
@@ -751,25 +852,6 @@ async fn run_turn(
         }
     }
 
-    let Some(model_gateway_source) = runtime.model_gateway.as_ref() else {
-        finish_failed_and_emit(
-            &runtime,
-            &prepared,
-            ModelError::new(ModelErrorKind::InvalidRequest, false),
-            None,
-        )
-        .await;
-        clear_active(&runtime, &thread_id, &turn_id);
-        return;
-    };
-    let model_gateway = match model_gateway_source.resolve() {
-        Ok(gateway) => gateway,
-        Err(error) => {
-            finish_failed_and_emit(&runtime, &prepared, error, None).await;
-            clear_active(&runtime, &thread_id, &turn_id);
-            return;
-        }
-    };
     let mut messages = prepared
         .history
         .iter()
@@ -779,6 +861,8 @@ async fn run_turn(
     let mut agent_loop = AgentLoopState::default();
     let mut compaction_ordinal = 0u64;
     let mut response_ordinal = 0u64;
+    let mut context_recovery_attempts = 0usize;
+    let mut last_successful_request_bytes = None::<usize>;
     let terminal = 'rounds: loop {
         messages.extend(
             runtime
@@ -797,7 +881,9 @@ async fn run_turn(
             messages: messages.clone(),
             tools: tools.clone(),
         };
-        if initial_request.context_bytes() > crate::context::COMPACTION_TARGET_BYTES {
+        if initial_request.context_bytes()
+            > model_gateway.capabilities.input_compaction_target_bytes()
+        {
             compaction_ordinal = match compaction_ordinal.checked_add(1) {
                 Some(value) => value,
                 None => {
@@ -824,15 +910,12 @@ async fn run_turn(
             model: model_gateway.model.to_string(),
             instructions: prepared.instructions.clone(),
             messages: messages.clone(),
-            tools,
+            tools: tools.clone(),
         };
-        if request.context_bytes() > crate::context::COMPACTION_TARGET_BYTES {
+        if request.context_bytes() > model_gateway.capabilities.input_compaction_target_bytes() {
             break Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false));
         }
-        response_ordinal = match response_ordinal.checked_add(1) {
-            Some(value) => value,
-            None => break Terminal::Failed(output_too_large_error()),
-        };
+        let request_context_bytes = request.context_bytes();
         let stream = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break 'rounds Terminal::Interrupted,
@@ -840,7 +923,49 @@ async fn run_turn(
         };
         let mut stream = match stream {
             Ok(stream) => stream,
-            Err(error) => break 'rounds Terminal::Failed(error),
+            Err(error) => {
+                let should_recover = match error.kind() {
+                    ModelErrorKind::ContextLengthExceeded => {
+                        context_recovery_attempts < MAX_EXPLICIT_CONTEXT_RECOVERIES
+                    }
+                    ModelErrorKind::InvalidRequest => {
+                        context_recovery_attempts < MAX_AMBIGUOUS_CONTEXT_RECOVERIES
+                            && last_successful_request_bytes
+                                .is_some_and(|bytes| request_context_bytes > bytes)
+                    }
+                    _ => false,
+                };
+                if !should_recover {
+                    break 'rounds Terminal::Failed(error);
+                }
+                compaction_ordinal = match compaction_ordinal.checked_add(1) {
+                    Some(value) => value,
+                    None => break 'rounds Terminal::Failed(output_too_large_error()),
+                };
+                match compact_active_turn(
+                    &runtime,
+                    &prepared,
+                    &model_gateway,
+                    &messages,
+                    &tools,
+                    compaction_ordinal,
+                    &cancellation,
+                    &mut usage,
+                )
+                .await
+                {
+                    Ok(compacted) => {
+                        messages = compacted;
+                        context_recovery_attempts += 1;
+                        continue 'rounds;
+                    }
+                    Err(terminal) => break 'rounds terminal,
+                }
+            }
+        };
+        response_ordinal = match response_ordinal.checked_add(1) {
+            Some(value) => value,
+            None => break Terminal::Failed(output_too_large_error()),
         };
         let mut preview_text = BTreeMap::<u32, String>::new();
         loop {
@@ -895,6 +1020,7 @@ async fn run_turn(
                             false,
                         ));
                     }
+                    last_successful_request_bytes = Some(request_context_bytes);
                     if let Some(value) = response.usage
                         && !accumulate_usage(&mut usage, value)
                     {
@@ -997,8 +1123,34 @@ async fn run_turn(
                             false,
                         ));
                     }
-                    if let Err(error) = validate_tool_call_batch(&runtime, &tool_calls) {
-                        break 'rounds Terminal::Failed(error);
+                    match validate_tool_call_batch(&runtime, &tool_calls) {
+                        Ok(()) => agent_loop.reset_tool_argument_errors(),
+                        Err(ToolBatchValidationFailure::Fatal(error)) => {
+                            break 'rounds Terminal::Failed(error);
+                        }
+                        Err(ToolBatchValidationFailure::Rejected(rejection)) => {
+                            let repeated = agent_loop
+                                .record_tool_argument_error(rejection.fingerprint.clone());
+                            if record_rejected_tool_batch(
+                                &runtime,
+                                &prepared,
+                                &mut messages,
+                                &tool_calls,
+                                &rejection,
+                            )
+                            .await
+                            .is_err()
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                            if repeated {
+                                break 'rounds Terminal::Failed(ModelError::new(
+                                    ModelErrorKind::UnsupportedToolArguments,
+                                    false,
+                                ));
+                            }
+                            continue 'rounds;
+                        }
                     }
                     if tool_calls.len() > 1
                         && tool_calls.iter().all(|call| {
@@ -1092,7 +1244,9 @@ async fn run_turn(
                             let coordinator = runtime.collaboration.clone();
                             let content = match call.name.as_str() {
                                 "collaboration/dispatch" => {
-                                    coordinator.dispatch(&runtime, &prepared, &call).await
+                                    coordinator
+                                        .dispatch(&runtime, &prepared, &model_gateway, &call)
+                                        .await
                                 }
                                 "collaboration/amend" => {
                                     coordinator.amend(&runtime, &prepared, &call).await
@@ -1956,32 +2110,34 @@ async fn run_turn(
 fn validate_tool_call_batch(
     runtime: &CoreRuntime,
     calls: &[ModelToolCall],
-) -> Result<(), ModelError> {
+) -> Result<(), ToolBatchValidationFailure> {
     let mut call_ids = std::collections::BTreeSet::new();
+    let mut kinds = Vec::with_capacity(calls.len());
     for call in calls {
         if !call_ids.insert(call.id.as_str()) {
-            return Err(ModelError::new(ModelErrorKind::Protocol, false));
+            return Err(ToolBatchValidationFailure::Fatal(ModelError::new(
+                ModelErrorKind::Protocol,
+                false,
+            )));
         }
-        match call.name.as_str() {
-            name if name.starts_with("collaboration/") => {
-                runtime.collaboration.validate_call(call)?;
-            }
+        let validation = match call.name.as_str() {
+            name if name.starts_with("collaboration/") => runtime.collaboration.validate_call(call),
             "workspace/read" if runtime.workspace_read.is_some() => {
-                workspace_tool_arguments(call)?;
+                workspace_tool_arguments(call).map(|_| ())
             }
             "workspace/list" if runtime.workspace_list.is_some() => {
-                workspace_tool_arguments(call)?;
+                workspace_tool_arguments(call).map(|_| ())
             }
             "workspace/search" if runtime.workspace_search.is_some() => {
-                workspace_tool_arguments(call)?;
+                workspace_tool_arguments(call).map(|_| ())
             }
             "workspace/apply-patch" if runtime.workspace_patch.is_some() => {
-                workspace_tool_arguments(call)?;
+                workspace_tool_arguments(call).map(|_| ())
             }
             "shell/exec"
                 if runtime.shell_executor.is_some() && runtime.approval_requester.is_some() =>
             {
-                shell_tool_arguments(call)?;
+                shell_tool_arguments(call).map(|_| ())
             }
             name if name.starts_with("mcp__")
                 && runtime.mcp_capability.is_enabled()
@@ -1998,6 +2154,7 @@ fn validate_tool_call_batch(
                     .as_ref()
                     .expect("validated MCP executor")
                     .prepare(&call.name, call.arguments.clone())
+                    .map(|_| ())
                     .map_err(|error| match error {
                         McpToolPrepareError::ArgumentTooLarge => {
                             ModelError::new(ModelErrorKind::OutputTooLarge, false)
@@ -2010,10 +2167,112 @@ fn validate_tool_call_batch(
                         McpToolPrepareError::Unavailable => {
                             ModelError::new(ModelErrorKind::UnsupportedOutput, false)
                         }
-                    })?;
+                    })
             }
-            _ => return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false)),
+            _ => {
+                kinds.push(Some(CoreToolErrorKind::UnknownTool));
+                continue;
+            }
+        };
+        kinds.push(
+            validation
+                .err()
+                .map(|_| CoreToolErrorKind::InvalidArguments),
+        );
+    }
+    if kinds.iter().all(Option::is_none) {
+        return Ok(());
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"tool-validation-v1\0");
+    for (call, kind) in calls.iter().zip(&kinds) {
+        hasher.update(call.name.as_bytes());
+        hasher.update(b"\0");
+        if let Some(kind) = kind {
+            hasher.update(kind.to_string().as_bytes());
+            hasher.update(b"\0");
+            if let Ok(arguments) = serde_json::to_vec(&call.arguments) {
+                hasher.update(Sha256::digest(arguments));
+            }
         }
+        hasher.update(b"\0");
+    }
+    Err(ToolBatchValidationFailure::Rejected(ToolBatchRejection {
+        kinds,
+        fingerprint: format!("{:x}", hasher.finalize()),
+    }))
+}
+
+enum ToolBatchValidationFailure {
+    Fatal(ModelError),
+    Rejected(ToolBatchRejection),
+}
+
+struct ToolBatchRejection {
+    kinds: Vec<Option<CoreToolErrorKind>>,
+    fingerprint: String,
+}
+
+async fn record_rejected_tool_batch(
+    runtime: &CoreRuntime,
+    prepared: &crate::PreparedTextTurn,
+    messages: &mut Vec<ModelMessage>,
+    calls: &[ModelToolCall],
+    rejection: &ToolBatchRejection,
+) -> Result<(), ()> {
+    let is_batch = calls.len() > 1;
+    if is_batch {
+        messages.push(ModelMessage::ToolCallBatch(calls.to_vec()));
+    }
+    for (call, validation_kind) in calls.iter().zip(&rejection.kinds) {
+        let kind = validation_kind.unwrap_or(CoreToolErrorKind::BatchRejected);
+        let arguments = serde_json::to_vec(&call.arguments).unwrap_or_default();
+        let arguments_sha256 = sha256(&arguments);
+        let content = format!(
+            "{} error: {}; argumentsBytes={}; argumentsSha256={arguments_sha256}",
+            call.name,
+            kind,
+            arguments.len(),
+        );
+        if append_completed_tool_item(
+            runtime,
+            prepared,
+            CoreItemKind::ToolCall {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                path: String::new(),
+                query: None,
+                patch: None,
+                command: None,
+                arguments: None,
+            },
+        )
+        .await
+        .is_none()
+        {
+            return Err(());
+        }
+        if append_completed_tool_item(
+            runtime,
+            prepared,
+            CoreItemKind::ToolResult {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                result: CoreToolResult::Error { kind },
+            },
+        )
+        .await
+        .is_none()
+        {
+            return Err(());
+        }
+        if !is_batch {
+            messages.push(ModelMessage::ToolCall(call.clone()));
+        }
+        messages.push(ModelMessage::ToolResult {
+            call_id: call.id.clone(),
+            content,
+        });
     }
     Ok(())
 }
@@ -2439,7 +2698,7 @@ async fn compact_active_turn(
         .checked_add(tool_bytes)
         .and_then(|bytes| bytes.checked_add(MAX_ACTIVE_TURN_COMPACTION_BYTES))
         .ok_or_else(output_too_large)?;
-    if fixed_post_bytes > crate::context::COMPACTION_TARGET_BYTES {
+    if fixed_post_bytes > model_gateway.capabilities.input_compaction_target_bytes() {
         return Err(output_too_large());
     }
 
@@ -2452,7 +2711,9 @@ async fn compact_active_turn(
             .ok_or_else(output_too_large)?;
         if fixed_post_bytes
             .checked_add(tail_bytes)
-            .is_some_and(|bytes| bytes <= crate::context::COMPACTION_TARGET_BYTES)
+            .is_some_and(|bytes| {
+                bytes <= model_gateway.capabilities.input_compaction_target_bytes()
+            })
         {
             break;
         }
@@ -2739,7 +3000,7 @@ async fn compact_active_turn(
         tools: tools.to_vec(),
     }
     .context_bytes();
-    if post_context_bytes > crate::context::COMPACTION_TARGET_BYTES {
+    if post_context_bytes > model_gateway.capabilities.input_compaction_target_bytes() {
         complete_compaction_item(
             runtime,
             prepared,
@@ -2896,6 +3157,7 @@ fn output_too_large_error() -> ModelError {
 fn model_error_kind_name(kind: ModelErrorKind) -> &'static str {
     match kind {
         ModelErrorKind::Authentication => "authentication",
+        ModelErrorKind::ContextLengthExceeded => "contextLengthExceeded",
         ModelErrorKind::InvalidRequest => "invalidRequest",
         ModelErrorKind::RateLimited => "rateLimited",
         ModelErrorKind::Timeout => "timeout",
@@ -2906,6 +3168,7 @@ fn model_error_kind_name(kind: ModelErrorKind) -> &'static str {
         ModelErrorKind::Incomplete => "incomplete",
         ModelErrorKind::Filtered => "filtered",
         ModelErrorKind::UnsupportedOutput => "unsupportedOutput",
+        ModelErrorKind::UnsupportedToolArguments => "unsupportedToolArguments",
         ModelErrorKind::OutputTooLarge => "outputTooLarge",
     }
 }

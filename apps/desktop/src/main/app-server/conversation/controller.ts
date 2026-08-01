@@ -15,6 +15,7 @@ import type {
   ConversationMessage,
   ConversationMcpActivity,
   ConversationMcpResultReceipt,
+  ConversationModelSelection,
   ConversationStateListener,
   ConversationStateSnapshot,
   ConversationThreadNavigatorSnapshot,
@@ -29,7 +30,7 @@ import type {
   ConversationWorkspaceSearchOutcome,
 } from '@/shared/conversation';
 import {
-  isValidConversationInput,
+  isConversationSendRequest,
   isValidThreadSearchInput,
 } from '@/shared/conversation';
 
@@ -241,6 +242,7 @@ type MutableMcpActivity = {
 type MutableTurn = {
   id: string;
   status: ConversationTurnStatus;
+  model?: ConversationModelSelection;
   messages: MutableMessage[];
   pendingAgentOutputs: MutableAgentOutput[];
   activities: MutableConversationActivity[];
@@ -799,7 +801,7 @@ export class ConversationController {
   };
 
   startTurn = async (input: unknown): Promise<ConversationActionResult> => {
-    if (!isValidConversationInput(input)) {
+    if (!isConversationSendRequest(input)) {
       return rejected('invalidInput');
     }
     if (this.getActionBlocked()) {
@@ -838,12 +840,14 @@ export class ConversationController {
       this.awaitingTurnResponse = true;
       const response = await rpc.startTurn(
         this.threadId,
-        input,
+        input.input,
+        input.modelProfileId,
         this.actionAbortController.signal,
       );
       const turn: MutableTurn = {
         id: response.turn.id,
         status: 'inProgress',
+        ...(response.turn.model ? { model: response.turn.model } : {}),
         messages: [],
         pendingAgentOutputs: [],
         activities: [],
@@ -2662,6 +2666,7 @@ export class ConversationController {
     turns: this.turns.map((turn): ConversationTurn => ({
       id: turn.id,
       status: turn.status,
+      ...(turn.model ? { model: { ...turn.model } } : {}),
       messages: turn.messages.map(({ id, role, text, status }) => ({
         id,
         role,

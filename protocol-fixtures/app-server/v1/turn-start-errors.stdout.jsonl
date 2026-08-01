@@ -8,7 +8,7 @@
 {"error":{"code":-32004,"data":{"threadId":"thr_missing"},"message":"Thread not found"},"id":"retry","jsonrpc":"2.0"}
 {"id":"thread-1","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000001"}}}
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
-{"id":"retry","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"id":"retry","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000001","model":{"contextWindowTokens":131072,"displayName":"Fixture model","modelId":"fixture-model","profileId":"model_fixture","providerKind":"openaiCompatible"},"status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
@@ -17,7 +17,7 @@
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"completed"}}}
 {"error":{"code":-32003,"message":"Duplicate request id"},"id":"thread-1","jsonrpc":"2.0"}
-{"id":"duplicate-turn","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
+{"id":"duplicate-turn","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000002","model":{"contextWindowTokens":131072,"displayName":"Fixture model","modelId":"fixture-model","profileId":"model_fixture","providerKind":"openaiCompatible"},"status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000003","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000003","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
@@ -26,7 +26,7 @@
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000004","text":"SugarCode deterministic response.","type":"agentMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002","status":"completed"}}}
 {"error":{"code":-32003,"message":"Duplicate request id"},"id":"duplicate-turn","jsonrpc":"2.0"}
-{"id":"turn-next","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000003","status":"inProgress"}}}
+{"id":"turn-next","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000003","model":{"contextWindowTokens":131072,"displayName":"Fixture model","modelId":"fixture-model","profileId":"model_fixture","providerKind":"openaiCompatible"},"status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000003","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000005","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000003"}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000005","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000003"}}

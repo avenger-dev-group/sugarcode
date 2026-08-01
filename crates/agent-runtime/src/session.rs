@@ -97,8 +97,19 @@ where
         thread_id: ThreadId,
         input: Option<String>,
     ) -> Result<(CoreRequestId, TurnStartOutcome), CoreError> {
+        self.start_text_turn_with_model(thread_id, input, None)
+    }
+
+    pub fn start_text_turn_with_model(
+        &mut self,
+        thread_id: ThreadId,
+        input: Option<String>,
+        model_profile_id: Option<String>,
+    ) -> Result<(CoreRequestId, TurnStartOutcome), CoreError> {
         let request_id = self.next_request_id()?;
-        let outcome = self.core.start_text_turn(request_id, thread_id, input)?;
+        let outcome =
+            self.core
+                .start_text_turn_with_model(request_id, thread_id, input, model_profile_id)?;
         Ok((request_id, outcome))
     }
 

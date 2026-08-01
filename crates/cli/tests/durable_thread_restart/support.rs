@@ -368,11 +368,26 @@ pub(super) fn configure_model(home: &Path, address: std::net::SocketAddr) {
             "contractVersion": 1,
             "expectedRevision": revision,
             "config": {
-                "apiFormat": "openai-chat-completions",
-                "endpoint": format!("http://{address}/v1/chat/completions"),
-                "model": "fixture-model"
+                "defaultProfileId": "model_fixture",
+                "connections": [{
+                    "id": "conn_fixture",
+                    "kind": "openaiCompatible",
+                    "displayName": "Fixture provider",
+                    "baseUrl": format!("http://{address}/v1"),
+                    "enabled": true,
+                    "wireApi": "openaiChatCompletions"
+                }],
+                "profiles": [{
+                    "id": "model_fixture",
+                    "connectionId": "conn_fixture",
+                    "displayName": "Fixture model",
+                    "modelId": "fixture-model"
+                }]
             },
-            "apiKeyUpdate": {"action": "preserve"}
+            "credentialUpdates": [{
+                "connectionId": "conn_fixture",
+                "action": "preserve"
+            }]
         })
     )
     .expect("write model config");

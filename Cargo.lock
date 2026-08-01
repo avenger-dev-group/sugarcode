@@ -2668,6 +2668,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "url",
  "zeroize",
 ]
 
@@ -2715,6 +2716,7 @@ dependencies = [
  "sugarcode-app-server-protocol",
  "sugarcode-exec",
  "sugarcode-mcp",
+ "sugarcode-model-provider",
  "sugarcode-state",
  "sugarcode-terminal",
  "sugarcode-tools",
@@ -2785,6 +2787,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-stream",
  "url",

@@ -100,6 +100,7 @@ pub enum CoreTurnErrorKind {
     Incomplete,
     Filtered,
     UnsupportedOutput,
+    UnsupportedToolArguments,
     OutputTooLarge,
     StateUnavailable,
 }

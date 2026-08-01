@@ -11,6 +11,45 @@
     "turn"
   ],
   "$defs": {
+    "ModelProviderKind": {
+      "type": "string",
+      "enum": [
+        "openai",
+        "anthropic",
+        "gemini",
+        "metallm",
+        "openaiCompatible"
+      ]
+    },
+    "ModelSelectionSnapshot": {
+      "type": "object",
+      "properties": {
+        "contextWindowTokens": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "profileId": {
+          "type": "string"
+        },
+        "providerKind": {
+          "$ref": "#/$defs/ModelProviderKind"
+        }
+      },
+      "required": [
+        "profileId",
+        "providerKind",
+        "modelId",
+        "displayName",
+        "contextWindowTokens"
+      ]
+    },
     "Turn": {
       "type": "object",
       "properties": {
@@ -26,6 +65,16 @@
         },
         "id": {
           "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSelectionSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "status": {
           "$ref": "#/$defs/TurnStatus"
@@ -65,6 +114,7 @@
         "incomplete",
         "filtered",
         "unsupportedOutput",
+        "unsupportedToolArguments",
         "outputTooLarge",
         "stateUnavailable"
       ]

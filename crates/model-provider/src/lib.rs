@@ -1,9 +1,17 @@
+mod discovery;
 mod error;
+mod native;
 mod openai_chat_completions;
+mod tool_names;
 mod types;
 
+pub use discovery::DiscoveredModel;
+pub use discovery::ModelDiscoveryProtocol;
+pub use discovery::discover_models;
 pub use error::ModelError;
 pub use error::ModelErrorKind;
+pub use native::NativeModelProvider;
+pub use native::append_path;
 pub use openai_chat_completions::OpenAiChatCompletionsProvider;
 pub use types::BoxModelFuture;
 pub use types::ModelEvent;

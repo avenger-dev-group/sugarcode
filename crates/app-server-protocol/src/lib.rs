@@ -76,6 +76,8 @@ pub use thread::ThreadUnarchiveResponse;
 pub use thread::TurnSnapshot;
 pub use thread::TurnSnapshotStatus;
 pub use turn::MAX_TURN_INPUT_BYTES;
+pub use turn::ModelProviderKind;
+pub use turn::ModelSelectionSnapshot;
 pub use turn::Turn;
 pub use turn::TurnCompletedNotification;
 pub use turn::TurnError;

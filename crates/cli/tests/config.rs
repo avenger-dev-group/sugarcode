@@ -4,6 +4,26 @@ use std::process::Command;
 use std::process::Stdio;
 use tempfile::tempdir;
 
+fn model_catalog(base_url: &str, model_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "defaultProfileId": "model_primary",
+        "connections": [{
+            "id": "conn_primary",
+            "kind": "openaiCompatible",
+            "displayName": "Custom provider",
+            "baseUrl": base_url,
+            "enabled": true,
+            "wireApi": "openaiChatCompletions"
+        }],
+        "profiles": [{
+            "id": "model_primary",
+            "connectionId": "conn_primary",
+            "displayName": "Primary model",
+            "modelId": model_id
+        }]
+    })
+}
+
 #[test]
 fn validates_missing_and_explicit_v1_configuration() {
     let home = tempdir().expect("SugarCode home");
@@ -171,6 +191,14 @@ fn invalid_configuration_has_no_stdout_and_redacts_values() {
 #[test]
 fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() {
     let home = tempdir().expect("SugarCode home");
+    let initial = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["--home"])
+        .arg(home.path())
+        .args(["config", "model", "inspect", "--json"])
+        .output()
+        .expect("inspect initial model config");
+    let initial =
+        serde_json::from_slice::<serde_json::Value>(&initial.stdout).expect("inspection JSON");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .args(["--home"])
         .arg(home.path())
@@ -186,13 +214,15 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
         "{}",
         serde_json::json!({
             "contractVersion": 1,
-            "expectedRevision": "45686ea2c125fee4f29640cef339e7971c01979f11bad3df6db75d8110ffbb78",
-            "config": {
-                "apiFormat": "openai-chat-completions",
-                "endpoint": "http://127.0.0.1:18080/custom/v1/chat/completions",
-                "model": "custom-model"
-            },
-            "apiKeyUpdate": {"action": "preserve"}
+            "expectedRevision": initial["revision"],
+            "config": model_catalog(
+                "http://127.0.0.1:18080/custom/v1",
+                "custom-model",
+            ),
+            "credentialUpdates": [{
+                "connectionId": "conn_primary",
+                "action": "preserve"
+            }]
         })
     )
     .expect("write model config");
@@ -204,7 +234,7 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
     assert!(set.stderr.is_empty());
 
     let stored = fs::read_to_string(home.path().join("config.toml")).expect("stored config");
-    assert!(stored.contains("endpoint = \"http://127.0.0.1:18080/"));
+    assert!(stored.contains("base_url = \"http://127.0.0.1:18080/"));
     assert!(!stored.contains("token"));
     assert!(!stored.contains("credential"));
     #[cfg(unix)]
@@ -236,12 +266,14 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
         serde_json::json!({
             "contractVersion": 1,
             "expectedRevision": set_receipt["revision"],
-            "config": {
-                "apiFormat": "openai-chat-completions",
-                "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
-                "model": "replacement-model"
-            },
-            "apiKeyUpdate": {"action": "preserve"}
+            "config": model_catalog(
+                "http://127.0.0.1:18081/v1",
+                "replacement-model",
+            ),
+            "credentialUpdates": [{
+                "connectionId": "conn_primary",
+                "action": "preserve"
+            }]
         })
     )
     .expect("write replacement model config");
@@ -267,11 +299,28 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
             "revision": serde_json::from_slice::<serde_json::Value>(&replacement.stdout)
                 .expect("replacement receipt")["revision"],
             "config": {
-                "apiFormat": "openai-chat-completions",
-                "endpoint": "http://127.0.0.1:18081/v1/chat/completions",
-                "model": "replacement-model"
+                "defaultProfileId": "model_primary",
+                "connections": [{
+                    "id": "conn_primary",
+                    "kind": "openaiCompatible",
+                    "displayName": "Custom provider",
+                    "baseUrl": "http://127.0.0.1:18081/v1",
+                    "enabled": true,
+                    "wireApi": "openaiChatCompletions"
+                }],
+                "profiles": [{
+                    "id": "model_primary",
+                    "connectionId": "conn_primary",
+                    "displayName": "Primary model",
+                    "modelId": "replacement-model",
+                    "strictTools": "auto",
+                    "parallelTools": "auto"
+                }]
             },
-            "apiKeyStatus": "notConfigured"
+            "credentialStatuses": [{
+                "connectionId": "conn_primary",
+                "status": "notConfigured"
+            }]
         })
     );
 }
@@ -281,12 +330,30 @@ fn delete_model_api_key_command_preserves_the_rest_of_the_local_model_config() {
     let home = tempdir().expect("SugarCode home");
     fs::write(
         home.path().join("config.toml"),
-        "schema_version = 1\n\n[model]\napi_format = \"openai-chat-completions\"\nendpoint = \"http://127.0.0.1:18080/v1/chat/completions\"\nmodel = \"fixture-model\"\napi_key = \"secret\"\n",
+        "schema_version = 1\n\n[models]\ndefault_profile_id = \"model_primary\"\n\n[[models.connections]]\nid = \"conn_primary\"\nkind = \"openaiCompatible\"\ndisplay_name = \"Custom provider\"\nbase_url = \"http://127.0.0.1:18080/v1\"\nenabled = true\nwire_api = \"openaiChatCompletions\"\napi_key = \"secret\"\n\n[[models.profiles]]\nid = \"model_primary\"\nconnection_id = \"conn_primary\"\ndisplay_name = \"Primary model\"\nmodel_id = \"fixture-model\"\nstrict_tools = \"auto\"\nparallel_tools = \"auto\"\n",
     )
     .expect("write config");
 
+    let inspection = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["config", "model", "inspect", "--json"])
+        .env("SUGARCODE_HOME", home.path())
+        .output()
+        .expect("inspect model config");
+    let revision = serde_json::from_slice::<serde_json::Value>(&inspection.stdout)
+        .expect("inspection JSON")["revision"]
+        .as_str()
+        .expect("revision")
+        .to_owned();
     let deleted = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
-        .args(["config", "model", "delete-api-key"])
+        .args([
+            "config",
+            "model",
+            "delete-api-key",
+            "--connection-id",
+            "conn_primary",
+            "--expected-revision",
+            &revision,
+        ])
         .env("SUGARCODE_HOME", home.path())
         .output()
         .expect("delete model API key");
@@ -298,11 +365,27 @@ fn delete_model_api_key_command_preserves_the_rest_of_the_local_model_config() {
     assert!(deleted.stderr.is_empty());
 
     let stored = fs::read_to_string(home.path().join("config.toml")).expect("stored config");
-    assert!(stored.contains("model = \"fixture-model\""));
+    assert!(stored.contains("model_id = \"fixture-model\""));
     assert!(!stored.contains("api_key"));
 
+    let latest = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["config", "model", "inspect", "--json"])
+        .env("SUGARCODE_HOME", home.path())
+        .output()
+        .expect("inspect after deletion");
+    let latest =
+        serde_json::from_slice::<serde_json::Value>(&latest.stdout).expect("latest inspection");
     let idempotent = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
-        .args(["config", "model", "delete-api-key", "--json"])
+        .args([
+            "config",
+            "model",
+            "delete-api-key",
+            "--connection-id",
+            "conn_primary",
+            "--expected-revision",
+            latest["revision"].as_str().expect("latest revision"),
+            "--json",
+        ])
         .env("SUGARCODE_HOME", home.path())
         .output()
         .expect("repeat model API key deletion");
@@ -310,6 +393,6 @@ fn delete_model_api_key_command_preserves_the_rest_of_the_local_model_config() {
     assert!(idempotent.stderr.is_empty());
     let receipt =
         serde_json::from_slice::<serde_json::Value>(&idempotent.stdout).expect("receipt JSON");
-    assert_eq!(receipt["apiKeyStatus"], "notConfigured");
-    assert_eq!(receipt["config"]["model"], "fixture-model");
+    assert_eq!(receipt["credentialStatuses"][0]["status"], "notConfigured");
+    assert_eq!(receipt["config"]["profiles"][0]["modelId"], "fixture-model");
 }

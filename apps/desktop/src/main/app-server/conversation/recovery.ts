@@ -826,6 +826,7 @@ export const recoverConversation = (
     return {
       id: turn.id,
       status: turn.status,
+      ...(turn.model ? { model: { ...turn.model } } : {}),
       messages,
       ...(activities.length > 0 ? { activities } : {}),
       ...(contextCompactions.length > 0 ? { contextCompactions } : {}),

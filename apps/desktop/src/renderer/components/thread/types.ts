@@ -149,8 +149,16 @@ export type ThreadStore = Readonly<{
   canStop: boolean;
   isSending: boolean;
   actionError: string | null;
+  modelOptions: readonly Readonly<{
+    profileId: string;
+    label: string;
+    available: boolean;
+  }>[];
+  selectedModelProfileId: string;
+  modelSelectionDisabled: boolean;
   setDraft: (value: string) => void;
   setNavigatorOpen: (open: boolean) => void;
+  setSelectedModelProfileId: (profileId: string) => void;
   startNewThread: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
   forkThread: (threadId: string) => Promise<void>;

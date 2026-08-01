@@ -20,6 +20,7 @@ fn rejects_an_empty_completed_turn_before_writing() {
         .append_completed_turn(
             &thread_id,
             &DurableTurnSnapshot {
+                model: None,
                 id: TurnId::new("turn_0000000000000001"),
                 status: DurableTurnStatus::Completed,
                 items: Vec::new(),
@@ -46,6 +47,7 @@ fn rejects_a_tampered_persisted_compaction_without_echoing_its_message() {
         sugarcode_state::build_context_compaction(std::slice::from_ref(&prior), 3_200_000, 30_000)
             .expect("checkpoint");
     let started = DurableTurnSnapshot {
+        model: None,
         id: TurnId::new("turn_0000000000000002"),
         status: DurableTurnStatus::InProgress,
         items: vec![DurableItemSnapshot::UserMessage {

@@ -597,10 +597,10 @@ fn approved_model_driven_call_completes_real_cli_round_trip() {
     assert_eq!(requests.len(), 3);
     let expected_tool_names = [
         "mcp__fixture__inspect",
-        "collaboration/dispatch",
-        "collaboration/amend",
-        "collaboration/wait",
-        "collaboration/interrupt",
+        "collaboration_dispatch",
+        "collaboration_amend",
+        "collaboration_wait",
+        "collaboration_interrupt",
     ];
     for request in &requests {
         assert_eq!(
@@ -826,10 +826,10 @@ fn multiple_selected_servers_complete_one_cross_server_turn() {
             [
                 "mcp__alpha__inspect",
                 "mcp__beta__inspect",
-                "collaboration/dispatch",
-                "collaboration/amend",
-                "collaboration/wait",
-                "collaboration/interrupt",
+                "collaboration_dispatch",
+                "collaboration_amend",
+                "collaboration_wait",
+                "collaboration_interrupt",
             ],
             "built-in-free MCP definitions must sort by raw ASCII server ID"
         );
@@ -994,10 +994,10 @@ fn selected_server_failure_never_falls_back_to_another_server() {
         let expected_tool_names = [
             "mcp__alpha__inspect",
             "mcp__beta__inspect",
-            "collaboration/dispatch",
-            "collaboration/amend",
-            "collaboration/wait",
-            "collaboration/interrupt",
+            "collaboration_dispatch",
+            "collaboration_amend",
+            "collaboration_wait",
+            "collaboration_interrupt",
         ];
         assert_eq!(
             requests[0]["tools"]
@@ -1465,11 +1465,26 @@ fn configure_model(home: &Path, address: std::net::SocketAddr) {
             "contractVersion": 1,
             "expectedRevision": revision,
             "config": {
-                "apiFormat": "openai-chat-completions",
-                "endpoint": format!("http://{address}/v1/chat/completions"),
-                "model": "fixture-model"
+                "defaultProfileId": "model_fixture",
+                "connections": [{
+                    "id": "conn_fixture",
+                    "kind": "openaiCompatible",
+                    "displayName": "Fixture provider",
+                    "baseUrl": format!("http://{address}/v1"),
+                    "enabled": true,
+                    "wireApi": "openaiChatCompletions"
+                }],
+                "profiles": [{
+                    "id": "model_fixture",
+                    "connectionId": "conn_fixture",
+                    "displayName": "Fixture model",
+                    "modelId": "fixture-model"
+                }]
             },
-            "apiKeyUpdate": {"action": "preserve"}
+            "credentialUpdates": [{
+                "connectionId": "conn_fixture",
+                "action": "preserve"
+            }]
         }),
     );
     let output = child.wait_with_output().expect("model config");

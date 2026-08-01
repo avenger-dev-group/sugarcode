@@ -1,7 +1,7 @@
 {"id":1,"jsonrpc":"2.0","result":{"capabilities":{"commandApprovals":true,"commandWorkspaceWriteApprovals":true,"subagents":true},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
 {"id":"thread-1","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000001"}}}
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
-{"id":"turn-1","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
+{"id":"turn-1","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000001","model":{"contextWindowTokens":131072,"displayName":"Fixture model","modelId":"fixture-model","profileId":"model_fixture","providerKind":"openaiCompatible"},"status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000001","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}
@@ -13,8 +13,8 @@
 {"id":"unarchive","jsonrpc":"2.0","result":{}}
 {"id":"list","jsonrpc":"2.0","result":{"data":[{"id":"thr_0000000000000001"}],"nextCursor":null}}
 {"id":"search","jsonrpc":"2.0","result":{"data":[{"id":"thr_0000000000000001"}],"nextCursor":null}}
-{"id":"resume","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000001"},"turns":[{"id":"turn_0000000000000001","items":[{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"}],"status":"completed"}]}}
-{"id":"turn-2","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
+{"id":"resume","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000001"},"turns":[{"id":"turn_0000000000000001","items":[{"id":"item_0000000000000001","text":"Hello","type":"userMessage"},{"id":"item_0000000000000002","text":"SugarCode deterministic response.","type":"agentMessage"}],"model":{"contextWindowTokens":131072,"displayName":"Fixture model","modelId":"fixture-model","profileId":"model_fixture","providerKind":"openaiCompatible"},"status":"completed"}]}}
+{"id":"turn-2","jsonrpc":"2.0","result":{"turn":{"id":"turn_0000000000000002","model":{"contextWindowTokens":131072,"displayName":"Fixture model","modelId":"fixture-model","profileId":"model_fixture","providerKind":"openaiCompatible"},"status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr_0000000000000001","turn":{"id":"turn_0000000000000002","status":"inProgress"}}}
 {"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"item_0000000000000003","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}
 {"jsonrpc":"2.0","method":"item/completed","params":{"item":{"id":"item_0000000000000003","text":"Hello","type":"userMessage"},"threadId":"thr_0000000000000001","turnId":"turn_0000000000000002"}}

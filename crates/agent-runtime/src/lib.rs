@@ -18,14 +18,18 @@ use std::sync::Arc;
 use sugarcode_core::Core;
 use sugarcode_core::CoreRuntime;
 use sugarcode_core::McpToolCapability;
+use sugarcode_core::ModelCapabilities;
 use sugarcode_core::ModelResolver;
 use sugarcode_core::ResolvedModel;
 use sugarcode_model_provider::ModelError;
 use sugarcode_model_provider::ModelErrorKind;
+use sugarcode_model_provider::NativeModelProvider;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_state::EffectiveConfig;
-use sugarcode_state::ModelApiFormat;
+use sugarcode_state::ModelCapabilityMode;
+use sugarcode_state::ModelProviderKind;
+use sugarcode_state::ModelWireApi;
 use sugarcode_state::RolloutRepository;
 use sugarcode_state::SugarCodeHome;
 use sugarcode_tools::WorkspaceTool;
@@ -90,24 +94,97 @@ struct LocalModelResolver {
 }
 
 impl ModelResolver for LocalModelResolver {
-    fn resolve(&self) -> Result<ResolvedModel, ModelError> {
+    fn resolve(&self, profile_id: Option<&str>) -> Result<ResolvedModel, ModelError> {
         let config = sugarcode_state::load_effective_config_for_home(self.home.clone())
             .map_err(|_| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
-        let model = config
-            .model()
+        let models = config
+            .models()
             .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
-        let token = model
+        let profile = models
+            .profile(profile_id.unwrap_or_else(|| models.default_profile_id()))
+            .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        let connection = models
+            .connection(profile.connection_id())
+            .filter(|connection| connection.enabled())
+            .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        let token = connection
             .api_key()
             .map(|api_key| Zeroizing::new(api_key.to_owned()));
-        let provider: Arc<dyn sugarcode_model_provider::ModelProvider> = match model.api_format() {
-            ModelApiFormat::OpenAiChatCompletions => Arc::new(
-                OpenAiChatCompletionsProvider::new_secret(model.endpoint().clone(), token)?,
+        let strict_tools = resolve_capability(
+            profile.strict_tools(),
+            matches!(
+                connection.kind(),
+                ModelProviderKind::OpenAi | ModelProviderKind::Anthropic
             ),
+        );
+        let parallel_tools = resolve_capability(
+            profile.parallel_tools(),
+            matches!(
+                connection.kind(),
+                ModelProviderKind::OpenAi
+                    | ModelProviderKind::Anthropic
+                    | ModelProviderKind::Gemini
+            ),
+        );
+        let capabilities = ModelCapabilities::new(
+            profile.effective_context_window_tokens(),
+            strict_tools,
+            parallel_tools,
+        );
+        let provider: Arc<dyn sugarcode_model_provider::ModelProvider> = match connection.wire_api()
+        {
+            ModelWireApi::OpenAiChatCompletions => {
+                let endpoint = sugarcode_model_provider::append_path(
+                    connection.base_url(),
+                    "chat/completions",
+                )?;
+                Arc::new(OpenAiChatCompletionsProvider::new_secret_with_capabilities(
+                    endpoint,
+                    token,
+                    strict_tools,
+                    parallel_tools,
+                )?)
+            }
+            ModelWireApi::OpenAiResponses => Arc::new(NativeModelProvider::openai_responses(
+                connection.base_url().clone(),
+                token,
+                strict_tools,
+                parallel_tools,
+                capabilities.output_reserve_tokens,
+            )?),
+            ModelWireApi::AnthropicMessages => Arc::new(NativeModelProvider::anthropic_messages(
+                connection.base_url().clone(),
+                token,
+                strict_tools,
+                parallel_tools,
+                capabilities.output_reserve_tokens,
+            )?),
+            ModelWireApi::GeminiGenerateContent => {
+                Arc::new(NativeModelProvider::gemini_generate_content(
+                    connection.base_url().clone(),
+                    token,
+                    strict_tools,
+                    parallel_tools,
+                    capabilities.output_reserve_tokens,
+                )?)
+            }
         };
         Ok(ResolvedModel {
             provider,
-            model: model.model().to_string(),
+            model: profile.model_id().to_string(),
+            profile_id: profile.id().to_owned(),
+            provider_kind: connection.kind().as_str().to_owned(),
+            display_name: profile.display_name().to_owned(),
+            capabilities,
         })
+    }
+}
+
+fn resolve_capability(mode: ModelCapabilityMode, automatic: bool) -> bool {
+    match mode {
+        ModelCapabilityMode::Auto => automatic,
+        ModelCapabilityMode::Enabled => true,
+        ModelCapabilityMode::Disabled => false,
     }
 }
 

@@ -96,6 +96,25 @@ impl ModelProvider for RoutingCollaborationProvider {
     }
 }
 
+struct CountingModelResolver {
+    provider: Arc<dyn ModelProvider>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl ModelResolver for CountingModelResolver {
+    fn resolve(&self, profile_id: Option<&str>) -> Result<ResolvedModel, ModelError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Ok(ResolvedModel {
+            provider: self.provider.clone(),
+            model: "fixture-model".to_string(),
+            profile_id: profile_id.unwrap_or("model_primary").to_string(),
+            provider_kind: "openai".to_string(),
+            display_name: "Fixture model".to_string(),
+            capabilities: ModelCapabilities::new(200_000, true, true),
+        })
+    }
+}
+
 #[tokio::test]
 async fn dispatch_wait_persists_hidden_child_origin_and_public_result() {
     let mut core = Core::new();
@@ -105,13 +124,18 @@ async fn dispatch_wait_persists_hidden_child_origin_and_public_result() {
     let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
         panic!("thread event");
     };
-    let provider = RoutingCollaborationProvider {
+    let provider = Arc::new(RoutingCollaborationProvider {
         root_round: AtomicUsize::new(0),
         requests: Arc::new(Mutex::new(Vec::new())),
-    };
+    });
     let requests = provider.requests.clone();
+    let resolve_calls = Arc::new(AtomicUsize::new(0));
+    let resolver = CountingModelResolver {
+        provider,
+        calls: resolve_calls.clone(),
+    };
     let (mut runtime, mut events) =
-        CoreRuntime::new(core, Arc::new(provider), "fixture-model".to_string());
+        CoreRuntime::new_with_model_resolver(core, Arc::new(resolver), None, None, None);
     let TurnStartOutcome::Accepted { turn_id } = runtime
         .start_text_turn(
             CoreRequestId::new(2),
@@ -175,6 +199,19 @@ async fn dispatch_wait_persists_hidden_child_origin_and_public_result() {
     assert_eq!(
         descendants[0].turns.last().expect("child turn").status,
         DurableTurnStatus::Completed
+    );
+    assert_eq!(
+        resolve_calls.load(Ordering::Acquire),
+        1,
+        "subagents must reuse the root turn's frozen model gateway"
+    );
+    assert_eq!(
+        descendants[0]
+            .turns
+            .last()
+            .and_then(|turn| turn.model.as_ref())
+            .map(|model| model.context_window_tokens),
+        Some(200_000)
     );
     assert!(requests.lock().expect("requests").iter().any(|request| {
         matches!(

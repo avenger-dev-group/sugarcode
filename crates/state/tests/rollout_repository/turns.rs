@@ -33,11 +33,112 @@ fn persists_and_replays_completed_thread_history() {
 }
 
 #[test]
+fn replay_accepts_globally_unique_incremental_items_out_of_file_order() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let earlier_file = ThreadId::new("thr_0000000000000001");
+    let later_file = ThreadId::new("thr_0000000000000002");
+
+    let later_turn = DurableTurnSnapshot {
+        model: None,
+        id: TurnId::new("turn_0000000000000001"),
+        status: DurableTurnStatus::Completed,
+        items: vec![
+            DurableItemSnapshot::UserMessage {
+                id: ItemId::new("item_0000000000000001"),
+                text: "Review the child task.".to_string(),
+            },
+            DurableItemSnapshot::AgentCommentary {
+                id: ItemId::new("item_0000000000000002"),
+                text: "Inspecting the child task.".to_string(),
+            },
+        ],
+        context_compaction: None,
+        workspace_instructions: None,
+        workspace_skills: None,
+        error: None,
+        usage: None,
+    };
+    let earlier_turn = DurableTurnSnapshot {
+        model: None,
+        id: TurnId::new("turn_0000000000000002"),
+        status: DurableTurnStatus::Completed,
+        items: vec![
+            DurableItemSnapshot::UserMessage {
+                id: ItemId::new("item_0000000000000003"),
+                text: "Continue the parent task.".to_string(),
+            },
+            DurableItemSnapshot::AgentCommentary {
+                id: ItemId::new("item_0000000000000004"),
+                text: "Continuing the parent task.".to_string(),
+            },
+        ],
+        context_compaction: None,
+        workspace_instructions: None,
+        workspace_skills: None,
+        error: None,
+        usage: None,
+    };
+
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository
+            .create_thread(&earlier_file)
+            .expect("earlier rollout file");
+        repository
+            .create_thread(&later_file)
+            .expect("later rollout file");
+        for (thread_id, turn) in [(&later_file, &later_turn), (&earlier_file, &earlier_turn)] {
+            repository
+                .begin_turn(
+                    thread_id,
+                    &DurableTurnSnapshot {
+                        model: None,
+                        status: DurableTurnStatus::InProgress,
+                        items: vec![turn.items[0].clone()],
+                        ..turn.clone()
+                    },
+                )
+                .expect("begin turn");
+            repository
+                .append_turn_item(thread_id, &turn.id, &turn.items[1])
+                .expect("append incremental item");
+            repository
+                .complete_turn_item(thread_id, &turn.id, &turn.items[1])
+                .expect("complete incremental item");
+            repository
+                .finish_turn(thread_id, turn)
+                .expect("finish turn");
+        }
+    }
+
+    let repository = RolloutRepository::open(&home).expect("replay out-of-order files");
+    assert_eq!(repository.id_sequences().item, 4);
+    assert_eq!(
+        repository
+            .load_thread(&earlier_file)
+            .expect("load earlier file")
+            .expect("earlier thread")
+            .turns,
+        vec![earlier_turn]
+    );
+    assert_eq!(
+        repository
+            .load_thread(&later_file)
+            .expect("load later file")
+            .expect("later thread")
+            .turns,
+        vec![later_turn]
+    );
+}
+
+#[test]
 fn commentary_round_trips_through_the_jsonl_rollout() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
     let thread_id = ThreadId::new("thr_0000000000000001");
     let turn = DurableTurnSnapshot {
+        model: None,
         id: TurnId::new("turn_0000000000000001"),
         status: DurableTurnStatus::Completed,
         items: vec![
@@ -144,6 +245,7 @@ fn collaboration_items_round_trip_through_incremental_rollout_records() {
         },
     ];
     let completed = DurableTurnSnapshot {
+        model: None,
         id: turn_id.clone(),
         status: DurableTurnStatus::Completed,
         items: std::iter::once(user.clone())
@@ -162,6 +264,7 @@ fn collaboration_items_round_trip_through_incremental_rollout_records() {
             .begin_turn(
                 &thread_id,
                 &DurableTurnSnapshot {
+                    model: None,
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![user],
@@ -235,6 +338,7 @@ fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
         text: "Done.".to_string(),
     });
     let turn = DurableTurnSnapshot {
+        model: None,
         id: TurnId::new("turn_0000000000000001"),
         status: DurableTurnStatus::Completed,
         items,
@@ -327,6 +431,7 @@ fn an_unfinished_checkpoint_is_retained_for_audit_but_remains_interrupted() {
         sugarcode_state::build_context_compaction(std::slice::from_ref(&prior), 3_200_000, 30_000)
             .expect("checkpoint");
     let started = DurableTurnSnapshot {
+        model: None,
         id: TurnId::new("turn_0000000000000002"),
         status: DurableTurnStatus::InProgress,
         items: vec![DurableItemSnapshot::UserMessage {
@@ -439,6 +544,7 @@ fn an_unfinished_active_compaction_is_completed_as_interrupted_before_recovery_t
             .begin_turn(
                 &thread_id,
                 &DurableTurnSnapshot {
+                    model: None,
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![DurableItemSnapshot::UserMessage {
@@ -604,6 +710,7 @@ fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
             .begin_turn(
                 &thread_id,
                 &DurableTurnSnapshot {
+                    model: None,
                     id: TurnId::new("turn_0000000000000001"),
                     status: DurableTurnStatus::InProgress,
                     items: Vec::new(),
@@ -652,6 +759,7 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
             .begin_turn(
                 &thread_id,
                 &DurableTurnSnapshot {
+                    model: None,
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![DurableItemSnapshot::UserMessage {
@@ -756,6 +864,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             .begin_turn(
                 &thread_id,
                 &DurableTurnSnapshot {
+                    model: None,
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![user.clone()],
@@ -778,6 +887,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             .finish_turn(
                 &thread_id,
                 &DurableTurnSnapshot {
+                    model: None,
                     id: turn_id.clone(),
                     status: DurableTurnStatus::Completed,
                     items,
@@ -902,6 +1012,7 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
             .begin_turn(
                 &thread_id,
                 &DurableTurnSnapshot {
+                    model: None,
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![user],
@@ -953,6 +1064,7 @@ fn execution_attempt_requires_matching_approved_shell_audit() {
         .begin_turn(
             &thread_id,
             &DurableTurnSnapshot {
+                model: None,
                 id: turn_id.clone(),
                 status: DurableTurnStatus::InProgress,
                 items: vec![DurableItemSnapshot::UserMessage {
@@ -998,6 +1110,7 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
         .begin_turn(
             &thread_id,
             &DurableTurnSnapshot {
+                model: None,
                 id: turn_id.clone(),
                 status: DurableTurnStatus::InProgress,
                 items: vec![DurableItemSnapshot::UserMessage {
@@ -1137,6 +1250,7 @@ fn file_change_proposal_survives_recovery_without_replaying_the_write() {
             .begin_turn(
                 &thread_id,
                 &DurableTurnSnapshot {
+                    model: None,
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![DurableItemSnapshot::UserMessage {

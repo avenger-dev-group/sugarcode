@@ -119,6 +119,8 @@ pub(super) struct StoredTurnRef<'a> {
     pub status: &'static str,
     pub items: Vec<StoredItemRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<StoredModelSelectionRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_compaction: Option<StoredContextCompactionRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_instructions: Option<StoredWorkspaceInstructionsAuditRef<'a>>,
@@ -128,6 +130,16 @@ pub(super) struct StoredTurnRef<'a> {
     pub error: Option<StoredTurnErrorRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<StoredUsageRef>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredModelSelectionRef<'a> {
+    pub profile_id: &'a str,
+    pub provider_kind: &'a str,
+    pub model_id: &'a str,
+    pub display_name: &'a str,
+    pub context_window_tokens: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -766,6 +778,13 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
                 DurableTurnStatus::Interrupted => "interrupted",
             },
             items: turn.items.iter().map(StoredItemRef::from).collect(),
+            model: turn.model.as_ref().map(|model| StoredModelSelectionRef {
+                profile_id: &model.profile_id,
+                provider_kind: &model.provider_kind,
+                model_id: &model.model_id,
+                display_name: &model.display_name,
+                context_window_tokens: model.context_window_tokens,
+            }),
             context_compaction: turn.context_compaction.as_ref().map(|compaction| {
                 StoredContextCompactionRef {
                     strategy: match compaction.strategy {
@@ -850,6 +869,7 @@ fn stored_error_kind(kind: DurableTurnErrorKind) -> &'static str {
         DurableTurnErrorKind::Incomplete => "incomplete",
         DurableTurnErrorKind::Filtered => "filtered",
         DurableTurnErrorKind::UnsupportedOutput => "unsupportedOutput",
+        DurableTurnErrorKind::UnsupportedToolArguments => "unsupportedToolArguments",
         DurableTurnErrorKind::OutputTooLarge => "outputTooLarge",
         DurableTurnErrorKind::StateUnavailable => "stateUnavailable",
     }
@@ -1010,6 +1030,8 @@ struct StoredTurn {
     status: StoredTurnStatus,
     items: Vec<StoredItem>,
     #[serde(default)]
+    model: Option<StoredModelSelection>,
+    #[serde(default)]
     context_compaction: Option<StoredContextCompaction>,
     #[serde(default)]
     workspace_instructions: Option<StoredWorkspaceInstructionsAudit>,
@@ -1019,6 +1041,16 @@ struct StoredTurn {
     error: Option<StoredTurnError>,
     #[serde(default)]
     usage: Option<StoredUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredModelSelection {
+    profile_id: String,
+    provider_kind: String,
+    model_id: String,
+    display_name: String,
+    context_window_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1353,6 +1385,7 @@ enum StoredTurnErrorKind {
     Incomplete,
     Filtered,
     UnsupportedOutput,
+    UnsupportedToolArguments,
     OutputTooLarge,
     StateUnavailable,
 }
@@ -1539,6 +1572,7 @@ pub(super) fn decode_record(
                 id,
                 status,
                 items,
+                model,
                 context_compaction,
                 workspace_instructions,
                 workspace_skills,
@@ -1564,6 +1598,7 @@ pub(super) fn decode_record(
                     id: TurnId::new(id),
                     status,
                     items: decode_items(items),
+                    model: model.map(decode_model_selection),
                     context_compaction: context_compaction.map(decode_context_compaction),
                     workspace_instructions: workspace_instructions
                         .map(decode_workspace_instructions),
@@ -1593,6 +1628,7 @@ pub(super) fn decode_record(
                 id,
                 status,
                 items,
+                model,
                 context_compaction,
                 workspace_instructions,
                 workspace_skills,
@@ -1614,6 +1650,7 @@ pub(super) fn decode_record(
                     id: TurnId::new(id),
                     status: DurableTurnStatus::InProgress,
                     items: decode_items(items),
+                    model: model.map(decode_model_selection),
                     context_compaction: context_compaction.map(decode_context_compaction),
                     workspace_instructions: workspace_instructions
                         .map(decode_workspace_instructions),
@@ -2095,6 +2132,9 @@ fn decode_error(error: StoredTurnError) -> DurableTurnError {
             StoredTurnErrorKind::Incomplete => DurableTurnErrorKind::Incomplete,
             StoredTurnErrorKind::Filtered => DurableTurnErrorKind::Filtered,
             StoredTurnErrorKind::UnsupportedOutput => DurableTurnErrorKind::UnsupportedOutput,
+            StoredTurnErrorKind::UnsupportedToolArguments => {
+                DurableTurnErrorKind::UnsupportedToolArguments
+            }
             StoredTurnErrorKind::OutputTooLarge => DurableTurnErrorKind::OutputTooLarge,
             StoredTurnErrorKind::StateUnavailable => DurableTurnErrorKind::StateUnavailable,
         },
@@ -2174,6 +2214,16 @@ fn decode_usage(usage: StoredUsage) -> DurableUsage {
         output_tokens: usage.output_tokens,
         reasoning_tokens: usage.reasoning_tokens,
         total_tokens: usage.total_tokens,
+    }
+}
+
+fn decode_model_selection(model: StoredModelSelection) -> super::DurableModelSelectionSnapshot {
+    super::DurableModelSelectionSnapshot {
+        profile_id: model.profile_id,
+        provider_kind: model.provider_kind,
+        model_id: model.model_id,
+        display_name: model.display_name,
+        context_window_tokens: model.context_window_tokens,
     }
 }
 

@@ -61,6 +61,7 @@ export type ConversationRpc = Readonly<{
   startTurn: (
     threadId: string,
     input: string,
+    modelProfileId?: string,
     signal?: AbortSignal,
   ) => Promise<TurnStartResponse>;
   interruptTurn: (
@@ -191,12 +192,17 @@ export class ConversationRpcClient implements ConversationRpc {
   startTurn = async (
     threadId: string,
     input: string,
+    modelProfileId?: string,
     signal?: AbortSignal,
   ): Promise<TurnStartResponse> =>
     parseTurnStartResponse(
       await this.client.requestReady(
         'turn/start',
-        { threadId, input },
+        {
+          threadId,
+          input,
+          ...(modelProfileId ? { modelProfileId } : {}),
+        },
         signal,
       ),
     );

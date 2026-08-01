@@ -419,6 +419,9 @@ pub struct TurnSnapshot {
     pub items: Vec<Item>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub model: Option<crate::ModelSelectionSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error: Option<crate::TurnError>,
 }
 

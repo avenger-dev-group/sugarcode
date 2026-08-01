@@ -1363,6 +1363,30 @@ async fn http_statuses_map_to_stable_retryable_errors() {
 }
 
 #[tokio::test]
+async fn context_length_rejections_are_distinct_from_other_invalid_requests() {
+    for (status, body) in [
+        (413, ""),
+        (
+            400,
+            r#"{"error":{"code":"context_length_exceeded","message":"maximum context length reached"}}"#,
+        ),
+        (
+            422,
+            r#"{"error":{"message":"This prompt is too long for the context window."}}"#,
+        ),
+    ] {
+        let (endpoint, server) = status_server_with_body(status, body.as_bytes()).await;
+        let error = match provider(endpoint).stream(request()).await {
+            Ok(_) => panic!("context rejection must not open a stream"),
+            Err(error) => error,
+        };
+        server.await.expect("mock server");
+        assert_eq!(error.kind(), ModelErrorKind::ContextLengthExceeded);
+        assert!(!error.retryable());
+    }
+}
+
+#[tokio::test]
 async fn terminal_reason_matrix_maps_to_stable_non_retryable_errors() {
     for (terminal, kind) in [
         (
@@ -1804,22 +1828,32 @@ async fn capturing_response_server(
 }
 
 async fn status_server(status: u16) -> (Url, tokio::task::JoinHandle<()>) {
+    status_server_with_body(status, &[]).await
+}
+
+async fn status_server_with_body(status: u16, body: &[u8]) -> (Url, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("bind status server");
     let address = listener.local_addr().expect("status server address");
+    let body = body.to_vec();
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("accept request");
         read_request(&mut socket, true).await;
         socket
             .write_all(
                 format!(
-                    "HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
                 )
                 .as_bytes(),
             )
             .await
             .expect("write status response");
+        socket
+            .write_all(&body)
+            .await
+            .expect("write status response body");
         socket.flush().await.expect("flush status response");
     });
     (
@@ -1875,8 +1909,8 @@ async fn read_request(socket: &mut TcpStream, expect_auth: bool) -> serde_json::
         expected.insert("tools");
         expected.insert("parallel_tool_calls");
         assert_eq!(body["tools"][0]["type"], "function");
-        assert_eq!(body["tools"][0]["function"]["name"], "workspace/read");
-        assert_eq!(body["parallel_tool_calls"], true);
+        assert_eq!(body["tools"][0]["function"]["name"], "workspace_read");
+        assert_eq!(body["parallel_tool_calls"], false);
     }
     assert_eq!(keys, expected);
     assert_eq!(body["stream_options"]["include_usage"], true);

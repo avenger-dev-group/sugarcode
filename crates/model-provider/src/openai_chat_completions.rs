@@ -40,6 +40,8 @@ const MODEL_STREAM_CAPACITY: usize = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_ERROR_RESPONSE_BYTES: usize = 16 * 1024;
 const MAX_SSE_EVENT_BYTES: usize = 256 * 1024;
 const MAX_TOOL_CALL_ID_BYTES: usize = 128;
 const MAX_TOOL_NAME_BYTES: usize = 128;
@@ -52,6 +54,8 @@ pub struct OpenAiChatCompletionsProvider {
     client: reqwest::Client,
     endpoint: Url,
     token: Option<Zeroizing<String>>,
+    strict_tools: bool,
+    parallel_tools: bool,
 }
 
 impl OpenAiChatCompletionsProvider {
@@ -60,6 +64,15 @@ impl OpenAiChatCompletionsProvider {
     }
 
     pub fn new_secret(endpoint: Url, token: Option<Zeroizing<String>>) -> Result<Self, ModelError> {
+        Self::new_secret_with_capabilities(endpoint, token, false, false)
+    }
+
+    pub fn new_secret_with_capabilities(
+        endpoint: Url,
+        token: Option<Zeroizing<String>>,
+        strict_tools: bool,
+        parallel_tools: bool,
+    ) -> Result<Self, ModelError> {
         validate_endpoint(&endpoint)?;
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
@@ -70,6 +83,8 @@ impl OpenAiChatCompletionsProvider {
             client,
             endpoint,
             token: token.filter(|token| !token.is_empty()),
+            strict_tools,
+            parallel_tools,
         })
     }
 }
@@ -87,7 +102,9 @@ impl fmt::Debug for OpenAiChatCompletionsProvider {
 impl ModelProvider for OpenAiChatCompletionsProvider {
     fn stream(&self, request: ModelRequest) -> BoxModelFuture<'_> {
         async move {
-            let body = ChatRequest::from(request);
+            let (request, tool_names) = crate::tool_names::normalize_request(request).into_parts();
+            let body =
+                ChatRequest::from_model_request(request, self.strict_tools, self.parallel_tools);
             let allow_tools = !body.tools.is_empty();
             let mut builder = self.client.post(self.endpoint.clone()).json(&body);
             if let Some(token) = &self.token {
@@ -102,7 +119,7 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
                 .map_err(|_| ModelError::new(ModelErrorKind::Timeout, true))?
                 .map_err(map_reqwest_error)?;
             if !response.status().is_success() {
-                return Err(map_status(response.status()));
+                return Err(map_error_response(response).await);
             }
             let is_event_stream = response
                 .headers()
@@ -119,7 +136,7 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
             }
 
             let (sender, receiver) = mpsc::channel(MODEL_STREAM_CAPACITY);
-            tokio::spawn(process_stream(response, sender, allow_tools));
+            tokio::spawn(process_stream(response, sender, allow_tools, tool_names));
             Ok(ReceiverStream::new(receiver).boxed())
         }
         .boxed()
@@ -145,6 +162,7 @@ async fn process_stream(
     response: reqwest::Response,
     sender: mpsc::Sender<Result<ModelEvent, ModelError>>,
     allow_tools: bool,
+    tool_names: BTreeMap<String, String>,
 ) {
     let mut event_bytes = 0usize;
     let mut suffix = [0u8; 4];
@@ -262,7 +280,10 @@ async fn process_stream(
                             },
                         });
                     }
-                    for call in calls {
+                    for mut call in calls {
+                        if let Some(internal_name) = tool_names.get(&call.name) {
+                            call.name.clone_from(internal_name);
+                        }
                         let output_index = match u32::try_from(output.len()) {
                             Ok(output_index) => output_index,
                             Err(_) => {
@@ -311,11 +332,11 @@ async fn process_stream(
             }
             continue;
         }
-        if let Some(chunk_usage) = chunk.usage {
-            if !merge_usage(&mut usage, chunk_usage) {
-                send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
-                return;
-            }
+        if let Some(chunk_usage) = chunk.usage
+            && !merge_usage(&mut usage, chunk_usage)
+        {
+            send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
+            return;
         }
         if chunk.choices.iter().any(|choice| choice.index != 0) {
             send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
@@ -508,11 +529,64 @@ fn map_reqwest_error(error: reqwest::Error) -> ModelError {
     }
 }
 
+async fn map_error_response(response: reqwest::Response) -> ModelError {
+    let status = response.status();
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        return ModelError::new(ModelErrorKind::ContextLengthExceeded, false);
+    }
+    if matches!(
+        status,
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+    ) && bounded_error_body(response)
+        .await
+        .is_some_and(|body| is_context_length_error(&body))
+    {
+        return ModelError::new(ModelErrorKind::ContextLengthExceeded, false);
+    }
+    map_status(status)
+}
+
+async fn bounded_error_body(response: reqwest::Response) -> Option<Vec<u8>> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    loop {
+        let chunk = match tokio::time::timeout(ERROR_BODY_TIMEOUT, stream.next()).await {
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(None) => return Some(body),
+            Ok(Some(Err(_))) | Err(_) => return None,
+        };
+        if body
+            .len()
+            .checked_add(chunk.len())
+            .is_none_or(|bytes| bytes > MAX_ERROR_RESPONSE_BYTES)
+        {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+        if body.len() == MAX_ERROR_RESPONSE_BYTES {
+            return Some(body);
+        }
+    }
+}
+
+fn is_context_length_error(body: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(body).to_ascii_lowercase();
+    [
+        "context_length_exceeded",
+        "maximum context length",
+        "context length exceeded",
+        "context window",
+        "too many tokens",
+        "input is too long",
+        "prompt is too long",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
 fn map_status(status: StatusCode) -> ModelError {
     match status.as_u16() {
-        300..=399 | 400 | 404 | 409 | 413 | 422 => {
-            ModelError::new(ModelErrorKind::InvalidRequest, false)
-        }
+        300..=399 | 400 | 404 | 409 | 422 => ModelError::new(ModelErrorKind::InvalidRequest, false),
         401 | 403 => ModelError::new(ModelErrorKind::Authentication, false),
         408 => ModelError::new(ModelErrorKind::Timeout, true),
         429 => ModelError::new(ModelErrorKind::RateLimited, true),
@@ -539,8 +613,8 @@ struct StreamOptions {
     include_usage: bool,
 }
 
-impl From<ModelRequest> for ChatRequest {
-    fn from(request: ModelRequest) -> Self {
+impl ChatRequest {
+    fn from_model_request(request: ModelRequest, strict_tools: bool, parallel_tools: bool) -> Self {
         let mut messages = request
             .instructions
             .into_iter()
@@ -556,10 +630,11 @@ impl From<ModelRequest> for ChatRequest {
                     name: tool.name,
                     description: tool.description,
                     parameters: tool.parameters,
+                    strict: strict_tools,
                 },
             })
             .collect::<Vec<_>>();
-        let parallel_tool_calls = (!tools.is_empty()).then_some(true);
+        let parallel_tool_calls = (!tools.is_empty()).then_some(parallel_tools);
         Self {
             model: request.model,
             messages,
@@ -711,6 +786,7 @@ struct ChatFunctionDefinition {
     name: String,
     description: String,
     parameters: serde_json::Value,
+    strict: bool,
 }
 
 #[derive(Serialize)]

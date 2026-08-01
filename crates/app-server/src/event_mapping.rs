@@ -14,6 +14,8 @@ use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcNotification;
 use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::McpToolResult as PublicMcpToolResult;
+use sugarcode_app_server_protocol::ModelProviderKind as PublicModelProviderKind;
+use sugarcode_app_server_protocol::ModelSelectionSnapshot as PublicModelSelectionSnapshot;
 use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
 use sugarcode_app_server_protocol::ToolResult as PublicToolResult;
@@ -33,6 +35,7 @@ use sugarcode_protocol::CoreTurnError;
 use sugarcode_protocol::CoreTurnErrorKind;
 use sugarcode_protocol::ThreadId;
 use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableModelSelectionSnapshot;
 use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableTurnError;
 use sugarcode_state::DurableTurnErrorKind;
@@ -146,6 +149,7 @@ pub(crate) fn map_turn_lifecycle(
     let turn = PublicTurn {
         id: public_turn_id.clone(),
         status: TurnStatus::InProgress,
+        model: None,
         error: None,
     };
     let started_public_item = PublicItem::AgentMessage {
@@ -202,6 +206,7 @@ pub(crate) fn map_turn_lifecycle(
                 turn: PublicTurn {
                     id: public_turn_id,
                     status: TurnStatus::Completed,
+                    model: None,
                     error: None,
                 },
             })
@@ -252,6 +257,7 @@ fn map_snapshot_parts(
                     DurableTurnStatus::Failed => TurnSnapshotStatus::Failed,
                     DurableTurnStatus::Interrupted => TurnSnapshotStatus::Interrupted,
                 },
+                model: turn.model.map(map_model_selection),
                 items: turn
                     .items
                     .into_iter()
@@ -535,6 +541,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
                 turn: PublicTurn {
                     id: turn_id.into_string(),
                     status: TurnStatus::InProgress,
+                    model: None,
                     error: None,
                 },
             })
@@ -654,11 +661,31 @@ fn terminal_notification(
             turn: PublicTurn {
                 id: turn_id.into_string(),
                 status,
+                model: None,
                 error,
             },
         })
         .map_err(|_| EventMappingError)?,
     ))
+}
+
+pub(crate) fn map_model_selection(
+    model: DurableModelSelectionSnapshot,
+) -> PublicModelSelectionSnapshot {
+    PublicModelSelectionSnapshot {
+        profile_id: model.profile_id,
+        provider_kind: match model.provider_kind.as_str() {
+            "openai" => PublicModelProviderKind::Openai,
+            "anthropic" => PublicModelProviderKind::Anthropic,
+            "gemini" => PublicModelProviderKind::Gemini,
+            "metallm" => PublicModelProviderKind::Metallm,
+            "openaiCompatible" => PublicModelProviderKind::OpenaiCompatible,
+            _ => PublicModelProviderKind::OpenaiCompatible,
+        },
+        model_id: model.model_id,
+        display_name: model.display_name,
+        context_window_tokens: model.context_window_tokens,
+    }
 }
 
 fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
@@ -1204,6 +1231,7 @@ fn map_core_error(error: CoreTurnError) -> TurnError {
             CoreTurnErrorKind::Incomplete => TurnErrorKind::Incomplete,
             CoreTurnErrorKind::Filtered => TurnErrorKind::Filtered,
             CoreTurnErrorKind::UnsupportedOutput => TurnErrorKind::UnsupportedOutput,
+            CoreTurnErrorKind::UnsupportedToolArguments => TurnErrorKind::UnsupportedToolArguments,
             CoreTurnErrorKind::OutputTooLarge => TurnErrorKind::OutputTooLarge,
             CoreTurnErrorKind::StateUnavailable => TurnErrorKind::StateUnavailable,
         },
@@ -1225,6 +1253,9 @@ fn map_durable_error(error: DurableTurnError) -> TurnError {
             DurableTurnErrorKind::Incomplete => TurnErrorKind::Incomplete,
             DurableTurnErrorKind::Filtered => TurnErrorKind::Filtered,
             DurableTurnErrorKind::UnsupportedOutput => TurnErrorKind::UnsupportedOutput,
+            DurableTurnErrorKind::UnsupportedToolArguments => {
+                TurnErrorKind::UnsupportedToolArguments
+            }
             DurableTurnErrorKind::OutputTooLarge => TurnErrorKind::OutputTooLarge,
             DurableTurnErrorKind::StateUnavailable => TurnErrorKind::StateUnavailable,
         },

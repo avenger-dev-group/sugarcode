@@ -4,6 +4,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelErrorKind {
     Authentication,
+    ContextLengthExceeded,
     InvalidRequest,
     RateLimited,
     Timeout,
@@ -14,6 +15,7 @@ pub enum ModelErrorKind {
     Incomplete,
     Filtered,
     UnsupportedOutput,
+    UnsupportedToolArguments,
     OutputTooLarge,
 }
 
@@ -51,6 +53,7 @@ impl fmt::Display for ModelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self.kind {
             ModelErrorKind::Authentication => "model authentication failed",
+            ModelErrorKind::ContextLengthExceeded => "model context window was exceeded",
             ModelErrorKind::InvalidRequest => "model request was rejected",
             ModelErrorKind::RateLimited => "model request was rate limited",
             ModelErrorKind::Timeout => "model request timed out",
@@ -61,6 +64,9 @@ impl fmt::Display for ModelError {
             ModelErrorKind::Incomplete => "model response was incomplete",
             ModelErrorKind::Filtered => "model response was filtered",
             ModelErrorKind::UnsupportedOutput => "model returned unsupported output",
+            ModelErrorKind::UnsupportedToolArguments => {
+                "model repeatedly returned unsupported tool arguments"
+            }
             ModelErrorKind::OutputTooLarge => "model output exceeded the limit",
         })
     }

@@ -176,6 +176,7 @@ fn begin_mcp_turn(repository: &mut RolloutRepository, thread_id: &ThreadId) {
         .begin_turn(
             thread_id,
             &DurableTurnSnapshot {
+                model: None,
                 id: TurnId::new("turn_0000000000000001"),
                 status: DurableTurnStatus::InProgress,
                 items: vec![DurableItemSnapshot::UserMessage {

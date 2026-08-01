@@ -30,6 +30,7 @@ fn thread(sequence: u64) -> ThreadId {
 
 fn turn(sequence: u64, text: &str) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
+        model: None,
         id: TurnId::new(format!("turn_{sequence:016}")),
         status: DurableTurnStatus::Completed,
         items: vec![DurableItemSnapshot::AgentMessage {
@@ -58,6 +59,7 @@ fn seed(repository: &mut RolloutRepository) {
 
 fn started_turn(sequence: u64, input: &str) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
+        model: None,
         id: TurnId::new(format!("turn_{sequence:016}")),
         status: DurableTurnStatus::InProgress,
         items: vec![

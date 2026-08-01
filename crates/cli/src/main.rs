@@ -89,8 +89,21 @@ struct ModelConfigArgs {
 
 #[derive(Debug, Subcommand)]
 enum ModelConfigCommand {
-    /// Delete only the locally stored model API key.
+    /// Discover models from one saved connection without running inference.
+    Discover {
+        #[arg(long, value_name = "CONNECTION_ID")]
+        connection_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete one connection's locally stored model API key.
     DeleteApiKey {
+        /// Connection whose credential should be deleted.
+        #[arg(long, value_name = "CONNECTION_ID")]
+        connection_id: String,
+        /// Expected complete model-catalog revision.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: String,
         /// Emit the resulting model configuration receipt as JSON.
         #[arg(long)]
         json: bool,
@@ -203,6 +216,9 @@ struct ExecArgs {
     /// Resume one existing active Thread instead of creating a new Thread.
     #[arg(long, value_name = "THREAD_ID")]
     resume: Option<String>,
+    /// Use one configured model profile for this Turn.
+    #[arg(long, value_name = "PROFILE_ID")]
+    model_profile: Option<String>,
     /// Explicit workspace root available to bounded model tools and instructions.
     #[arg(long, value_name = "DIR")]
     workspace: Option<PathBuf>,
@@ -323,6 +339,27 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
             );
         }
         Command::Config(ConfigArgs {
+            command:
+                ConfigCommand::Model(ModelConfigArgs {
+                    command:
+                        ModelConfigCommand::Discover {
+                            connection_id,
+                            json,
+                        },
+                }),
+        }) => {
+            if !json {
+                return Err("config model discover requires --json".into());
+            }
+            let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
+            config::discover_model_config(
+                &resolved_home,
+                &connection_id,
+                &mut std::io::stdout().lock(),
+            )
+            .await?;
+        }
+        Command::Config(ConfigArgs {
             command: ConfigCommand::Validate,
         }) => {
             let config = sugarcode_state::load_effective_config(home)?;
@@ -334,14 +371,29 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
         Command::Config(ConfigArgs {
             command:
                 ConfigCommand::Model(ModelConfigArgs {
-                    command: ModelConfigCommand::DeleteApiKey { json },
+                    command:
+                        ModelConfigCommand::DeleteApiKey {
+                            connection_id,
+                            expected_revision,
+                            json,
+                        },
                 }),
         }) => {
             let resolved_home = sugarcode_state::resolve_sugarcode_home_from_process(home)?;
             if json {
-                config::delete_model_api_key(&resolved_home, &mut std::io::stdout().lock())?;
+                config::delete_model_api_key(
+                    &resolved_home,
+                    &connection_id,
+                    &expected_revision,
+                    &mut std::io::stdout().lock(),
+                )?;
             } else {
-                let removed = config::delete_model_api_key(&resolved_home, &mut std::io::sink())?;
+                let removed = config::delete_model_api_key(
+                    &resolved_home,
+                    &connection_id,
+                    &expected_revision,
+                    &mut std::io::sink(),
+                )?;
                 if removed {
                     println!("Model API key removed from local configuration.");
                 } else {
@@ -531,6 +583,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                     allow_command_workspace_write: args.allow_command_workspace_write,
                     mcp_servers: args.mcp_server,
                     resume_thread_id: args.resume,
+                    model_profile_id: args.model_profile,
                     prompt,
                     output_format: if args.json {
                         sugarcode_exec::ExecOutputFormat::JsonLines

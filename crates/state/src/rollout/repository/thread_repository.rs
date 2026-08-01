@@ -843,7 +843,11 @@ impl ThreadRepository for RolloutRepository {
             matching.extend(
                 page.data
                     .into_iter()
-                    .filter(|thread| self.threads.contains_key(&thread.id))
+                    .filter(|thread| {
+                        self.threads
+                            .get(&thread.id)
+                            .is_some_and(|state| state.snapshot.origin.is_none())
+                    })
                     .take(limit.saturating_add(1).saturating_sub(matching.len())),
             );
             if matching.len() > limit || page.next_cursor.is_none() {
@@ -882,7 +886,11 @@ impl ThreadRepository for RolloutRepository {
             results.extend(
                 page.data
                     .into_iter()
-                    .filter(|thread| self.threads.contains_key(&thread.id))
+                    .filter(|thread| {
+                        self.threads
+                            .get(&thread.id)
+                            .is_some_and(|state| state.snapshot.origin.is_none())
+                    })
                     .take(limit.saturating_add(1).saturating_sub(results.len())),
             );
             if results.len() > limit || page.next_cursor.is_none() {

@@ -16,6 +16,7 @@ use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
 use sugarcode_state::DurableContextCompaction;
 use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableModelSelectionSnapshot;
 use sugarcode_state::DurableThreadLifecycle;
 use sugarcode_state::DurableThreadOrigin;
 use sugarcode_state::DurableThreadPage;
@@ -56,6 +57,7 @@ pub struct PreparedTextTurn {
     pub thread_id: ThreadId,
     pub turn_id: TurnId,
     pub user_item: Option<CoreItemSnapshot>,
+    pub model: Option<DurableModelSelectionSnapshot>,
     pub history: Vec<PreparedMessage>,
     pub instructions: Vec<ModelInstruction>,
     pub workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
@@ -140,6 +142,7 @@ struct Turn {
     state: TurnState,
     items: BTreeMap<ItemId, Item>,
     active_item_id: Option<ItemId>,
+    model: Option<DurableModelSelectionSnapshot>,
     context_compaction: Option<DurableContextCompaction>,
     workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
     workspace_skills: Option<DurableWorkspaceSkillsAudit>,
@@ -155,6 +158,7 @@ impl Turn {
             state: TurnState::InProgress,
             items: BTreeMap::new(),
             active_item_id: None,
+            model: None,
             context_compaction: None,
             workspace_instructions: None,
             workspace_skills: None,
@@ -741,6 +745,15 @@ pub trait CoreApi {
         self.start_turn(request_id, thread_id)
             .map(TurnStartOutcome::Immediate)
     }
+    fn start_text_turn_with_model(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+        input: Option<String>,
+        _model_profile_id: Option<String>,
+    ) -> Result<TurnStartOutcome, CoreError> {
+        self.start_text_turn(request_id, thread_id, input)
+    }
     fn interrupt_turn(
         &mut self,
         _thread_id: &ThreadId,
@@ -776,6 +789,16 @@ impl Core {
             last_item_sequence: sequences.item,
             repository,
         }
+    }
+
+    pub fn latest_model_profile_id(&self, thread_id: &ThreadId) -> Option<String> {
+        self.threads
+            .get(thread_id)?
+            .turns
+            .values()
+            .rev()
+            .find_map(|turn| turn.model.as_ref())
+            .map(|model| model.profile_id.clone())
     }
 
     pub fn thread_count(&self) -> usize {
@@ -1155,6 +1178,7 @@ impl Core {
                 },
                 items,
                 active_item_id: None,
+                model: durable_turn.model.clone(),
                 context_compaction: durable_turn.context_compaction.clone(),
                 workspace_instructions: durable_turn.workspace_instructions.clone(),
                 workspace_skills: durable_turn.workspace_skills.clone(),
@@ -1214,6 +1238,32 @@ impl Core {
         workspace_skills: Option<DurableWorkspaceSkillsAudit>,
         instruction_context_bytes: usize,
         tool_context_bytes: usize,
+    ) -> Result<PreparedTextTurn, CoreError> {
+        self.prepare_text_turn_with_model_context(
+            request_id,
+            thread_id,
+            input,
+            workspace_instructions,
+            workspace_skills,
+            instruction_context_bytes,
+            tool_context_bytes,
+            None,
+            crate::context::COMPACTION_TARGET_BYTES,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_text_turn_with_model_context(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+        input: Option<String>,
+        workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
+        workspace_skills: Option<DurableWorkspaceSkillsAudit>,
+        instruction_context_bytes: usize,
+        tool_context_bytes: usize,
+        model: Option<DurableModelSelectionSnapshot>,
+        compaction_target_bytes: usize,
     ) -> Result<PreparedTextTurn, CoreError> {
         if input
             .as_ref()
@@ -1275,7 +1325,7 @@ impl Core {
             .and_then(|bytes| bytes.checked_add(fixed_context_bytes))
             .ok_or(CoreError::ContextTooLarge)?;
         let mut context_compaction = None;
-        if pre_context_bytes > crate::context::COMPACTION_TARGET_BYTES {
+        if pre_context_bytes > compaction_target_bytes {
             let durable_completed_turns = completed_turns
                 .iter()
                 .map(|turn| durable_turn_snapshot(turn))
@@ -1298,7 +1348,7 @@ impl Core {
             let post_context_bytes = crate::context::prepared_history_bytes(&compacted_history)
                 .and_then(|bytes| bytes.checked_add(fixed_context_bytes))
                 .ok_or(CoreError::ContextTooLarge)?;
-            if post_context_bytes > crate::context::COMPACTION_TARGET_BYTES {
+            if post_context_bytes > compaction_target_bytes {
                 return Err(CoreError::ContextTooLarge);
             }
             let compaction = sugarcode_state::build_context_compaction(
@@ -1349,6 +1399,7 @@ impl Core {
             id: turn_id.clone(),
             status: DurableTurnStatus::InProgress,
             items: durable_items,
+            model: model.clone(),
             context_compaction: context_compaction.clone(),
             workspace_instructions: workspace_instructions.clone(),
             workspace_skills: workspace_skills.clone(),
@@ -1381,6 +1432,7 @@ impl Core {
             state: TurnState::InProgress,
             items,
             active_item_id: None,
+            model: model.clone(),
             context_compaction,
             workspace_instructions: workspace_instructions.clone(),
             workspace_skills: workspace_skills.clone(),
@@ -1403,6 +1455,7 @@ impl Core {
             thread_id,
             turn_id,
             user_item,
+            model,
             history,
             instructions: Vec::new(),
             workspace_instructions,
@@ -1618,6 +1671,7 @@ impl Core {
                 .values()
                 .map(|item| durable_item_snapshot(&item.snapshot()))
                 .collect(),
+            model: turn.model.clone(),
             context_compaction: turn.context_compaction.clone(),
             workspace_instructions: turn.workspace_instructions.clone(),
             workspace_skills: turn.workspace_skills.clone(),
@@ -1701,6 +1755,7 @@ impl Core {
             id: turn_id.clone(),
             status,
             items: turn.items.values().map(durable_item_from_item).collect(),
+            model: turn.model.clone(),
             context_compaction: turn.context_compaction.clone(),
             workspace_instructions: turn.workspace_instructions.clone(),
             workspace_skills: turn.workspace_skills.clone(),
@@ -1859,6 +1914,7 @@ fn durable_turn_snapshot(turn: &Turn) -> DurableTurnSnapshot {
             TurnState::Interrupted => DurableTurnStatus::Interrupted,
         },
         items: turn.items.values().map(durable_item_from_item).collect(),
+        model: turn.model.clone(),
         context_compaction: turn.context_compaction.clone(),
         workspace_instructions: turn.workspace_instructions.clone(),
         workspace_skills: turn.workspace_skills.clone(),

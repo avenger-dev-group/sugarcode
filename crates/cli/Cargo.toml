@@ -17,6 +17,7 @@ sha2.workspace = true
 sugarcode-app-server = { path = "../app-server" }
 sugarcode-app-server-protocol = { path = "../app-server-protocol" }
 sugarcode-exec = { path = "../exec" }
+sugarcode-model-provider = { path = "../model-provider" }
 sugarcode-state = { path = "../state" }
 sugarcode-terminal = { path = "../terminal" }
 sugarcode-tools = { path = "../tools" }

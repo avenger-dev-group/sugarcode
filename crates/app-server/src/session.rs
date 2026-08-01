@@ -1,6 +1,7 @@
 use crate::event_mapping::EventMappingError;
 use crate::event_mapping::map_core_event;
 use crate::event_mapping::map_fork_snapshot;
+use crate::event_mapping::map_model_selection;
 use crate::event_mapping::map_thread_snapshot;
 use crate::event_mapping::map_turn_lifecycle;
 use serde_json::Value;

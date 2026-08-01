@@ -10,6 +10,13 @@ import { WorkspaceListActivity } from '@/renderer/components/agent/workspace-lis
 import { WorkspaceSearchActivity } from '@/renderer/components/agent/workspace-search-activity';
 import { Button } from '@/renderer/components/ui/button';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/renderer/components/ui/select';
 import { Textarea } from '@/renderer/components/ui/textarea';
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline';
@@ -445,10 +452,38 @@ export const ThreadWorkbenchView = ({
               />
               <div className="flex items-center justify-between gap-3 border-t px-3 py-2">
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs text-secondary">
-                    {store.thread.statusLabel}
-                  </p>
-                  <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <Select
+                      value={store.selectedModelProfileId || undefined}
+                      onValueChange={store.setSelectedModelProfileId}
+                      disabled={
+                        store.modelSelectionDisabled ||
+                        store.modelOptions.length === 0
+                      }
+                    >
+                      <SelectTrigger
+                        className="h-7 w-auto max-w-64 border-0 bg-transparent px-1.5 text-xs shadow-none"
+                        aria-label="Model for next turn"
+                      >
+                        <SelectValue placeholder="No model configured" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {store.modelOptions.map((option) => (
+                          <SelectItem
+                            key={option.profileId}
+                            value={option.profileId}
+                            disabled={!option.available}
+                          >
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="min-w-0 truncate text-xs text-secondary">
+                      {store.thread.statusLabel}
+                    </p>
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-1.5 text-[11px]">
                     <span
                       id="conversation-input-hint"
                       className={

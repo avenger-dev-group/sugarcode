@@ -163,7 +163,7 @@ fn provider_history_excludes_failed_and_interrupted_partial_turns() {
 }
 
 #[test]
-fn provider_history_compacts_deterministically_above_the_three_mib_target() {
+fn provider_history_compacts_deterministically_above_the_compatibility_target() {
     let mut core = Core::new();
     let thread_id = start_thread(&mut core, 1);
     let maximum_output = "x".repeat(MAX_AGENT_MESSAGE_BYTES);

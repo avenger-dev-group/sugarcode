@@ -21,6 +21,8 @@ use sugarcode_app_server_protocol::JsonRpcError;
 use sugarcode_app_server_protocol::JsonRpcErrorObject;
 use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcVersion;
+use sugarcode_app_server_protocol::ModelProviderKind;
+use sugarcode_app_server_protocol::ModelSelectionSnapshot;
 use sugarcode_app_server_protocol::RequestId;
 use sugarcode_app_server_protocol::Thread;
 use sugarcode_app_server_protocol::ThreadArchiveParams;
@@ -330,6 +332,7 @@ fn collaboration_items_and_descendant_origin_are_provider_neutral() {
             }),
         },
         turns: vec![TurnSnapshot {
+            model: None,
             id: "turn_0000000000000002".to_string(),
             status: TurnSnapshotStatus::Completed,
             items: items.clone(),
@@ -534,6 +537,7 @@ fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
             origin: None,
         },
         turns: vec![TurnSnapshot {
+            model: None,
             id: "turn_0000000000000002".to_string(),
             status: TurnSnapshotStatus::Completed,
             items: vec![Item::AgentMessage {
@@ -671,6 +675,13 @@ fn thread_search_response_exposes_only_thread_identity_and_cursor() {
 #[test]
 fn turn_start_types_use_the_public_turn_dto() {
     let turn = Turn {
+        model: Some(ModelSelectionSnapshot {
+            profile_id: "model_primary".to_string(),
+            provider_kind: ModelProviderKind::OpenaiCompatible,
+            model_id: "fixture-model".to_string(),
+            display_name: "Fixture model".to_string(),
+            context_window_tokens: 131_072,
+        }),
         id: "turn_0000000000000001".to_string(),
         status: TurnStatus::InProgress,
         error: None,
@@ -682,6 +693,13 @@ fn turn_start_types_use_the_public_turn_dto() {
         json!({
             "turn": {
                 "id": "turn_0000000000000001",
+                "model": {
+                    "profileId": "model_primary",
+                    "providerKind": "openaiCompatible",
+                    "modelId": "fixture-model",
+                    "displayName": "Fixture model",
+                    "contextWindowTokens": 131072
+                },
                 "status": "inProgress"
             }
         })
@@ -696,6 +714,13 @@ fn turn_start_types_use_the_public_turn_dto() {
             "threadId": "thr_0000000000000001",
             "turn": {
                 "id": "turn_0000000000000001",
+                "model": {
+                    "profileId": "model_primary",
+                    "providerKind": "openaiCompatible",
+                    "modelId": "fixture-model",
+                    "displayName": "Fixture model",
+                    "contextWindowTokens": 131072
+                },
                 "status": "inProgress"
             }
         })
@@ -770,6 +795,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
         serde_json::to_value(TurnCompletedNotification {
             thread_id: "thr_0000000000000001".to_string(),
             turn: Turn {
+                model: None,
                 id: "turn_0000000000000001".to_string(),
                 status: TurnStatus::Completed,
                 error: None,
@@ -1023,10 +1049,12 @@ fn turn_start_params_require_thread_id_and_accept_optional_text_input() {
     assert_eq!(
         serde_json::from_value::<TurnStartParams>(json!({
             "threadId": "thr_0000000000000001",
-            "input": "Hello"
+            "input": "Hello",
+            "modelProfileId": "model_primary"
         }))
         .expect("valid params"),
         TurnStartParams {
+            model_profile_id: Some("model_primary".to_string()),
             thread_id: "thr_0000000000000001".to_string(),
             input: Some("Hello".to_string()),
         }
@@ -1037,6 +1065,7 @@ fn turn_start_params_require_thread_id_and_accept_optional_text_input() {
         }))
         .expect("optional input"),
         TurnStartParams {
+            model_profile_id: None,
             thread_id: "thr_0000000000000001".to_string(),
             input: None,
         }
@@ -1051,6 +1080,8 @@ fn turn_start_params_require_thread_id_and_accept_optional_text_input() {
         json!({"threadId": ""}),
         json!({"threadId": "   "}),
         json!({"threadId": "thr_0000000000000001", "input": []}),
+        json!({"threadId": "thr_0000000000000001", "modelProfileId": ""}),
+        json!({"threadId": "thr_0000000000000001", "modelProfileId": "bad id"}),
     ] {
         assert!(
             serde_json::from_value::<TurnStartParams>(invalid).is_err(),
@@ -1085,6 +1116,7 @@ fn turn_interrupt_is_strict_and_terminal_errors_are_provider_neutral() {
     );
     assert_eq!(
         serde_json::to_value(Turn {
+            model: None,
             id: "turn_0000000000000001".to_string(),
             status: TurnStatus::Failed,
             error: Some(TurnError {
@@ -1109,6 +1141,7 @@ fn thread_resume_returns_a_complete_snapshot() {
             origin: None,
         },
         turns: vec![TurnSnapshot {
+            model: None,
             id: "turn_0000000000000001".to_string(),
             status: TurnSnapshotStatus::Completed,
             items: vec![Item::AgentMessage {

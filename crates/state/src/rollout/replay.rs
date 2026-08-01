@@ -270,10 +270,10 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     }
                     let item_sequence = parse_canonical_id(item.id().as_str(), "item_", "item")
                         .map_err(|_| corrupt(&path, offset as u64, "invalidItemId"))?;
-                    if item_sequence <= sequences.item || !item_ids.insert(item.id().clone()) {
+                    if !item_ids.insert(item.id().clone()) {
                         return Err(corrupt(&path, offset as u64, "duplicateItemId"));
                     }
-                    sequences.item = item_sequence;
+                    sequences.item = sequences.item.max(item_sequence);
                     thread
                         .turns
                         .last_mut()

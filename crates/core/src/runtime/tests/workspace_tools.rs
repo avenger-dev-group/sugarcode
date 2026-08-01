@@ -564,15 +564,23 @@ async fn serialized_tool_result_limit_becomes_one_durable_error_result() {
 }
 
 #[tokio::test]
-async fn unknown_tool_calls_fail_without_execution() {
-    for rounds in [VecDeque::from([vec![
-        Ok(model_event::tool_call(ModelToolCall {
-            id: "call_unknown".to_string(),
-            name: "workspace/unknown".to_string(),
-            arguments: serde_json::json!({ "path": "README.txt" }),
-        })),
-        Ok(model_event::COMPLETED),
-    ]])] {
+async fn unknown_tool_calls_return_model_visible_errors_without_execution() {
+    for rounds in [VecDeque::from([
+        vec![
+            Ok(model_event::tool_call(ModelToolCall {
+                id: "call_unknown".to_string(),
+                name: "workspace/unknown".to_string(),
+                arguments: serde_json::json!({ "path": "README.txt" }),
+            })),
+            Ok(model_event::COMPLETED),
+        ],
+        vec![
+            Ok(model_event::text_delta(
+                "Recovered from the tool error.".to_string(),
+            )),
+            Ok(model_event::COMPLETED),
+        ],
+    ])] {
         let directory = tempfile::tempdir().expect("workspace");
         std::fs::write(directory.path().join("README.txt"), "bounded context")
             .expect("workspace fixture");
@@ -608,21 +616,197 @@ async fn unknown_tool_calls_fail_without_execution() {
         };
         while !matches!(
             events.recv().await.expect("terminal event").kind,
-            CoreEventKind::TurnFailed { .. }
+            CoreEventKind::TurnCompleted { .. }
         ) {}
-        assert_eq!(requests.lock().expect("requests").len(), 1);
+        let requests = requests.lock().expect("requests");
+        assert_eq!(requests.len(), 2);
+        assert!(matches!(
+            requests[1].messages.last(),
+            Some(ModelMessage::ToolResult { content, .. })
+                if content.contains("unknownTool")
+                    && content.contains("argumentsBytes=")
+                    && content.contains("argumentsSha256=")
+        ));
+        drop(requests);
         let snapshot = runtime.resume_thread(&thread_id).expect("resume");
         let turn = snapshot
             .turns
             .iter()
             .find(|turn| turn.id == turn_id)
             .expect("persisted turn");
-        assert_eq!(turn.status, DurableTurnStatus::Failed);
-        assert_eq!(
-            turn.error.as_ref().map(|error| error.kind),
-            Some(DurableTurnErrorKind::UnsupportedOutput)
-        );
+        assert_eq!(turn.status, DurableTurnStatus::Completed);
+        assert!(turn.error.is_none());
+        assert!(turn.items.iter().any(|item| matches!(
+            item,
+            sugarcode_state::DurableItemSnapshot::ToolResult {
+                result: sugarcode_state::DurableToolResult::Error { kind },
+                ..
+            } if kind == "unknownTool"
+        )));
     }
+}
+
+#[tokio::test]
+async fn invalid_tool_batch_is_rejected_without_partial_execution() {
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("README.txt"), "must not be read")
+        .expect("workspace fixture");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![Ok(model_event::tool_call_batch(vec![
+                ModelToolCall {
+                    id: "call_valid".to_string(),
+                    name: "workspace/read".to_string(),
+                    arguments: serde_json::json!({"path": "README.txt"}),
+                },
+                ModelToolCall {
+                    id: "call_invalid".to_string(),
+                    name: "workspace/read".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+            ]))],
+            vec![
+                Ok(model_event::text_delta(
+                    "Regenerated after batch rejection.".to_string(),
+                )),
+                Ok(model_event::COMPLETED),
+            ],
+        ])),
+        requests: Arc::clone(&requests),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(tool),
+        None,
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Read safely".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("async turn");
+    };
+    while !matches!(
+        events.recv().await.expect("terminal").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
+    let results = requests[1]
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            ModelMessage::ToolResult { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 2);
+    assert!(results[0].contains("batchRejected"));
+    assert!(results[1].contains("invalidArguments"));
+    assert!(
+        !results
+            .iter()
+            .any(|result| result.contains("must not be read"))
+    );
+    drop(requests);
+
+    let turn = runtime
+        .resume_thread(&thread_id)
+        .expect("resume")
+        .turns
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    let error_kinds = turn
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            sugarcode_state::DurableItemSnapshot::ToolResult {
+                result: sugarcode_state::DurableToolResult::Error { kind },
+                ..
+            } => Some(kind.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(error_kinds, ["batchRejected", "invalidArguments"]);
+}
+
+#[tokio::test]
+async fn three_identical_argument_errors_end_with_explicit_terminal_kind() {
+    let invalid_round = |id: &str| {
+        vec![Ok(model_event::tool_call(ModelToolCall {
+            id: id.to_string(),
+            name: "workspace/read".to_string(),
+            arguments: serde_json::json!({}),
+        }))]
+    };
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            invalid_round("call_invalid_1"),
+            invalid_round("call_invalid_2"),
+            invalid_round("call_invalid_3"),
+        ])),
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let directory = tempfile::tempdir().expect("workspace");
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(tool),
+        None,
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Read".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("async turn");
+    };
+    while !matches!(
+        events.recv().await.expect("terminal").kind,
+        CoreEventKind::TurnFailed { .. }
+    ) {}
+
+    let turn = runtime
+        .resume_thread(&thread_id)
+        .expect("resume")
+        .turns
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert_eq!(
+        turn.error.map(|error| error.kind),
+        Some(DurableTurnErrorKind::UnsupportedToolArguments)
+    );
 }
 
 #[tokio::test]
@@ -894,8 +1078,11 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
         }
     }
     let directory = tempfile::tempdir().expect("workspace");
-    std::fs::write(directory.path().join("large.txt"), vec![b'a'; 256 * 1024])
-        .expect("large workspace fixture");
+    std::fs::write(
+        directory.path().join("large.txt"),
+        vec![b'a'; crate::context::COMPACTION_TARGET_BYTES / 12],
+    )
+    .expect("large workspace fixture");
     let requests = Arc::new(Mutex::new(Vec::new()));
     let provider = CompactionAwareProvider {
         calls: AtomicUsize::new(0),
@@ -958,6 +1145,12 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
     {
         let recorded_requests = requests.lock().expect("requests");
         assert_eq!(recorded_requests.len(), 15);
+        assert!(
+            recorded_requests
+                .iter()
+                .filter(|request| !request.tools.is_empty())
+                .all(|request| request.context_bytes() <= crate::context::COMPACTION_TARGET_BYTES)
+        );
         let compaction_index = recorded_requests
             .iter()
             .position(|request| request.tools.is_empty())
@@ -1026,6 +1219,118 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
             if content.contains("Prior reads succeeded")
     ));
     assert!(requests[15].context_bytes() < crate::context::COMPACTION_TARGET_BYTES);
+}
+
+#[tokio::test]
+async fn growing_context_rejection_compacts_and_retries_the_same_turn() {
+    #[derive(Debug)]
+    struct ContextRejectingProvider {
+        calls: AtomicUsize,
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    impl ModelProvider for ContextRejectingProvider {
+        fn stream(&self, request: ModelRequest) -> BoxModelFuture<'_> {
+            let call = self.calls.fetch_add(1, Ordering::AcqRel);
+            self.requests
+                .lock()
+                .expect("requests")
+                .push(request.clone());
+            async move {
+                match call {
+                    0 => Ok(stream::iter(vec![Ok(model_event::tool_call(ModelToolCall {
+                        id: "context_call".to_string(),
+                        name: "workspace/read".to_string(),
+                        arguments: serde_json::json!({ "path": "context.txt" }),
+                    }))])
+                    .boxed()),
+                    1 => Err(ModelError::new(ModelErrorKind::InvalidRequest, false)),
+                    2 => Ok(stream::iter(vec![Ok(model_event::final_response(
+                        "The task and successful read must be preserved.",
+                    ))])
+                    .boxed()),
+                    3 => Ok(stream::iter(vec![Ok(model_event::final_response(
+                        "Recovered after automatic context compaction.",
+                    ))])
+                    .boxed()),
+                    _ => panic!("unexpected provider request"),
+                }
+            }
+            .boxed()
+        }
+    }
+
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(
+        directory.path().join("context.txt"),
+        "context that makes the follow-up request larger",
+    )
+    .expect("workspace fixture");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = ContextRejectingProvider {
+        calls: AtomicUsize::new(0),
+        requests: requests.clone(),
+    };
+    let mut core = Core::new();
+    let started = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread");
+    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(tool),
+        None,
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Read context.txt and finish the task".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("asynchronous turn");
+    };
+    while !matches!(
+        events.recv().await.expect("turn event").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    let recorded_requests = requests.lock().expect("requests");
+    assert_eq!(recorded_requests.len(), 4);
+    assert!(recorded_requests[1].context_bytes() > recorded_requests[0].context_bytes());
+    assert!(recorded_requests[2].tools.is_empty());
+    assert!(matches!(
+        recorded_requests[3].messages.first(),
+        Some(ModelMessage::ContextCompaction { .. })
+    ));
+    drop(recorded_requests);
+
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    let turn = snapshot
+        .turns
+        .iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("persisted turn");
+    assert_eq!(turn.status, DurableTurnStatus::Completed);
+    assert!(turn.error.is_none());
+    assert!(turn.items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::ContextCompaction {
+            outcome: Some(sugarcode_state::DurableActiveTurnCompactionOutcome::Completed { .. }),
+            ..
+        }
+    )));
+    assert!(turn.items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
+            if text == "Recovered after automatic context compaction."
+    )));
 }
 
 #[tokio::test]

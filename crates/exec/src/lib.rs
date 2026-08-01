@@ -56,6 +56,7 @@ pub struct ExecRequest {
     pub allow_command_workspace_write: bool,
     pub mcp_servers: Vec<String>,
     pub resume_thread_id: Option<String>,
+    pub model_profile_id: Option<String>,
     pub prompt: String,
     pub output_format: ExecOutputFormat,
 }
@@ -94,7 +95,7 @@ where
             );
         }
     };
-    if config.model().is_none() {
+    if config.models().is_none() {
         return surface_error(
             stdout,
             stderr,
@@ -144,6 +145,7 @@ where
     run_with_runtime(
         runtime.into_parts(),
         request.resume_thread_id,
+        request.model_profile_id,
         request.prompt,
         request.output_format,
         stdout,
@@ -156,6 +158,7 @@ where
 async fn run_with_runtime<W, D>(
     parts: AgentSurfaceRuntimeParts,
     resume_thread_id: Option<String>,
+    model_profile_id: Option<String>,
     prompt: String,
     output_format: ExecOutputFormat,
     stdout: &mut W,
@@ -294,66 +297,67 @@ where
         return code;
     }
 
-    let (core_request_id, outcome) = match session.start_text_turn(thread_id.clone(), Some(prompt))
-    {
-        Ok(result) => result,
-        Err(CoreError::ModelUnavailable) => {
-            let _ = session.shutdown().await;
-            let code = emitter_error(
-                &mut output,
-                stderr,
-                EXEC_EXIT_CONFIGURATION,
-                ExecErrorCategoryV1::Configuration,
-                "model unavailable",
-                Some(thread_id.as_str()),
-                None,
-            );
-            finish_tasks(command_approval_task, mcp_approval_task);
-            return code;
-        }
-        Err(CoreError::InvalidInput | CoreError::ContextTooLarge) => {
-            let _ = session.shutdown().await;
-            let code = emitter_error(
-                &mut output,
-                stderr,
-                EXEC_EXIT_INPUT,
-                ExecErrorCategoryV1::Input,
-                "invalid prompt",
-                Some(thread_id.as_str()),
-                None,
-            );
-            finish_tasks(command_approval_task, mcp_approval_task);
-            return code;
-        }
-        Err(CoreError::StateUnavailable) => {
-            let _ = session.shutdown().await;
-            let code = emitter_error(
-                &mut output,
-                stderr,
-                EXEC_EXIT_CONFIGURATION,
-                ExecErrorCategoryV1::Configuration,
-                "durable thread state unavailable",
-                Some(thread_id.as_str()),
-                None,
-            );
-            finish_tasks(command_approval_task, mcp_approval_task);
-            return code;
-        }
-        Err(_) => {
-            let _ = session.shutdown().await;
-            let code = emitter_error(
-                &mut output,
-                stderr,
-                EXEC_EXIT_INTERNAL,
-                ExecErrorCategoryV1::Internal,
-                "turn start failed",
-                Some(thread_id.as_str()),
-                None,
-            );
-            finish_tasks(command_approval_task, mcp_approval_task);
-            return code;
-        }
-    };
+    let (core_request_id, outcome) =
+        match session.start_text_turn_with_model(thread_id.clone(), Some(prompt), model_profile_id)
+        {
+            Ok(result) => result,
+            Err(CoreError::ModelUnavailable) => {
+                let _ = session.shutdown().await;
+                let code = emitter_error(
+                    &mut output,
+                    stderr,
+                    EXEC_EXIT_CONFIGURATION,
+                    ExecErrorCategoryV1::Configuration,
+                    "model unavailable",
+                    Some(thread_id.as_str()),
+                    None,
+                );
+                finish_tasks(command_approval_task, mcp_approval_task);
+                return code;
+            }
+            Err(CoreError::InvalidInput | CoreError::ContextTooLarge) => {
+                let _ = session.shutdown().await;
+                let code = emitter_error(
+                    &mut output,
+                    stderr,
+                    EXEC_EXIT_INPUT,
+                    ExecErrorCategoryV1::Input,
+                    "invalid prompt",
+                    Some(thread_id.as_str()),
+                    None,
+                );
+                finish_tasks(command_approval_task, mcp_approval_task);
+                return code;
+            }
+            Err(CoreError::StateUnavailable) => {
+                let _ = session.shutdown().await;
+                let code = emitter_error(
+                    &mut output,
+                    stderr,
+                    EXEC_EXIT_CONFIGURATION,
+                    ExecErrorCategoryV1::Configuration,
+                    "durable thread state unavailable",
+                    Some(thread_id.as_str()),
+                    None,
+                );
+                finish_tasks(command_approval_task, mcp_approval_task);
+                return code;
+            }
+            Err(_) => {
+                let _ = session.shutdown().await;
+                let code = emitter_error(
+                    &mut output,
+                    stderr,
+                    EXEC_EXIT_INTERNAL,
+                    ExecErrorCategoryV1::Internal,
+                    "turn start failed",
+                    Some(thread_id.as_str()),
+                    None,
+                );
+                finish_tasks(command_approval_task, mcp_approval_task);
+                return code;
+            }
+        };
 
     let mut active_turn_id = match &outcome {
         TurnStartOutcome::Accepted { turn_id } => Some(turn_id.clone()),
@@ -663,6 +667,15 @@ fn validate_request(request: &ExecRequest) -> Result<(), &'static str> {
         .is_some_and(|thread_id| !is_canonical_thread_id(thread_id))
     {
         return Err("invalid thread id");
+    }
+    if request.model_profile_id.as_ref().is_some_and(|profile_id| {
+        profile_id.is_empty()
+            || profile_id.len() > 64
+            || !profile_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    }) {
+        return Err("invalid model profile id");
     }
     Ok(())
 }

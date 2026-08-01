@@ -309,6 +309,9 @@ impl fmt::Display for CoreCommandApprovalDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreToolErrorKind {
+    InvalidArguments,
+    UnknownTool,
+    BatchRejected,
     InvalidPath,
     InvalidQuery,
     NotFound,
@@ -349,6 +352,9 @@ pub enum CoreToolErrorKind {
 impl fmt::Display for CoreToolErrorKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidArguments => "invalidArguments",
+            Self::UnknownTool => "unknownTool",
+            Self::BatchRejected => "batchRejected",
             Self::InvalidPath => "invalidPath",
             Self::InvalidQuery => "invalidQuery",
             Self::NotFound => "notFound",

@@ -40,6 +40,61 @@ fn lists_threads_in_descending_numeric_order_with_stable_cursor_paging() {
 }
 
 #[test]
+fn rebuilt_discovery_and_search_hide_subagent_threads() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let root_id = ThreadId::new("thr_0000000000000001");
+    let child_id = ThreadId::new("thr_0000000000000002");
+
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&root_id).expect("root thread");
+        repository
+            .append_completed_turn(&root_id, &completed_turn(1))
+            .expect("root turn");
+        repository
+            .create_thread_with_origin(
+                &child_id,
+                &DurableThreadOrigin {
+                    parent_thread_id: root_id.clone(),
+                    parent_turn_id: TurnId::new("turn_0000000000000001"),
+                    orchestration_id: "orch/root/turn/review".to_string(),
+                    task_id: "orch/root/turn/review/child".to_string(),
+                    role: "explorer".to_string(),
+                },
+            )
+            .expect("child thread");
+        repository
+            .append_completed_turn(&child_id, &completed_turn(2))
+            .expect("child turn");
+    }
+
+    let mut repository = RolloutRepository::open(&home).expect("rebuild projections");
+    assert_eq!(
+        repository.list_threads(None, 50).expect("list roots").data,
+        vec![sugarcode_state::DurableThreadSummary {
+            id: root_id.clone(),
+        }]
+    );
+    assert_eq!(
+        repository
+            .search_threads("SugarCode deterministic", None, 50)
+            .expect("search roots")
+            .data,
+        vec![sugarcode_state::DurableThreadSummary { id: root_id }]
+    );
+    assert_eq!(
+        repository
+            .list_descendants(&ThreadId::new("thr_0000000000000001"))
+            .expect("child remains addressable")
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>(),
+        vec![child_id]
+    );
+}
+
+#[test]
 fn rebuilds_a_missing_projection_from_rollouts() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);

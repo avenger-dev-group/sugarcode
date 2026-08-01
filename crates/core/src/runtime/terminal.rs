@@ -227,6 +227,7 @@ fn map_model_error(error: ModelError) -> CoreTurnError {
     CoreTurnError {
         kind: match error.kind() {
             ModelErrorKind::Authentication => CoreTurnErrorKind::Authentication,
+            ModelErrorKind::ContextLengthExceeded => CoreTurnErrorKind::OutputTooLarge,
             ModelErrorKind::InvalidRequest => CoreTurnErrorKind::InvalidRequest,
             ModelErrorKind::RateLimited => CoreTurnErrorKind::RateLimited,
             ModelErrorKind::Timeout => CoreTurnErrorKind::Timeout,
@@ -237,6 +238,7 @@ fn map_model_error(error: ModelError) -> CoreTurnError {
             ModelErrorKind::Incomplete => CoreTurnErrorKind::Incomplete,
             ModelErrorKind::Filtered => CoreTurnErrorKind::Filtered,
             ModelErrorKind::UnsupportedOutput => CoreTurnErrorKind::UnsupportedOutput,
+            ModelErrorKind::UnsupportedToolArguments => CoreTurnErrorKind::UnsupportedToolArguments,
             ModelErrorKind::OutputTooLarge => CoreTurnErrorKind::OutputTooLarge,
         },
         retryable: error.retryable(),
@@ -257,6 +259,9 @@ fn map_durable_error(error: CoreTurnError) -> DurableTurnError {
             CoreTurnErrorKind::Incomplete => DurableTurnErrorKind::Incomplete,
             CoreTurnErrorKind::Filtered => DurableTurnErrorKind::Filtered,
             CoreTurnErrorKind::UnsupportedOutput => DurableTurnErrorKind::UnsupportedOutput,
+            CoreTurnErrorKind::UnsupportedToolArguments => {
+                DurableTurnErrorKind::UnsupportedToolArguments
+            }
             CoreTurnErrorKind::OutputTooLarge => DurableTurnErrorKind::OutputTooLarge,
             CoreTurnErrorKind::StateUnavailable => DurableTurnErrorKind::StateUnavailable,
         },

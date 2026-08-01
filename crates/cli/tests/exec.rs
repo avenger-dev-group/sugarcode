@@ -149,6 +149,32 @@ fn exec_input_configuration_and_turn_failures_have_deterministic_codes() {
         "sugarcode exec: model unavailable\n"
     );
 
+    let missing_profile_home = tempfile::tempdir().expect("isolated missing-profile home");
+    let _provider =
+        MockProvider::start(missing_profile_home.path(), vec![FIRST_ANSWER.to_string()]);
+    let missing_profile = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .arg("--home")
+        .arg(missing_profile_home.path())
+        .args([
+            "exec",
+            "--json",
+            "--model-profile",
+            "model_missing",
+            "hello",
+        ])
+        .env_remove("SUGARCODE_HOME")
+        .output()
+        .expect("run missing profile exec");
+    assert_eq!(
+        missing_profile.status.code(),
+        Some(3),
+        "{missing_profile:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&missing_profile.stderr),
+        "sugarcode exec: model unavailable\n"
+    );
+
     let failed_home = tempfile::tempdir().expect("isolated failed-turn home");
     let _provider = MockProvider::start(
         failed_home.path(),
@@ -488,11 +514,26 @@ fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
             "contractVersion": 1,
             "expectedRevision": revision,
             "config": {
-                "apiFormat": "openai-chat-completions",
-                "endpoint": format!("http://{address}/v1/chat/completions"),
-                "model": "fixture-model"
+                "defaultProfileId": "model_fixture",
+                "connections": [{
+                    "id": "conn_fixture",
+                    "kind": "openaiCompatible",
+                    "displayName": "Fixture provider",
+                    "baseUrl": format!("http://{address}/v1"),
+                    "enabled": true,
+                    "wireApi": "openaiChatCompletions"
+                }],
+                "profiles": [{
+                    "id": "model_fixture",
+                    "connectionId": "conn_fixture",
+                    "displayName": "Fixture model",
+                    "modelId": "fixture-model"
+                }]
             },
-            "apiKeyUpdate": {"action": "preserve"}
+            "credentialUpdates": [{
+                "connectionId": "conn_fixture",
+                "action": "preserve"
+            }]
         })
     )
     .expect("write model config");

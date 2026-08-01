@@ -915,15 +915,9 @@ fn model_configuration_is_resolved_per_turn_without_restarting_app_server() {
         "params": {"threadId": thread_id, "input": "Hello"}
         }),
     );
-    assert_eq!(read_json(&mut stdout)["id"], "missing-model");
-    loop {
-        let message = read_json(&mut stdout);
-        if message["method"] == "turn/completed" {
-            assert_eq!(message["params"]["turn"]["status"], "failed");
-            assert_eq!(message["params"]["turn"]["error"]["kind"], "invalidRequest");
-            break;
-        }
-    }
+    let missing_model = read_json(&mut stdout);
+    assert_eq!(missing_model["id"], "missing-model");
+    assert_eq!(missing_model["error"]["message"], "Model unavailable");
 
     let _provider = MockProvider::start_with_body(
         home.path(),
@@ -1680,11 +1674,26 @@ fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
             "contractVersion": 1,
             "expectedRevision": revision,
             "config": {
-                "apiFormat": "openai-chat-completions",
-                "endpoint": format!("http://{address}/v1/chat/completions"),
-                "model": "fixture-model"
+                "defaultProfileId": "model_fixture",
+                "connections": [{
+                    "id": "conn_fixture",
+                    "kind": "openaiCompatible",
+                    "displayName": "Fixture provider",
+                    "baseUrl": format!("http://{address}/v1"),
+                    "enabled": true,
+                    "wireApi": "openaiChatCompletions"
+                }],
+                "profiles": [{
+                    "id": "model_fixture",
+                    "connectionId": "conn_fixture",
+                    "displayName": "Fixture model",
+                    "modelId": "fixture-model"
+                }]
             },
-            "apiKeyUpdate": {"action": "preserve"}
+            "credentialUpdates": [{
+                "connectionId": "conn_fixture",
+                "action": "preserve"
+            }]
         })
     )
     .expect("write model config");

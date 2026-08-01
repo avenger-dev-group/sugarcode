@@ -1,7 +1,15 @@
 use crate::PreparedMessage;
 
 pub const MAX_PROVIDER_CONTEXT_BYTES: usize = 4 * 1024 * 1024;
-pub const COMPACTION_TARGET_BYTES: usize = 3 * 1024 * 1024;
+pub const DEFAULT_PROVIDER_CONTEXT_TOKENS: usize = 128 * 1024;
+pub const PROVIDER_OUTPUT_RESERVE_TOKENS: usize = 16 * 1024;
+const CONSERVATIVE_UTF8_BYTES_PER_TOKEN: usize = 3;
+// OpenAI-compatible endpoints do not expose one portable tokenizer or context
+// metadata contract. Use a conservative provider-neutral estimate and compact
+// before the 128K window so the model retains a 16K response allowance.
+pub const COMPACTION_TARGET_BYTES: usize = (DEFAULT_PROVIDER_CONTEXT_TOKENS
+    - PROVIDER_OUTPUT_RESERVE_TOKENS)
+    * CONSERVATIVE_UTF8_BYTES_PER_TOKEN;
 
 pub(crate) fn prepared_message_bytes(message: &PreparedMessage) -> usize {
     match message {
@@ -74,3 +82,7 @@ pub(crate) fn prepared_tool_arguments(
         _ => serde_json::json!({ "path": path }),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/context.rs"]
+mod tests;

@@ -180,7 +180,7 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
     );
     assert_eq!(
         continued_messages[1]["tool_calls"][0]["function"]["name"],
-        "workspace/search"
+        "workspace_search"
     );
     assert_eq!(
         continued_messages[1]["tool_calls"][0]["function"]["arguments"],
@@ -195,15 +195,15 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
 }
 
 fn expected_workspace_tools() -> Vec<&'static str> {
-    let mut tools = vec!["workspace/read", "workspace/list", "workspace/search"];
+    let mut tools = vec!["workspace_read", "workspace_list", "workspace_search"];
     if !cfg!(windows) {
-        tools.push("shell/exec");
+        tools.push("shell_exec");
     }
     tools.extend([
-        "collaboration/dispatch",
-        "collaboration/amend",
-        "collaboration/wait",
-        "collaboration/interrupt",
+        "collaboration_dispatch",
+        "collaboration_amend",
+        "collaboration_wait",
+        "collaboration_interrupt",
     ]);
     tools
 }

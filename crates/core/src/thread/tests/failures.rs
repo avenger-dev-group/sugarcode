@@ -101,6 +101,7 @@ fn failed_fork_write_does_not_materialize_or_advance_ids() {
     let source = DurableThreadSnapshot {
         id: source_id.clone(),
         turns: vec![DurableTurnSnapshot {
+            model: None,
             id: TurnId::new("turn_0000000000000001"),
             status: DurableTurnStatus::Completed,
             items: vec![DurableItemSnapshot::AgentMessage {

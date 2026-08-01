@@ -34,6 +34,8 @@ use crate::McpToolCallApprovalParams;
 use crate::McpToolCallApprovalResponse;
 use crate::McpToolCallApprovalResponseDecision;
 use crate::McpToolResult;
+use crate::ModelProviderKind;
+use crate::ModelSelectionSnapshot;
 use crate::PlatformInfo;
 use crate::ProcessOutcome;
 use crate::RequestId;
@@ -172,6 +174,8 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         TurnSnapshotStatus::decl(),
         TurnSnapshot::decl(),
         ThreadResumeResponse::decl(),
+        ModelProviderKind::decl(),
+        ModelSelectionSnapshot::decl(),
         Turn::decl(),
         TurnStatus::decl(),
         TurnErrorKind::decl(),
@@ -460,6 +464,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("ThreadResumeResponse.schema.json"),
         &schema_for!(ThreadResumeResponse),
+    )?;
+    write_schema(
+        out_dir.join("ModelProviderKind.schema.json"),
+        &schema_for!(ModelProviderKind),
+    )?;
+    write_schema(
+        out_dir.join("ModelSelectionSnapshot.schema.json"),
+        &schema_for!(ModelSelectionSnapshot),
     )?;
     write_schema(out_dir.join("Turn.schema.json"), &schema_for!(Turn))?;
     write_schema(

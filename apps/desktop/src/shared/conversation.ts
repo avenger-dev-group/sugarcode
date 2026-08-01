@@ -353,14 +353,29 @@ export type ConversationTurnError = Readonly<{
     | 'incomplete'
     | 'filtered'
     | 'unsupportedOutput'
+    | 'unsupportedToolArguments'
     | 'outputTooLarge'
     | 'stateUnavailable';
   retryable: boolean;
 }>;
 
+export type ConversationModelSelection = Readonly<{
+  profileId: string;
+  providerKind:
+    | 'openai'
+    | 'anthropic'
+    | 'gemini'
+    | 'metallm'
+    | 'openaiCompatible';
+  modelId: string;
+  displayName: string;
+  contextWindowTokens: number;
+}>;
+
 export type ConversationTurn = Readonly<{
   id: string;
   status: ConversationTurnStatus;
+  model?: ConversationModelSelection;
   messages: readonly ConversationMessage[];
   pendingAgentOutputs?: readonly ConversationAgentOutput[];
   activities?: readonly ConversationActivity[];
@@ -431,7 +446,9 @@ export type ConversationApi = Readonly<{
   onConversationStateChanged: (
     listener: ConversationStateListener,
   ) => () => void;
-  sendConversationMessage: (input: string) => Promise<ConversationActionResult>;
+  sendConversationMessage: (
+    request: ConversationSendRequest,
+  ) => Promise<ConversationActionResult>;
   stopConversationTurn: () => Promise<ConversationActionResult>;
   searchConversationThreads: (
     query: string,
@@ -452,6 +469,11 @@ export type ConversationApi = Readonly<{
   deleteConversationThread: (
     threadId: string,
   ) => Promise<ConversationActionResult>;
+}>;
+
+export type ConversationSendRequest = Readonly<{
+  input: string;
+  modelProfileId?: string;
 }>;
 
 const PHASES = new Set<ConversationPhase>([
@@ -487,6 +509,7 @@ const ERROR_KINDS = new Set<ConversationTurnError['kind']>([
   'incomplete',
   'filtered',
   'unsupportedOutput',
+  'unsupportedToolArguments',
   'outputTooLarge',
   'stateUnavailable',
 ]);
@@ -1114,6 +1137,22 @@ const isTurn = (value: unknown): value is ConversationTurn => {
     !TURN_STATUSES.has(value.status as ConversationTurnStatus) ||
     !Array.isArray(value.messages) ||
     !value.messages.every(isMessage) ||
+    (Object.hasOwn(value, 'model') &&
+      (!isRecord(value.model) ||
+        !/^[A-Za-z0-9_-]{1,64}$/u.test(
+          value.model.profileId as string,
+        ) ||
+        ![
+          'openai',
+          'anthropic',
+          'gemini',
+          'metallm',
+          'openaiCompatible',
+        ].includes(value.model.providerKind as string) ||
+        typeof value.model.modelId !== 'string' ||
+        typeof value.model.displayName !== 'string' ||
+        !Number.isInteger(value.model.contextWindowTokens) ||
+        (value.model.contextWindowTokens as number) < 4_096)) ||
     (Object.hasOwn(value, 'pendingAgentOutputs') &&
       (!Array.isArray(pendingAgentOutputs) ||
         pendingAgentOutputs.length > 1 ||
@@ -1373,6 +1412,18 @@ export const isValidConversationInput = (value: unknown): value is string =>
   typeof value === 'string' &&
   value.trim().length > 0 &&
   new TextEncoder().encode(value).byteLength <= MAX_CONVERSATION_INPUT_BYTES;
+
+export const isConversationSendRequest = (
+  value: unknown,
+): value is ConversationSendRequest =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['input', 'modelProfileId'].includes(key),
+  ) &&
+  isValidConversationInput(value.input) &&
+  (value.modelProfileId === undefined ||
+    (typeof value.modelProfileId === 'string' &&
+      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
 
 export const isValidThreadSearchInput = (value: unknown): value is string => {
   if (

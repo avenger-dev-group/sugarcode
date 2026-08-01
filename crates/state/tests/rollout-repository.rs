@@ -8,6 +8,7 @@ use sugarcode_state::DurableMcpToolResult;
 use sugarcode_state::DurableProcessOutcome;
 use sugarcode_state::DurableProcessResult;
 use sugarcode_state::DurableThreadLifecycle;
+use sugarcode_state::DurableThreadOrigin;
 use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableToolResult;
 use sugarcode_state::DurableTurnSnapshot;
@@ -27,6 +28,7 @@ use tempfile::tempdir;
 
 fn completed_turn(sequence: u64) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
+        model: None,
         id: TurnId::new(format!("turn_{sequence:016}")),
         status: DurableTurnStatus::Completed,
         items: vec![DurableItemSnapshot::AgentMessage {
@@ -43,6 +45,7 @@ fn completed_turn(sequence: u64) -> DurableTurnSnapshot {
 
 fn started_text_turn() -> DurableTurnSnapshot {
     DurableTurnSnapshot {
+        model: None,
         id: TurnId::new("turn_0000000000000001"),
         status: DurableTurnStatus::InProgress,
         items: vec![

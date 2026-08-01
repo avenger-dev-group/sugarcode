@@ -2,6 +2,7 @@ import type {
   ConversationActionResult,
   ConversationStateListener,
   ConversationStateSnapshot,
+  ConversationSendRequest,
 } from '@/shared/conversation';
 
 const desktopApi = (): Window['sugarcode'] => window.sugarcode;
@@ -15,9 +16,9 @@ export const onConversationStateChanged = (
 ): (() => void) => desktopApi().onConversationStateChanged(listener);
 
 export const sendConversationMessage = (
-  input: string,
+  request: ConversationSendRequest,
 ): Promise<ConversationActionResult> =>
-  desktopApi().sendConversationMessage(input);
+  desktopApi().sendConversationMessage(request);
 
 export const stopConversationTurn =
   (): Promise<ConversationActionResult> =>

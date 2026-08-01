@@ -2,28 +2,70 @@ export const MODEL_CONFIG_GET_CHANNEL = 'model-config:get';
 export const MODEL_CONFIG_SAVE_CHANNEL = 'model-config:save';
 export const MODEL_CONFIG_DELETE_API_KEY_CHANNEL =
   'model-config:delete-api-key';
+export const MODEL_CONFIG_DISCOVER_CHANNEL = 'model-config:discover';
 
-export type ModelApiKeyStatus =
-  | 'notConfigured'
-  | 'present';
+export type ModelProviderKind =
+  | 'openai'
+  | 'anthropic'
+  | 'gemini'
+  | 'metallm'
+  | 'openaiCompatible';
+
+export type ModelWireApi =
+  | 'openaiResponses'
+  | 'openaiChatCompletions'
+  | 'anthropicMessages'
+  | 'geminiGenerateContent';
+
+export type ModelCapabilityMode = 'auto' | 'enabled' | 'disabled';
+export type ModelApiKeyStatus = 'notConfigured' | 'present';
+
+export type ModelConnectionValue = Readonly<{
+  id: string;
+  kind: ModelProviderKind;
+  displayName: string;
+  baseUrl: string;
+  enabled: boolean;
+  wireApi: ModelWireApi;
+}>;
+
+export type ModelProfileValue = Readonly<{
+  id: string;
+  connectionId: string;
+  displayName: string;
+  modelId: string;
+  contextWindowTokens?: number;
+  strictTools: ModelCapabilityMode;
+  parallelTools: ModelCapabilityMode;
+}>;
 
 export type ModelConfigValue = Readonly<{
-  apiFormat: 'openai-chat-completions';
-  endpoint: string;
-  model: string;
+  defaultProfileId: string;
+  connections: readonly ModelConnectionValue[];
+  profiles: readonly ModelProfileValue[];
+}>;
+
+export type ModelCredentialStatus = Readonly<{
+  connectionId: string;
+  status: ModelApiKeyStatus;
 }>;
 
 export type ModelConfigInspection = Readonly<{
   contractVersion: 1;
   revision: string;
   config: ModelConfigValue | null;
-  apiKeyStatus: ModelApiKeyStatus;
+  credentialStatuses: readonly ModelCredentialStatus[];
 }>;
+
+export type ModelCredentialUpdate =
+  | Readonly<{ action: 'preserve'; connectionId: string }>
+  | Readonly<{ action: 'set'; connectionId: string; value: string }>
+  | Readonly<{ action: 'delete'; connectionId: string }>;
 
 export type ModelConfigSaveRequest = Readonly<{
   expectedRevision: string;
   config: ModelConfigValue;
-  apiKey?: string;
+  credentialUpdates: readonly ModelCredentialUpdate[];
 }>;
 
 export type ModelConfigActionResult = Readonly<{
@@ -37,14 +79,27 @@ export type ModelConfigActionResult = Readonly<{
     | 'stale';
 }>;
 
+export type DiscoveredModel = Readonly<{
+  modelId: string;
+  displayName: string;
+  contextWindowTokens?: number;
+}>;
+
+export type ModelDiscoveryResult = Readonly<{
+  connectionId: string;
+  models: readonly DiscoveredModel[];
+}>;
+
 export type ModelConfigApi = Readonly<{
   getModelConfig: () => Promise<ModelConfigInspection>;
   saveModelConfig: (
     request: ModelConfigSaveRequest,
   ) => Promise<ModelConfigActionResult>;
   deleteModelApiKey: (
+    connectionId: string,
     expectedRevision: string,
   ) => Promise<ModelConfigActionResult>;
+  discoverModels: (connectionId: string) => Promise<ModelDiscoveryResult>;
 }>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -68,54 +123,218 @@ const isRevision = (value: unknown): value is string =>
 const byteLength = (value: string): number =>
   new TextEncoder().encode(value).byteLength;
 
+const isId = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^[A-Za-z0-9_-]{1,64}$/u.test(value);
+
+const isDisplayName = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  byteLength(value) <= 128;
+
+const PROVIDER_KINDS: readonly ModelProviderKind[] = [
+  'openai',
+  'anthropic',
+  'gemini',
+  'metallm',
+  'openaiCompatible',
+];
+
+const WIRE_APIS: readonly ModelWireApi[] = [
+  'openaiResponses',
+  'openaiChatCompletions',
+  'anthropicMessages',
+  'geminiGenerateContent',
+];
+
+const CAPABILITY_MODES: readonly ModelCapabilityMode[] = [
+  'auto',
+  'enabled',
+  'disabled',
+];
+
+const isConnection = (value: unknown): value is ModelConnectionValue =>
+  isRecord(value) &&
+  hasOnlyKeys(value, [
+    'id',
+    'kind',
+    'displayName',
+    'baseUrl',
+    'enabled',
+    'wireApi',
+  ]) &&
+  isId(value.id) &&
+  PROVIDER_KINDS.includes(value.kind as ModelProviderKind) &&
+  isDisplayName(value.displayName) &&
+  typeof value.baseUrl === 'string' &&
+  byteLength(value.baseUrl) <= 16_384 &&
+  typeof value.enabled === 'boolean' &&
+  WIRE_APIS.includes(value.wireApi as ModelWireApi);
+
+const isProfile = (value: unknown): value is ModelProfileValue =>
+  isRecord(value) &&
+  hasOnlyKeys(
+    value,
+    [
+      'id',
+      'connectionId',
+      'displayName',
+      'modelId',
+      'strictTools',
+      'parallelTools',
+    ],
+    ['contextWindowTokens'],
+  ) &&
+  isId(value.id) &&
+  isId(value.connectionId) &&
+  isDisplayName(value.displayName) &&
+  typeof value.modelId === 'string' &&
+  value.modelId.length > 0 &&
+  byteLength(value.modelId) <= 256 &&
+  (value.contextWindowTokens === undefined ||
+    (Number.isInteger(value.contextWindowTokens) &&
+      (value.contextWindowTokens as number) >= 4_096 &&
+      (value.contextWindowTokens as number) <= 2_097_152)) &&
+  CAPABILITY_MODES.includes(value.strictTools as ModelCapabilityMode) &&
+  CAPABILITY_MODES.includes(value.parallelTools as ModelCapabilityMode);
+
 export const isModelConfigValue = (
   value: unknown,
 ): value is ModelConfigValue => {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['apiFormat', 'endpoint', 'model']) ||
-    value.apiFormat !== 'openai-chat-completions' ||
-    typeof value.endpoint !== 'string' ||
-    byteLength(value.endpoint) > 16 * 1024 ||
-    typeof value.model !== 'string' ||
-    byteLength(value.model) > 256
+    !hasOnlyKeys(value, [
+      'defaultProfileId',
+      'connections',
+      'profiles',
+    ]) ||
+    !isId(value.defaultProfileId) ||
+    !Array.isArray(value.connections) ||
+    value.connections.length < 1 ||
+    value.connections.length > 16 ||
+    !value.connections.every(isConnection) ||
+    !Array.isArray(value.profiles) ||
+    value.profiles.length < 1 ||
+    value.profiles.length > 128 ||
+    !value.profiles.every(isProfile)
   ) {
     return false;
   }
-  return true;
+  const connections = value.connections as ModelConnectionValue[];
+  const profiles = value.profiles as ModelProfileValue[];
+  const connectionIds = new Set(
+    connections.map((connection) => connection.id),
+  );
+  const profileIds = new Set(profiles.map((profile) => profile.id));
+  if (
+    connectionIds.size !== connections.length ||
+    profileIds.size !== profiles.length ||
+    profiles.some(
+      (profile) => !connectionIds.has(profile.connectionId),
+    )
+  ) {
+    return false;
+  }
+  const wireApiMatches = connections.every((connection) => {
+    switch (connection.kind) {
+      case 'openai':
+        return connection.wireApi === 'openaiResponses';
+      case 'anthropic':
+        return connection.wireApi === 'anthropicMessages';
+      case 'gemini':
+        return connection.wireApi === 'geminiGenerateContent';
+      case 'metallm':
+        return connection.wireApi === 'openaiChatCompletions';
+      case 'openaiCompatible':
+        return [
+          'openaiResponses',
+          'openaiChatCompletions',
+        ].includes(connection.wireApi);
+    }
+  });
+  const defaultProfile = profiles.find(
+    (profile) => profile.id === value.defaultProfileId,
+  );
+  const defaultConnection = connections.find(
+    (connection) =>
+      connection.id === defaultProfile?.connectionId,
+  );
+  return wireApiMatches && defaultConnection?.enabled === true;
 };
+
+const isCredentialStatus = (
+  value: unknown,
+): value is ModelCredentialStatus =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['connectionId', 'status']) &&
+  isId(value.connectionId) &&
+  ['notConfigured', 'present'].includes(value.status as string);
 
 export const isModelConfigInspection = (
   value: unknown,
-): value is ModelConfigInspection => {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      'contractVersion',
-      'revision',
-      'config',
-      'apiKeyStatus',
-    ]) ||
-    value.contractVersion !== 1 ||
-    !isRevision(value.revision) ||
-    (value.config !== null && !isModelConfigValue(value.config)) ||
-    !['notConfigured', 'present'].includes(value.apiKeyStatus as string)
-  ) {
+): value is ModelConfigInspection =>
+  isRecord(value) &&
+  hasOnlyKeys(value, [
+    'contractVersion',
+    'revision',
+    'config',
+    'credentialStatuses',
+  ]) &&
+  value.contractVersion === 1 &&
+  isRevision(value.revision) &&
+  (value.config === null || isModelConfigValue(value.config)) &&
+  Array.isArray(value.credentialStatuses) &&
+  value.credentialStatuses.every(isCredentialStatus);
+
+const isCredentialUpdate = (
+  value: unknown,
+): value is ModelCredentialUpdate => {
+  if (!isRecord(value) || !isId(value.connectionId)) {
     return false;
   }
-  return value.config !== null || value.apiKeyStatus === 'notConfigured';
+  if (value.action === 'set') {
+    return (
+      hasOnlyKeys(value, ['action', 'connectionId', 'value']) &&
+      typeof value.value === 'string' &&
+      value.value.length > 0 &&
+      byteLength(value.value) <= 2_048
+    );
+  }
+  return (
+    ['preserve', 'delete'].includes(value.action as string) &&
+    hasOnlyKeys(value, ['action', 'connectionId'])
+  );
 };
 
 export const isModelConfigSaveRequest = (
   value: unknown,
-): value is ModelConfigSaveRequest =>
-  isRecord(value) &&
-  hasOnlyKeys(value, ['expectedRevision', 'config'], ['apiKey']) &&
-  isRevision(value.expectedRevision) &&
-  isModelConfigValue(value.config) &&
-  (value.apiKey === undefined ||
-    (typeof value.apiKey === 'string' &&
-      byteLength(value.apiKey) <= 2_048));
+): value is ModelConfigSaveRequest => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'expectedRevision',
+      'config',
+      'credentialUpdates',
+    ]) ||
+    !isRevision(value.expectedRevision) ||
+    !isModelConfigValue(value.config) ||
+    !Array.isArray(value.credentialUpdates) ||
+    !value.credentialUpdates.every(isCredentialUpdate)
+  ) {
+    return false;
+  }
+  const connectionIds = new Set(
+    value.config.connections.map((connection) => connection.id),
+  );
+  const credentialIds = new Set(
+    value.credentialUpdates.map((update) => update.connectionId),
+  );
+  return (
+    credentialIds.size === value.credentialUpdates.length &&
+    credentialIds.size === connectionIds.size &&
+    [...credentialIds].every((id) => connectionIds.has(id))
+  );
+};
 
 export const isModelConfigActionResult = (
   value: unknown,
@@ -139,3 +358,24 @@ export const isModelConfigActionResult = (
   }
   return value.accepted === (value.state === 'saved');
 };
+
+export const isModelDiscoveryResult = (
+  value: unknown,
+): value is ModelDiscoveryResult =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['connectionId', 'models']) &&
+  isId(value.connectionId) &&
+  Array.isArray(value.models) &&
+  value.models.every(
+    (model) =>
+      isRecord(model) &&
+      hasOnlyKeys(model, ['modelId', 'displayName'], [
+        'contextWindowTokens',
+      ]) &&
+      typeof model.modelId === 'string' &&
+      typeof model.displayName === 'string' &&
+      (model.contextWindowTokens === undefined ||
+        (Number.isInteger(model.contextWindowTokens) &&
+          (model.contextWindowTokens as number) >= 4_096 &&
+          (model.contextWindowTokens as number) <= 2_097_152)),
+  );

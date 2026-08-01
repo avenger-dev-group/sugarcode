@@ -286,6 +286,24 @@ fn runtime(provider: RecordedProvider) -> (CoreRuntime, mpsc::Receiver<CoreEvent
     (runtime, events, thread_id)
 }
 
+#[test]
+fn model_capabilities_derive_context_reserve_and_absolute_byte_cap() {
+    let default = ModelCapabilities::new(131_072, true, true);
+    assert_eq!(default.output_reserve_tokens, 16_384);
+    assert_eq!(default.input_compaction_target_tokens(), 114_688);
+    assert_eq!(default.input_compaction_target_bytes(), 344_064);
+
+    let small = ModelCapabilities::new(8_192, false, false);
+    assert_eq!(small.output_reserve_tokens, 4_096);
+    assert_eq!(small.input_compaction_target_tokens(), 4_096);
+
+    let maximum = ModelCapabilities::new(2_097_152, false, false);
+    assert_eq!(
+        maximum.input_compaction_target_bytes(),
+        crate::context::MAX_PROVIDER_CONTEXT_BYTES
+    );
+}
+
 mod agent_instructions;
 mod collaboration;
 mod interruption;

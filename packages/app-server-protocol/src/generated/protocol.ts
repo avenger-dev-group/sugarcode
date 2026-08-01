@@ -136,19 +136,23 @@ export type ThreadResumeParams = { threadId: string, };
 
 export type TurnSnapshotStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
-export type TurnSnapshot = { id: string, status: TurnSnapshotStatus, items: Array<Item>, error?: TurnError, };
+export type TurnSnapshot = { id: string, status: TurnSnapshotStatus, items: Array<Item>, model?: ModelSelectionSnapshot, error?: TurnError, };
 
 export type ThreadResumeResponse = { thread: Thread, turns: Array<TurnSnapshot>, };
 
-export type Turn = { id: string, status: TurnStatus, error?: TurnError, };
+export type ModelProviderKind = "openai" | "anthropic" | "gemini" | "metallm" | "openaiCompatible";
+
+export type ModelSelectionSnapshot = { profileId: string, providerKind: ModelProviderKind, modelId: string, displayName: string, contextWindowTokens: number, };
+
+export type Turn = { id: string, status: TurnStatus, model?: ModelSelectionSnapshot, error?: TurnError, };
 
 export type TurnStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
-export type TurnErrorKind = "authentication" | "invalidRequest" | "rateLimited" | "timeout" | "transport" | "disconnected" | "server" | "protocol" | "incomplete" | "filtered" | "unsupportedOutput" | "outputTooLarge" | "stateUnavailable";
+export type TurnErrorKind = "authentication" | "invalidRequest" | "rateLimited" | "timeout" | "transport" | "disconnected" | "server" | "protocol" | "incomplete" | "filtered" | "unsupportedOutput" | "unsupportedToolArguments" | "outputTooLarge" | "stateUnavailable";
 
 export type TurnError = { kind: TurnErrorKind, retryable: boolean, };
 
-export type TurnStartParams = { threadId: string, input?: string, };
+export type TurnStartParams = { threadId: string, input?: string, modelProfileId?: string, };
 
 export type TurnStartResponse = { turn: Turn, };
 

@@ -17,6 +17,13 @@ pub const CURRENT_CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 pub const MAX_MODEL_NAME_BYTES: usize = 256;
 pub const MAX_MODEL_API_KEY_BYTES: usize = 2 * 1024;
+pub const MAX_MODEL_CONNECTIONS: usize = 16;
+pub const MAX_MODEL_PROFILES: usize = 128;
+pub const MAX_MODEL_ID_BYTES: usize = 64;
+pub const MAX_MODEL_DISPLAY_NAME_BYTES: usize = 128;
+pub const MIN_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 4_096;
+pub const MAX_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 2_097_152;
+pub const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 131_072;
 pub const MAX_MCP_SERVERS: usize = 2;
 pub const MAX_MCP_SERVER_ID_BYTES: usize = 32;
 pub const MAX_MCP_PATH_BYTES: usize = 1024;
@@ -26,56 +33,123 @@ pub const MAX_MCP_ARG_BYTES: usize = 8 * 1024;
 pub const MAX_MCP_ARGV_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelApiFormat {
-    OpenAiChatCompletions,
+pub enum ModelProviderKind {
+    OpenAi,
+    Anthropic,
+    Gemini,
+    MetaLlm,
+    OpenAiCompatible,
 }
 
-impl ModelApiFormat {
+impl ModelProviderKind {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::OpenAiChatCompletions => "openai-chat-completions",
+            Self::OpenAi => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::MetaLlm => "metallm",
+            Self::OpenAiCompatible => "openaiCompatible",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelWireApi {
+    OpenAiResponses,
+    OpenAiChatCompletions,
+    AnthropicMessages,
+    GeminiGenerateContent,
+}
+
+impl ModelWireApi {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiResponses => "openaiResponses",
+            Self::OpenAiChatCompletions => "openaiChatCompletions",
+            Self::AnthropicMessages => "anthropicMessages",
+            Self::GeminiGenerateContent => "geminiGenerateContent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelCapabilityMode {
+    Auto,
+    Enabled,
+    Disabled,
+}
+
+impl ModelCapabilityMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
         }
     }
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct ModelConfig {
-    api_format: ModelApiFormat,
-    endpoint: Url,
-    model: String,
+pub struct ModelConnection {
+    id: String,
+    kind: ModelProviderKind,
+    display_name: String,
+    base_url: Url,
+    enabled: bool,
+    wire_api: ModelWireApi,
     api_key: Option<Zeroizing<String>>,
 }
 
-impl ModelConfig {
+impl ModelConnection {
     pub fn new(
-        api_format: ModelApiFormat,
-        endpoint: Url,
-        model: String,
+        id: String,
+        kind: ModelProviderKind,
+        display_name: String,
+        base_url: Url,
+        enabled: bool,
+        wire_api: Option<ModelWireApi>,
         api_key: Option<String>,
     ) -> Result<Self, &'static str> {
-        validate_endpoint(api_format, &endpoint)?;
-        validate_model(&model)?;
+        validate_model_id(&id)?;
+        validate_model_display_name(&display_name)?;
+        validate_model_base_url(&base_url)?;
         if let Some(api_key) = api_key.as_deref() {
             validate_model_api_key(api_key)?;
         }
+        let wire_api = resolve_wire_api(kind, wire_api)?;
         Ok(Self {
-            api_format,
-            endpoint,
-            model,
+            id,
+            kind,
+            display_name,
+            base_url,
+            enabled,
+            wire_api,
             api_key: api_key.map(Zeroizing::new),
         })
     }
 
-    pub const fn api_format(&self) -> ModelApiFormat {
-        self.api_format
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
-    pub fn endpoint(&self) -> &Url {
-        &self.endpoint
+    pub const fn kind(&self) -> ModelProviderKind {
+        self.kind
     }
 
-    pub fn model(&self) -> &str {
-        &self.model
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
+    }
+
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub const fn wire_api(&self) -> ModelWireApi {
+        self.wire_api
     }
 
     pub fn api_key(&self) -> Option<&str> {
@@ -83,15 +157,171 @@ impl ModelConfig {
     }
 }
 
-impl fmt::Debug for ModelConfig {
+impl fmt::Debug for ModelConnection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ModelConfig")
-            .field("api_format", &self.api_format)
-            .field("endpoint", &"<redacted>")
-            .field("model", &"<redacted>")
+            .debug_struct("ModelConnection")
+            .field("id", &self.id)
+            .field("kind", &self.kind)
+            .field("display_name", &self.display_name)
+            .field("base_url", &"<redacted>")
+            .field("enabled", &self.enabled)
+            .field("wire_api", &self.wire_api)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelProfile {
+    id: String,
+    connection_id: String,
+    display_name: String,
+    model_id: String,
+    context_window_tokens: Option<u32>,
+    strict_tools: ModelCapabilityMode,
+    parallel_tools: ModelCapabilityMode,
+}
+
+impl ModelProfile {
+    pub fn new(
+        id: String,
+        connection_id: String,
+        display_name: String,
+        model_id: String,
+        context_window_tokens: Option<u32>,
+        strict_tools: ModelCapabilityMode,
+        parallel_tools: ModelCapabilityMode,
+    ) -> Result<Self, &'static str> {
+        validate_model_id(&id)?;
+        validate_model_id(&connection_id)?;
+        validate_model_display_name(&display_name)?;
+        validate_model_name(&model_id)?;
+        if context_window_tokens.is_some_and(|value| {
+            !(MIN_MODEL_CONTEXT_WINDOW_TOKENS..=MAX_MODEL_CONTEXT_WINDOW_TOKENS).contains(&value)
+        }) {
+            return Err("invalidContextWindow");
+        }
+        Ok(Self {
+            id,
+            connection_id,
+            display_name,
+            model_id,
+            context_window_tokens,
+            strict_tools,
+            parallel_tools,
+        })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn connection_id(&self) -> &str {
+        &self.connection_id
+    }
+
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    pub const fn context_window_tokens(&self) -> Option<u32> {
+        self.context_window_tokens
+    }
+
+    pub const fn effective_context_window_tokens(&self) -> u32 {
+        match self.context_window_tokens {
+            Some(value) => value,
+            None => DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+        }
+    }
+
+    pub const fn strict_tools(&self) -> ModelCapabilityMode {
+        self.strict_tools
+    }
+
+    pub const fn parallel_tools(&self) -> ModelCapabilityMode {
+        self.parallel_tools
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelCatalog {
+    default_profile_id: String,
+    connections: Vec<ModelConnection>,
+    profiles: Vec<ModelProfile>,
+}
+
+impl ModelCatalog {
+    pub fn new(
+        default_profile_id: String,
+        connections: Vec<ModelConnection>,
+        profiles: Vec<ModelProfile>,
+    ) -> Result<Self, &'static str> {
+        validate_model_id(&default_profile_id)?;
+        if connections.is_empty() || connections.len() > MAX_MODEL_CONNECTIONS {
+            return Err("invalidConnectionCount");
+        }
+        if profiles.is_empty() || profiles.len() > MAX_MODEL_PROFILES {
+            return Err("invalidProfileCount");
+        }
+        let mut connection_ids = std::collections::BTreeSet::new();
+        if connections
+            .iter()
+            .any(|connection| !connection_ids.insert(connection.id()))
+        {
+            return Err("duplicateConnectionId");
+        }
+        let mut profile_ids = std::collections::BTreeSet::new();
+        if profiles.iter().any(|profile| {
+            !profile_ids.insert(profile.id()) || !connection_ids.contains(profile.connection_id())
+        }) {
+            return Err("invalidProfileReference");
+        }
+        let Some(default_profile) = profiles
+            .iter()
+            .find(|profile| profile.id() == default_profile_id)
+        else {
+            return Err("invalidDefaultProfile");
+        };
+        let default_connection = connections
+            .iter()
+            .find(|connection| connection.id() == default_profile.connection_id())
+            .ok_or("invalidDefaultProfile")?;
+        if !default_connection.enabled() {
+            return Err("disabledDefaultConnection");
+        }
+        Ok(Self {
+            default_profile_id,
+            connections,
+            profiles,
+        })
+    }
+
+    pub fn default_profile_id(&self) -> &str {
+        &self.default_profile_id
+    }
+
+    pub fn connections(&self) -> &[ModelConnection] {
+        &self.connections
+    }
+
+    pub fn profiles(&self) -> &[ModelProfile] {
+        &self.profiles
+    }
+
+    pub fn profile(&self, id: &str) -> Option<&ModelProfile> {
+        self.profiles.iter().find(|profile| profile.id() == id)
+    }
+
+    pub fn connection(&self, id: &str) -> Option<&ModelConnection> {
+        self.connections
+            .iter()
+            .find(|connection| connection.id() == id)
     }
 }
 
@@ -246,7 +476,7 @@ pub struct EffectiveConfig {
     home: SugarCodeHome,
     config_path: PathBuf,
     schema_version: u32,
-    model: Option<ModelConfig>,
+    models: Option<ModelCatalog>,
     mcp_servers: Vec<McpServerConfig>,
 }
 
@@ -263,8 +493,8 @@ impl EffectiveConfig {
         self.schema_version
     }
 
-    pub fn model(&self) -> Option<&ModelConfig> {
-        self.model.as_ref()
+    pub fn models(&self) -> Option<&ModelCatalog> {
+        self.models.as_ref()
     }
 
     pub fn mcp_servers(&self) -> &[McpServerConfig] {
@@ -279,7 +509,7 @@ impl fmt::Debug for EffectiveConfig {
             .field("home", &self.home)
             .field("config_path", &self.config_path)
             .field("schema_version", &self.schema_version)
-            .field("model", &self.model)
+            .field("models", &self.models)
             .field("mcp_servers", &self.mcp_servers)
             .finish()
     }
@@ -483,7 +713,12 @@ pub fn load_model_edit_config_for_home(
 fn is_model_section_error(error: &ConfigError) -> bool {
     match error {
         ConfigError::InvalidModelField { .. } => true,
-        ConfigError::UnknownField { field, .. } => field.starts_with("model."),
+        ConfigError::UnknownField { field, .. } => {
+            field == "model"
+                || field.starts_with("model.")
+                || field == "models"
+                || field.starts_with("models.")
+        }
         _ => false,
     }
 }
@@ -547,7 +782,12 @@ fn load_config_for_home(
 
     let mut unknown_fields = table
         .keys()
-        .filter(|field| !matches!(field.as_str(), "schema_version" | "model" | "mcp"))
+        .filter(|field| {
+            !matches!(
+                field.as_str(),
+                "schema_version" | "model" | "models" | "mcp"
+            )
+        })
         .cloned()
         .collect::<Vec<_>>();
     unknown_fields.sort();
@@ -583,10 +823,19 @@ fn load_config_for_home(
         });
     }
 
-    let model = if include_model {
-        match table.get("model") {
+    if include_model && table.contains_key("model") {
+        let (line, column) = field_position(contents, "model");
+        return Err(ConfigError::UnknownField {
+            path: config_path,
+            field: "model".to_owned(),
+            line,
+            column,
+        });
+    }
+    let models = if include_model {
+        match table.get("models") {
             None => None,
-            Some(value) => Some(parse_model_config(value, contents, &config_path)?),
+            Some(value) => Some(parse_model_catalog(value, contents, &config_path)?),
         }
     } else {
         None
@@ -600,7 +849,7 @@ fn load_config_for_home(
         home,
         config_path,
         schema_version: CURRENT_CONFIG_SCHEMA_VERSION,
-        model,
+        models,
         mcp_servers,
     })
 }
@@ -610,17 +859,17 @@ fn default_config(home: SugarCodeHome, config_path: PathBuf) -> EffectiveConfig 
         home,
         config_path,
         schema_version: CURRENT_CONFIG_SCHEMA_VERSION,
-        model: None,
+        models: None,
         mcp_servers: Vec::new(),
     }
 }
 
-pub fn save_model_config(
+pub fn save_model_catalog(
     home: &SugarCodeHome,
-    model: &ModelConfig,
+    models: &ModelCatalog,
 ) -> Result<EffectiveConfig, ConfigError> {
     let existing = load_model_edit_config_for_home(home.clone())?;
-    save_config(home, Some(model), existing.mcp_servers())
+    save_config(home, Some(models), existing.mcp_servers())
 }
 
 pub fn save_mcp_config(
@@ -640,19 +889,19 @@ pub fn save_mcp_config(
             kind: io::ErrorKind::InvalidInput,
         });
     }
-    let existing = load_effective_config_for_home(home.clone())?;
-    save_config(home, existing.model(), mcp_servers)
+    let existing = load_model_edit_config_for_home(home.clone())?;
+    save_config(home, existing.models(), mcp_servers)
 }
 
 fn save_config(
     home: &SugarCodeHome,
-    model: Option<&ModelConfig>,
+    models: Option<&ModelCatalog>,
     mcp_servers: &[McpServerConfig],
 ) -> Result<EffectiveConfig, ConfigError> {
     ensure_config_home(home)?;
     let config_path = home.path().join(CONFIG_FILE_NAME);
     reject_unsafe_config_target(&config_path)?;
-    let encoded = encode_config(model, mcp_servers)?;
+    let encoded = encode_config(models, mcp_servers)?;
     if encoded.len() as u64 > MAX_CONFIG_BYTES {
         return Err(ConfigError::WriteFailed {
             path: config_path,
@@ -789,20 +1038,20 @@ fn ensure_config_home(home: &SugarCodeHome) -> Result<(), ConfigError> {
     }
 }
 
-fn parse_model_config(
+fn parse_model_catalog(
     value: &toml::Value,
     contents: &str,
     path: &Path,
-) -> Result<ModelConfig, ConfigError> {
+) -> Result<ModelCatalog, ConfigError> {
     let table = value
         .as_table()
-        .ok_or_else(|| invalid_model_field(path, contents, "model", "expectedTable"))?;
+        .ok_or_else(|| invalid_model_field(path, contents, "models", "expectedTable"))?;
     let mut unknown = table
         .keys()
         .filter(|key| {
             !matches!(
                 key.as_str(),
-                "api_format" | "endpoint" | "model" | "api_key" | "credential"
+                "default_profile_id" | "connections" | "profiles"
             )
         })
         .cloned()
@@ -812,46 +1061,117 @@ fn parse_model_config(
         let (line, column) = field_position(contents, field);
         return Err(ConfigError::UnknownField {
             path: path.to_path_buf(),
-            field: format!("model.{field}"),
+            field: format!("models.{field}"),
             line,
             column,
         });
     }
 
-    let api_format = required_model_string(table, "api_format", contents, path)?;
-    let api_format = match api_format {
-        "openai-chat-completions" => ModelApiFormat::OpenAiChatCompletions,
+    let default_profile_id =
+        required_model_string(table, "default_profile_id", contents, path)?.to_owned();
+    let connections = table
+        .get("connections")
+        .ok_or_else(|| invalid_model_field(path, contents, "connections", "missingField"))?
+        .as_array()
+        .ok_or_else(|| invalid_model_field(path, contents, "connections", "expectedArray"))?;
+    if connections.is_empty() || connections.len() > MAX_MODEL_CONNECTIONS {
+        return Err(invalid_model_field(
+            path,
+            contents,
+            "connections",
+            "invalidConnectionCount",
+        ));
+    }
+    let connections = connections
+        .iter()
+        .map(|value| parse_model_connection(value, contents, path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let profiles = table
+        .get("profiles")
+        .ok_or_else(|| invalid_model_field(path, contents, "profiles", "missingField"))?
+        .as_array()
+        .ok_or_else(|| invalid_model_field(path, contents, "profiles", "expectedArray"))?;
+    if profiles.is_empty() || profiles.len() > MAX_MODEL_PROFILES {
+        return Err(invalid_model_field(
+            path,
+            contents,
+            "profiles",
+            "invalidProfileCount",
+        ));
+    }
+    let profiles = profiles
+        .iter()
+        .map(|value| parse_model_profile(value, contents, path))
+        .collect::<Result<Vec<_>, _>>()?;
+    ModelCatalog::new(default_profile_id, connections, profiles)
+        .map_err(|kind| invalid_model_field(path, contents, "models", kind))
+}
+
+fn parse_model_connection(
+    value: &toml::Value,
+    contents: &str,
+    path: &Path,
+) -> Result<ModelConnection, ConfigError> {
+    let table = value
+        .as_table()
+        .ok_or_else(|| invalid_model_field(path, contents, "connections", "expectedTable"))?;
+    reject_unknown_model_fields(
+        table,
+        &[
+            "id",
+            "kind",
+            "display_name",
+            "base_url",
+            "enabled",
+            "wire_api",
+            "api_key",
+        ],
+        "models.connections",
+        contents,
+        path,
+    )?;
+    let id = required_model_string(table, "id", contents, path)?.to_owned();
+    let kind = match required_model_string(table, "kind", contents, path)? {
+        "openai" => ModelProviderKind::OpenAi,
+        "anthropic" => ModelProviderKind::Anthropic,
+        "gemini" => ModelProviderKind::Gemini,
+        "metallm" => ModelProviderKind::MetaLlm,
+        "openaiCompatible" => ModelProviderKind::OpenAiCompatible,
         _ => {
             return Err(invalid_model_field(
                 path,
                 contents,
-                "api_format",
-                "unsupportedApiFormat",
+                "kind",
+                "unsupportedProviderKind",
             ));
         }
     };
-    let endpoint = required_model_string(table, "endpoint", contents, path)?;
-    let endpoint = Url::parse(endpoint)
-        .map_err(|_| invalid_model_field(path, contents, "endpoint", "invalidEndpoint"))?;
-    validate_endpoint(api_format, &endpoint)
-        .map_err(|kind| invalid_model_field(path, contents, "endpoint", kind))?;
-    let model = required_model_string(table, "model", contents, path)?.to_owned();
-    validate_model(&model).map_err(|kind| invalid_model_field(path, contents, "model", kind))?;
-    if table.get("credential").is_some_and(|value| !value.is_str()) {
-        return Err(invalid_model_field(
-            path,
-            contents,
-            "credential",
-            "expectedString",
-        ));
-    }
+    let display_name = required_model_string(table, "display_name", contents, path)?.to_owned();
+    let base_url = Url::parse(required_model_string(table, "base_url", contents, path)?)
+        .map_err(|_| invalid_model_field(path, contents, "base_url", "invalidEndpoint"))?;
+    let enabled = table
+        .get("enabled")
+        .ok_or_else(|| invalid_model_field(path, contents, "enabled", "missingField"))?
+        .as_bool()
+        .ok_or_else(|| invalid_model_field(path, contents, "enabled", "expectedBoolean"))?;
+    let wire_api = match table.get("wire_api") {
+        None => None,
+        Some(toml::Value::String(value)) => Some(
+            parse_wire_api(value)
+                .map_err(|kind| invalid_model_field(path, contents, "wire_api", kind))?,
+        ),
+        Some(_) => {
+            return Err(invalid_model_field(
+                path,
+                contents,
+                "wire_api",
+                "expectedString",
+            ));
+        }
+    };
     let api_key = match table.get("api_key") {
         None => None,
-        Some(toml::Value::String(api_key)) => {
-            validate_model_api_key(api_key)
-                .map_err(|kind| invalid_model_field(path, contents, "api_key", kind))?;
-            Some(api_key.clone())
-        }
+        Some(toml::Value::String(value)) => Some(value.clone()),
         Some(_) => {
             return Err(invalid_model_field(
                 path,
@@ -861,8 +1181,121 @@ fn parse_model_config(
             ));
         }
     };
-    ModelConfig::new(api_format, endpoint, model, api_key)
-        .map_err(|kind| invalid_model_field(path, contents, "model", kind))
+    ModelConnection::new(id, kind, display_name, base_url, enabled, wire_api, api_key)
+        .map_err(|kind| invalid_model_field(path, contents, "connections", kind))
+}
+
+fn parse_model_profile(
+    value: &toml::Value,
+    contents: &str,
+    path: &Path,
+) -> Result<ModelProfile, ConfigError> {
+    let table = value
+        .as_table()
+        .ok_or_else(|| invalid_model_field(path, contents, "profiles", "expectedTable"))?;
+    reject_unknown_model_fields(
+        table,
+        &[
+            "id",
+            "connection_id",
+            "display_name",
+            "model_id",
+            "context_window_tokens",
+            "strict_tools",
+            "parallel_tools",
+        ],
+        "models.profiles",
+        contents,
+        path,
+    )?;
+    let context_window_tokens = match table.get("context_window_tokens") {
+        None => None,
+        Some(toml::Value::Integer(value)) => Some(u32::try_from(*value).map_err(|_| {
+            invalid_model_field(
+                path,
+                contents,
+                "context_window_tokens",
+                "invalidContextWindow",
+            )
+        })?),
+        Some(_) => {
+            return Err(invalid_model_field(
+                path,
+                contents,
+                "context_window_tokens",
+                "expectedInteger",
+            ));
+        }
+    };
+    let strict_tools = optional_capability_mode(table, "strict_tools", contents, path)?;
+    let parallel_tools = optional_capability_mode(table, "parallel_tools", contents, path)?;
+    ModelProfile::new(
+        required_model_string(table, "id", contents, path)?.to_owned(),
+        required_model_string(table, "connection_id", contents, path)?.to_owned(),
+        required_model_string(table, "display_name", contents, path)?.to_owned(),
+        required_model_string(table, "model_id", contents, path)?.to_owned(),
+        context_window_tokens,
+        strict_tools,
+        parallel_tools,
+    )
+    .map_err(|kind| invalid_model_field(path, contents, "profiles", kind))
+}
+
+fn reject_unknown_model_fields(
+    table: &toml::map::Map<String, toml::Value>,
+    allowed: &[&str],
+    prefix: &str,
+    contents: &str,
+    path: &Path,
+) -> Result<(), ConfigError> {
+    let mut unknown = table
+        .keys()
+        .filter(|key| !allowed.contains(&key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    unknown.sort();
+    if let Some(field) = unknown.first() {
+        return Err(unknown_field(
+            path,
+            contents,
+            format!("{prefix}.{field}"),
+            field,
+        ));
+    }
+    Ok(())
+}
+
+fn parse_wire_api(value: &str) -> Result<ModelWireApi, &'static str> {
+    match value {
+        "openaiResponses" => Ok(ModelWireApi::OpenAiResponses),
+        "openaiChatCompletions" => Ok(ModelWireApi::OpenAiChatCompletions),
+        "anthropicMessages" => Ok(ModelWireApi::AnthropicMessages),
+        "geminiGenerateContent" => Ok(ModelWireApi::GeminiGenerateContent),
+        _ => Err("unsupportedWireApi"),
+    }
+}
+
+fn optional_capability_mode(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+    contents: &str,
+    path: &Path,
+) -> Result<ModelCapabilityMode, ConfigError> {
+    match table.get(field) {
+        None => Ok(ModelCapabilityMode::Auto),
+        Some(toml::Value::String(value)) => match value.as_str() {
+            "auto" => Ok(ModelCapabilityMode::Auto),
+            "enabled" => Ok(ModelCapabilityMode::Enabled),
+            "disabled" => Ok(ModelCapabilityMode::Disabled),
+            _ => Err(invalid_model_field(
+                path,
+                contents,
+                field,
+                "unsupportedCapabilityMode",
+            )),
+        },
+        Some(_) => Err(invalid_model_field(path, contents, field, "expectedString")),
+    }
 }
 
 fn parse_mcp_config(
@@ -1250,7 +1683,7 @@ fn required_model_string<'a>(
     }
 }
 
-fn validate_endpoint(api_format: ModelApiFormat, endpoint: &Url) -> Result<(), &'static str> {
+fn validate_model_base_url(endpoint: &Url) -> Result<(), &'static str> {
     if !matches!(endpoint.scheme(), "http" | "https") {
         return Err("unsupportedEndpointScheme");
     }
@@ -1262,15 +1695,58 @@ fn validate_endpoint(api_format: ModelApiFormat, endpoint: &Url) -> Result<(), &
     {
         return Err("unsafeEndpoint");
     }
-    if api_format == ModelApiFormat::OpenAiChatCompletions
-        && !endpoint.path().ends_with("/chat/completions")
+    Ok(())
+}
+
+fn resolve_wire_api(
+    kind: ModelProviderKind,
+    wire_api: Option<ModelWireApi>,
+) -> Result<ModelWireApi, &'static str> {
+    let required = match kind {
+        ModelProviderKind::OpenAi => Some(ModelWireApi::OpenAiResponses),
+        ModelProviderKind::Anthropic => Some(ModelWireApi::AnthropicMessages),
+        ModelProviderKind::Gemini => Some(ModelWireApi::GeminiGenerateContent),
+        ModelProviderKind::MetaLlm => Some(ModelWireApi::OpenAiChatCompletions),
+        ModelProviderKind::OpenAiCompatible => None,
+    };
+    if let Some(required) = required {
+        if wire_api.is_some_and(|wire_api| wire_api != required) {
+            return Err("wireApiProviderMismatch");
+        }
+        return Ok(required);
+    }
+    match wire_api {
+        Some(ModelWireApi::OpenAiResponses | ModelWireApi::OpenAiChatCompletions) => {
+            Ok(wire_api.expect("checked as some"))
+        }
+        Some(_) => Err("wireApiProviderMismatch"),
+        None => Err("missingWireApi"),
+    }
+}
+
+fn validate_model_id(id: &str) -> Result<(), &'static str> {
+    if id.is_empty()
+        || id.len() > MAX_MODEL_ID_BYTES
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     {
-        return Err("invalidEndpointPath");
+        return Err("invalidId");
     }
     Ok(())
 }
 
-fn validate_model(model: &str) -> Result<(), &'static str> {
+fn validate_model_display_name(display_name: &str) -> Result<(), &'static str> {
+    if display_name.trim().is_empty()
+        || display_name.len() > MAX_MODEL_DISPLAY_NAME_BYTES
+        || display_name.chars().any(char::is_control)
+    {
+        return Err("invalidDisplayName");
+    }
+    Ok(())
+}
+
+fn validate_model_name(model: &str) -> Result<(), &'static str> {
     if model.is_empty() || model.len() > MAX_MODEL_NAME_BYTES {
         return Err("invalidModel");
     }
@@ -1308,20 +1784,57 @@ fn invalid_model_field(
 }
 
 fn encode_config(
-    model: Option<&ModelConfig>,
+    models: Option<&ModelCatalog>,
     mcp_servers: &[McpServerConfig],
 ) -> Result<String, ConfigError> {
     let mut output = format!("schema_version = {}\n", CURRENT_CONFIG_SCHEMA_VERSION);
-    if let Some(model) = model {
-        output.push_str(&format!(
-            "\n[model]\napi_format = {}\nendpoint = {}\nmodel = {}\n",
-            toml_string(model.api_format.as_str()),
-            toml_string(model.endpoint.as_str()),
-            toml_string(model.model())
-        ));
-        if let Some(api_key) = model.api_key() {
-            output.push_str("api_key = ");
-            output.push_str(&toml_string(api_key));
+    if let Some(models) = models {
+        output.push_str("\n[models]\ndefault_profile_id = ");
+        output.push_str(&toml_string(models.default_profile_id()));
+        output.push('\n');
+        for connection in models.connections() {
+            output.push_str("\n[[models.connections]]\nid = ");
+            output.push_str(&toml_string(connection.id()));
+            output.push_str("\nkind = ");
+            output.push_str(&toml_string(connection.kind().as_str()));
+            output.push_str("\ndisplay_name = ");
+            output.push_str(&toml_string(connection.display_name()));
+            output.push_str("\nbase_url = ");
+            output.push_str(&toml_string(connection.base_url().as_str()));
+            output.push_str("\nenabled = ");
+            output.push_str(if connection.enabled() {
+                "true"
+            } else {
+                "false"
+            });
+            output.push_str("\nwire_api = ");
+            output.push_str(&toml_string(connection.wire_api().as_str()));
+            output.push('\n');
+            if let Some(api_key) = connection.api_key() {
+                output.push_str("api_key = ");
+                output.push_str(&toml_string(api_key));
+                output.push('\n');
+            }
+        }
+        for profile in models.profiles() {
+            output.push_str("\n[[models.profiles]]\nid = ");
+            output.push_str(&toml_string(profile.id()));
+            output.push_str("\nconnection_id = ");
+            output.push_str(&toml_string(profile.connection_id()));
+            output.push_str("\ndisplay_name = ");
+            output.push_str(&toml_string(profile.display_name()));
+            output.push_str("\nmodel_id = ");
+            output.push_str(&toml_string(profile.model_id()));
+            output.push('\n');
+            if let Some(context_window_tokens) = profile.context_window_tokens() {
+                output.push_str("context_window_tokens = ");
+                output.push_str(&context_window_tokens.to_string());
+                output.push('\n');
+            }
+            output.push_str("strict_tools = ");
+            output.push_str(&toml_string(profile.strict_tools().as_str()));
+            output.push_str("\nparallel_tools = ");
+            output.push_str(&toml_string(profile.parallel_tools().as_str()));
             output.push('\n');
         }
     }

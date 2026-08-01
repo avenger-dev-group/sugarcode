@@ -21,6 +21,10 @@ import {
   unarchiveConversationThread,
 } from '@/renderer/services/conversation';
 import {
+  getModelConfig,
+  MODEL_CONFIG_CHANGED_EVENT,
+} from '@/renderer/services/model-config';
+import {
   MAX_CONVERSATION_INPUT_BYTES,
   type ConversationActionResult,
   type ConversationMessageStatus,
@@ -1066,6 +1070,10 @@ export const useStore = (): ThreadStore => {
   const [navigatorOpen, setNavigatorOpen] = useState<boolean>(false);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [modelInspection, setModelInspection] =
+    useState<Awaited<ReturnType<typeof getModelConfig>> | null>(null);
+  const [selectedModelProfileId, setSelectedModelProfileId] =
+    useState<string>('');
   const revision = useRef<number>(-1);
   const previousThread = useRef<ThreadViewModel | undefined>(undefined);
 
@@ -1091,6 +1099,47 @@ export const useStore = (): ThreadStore => {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const refreshModelCatalog = (): void => {
+      void getModelConfig()
+        .then((inspection) => {
+          if (active) {
+            setModelInspection(inspection);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setActionError('Desktop could not read the model catalog.');
+          }
+        });
+    };
+    refreshModelCatalog();
+    window.addEventListener(
+      MODEL_CONFIG_CHANGED_EVENT,
+      refreshModelCatalog,
+    );
+    return () => {
+      active = false;
+      window.removeEventListener(
+        MODEL_CONFIG_CHANGED_EVENT,
+        refreshModelCatalog,
+      );
+    };
+  }, []);
+
+  useEffect(() => {
+    const catalog = modelInspection?.config;
+    if (!catalog) {
+      setSelectedModelProfileId('');
+      return;
+    }
+    const sticky = [...snapshot.turns]
+      .reverse()
+      .find((turn) => turn.model)?.model?.profileId;
+    setSelectedModelProfileId(sticky ?? catalog.defaultProfileId);
+  }, [modelInspection, snapshot.threadId, snapshot.turns]);
+
   const bytes = inputBytes(draft);
   const phaseAllowsSend =
     snapshot.phase === 'idle' || snapshot.phase === 'ready';
@@ -1100,7 +1149,19 @@ export const useStore = (): ThreadStore => {
     !snapshot.navigator.pendingMutation &&
     !isSending &&
     draft.trim().length > 0 &&
-    bytes <= MAX_CONVERSATION_INPUT_BYTES;
+    bytes <= MAX_CONVERSATION_INPUT_BYTES &&
+    selectedModelProfileId.length > 0 &&
+    Boolean(
+      modelInspection?.config?.profiles.some(
+        (profile) =>
+          profile.id === selectedModelProfileId &&
+          modelInspection.config?.connections.some(
+            (connection) =>
+              connection.id === profile.connectionId &&
+              connection.enabled,
+          ),
+      ),
+    );
   const canStop =
     snapshot.phase === 'inProgress' || snapshot.phase === 'stopping';
 
@@ -1111,7 +1172,10 @@ export const useStore = (): ThreadStore => {
     setIsSending(true);
     setActionError(null);
     try {
-      const result = await sendConversationMessage(draft);
+      const result = await sendConversationMessage({
+        input: draft,
+        modelProfileId: selectedModelProfileId,
+      });
       if (result.accepted) {
         setDraft('');
       } else {
@@ -1165,6 +1229,11 @@ export const useStore = (): ThreadStore => {
       const result = await startNewConversationThread();
       if (result.accepted) {
         setNavigatorOpen(false);
+        const defaultProfileId =
+          modelInspection?.config?.defaultProfileId;
+        if (defaultProfileId) {
+          setSelectedModelProfileId(defaultProfileId);
+        }
         return;
       }
       setActionError(
@@ -1238,6 +1307,34 @@ export const useStore = (): ThreadStore => {
     () => toThreadNavigatorViewModel(snapshot),
     [snapshot],
   );
+  const modelOptions = useMemo(() => {
+    const catalog = modelInspection?.config;
+    const available = (catalog?.profiles ?? []).map((profile) => {
+      const connection = catalog?.connections.find(
+        (candidate) => candidate.id === profile.connectionId,
+      );
+      return {
+        profileId: profile.id,
+        label: `${profile.displayName} · ${
+          connection?.displayName ?? 'Unavailable'
+        }`,
+        available: connection?.enabled === true,
+      };
+    });
+    if (
+      selectedModelProfileId &&
+      !available.some(
+        (option) => option.profileId === selectedModelProfileId,
+      )
+    ) {
+      available.push({
+        profileId: selectedModelProfileId,
+        label: `${selectedModelProfileId} · unavailable`,
+        available: false,
+      });
+    }
+    return available;
+  }, [modelInspection, selectedModelProfileId]);
 
   return {
     thread,
@@ -1251,8 +1348,16 @@ export const useStore = (): ThreadStore => {
     canStop,
     isSending,
     actionError,
+    modelOptions,
+    selectedModelProfileId,
+    modelSelectionDisabled:
+      snapshot.phase === 'starting' ||
+      snapshot.phase === 'inProgress' ||
+      snapshot.phase === 'stopping' ||
+      isSending,
     setDraft,
     setNavigatorOpen,
+    setSelectedModelProfileId,
     startNewThread,
     selectThread,
     forkThread,

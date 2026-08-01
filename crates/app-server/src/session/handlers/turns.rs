@@ -43,38 +43,41 @@ where
             )];
         }
 
-        let (core_request_id, outcome) =
-            match self.agent.start_text_turn(thread_id.clone(), params.input) {
-                Ok(result) => result,
-                Err(CoreError::StateUnavailable) => {
-                    self.accepted_request_ids.insert(id.clone());
-                    return vec![error(
-                        Some(id),
-                        ERROR_STATE_UNAVAILABLE,
-                        "State unavailable",
-                        None,
-                    )];
-                }
-                Err(CoreError::ModelUnavailable) => {
-                    return vec![error(
-                        Some(id),
-                        ERROR_MODEL_UNAVAILABLE,
-                        "Model unavailable",
-                        None,
-                    )];
-                }
-                Err(CoreError::InvalidInput | CoreError::ContextTooLarge) => {
-                    return vec![error(
-                        Some(id),
-                        ERROR_INVALID_PARAMS,
-                        "Invalid params",
-                        None,
-                    )];
-                }
-                Err(_) => {
-                    return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
-                }
-            };
+        let (core_request_id, outcome) = match self.agent.start_text_turn_with_model(
+            thread_id.clone(),
+            params.input,
+            params.model_profile_id,
+        ) {
+            Ok(result) => result,
+            Err(CoreError::StateUnavailable) => {
+                self.accepted_request_ids.insert(id.clone());
+                return vec![error(
+                    Some(id),
+                    ERROR_STATE_UNAVAILABLE,
+                    "State unavailable",
+                    None,
+                )];
+            }
+            Err(CoreError::ModelUnavailable) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_MODEL_UNAVAILABLE,
+                    "Model unavailable",
+                    None,
+                )];
+            }
+            Err(CoreError::InvalidInput | CoreError::ContextTooLarge) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
+            Err(_) => {
+                return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
+            }
+        };
         self.accepted_request_ids.insert(id.clone());
 
         match outcome {
@@ -99,10 +102,23 @@ where
                 messages
             }
             TurnStartOutcome::Accepted { turn_id } => {
+                let model = self
+                    .agent
+                    .resume_thread(&thread_id)
+                    .ok()
+                    .and_then(|snapshot| {
+                        snapshot
+                            .turns
+                            .into_iter()
+                            .find(|turn| turn.id == turn_id)
+                            .and_then(|turn| turn.model)
+                    })
+                    .map(map_model_selection);
                 let response = TurnStartResponse {
                     turn: sugarcode_app_server_protocol::Turn {
                         id: turn_id.into_string(),
                         status: sugarcode_app_server_protocol::TurnStatus::InProgress,
+                        model,
                         error: None,
                     },
                 };

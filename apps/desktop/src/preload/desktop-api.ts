@@ -85,12 +85,15 @@ import {
 } from '@/shared/mcp';
 import {
   isModelConfigActionResult,
+  isModelDiscoveryResult,
   isModelConfigInspection,
   MODEL_CONFIG_DELETE_API_KEY_CHANNEL,
+  MODEL_CONFIG_DISCOVER_CHANNEL,
   MODEL_CONFIG_GET_CHANNEL,
   MODEL_CONFIG_SAVE_CHANNEL,
   type ModelConfigActionResult,
   type ModelConfigInspection,
+  type ModelDiscoveryResult,
   type ModelConfigSaveRequest,
 } from '@/shared/model-config';
 import {
@@ -528,11 +531,11 @@ export const createDesktopApi = (
     };
   },
   sendConversationMessage: async (
-    input: string,
+    request,
   ): Promise<ConversationActionResult> => {
     const result: unknown = await ipcRenderer.invoke(
       CONVERSATION_SEND_CHANNEL,
-      input,
+      request,
     );
     if (!isConversationActionResult(result)) {
       throw new Error('Main returned an invalid conversation send result.');
@@ -743,11 +746,25 @@ export const createDesktopApi = (
     }
     return action;
   },
+  discoverModels: async (
+    connectionId: string,
+  ): Promise<ModelDiscoveryResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      MODEL_CONFIG_DISCOVER_CHANNEL,
+      connectionId,
+    );
+    if (!isModelDiscoveryResult(result)) {
+      throw new Error('Main returned an invalid model discovery result.');
+    }
+    return result;
+  },
   deleteModelApiKey: async (
+    connectionId: string,
     expectedRevision: string,
   ): Promise<ModelConfigActionResult> => {
     const action: unknown = await ipcRenderer.invoke(
       MODEL_CONFIG_DELETE_API_KEY_CHANNEL,
+      connectionId,
       expectedRevision,
     );
     if (!isModelConfigActionResult(action)) {

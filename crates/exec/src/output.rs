@@ -687,6 +687,7 @@ fn turn_error_kind(kind: CoreTurnErrorKind) -> &'static str {
         CoreTurnErrorKind::Incomplete => "incomplete",
         CoreTurnErrorKind::Filtered => "filtered",
         CoreTurnErrorKind::UnsupportedOutput => "unsupportedOutput",
+        CoreTurnErrorKind::UnsupportedToolArguments => "unsupportedToolArguments",
         CoreTurnErrorKind::OutputTooLarge => "outputTooLarge",
         CoreTurnErrorKind::StateUnavailable => "stateUnavailable",
     }

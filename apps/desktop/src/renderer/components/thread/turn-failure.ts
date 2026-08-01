@@ -14,6 +14,8 @@ const FAILURE_SUMMARIES: Record<ConversationTurnError['kind'], string> = {
   incomplete: 'The model response was incomplete',
   filtered: 'The model response was filtered',
   unsupportedOutput: 'The model returned unsupported output',
+  unsupportedToolArguments:
+    'The model repeatedly returned invalid tool arguments',
   outputTooLarge: 'The model output was too large',
   stateUnavailable: 'Local conversation state is unavailable',
 };

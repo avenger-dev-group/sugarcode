@@ -1,8 +1,10 @@
 import {
   isModelConfigInspection,
   isModelConfigSaveRequest,
+  isModelDiscoveryResult,
   type ModelConfigActionResult,
   type ModelConfigInspection,
+  type ModelDiscoveryResult,
 } from '@/shared/model-config';
 
 import { CliOneShotError, runCliJson } from '../cli/one-shot';
@@ -49,6 +51,29 @@ export class ModelConfigController {
     return value;
   };
 
+  discover = async (
+    connectionId: unknown,
+  ): Promise<ModelDiscoveryResult> => {
+    if (
+      typeof connectionId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,64}$/u.test(connectionId)
+    ) {
+      throw new Error('The model connection identifier was invalid.');
+    }
+    const value = await this.runCommand([
+      'config',
+      'model',
+      'discover',
+      '--connection-id',
+      connectionId,
+      '--json',
+    ]);
+    if (!isModelDiscoveryResult(value)) {
+      throw new Error('The model discovery receipt was invalid.');
+    }
+    return value;
+  };
+
   save = async (request: unknown): Promise<ModelConfigActionResult> => {
     if (!isModelConfigSaveRequest(request)) {
       return blocked('invalid');
@@ -73,20 +98,13 @@ export class ModelConfigController {
         return failed('invalid');
       }
 
-      if (request.apiKey !== undefined && request.apiKey.length === 0) {
-        return failed('invalid');
-      }
-
       let inspection: ModelConfigInspection;
       const input = Buffer.from(
         JSON.stringify({
           contractVersion: 1,
           expectedRevision: request.expectedRevision,
           config: request.config,
-          apiKeyUpdate:
-            request.apiKey === undefined
-              ? { action: 'preserve' }
-              : { action: 'set', value: request.apiKey },
+          credentialUpdates: request.credentialUpdates,
         }),
         'utf8',
       );
@@ -125,9 +143,12 @@ export class ModelConfigController {
   };
 
   deleteApiKey = async (
+    connectionId: unknown,
     expectedRevision: unknown,
   ): Promise<ModelConfigActionResult> => {
     if (
+      typeof connectionId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,64}$/u.test(connectionId) ||
       typeof expectedRevision !== 'string' ||
       !/^[0-9a-f]{64}$/u.test(expectedRevision)
     ) {
@@ -147,23 +168,25 @@ export class ModelConfigController {
       if (current.revision !== expectedRevision) {
         return blocked('stale');
       }
-      if (!current.config || current.apiKeyStatus === 'notConfigured') {
+      const status = current.credentialStatuses.find(
+        (credential) => credential.connectionId === connectionId,
+      );
+      if (!current.config || status?.status !== 'present') {
         return failed('invalid');
       }
-      const input = Buffer.from(
-        JSON.stringify({
-          contractVersion: 1,
-          expectedRevision,
-          config: current.config,
-          apiKeyUpdate: { action: 'delete' },
-        }),
-        'utf8',
-      );
       let inspection: ModelConfigInspection;
       try {
         const value = await this.runCommand(
-          ['config', 'model', 'set', '--stdin', '--json'],
-          input,
+          [
+            'config',
+            'model',
+            'delete-api-key',
+            '--connection-id',
+            connectionId,
+            '--expected-revision',
+            expectedRevision,
+            '--json',
+          ],
         );
         if (!isModelConfigInspection(value)) {
           return failed();
@@ -171,8 +194,6 @@ export class ModelConfigController {
         inspection = value;
       } catch {
         return failed();
-      } finally {
-        input.fill(0);
       }
       return { accepted: true, state: 'saved', inspection };
     } finally {

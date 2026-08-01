@@ -13,6 +13,7 @@ use sugarcode_state::validate_context_compaction;
 
 fn completed_turn(items: Vec<DurableItemSnapshot>) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
+        model: None,
         id: TurnId::new("turn_0000000000000001"),
         status: DurableTurnStatus::Completed,
         items,
