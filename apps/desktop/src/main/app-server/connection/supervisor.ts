@@ -109,7 +109,8 @@ const DIAGNOSTIC_SUMMARIES: Record<ConnectionDiagnosticCode, string> = {
     'The packaged CLI cannot be executed on this host.',
   'spawn-failed': 'SugarCode could not start its local CLI.',
   'initialize-rejected': 'The local CLI rejected the initialization request.',
-  'protocol-invalid': 'The local CLI returned an invalid protocol message.',
+  'protocol-invalid':
+    'SugarCode paused the local Agent after an internal compatibility error. Your conversation is saved.',
   'protocol-version-mismatch':
     'The Desktop and local CLI use different protocol versions.',
   'product-version-mismatch':
@@ -588,6 +589,7 @@ export class ConnectionSupervisor {
           ...(this.workspacePath
             ? ['--workspace', this.workspacePath]
             : []),
+          ...(this.workspacePath ? ['--allow-workspace-write'] : []),
           ...(this.workspacePath && this.workspaceRuntimeKind === 'chat'
             ? ['--unbound-threads']
             : []),

@@ -748,19 +748,19 @@ async fn invalid_tool_batch_is_rejected_without_partial_execution() {
 }
 
 #[tokio::test]
-async fn three_identical_argument_errors_end_with_explicit_terminal_kind() {
-    let invalid_round = |id: &str| {
+async fn three_consecutive_argument_errors_end_with_explicit_terminal_kind() {
+    let invalid_round = |id: &str, arguments: serde_json::Value| {
         vec![Ok(model_event::tool_call(ModelToolCall {
             id: id.to_string(),
             name: "workspace/read".to_string(),
-            arguments: serde_json::json!({}),
+            arguments,
         }))]
     };
     let provider = SequencedProvider {
         rounds: Mutex::new(VecDeque::from([
-            invalid_round("call_invalid_1"),
-            invalid_round("call_invalid_2"),
-            invalid_round("call_invalid_3"),
+            invalid_round("call_invalid_1", serde_json::json!({})),
+            invalid_round("call_invalid_2", serde_json::json!({ "path": 7 })),
+            invalid_round("call_invalid_3", serde_json::json!({ "path": false })),
         ])),
         requests: Arc::new(Mutex::new(Vec::new())),
     };

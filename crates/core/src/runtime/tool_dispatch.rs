@@ -61,6 +61,10 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "A short plain-language explanation shown in the approval UI. Describe the user-visible action without executable paths, argv, cwd, or policy names."
+                    },
                     "command": { "type": "string" },
                     "arguments": {
                         "type": "array",
@@ -68,7 +72,7 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
                     },
                     "cwd": { "type": "string", "enum": ["."] }
                 },
-                "required": ["command", "arguments", "cwd"]
+                "required": ["description", "command", "arguments", "cwd"]
             }),
         });
     }
@@ -113,6 +117,7 @@ pub(super) struct WorkspaceToolArguments {
 }
 
 pub(super) struct ShellToolArguments {
+    pub description: String,
     pub command: String,
     pub arguments: Vec<String>,
     pub cwd: String,
@@ -125,9 +130,13 @@ pub(super) fn shell_tool_arguments(call: &ModelToolCall) -> Result<ShellToolArgu
     let Some(arguments) = call.arguments.as_object() else {
         return Err(ModelError::new(ModelErrorKind::Protocol, false));
     };
-    if arguments.len() != 3 {
+    if arguments.len() != 4 {
         return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
     }
+    let description = arguments
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
     let command = arguments
         .get("command")
         .and_then(serde_json::Value::as_str)
@@ -140,7 +149,10 @@ pub(super) fn shell_tool_arguments(call: &ModelToolCall) -> Result<ShellToolArgu
         .get("cwd")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
-    if cwd != "."
+    if description.is_empty()
+        || description.len() > 512
+        || invalid_command_text(description)
+        || cwd != "."
         || command.is_empty()
         || command.len() > sugarcode_tools::MAX_SHELL_COMMAND_BYTES
         || !std::path::Path::new(command).is_absolute()
@@ -168,6 +180,7 @@ pub(super) fn shell_tool_arguments(call: &ModelToolCall) -> Result<ShellToolArgu
         parsed.push(value.to_string());
     }
     Ok(ShellToolArguments {
+        description: description.to_string(),
         command: command.to_string(),
         arguments: parsed,
         cwd: cwd.to_string(),
@@ -479,13 +492,13 @@ pub(super) async fn append_completed_tool_item(
     runtime: &CoreRuntime,
     prepared: &crate::PreparedTextTurn,
     kind: CoreItemKind,
-) -> Option<CoreItemSnapshot> {
+) -> Result<CoreItemSnapshot, Terminal> {
     let item = runtime
         .lock_core()
         .and_then(|mut core| {
             core.append_completed_item(&prepared.thread_id, &prepared.turn_id, kind)
         })
-        .ok()?;
+        .map_err(terminal_for_item_append)?;
     let durable_event = CancellationToken::new();
     if !send_event(
         runtime,
@@ -499,7 +512,7 @@ pub(super) async fn append_completed_tool_item(
     )
     .await
     {
-        return None;
+        return Err(Terminal::Interrupted);
     }
     if !send_event(
         runtime,
@@ -513,9 +526,9 @@ pub(super) async fn append_completed_tool_item(
     )
     .await
     {
-        return None;
+        return Err(Terminal::Interrupted);
     }
-    Some(item)
+    Ok(item)
 }
 
 pub(super) async fn append_completed_agent_output_item(
@@ -523,13 +536,13 @@ pub(super) async fn append_completed_agent_output_item(
     prepared: &crate::PreparedTextTurn,
     output: CoreAgentOutputRef,
     kind: CoreItemKind,
-) -> Option<CoreItemSnapshot> {
+) -> Result<CoreItemSnapshot, Terminal> {
     let item = runtime
         .lock_core()
         .and_then(|mut core| {
             core.append_completed_item(&prepared.thread_id, &prepared.turn_id, kind)
         })
-        .ok()?;
+        .map_err(terminal_for_item_append)?;
     let durable_event = CancellationToken::new();
     if !send_event(
         runtime,
@@ -544,7 +557,7 @@ pub(super) async fn append_completed_agent_output_item(
     )
     .await
     {
-        return None;
+        return Err(Terminal::Interrupted);
     }
     if !send_event(
         runtime,
@@ -558,7 +571,27 @@ pub(super) async fn append_completed_agent_output_item(
     )
     .await
     {
-        return None;
+        return Err(Terminal::Interrupted);
     }
-    Some(item)
+    Ok(item)
+}
+
+fn terminal_for_item_append(error: CoreError) -> Terminal {
+    match error {
+        CoreError::ContextTooLarge | CoreError::OutputTooLarge => {
+            Terminal::Failed(output_too_large_error())
+        }
+        CoreError::ThreadIdExhausted
+        | CoreError::TurnIdExhausted
+        | CoreError::ItemIdExhausted
+        | CoreError::ThreadNotFound(_)
+        | CoreError::NoActiveTurn(_)
+        | CoreError::TurnAlreadyActive { .. }
+        | CoreError::TurnNotInProgress(_)
+        | CoreError::ItemNotInProgress(_)
+        | CoreError::InvalidInput
+        | CoreError::ModelUnavailable
+        | CoreError::StateUnavailable
+        | CoreError::Internal(_) => Terminal::StateUnavailable,
+    }
 }

@@ -213,6 +213,21 @@ four; mixed, shell, approval, write or unknown-effect batches execute in model
 order. Results always return in model order, while one independent read failure
 does not cancel its siblings.
 
+Tool-argument validation failures are an Agent-loop condition, not an
+app-server transport failure. Core emits a deliberately redacted ToolCall
+followed by an `invalidArguments`, `unknownTool`, or `batchRejected` ToolResult;
+Desktop omits that pair from presentation and keeps the connection alive while
+the result returns to the model. The Desktop matcher accepts only the exact
+redacted shape. Malformed JSON-RPC, extra fields and lifecycle correlation
+damage still fail closed as protocol errors.
+
+The loop guard counts consecutive failures by tool and error category rather
+than by the provider's raw argument payload. Three matching validation
+failures, or three matching `invalidPatch`/`patchDoesNotApply` results, end the
+Turn as `unsupportedToolArguments` before an unproductive provider can grow the
+transcript indefinitely. A later successful or different-category operation
+resets the relevant execution-error sequence.
+
 Provider streams expose provisional text deltas followed by exactly one typed
 completed response, which must be the terminal stream event; EOF before it,
 duplicate completion or any later event is a protocol error. A provisional
@@ -349,8 +364,19 @@ barrier. A matched success ToolResult is the application receipt. Missing
 result after the proposal is outcome-unknown; restart never retries or rolls
 back.
 
+Desktop starts every explicitly selected project or isolated chat directory
+with bounded workspace writes enabled. This exposes `workspace/apply-patch`
+inside that opened capability root; it does not enable shell-command writes or
+grant access outside the selected root.
+
 Desktop inspector content is disposable Renderer state. It does not enter
 conversation state, rollout, diagnostics, search or a cross-file cache.
+
+Failure to deliver an already durable Item to the active surface means that
+surface disconnected and ends the Turn as Interrupted. It is not
+`stateUnavailable`. That error kind is reserved for failures to read or append
+the rollout or for internal state invariants that make safe continuation
+impossible.
 
 ## 7.1. Workspace concurrency
 
@@ -395,6 +421,14 @@ durable ToolCall
 Every request is once-only, expires after 120 seconds and creates no persistent
 policy. Missing capability, malformed response, Renderer loss, disconnect or
 expiry fails closed.
+
+The tool call must also contain a bounded plain-language description of its
+purpose. Core passes that description through the app-server request while
+retaining the exact command and argv for execution and durable audit. Desktop
+and TUI approval surfaces present only the purpose, countdown and explicit
+one-time allow/deny actions; command, argv, cwd and policy fields do not cross
+the Desktop preload presentation boundary. TUI approval requires `y`/`Y` to
+allow or `n`/`N`/Escape to deny; Enter is inert.
 
 The supervisor owns process-tree cancellation, concurrent bounded stdout/stderr
 drain and timeout. Production execution requires:

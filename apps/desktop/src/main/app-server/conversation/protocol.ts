@@ -23,6 +23,7 @@ import {
   parseMcpConversationItem,
   type McpConversationItem,
 } from './mcp-protocol';
+import { isRecoverableToolValidationItem } from './tool-validation-protocol';
 
 export { parseThreadListResponse } from './thread-protocol';
 
@@ -668,6 +669,9 @@ export const parseTurnInterruptResponse = (
 const parseConversationItem = (value: unknown): ConversationItem | null => {
   if (!isRecord(value) || !isId(value.id) || typeof value.type !== 'string') {
     throw new Error('Invalid Item.');
+  }
+  if (isRecoverableToolValidationItem(value)) {
+    return null;
   }
   if (value.type === 'userMessage' || value.type === 'agentMessage') {
     if (typeof value.text !== 'string') {

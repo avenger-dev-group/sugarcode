@@ -8,6 +8,7 @@ import path from 'node:path';
 import type { ServerMessage } from '../transport/server-message';
 
 const MAX_COMMAND_BYTES = 1024;
+const MAX_DESCRIPTION_BYTES = 512;
 const MAX_ARGUMENT_BYTES = 8 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024;
 const MAX_ARGUMENTS = 64;
@@ -72,6 +73,7 @@ export const parseCommandApprovalRequest = (
         'threadId',
         'turnId',
         'callId',
+        'description',
         'command',
         'arguments',
         'cwd',
@@ -89,6 +91,7 @@ export const parseCommandApprovalRequest = (
     !isBoundedIdentifier(value.threadId) ||
     !isBoundedIdentifier(value.turnId) ||
     !isBoundedIdentifier(value.callId) ||
+    !isBoundedCommandText(value.description, MAX_DESCRIPTION_BYTES) ||
     !isBoundedCommandText(value.command, MAX_COMMAND_BYTES) ||
     !isAbsoluteCommand(value.command, platform) ||
     !Array.isArray(value.arguments) ||
@@ -150,6 +153,7 @@ export const parseCommandApprovalRequest = (
     threadId: value.threadId,
     turnId: value.turnId,
     callId: value.callId,
+    description: value.description,
     command: value.command,
     arguments: [...argumentsList],
     cwd: '.',

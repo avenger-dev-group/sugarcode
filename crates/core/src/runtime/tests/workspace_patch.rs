@@ -179,6 +179,147 @@ async fn invalid_apply_patch_arguments_are_returned_to_the_model_for_retry() {
 }
 
 #[tokio::test]
+async fn three_invalid_patches_end_with_explicit_terminal_kind() {
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("notes.txt"), "old\n").expect("workspace fixture");
+    let invalid_round = |id: &str, patch: &str| {
+        vec![Ok(model_event::tool_call(ModelToolCall {
+            id: id.to_string(),
+            name: "workspace/apply-patch".to_string(),
+            arguments: serde_json::json!({
+                "path": "notes.txt",
+                "patch": patch,
+            }),
+        }))]
+    };
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            invalid_round("call_patch_invalid_1", "@@\n old\n+one\n"),
+            invalid_round("call_patch_invalid_2", "@@ nope @@\n old\n+two\n"),
+            invalid_round("call_patch_invalid_3", "@@ -x,1 +1,1 @@\n-old\n+three\n"),
+        ])),
+        requests: Arc::clone(&requests),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let workspace_patch: Arc<dyn WorkspacePatchExecutor> = tool;
+    let (runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        None,
+        None,
+    );
+    let mut runtime = runtime.with_workspace_patch(Some(workspace_patch));
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Apply the patch".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("async turn");
+    };
+    while !matches!(
+        events.recv().await.expect("terminal").kind,
+        CoreEventKind::TurnFailed { .. }
+    ) {}
+
+    assert_eq!(requests.lock().expect("requests").len(), 3);
+    let turn = runtime
+        .resume_thread(&thread_id)
+        .expect("resume")
+        .turns
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert_eq!(
+        turn.error.map(|error| error.kind),
+        Some(DurableTurnErrorKind::UnsupportedToolArguments)
+    );
+}
+
+#[tokio::test]
+async fn successful_tool_call_resets_the_invalid_patch_sequence() {
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("notes.txt"), "old\n").expect("workspace fixture");
+    let patch_call = |id: &str| {
+        vec![Ok(model_event::tool_call(ModelToolCall {
+            id: id.to_string(),
+            name: "workspace/apply-patch".to_string(),
+            arguments: serde_json::json!({
+                "path": "notes.txt",
+                "patch": "@@\n old\n+new\n",
+            }),
+        }))]
+    };
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            patch_call("call_patch_invalid_1"),
+            vec![Ok(model_event::tool_call(ModelToolCall {
+                id: "call_read".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({ "path": "notes.txt" }),
+            }))],
+            patch_call("call_patch_invalid_2"),
+            patch_call("call_patch_invalid_3"),
+            vec![Ok(model_event::final_response("Stopped retrying."))],
+        ])),
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let workspace_patch: Arc<dyn WorkspacePatchExecutor> = tool.clone();
+    let (runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(tool),
+        None,
+    );
+    let mut runtime = runtime.with_workspace_patch(Some(workspace_patch));
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Apply the patch".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("async turn");
+    };
+    while !matches!(
+        events.recv().await.expect("terminal").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    let turn = runtime
+        .resume_thread(&thread_id)
+        .expect("resume")
+        .turns
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert_eq!(turn.status, DurableTurnStatus::Completed);
+}
+
+#[tokio::test]
 async fn workspace_patch_persists_review_before_result_and_finishes_model_round() {
     let directory = tempfile::tempdir().expect("workspace");
     let target = directory.path().join("notes.txt");

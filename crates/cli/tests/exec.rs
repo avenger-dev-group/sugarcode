@@ -208,6 +208,7 @@ fn noninteractive_command_approval_is_denied_without_execution() {
     let home = tempfile::tempdir().expect("isolated SugarCode home");
     let workspace = tempfile::tempdir().expect("isolated workspace");
     let arguments = serde_json::to_string(&json!({
+        "description": "Check the SugarCode version.",
         "command": env!("CARGO_BIN_EXE_sugarcode"),
         "arguments": ["version"],
         "cwd": "."

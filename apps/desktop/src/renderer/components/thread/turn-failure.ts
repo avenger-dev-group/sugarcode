@@ -17,7 +17,7 @@ const FAILURE_SUMMARIES: Record<ConversationTurnError['kind'], string> = {
   unsupportedToolArguments:
     'The model repeatedly returned invalid tool arguments',
   outputTooLarge: 'The model output was too large',
-  stateUnavailable: 'Local conversation state is unavailable',
+  stateUnavailable: 'SugarCode could not save this Turn safely',
 };
 
 export const toTurnFailureViewModel = (
@@ -25,8 +25,11 @@ export const toTurnFailureViewModel = (
 ): TurnFailureViewModel => ({
   kind: error.kind,
   summary: FAILURE_SUMMARIES[error.kind],
-  guidance: error.retryable
-    ? 'You can send another message to retry.'
-    : 'Review the request or model configuration before trying again.',
+  guidance:
+    error.kind === 'stateUnavailable'
+      ? 'Restart SugarCode before continuing. Your earlier saved messages are unchanged.'
+      : error.retryable
+        ? 'You can send another message to retry.'
+        : 'Review the request or model configuration before trying again.',
   retryable: error.retryable,
 });

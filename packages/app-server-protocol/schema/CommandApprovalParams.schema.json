@@ -24,6 +24,9 @@
     "cwd": {
       "type": "string"
     },
+    "description": {
+      "type": "string"
+    },
     "environmentPolicy": {
       "type": "string"
     },
@@ -79,6 +82,7 @@
     "threadId",
     "turnId",
     "callId",
+    "description",
     "command",
     "arguments",
     "cwd",

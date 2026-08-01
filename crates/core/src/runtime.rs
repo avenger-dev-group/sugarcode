@@ -1086,7 +1086,7 @@ async fn run_turn(
                         }
                         CompletedRoundOutput::ToolUse { commentary, calls } => {
                             if let Some((output_index, text)) = commentary {
-                                if append_completed_agent_output_item(
+                                if let Err(error) = append_completed_agent_output_item(
                                     &runtime,
                                     &prepared,
                                     CoreAgentOutputRef {
@@ -1096,9 +1096,8 @@ async fn run_turn(
                                     CoreItemKind::AgentCommentary { text: text.clone() },
                                 )
                                 .await
-                                .is_none()
                                 {
-                                    break 'rounds Terminal::StateUnavailable;
+                                    break 'rounds error;
                                 }
                                 messages.push(ModelMessage::Commentary { text });
                             }
@@ -1131,7 +1130,7 @@ async fn run_turn(
                         Err(ToolBatchValidationFailure::Rejected(rejection)) => {
                             let repeated = agent_loop
                                 .record_tool_argument_error(rejection.fingerprint.clone());
-                            if record_rejected_tool_batch(
+                            if let Err(error) = record_rejected_tool_batch(
                                 &runtime,
                                 &prepared,
                                 &mut messages,
@@ -1139,9 +1138,8 @@ async fn run_turn(
                                 &rejection,
                             )
                             .await
-                            .is_err()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             if repeated {
                                 break 'rounds Terminal::Failed(ModelError::new(
@@ -1221,9 +1219,12 @@ async fn run_turn(
                                 false,
                             ));
                         }
+                        if call.name != "workspace/apply-patch" {
+                            agent_loop.reset_tool_execution_errors();
+                        }
                         if call.name.starts_with("collaboration/") {
                             if !batch_calls_persisted
-                                && append_completed_tool_item(
+                                && let Err(error) = append_completed_tool_item(
                                     &runtime,
                                     &prepared,
                                     CoreItemKind::ToolCall {
@@ -1237,9 +1238,8 @@ async fn run_turn(
                                     },
                                 )
                                 .await
-                                .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             let coordinator = runtime.collaboration.clone();
                             let content = match call.name.as_str() {
@@ -1280,7 +1280,7 @@ async fn run_turn(
                                     false,
                                 ));
                             }
-                            if append_completed_tool_item(
+                            if let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
                                 CoreItemKind::ToolResult {
@@ -1290,9 +1290,8 @@ async fn run_turn(
                                 },
                             )
                             .await
-                            .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             if record_executed_tool_call(
                                 &mut messages,
@@ -1338,7 +1337,7 @@ async fn run_turn(
                                 }
                             };
                             if !batch_calls_persisted
-                                && append_completed_tool_item(
+                                && let Err(error) = append_completed_tool_item(
                                     &runtime,
                                     &prepared,
                                     CoreItemKind::McpToolCall {
@@ -1351,13 +1350,12 @@ async fn run_turn(
                                     },
                                 )
                                 .await
-                                .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             let approval_id =
                                 format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
-                            if append_completed_tool_item(
+                            if let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
                                 CoreItemKind::McpToolCallApprovalRequest {
@@ -1371,9 +1369,8 @@ async fn run_turn(
                                 },
                             )
                             .await
-                            .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             let approval = runtime
                                 .mcp_approval_requester
@@ -1416,7 +1413,7 @@ async fn run_turn(
                             }
                             None => sugarcode_protocol::CoreCommandApprovalDecision::Cancelled,
                         };
-                            if append_completed_tool_item(
+                            if let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
                                 CoreItemKind::McpToolCallApprovalDecision {
@@ -1425,16 +1422,15 @@ async fn run_turn(
                                 },
                             )
                             .await
-                            .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             let (mut result, mut content, interrupted) = match approval {
                                 Some(McpToolApprovalOutcome::Approved) => {
                                     agent_loop.reset_approval_denials();
                                     match runtime.mcp_execution_lease.clone().try_acquire_owned() {
                                         Ok(_lease) => {
-                                            if append_completed_tool_item(
+                                            if let Err(error) = append_completed_tool_item(
                                                 &runtime,
                                                 &prepared,
                                                 CoreItemKind::McpToolExecutionAttempt {
@@ -1446,9 +1442,8 @@ async fn run_turn(
                                                 },
                                             )
                                             .await
-                                            .is_none()
                                             {
-                                                break 'rounds Terminal::StateUnavailable;
+                                                break 'rounds error;
                                             }
                                             let outcome = runtime
                                                 .mcp_executor
@@ -1492,7 +1487,7 @@ async fn run_turn(
                                     false,
                                 ));
                             }
-                            if append_completed_tool_item(
+                            if let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
                                 CoreItemKind::McpToolResult {
@@ -1502,9 +1497,8 @@ async fn run_turn(
                                 },
                             )
                             .await
-                            .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             if interrupted {
                                 break 'rounds Terminal::Interrupted;
@@ -1554,7 +1548,7 @@ async fn run_turn(
                                     None
                                 };
                             if !batch_calls_persisted
-                                && append_completed_tool_item(
+                                && let Err(error) = append_completed_tool_item(
                                     &runtime,
                                     &prepared,
                                     CoreItemKind::ToolCall {
@@ -1568,9 +1562,8 @@ async fn run_turn(
                                     },
                                 )
                                 .await
-                                .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             let filesystem_policy =
                                 core_filesystem_policy(command_policy.filesystem);
@@ -1583,7 +1576,7 @@ async fn run_turn(
                             let network_policy = core_network_policy(command_policy.network);
                             let approval_id =
                                 format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
-                            if append_completed_tool_item(
+                            if let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
                                 CoreItemKind::CommandApprovalRequest {
@@ -1601,9 +1594,8 @@ async fn run_turn(
                                 },
                             )
                             .await
-                            .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             let approval = runtime
                                 .approval_requester
@@ -1614,6 +1606,7 @@ async fn run_turn(
                                     thread_id: thread_id.clone(),
                                     turn_id: turn_id.clone(),
                                     call_id: call.id.clone(),
+                                    description: arguments.description.clone(),
                                     command: arguments.command.clone(),
                                     arguments: arguments.arguments.clone(),
                                     cwd: arguments.cwd.clone(),
@@ -1650,7 +1643,7 @@ async fn run_turn(
                             }
                             None => sugarcode_protocol::CoreCommandApprovalDecision::Cancelled,
                         };
-                            if append_completed_tool_item(
+                            if let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
                                 CoreItemKind::CommandApprovalDecision {
@@ -1665,9 +1658,8 @@ async fn run_turn(
                                 },
                             )
                             .await
-                            .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             let (mut result, mut content) = match approval {
                                 None | Some(CommandApprovalOutcome::ClientDisconnected) => {
@@ -1697,7 +1689,7 @@ async fn run_turn(
                                 }
                                 Some(CommandApprovalOutcome::Approved) => {
                                     agent_loop.reset_approval_denials();
-                                    if append_completed_tool_item(
+                                    if let Err(error) = append_completed_tool_item(
                                         &runtime,
                                         &prepared,
                                         CoreItemKind::CommandExecutionAttempt {
@@ -1706,9 +1698,8 @@ async fn run_turn(
                                         },
                                     )
                                     .await
-                                    .is_none()
                                     {
-                                        break 'rounds Terminal::StateUnavailable;
+                                        break 'rounds error;
                                     }
                                     let execution = runtime
                                         .shell_executor
@@ -1737,7 +1728,7 @@ async fn run_turn(
                                 result_bytes = serialized_tool_result_bytes(&result);
                             }
                             debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
-                            if append_completed_tool_item(
+                            if let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
                                 CoreItemKind::ToolResult {
@@ -1747,9 +1738,8 @@ async fn run_turn(
                                 },
                             )
                             .await
-                            .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
                             }
                             if matches!(approval, Some(CommandApprovalOutcome::Denied))
                                 && agent_loop.record_approval_denied()
@@ -1791,7 +1781,7 @@ async fn run_turn(
                             };
                         agent_loop.reset_approval_denials();
                         if !batch_calls_persisted
-                            && append_completed_tool_item(
+                            && let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
                                 CoreItemKind::ToolCall {
@@ -1805,9 +1795,8 @@ async fn run_turn(
                                 },
                             )
                             .await
-                            .is_none()
                         {
-                            break 'rounds Terminal::StateUnavailable;
+                            break 'rounds error;
                         }
                         if call.name == "workspace/apply-patch" {
                             let prepare_outcome = runtime
@@ -1861,15 +1850,14 @@ async fn run_turn(
                                         let change_bytes =
                                             serialized_file_change_bytes(&file_change);
                                         if change_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES {
-                                            if append_completed_tool_item(
+                                            if let Err(error) = append_completed_tool_item(
                                                 &runtime,
                                                 &prepared,
                                                 file_change,
                                             )
                                             .await
-                                            .is_none()
                                             {
-                                                break 'rounds Terminal::StateUnavailable;
+                                                break 'rounds error;
                                             }
                                             if cancellation.is_cancelled() {
                                                 break 'rounds Terminal::Interrupted;
@@ -1945,7 +1933,15 @@ async fn run_turn(
                                 result_bytes = serialized_tool_result_bytes(&result);
                             }
                             debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
-                            if append_completed_tool_item(
+                            let execution_error_signature = match &result {
+                                CoreToolResult::Error {
+                                    kind:
+                                        kind @ (CoreToolErrorKind::InvalidPatch
+                                        | CoreToolErrorKind::PatchDoesNotApply),
+                                } => Some(format!("{}:{kind}", call.name)),
+                                _ => None,
+                            };
+                            if let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
                                 CoreItemKind::ToolResult {
@@ -1955,9 +1951,18 @@ async fn run_turn(
                                 },
                             )
                             .await
-                            .is_none()
                             {
-                                break 'rounds Terminal::StateUnavailable;
+                                break 'rounds error;
+                            }
+                            if let Some(signature) = execution_error_signature {
+                                if agent_loop.record_tool_execution_error(signature) {
+                                    break 'rounds Terminal::Failed(ModelError::new(
+                                        ModelErrorKind::UnsupportedToolArguments,
+                                        false,
+                                    ));
+                                }
+                            } else {
+                                agent_loop.reset_tool_execution_errors();
                             }
                             if interrupted_after_commit {
                                 break 'rounds Terminal::Interrupted;
@@ -2056,7 +2061,7 @@ async fn run_turn(
                             result_bytes = serialized_tool_result_bytes(&result);
                         }
                         debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
-                        if append_completed_tool_item(
+                        if let Err(error) = append_completed_tool_item(
                             &runtime,
                             &prepared,
                             CoreItemKind::ToolResult {
@@ -2066,9 +2071,8 @@ async fn run_turn(
                             },
                         )
                         .await
-                        .is_none()
                         {
-                            break 'rounds Terminal::StateUnavailable;
+                            break 'rounds error;
                         }
                         if record_executed_tool_call(
                             &mut messages,
@@ -2190,10 +2194,6 @@ fn validate_tool_call_batch(
         hasher.update(b"\0");
         if let Some(kind) = kind {
             hasher.update(kind.to_string().as_bytes());
-            hasher.update(b"\0");
-            if let Ok(arguments) = serde_json::to_vec(&call.arguments) {
-                hasher.update(Sha256::digest(arguments));
-            }
         }
         hasher.update(b"\0");
     }
@@ -2219,7 +2219,7 @@ async fn record_rejected_tool_batch(
     messages: &mut Vec<ModelMessage>,
     calls: &[ModelToolCall],
     rejection: &ToolBatchRejection,
-) -> Result<(), ()> {
+) -> Result<(), Terminal> {
     let is_batch = calls.len() > 1;
     if is_batch {
         messages.push(ModelMessage::ToolCallBatch(calls.to_vec()));
@@ -2234,7 +2234,7 @@ async fn record_rejected_tool_batch(
             kind,
             arguments.len(),
         );
-        if append_completed_tool_item(
+        append_completed_tool_item(
             runtime,
             prepared,
             CoreItemKind::ToolCall {
@@ -2247,12 +2247,8 @@ async fn record_rejected_tool_batch(
                 arguments: None,
             },
         )
-        .await
-        .is_none()
-        {
-            return Err(());
-        }
-        if append_completed_tool_item(
+        .await?;
+        append_completed_tool_item(
             runtime,
             prepared,
             CoreItemKind::ToolResult {
@@ -2261,11 +2257,7 @@ async fn record_rejected_tool_batch(
                 result: CoreToolResult::Error { kind },
             },
         )
-        .await
-        .is_none()
-        {
-            return Err(());
-        }
+        .await?;
         if !is_batch {
             messages.push(ModelMessage::ToolCall(call.clone()));
         }
@@ -2425,7 +2417,7 @@ async fn execute_read_only_tool_batch(
         .collect::<Result<Vec<_>, _>>()
         .map_err(Terminal::Failed)?;
     for (call, arguments) in calls.iter().zip(&arguments) {
-        if append_completed_tool_item(
+        append_completed_tool_item(
             runtime,
             prepared,
             CoreItemKind::ToolCall {
@@ -2438,11 +2430,7 @@ async fn execute_read_only_tool_batch(
                 arguments: None,
             },
         )
-        .await
-        .is_none()
-        {
-            return Err(Terminal::StateUnavailable);
-        }
+        .await?;
     }
 
     let executions = calls
@@ -2541,7 +2529,7 @@ async fn execute_read_only_tool_batch(
 
     let mut contents = Vec::with_capacity(outcomes.len());
     for (call, result, content, _) in outcomes {
-        if append_completed_tool_item(
+        append_completed_tool_item(
             runtime,
             prepared,
             CoreItemKind::ToolResult {
@@ -2550,11 +2538,7 @@ async fn execute_read_only_tool_batch(
                 result,
             },
         )
-        .await
-        .is_none()
-        {
-            return Err(Terminal::StateUnavailable);
-        }
+        .await?;
         contents.push(content);
     }
     Ok(contents)
@@ -2628,12 +2612,7 @@ async fn persist_mixed_batch_calls(
                 arguments: None,
             }
         };
-        if append_completed_tool_item(runtime, prepared, item)
-            .await
-            .is_none()
-        {
-            return Err(Terminal::StateUnavailable);
-        }
+        append_completed_tool_item(runtime, prepared, item).await?;
     }
     Ok(())
 }

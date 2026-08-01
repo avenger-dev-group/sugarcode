@@ -419,7 +419,7 @@ impl CollaborationCoordinator {
 
         for (task, child_thread_id) in &created {
             let task_id = format!("{orchestration_id}/{}", task.client_task_key);
-            if append_completed_tool_item(
+            append_completed_tool_item(
                 runtime,
                 prepared,
                 CoreItemKind::AgentTask {
@@ -434,11 +434,7 @@ impl CollaborationCoordinator {
                     task_markdown: task.task_markdown.clone(),
                 },
             )
-            .await
-            .is_none()
-            {
-                return Err(Terminal::StateUnavailable);
-            }
+            .await?;
         }
 
         let coordinator = self.clone();
@@ -487,7 +483,7 @@ impl CollaborationCoordinator {
             task.amendments.push(arguments.amendment_markdown.clone());
             task.task_id.clone()
         };
-        if append_completed_tool_item(
+        append_completed_tool_item(
             runtime,
             prepared,
             CoreItemKind::AgentTaskAmendment {
@@ -496,11 +492,7 @@ impl CollaborationCoordinator {
                 amendment_markdown: arguments.amendment_markdown,
             },
         )
-        .await
-        .is_none()
-        {
-            return Err(Terminal::StateUnavailable);
-        }
+        .await?;
         self.notify.notify_waiters();
         Ok("{\"accepted\":true}".to_string())
     }
@@ -581,12 +573,7 @@ impl CollaborationCoordinator {
             .to_string()
         };
         for item in completed_items {
-            if append_completed_tool_item(runtime, prepared, item)
-                .await
-                .is_none()
-            {
-                return Err(Terminal::StateUnavailable);
-            }
+            append_completed_tool_item(runtime, prepared, item).await?;
         }
         Ok(response)
     }

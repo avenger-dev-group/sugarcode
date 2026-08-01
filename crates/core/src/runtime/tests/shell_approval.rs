@@ -231,6 +231,7 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                     id: "call_shell_1".to_string(),
                     name: "shell/exec".to_string(),
                     arguments: serde_json::json!({
+                        "description": "Print the approved test output.",
                         "command": command,
                         "arguments": ["approved output"],
                         "cwd": "."
@@ -410,6 +411,7 @@ async fn failed_attempt_audit_never_calls_the_shell_executor() {
                 id: "call_shell_attempt_failure".to_string(),
                 name: "shell/exec".to_string(),
                 arguments: serde_json::json!({
+                    "description": "Exercise a failed command execution.",
                     "command": test_absolute_command(),
                     "arguments": [],
                     "cwd": "."
@@ -471,6 +473,7 @@ async fn denied_shell_command_persists_decision_without_running_process() {
                     id: "call_shell_denied".to_string(),
                     name: "shell/exec".to_string(),
                     arguments: serde_json::json!({
+                        "description": "Run the command used by the denial test.",
                         "command": command,
                         "arguments": [],
                         "cwd": "."
@@ -539,6 +542,7 @@ async fn three_consecutive_explicit_denials_interrupt_the_turn() {
                     id: format!("call_shell_denied_{ordinal}"),
                     name: "shell/exec".to_string(),
                     arguments: serde_json::json!({
+                        "description": "Run the repeatedly denied test command.",
                         "command": command,
                         "arguments": [],
                         "cwd": "."
@@ -607,6 +611,7 @@ async fn interrupt_while_awaiting_approval_persists_cancelled_without_tool_resul
                 id: "call_shell_interrupt".to_string(),
                 name: "shell/exec".to_string(),
                 arguments: serde_json::json!({
+                    "description": "Run the command used by the interruption test.",
                     "command": test_absolute_command(),
                     "arguments": [],
                     "cwd": "."

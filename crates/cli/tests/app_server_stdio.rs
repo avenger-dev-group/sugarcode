@@ -523,6 +523,7 @@ fn workspace_apply_patch_lifecycle_matches_golden_trace() {
 fn denied_shell_approval_matches_bidirectional_golden_trace() {
     let command = env!("CARGO_BIN_EXE_sugarcode");
     let arguments = serde_json::to_string(&json!({
+        "description": "Run the denied approval fixture.",
         "command": command,
         "arguments": [],
         "cwd": "."
@@ -570,6 +571,7 @@ fn denied_shell_approval_matches_bidirectional_golden_trace() {
 fn approved_shell_approval_matches_execution_attempt_golden_trace() {
     let command = env!("CARGO_BIN_EXE_sugarcode");
     let arguments = serde_json::to_string(&json!({
+        "description": "Check the SugarCode version.",
         "command": command,
         "arguments": ["version"],
         "cwd": "."
@@ -620,6 +622,7 @@ fn approved_shell_approval_matches_execution_attempt_golden_trace() {
 fn informed_workspace_write_approval_mutates_the_real_workspace_and_matches_golden() {
     let command = env!("CARGO_BIN_EXE_sugarcode");
     let arguments = serde_json::to_string(&json!({
+        "description": "Update the workspace acceptance fixtures.",
         "command": command,
         "arguments": ["__command-workspace-write-acceptance"],
         "cwd": "."
@@ -703,6 +706,7 @@ fn informed_workspace_write_approval_mutates_the_real_workspace_and_matches_gold
 fn approved_command_stays_bound_to_the_original_workspace_scope() {
     let command = "/bin/cat";
     let arguments = serde_json::to_string(&json!({
+        "description": "Read the workspace marker file.",
         "command": command,
         "arguments": ["marker.txt"],
         "cwd": "."

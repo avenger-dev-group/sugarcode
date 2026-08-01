@@ -348,6 +348,7 @@ fn request(approval_id: &str) -> CommandApprovalRequest {
         thread_id: ThreadId::new("thr_0000000000000001"),
         turn_id: TurnId::new("turn_0000000000000001"),
         call_id: "call_1".to_string(),
+        description: "Print a greeting.".to_string(),
         command: if cfg!(windows) {
             r"C:\Windows\System32\cmd.exe".to_string()
         } else {

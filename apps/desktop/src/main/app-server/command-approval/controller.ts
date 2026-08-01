@@ -280,14 +280,7 @@ export class CommandApprovalController {
     active: ActiveApproval,
   ): CommandApprovalViewModel => ({
     presentationId: active.presentationId,
-    command: active.params.command,
-    arguments: [...active.params.arguments],
-    cwd: active.params.cwd,
-    approvalScope: 'command',
-    environmentPolicy: 'minimalV1',
-    sandboxed: true,
-    sandboxPolicy: 'filesystemReadOnlyV1',
-    networkPolicy: 'networkDeniedV1',
+    description: active.params.description,
     ...(active.params.sourceAgent
       ? { sourceAgent: { ...active.params.sourceAgent } }
       : {}),

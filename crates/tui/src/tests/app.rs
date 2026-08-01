@@ -1,24 +1,9 @@
 use crate::app::App;
 use crate::app::Focus;
 use crate::app::PendingApproval;
+use crossterm::event::KeyCode;
 use sugarcode_core::CommandApprovalOutcome;
 use tokio::sync::oneshot;
-
-#[test]
-fn command_argv_preserves_exact_inert_argument_boundaries() {
-    let rendered = super::app::format_argv(
-        "/usr/bin/printf",
-        &[
-            "%s; not shell".to_string(),
-            "hello world".to_string(),
-            "雪".to_string(),
-        ],
-    );
-    assert_eq!(
-        rendered,
-        "argv[0] \"/usr/bin/printf\"\nargv[1] \"%s; not shell\"\nargv[2] \"hello world\"\nargv[3] \"雪\""
-    );
-}
 
 #[test]
 fn unicode_paste_is_retained_and_wrong_focus_is_inert() {
@@ -45,6 +30,24 @@ async fn pending_approval_is_denied_by_default() {
     assert_eq!(receiver.await, Ok(CommandApprovalOutcome::Denied));
     assert!(app.approval.is_none());
     assert_eq!(app.status, "Denied");
+}
+
+#[test]
+fn approval_keys_are_explicit_and_enter_is_inert() {
+    assert_eq!(
+        super::app::approval_decision(KeyCode::Char('y')),
+        Some(true)
+    );
+    assert_eq!(
+        super::app::approval_decision(KeyCode::Char('Y')),
+        Some(true)
+    );
+    assert_eq!(
+        super::app::approval_decision(KeyCode::Char('n')),
+        Some(false)
+    );
+    assert_eq!(super::app::approval_decision(KeyCode::Esc), Some(false));
+    assert_eq!(super::app::approval_decision(KeyCode::Enter), None);
 }
 
 #[test]

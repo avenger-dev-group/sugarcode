@@ -9,6 +9,7 @@ pub struct CommandApprovalRequest {
     pub thread_id: ThreadId,
     pub turn_id: TurnId,
     pub call_id: String,
+    pub description: String,
     pub command: String,
     pub arguments: Vec<String>,
     pub cwd: String,

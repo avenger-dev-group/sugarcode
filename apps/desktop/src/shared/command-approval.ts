@@ -21,14 +21,7 @@ export type CommandApprovalActionState =
 
 export type CommandApprovalViewModel = Readonly<{
   presentationId: string;
-  command: string;
-  arguments: readonly string[];
-  cwd: string;
-  approvalScope: 'command';
-  environmentPolicy: 'minimalV1';
-  sandboxed: true;
-  sandboxPolicy: 'filesystemReadOnlyV1';
-  networkPolicy: 'networkDeniedV1';
+  description: string;
   sourceAgent?: Readonly<{
     taskId: string;
     role: 'explorer' | 'worker' | 'auditor';
@@ -109,14 +102,7 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
     value,
     [
       'presentationId',
-      'command',
-      'arguments',
-      'cwd',
-      'approvalScope',
-      'environmentPolicy',
-      'sandboxed',
-      'sandboxPolicy',
-      'networkPolicy',
+      'description',
       'localExpiresAtMs',
       'actionState',
     ],
@@ -124,16 +110,8 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
   ) &&
   typeof value.presentationId === 'string' &&
   value.presentationId.length > 0 &&
-  typeof value.command === 'string' &&
-  value.command.length > 0 &&
-  Array.isArray(value.arguments) &&
-  value.arguments.every((argument) => typeof argument === 'string') &&
-  value.cwd === '.' &&
-  value.approvalScope === 'command' &&
-  value.environmentPolicy === 'minimalV1' &&
-  value.sandboxed === true &&
-  value.sandboxPolicy === 'filesystemReadOnlyV1' &&
-  value.networkPolicy === 'networkDeniedV1' &&
+  typeof value.description === 'string' &&
+  value.description.length > 0 &&
   typeof value.localExpiresAtMs === 'number' &&
   Number.isSafeInteger(value.localExpiresAtMs) &&
   value.localExpiresAtMs >= 0 &&

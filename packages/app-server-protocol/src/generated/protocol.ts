@@ -52,7 +52,7 @@ export type CommandWorkspaceWriteRisk = "nonTransactionalWorkspaceTreeV1";
 
 export type ApprovalSourceAgent = { taskId: string, role: AgentTaskRole, };
 
-export type CommandApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy: CommandSandboxPolicy, sourceAgent?: ApprovalSourceAgent, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy: CommandNetworkPolicy, };
+export type CommandApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, description: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy: CommandSandboxPolicy, sourceAgent?: ApprovalSourceAgent, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy: CommandNetworkPolicy, };
 
 export type CommandApprovalResponse = { decision: CommandApprovalResponseDecision, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, };
 

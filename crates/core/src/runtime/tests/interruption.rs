@@ -177,6 +177,84 @@ async fn interrupt_cancels_a_pending_stream_and_emits_one_interrupted_terminal()
 }
 
 #[tokio::test]
+async fn closed_event_consumer_interrupts_without_claiming_state_is_unavailable() {
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("README.md"), "hello").expect("workspace fixture");
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([vec![Ok(model_event::tool_call(
+            ModelToolCall {
+                id: "call_read".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({ "path": "README.md" }),
+            },
+        ))]])),
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(tool),
+        None,
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Read it".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("asynchronous turn");
+    };
+    loop {
+        let event = events.recv().await.expect("tool lifecycle");
+        if matches!(
+            event.kind,
+            CoreEventKind::ItemStarted {
+                item: CoreItemSnapshot {
+                    kind: CoreItemKind::ToolCall { .. },
+                    ..
+                },
+                ..
+            }
+        ) {
+            break;
+        }
+    }
+    drop(events);
+    let turn = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let turn = runtime
+                .resume_thread(&thread_id)
+                .expect("resume")
+                .turns
+                .into_iter()
+                .find(|turn| turn.id == turn_id)
+                .expect("turn");
+            if turn.status != DurableTurnStatus::InProgress {
+                break turn;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("event consumer closure must terminate the turn");
+    assert_eq!(turn.status, DurableTurnStatus::Interrupted);
+    assert!(turn.error.is_none());
+    runtime.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn interrupt_while_preview_is_backpressured_persists_no_agent_item() {
     let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
         events: vec![Ok(model_event::text_delta("partial".to_string()))],

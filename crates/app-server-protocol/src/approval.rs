@@ -47,6 +47,7 @@ pub struct CommandApprovalParams {
     pub thread_id: String,
     pub turn_id: String,
     pub call_id: String,
+    pub description: String,
     pub command: String,
     pub arguments: Vec<String>,
     pub cwd: String,

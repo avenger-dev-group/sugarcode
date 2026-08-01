@@ -197,17 +197,10 @@ impl App {
             return Ok(());
         }
         if self.approval.is_some() {
-            return match key.code {
-                KeyCode::Char('y') => {
-                    self.resolve_approval(true);
-                    Ok(())
-                }
-                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Enter => {
-                    self.resolve_approval(false);
-                    Ok(())
-                }
-                _ => Ok(()),
-            };
+            if let Some(approved) = approval_decision(key.code) {
+                self.resolve_approval(approved);
+            }
+            return Ok(());
         }
         match key.code {
             KeyCode::Tab => self.next_focus(),
@@ -372,16 +365,7 @@ impl App {
             let _ = approval.response.send(fallback);
             return;
         }
-        let detail = format!(
-            "Command argv\n{}\n\ncwd: {}\nenvironment: {}\nsandboxed: {}\nsandbox: {:?}\nnetwork: {:?}\nworkspace write: {:?}",
-            format_argv(&approval.request.command, &approval.request.arguments),
-            approval.request.cwd,
-            approval.request.environment_policy,
-            approval.request.sandboxed,
-            approval.request.sandbox_policy,
-            approval.request.network_policy,
-            approval.request.workspace_write_policy
-        );
+        let detail = approval.request.description.clone();
         self.approval = Some(PendingApproval::Command {
             detail,
             response: approval.response,
@@ -626,18 +610,12 @@ fn core_error(message: &'static str) -> impl FnOnce(sugarcode_core::CoreError) -
     move |error| io::Error::other(format!("{message}: {error:?}"))
 }
 
-pub(crate) fn format_argv(command: &str, arguments: &[String]) -> String {
-    std::iter::once(command)
-        .chain(arguments.iter().map(String::as_str))
-        .enumerate()
-        .map(|(index, value)| {
-            format!(
-                "argv[{index}] {}",
-                serde_json::to_string(value).expect("a Rust string is valid JSON")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+pub(crate) fn approval_decision(key: KeyCode) -> Option<bool> {
+    match key {
+        KeyCode::Char('y') | KeyCode::Char('Y') => Some(true),
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Some(false),
+        _ => None,
+    }
 }
 
 fn transcript_from_snapshot(

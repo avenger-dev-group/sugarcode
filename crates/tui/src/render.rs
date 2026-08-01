@@ -168,7 +168,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Red))
-                        .title(" Approval · y approve once · n/Esc deny (default) "),
+                        .title(" Approval · y approve once · n/Esc deny "),
                 )
                 .wrap(Wrap { trim: false }),
             popup,

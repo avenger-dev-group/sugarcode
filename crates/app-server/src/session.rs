@@ -307,6 +307,7 @@ where
             thread_id: pending.request.thread_id.into_string(),
             turn_id: pending.request.turn_id.into_string(),
             call_id: pending.request.call_id,
+            description: pending.request.description,
             command: pending.request.command,
             arguments: pending.request.arguments,
             cwd: pending.request.cwd,
