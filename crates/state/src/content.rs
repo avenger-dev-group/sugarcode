@@ -400,10 +400,12 @@ fn ensure_directory(path: &Path) -> Result<(), ContentStoreError> {
     }
 }
 
-fn sync_directory(path: &Path) -> Result<(), ContentStoreError> {
-    fs::File::open(path)
+fn sync_directory(_path: &Path) -> Result<(), ContentStoreError> {
+    #[cfg(unix)]
+    fs::File::open(_path)
         .and_then(|directory| directory.sync_all())
-        .map_err(ContentStoreError::Io)
+        .map_err(ContentStoreError::Io)?;
+    Ok(())
 }
 
 #[cfg(test)]
