@@ -541,6 +541,12 @@ async fn consume_openai_event(
         | "response.reasoning_summary_part.done"
         | "response.reasoning_summary_text.delta"
         | "response.reasoning_summary_text.done" => Ok(StreamProgress::Continue),
+        // A completed Responses payload is authoritative. Providers may add
+        // optional typed progress events without changing that final payload,
+        // so keep the streaming consumer forward compatible with those events.
+        // Terminal events remain explicitly handled above and final output
+        // items are still validated by `parse_openai_response`.
+        kind if kind.starts_with("response.") => Ok(StreamProgress::Continue),
         _ => Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false)),
     }
 }
@@ -1529,6 +1535,10 @@ fn parse_openai_response(value: Value) -> Result<ModelResponse, ModelError> {
                             let text = required_string(content, "text")?;
                             push_text(&mut items, text);
                         }
+                        Some("refusal") => {
+                            let text = required_string(content, "refusal")?;
+                            push_text(&mut items, text);
+                        }
                         _ => {
                             return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
                         }
@@ -1585,7 +1595,10 @@ fn openai_finish_reason(value: &Value) -> ModelFinishReason {
             None => ModelFinishReason::Unknown("incomplete".to_owned()),
         },
         Some(status) => ModelFinishReason::Unknown(status.to_owned()),
-        None => ModelFinishReason::Unknown("missing".to_owned()),
+        // This parser is reached only from a `response.completed` event. Some
+        // compatible gateways omit the redundant inner status, so the outer
+        // terminal event remains sufficient evidence of normal completion.
+        None => ModelFinishReason::Stop,
     }
 }
 
@@ -2054,6 +2067,54 @@ mod tests {
             response.usage.and_then(|usage| usage.total_tokens),
             Some(15)
         );
+        assert_eq!(response.terminal.finish_reason, ModelFinishReason::Stop);
+    }
+
+    #[tokio::test]
+    async fn openai_sse_ignores_optional_response_progress_events() {
+        let (sender, _receiver) = mpsc::channel(4);
+
+        for event_name in [
+            "response.output_text.annotation.added",
+            "response.refusal.delta",
+            "response.code_interpreter_call.in_progress",
+            "response.future_progress_event",
+        ] {
+            assert!(matches!(
+                consume_openai_event(event_name, json!({}), &sender, &tool_names())
+                    .await
+                    .expect("optional progress event"),
+                StreamProgress::Continue
+            ));
+        }
+
+        let Err(error) =
+            consume_openai_event("message", json!({"choices": []}), &sender, &tool_names()).await
+        else {
+            panic!("a Chat Completions chunk is not a Responses event");
+        };
+        assert_eq!(error.kind(), ModelErrorKind::UnsupportedOutput);
+    }
+
+    #[test]
+    fn openai_completed_response_preserves_visible_refusals() {
+        let response = parse_openai_response(json!({
+            "id": "resp_refusal",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "refusal", "refusal": "I cannot help with that."}]
+            }]
+        }))
+        .expect("visible refusal");
+
+        assert!(matches!(
+            &response.output[0].kind,
+            ModelOutputItemKind::AssistantText {
+                phase: ModelTextPhase::Final,
+                text,
+            } if text == "I cannot help with that."
+        ));
     }
 
     #[tokio::test]

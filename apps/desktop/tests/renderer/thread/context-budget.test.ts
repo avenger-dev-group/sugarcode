@@ -6,6 +6,7 @@ import {
   estimatedTokensFromContextBytes,
   formatTokenCount,
   formatTokenUsageHint,
+  latestTurnUsage,
 } from '../../../src/renderer/components/thread/context-budget.ts';
 
 test('128K context preserves output and recovery reserves before compaction', () => {
@@ -52,4 +53,17 @@ test('current request stays distinct from cumulative Turn usage', () => {
     }),
     '≈ 0 / 128K current · 0 Turn total across 1 request',
   );
+});
+
+test('composer usage never leaks forward from an earlier Turn', () => {
+  const previousUsage = {
+    lastRequest: { inputTokens: 30_000 },
+    turnTotal: { inputTokens: 210_000 },
+    requestCount: 7,
+    contextWindowTokens: 200_000,
+    source: 'provider' as const,
+  };
+
+  assert.equal(latestTurnUsage([{ usage: previousUsage }, {}]), undefined);
+  assert.equal(latestTurnUsage([{ usage: previousUsage }]), previousUsage);
 });

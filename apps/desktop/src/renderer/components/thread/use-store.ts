@@ -71,6 +71,7 @@ import {
   estimatedTokensFromContextBytes,
   formatTokenCount,
   formatTokenUsageHint,
+  latestTurnUsage,
 } from './context-budget';
 import {
   isTranscriptScrollUpKey,
@@ -1412,9 +1413,7 @@ export const useStore = (): ThreadStore => {
   const selectedContextBudget = contextBudget(
     selectedProfile?.contextWindowTokens ?? 131_072,
   );
-  const latestUsage = [...snapshot.turns]
-    .reverse()
-    .find((turn) => turn.usage)?.usage;
+  const latestUsage = latestTurnUsage(snapshot.turns);
   const contextBudgetHint = latestUsage
     ? formatTokenUsageHint(latestUsage)
     : selectedModelProfileId
