@@ -260,7 +260,7 @@ fn desktop_workspace_browser_matches_golden_trace() {
         Some(workspace.path()),
         false,
         false,
-        false,
+        true,
     );
 }
 
@@ -947,7 +947,16 @@ fn model_configuration_is_resolved_per_turn_without_restarting_app_server() {
     drop(stdin);
     let output = child.wait_with_output().expect("wait for app-server");
     assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty());
+    let expected_stderr = if cfg!(windows) {
+        "sugarcode: shell/exec unavailable: sandboxUnavailable\n"
+    } else {
+        ""
+    };
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        expected_stderr,
+        "unexpected protocol diagnostics"
+    );
 }
 
 #[test]
@@ -1357,9 +1366,33 @@ fn run_golden_with_options(
     let mut actual = String::new();
     let input_lines = input.lines().collect::<Vec<_>>();
     for (input_index, input_line) in input_lines.iter().enumerate() {
+        let input_value = serde_json::from_str::<Value>(input_line);
+        let response_id = match &input_value {
+            Ok(Value::Object(object))
+                if object.get("method").is_none()
+                    && (object.contains_key("result") || object.contains_key("error")) =>
+            {
+                object.get("id")
+            }
+            _ => None,
+        };
+        if let Some(response_id) = response_id {
+            loop {
+                let line = read_golden_protocol_line(&mut stdout, "golden server request");
+                let server_message = serde_json::from_str::<Value>(line.trim_end())
+                    .expect("golden server request JSON");
+                actual.push_str(&line);
+                expected_index += 1;
+                if server_message.get("id") == Some(response_id)
+                    && server_message.get("method").is_some()
+                {
+                    break;
+                }
+            }
+        }
         writeln!(stdin, "{input_line}").expect("write fixture input");
         stdin.flush().expect("flush fixture input");
-        let expects_response = match serde_json::from_str::<Value>(input_line) {
+        let expects_response = match input_value {
             Err(_) => true,
             Ok(Value::Object(object)) => object.contains_key("method") && object.contains_key("id"),
             Ok(_) => true,
