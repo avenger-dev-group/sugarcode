@@ -266,6 +266,17 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
             output_tokens: Some(6),
             reasoning_tokens: Some(3),
             total_tokens: Some(16),
+            last_request: Some(sugarcode_state::DurableUsageSample {
+                input_tokens: Some(7),
+                cached_input_tokens: Some(2),
+                output_tokens: Some(4),
+                reasoning_tokens: Some(2),
+                total_tokens: Some(11),
+            }),
+            max_request_input_tokens: Some(7),
+            request_count: 2,
+            context_window_tokens: Some(131_072),
+            source: Some(sugarcode_state::DurableUsageSource::Provider),
         })
     );
     assert!(matches!(
@@ -1162,9 +1173,11 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
                 .iter()
                 .filter(|request| !request.tools.is_empty())
                 .all(|request| {
-                    request.context_bytes()
-                        <= ModelCapabilities::new(131_072, true, false, false, true, true)
-                            .active_turn_compaction_target_bytes()
+                    request.estimated_context_tokens()
+                        <= u64::from(
+                            ModelCapabilities::new(131_072, true, false, false, true, true)
+                                .active_turn_compaction_target_tokens(),
+                        )
                 })
         );
         let compaction_index = recorded_requests
@@ -1196,7 +1209,11 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
                 .messages
                 .first()
                 .and_then(message_compaction)
-                .is_some()
+                .is_some_and(|checkpoint| {
+                    checkpoint.contains("Inspect the large file completely")
+                        && checkpoint.contains("Prior reads succeeded")
+                        && checkpoint.contains("Continue executing the same user task")
+                })
         );
     }
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
@@ -1244,7 +1261,169 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
             .and_then(message_compaction)
             .is_some_and(|content| content.contains("Prior reads succeeded"))
     );
-    assert!(requests[15].context_bytes() < crate::context::COMPACTION_TARGET_BYTES);
+    assert!(
+        requests[15].estimated_context_tokens()
+            < u64::from(
+                ModelCapabilities::new(131_072, true, false, false, true, true)
+                    .active_turn_compaction_target_tokens(),
+            )
+    );
+}
+
+#[tokio::test]
+async fn large_private_continuation_and_cumulative_usage_do_not_fake_context_overflow() {
+    #[derive(Debug)]
+    struct ContinuationProvider {
+        calls: AtomicUsize,
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    impl ModelProvider for ContinuationProvider {
+        fn stream(&self, request: ModelRequest) -> BoxModelFuture<'_> {
+            let call = self.calls.fetch_add(1, Ordering::AcqRel);
+            self.requests.lock().expect("requests").push(request);
+            let events = if call == 0 {
+                let context =
+                    sugarcode_model_provider::ProviderContextEnvelope::new_with_replay_tokens(
+                        sugarcode_model_provider::ProviderWireApi::OpenAiResponses,
+                        Some("response_large_continuation".to_string()),
+                        vec![0x6b; 1024 * 1024],
+                        Some(1_000),
+                    )
+                    .expect("large private continuation");
+                assert!(context.is_spilled());
+                vec![Ok(ModelEvent::ResponseCompleted(ModelResponse {
+                    output: vec![
+                        sugarcode_model_provider::ModelOutputItem {
+                            output_index: 0,
+                            kind: ModelOutputItemKind::ToolCall(ModelToolCall {
+                                id: "read_a".to_string(),
+                                name: "workspace/read".to_string(),
+                                arguments: serde_json::json!({"path": "a.txt"}),
+                            }),
+                        },
+                        sugarcode_model_provider::ModelOutputItem {
+                            output_index: 1,
+                            kind: ModelOutputItemKind::ToolCall(ModelToolCall {
+                                id: "read_b".to_string(),
+                                name: "workspace/read".to_string(),
+                                arguments: serde_json::json!({"path": "b.txt"}),
+                            }),
+                        },
+                    ],
+                    usage: Some(ModelUsage {
+                        input_tokens: Some(60_000),
+                        cached_input_tokens: Some(55_000),
+                        output_tokens: Some(1_000),
+                        reasoning_output_tokens: Some(900),
+                        total_tokens: Some(61_000),
+                    }),
+                    terminal: ModelTerminalMetadata::completed(ModelContinuation::ToolCalls),
+                    provider_context: Some(context),
+                }))]
+            } else {
+                vec![Ok(ModelEvent::ResponseCompleted(ModelResponse {
+                    output: vec![sugarcode_model_provider::ModelOutputItem {
+                        output_index: 0,
+                        kind: ModelOutputItemKind::AssistantText {
+                            phase: ModelTextPhase::Final,
+                            text: "Both files were read; the requested task is complete."
+                                .to_string(),
+                        },
+                    }],
+                    usage: Some(ModelUsage {
+                        input_tokens: Some(115_318),
+                        cached_input_tokens: Some(110_000),
+                        output_tokens: Some(426),
+                        reasoning_output_tokens: Some(300),
+                        total_tokens: Some(115_744),
+                    }),
+                    terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+                    provider_context: None,
+                }))]
+            };
+            async move { Ok(stream::iter(events).boxed()) }.boxed()
+        }
+    }
+
+    struct TwoHundredKResolver {
+        provider: Arc<dyn ModelProvider>,
+    }
+
+    impl ModelResolver for TwoHundredKResolver {
+        fn resolve(&self, _: Option<&str>) -> Result<ResolvedModel, ModelError> {
+            Ok(ResolvedModel {
+                provider: self.provider.clone(),
+                model: "fixture-model".to_string(),
+                profile_id: "fixture".to_string(),
+                provider_family: "openai".to_string(),
+                wire_api: "openaiResponses".to_string(),
+                display_name: "Fixture 200K".to_string(),
+                capabilities: ModelCapabilities::new(200_000, true, true, true, true, true),
+            })
+        }
+    }
+
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("a.txt"), "alpha").expect("a fixture");
+    std::fs::write(directory.path().join("b.txt"), "beta").expect("b fixture");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(ContinuationProvider {
+        calls: AtomicUsize::new(0),
+        requests: requests.clone(),
+    });
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let (mut runtime, mut events) = CoreRuntime::new_with_model_resolver(
+        core,
+        Arc::new(TwoHundredKResolver { provider }),
+        Some(tool),
+        None,
+        None,
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Read both files and finish the task.".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("asynchronous turn");
+    };
+    while !matches!(
+        events.recv().await.expect("turn event").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    let recorded = requests.lock().expect("requests");
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[1].provider_context_bytes(), 1024 * 1024);
+    assert!(recorded[1].estimated_context_tokens() < 150_000);
+    drop(recorded);
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    let turn = snapshot
+        .turns
+        .iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert_eq!(turn.status, DurableTurnStatus::Completed);
+    assert!(turn.context_compaction.is_none());
+    let usage = turn.usage.as_ref().expect("usage");
+    assert_eq!(usage.input_tokens, Some(175_318));
+    assert_eq!(
+        usage.last_request.and_then(|sample| sample.input_tokens),
+        Some(115_318)
+    );
+    assert_eq!(usage.request_count, 2);
+    assert_eq!(usage.context_window_tokens, Some(200_000));
 }
 
 #[tokio::test]

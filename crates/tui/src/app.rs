@@ -352,6 +352,8 @@ impl App {
             )),
             CoreEventKind::TurnInterrupted { .. } => self.finish_turn("Interrupted"),
             CoreEventKind::RuntimeFailed => self.finish_turn("Runtime failed"),
+            CoreEventKind::TokenUsageUpdated { .. } => {}
+            CoreEventKind::Warning { .. } => {}
             CoreEventKind::ThreadStarted { .. } => {}
         }
     }

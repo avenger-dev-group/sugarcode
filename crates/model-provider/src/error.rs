@@ -16,6 +16,8 @@ pub enum ModelErrorKind {
     Filtered,
     UnsupportedOutput,
     UnsupportedToolArguments,
+    ProviderRequestTooLarge,
+    ProviderResponseTooLarge,
     OutputTooLarge,
 }
 
@@ -158,6 +160,12 @@ impl fmt::Display for ModelError {
             ModelErrorKind::UnsupportedOutput => "model returned unsupported output",
             ModelErrorKind::UnsupportedToolArguments => {
                 "model repeatedly returned unsupported tool arguments"
+            }
+            ModelErrorKind::ProviderRequestTooLarge => {
+                "provider rejected the request transport size"
+            }
+            ModelErrorKind::ProviderResponseTooLarge => {
+                "provider returned an abnormally large internal response"
             }
             ModelErrorKind::OutputTooLarge => "model output exceeded the limit",
         })

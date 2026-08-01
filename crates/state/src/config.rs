@@ -57,6 +57,21 @@ pub enum ModelWireApi {
     GeminiGenerateContent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelContinuationMode {
+    LocalReplay,
+    ProviderManaged,
+}
+
+impl ModelContinuationMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalReplay => "localReplay",
+            Self::ProviderManaged => "providerManaged",
+        }
+    }
+}
+
 impl ModelWireApi {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -132,6 +147,7 @@ pub struct ModelConnection {
     base_url: Url,
     enabled: bool,
     wire_api: ModelWireApi,
+    continuation_mode: ModelContinuationMode,
     api_key: Option<Zeroizing<String>>,
 }
 
@@ -159,6 +175,7 @@ impl ModelConnection {
             base_url,
             enabled,
             wire_api,
+            continuation_mode: ModelContinuationMode::LocalReplay,
             api_key: api_key.map(Zeroizing::new),
         })
     }
@@ -187,6 +204,19 @@ impl ModelConnection {
         self.wire_api
     }
 
+    pub const fn continuation_mode(&self) -> ModelContinuationMode {
+        self.continuation_mode
+    }
+
+    pub fn with_continuation_mode(mut self, mode: ModelContinuationMode) -> Self {
+        self.continuation_mode = if self.wire_api == ModelWireApi::OpenAiResponses {
+            mode
+        } else {
+            ModelContinuationMode::LocalReplay
+        };
+        self
+    }
+
     pub fn api_key(&self) -> Option<&str> {
         self.api_key.as_deref().map(String::as_str)
     }
@@ -202,6 +232,7 @@ impl fmt::Debug for ModelConnection {
             .field("base_url", &"<redacted>")
             .field("enabled", &self.enabled)
             .field("wire_api", &self.wire_api)
+            .field("continuation_mode", &self.continuation_mode)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .finish()
     }
@@ -1179,6 +1210,7 @@ fn parse_model_connection(
             "base_url",
             "enabled",
             "wire_api",
+            "continuation_mode",
             "api_key",
         ],
         "models.connections",
@@ -1239,6 +1271,29 @@ fn parse_model_connection(
             ));
         }
     };
+    let continuation_mode = match table.get("continuation_mode") {
+        None => ModelContinuationMode::LocalReplay,
+        Some(toml::Value::String(value)) => match value.as_str() {
+            "localReplay" => ModelContinuationMode::LocalReplay,
+            "providerManaged" => ModelContinuationMode::ProviderManaged,
+            _ => {
+                return Err(invalid_model_field(
+                    path,
+                    contents,
+                    "continuation_mode",
+                    "unsupportedContinuationMode",
+                ));
+            }
+        },
+        Some(_) => {
+            return Err(invalid_model_field(
+                path,
+                contents,
+                "continuation_mode",
+                "expectedString",
+            ));
+        }
+    };
     ModelConnection::new(
         id,
         provider_family,
@@ -1248,6 +1303,7 @@ fn parse_model_connection(
         wire_api,
         api_key,
     )
+    .map(|connection| connection.with_continuation_mode(continuation_mode))
     .map_err(|kind| invalid_model_field(path, contents, "connections", kind))
 }
 
@@ -1875,6 +1931,10 @@ fn encode_config(
             });
             output.push_str("\nwire_api = ");
             output.push_str(&toml_string(connection.wire_api().as_str()));
+            if connection.wire_api() == ModelWireApi::OpenAiResponses {
+                output.push_str("\ncontinuation_mode = ");
+                output.push_str(&toml_string(connection.continuation_mode().as_str()));
+            }
             output.push('\n');
             if let Some(api_key) = connection.api_key() {
                 output.push_str("api_key = ");

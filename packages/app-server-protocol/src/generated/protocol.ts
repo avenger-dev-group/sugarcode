@@ -144,7 +144,7 @@ export type ThreadResumeParams = { threadId: string, };
 
 export type TurnSnapshotStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
-export type TurnSnapshot = { id: string, status: TurnSnapshotStatus, items: Array<Item>, model?: ModelSelectionSnapshot, error?: TurnError, };
+export type TurnSnapshot = { id: string, status: TurnSnapshotStatus, items: Array<Item>, model?: ModelSelectionSnapshot, error?: TurnError, usage?: TokenUsage, };
 
 export type ThreadResumeResponse = { thread: Thread, turns: Array<TurnSnapshot>, };
 
@@ -156,17 +156,29 @@ export type ModelSelectionCapabilities = { toolCalls: boolean, strictTools: bool
 
 export type ModelSelectionSnapshot = { profileId: string, providerFamily: ModelProviderFamily, wireApi: ModelWireApi, modelId: string, displayName: string, contextWindowTokens: number, effectiveCapabilities: ModelSelectionCapabilities, };
 
-export type Turn = { id: string, status: TurnStatus, model?: ModelSelectionSnapshot, error?: TurnError, };
+export type Turn = { id: string, status: TurnStatus, model?: ModelSelectionSnapshot, error?: TurnError, usage?: TokenUsage, };
 
 export type TurnStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
-export type TurnErrorKind = "authentication" | "invalidRequest" | "rateLimited" | "timeout" | "transport" | "disconnected" | "server" | "protocol" | "incomplete" | "filtered" | "unsupportedOutput" | "unsupportedToolArguments" | "outputTooLarge" | "stateUnavailable";
+export type TurnErrorKind = "authentication" | "contextWindowExceeded" | "invalidRequest" | "rateLimited" | "timeout" | "transport" | "disconnected" | "server" | "protocol" | "incomplete" | "filtered" | "unsupportedOutput" | "unsupportedToolArguments" | "providerRequestTooLarge" | "providerResponseTooLarge" | "outputTooLarge" | "stateUnavailable";
 
 export type TurnError = { kind: TurnErrorKind, retryable: boolean, provider?: ProviderErrorMetadata, toolSchema?: ToolSchemaError, };
 
 export type ProviderErrorMetadata = { httpStatus: number, code: string | null, requestId: string | null, retryAfter: string | null, };
 
 export type ToolSchemaError = { toolName: string, reason: string, };
+
+export type TokenUsageSource = "provider" | "estimated";
+
+export type TokenUsageSample = { inputTokens: bigint | null, cachedInputTokens: bigint | null, outputTokens: bigint | null, reasoningTokens: bigint | null, totalTokens: bigint | null, };
+
+export type TokenUsage = { lastRequest: TokenUsageSample, turnTotal: TokenUsageSample, requestCount: bigint, contextWindowTokens: number, source: TokenUsageSource, };
+
+export type TokenUsageUpdatedNotification = { threadId: string, turnId: string, usage: TokenUsage, };
+
+export type TurnWarningCode = "providerManagedContinuationFallback";
+
+export type TurnWarningNotification = { threadId: string, turnId: string, code: TurnWarningCode, };
 
 export type TurnInputPart = { "type": "text", text: string, } | { "type": "image", asset: AssetDescriptor, } | { "type": "document", asset: AssetDescriptor, };
 

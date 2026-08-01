@@ -1,10 +1,16 @@
 import { Check, ChevronsUp, LoaderCircle, TriangleAlert } from 'lucide-react';
 
+import type { ContextBudget } from '@/renderer/components/thread/context-budget';
+import { formatTokenCount } from '@/renderer/components/thread/context-budget';
+
 export type ContextCompactionActivityViewModel = Readonly<{
   id: string;
   ordinal: number;
   state: 'compacting' | 'completed' | 'failed' | 'interrupted';
   preContextBytes: number;
+  contextWindowTokens?: number;
+  estimatedPreContextTokens?: number;
+  budget?: ContextBudget;
   sourceMessages: number;
   sourceBytes: number;
   sourceSha256: string;
@@ -53,7 +59,24 @@ export const ContextCompactionActivity = ({
           }`}
         />
         <span>{label}</span>
+        {activity.estimatedPreContextTokens !== undefined &&
+        activity.contextWindowTokens !== undefined ? (
+          <span className="ml-auto shrink-0 font-mono text-[10px] text-tertiary">
+            ≈ {formatTokenCount(activity.estimatedPreContextTokens)} /{' '}
+            {formatTokenCount(activity.contextWindowTokens)} tokens
+          </span>
+        ) : null}
       </summary>
+      {activity.budget ? (
+        <p className="mt-2 border-t border-border/60 pt-2 text-xs font-normal leading-5 text-secondary">
+          SugarCode compacts near{' '}
+          {formatTokenCount(activity.budget.compactionTargetTokens)} tokens,
+          before the full window, reserving{' '}
+          {formatTokenCount(activity.budget.outputReserveTokens)} for output
+          and {formatTokenCount(activity.budget.recoveryReserveTokens)} for
+          recovery. Token usage shown here is a conservative estimate.
+        </p>
+      ) : null}
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-border/60 pt-3 font-mono text-[10px] text-tertiary">
         <dt>Ordinal</dt>
         <dd>{activity.ordinal}</dd>

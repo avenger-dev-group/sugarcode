@@ -69,6 +69,10 @@ use crate::ThreadStartResponse;
 use crate::ThreadStartedNotification;
 use crate::ThreadUnarchiveParams;
 use crate::ThreadUnarchiveResponse;
+use crate::TokenUsage;
+use crate::TokenUsageSample;
+use crate::TokenUsageSource;
+use crate::TokenUsageUpdatedNotification;
 use crate::ToolResult;
 use crate::ToolSchemaError;
 use crate::Turn;
@@ -84,6 +88,8 @@ use crate::TurnStartParams;
 use crate::TurnStartResponse;
 use crate::TurnStartedNotification;
 use crate::TurnStatus;
+use crate::TurnWarningCode;
+use crate::TurnWarningNotification;
 use crate::WorkspaceBinding;
 use crate::WorkspaceEntry;
 use crate::WorkspaceEntryKind;
@@ -197,6 +203,12 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         TurnError::decl(),
         ProviderErrorMetadata::decl(),
         ToolSchemaError::decl(),
+        TokenUsageSource::decl(),
+        TokenUsageSample::decl(),
+        TokenUsage::decl(),
+        TokenUsageUpdatedNotification::decl(),
+        TurnWarningCode::decl(),
+        TurnWarningNotification::decl(),
         TurnInputPart::decl(),
         TurnStartParams::decl(),
         TurnStartResponse::decl(),
@@ -508,6 +520,30 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
         &schema_for!(ModelSelectionSnapshot),
     )?;
     write_schema(out_dir.join("Turn.schema.json"), &schema_for!(Turn))?;
+    write_schema(
+        out_dir.join("TokenUsageSource.schema.json"),
+        &schema_for!(TokenUsageSource),
+    )?;
+    write_schema(
+        out_dir.join("TokenUsageSample.schema.json"),
+        &schema_for!(TokenUsageSample),
+    )?;
+    write_schema(
+        out_dir.join("TokenUsage.schema.json"),
+        &schema_for!(TokenUsage),
+    )?;
+    write_schema(
+        out_dir.join("TokenUsageUpdatedNotification.schema.json"),
+        &schema_for!(TokenUsageUpdatedNotification),
+    )?;
+    write_schema(
+        out_dir.join("TurnWarningCode.schema.json"),
+        &schema_for!(TurnWarningCode),
+    )?;
+    write_schema(
+        out_dir.join("TurnWarningNotification.schema.json"),
+        &schema_for!(TurnWarningNotification),
+    )?;
     write_schema(
         out_dir.join("TurnStartParams.schema.json"),
         &schema_for!(TurnStartParams),

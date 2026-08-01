@@ -278,6 +278,37 @@ export const ModelConfigSettingsPanel = (
                 </label>
               </div>
 
+              {store.selectedConnection.wireApi === 'openaiResponses' ? (
+                <label className="grid gap-1.5 text-sm">
+                  <span>Continuation mode</span>
+                  <Select
+                    value={store.selectedConnection.continuationMode}
+                    onValueChange={(continuationMode) =>
+                      store.updateConnection({
+                        continuationMode:
+                          continuationMode as typeof store.selectedConnection.continuationMode,
+                      })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="localReplay">Local replay</SelectItem>
+                      <SelectItem value="providerManaged">
+                        Provider managed
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <span className="text-xs text-secondary">
+                    Local replay keeps store:false and replays private reasoning
+                    from this device. Provider managed uses store:true and
+                    previous_response_id; incompatible endpoints fall back to
+                    local replay.
+                  </span>
+                </label>
+              ) : null}
+
               <div className="rounded-xl border bg-surface p-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <KeyRound

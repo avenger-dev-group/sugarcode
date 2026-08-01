@@ -306,7 +306,8 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
                     "displayName": "Custom provider",
                     "baseUrl": "http://127.0.0.1:18081/v1",
                     "enabled": true,
-                    "wireApi": "openaiChatCompletions"
+                    "wireApi": "openaiChatCompletions",
+                    "continuationMode": "localReplay"
                 }],
                 "profiles": [{
                     "id": "model_primary",

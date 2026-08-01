@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TokenUsage",
+  "type": "object",
+  "properties": {
+    "contextWindowTokens": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "lastRequest": {
+      "$ref": "#/$defs/TokenUsageSample"
+    },
+    "requestCount": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "source": {
+      "$ref": "#/$defs/TokenUsageSource"
+    },
+    "turnTotal": {
+      "$ref": "#/$defs/TokenUsageSample"
+    }
+  },
+  "required": [
+    "lastRequest",
+    "turnTotal",
+    "requestCount",
+    "contextWindowTokens",
+    "source"
+  ],
+  "$defs": {
+    "TokenUsageSample": {
+      "type": "object",
+      "properties": {
+        "cachedInputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "inputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reasoningTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "totalTokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      }
+    },
+    "TokenUsageSource": {
+      "type": "string",
+      "enum": [
+        "provider",
+        "estimated"
+      ]
+    }
+  }
+}

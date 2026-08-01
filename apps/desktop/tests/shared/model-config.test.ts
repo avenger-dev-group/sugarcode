@@ -16,6 +16,7 @@ const catalog = (contextWindowTokens?: number) => ({
       baseUrl: 'http://127.0.0.1:18080/v1',
       enabled: true,
       wireApi: 'openaiChatCompletions',
+      continuationMode: 'localReplay',
     },
   ],
   profiles: [

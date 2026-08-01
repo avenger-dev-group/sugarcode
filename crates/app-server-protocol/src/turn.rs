@@ -23,6 +23,7 @@ pub enum TurnStatus {
 #[ts(rename_all = "camelCase")]
 pub enum TurnErrorKind {
     Authentication,
+    ContextWindowExceeded,
     InvalidRequest,
     RateLimited,
     Timeout,
@@ -34,6 +35,8 @@ pub enum TurnErrorKind {
     Filtered,
     UnsupportedOutput,
     UnsupportedToolArguments,
+    ProviderRequestTooLarge,
+    ProviderResponseTooLarge,
     OutputTooLarge,
     StateUnavailable,
 }
@@ -125,6 +128,64 @@ pub struct Turn {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<TurnError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub usage: Option<TokenUsage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum TokenUsageSource {
+    Provider,
+    Estimated,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct TokenUsageSample {
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub last_request: TokenUsageSample,
+    pub turn_total: TokenUsageSample,
+    pub request_count: u64,
+    pub context_window_tokens: u32,
+    pub source: TokenUsageSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct TokenUsageUpdatedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub usage: TokenUsage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum TurnWarningCode {
+    ProviderManagedContinuationFallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct TurnWarningNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub code: TurnWarningCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, TS)]

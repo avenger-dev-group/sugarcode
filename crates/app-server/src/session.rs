@@ -803,6 +803,8 @@ fn core_event_thread_id(kind: &CoreEventKind) -> Option<&ThreadId> {
         | CoreEventKind::AgentOutputResolved { thread_id, .. }
         | CoreEventKind::AgentMessageDelta { thread_id, .. }
         | CoreEventKind::ItemCompleted { thread_id, .. }
+        | CoreEventKind::TokenUsageUpdated { thread_id, .. }
+        | CoreEventKind::Warning { thread_id, .. }
         | CoreEventKind::TurnCompleted { thread_id, .. }
         | CoreEventKind::TurnFailed { thread_id, .. }
         | CoreEventKind::TurnInterrupted { thread_id, .. } => Some(thread_id),

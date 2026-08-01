@@ -109,7 +109,7 @@ export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
   messages: readonly TranscriptMessageViewModel[];
-  pendingAgentOutputs?: readonly AgentCommentaryViewModel[];
+  pendingAgentOutputs?: readonly AgentMessageViewModel[];
   activities?: readonly TurnActivityViewModel[];
   contextCompactions?: readonly ContextCompactionActivityViewModel[];
   workspaceRead?: WorkspaceReadActivityViewModel;
@@ -158,6 +158,7 @@ export type ThreadStore = Readonly<{
   inputBytes: number;
   inputLimitBytes: number;
   inputHint: string;
+  contextBudgetHint: string | null;
   canSend: boolean;
   canStop: boolean;
   isSending: boolean;

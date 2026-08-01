@@ -840,6 +840,15 @@ export const recoverConversation = (
       ...(commandApproval ? { commandApproval } : {}),
       ...(mcpActivities.length > 0 ? { mcpActivities } : {}),
       ...(turn.error ? { error: { ...turn.error } } : {}),
+      ...(turn.usage
+        ? {
+            usage: {
+              ...turn.usage,
+              lastRequest: { ...turn.usage.lastRequest },
+              turnTotal: { ...turn.usage.turnTotal },
+            },
+          }
+        : {}),
     };
   });
 

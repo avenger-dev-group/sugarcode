@@ -2,6 +2,7 @@ import {
   ArrowUp,
   FileText,
   Image as ImageIcon,
+  LoaderCircle,
   PanelLeft,
   PanelRight,
   Paperclip,
@@ -222,13 +223,27 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
         />
       ) : null}
       {turn.pendingAgentOutputs?.map((output) => (
-        <AgentCommentary key={output.id} commentary={output} />
+        <AgentMessage key={output.id} message={output} />
       ))}
       {turn.messages
         .filter((entry) => entry.role === 'agent')
         .map((entry) => (
           <TranscriptMessage key={entry.message.id} entry={entry} />
         ))}
+      {turn.status === 'inProgress' &&
+      !turn.pendingAgentOutputs?.length ? (
+        <div
+          className="flex items-center gap-2 text-sm font-normal text-process"
+          role="status"
+          aria-live="polite"
+        >
+          <LoaderCircle
+            className="size-3.5 animate-spin"
+            aria-hidden="true"
+          />
+          <span>Agent 正在处理…</span>
+        </div>
+      ) : null}
       {turn.failure ? (
         <div
           className="ml-10 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3"
@@ -448,6 +463,19 @@ export const ThreadWorkbenchView = ({
                 ))}
               </div>
             )}
+            {store.isSending || store.thread.phase === 'starting' ? (
+              <div
+                className="mt-8 flex items-center gap-2 text-sm font-normal text-process"
+                role="status"
+                aria-live="polite"
+              >
+                <LoaderCircle
+                  className="size-3.5 animate-spin"
+                  aria-hidden="true"
+                />
+                <span>正在提交任务…</span>
+              </div>
+            ) : null}
             <div ref={transcriptEnd} />
           </div>
         </ScrollArea>
@@ -620,6 +648,16 @@ export const ThreadWorkbenchView = ({
                     >
                       {store.inputHint}
                     </span>
+                    {store.contextBudgetHint ? (
+                      <>
+                        <span className="text-tertiary" aria-hidden="true">
+                          ·
+                        </span>
+                        <span className="text-tertiary">
+                          {store.contextBudgetHint}
+                        </span>
+                      </>
+                    ) : null}
                   </div>
                 </div>
                 {store.canStop ? (

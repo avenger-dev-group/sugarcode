@@ -876,6 +876,30 @@ pub(super) struct StoredUsageRef {
     pub reasoning_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_request: Option<StoredUsageSampleRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_request_input_tokens: Option<u64>,
+    pub request_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredUsageSampleRef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
 }
 
 impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
@@ -986,6 +1010,20 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
                 output_tokens: usage.output_tokens,
                 reasoning_tokens: usage.reasoning_tokens,
                 total_tokens: usage.total_tokens,
+                last_request: usage.last_request.map(|sample| StoredUsageSampleRef {
+                    input_tokens: sample.input_tokens,
+                    cached_input_tokens: sample.cached_input_tokens,
+                    output_tokens: sample.output_tokens,
+                    reasoning_tokens: sample.reasoning_tokens,
+                    total_tokens: sample.total_tokens,
+                }),
+                max_request_input_tokens: usage.max_request_input_tokens,
+                request_count: usage.request_count,
+                context_window_tokens: usage.context_window_tokens,
+                source: usage.source.map(|source| match source {
+                    super::DurableUsageSource::Provider => "provider",
+                    super::DurableUsageSource::Estimated => "estimated",
+                }),
             }),
         }
     }
@@ -994,6 +1032,7 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
 fn stored_error_kind(kind: DurableTurnErrorKind) -> &'static str {
     match kind {
         DurableTurnErrorKind::Authentication => "authentication",
+        DurableTurnErrorKind::ContextWindowExceeded => "contextWindowExceeded",
         DurableTurnErrorKind::InvalidRequest => "invalidRequest",
         DurableTurnErrorKind::RateLimited => "rateLimited",
         DurableTurnErrorKind::Timeout => "timeout",
@@ -1005,6 +1044,8 @@ fn stored_error_kind(kind: DurableTurnErrorKind) -> &'static str {
         DurableTurnErrorKind::Filtered => "filtered",
         DurableTurnErrorKind::UnsupportedOutput => "unsupportedOutput",
         DurableTurnErrorKind::UnsupportedToolArguments => "unsupportedToolArguments",
+        DurableTurnErrorKind::ProviderRequestTooLarge => "providerRequestTooLarge",
+        DurableTurnErrorKind::ProviderResponseTooLarge => "providerResponseTooLarge",
         DurableTurnErrorKind::OutputTooLarge => "outputTooLarge",
         DurableTurnErrorKind::StateUnavailable => "stateUnavailable",
     }
@@ -1569,6 +1610,7 @@ struct StoredToolSchemaError {
 #[serde(rename_all = "camelCase")]
 enum StoredTurnErrorKind {
     Authentication,
+    ContextWindowExceeded,
     InvalidRequest,
     RateLimited,
     Timeout,
@@ -1580,6 +1622,8 @@ enum StoredTurnErrorKind {
     Filtered,
     UnsupportedOutput,
     UnsupportedToolArguments,
+    ProviderRequestTooLarge,
+    ProviderResponseTooLarge,
     OutputTooLarge,
     StateUnavailable,
 }
@@ -1597,6 +1641,38 @@ struct StoredUsage {
     reasoning_tokens: Option<u64>,
     #[serde(default)]
     total_tokens: Option<u64>,
+    #[serde(default)]
+    last_request: Option<StoredUsageSample>,
+    #[serde(default)]
+    max_request_input_tokens: Option<u64>,
+    #[serde(default)]
+    request_count: u64,
+    #[serde(default)]
+    context_window_tokens: Option<u32>,
+    #[serde(default)]
+    source: Option<StoredUsageSource>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredUsageSample {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    cached_input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
+    #[serde(default)]
+    total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StoredUsageSource {
+    Provider,
+    Estimated,
 }
 
 pub(super) enum DecodedRecord {
@@ -2363,6 +2439,9 @@ fn decode_error(error: StoredTurnError) -> DurableTurnError {
     DurableTurnError {
         kind: match kind {
             StoredTurnErrorKind::Authentication => DurableTurnErrorKind::Authentication,
+            StoredTurnErrorKind::ContextWindowExceeded => {
+                DurableTurnErrorKind::ContextWindowExceeded
+            }
             StoredTurnErrorKind::InvalidRequest => DurableTurnErrorKind::InvalidRequest,
             StoredTurnErrorKind::RateLimited => DurableTurnErrorKind::RateLimited,
             StoredTurnErrorKind::Timeout => DurableTurnErrorKind::Timeout,
@@ -2375,6 +2454,12 @@ fn decode_error(error: StoredTurnError) -> DurableTurnError {
             StoredTurnErrorKind::UnsupportedOutput => DurableTurnErrorKind::UnsupportedOutput,
             StoredTurnErrorKind::UnsupportedToolArguments => {
                 DurableTurnErrorKind::UnsupportedToolArguments
+            }
+            StoredTurnErrorKind::ProviderRequestTooLarge => {
+                DurableTurnErrorKind::ProviderRequestTooLarge
+            }
+            StoredTurnErrorKind::ProviderResponseTooLarge => {
+                DurableTurnErrorKind::ProviderResponseTooLarge
             }
             StoredTurnErrorKind::OutputTooLarge => DurableTurnErrorKind::OutputTooLarge,
             StoredTurnErrorKind::StateUnavailable => DurableTurnErrorKind::StateUnavailable,
@@ -2465,6 +2550,20 @@ fn decode_usage(usage: StoredUsage) -> DurableUsage {
         output_tokens: usage.output_tokens,
         reasoning_tokens: usage.reasoning_tokens,
         total_tokens: usage.total_tokens,
+        last_request: usage.last_request.map(|sample| super::DurableUsageSample {
+            input_tokens: sample.input_tokens,
+            cached_input_tokens: sample.cached_input_tokens,
+            output_tokens: sample.output_tokens,
+            reasoning_tokens: sample.reasoning_tokens,
+            total_tokens: sample.total_tokens,
+        }),
+        max_request_input_tokens: usage.max_request_input_tokens,
+        request_count: usage.request_count,
+        context_window_tokens: usage.context_window_tokens,
+        source: usage.source.map(|source| match source {
+            StoredUsageSource::Provider => super::DurableUsageSource::Provider,
+            StoredUsageSource::Estimated => super::DurableUsageSource::Estimated,
+        }),
     }
 }
 

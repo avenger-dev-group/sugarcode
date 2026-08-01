@@ -155,6 +155,7 @@ fn normalize_expected_model_events(
                 }
             }
             Ok(ModelEvent::ResponseCompleted(completed)) => response = Some(completed),
+            Ok(event @ ModelEvent::Warning { .. }) => normalized.push(Ok(event)),
             Err(error) => normalized.push(Err(error)),
         }
     }
@@ -1098,7 +1099,8 @@ async fn provider_reasoning_content_is_not_classified_as_assistant_output() {
         .as_ref()
         .expect("reasoning continuation context");
     let replay: serde_json::Value =
-        serde_json::from_slice(context.payload()).expect("chat continuation payload");
+        serde_json::from_slice(&context.payload().expect("read continuation"))
+            .expect("chat continuation payload");
     assert_eq!(replay["reasoning_content"], "private reasoning");
 }
 
@@ -1411,7 +1413,6 @@ async fn http_error_exposes_only_bounded_provider_metadata() {
 #[tokio::test]
 async fn context_length_rejections_are_distinct_from_other_invalid_requests() {
     for (status, body) in [
-        (413, ""),
         (
             400,
             r#"{"error":{"code":"context_length_exceeded","message":"maximum context length reached"}}"#,
@@ -1430,6 +1431,15 @@ async fn context_length_rejections_are_distinct_from_other_invalid_requests() {
         assert_eq!(error.kind(), ModelErrorKind::ContextLengthExceeded);
         assert!(!error.retryable());
     }
+
+    let (endpoint, server) = status_server_with_body(413, b"").await;
+    let error = match provider(endpoint).stream(request()).await {
+        Ok(_) => panic!("oversized provider request must not open a stream"),
+        Err(error) => error,
+    };
+    server.await.expect("mock server");
+    assert_eq!(error.kind(), ModelErrorKind::ProviderRequestTooLarge);
+    assert!(!error.retryable());
 }
 
 #[tokio::test]

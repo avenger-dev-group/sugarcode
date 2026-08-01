@@ -47,6 +47,10 @@ use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
 use sugarcode_app_server_protocol::ThreadUnarchiveParams;
 use sugarcode_app_server_protocol::ThreadUnarchiveResponse;
+use sugarcode_app_server_protocol::TokenUsage;
+use sugarcode_app_server_protocol::TokenUsageSample;
+use sugarcode_app_server_protocol::TokenUsageSource;
+use sugarcode_app_server_protocol::TokenUsageUpdatedNotification;
 use sugarcode_app_server_protocol::ToolResult;
 use sugarcode_app_server_protocol::Turn;
 use sugarcode_app_server_protocol::TurnCompletedNotification;
@@ -60,6 +64,8 @@ use sugarcode_app_server_protocol::TurnStartParams;
 use sugarcode_app_server_protocol::TurnStartResponse;
 use sugarcode_app_server_protocol::TurnStartedNotification;
 use sugarcode_app_server_protocol::TurnStatus;
+use sugarcode_app_server_protocol::TurnWarningCode;
+use sugarcode_app_server_protocol::TurnWarningNotification;
 
 #[test]
 fn error_envelope_uses_json_rpc_2_and_null_unknown_id() {
@@ -340,6 +346,7 @@ fn collaboration_items_and_descendant_origin_are_provider_neutral() {
             status: TurnSnapshotStatus::Completed,
             items: items.clone(),
             error: None,
+            usage: None,
         }],
     };
     let value = serde_json::to_value(ThreadDescendantsListResponse {
@@ -550,6 +557,7 @@ fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
                 text: "SugarCode deterministic response.".to_string(),
             }],
             error: None,
+            usage: None,
         }],
     };
     assert_eq!(
@@ -700,6 +708,7 @@ fn turn_start_types_use_the_public_turn_dto() {
         id: "turn_0000000000000001".to_string(),
         status: TurnStatus::InProgress,
         error: None,
+        usage: None,
     };
 
     assert_eq!(
@@ -830,6 +839,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
                 id: "turn_0000000000000001".to_string(),
                 status: TurnStatus::Completed,
                 error: None,
+                usage: None,
             },
         })
         .expect("turn/completed serializes"),
@@ -1186,12 +1196,74 @@ fn turn_interrupt_is_strict_and_terminal_errors_are_provider_neutral() {
                 provider: None,
                 tool_schema: None,
             }),
+            usage: None,
         })
         .expect("failed turn"),
         json!({
             "id": "turn_0000000000000001",
             "status": "failed",
             "error": {"kind": "rateLimited", "retryable": true}
+        })
+    );
+}
+
+#[test]
+fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
+    let sample = TokenUsageSample {
+        input_tokens: Some(60_000),
+        cached_input_tokens: Some(2_000),
+        output_tokens: Some(1_000),
+        reasoning_tokens: Some(800),
+        total_tokens: Some(61_000),
+    };
+    assert_eq!(
+        serde_json::to_value(TokenUsageUpdatedNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn_id: "turn_0000000000000001".to_string(),
+            usage: TokenUsage {
+                last_request: sample.clone(),
+                turn_total: sample,
+                request_count: 2,
+                context_window_tokens: 200_000,
+                source: TokenUsageSource::Provider,
+            },
+        })
+        .expect("usage notification"),
+        json!({
+            "threadId": "thr_0000000000000001",
+            "turnId": "turn_0000000000000001",
+            "usage": {
+                "lastRequest": {
+                    "inputTokens": 60_000,
+                    "cachedInputTokens": 2_000,
+                    "outputTokens": 1_000,
+                    "reasoningTokens": 800,
+                    "totalTokens": 61_000
+                },
+                "turnTotal": {
+                    "inputTokens": 60_000,
+                    "cachedInputTokens": 2_000,
+                    "outputTokens": 1_000,
+                    "reasoningTokens": 800,
+                    "totalTokens": 61_000
+                },
+                "requestCount": 2,
+                "contextWindowTokens": 200_000,
+                "source": "provider"
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(TurnWarningNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn_id: "turn_0000000000000001".to_string(),
+            code: TurnWarningCode::ProviderManagedContinuationFallback,
+        })
+        .expect("warning notification"),
+        json!({
+            "threadId": "thr_0000000000000001",
+            "turnId": "turn_0000000000000001",
+            "code": "providerManagedContinuationFallback"
         })
     );
 }
@@ -1213,6 +1285,7 @@ fn thread_resume_returns_a_complete_snapshot() {
                 text: "SugarCode deterministic response.".to_string(),
             }],
             error: None,
+            usage: None,
         }],
     };
     assert_eq!(

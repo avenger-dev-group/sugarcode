@@ -23,6 +23,10 @@ use sugarcode_app_server_protocol::ModelWireApi as PublicModelWireApi;
 use sugarcode_app_server_protocol::ProviderErrorMetadata;
 use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
+use sugarcode_app_server_protocol::TokenUsage;
+use sugarcode_app_server_protocol::TokenUsageSample;
+use sugarcode_app_server_protocol::TokenUsageSource;
+use sugarcode_app_server_protocol::TokenUsageUpdatedNotification;
 use sugarcode_app_server_protocol::ToolResult as PublicToolResult;
 use sugarcode_app_server_protocol::ToolSchemaError;
 use sugarcode_app_server_protocol::Turn as PublicTurn;
@@ -34,10 +38,14 @@ use sugarcode_app_server_protocol::TurnSnapshot;
 use sugarcode_app_server_protocol::TurnSnapshotStatus;
 use sugarcode_app_server_protocol::TurnStartedNotification;
 use sugarcode_app_server_protocol::TurnStatus;
+use sugarcode_app_server_protocol::TurnWarningCode;
+use sugarcode_app_server_protocol::TurnWarningNotification;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreItemKind;
 use sugarcode_protocol::CoreRequestId;
+use sugarcode_protocol::CoreTokenUsage;
+use sugarcode_protocol::CoreTokenUsageSource;
 use sugarcode_protocol::CoreTurnError;
 use sugarcode_protocol::CoreTurnErrorKind;
 use sugarcode_protocol::ThreadId;
@@ -47,6 +55,8 @@ use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableTurnError;
 use sugarcode_state::DurableTurnErrorKind;
 use sugarcode_state::DurableTurnStatus;
+use sugarcode_state::DurableUsage;
+use sugarcode_state::DurableUsageSource;
 
 #[derive(Debug)]
 pub(crate) struct EventMappingError;
@@ -158,6 +168,7 @@ pub(crate) fn map_turn_lifecycle(
         status: TurnStatus::InProgress,
         model: None,
         error: None,
+        usage: None,
     };
     let started_public_item = PublicItem::AgentMessage {
         id: public_item_id.clone(),
@@ -215,6 +226,7 @@ pub(crate) fn map_turn_lifecycle(
                     status: TurnStatus::Completed,
                     model: None,
                     error: None,
+                    usage: None,
                 },
             })
             .map_err(|_| EventMappingError)?,
@@ -561,6 +573,7 @@ fn map_snapshot_parts(
                     })
                     .collect(),
                 error: turn.error.map(map_durable_error),
+                usage: turn.usage.and_then(map_durable_usage),
             })
             .collect(),
     )
@@ -577,6 +590,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
                     status: TurnStatus::InProgress,
                     model: None,
                     error: None,
+                    usage: None,
                 },
             })
             .map_err(|_| EventMappingError)?,
@@ -659,6 +673,36 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
             })
             .map_err(|_| EventMappingError)?,
         ),
+        CoreEventKind::TokenUsageUpdated {
+            thread_id,
+            turn_id,
+            usage,
+        } => notification(
+            "thread/tokenUsage/updated",
+            to_value(TokenUsageUpdatedNotification {
+                thread_id: thread_id.into_string(),
+                turn_id: turn_id.into_string(),
+                usage: map_core_usage(usage),
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
+        CoreEventKind::Warning {
+            thread_id,
+            turn_id,
+            code,
+        } => notification(
+            "turn/warning",
+            to_value(TurnWarningNotification {
+                thread_id: thread_id.into_string(),
+                turn_id: turn_id.into_string(),
+                code: match code {
+                    sugarcode_protocol::CoreWarningCode::ProviderManagedContinuationFallback => {
+                        TurnWarningCode::ProviderManagedContinuationFallback
+                    }
+                },
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
         CoreEventKind::TurnCompleted { thread_id, turn_id } => {
             terminal_notification(thread_id, turn_id, TurnStatus::Completed, None)?
         }
@@ -697,10 +741,62 @@ fn terminal_notification(
                 status,
                 model: None,
                 error,
+                usage: None,
             },
         })
         .map_err(|_| EventMappingError)?,
     ))
+}
+
+fn map_core_usage(usage: CoreTokenUsage) -> TokenUsage {
+    TokenUsage {
+        last_request: TokenUsageSample {
+            input_tokens: usage.last_request.input_tokens,
+            cached_input_tokens: usage.last_request.cached_input_tokens,
+            output_tokens: usage.last_request.output_tokens,
+            reasoning_tokens: usage.last_request.reasoning_tokens,
+            total_tokens: usage.last_request.total_tokens,
+        },
+        turn_total: TokenUsageSample {
+            input_tokens: usage.turn_total.input_tokens,
+            cached_input_tokens: usage.turn_total.cached_input_tokens,
+            output_tokens: usage.turn_total.output_tokens,
+            reasoning_tokens: usage.turn_total.reasoning_tokens,
+            total_tokens: usage.turn_total.total_tokens,
+        },
+        request_count: usage.request_count,
+        context_window_tokens: usage.context_window_tokens,
+        source: match usage.source {
+            CoreTokenUsageSource::Provider => TokenUsageSource::Provider,
+            CoreTokenUsageSource::Estimated => TokenUsageSource::Estimated,
+        },
+    }
+}
+
+fn map_durable_usage(usage: DurableUsage) -> Option<TokenUsage> {
+    let last_request = usage.last_request?;
+    Some(TokenUsage {
+        last_request: TokenUsageSample {
+            input_tokens: last_request.input_tokens,
+            cached_input_tokens: last_request.cached_input_tokens,
+            output_tokens: last_request.output_tokens,
+            reasoning_tokens: last_request.reasoning_tokens,
+            total_tokens: last_request.total_tokens,
+        },
+        turn_total: TokenUsageSample {
+            input_tokens: usage.input_tokens,
+            cached_input_tokens: usage.cached_input_tokens,
+            output_tokens: usage.output_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            total_tokens: usage.total_tokens,
+        },
+        request_count: usage.request_count,
+        context_window_tokens: usage.context_window_tokens?,
+        source: match usage.source? {
+            DurableUsageSource::Provider => TokenUsageSource::Provider,
+            DurableUsageSource::Estimated => TokenUsageSource::Estimated,
+        },
+    })
 }
 
 pub(crate) fn map_model_selection(
@@ -1365,6 +1461,7 @@ fn map_core_error(error: CoreTurnError) -> TurnError {
     TurnError {
         kind: match kind {
             CoreTurnErrorKind::Authentication => TurnErrorKind::Authentication,
+            CoreTurnErrorKind::ContextWindowExceeded => TurnErrorKind::ContextWindowExceeded,
             CoreTurnErrorKind::InvalidRequest => TurnErrorKind::InvalidRequest,
             CoreTurnErrorKind::RateLimited => TurnErrorKind::RateLimited,
             CoreTurnErrorKind::Timeout => TurnErrorKind::Timeout,
@@ -1376,6 +1473,8 @@ fn map_core_error(error: CoreTurnError) -> TurnError {
             CoreTurnErrorKind::Filtered => TurnErrorKind::Filtered,
             CoreTurnErrorKind::UnsupportedOutput => TurnErrorKind::UnsupportedOutput,
             CoreTurnErrorKind::UnsupportedToolArguments => TurnErrorKind::UnsupportedToolArguments,
+            CoreTurnErrorKind::ProviderRequestTooLarge => TurnErrorKind::ProviderRequestTooLarge,
+            CoreTurnErrorKind::ProviderResponseTooLarge => TurnErrorKind::ProviderResponseTooLarge,
             CoreTurnErrorKind::OutputTooLarge => TurnErrorKind::OutputTooLarge,
             CoreTurnErrorKind::StateUnavailable => TurnErrorKind::StateUnavailable,
         },
@@ -1403,6 +1502,7 @@ fn map_durable_error(error: DurableTurnError) -> TurnError {
     TurnError {
         kind: match kind {
             DurableTurnErrorKind::Authentication => TurnErrorKind::Authentication,
+            DurableTurnErrorKind::ContextWindowExceeded => TurnErrorKind::ContextWindowExceeded,
             DurableTurnErrorKind::InvalidRequest => TurnErrorKind::InvalidRequest,
             DurableTurnErrorKind::RateLimited => TurnErrorKind::RateLimited,
             DurableTurnErrorKind::Timeout => TurnErrorKind::Timeout,
@@ -1415,6 +1515,10 @@ fn map_durable_error(error: DurableTurnError) -> TurnError {
             DurableTurnErrorKind::UnsupportedOutput => TurnErrorKind::UnsupportedOutput,
             DurableTurnErrorKind::UnsupportedToolArguments => {
                 TurnErrorKind::UnsupportedToolArguments
+            }
+            DurableTurnErrorKind::ProviderRequestTooLarge => TurnErrorKind::ProviderRequestTooLarge,
+            DurableTurnErrorKind::ProviderResponseTooLarge => {
+                TurnErrorKind::ProviderResponseTooLarge
             }
             DurableTurnErrorKind::OutputTooLarge => TurnErrorKind::OutputTooLarge,
             DurableTurnErrorKind::StateUnavailable => TurnErrorKind::StateUnavailable,

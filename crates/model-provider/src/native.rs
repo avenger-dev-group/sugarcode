@@ -46,7 +46,7 @@ use zeroize::Zeroizing;
 
 const MODEL_STREAM_CAPACITY: usize = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_SSE_EVENT_BYTES: usize = 256 * 1024;
+const MAX_SSE_EVENT_BYTES: usize = crate::MAX_PROVIDER_RESPONSE_BYTES;
 const MAX_SEMANTIC_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 
@@ -57,6 +57,12 @@ enum NativeProtocol {
     GeminiGenerateContent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenAiContinuationMode {
+    LocalReplay,
+    ProviderManaged,
+}
+
 pub struct NativeModelProvider {
     client: reqwest::Client,
     base_url: Url,
@@ -65,6 +71,7 @@ pub struct NativeModelProvider {
     strict_tools: ModelStrictToolsMode,
     parallel_tools: bool,
     max_output_tokens: u32,
+    openai_continuation_mode: OpenAiContinuationMode,
 }
 
 impl NativeModelProvider {
@@ -143,7 +150,15 @@ impl NativeModelProvider {
             strict_tools,
             parallel_tools,
             max_output_tokens,
+            openai_continuation_mode: OpenAiContinuationMode::LocalReplay,
         })
+    }
+
+    pub fn with_openai_continuation_mode(mut self, mode: OpenAiContinuationMode) -> Self {
+        if self.protocol == NativeProtocol::OpenAiResponses {
+            self.openai_continuation_mode = mode;
+        }
+        self
     }
 }
 
@@ -157,6 +172,7 @@ impl fmt::Debug for NativeModelProvider {
             .field("strict_tools", &self.strict_tools)
             .field("parallel_tools", &self.parallel_tools)
             .field("max_output_tokens", &self.max_output_tokens)
+            .field("openai_continuation_mode", &self.openai_continuation_mode)
             .finish()
     }
 }
@@ -166,26 +182,43 @@ impl ModelProvider for NativeModelProvider {
         async move {
             let normalized = crate::tool_names::normalize_request(request);
             let request = &normalized.request;
-            let (endpoint, body) = match self.protocol {
-                NativeProtocol::OpenAiResponses => (
-                    append_path(&self.base_url, "responses")?,
-                    openai_request(
+            let (endpoint, body, local_fallback) = match self.protocol {
+                NativeProtocol::OpenAiResponses => {
+                    let endpoint = append_path(&self.base_url, "responses")?;
+                    let local = openai_request(
                         request,
                         self.strict_tools,
                         self.parallel_tools,
                         self.max_output_tokens,
-                    )?,
-                ),
+                    )?;
+                    if self.openai_continuation_mode == OpenAiContinuationMode::ProviderManaged {
+                        let managed = openai_provider_managed_request(
+                            request,
+                            self.strict_tools,
+                            self.parallel_tools,
+                            self.max_output_tokens,
+                        )?;
+                        let fallback = managed
+                            .get("previous_response_id")
+                            .is_some()
+                            .then_some(local);
+                        (endpoint, managed, fallback)
+                    } else {
+                        (endpoint, local, None)
+                    }
+                }
                 NativeProtocol::AnthropicMessages => (
                     append_path(&self.base_url, "messages")?,
                     anthropic_request(request, self.strict_tools, self.max_output_tokens)?,
+                    None,
                 ),
                 NativeProtocol::GeminiGenerateContent => (
                     gemini_stream_endpoint(&self.base_url, &request.model)?,
                     gemini_request(request, self.strict_tools, self.max_output_tokens)?,
+                    None,
                 ),
             };
-            let mut builder = self.client.post(endpoint).json(&body);
+            let mut builder = self.client.post(endpoint.clone()).json(&body);
             match self.protocol {
                 NativeProtocol::OpenAiResponses => {
                     if let Some(token) = &self.token {
@@ -213,7 +246,24 @@ impl ModelProvider for NativeModelProvider {
                     }
                 }
             }
-            let response = builder.send().await.map_err(map_reqwest_error)?;
+            let mut response = builder.send().await.map_err(map_reqwest_error)?;
+            let mut used_local_fallback = false;
+            if !response.status().is_success()
+                && matches!(
+                    response.status(),
+                    StatusCode::BAD_REQUEST
+                        | StatusCode::NOT_FOUND
+                        | StatusCode::UNPROCESSABLE_ENTITY
+                )
+                && let Some(local_fallback) = local_fallback
+            {
+                let mut fallback = self.client.post(endpoint).json(&local_fallback);
+                if let Some(token) = &self.token {
+                    fallback = fallback.header(AUTHORIZATION, bearer_header(token)?);
+                }
+                response = fallback.send().await.map_err(map_reqwest_error)?;
+                used_local_fallback = true;
+            }
             let status = response.status();
             if !status.is_success() {
                 let provider_request_id = provider_request_id(response.headers());
@@ -251,6 +301,7 @@ impl ModelProvider for NativeModelProvider {
                 self.protocol,
                 self.parallel_tools,
                 tool_names,
+                used_local_fallback,
             ));
             Ok(ReceiverStream::new(receiver).boxed())
         }
@@ -264,7 +315,18 @@ async fn process_native_stream(
     protocol: NativeProtocol,
     parallel_tools: bool,
     tool_names: BTreeMap<String, String>,
+    used_local_fallback: bool,
 ) {
+    if used_local_fallback
+        && sender
+            .send(Ok(ModelEvent::Warning {
+                code: "providerManagedContinuationFallback",
+            }))
+            .await
+            .is_err()
+    {
+        return;
+    }
     let mut event_bytes = 0usize;
     let mut suffix = [0u8; 4];
     let bounded_bytes = response.bytes_stream().map(move |chunk| {
@@ -315,10 +377,16 @@ async fn process_native_stream(
                     {
                         ModelError::new(ModelErrorKind::Disconnected, true)
                     }
-                    EventStreamError::Transport(_)
-                    | EventStreamError::Utf8(_)
-                    | EventStreamError::Parser(_) => {
+                    EventStreamError::Transport(error)
+                        if error.kind() == io::ErrorKind::InvalidData =>
+                    {
+                        ModelError::new(ModelErrorKind::ProviderResponseTooLarge, false)
+                    }
+                    EventStreamError::Utf8(_) | EventStreamError::Parser(_) => {
                         ModelError::new(ModelErrorKind::Protocol, false)
+                    }
+                    EventStreamError::Transport(_) => {
+                        ModelError::new(ModelErrorKind::Disconnected, true)
                     }
                 };
                 send_stream_error(&sender, error).await;
@@ -731,10 +799,11 @@ impl AnthropicStreamState {
                 ModelContinuation::Complete
             },
         };
-        response.provider_context = Some(ProviderContextEnvelope::new(
+        response.provider_context = Some(ProviderContextEnvelope::new_with_replay_tokens(
             ProviderWireApi::AnthropicMessages,
             self.message_id.clone(),
             serde_json::to_vec(&raw_blocks).map_err(|_| protocol_error())?,
+            self.output_tokens,
         )?);
         Ok(response)
     }
@@ -888,7 +957,7 @@ impl GeminiStreamState {
                 ModelContinuation::Complete
             },
         };
-        response.provider_context = Some(ProviderContextEnvelope::new(
+        response.provider_context = Some(ProviderContextEnvelope::new_with_replay_tokens(
             ProviderWireApi::GeminiGenerateContent,
             self.provider_request_id.clone(),
             serde_json::to_vec(&json!({
@@ -896,6 +965,7 @@ impl GeminiStreamState {
                 "parts": self.raw_parts,
             }))
             .map_err(|_| protocol_error())?,
+            self.usage.and_then(|usage| usage.output_tokens),
         )?);
         Ok(response)
     }
@@ -1053,10 +1123,44 @@ fn openai_request(
     }))
 }
 
+fn openai_provider_managed_request(
+    request: &ModelRequest,
+    strict_tools: ModelStrictToolsMode,
+    parallel_tools: bool,
+    max_output_tokens: u32,
+) -> Result<Value, ModelError> {
+    let mut previous_response_id = None;
+    let mut tail_start = 0usize;
+    for (index, message) in request.messages.iter().enumerate() {
+        if let Some(context) = sole_provider_context(message)? {
+            ensure_context_wire(context, ProviderWireApi::OpenAiResponses)?;
+            if let Some(response_id) = context.response_id() {
+                previous_response_id = Some(response_id.to_owned());
+                tail_start = index.saturating_add(1);
+            }
+        }
+    }
+    let mut managed_request = request.clone();
+    if previous_response_id.is_some() {
+        managed_request.messages = request.messages[tail_start..].to_vec();
+    }
+    let mut body = openai_request(
+        &managed_request,
+        strict_tools,
+        parallel_tools,
+        max_output_tokens,
+    )?;
+    body["store"] = Value::Bool(true);
+    if let Some(previous_response_id) = previous_response_id {
+        body["previous_response_id"] = Value::String(previous_response_id);
+    }
+    Ok(body)
+}
+
 fn openai_input_items(message: &ModelMessage) -> Result<Vec<Value>, ModelError> {
     if let Some(context) = sole_provider_context(message)? {
         ensure_context_wire(context, ProviderWireApi::OpenAiResponses)?;
-        return serde_json::from_slice::<Vec<Value>>(context.payload())
+        return serde_json::from_slice::<Vec<Value>>(&context.payload()?)
             .map_err(|_| protocol_error());
     }
     if message.role == ModelRole::User
@@ -1170,7 +1274,7 @@ fn anthropic_request(
 fn anthropic_message(message: &ModelMessage) -> Result<Value, ModelError> {
     if let Some(context) = sole_provider_context(message)? {
         ensure_context_wire(context, ProviderWireApi::AnthropicMessages)?;
-        let content = serde_json::from_slice::<Vec<Value>>(context.payload())
+        let content = serde_json::from_slice::<Vec<Value>>(&context.payload()?)
             .map_err(|_| protocol_error())?;
         return Ok(json!({"role": "assistant", "content": content}));
     }
@@ -1247,7 +1351,7 @@ fn gemini_request(
         };
         ensure_context_wire(context, ProviderWireApi::GeminiGenerateContent)?;
         let value: Value =
-            serde_json::from_slice(context.payload()).map_err(|_| protocol_error())?;
+            serde_json::from_slice(&context.payload()?).map_err(|_| protocol_error())?;
         for call in value
             .get("parts")
             .and_then(Value::as_array)
@@ -1301,7 +1405,7 @@ fn gemini_message(
 ) -> Result<Value, ModelError> {
     if let Some(context) = sole_provider_context(message)? {
         ensure_context_wire(context, ProviderWireApi::GeminiGenerateContent)?;
-        return serde_json::from_slice(context.payload()).map_err(|_| protocol_error());
+        return serde_json::from_slice(&context.payload()?).map_err(|_| protocol_error());
     }
     let parts = message
         .content
@@ -1390,13 +1494,25 @@ fn parse_openai_response(value: Value) -> Result<ModelResponse, ModelError> {
         .get("output")
         .and_then(Value::as_array)
         .ok_or_else(protocol_error)?;
-    let provider_context = ProviderContextEnvelope::new(
+    let usage = value.get("usage").map(|usage| ModelUsage {
+        input_tokens: u64_field(usage, "input_tokens"),
+        cached_input_tokens: usage
+            .pointer("/input_tokens_details/cached_tokens")
+            .and_then(Value::as_u64),
+        output_tokens: u64_field(usage, "output_tokens"),
+        reasoning_output_tokens: usage
+            .pointer("/output_tokens_details/reasoning_tokens")
+            .and_then(Value::as_u64),
+        total_tokens: u64_field(usage, "total_tokens"),
+    });
+    let provider_context = ProviderContextEnvelope::new_with_replay_tokens(
         ProviderWireApi::OpenAiResponses,
         value
             .get("id")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
         serde_json::to_vec(output).map_err(|_| protocol_error())?,
+        usage.and_then(|usage| usage.output_tokens),
     )?;
     let mut items = Vec::new();
     for value in output {
@@ -1437,17 +1553,7 @@ fn parse_openai_response(value: Value) -> Result<ModelResponse, ModelError> {
     }
     Ok(ModelResponse {
         output: items,
-        usage: value.get("usage").map(|usage| ModelUsage {
-            input_tokens: u64_field(usage, "input_tokens"),
-            cached_input_tokens: usage
-                .pointer("/input_tokens_details/cached_tokens")
-                .and_then(Value::as_u64),
-            output_tokens: u64_field(usage, "output_tokens"),
-            reasoning_output_tokens: usage
-                .pointer("/output_tokens_details/reasoning_tokens")
-                .and_then(Value::as_u64),
-            total_tokens: u64_field(usage, "total_tokens"),
-        }),
+        usage,
         terminal: ModelTerminalMetadata {
             finish_reason: openai_finish_reason(&value),
             provider_request_id: value
@@ -1590,7 +1696,7 @@ fn map_error(status: StatusCode, body: &[u8]) -> ModelError {
     let text = String::from_utf8_lossy(body).to_ascii_lowercase();
     if matches!(
         status,
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY | StatusCode::PAYLOAD_TOO_LARGE
     ) && [
         "context_length_exceeded",
         "maximum context length",
@@ -1606,6 +1712,7 @@ fn map_error(status: StatusCode, body: &[u8]) -> ModelError {
     match status.as_u16() {
         401 | 403 => ModelError::new(ModelErrorKind::Authentication, false),
         408 => ModelError::new(ModelErrorKind::Timeout, true),
+        413 => ModelError::new(ModelErrorKind::ProviderRequestTooLarge, false),
         429 => ModelError::new(ModelErrorKind::RateLimited, true),
         400..=499 => ModelError::new(ModelErrorKind::InvalidRequest, false),
         500..=599 => ModelError::new(ModelErrorKind::Server, true),
@@ -1798,6 +1905,31 @@ mod tests {
         assert_eq!(body["input"][2]["call_id"], "call_1");
         assert_eq!(body["store"], false);
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    #[test]
+    fn provider_managed_responses_uses_previous_response_id_and_only_sends_tail() {
+        let request = continuation_request(vec![
+            ModelMessage::user_text("original task".to_owned()),
+            continuation_message(
+                ProviderWireApi::OpenAiResponses,
+                json!([{"type": "reasoning", "encrypted_content": "opaque"}]),
+            ),
+            ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+                "call_1".to_owned(),
+                "contents".to_owned(),
+            )]),
+        ]);
+
+        let body =
+            openai_provider_managed_request(&request, ModelStrictToolsMode::Auto, true, 1024)
+                .expect("provider-managed request");
+        assert_eq!(body["store"], true);
+        assert_eq!(body["previous_response_id"], "response_fixture");
+        assert_eq!(body["input"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["input"][0]["type"], "function_call_output");
+        assert!(!body.to_string().contains("opaque"));
+        assert!(!body.to_string().contains("original task"));
     }
 
     #[test]

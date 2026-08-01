@@ -186,8 +186,7 @@ impl RunningServer {
                     let bytes = self.stdout.read_line(&mut line).expect("read response");
                     assert!(bytes > 0, "app-server closed before expected response");
                     let value = serde_json::from_str::<Value>(&line).expect("response JSON");
-                    if value.get("method").and_then(Value::as_str) != Some("turn/agentOutput/delta")
-                    {
+                    if !is_transient_notification(&value) {
                         break value;
                     }
                 }
@@ -237,7 +236,13 @@ impl RunningServer {
         self.stdout
             .read_to_string(&mut remaining_stdout)
             .expect("drain stdout");
-        assert!(remaining_stdout.is_empty(), "unexpected protocol output");
+        assert!(
+            remaining_stdout.lines().all(|line| {
+                serde_json::from_str::<Value>(line)
+                    .is_ok_and(|value| is_transient_notification(&value))
+            }),
+            "unexpected protocol output"
+        );
         let status = self.child.wait().expect("wait for app-server");
         let mut stderr = String::new();
         self.child
@@ -249,6 +254,13 @@ impl RunningServer {
         assert!(status.success(), "app-server failed: {status:?}: {stderr}");
         stderr
     }
+}
+
+fn is_transient_notification(value: &Value) -> bool {
+    matches!(
+        value.get("method").and_then(Value::as_str),
+        Some("turn/agentOutput/delta" | "thread/tokenUsage/updated")
+    )
 }
 
 pub(super) struct MockProvider {

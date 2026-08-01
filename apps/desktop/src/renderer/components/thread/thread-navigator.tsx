@@ -583,7 +583,8 @@ const ThreadButton = ({
   onRequestDelete,
 }: ThreadButtonProps) => (
   <div
-    className={`group/session flex min-w-0 items-stretch rounded-lg ${
+    data-thread-row
+    className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-stretch overflow-hidden rounded-lg ${
       current
         ? 'bg-surface-hover text-foreground'
         : 'text-secondary hover:bg-surface-hover hover:text-foreground'
@@ -616,7 +617,10 @@ const ThreadButton = ({
       </span>
     </span>
     {actionsEnabled ? (
-      <div className="flex shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100">
+      <div
+        data-thread-actions
+        className="flex min-w-fit shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100"
+      >
         <ThreadActionButton
           label={`Fork Thread ${threadId}`}
           active={

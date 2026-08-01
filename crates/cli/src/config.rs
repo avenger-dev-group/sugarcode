@@ -460,6 +460,11 @@ fn parse_model_catalog(
             let wire_api = parse_wire_api(&connection.wire_api)?;
             let base_url = Url::parse(&connection.base_url)
                 .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
+            let continuation_mode = match connection.continuation_mode.as_deref() {
+                None | Some("localReplay") => sugarcode_state::ModelContinuationMode::LocalReplay,
+                Some("providerManaged") => sugarcode_state::ModelContinuationMode::ProviderManaged,
+                Some(_) => return Err(ModelConfigCommandError::InvalidConfiguration),
+            };
             let api_key = match credentials {
                 None => None,
                 Some(credentials) => credentials
@@ -469,7 +474,7 @@ fn parse_model_catalog(
                     .1
                     .clone(),
             };
-            ModelConnection::new(
+            let connection = ModelConnection::new(
                 connection.id,
                 provider_family,
                 connection.display_name,
@@ -478,7 +483,8 @@ fn parse_model_catalog(
                 wire_api,
                 api_key,
             )
-            .map_err(|_| ModelConfigCommandError::InvalidConfiguration)
+            .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
+            Ok(connection.with_continuation_mode(continuation_mode))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let profiles = input
@@ -555,6 +561,8 @@ fn config_revision(models: Option<&ModelCatalog>) -> String {
                 hasher.update(b"\0");
                 hasher.update([u8::from(connection.enabled())]);
                 hasher.update(connection.wire_api().as_str().as_bytes());
+                hasher.update(b"\0");
+                hasher.update(connection.continuation_mode().as_str().as_bytes());
                 hasher.update(b"\0");
                 if let Some(api_key) = connection.api_key() {
                     hasher.update(api_key.as_bytes());
@@ -694,6 +702,7 @@ struct ModelConnectionInput {
     base_url: String,
     enabled: bool,
     wire_api: String,
+    continuation_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -783,6 +792,7 @@ struct ModelConnectionView<'a> {
     base_url: &'a str,
     enabled: bool,
     wire_api: &'a str,
+    continuation_mode: &'a str,
 }
 
 impl<'a> From<&'a ModelConnection> for ModelConnectionView<'a> {
@@ -794,6 +804,7 @@ impl<'a> From<&'a ModelConnection> for ModelConnectionView<'a> {
             base_url: connection.base_url().as_str(),
             enabled: connection.enabled(),
             wire_api: connection.wire_api().as_str(),
+            continuation_mode: connection.continuation_mode().as_str(),
         }
     }
 }

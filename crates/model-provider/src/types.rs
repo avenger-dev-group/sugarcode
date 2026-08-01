@@ -1,5 +1,5 @@
 use crate::ModelError;
-use crate::ModelErrorKind;
+use crate::provider_context::ProviderContextPayload;
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
 use std::fmt;
@@ -58,6 +58,38 @@ impl ModelRequest {
             .try_fold(0usize, usize::checked_add)
             .unwrap_or(usize::MAX)
     }
+
+    pub fn estimated_context_tokens(&self) -> u64 {
+        self.instructions
+            .iter()
+            .map(ModelInstruction::estimated_context_tokens)
+            .chain(
+                self.messages
+                    .iter()
+                    .map(ModelMessage::estimated_context_tokens),
+            )
+            .chain(
+                self.tools
+                    .iter()
+                    .map(ModelToolDefinition::estimated_context_tokens),
+            )
+            .fold(0u64, u64::saturating_add)
+    }
+
+    pub fn provider_context_bytes(&self) -> usize {
+        self.messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|part| match part {
+                ModelContentPart::ProviderContext(context) => Some(context.payload_len()),
+                _ => None,
+            })
+            .fold(0usize, usize::saturating_add)
+    }
+}
+
+fn estimated_tokens_for_bytes(bytes: usize) -> u64 {
+    u64::try_from(bytes.saturating_add(2) / 3).unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -73,6 +105,10 @@ impl ModelInstruction {
 
     pub fn context_bytes(&self) -> usize {
         self.source.prefix().len() + self.content.len()
+    }
+
+    pub fn estimated_context_tokens(&self) -> u64 {
+        estimated_tokens_for_bytes(self.context_bytes())
     }
 }
 
@@ -167,6 +203,13 @@ impl ModelMessage {
             .try_fold(0usize, usize::checked_add)
             .unwrap_or(usize::MAX)
     }
+
+    pub fn estimated_context_tokens(&self) -> u64 {
+        self.content
+            .iter()
+            .map(ModelContentPart::estimated_context_tokens)
+            .fold(0u64, u64::saturating_add)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -188,7 +231,14 @@ impl ModelContentPart {
             Self::ImageAsset(asset) | Self::PdfDocument(asset) => asset.context_bytes(),
             Self::ToolCall { call } => call.context_bytes(),
             Self::ToolResult { result } => result.context_bytes(),
-            Self::ProviderContext(envelope) => envelope.payload.len(),
+            Self::ProviderContext(envelope) => envelope.payload_len(),
+        }
+    }
+
+    pub fn estimated_context_tokens(&self) -> u64 {
+        match self {
+            Self::ProviderContext(envelope) => envelope.estimated_replay_tokens(),
+            _ => estimated_tokens_for_bytes(self.context_bytes()),
         }
     }
 }
@@ -306,8 +356,6 @@ pub enum ModelToolResultContent {
     Error { kind: String, message: String },
 }
 
-pub const MAX_PROVIDER_CONTEXT_BYTES: usize = 512 * 1024;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderWireApi {
     OpenAiResponses,
@@ -320,7 +368,8 @@ pub enum ProviderWireApi {
 pub struct ProviderContextEnvelope {
     wire_api: ProviderWireApi,
     response_id: Option<String>,
-    payload: Vec<u8>,
+    payload: ProviderContextPayload,
+    replay_tokens: Option<u64>,
 }
 
 impl ProviderContextEnvelope {
@@ -329,13 +378,20 @@ impl ProviderContextEnvelope {
         response_id: Option<String>,
         payload: Vec<u8>,
     ) -> Result<Self, ModelError> {
-        if payload.len() > MAX_PROVIDER_CONTEXT_BYTES {
-            return Err(ModelError::new(ModelErrorKind::OutputTooLarge, false));
-        }
+        Self::new_with_replay_tokens(wire_api, response_id, payload, None)
+    }
+
+    pub fn new_with_replay_tokens(
+        wire_api: ProviderWireApi,
+        response_id: Option<String>,
+        payload: Vec<u8>,
+        replay_tokens: Option<u64>,
+    ) -> Result<Self, ModelError> {
         Ok(Self {
             wire_api,
             response_id,
-            payload,
+            payload: ProviderContextPayload::new(payload)?,
+            replay_tokens,
         })
     }
 
@@ -347,8 +403,29 @@ impl ProviderContextEnvelope {
         self.response_id.as_deref()
     }
 
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
+    pub fn payload(&self) -> Result<Vec<u8>, ModelError> {
+        self.payload.read()
+    }
+
+    pub const fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+
+    pub const fn payload_sha256(&self) -> &[u8; 32] {
+        self.payload.sha256()
+    }
+
+    pub const fn replay_tokens(&self) -> Option<u64> {
+        self.replay_tokens
+    }
+
+    pub fn estimated_replay_tokens(&self) -> u64 {
+        self.replay_tokens
+            .unwrap_or_else(|| estimated_tokens_for_bytes(self.payload_len()))
+    }
+
+    pub fn is_spilled(&self) -> bool {
+        self.payload.is_spilled()
     }
 }
 
@@ -365,6 +442,11 @@ impl fmt::Debug for ProviderContextEnvelope {
                 "payload",
                 &format_args!("<redacted:{} bytes>", self.payload.len()),
             )
+            .field("replay_tokens", &self.replay_tokens)
+            .field(
+                "sha256",
+                &format_args!("{:02x?}", &self.payload.sha256()[..4]),
+            )
             .finish()
     }
 }
@@ -378,6 +460,7 @@ pub enum ModelRole {
 #[derive(Clone, PartialEq, Eq)]
 pub enum ModelEvent {
     OutputTextDelta { output_index: u32, delta: String },
+    Warning { code: &'static str },
     ResponseCompleted(ModelResponse),
 }
 
@@ -395,6 +478,10 @@ impl fmt::Debug for ModelEvent {
             Self::ResponseCompleted(response) => formatter
                 .debug_tuple("ResponseCompleted")
                 .field(response)
+                .finish(),
+            Self::Warning { code } => formatter
+                .debug_struct("Warning")
+                .field("code", code)
                 .finish(),
         }
     }
@@ -494,6 +581,10 @@ impl ModelToolDefinition {
                     .and_then(|parameters| total.checked_add(parameters.len()))
             })
             .unwrap_or(usize::MAX)
+    }
+
+    pub fn estimated_context_tokens(&self) -> u64 {
+        estimated_tokens_for_bytes(self.context_bytes())
     }
 }
 

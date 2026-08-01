@@ -52,6 +52,7 @@ const INITIAL_CONNECTION: ModelConnectionValue = {
   baseUrl: 'https://api.openai.com/v1',
   enabled: true,
   wireApi: 'openaiResponses',
+  continuationMode: 'localReplay',
 };
 
 const INITIAL_PROFILE: ModelProfileValue = {
@@ -229,6 +230,7 @@ export const useStore = ({
       baseUrl: 'http://127.0.0.1:8000/v1',
       enabled: true,
       wireApi: 'openaiChatCompletions',
+      continuationMode: 'localReplay',
     };
     updateConfig((current) => ({
       ...current,
@@ -469,6 +471,7 @@ export const useStore = ({
       displayName: preset.label,
       baseUrl: preset.baseUrl,
       wireApi: preset.wireApi,
+      continuationMode: 'localReplay',
     });
   };
 

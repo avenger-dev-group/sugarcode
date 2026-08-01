@@ -126,6 +126,7 @@ where
                         status: sugarcode_app_server_protocol::TurnStatus::InProgress,
                         model,
                         error: None,
+                        usage: None,
                     },
                 };
                 vec![JsonRpcMessage::Response(JsonRpcResponse {

@@ -271,6 +271,7 @@ pub enum DurableTurnStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurableTurnErrorKind {
     Authentication,
+    ContextWindowExceeded,
     InvalidRequest,
     RateLimited,
     Timeout,
@@ -282,6 +283,8 @@ pub enum DurableTurnErrorKind {
     Filtered,
     UnsupportedOutput,
     UnsupportedToolArguments,
+    ProviderRequestTooLarge,
+    ProviderResponseTooLarge,
     OutputTooLarge,
     StateUnavailable,
 }
@@ -315,6 +318,26 @@ pub struct DurableUsage {
     pub output_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
+    pub last_request: Option<DurableUsageSample>,
+    pub max_request_input_tokens: Option<u64>,
+    pub request_count: u64,
+    pub context_window_tokens: Option<u32>,
+    pub source: Option<DurableUsageSource>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DurableUsageSample {
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableUsageSource {
+    Provider,
+    Estimated,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

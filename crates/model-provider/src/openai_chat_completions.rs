@@ -51,7 +51,7 @@ const MODEL_STREAM_CAPACITY: usize = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_ERROR_RESPONSE_BYTES: usize = 16 * 1024;
-const MAX_SSE_EVENT_BYTES: usize = 256 * 1024;
+const MAX_SSE_EVENT_BYTES: usize = crate::MAX_PROVIDER_RESPONSE_BYTES;
 const MAX_TOOL_CALL_ID_BYTES: usize = 128;
 const MAX_TOOL_NAME_BYTES: usize = 128;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 32 * 1024;
@@ -196,7 +196,7 @@ async fn process_stream(
     });
     let mut stream = bounded_bytes.eventsource();
     let mut finish = None;
-    let mut usage = None;
+    let mut usage: Option<ModelUsage> = None;
     let mut output_text = String::new();
     let mut reasoning_content = String::new();
     let mut semantic_output_bytes = 0usize;
@@ -219,10 +219,16 @@ async fn process_stream(
                     {
                         ModelError::new(ModelErrorKind::Disconnected, true)
                     }
-                    EventStreamError::Transport(_)
-                    | EventStreamError::Utf8(_)
-                    | EventStreamError::Parser(_) => {
+                    EventStreamError::Transport(error)
+                        if error.kind() == io::ErrorKind::InvalidData =>
+                    {
+                        ModelError::new(ModelErrorKind::ProviderResponseTooLarge, false)
+                    }
+                    EventStreamError::Utf8(_) | EventStreamError::Parser(_) => {
                         ModelError::new(ModelErrorKind::Protocol, false)
+                    }
+                    EventStreamError::Transport(_) => {
+                        ModelError::new(ModelErrorKind::Disconnected, true)
                     }
                 };
                 send_error(&sender, error).await;
@@ -353,10 +359,11 @@ async fn process_stream(
                 })
                 .map_err(|_| ModelError::new(ModelErrorKind::Protocol, false))
                 .and_then(|payload| {
-                    ProviderContextEnvelope::new(
+                    ProviderContextEnvelope::new_with_replay_tokens(
                         ProviderWireApi::OpenAiChatCompletions,
                         provider_request_id.clone(),
                         payload,
+                        usage.and_then(|usage| usage.output_tokens),
                     )
                 })
             });
@@ -633,13 +640,14 @@ async fn map_error_response(response: reqwest::Response) -> ModelError {
     let retry_after = error_header_text(response.headers(), RETRY_AFTER.as_str());
     let body = bounded_error_body(response).await;
     let provider_code = body.as_deref().and_then(provider_error_code);
-    let context_length_exceeded = status == StatusCode::PAYLOAD_TOO_LARGE
-        || (matches!(
-            status,
-            StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
-        ) && body.as_deref().is_some_and(is_context_length_error));
+    let context_length_exceeded = matches!(
+        status,
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY | StatusCode::PAYLOAD_TOO_LARGE
+    ) && body.as_deref().is_some_and(is_context_length_error);
     let error = if context_length_exceeded {
         ModelError::new(ModelErrorKind::ContextLengthExceeded, false)
+    } else if status == StatusCode::PAYLOAD_TOO_LARGE {
+        ModelError::new(ModelErrorKind::ProviderRequestTooLarge, false)
     } else {
         map_status(status)
     };
@@ -821,7 +829,7 @@ fn chat_messages_from_model_messages(
             if context.wire_api() != ProviderWireApi::OpenAiChatCompletions {
                 return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
             }
-            let mut restored: ChatMessage = serde_json::from_slice(context.payload())
+            let mut restored: ChatMessage = serde_json::from_slice(&context.payload()?)
                 .map_err(|_| ModelError::new(ModelErrorKind::Protocol, false))?;
             restored.role = "assistant".to_owned();
             rendered.push(restored);

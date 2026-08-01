@@ -419,6 +419,8 @@ pub(crate) fn map_core_event(event: &CoreEvent) -> Option<MappedExecEvent> {
                 item: map_item(item),
             },
         },
+        CoreEventKind::TokenUsageUpdated { .. } => return None,
+        CoreEventKind::Warning { .. } => return None,
         CoreEventKind::TurnCompleted { thread_id, turn_id } => MappedExecEvent {
             thread_id: Some(thread_id.as_str().to_string()),
             turn_id: Some(turn_id.as_str().to_string()),
@@ -692,6 +694,7 @@ fn tool_result(result: &CoreToolResult) -> String {
 fn turn_error_kind(kind: CoreTurnErrorKind) -> &'static str {
     match kind {
         CoreTurnErrorKind::Authentication => "authentication",
+        CoreTurnErrorKind::ContextWindowExceeded => "contextWindowExceeded",
         CoreTurnErrorKind::InvalidRequest => "invalidRequest",
         CoreTurnErrorKind::RateLimited => "rateLimited",
         CoreTurnErrorKind::Timeout => "timeout",
@@ -703,6 +706,8 @@ fn turn_error_kind(kind: CoreTurnErrorKind) -> &'static str {
         CoreTurnErrorKind::Filtered => "filtered",
         CoreTurnErrorKind::UnsupportedOutput => "unsupportedOutput",
         CoreTurnErrorKind::UnsupportedToolArguments => "unsupportedToolArguments",
+        CoreTurnErrorKind::ProviderRequestTooLarge => "providerRequestTooLarge",
+        CoreTurnErrorKind::ProviderResponseTooLarge => "providerResponseTooLarge",
         CoreTurnErrorKind::OutputTooLarge => "outputTooLarge",
         CoreTurnErrorKind::StateUnavailable => "stateUnavailable",
     }

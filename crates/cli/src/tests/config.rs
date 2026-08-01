@@ -59,7 +59,8 @@ fn validation_is_strict_and_returns_the_rust_owned_shape() {
                     "displayName": "Fixture provider",
                     "baseUrl": "http://127.0.0.1:18080/v1",
                     "enabled": true,
-                    "wireApi": "openaiChatCompletions"
+                    "wireApi": "openaiChatCompletions",
+                    "continuationMode": "localReplay"
                 }],
                 "profiles": [{
                     "id": "model_primary",

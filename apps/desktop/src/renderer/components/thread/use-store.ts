@@ -67,6 +67,12 @@ import type {
   TurnViewModel,
 } from './types';
 import {
+  contextBudget,
+  estimatedTokensFromContextBytes,
+  formatTokenCount,
+  formatTokenUsageHint,
+} from './context-budget';
+import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
 } from './transcript-follow';
@@ -374,7 +380,7 @@ export const toThreadViewModel = (
     const nextPendingAgentOutputs = turn.pendingAgentOutputs?.map((output) => ({
       id: `agent-output:${turn.id}:${output.responseOrdinal}:${output.outputIndex}`,
       text: output.text,
-      state: 'running' as const,
+      state: 'streaming' as const,
     }));
     const pendingAgentOutputs =
       JSON.stringify(previousTurn?.pendingAgentOutputs) ===
@@ -395,6 +401,15 @@ export const toThreadViewModel = (
                 ? ('failed' as const)
                 : ('interrupted' as const),
         preContextBytes: activity.preContextBytes,
+        ...(turn.model
+          ? {
+              contextWindowTokens: turn.model.contextWindowTokens,
+              estimatedPreContextTokens: estimatedTokensFromContextBytes(
+                activity.preContextBytes,
+              ),
+              budget: contextBudget(turn.model.contextWindowTokens),
+            }
+          : {}),
         sourceMessages: activity.sourceMessages,
         sourceBytes: activity.sourceBytes,
         sourceSha256: activity.sourceSha256,
@@ -633,6 +648,16 @@ export const toThreadViewModel = (
                       ? ('failed' as const)
                       : ('interrupted' as const),
               preContextBytes: entry.activity.preContextBytes,
+              ...(turn.model
+                ? {
+                    contextWindowTokens: turn.model.contextWindowTokens,
+                    estimatedPreContextTokens:
+                      estimatedTokensFromContextBytes(
+                        entry.activity.preContextBytes,
+                      ),
+                    budget: contextBudget(turn.model.contextWindowTokens),
+                  }
+                : {}),
               sourceMessages: entry.activity.sourceMessages,
               sourceBytes: entry.activity.sourceBytes,
               sourceSha256: entry.activity.sourceSha256,
@@ -1381,6 +1406,20 @@ export const useStore = (): ThreadStore => {
       : attachments.length > 0
         ? `${attachments.length} attachment${attachments.length === 1 ? '' : 's'} · ${Math.ceil(attachmentBytes / 1024)} KiB`
         : `${Math.ceil(bytes / 1024)} / 64 KiB`;
+  const selectedProfile = modelInspection?.config?.profiles.find(
+    (profile) => profile.id === selectedModelProfileId,
+  );
+  const selectedContextBudget = contextBudget(
+    selectedProfile?.contextWindowTokens ?? 131_072,
+  );
+  const latestUsage = [...snapshot.turns]
+    .reverse()
+    .find((turn) => turn.usage)?.usage;
+  const contextBudgetHint = latestUsage
+    ? formatTokenUsageHint(latestUsage)
+    : selectedModelProfileId
+      ? `${formatTokenCount(selectedContextBudget.contextWindowTokens)} context · compacts near ${formatTokenCount(selectedContextBudget.compactionTargetTokens)}`
+      : null;
   const navigator = useMemo(
     () => toThreadNavigatorViewModel(snapshot),
     [snapshot],
@@ -1423,6 +1462,7 @@ export const useStore = (): ThreadStore => {
     inputBytes: bytes,
     inputLimitBytes: MAX_CONVERSATION_INPUT_BYTES,
     inputHint,
+    contextBudgetHint,
     canSend,
     canStop,
     isSending,

@@ -4,6 +4,7 @@ import type { TurnFailureViewModel } from './types';
 
 const FAILURE_SUMMARIES: Record<ConversationTurnError['kind'], string> = {
   authentication: 'Model authentication failed',
+  contextWindowExceeded: 'The current request exceeded the model context window',
   invalidRequest: 'The model rejected this request',
   rateLimited: 'The model is rate limited',
   timeout: 'The model response timed out',
@@ -16,7 +17,10 @@ const FAILURE_SUMMARIES: Record<ConversationTurnError['kind'], string> = {
   unsupportedOutput: 'The model returned unsupported output',
   unsupportedToolArguments:
     'The model repeatedly returned invalid tool arguments',
-  outputTooLarge: 'The conversation exceeded the model context or output limit',
+  providerRequestTooLarge: 'The provider rejected the request transport size',
+  providerResponseTooLarge:
+    'The provider returned an abnormally large internal response',
+  outputTooLarge: 'The visible model or tool output exceeded the local limit',
   stateUnavailable: 'SugarCode could not save this Turn safely',
 };
 
@@ -29,7 +33,13 @@ export const toTurnFailureViewModel = (
     error.kind === 'stateUnavailable'
       ? 'Restart SugarCode before continuing. Your earlier saved messages are unchanged.'
       : error.kind === 'outputTooLarge'
-        ? 'Start a new task or choose a model with a larger context window before trying again.'
+        ? 'Reduce the visible output or tool result size before trying again.'
+        : error.kind === 'contextWindowExceeded'
+          ? 'SugarCode already attempted context recovery. Continue in a new task or choose a model with a larger context window.'
+          : error.kind === 'providerRequestTooLarge'
+            ? 'Reduce large visible inputs or choose a provider endpoint with a larger request-body limit.'
+            : error.kind === 'providerResponseTooLarge'
+              ? 'The conversation may still fit the model window. Retry or switch provider endpoints; an unusually large private continuation response was rejected for safety.'
         : error.retryable
           ? 'You can send another message to retry.'
           : 'Review the request or model configuration before trying again.',

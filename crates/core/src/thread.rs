@@ -1780,6 +1780,7 @@ impl Core {
                 output_tokens: Some(u64::MAX),
                 reasoning_tokens: Some(u64::MAX),
                 total_tokens: Some(u64::MAX),
+                ..DurableUsage::default()
             }),
         };
         if !terminal_turn_record_fits(thread_id, &terminal_budget) {

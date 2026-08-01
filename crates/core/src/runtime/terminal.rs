@@ -31,16 +31,9 @@ pub(super) enum Terminal {
 pub(super) async fn finish_completed_and_emit(
     runtime: &CoreRuntime,
     prepared: &crate::PreparedTextTurn,
-    usage: Option<ModelUsage>,
+    usage: Option<DurableUsage>,
 ) {
-    let durable_usage = usage.map(map_usage);
-    match finish(
-        runtime,
-        prepared,
-        DurableTurnStatus::Completed,
-        None,
-        durable_usage,
-    ) {
+    match finish(runtime, prepared, DurableTurnStatus::Completed, None, usage) {
         Ok(item) => {
             emit_terminal(
                 runtime,
@@ -61,7 +54,7 @@ pub(super) async fn finish_failed_and_emit(
     runtime: &CoreRuntime,
     prepared: &crate::PreparedTextTurn,
     error: ModelError,
-    usage: Option<ModelUsage>,
+    usage: Option<DurableUsage>,
 ) {
     let core_error = map_model_error(error);
     let durable_error = map_durable_error(core_error.clone());
@@ -70,7 +63,7 @@ pub(super) async fn finish_failed_and_emit(
         prepared,
         DurableTurnStatus::Failed,
         Some(durable_error),
-        usage.map(map_usage),
+        usage,
     ) {
         emit_terminal(
             runtime,
@@ -91,7 +84,7 @@ pub(super) async fn finish_failed_and_emit(
 pub(super) async fn finish_interrupted_and_emit(
     runtime: &CoreRuntime,
     prepared: &crate::PreparedTextTurn,
-    usage: Option<ModelUsage>,
+    usage: Option<DurableUsage>,
 ) {
     if let Ok(item) = finish_interrupted(runtime, prepared, usage).await {
         emit_terminal(
@@ -112,14 +105,14 @@ pub(super) async fn finish_interrupted_and_emit(
 pub(super) async fn finish_interrupted(
     runtime: &CoreRuntime,
     prepared: &crate::PreparedTextTurn,
-    usage: Option<ModelUsage>,
+    usage: Option<DurableUsage>,
 ) -> Result<Option<CoreItemSnapshot>, CoreError> {
     finish(
         runtime,
         prepared,
         DurableTurnStatus::Interrupted,
         None,
-        usage.map(map_usage),
+        usage,
     )
 }
 
@@ -244,7 +237,7 @@ fn map_model_error(error: ModelError) -> CoreTurnError {
     CoreTurnError {
         kind: match error.kind() {
             ModelErrorKind::Authentication => CoreTurnErrorKind::Authentication,
-            ModelErrorKind::ContextLengthExceeded => CoreTurnErrorKind::OutputTooLarge,
+            ModelErrorKind::ContextLengthExceeded => CoreTurnErrorKind::ContextWindowExceeded,
             ModelErrorKind::InvalidRequest => CoreTurnErrorKind::InvalidRequest,
             ModelErrorKind::RateLimited => CoreTurnErrorKind::RateLimited,
             ModelErrorKind::Timeout => CoreTurnErrorKind::Timeout,
@@ -256,6 +249,8 @@ fn map_model_error(error: ModelError) -> CoreTurnError {
             ModelErrorKind::Filtered => CoreTurnErrorKind::Filtered,
             ModelErrorKind::UnsupportedOutput => CoreTurnErrorKind::UnsupportedOutput,
             ModelErrorKind::UnsupportedToolArguments => CoreTurnErrorKind::UnsupportedToolArguments,
+            ModelErrorKind::ProviderRequestTooLarge => CoreTurnErrorKind::ProviderRequestTooLarge,
+            ModelErrorKind::ProviderResponseTooLarge => CoreTurnErrorKind::ProviderResponseTooLarge,
             ModelErrorKind::OutputTooLarge => CoreTurnErrorKind::OutputTooLarge,
         },
         retryable: error.retryable(),
@@ -274,6 +269,7 @@ fn map_durable_error(error: CoreTurnError) -> DurableTurnError {
     DurableTurnError {
         kind: match kind {
             CoreTurnErrorKind::Authentication => DurableTurnErrorKind::Authentication,
+            CoreTurnErrorKind::ContextWindowExceeded => DurableTurnErrorKind::ContextWindowExceeded,
             CoreTurnErrorKind::InvalidRequest => DurableTurnErrorKind::InvalidRequest,
             CoreTurnErrorKind::RateLimited => DurableTurnErrorKind::RateLimited,
             CoreTurnErrorKind::Timeout => DurableTurnErrorKind::Timeout,
@@ -286,6 +282,12 @@ fn map_durable_error(error: CoreTurnError) -> DurableTurnError {
             CoreTurnErrorKind::UnsupportedOutput => DurableTurnErrorKind::UnsupportedOutput,
             CoreTurnErrorKind::UnsupportedToolArguments => {
                 DurableTurnErrorKind::UnsupportedToolArguments
+            }
+            CoreTurnErrorKind::ProviderRequestTooLarge => {
+                DurableTurnErrorKind::ProviderRequestTooLarge
+            }
+            CoreTurnErrorKind::ProviderResponseTooLarge => {
+                DurableTurnErrorKind::ProviderResponseTooLarge
             }
             CoreTurnErrorKind::OutputTooLarge => DurableTurnErrorKind::OutputTooLarge,
             CoreTurnErrorKind::StateUnavailable => DurableTurnErrorKind::StateUnavailable,
@@ -301,15 +303,5 @@ fn map_durable_error(error: CoreTurnError) -> DurableTurnError {
             tool_name: error.tool_name,
             reason: error.reason,
         }),
-    }
-}
-
-fn map_usage(usage: ModelUsage) -> DurableUsage {
-    DurableUsage {
-        input_tokens: usage.input_tokens,
-        cached_input_tokens: usage.cached_input_tokens,
-        output_tokens: usage.output_tokens,
-        reasoning_tokens: usage.reasoning_output_tokens,
-        total_tokens: usage.total_tokens,
     }
 }

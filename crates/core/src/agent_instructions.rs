@@ -44,14 +44,14 @@ pub(crate) const SUGARCODE_BASE_AGENT_PROMPT_V1: &str = r#"You are SugarCode, a 
 
 pub(crate) const SUGARCODE_ACTIVE_TURN_COMPACTION_PROMPT_V1: &str = r#"Create a concise semantic checkpoint for the active SugarCode Turn from the supplied conversation prefix.
 
-Preserve all facts needed to continue the same Turn:
+The runtime separately preserves a bounded verbatim anchor of the active user's task. Preserve all other facts needed to continue the same Turn:
 - the user's goal, constraints, and completion criteria;
 - important implementation details already discovered;
 - files and behavior already changed;
 - verification commands, results, and failure causes;
 - approvals, safety boundaries, unresolved risks, and remaining work.
 
-Merge any earlier context-compaction checkpoint with newer activity. Distinguish verified facts from assumptions. Do not invent results, include hidden reasoning, address the user, or provide a final answer. Output only the checkpoint text, with no tool call or wrapper. Keep it under 32 KiB."#;
+Merge any earlier context-compaction checkpoint with newer activity. State the exact remaining work and the next concrete action so execution can resume immediately. Distinguish verified facts from assumptions. Do not invent results, include hidden reasoning, address the user, or provide a final answer. Output only the checkpoint text, with no tool call or wrapper. Keep it under 23 KiB."#;
 
 pub(crate) fn sugarcode_base_agent_instruction_v1() -> ModelInstruction {
     ModelInstruction {

@@ -13,6 +13,7 @@ export type ModelWireApi =
   | 'geminiGenerateContent';
 
 export type ModelCapabilityMode = 'auto' | 'enabled' | 'disabled';
+export type ModelContinuationMode = 'localReplay' | 'providerManaged';
 export type ModelApiKeyStatus = 'notConfigured' | 'present';
 
 export type ModelConnectionValue = Readonly<{
@@ -22,6 +23,7 @@ export type ModelConnectionValue = Readonly<{
   baseUrl: string;
   enabled: boolean;
   wireApi: ModelWireApi;
+  continuationMode: ModelContinuationMode;
 }>;
 
 export type ModelProfileValue = Readonly<{
@@ -158,6 +160,7 @@ const isConnection = (value: unknown): value is ModelConnectionValue =>
     'baseUrl',
     'enabled',
     'wireApi',
+    'continuationMode',
   ]) &&
   isId(value.id) &&
   PROVIDER_FAMILIES.includes(
@@ -167,7 +170,10 @@ const isConnection = (value: unknown): value is ModelConnectionValue =>
   typeof value.baseUrl === 'string' &&
   byteLength(value.baseUrl) <= 16_384 &&
   typeof value.enabled === 'boolean' &&
-  WIRE_APIS.includes(value.wireApi as ModelWireApi);
+  WIRE_APIS.includes(value.wireApi as ModelWireApi) &&
+  ['localReplay', 'providerManaged'].includes(
+    value.continuationMode as ModelContinuationMode,
+  );
 
 const isProfile = (value: unknown): value is ModelProfileValue =>
   isRecord(value) &&

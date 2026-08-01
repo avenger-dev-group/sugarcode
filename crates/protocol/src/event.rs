@@ -59,6 +59,16 @@ pub enum CoreEventKind {
         turn_id: TurnId,
         item: CoreItemSnapshot,
     },
+    TokenUsageUpdated {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        usage: CoreTokenUsage,
+    },
+    Warning {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        code: CoreWarningCode,
+    },
     TurnCompleted {
         thread_id: ThreadId,
         turn_id: TurnId,
@@ -73,6 +83,35 @@ pub enum CoreEventKind {
         turn_id: TurnId,
     },
     RuntimeFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreWarningCode {
+    ProviderManagedContinuationFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreTokenUsageSource {
+    Provider,
+    Estimated,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CoreTokenUsageSample {
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreTokenUsage {
+    pub last_request: CoreTokenUsageSample,
+    pub turn_total: CoreTokenUsageSample,
+    pub request_count: u64,
+    pub context_window_tokens: u32,
+    pub source: CoreTokenUsageSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -106,6 +145,7 @@ pub struct CoreToolSchemaError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreTurnErrorKind {
     Authentication,
+    ContextWindowExceeded,
     InvalidRequest,
     RateLimited,
     Timeout,
@@ -117,6 +157,8 @@ pub enum CoreTurnErrorKind {
     Filtered,
     UnsupportedOutput,
     UnsupportedToolArguments,
+    ProviderRequestTooLarge,
+    ProviderResponseTooLarge,
     OutputTooLarge,
     StateUnavailable,
 }

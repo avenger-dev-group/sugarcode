@@ -267,6 +267,27 @@ export type ResumeTurn = Readonly<{
   model?: ModelSelectionSnapshot;
   items: readonly ResumeItem[];
   error?: TurnError;
+  usage?: TokenUsageValue;
+}>;
+
+export type TokenUsageValue = Readonly<{
+  lastRequest: Readonly<{
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    totalTokens?: number;
+  }>;
+  turnTotal: Readonly<{
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    totalTokens?: number;
+  }>;
+  requestCount: number;
+  contextWindowTokens: number;
+  source: 'provider' | 'estimated';
 }>;
 
 export type ResumeSnapshot = Readonly<{
@@ -321,6 +342,22 @@ export type ConversationLifecycle =
   | Readonly<{
       type: 'turnCompleted';
       params: TurnCompletedNotification;
+    }>
+  | Readonly<{
+      type: 'tokenUsageUpdated';
+      params: Readonly<{
+        threadId: string;
+        turnId: string;
+        usage: TokenUsageValue;
+      }>;
+    }>
+  | Readonly<{
+      type: 'warning';
+      params: Readonly<{
+        threadId: string;
+        turnId: string;
+        code: 'providerManagedContinuationFallback';
+      }>;
     }>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -500,6 +537,7 @@ const TURN_STATUSES = new Set([
 
 const TURN_ERROR_KINDS = new Set([
   'authentication',
+  'contextWindowExceeded',
   'invalidRequest',
   'rateLimited',
   'timeout',
@@ -511,9 +549,58 @@ const TURN_ERROR_KINDS = new Set([
   'filtered',
   'unsupportedOutput',
   'unsupportedToolArguments',
+  'providerRequestTooLarge',
+  'providerResponseTooLarge',
   'outputTooLarge',
   'stateUnavailable',
 ]);
+
+const parseTokenSample = (
+  value: unknown,
+): TokenUsageValue['lastRequest'] => {
+  if (!isRecord(value)) {
+    throw new Error('Invalid token usage sample.');
+  }
+  const parsed: Record<string, number> = {};
+  for (const key of [
+    'inputTokens',
+    'cachedInputTokens',
+    'outputTokens',
+    'reasoningTokens',
+    'totalTokens',
+  ] as const) {
+    const candidate = value[key];
+    if (candidate === null || candidate === undefined) {
+      continue;
+    }
+    if (!Number.isSafeInteger(candidate) || (candidate as number) < 0) {
+      throw new Error('Invalid token usage sample.');
+    }
+    parsed[key] = candidate as number;
+  }
+  return parsed;
+};
+
+const parseTokenUsage = (value: unknown): TokenUsageValue => {
+  if (
+    !isRecord(value) ||
+    !Number.isSafeInteger(value.requestCount) ||
+    (value.requestCount as number) < 1 ||
+    !Number.isInteger(value.contextWindowTokens) ||
+    (value.contextWindowTokens as number) < 4_096 ||
+    (value.contextWindowTokens as number) > 2_097_152 ||
+    (value.source !== 'provider' && value.source !== 'estimated')
+  ) {
+    throw new Error('Invalid token usage.');
+  }
+  return {
+    lastRequest: parseTokenSample(value.lastRequest),
+    turnTotal: parseTokenSample(value.turnTotal),
+    requestCount: value.requestCount as number,
+    contextWindowTokens: value.contextWindowTokens as number,
+    source: value.source,
+  };
+};
 
 const parseTurnError = (value: unknown): TurnError | undefined => {
   if (value === undefined) {
@@ -645,12 +732,16 @@ export const parseThreadResumeResponse = (value: unknown): ResumeSnapshot => {
       throw new Error('Invalid Turn in thread/resume response.');
     }
     const parsedTurn = parseTurn(turn);
+    const usage = Object.hasOwn(turn, 'usage')
+      ? parseTokenUsage(turn.usage)
+      : undefined;
     return {
       id: parsedTurn.id,
       status: parsedTurn.status,
       ...(parsedTurn.model ? { model: parsedTurn.model } : {}),
       items: turn.items.map(parseResumeItem),
       ...(parsedTurn.error ? { error: parsedTurn.error } : {}),
+      ...(usage ? { usage } : {}),
     };
   });
   let origin: ResumeSnapshot['origin'];
@@ -1420,6 +1511,32 @@ export const parseConversationLifecycle = (
       return {
         type: 'turnCompleted',
         params: { threadId: params.threadId, turn },
+      };
+    }
+    case 'thread/tokenUsage/updated': {
+      const correlation = parseThreadAndTurn(params);
+      if (!isRecord(params)) {
+        throw new Error('Invalid token usage notification.');
+      }
+      return {
+        type: 'tokenUsageUpdated',
+        params: {
+          ...correlation,
+          usage: parseTokenUsage(params.usage),
+        },
+      };
+    }
+    case 'turn/warning': {
+      const correlation = parseThreadAndTurn(params);
+      if (
+        !isRecord(params) ||
+        params.code !== 'providerManagedContinuationFallback'
+      ) {
+        throw new Error('Invalid turn warning notification.');
+      }
+      return {
+        type: 'warning',
+        params: { ...correlation, code: params.code },
       };
     }
     default:

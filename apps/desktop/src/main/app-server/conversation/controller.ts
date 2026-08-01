@@ -262,6 +262,7 @@ type MutableTurn = {
   mcpActivities?: MutableMcpActivity[];
   orchestration?: MutableOrchestrationActivity;
   error?: ConversationTurnError;
+  usage?: ConversationTurn['usage'];
 };
 
 type ConversationControllerOptions = Readonly<{
@@ -1578,6 +1579,32 @@ export class ConversationController {
         this.publish();
         return;
       }
+      case 'tokenUsageUpdated': {
+        const turn = this.requireCorrelatedTurn(
+          lifecycle.params.threadId,
+          lifecycle.params.turnId,
+        );
+        turn.usage = {
+          ...lifecycle.params.usage,
+          lastRequest: { ...lifecycle.params.usage.lastRequest },
+          turnTotal: { ...lifecycle.params.usage.turnTotal },
+        };
+        this.publish();
+        return;
+      }
+      case 'warning': {
+        this.requireCorrelatedTurn(
+          lifecycle.params.threadId,
+          lifecycle.params.turnId,
+        );
+        this.notice = {
+          kind: 'warning',
+          summary:
+            'Provider-managed continuation is unsupported by this endpoint. SugarCode continued with private local replay.',
+        };
+        this.publish();
+        return;
+      }
       case 'agentOutputDelta': {
         const turn = this.requireCorrelatedTurn(
           lifecycle.params.threadId,
@@ -2747,6 +2774,15 @@ export class ConversationController {
           }
         : {}),
       ...(turn.error ? { error: { ...turn.error } } : {}),
+      ...(turn.usage
+        ? {
+            usage: {
+              ...turn.usage,
+              lastRequest: { ...turn.usage.lastRequest },
+              turnTotal: { ...turn.usage.turnTotal },
+            },
+          }
+        : {}),
     }));
   };
 
@@ -2912,6 +2948,15 @@ export class ConversationController {
           }
         : {}),
       ...(turn.error ? { error: { ...turn.error } } : {}),
+      ...(turn.usage
+        ? {
+            usage: {
+              ...turn.usage,
+              lastRequest: { ...turn.usage.lastRequest },
+              turnTotal: { ...turn.usage.turnTotal },
+            },
+          }
+        : {}),
     })),
     navigator: snapshotThreadNavigator(this.navigator),
     ...(this.notice ? { notice: { ...this.notice } } : {}),

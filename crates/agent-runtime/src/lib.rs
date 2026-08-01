@@ -26,10 +26,12 @@ use sugarcode_model_provider::ModelErrorKind;
 use sugarcode_model_provider::ModelStrictToolsMode;
 use sugarcode_model_provider::NativeModelProvider;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
+use sugarcode_model_provider::OpenAiContinuationMode;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_state::ContentStore;
 use sugarcode_state::EffectiveConfig;
 use sugarcode_state::ModelCapabilityMode;
+use sugarcode_state::ModelContinuationMode;
 use sugarcode_state::ModelWireApi;
 use sugarcode_state::RolloutRepository;
 use sugarcode_state::SugarCodeHome;
@@ -143,13 +145,23 @@ impl ModelResolver for LocalModelResolver {
                     parallel_tools,
                 )?)
             }
-            ModelWireApi::OpenAiResponses => Arc::new(NativeModelProvider::openai_responses(
-                connection.base_url().clone(),
-                token,
-                strict_tools_mode,
-                parallel_tools,
-                capabilities.output_reserve_tokens,
-            )?),
+            ModelWireApi::OpenAiResponses => Arc::new(
+                NativeModelProvider::openai_responses(
+                    connection.base_url().clone(),
+                    token,
+                    strict_tools_mode,
+                    parallel_tools,
+                    capabilities.output_reserve_tokens,
+                )?
+                .with_openai_continuation_mode(
+                    match connection.continuation_mode() {
+                        ModelContinuationMode::LocalReplay => OpenAiContinuationMode::LocalReplay,
+                        ModelContinuationMode::ProviderManaged => {
+                            OpenAiContinuationMode::ProviderManaged
+                        }
+                    },
+                ),
+            ),
             ModelWireApi::AnthropicMessages => Arc::new(NativeModelProvider::anthropic_messages(
                 connection.base_url().clone(),
                 token,

@@ -362,6 +362,7 @@ export type ConversationActivity =
 export type ConversationTurnError = Readonly<{
   kind:
     | 'authentication'
+    | 'contextWindowExceeded'
     | 'invalidRequest'
     | 'rateLimited'
     | 'timeout'
@@ -373,9 +374,31 @@ export type ConversationTurnError = Readonly<{
     | 'filtered'
     | 'unsupportedOutput'
     | 'unsupportedToolArguments'
+    | 'providerRequestTooLarge'
+    | 'providerResponseTooLarge'
     | 'outputTooLarge'
     | 'stateUnavailable';
   retryable: boolean;
+}>;
+
+export type ConversationTokenUsage = Readonly<{
+  lastRequest: Readonly<{
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    totalTokens?: number;
+  }>;
+  turnTotal: Readonly<{
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    outputTokens?: number;
+    reasoningTokens?: number;
+    totalTokens?: number;
+  }>;
+  requestCount: number;
+  contextWindowTokens: number;
+  source: 'provider' | 'estimated';
 }>;
 
 export type ConversationModelSelection = Readonly<{
@@ -413,10 +436,30 @@ export type ConversationTurn = Readonly<{
   commandApproval?: ConversationCommandApprovalActivity;
   mcpActivities?: readonly ConversationMcpActivity[];
   error?: ConversationTurnError;
+  usage?: ConversationTokenUsage;
 }>;
 
+const isTokenUsage = (value: unknown): value is ConversationTokenUsage => {
+  const isSample = (sample: unknown): boolean =>
+    isRecord(sample) &&
+    Object.values(sample).every(
+      (token) => Number.isSafeInteger(token) && (token as number) >= 0,
+    );
+  return (
+    isRecord(value) &&
+    isSample(value.lastRequest) &&
+    isSample(value.turnTotal) &&
+    Number.isSafeInteger(value.requestCount) &&
+    (value.requestCount as number) >= 1 &&
+    Number.isInteger(value.contextWindowTokens) &&
+    (value.contextWindowTokens as number) >= 4_096 &&
+    (value.contextWindowTokens as number) <= 2_097_152 &&
+    (value.source === 'provider' || value.source === 'estimated')
+  );
+};
+
 export type ConversationNotice = Readonly<{
-  kind: 'requestFailed' | 'connectionLost';
+  kind: 'requestFailed' | 'connectionLost' | 'warning';
   summary: string;
 }>;
 
@@ -1249,7 +1292,8 @@ const isTurn = (value: unknown): value is ConversationTurn => {
     (Object.hasOwn(value, 'mcpActivities') &&
       (!Array.isArray(value.mcpActivities) ||
         value.mcpActivities.length > 4 ||
-        !value.mcpActivities.every(isMcpActivity)))
+        !value.mcpActivities.every(isMcpActivity))) ||
+    (Object.hasOwn(value, 'usage') && !isTokenUsage(value.usage))
   ) {
     return false;
   }
@@ -1363,7 +1407,9 @@ const isTurn = (value: unknown): value is ConversationTurn => {
 
 const isNotice = (value: unknown): value is ConversationNotice =>
   isRecord(value) &&
-  (value.kind === 'requestFailed' || value.kind === 'connectionLost') &&
+  (value.kind === 'requestFailed' ||
+    value.kind === 'connectionLost' ||
+    value.kind === 'warning') &&
   typeof value.summary === 'string' &&
   value.summary.length > 0;
 
