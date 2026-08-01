@@ -25,6 +25,7 @@ fn workspace_bound_repositories_never_resume_foreign_or_unbound_threads() {
             repository.list_threads(None, 50).expect("list B").data,
             vec![sugarcode_state::DurableThreadSummary {
                 id: thread_b.clone(),
+                title: None,
             }]
         );
     }
@@ -36,6 +37,7 @@ fn workspace_bound_repositories_never_resume_foreign_or_unbound_threads() {
             repository.list_threads(None, 50).expect("list A").data,
             vec![sugarcode_state::DurableThreadSummary {
                 id: thread_a.clone(),
+                title: None,
             }]
         );
         assert!(repository.load_thread(&thread_b).expect("load B").is_none());
@@ -83,6 +85,7 @@ fn workspace_free_repositories_only_resume_independent_threads() {
                 .data,
             vec![sugarcode_state::DurableThreadSummary {
                 id: independent_thread,
+                title: None,
             }]
         );
     }

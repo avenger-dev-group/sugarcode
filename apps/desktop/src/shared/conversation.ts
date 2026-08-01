@@ -423,11 +423,13 @@ export type ConversationNotice = Readonly<{
 export type ConversationThreadNavigatorSnapshot = Readonly<{
   status: 'loading' | 'ready' | 'error' | 'unavailable';
   activeThreadIds: readonly string[];
+  activeThreadTitles: Readonly<Record<string, string>>;
   activeTruncated: boolean;
   search: Readonly<{
     query: string;
     status: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
     threadIds: readonly string[];
+    threadTitles: Readonly<Record<string, string>>;
     truncated: boolean;
     summary?: string;
   }>;
@@ -1380,6 +1382,7 @@ const isThreadNavigator = (
     !Array.isArray(value.activeThreadIds) ||
     !value.activeThreadIds.every(isId) ||
     new Set(value.activeThreadIds).size !== value.activeThreadIds.length ||
+    !isThreadTitleMap(value.activeThreadTitles, value.activeThreadIds) ||
     typeof value.activeTruncated !== 'boolean' ||
     !isRecord(value.search) ||
     typeof value.search.query !== 'string' ||
@@ -1391,6 +1394,7 @@ const isThreadNavigator = (
     !Array.isArray(value.search.threadIds) ||
     !value.search.threadIds.every(isId) ||
     new Set(value.search.threadIds).size !== value.search.threadIds.length ||
+    !isThreadTitleMap(value.search.threadTitles, value.search.threadIds) ||
     typeof value.search.truncated !== 'boolean' ||
     (Object.hasOwn(value.search, 'summary') &&
       (typeof value.search.summary !== 'string' ||
@@ -1424,6 +1428,23 @@ const isThreadNavigator = (
     (value.search.status === 'empty'
       ? value.search.threadIds.length === 0
       : true)
+  );
+};
+
+const isThreadTitleMap = (
+  value: unknown,
+  threadIds: readonly unknown[],
+): value is Readonly<Record<string, string>> => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const knownIds = new Set(threadIds);
+  return Object.entries(value).every(
+    ([threadId, title]) =>
+      knownIds.has(threadId) &&
+      typeof title === 'string' &&
+      title.trim().length > 0 &&
+      new TextEncoder().encode(title).byteLength <= 256,
   );
 };
 

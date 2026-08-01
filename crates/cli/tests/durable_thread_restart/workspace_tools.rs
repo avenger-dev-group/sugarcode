@@ -317,7 +317,10 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
     for (query, expected) in [
         (
             "SugarCode deterministic",
-            json!([{"id": "thr_0000000000000001"}]),
+            json!([{
+                "id": "thr_0000000000000001",
+                "title": "completed searchable marker"
+            }]),
         ),
         ("failed private marker", json!([])),
         ("interrupted private marker", json!([])),

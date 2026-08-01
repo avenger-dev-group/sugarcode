@@ -5,11 +5,13 @@ import type {
 export type MutableThreadNavigator = {
   status: ConversationThreadNavigatorSnapshot['status'];
   activeThreadIds: string[];
+  activeThreadTitles: Record<string, string>;
   activeTruncated: boolean;
   search: {
     query: string;
     status: ConversationThreadNavigatorSnapshot['search']['status'];
     threadIds: string[];
+    threadTitles: Record<string, string>;
     truncated: boolean;
     summary?: string;
   };
@@ -26,11 +28,13 @@ export type MutableThreadNavigator = {
 export const createThreadNavigator = (): MutableThreadNavigator => ({
   status: 'loading',
   activeThreadIds: [],
+  activeThreadTitles: {},
   activeTruncated: false,
   search: {
     query: '',
     status: 'idle',
     threadIds: [],
+    threadTitles: {},
     truncated: false,
   },
 });
@@ -40,11 +44,13 @@ export const snapshotThreadNavigator = (
 ): ConversationThreadNavigatorSnapshot => ({
   status: navigator.status,
   activeThreadIds: [...navigator.activeThreadIds],
+  activeThreadTitles: { ...navigator.activeThreadTitles },
   activeTruncated: navigator.activeTruncated,
   search: {
     query: navigator.search.query,
     status: navigator.search.status,
     threadIds: [...navigator.search.threadIds],
+    threadTitles: { ...navigator.search.threadTitles },
     truncated: navigator.search.truncated,
     ...(navigator.search.summary
       ? { summary: navigator.search.summary }
@@ -79,11 +85,21 @@ export const isKnownThread = (
 export const recordActiveThread = (
   navigator: MutableThreadNavigator,
   threadId: string,
+  title?: string,
 ): void => {
   navigator.activeThreadIds = [
     threadId,
     ...navigator.activeThreadIds.filter((id) => id !== threadId),
   ].slice(0, 50);
+  if (title) {
+    navigator.activeThreadTitles[threadId] = title;
+  }
+  navigator.activeThreadTitles = Object.fromEntries(
+    navigator.activeThreadIds.flatMap((id) => {
+      const activeTitle = navigator.activeThreadTitles[id];
+      return activeTitle ? [[id, activeTitle]] : [];
+    }),
+  );
 };
 
 export const resetThreadSearch = (
@@ -93,6 +109,7 @@ export const resetThreadSearch = (
     query: '',
     status: 'idle',
     threadIds: [],
+    threadTitles: {},
     truncated: false,
   };
 };

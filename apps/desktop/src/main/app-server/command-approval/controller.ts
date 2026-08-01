@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 
 import type {
   CommandApprovalActionResult,
+  CommandApprovalMode,
   CommandApprovalStateListener,
   CommandApprovalStateSnapshot,
   CommandApprovalStatus,
@@ -18,6 +19,11 @@ import {
   parseCommandApprovalCompletion,
   parseCommandApprovalRequest,
 } from './protocol';
+import {
+  createCommandApprovalModeScope,
+  evaluateAutomaticCommandApproval,
+  type CommandApprovalModeScope,
+} from './mode-policy';
 import type { ServerMessage } from '../transport/server-message';
 
 const LOCAL_APPROVAL_WINDOW_MS = 120_000;
@@ -67,8 +73,11 @@ export class CommandApprovalController {
   private snapshot: CommandApprovalStateSnapshot = {
     revision: 0,
     status: 'idle',
+    mode: 'ask',
   };
   private active: ActiveApproval | null = null;
+  private modeScope: CommandApprovalModeScope =
+    createCommandApprovalModeScope('ask');
   private surfaceReady = false;
   private closed = false;
 
@@ -118,6 +127,10 @@ export class CommandApprovalController {
     }
     if (this.options.platform === 'win32') {
       void this.denyThenFail(request.id, this.options.onProtocolFailure);
+      return;
+    }
+    if (this.shouldApproveAutomatically(params.threadId)) {
+      void this.approveAutomatically(request.id);
       return;
     }
     if (!this.surfaceReady || this.active) {
@@ -181,13 +194,34 @@ export class CommandApprovalController {
 
   approve = (
     presentationId: unknown,
+    mode: unknown = 'ask',
   ): Promise<CommandApprovalActionResult> =>
-    this.respond(presentationId, 'approved');
+    this.respond(presentationId, 'approved', false, mode);
 
   deny = (
     presentationId: unknown,
   ): Promise<CommandApprovalActionResult> =>
     this.respond(presentationId, 'denied');
+
+  setMode = (
+    mode: unknown,
+    threadId?: unknown,
+  ): CommandApprovalActionResult => {
+    if (!isCommandApprovalMode(mode) || this.active) {
+      return actionResult(this.active ? 'stale' : 'invalid');
+    }
+    if (threadId !== undefined && (typeof threadId !== 'string' || !threadId)) {
+      return actionResult('invalid');
+    }
+    this.applyMode(mode, typeof threadId === 'string' ? threadId : null);
+    this.transition(this.snapshot.status);
+    return actionResult('accepted');
+  };
+
+  resetScope = (): void => {
+    this.applyMode('ask', null);
+    this.transition(this.snapshot.status);
+  };
 
   surfaceUnavailable = (): void => {
     this.surfaceReady = false;
@@ -222,8 +256,12 @@ export class CommandApprovalController {
     presentationId: unknown,
     decision: CommandApprovalResponseDecision,
     allowElapsed = false,
+    requestedMode: unknown = 'ask',
   ): Promise<CommandApprovalActionResult> => {
     if (typeof presentationId !== 'string' || presentationId.length === 0) {
+      return actionResult('invalid');
+    }
+    if (!isCommandApprovalMode(requestedMode)) {
       return actionResult('invalid');
     }
     const active = this.active;
@@ -246,6 +284,9 @@ export class CommandApprovalController {
     this.transition('pending', this.toViewModel(active));
     try {
       await this.options.writeDecision(active.requestId, decision);
+      if (decision === 'approved') {
+        this.applyMode(requestedMode, active.params.threadId);
+      }
       return actionResult('accepted');
     } catch {
       this.options.onWriteFailure();
@@ -262,6 +303,33 @@ export class CommandApprovalController {
     } catch {
       this.options.onWriteFailure();
     }
+  };
+
+  private approveAutomatically = async (requestId: RequestId): Promise<void> => {
+    try {
+      await this.options.writeDecision(requestId, 'approved');
+    } catch {
+      this.options.onWriteFailure();
+    }
+  };
+
+  private shouldApproveAutomatically = (threadId: string): boolean => {
+    const evaluation = evaluateAutomaticCommandApproval(
+      this.modeScope,
+      threadId,
+    );
+    if (evaluation.scope !== this.modeScope) {
+      this.modeScope = evaluation.scope;
+      this.transition(this.snapshot.status);
+    }
+    return evaluation.approveAutomatically;
+  };
+
+  private applyMode = (
+    mode: CommandApprovalMode,
+    threadId: string | null,
+  ): void => {
+    this.modeScope = createCommandApprovalModeScope(mode, threadId);
   };
 
   private denyThenFail = async (
@@ -324,6 +392,10 @@ export class CommandApprovalController {
     this.snapshot = {
       revision: this.snapshot.revision + 1,
       status,
+      mode: this.modeScope.mode,
+      ...(this.modeScope.threadId
+        ? { modeThreadId: this.modeScope.threadId }
+        : {}),
       ...(request ? { request } : {}),
     };
     for (const listener of this.listeners) {
@@ -331,3 +403,8 @@ export class CommandApprovalController {
     }
   };
 }
+
+const isCommandApprovalMode = (
+  value: unknown,
+): value is CommandApprovalMode =>
+  value === 'ask' || value === 'thread' || value === 'workspace';

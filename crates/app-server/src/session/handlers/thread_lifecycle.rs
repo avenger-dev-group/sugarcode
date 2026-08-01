@@ -104,6 +104,7 @@ where
         };
         let thread = PublicThread {
             id: thread_id.into_string(),
+            title: None,
             origin: None,
         };
         let response = ThreadStartResponse {

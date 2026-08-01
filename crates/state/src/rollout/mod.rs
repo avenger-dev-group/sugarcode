@@ -62,12 +62,104 @@ pub enum DurableThreadLifecycle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableThreadSummary {
     pub id: ThreadId,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableThreadPage {
     pub data: Vec<DurableThreadSummary>,
     pub next_cursor: Option<ThreadId>,
+}
+
+pub const MAX_THREAD_TITLE_CHARS: usize = 48;
+
+pub fn derive_thread_title(snapshot: &DurableThreadSnapshot) -> Option<String> {
+    let user_messages = snapshot
+        .turns
+        .iter()
+        .flat_map(|turn| &turn.items)
+        .filter_map(|item| match item {
+            DurableItemSnapshot::UserMessage { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let first_user_message = user_messages.first().copied()?;
+    for content in &user_messages {
+        if let Some(title) = title_from_text_content(content) {
+            if !is_generic_greeting(&title) {
+                return Some(title);
+            }
+        }
+    }
+
+    for content in &user_messages {
+        if let Some(title) = attachment_title(content) {
+            return Some(title);
+        }
+    }
+
+    title_from_text_content(first_user_message)
+}
+
+fn title_from_text_content(content: &[DurableUserContentPart]) -> Option<String> {
+    let text = content
+        .iter()
+        .filter_map(|part| match part {
+            DurableUserContentPart::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    normalize_thread_title(&text)
+}
+
+fn normalize_thread_title(text: &str) -> Option<String> {
+    let sanitized = text
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let normalized = sanitized.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    let mut characters = normalized.chars();
+    let title = characters
+        .by_ref()
+        .take(MAX_THREAD_TITLE_CHARS)
+        .collect::<String>();
+    Some(if characters.next().is_some() {
+        format!("{title}…")
+    } else {
+        title
+    })
+}
+
+fn is_generic_greeting(title: &str) -> bool {
+    matches!(
+        title
+            .trim_matches(|character: char| {
+                character.is_ascii_punctuation() || matches!(character, '，' | '。' | '！' | '？')
+            })
+            .to_lowercase()
+            .as_str(),
+        "你好" | "您好" | "嗨" | "哈喽" | "hello" | "hi" | "hey"
+    )
+}
+
+fn attachment_title(content: &[DurableUserContentPart]) -> Option<String> {
+    content.iter().find_map(|part| match part {
+        DurableUserContentPart::Image { asset } | DurableUserContentPart::Document { asset } => {
+            normalize_thread_title(&format!("处理 {}", asset.original_name))
+        }
+        DurableUserContentPart::Text { .. } => None,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

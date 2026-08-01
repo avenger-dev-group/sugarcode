@@ -308,7 +308,13 @@ impl ThreadRepository for MemoryThreadRepository {
             next_cursor: has_more.then(|| ids.last().cloned()).flatten(),
             data: ids
                 .into_iter()
-                .map(|id| DurableThreadSummary { id })
+                .map(|id| DurableThreadSummary {
+                    title: self
+                        .threads
+                        .get(&id)
+                        .and_then(sugarcode_state::derive_thread_title),
+                    id,
+                })
                 .collect(),
         })
     }
@@ -368,6 +374,7 @@ impl ThreadRepository for MemoryThreadRepository {
                     parse_thread_sequence(&thread.id)?,
                     DurableThreadSummary {
                         id: thread.id.clone(),
+                        title: sugarcode_state::derive_thread_title(thread),
                     },
                 ))
             })

@@ -56,6 +56,7 @@ import {
   resetThreadSearch,
   snapshotThreadNavigator,
 } from './thread-navigator';
+import { deriveThreadTitle } from './thread-title';
 import {
   ConnectionClosedError,
   RpcResponseError,
@@ -364,6 +365,13 @@ export class ConversationController {
         : fallbackThreadId
           ? [fallbackThreadId]
           : [];
+      this.navigator.activeThreadTitles = listed
+        ? Object.fromEntries(
+            listed.data.flatMap((thread) =>
+              thread.title ? [[thread.id, thread.title]] : [],
+            ),
+          )
+        : {};
       this.navigator.activeTruncated = listed
         ? listed.nextCursor !== null
         : false;
@@ -484,6 +492,7 @@ export class ConversationController {
         query: '',
         status: 'idle',
         threadIds: [],
+        threadTitles: {},
         truncated: false,
       };
       this.publish();
@@ -496,6 +505,7 @@ export class ConversationController {
       query: normalized,
       status: 'loading',
       threadIds: [],
+      threadTitles: {},
       truncated: false,
     };
     this.publish();
@@ -512,6 +522,11 @@ export class ConversationController {
         query: normalized,
         status: threadIds.length === 0 ? 'empty' : 'ready',
         threadIds,
+        threadTitles: Object.fromEntries(
+          response.data.flatMap((thread) =>
+            thread.title ? [[thread.id, thread.title]] : [],
+          ),
+        ),
         truncated: response.nextCursor !== null,
       };
       this.publish();
@@ -529,6 +544,7 @@ export class ConversationController {
           query: normalized,
           status: 'error',
           threadIds: [],
+          threadTitles: {},
           truncated: false,
           summary: 'Thread search is temporarily unavailable.',
         };
@@ -649,7 +665,7 @@ export class ConversationController {
       const recovered = recoverConversation(snapshot.threadId, snapshot);
       this.replaceRecoveredConversation(recovered);
       this.phase = 'ready';
-      recordActiveThread(this.navigator, recovered.threadId);
+      recordActiveThread(this.navigator, recovered.threadId, snapshot.title);
       resetThreadSearch(this.navigator);
       this.navigator.archivedUndoThreadId = undefined;
       this.navigator.mutationNotice = `Forked and selected Thread ${recovered.threadId}.`;
@@ -758,7 +774,7 @@ export class ConversationController {
       this.applyActiveThreadList(listed);
       this.replaceRecoveredConversation(recovered);
       this.phase = 'ready';
-      recordActiveThread(this.navigator, threadId);
+      recordActiveThread(this.navigator, threadId, snapshot.title);
       this.navigator.mutationNotice = `Restored and selected Thread ${threadId}.`;
       return accepted();
     } catch (error) {
@@ -841,6 +857,16 @@ export class ConversationController {
         this.threadId = response.thread.id;
         recordActiveThread(this.navigator, response.thread.id);
         this.drainBufferedThreadLifecycle();
+      }
+
+      if (!this.navigator.activeThreadTitles[this.threadId]) {
+        const title = deriveThreadTitle(
+          input.input,
+          input.attachments?.[0]?.fileName,
+        );
+        if (title) {
+          recordActiveThread(this.navigator, this.threadId, title);
+        }
       }
 
       this.awaitingTurnResponse = true;
@@ -2519,6 +2545,11 @@ export class ConversationController {
 
   private applyActiveThreadList = (listed: ThreadListResponse): void => {
     this.navigator.activeThreadIds = listed.data.map((thread) => thread.id);
+    this.navigator.activeThreadTitles = Object.fromEntries(
+      listed.data.flatMap((thread) =>
+        thread.title ? [[thread.id, thread.title]] : [],
+      ),
+    );
     this.navigator.activeTruncated = listed.nextCursor !== null;
     this.navigator.status = 'ready';
     this.navigator.selectionNotice = undefined;

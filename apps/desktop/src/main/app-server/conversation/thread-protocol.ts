@@ -8,6 +8,7 @@ import {
   type ResumeSnapshot,
   parseThreadResumeResponse,
 } from './protocol';
+import { isThreadTitle } from './thread-title';
 
 const MAX_THREAD_RESULTS = 50;
 
@@ -29,10 +30,17 @@ const parseThreadCollection = (
     throw new Error(`Invalid ${method} response.`);
   }
   const data = value.data.map((thread) => {
-    if (!isRecord(thread) || !isId(thread.id)) {
+    if (
+      !isRecord(thread) ||
+      !isId(thread.id) ||
+      (Object.hasOwn(thread, 'title') && !isThreadTitle(thread.title))
+    ) {
       throw new Error(`Invalid Thread in ${method} response.`);
     }
-    return { id: thread.id };
+    return {
+      id: thread.id,
+      ...(typeof thread.title === 'string' ? { title: thread.title } : {}),
+    };
   });
   if (new Set(data.map((thread) => thread.id)).size !== data.length) {
     throw new Error(`Duplicate Thread in ${method} response.`);

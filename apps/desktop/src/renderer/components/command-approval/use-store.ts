@@ -5,33 +5,19 @@ import {
   denyCommand,
   getCommandApprovalState,
   onCommandApprovalStateChanged,
+  setCommandApprovalMode,
 } from '@/renderer/services/command-approval';
-import type { CommandApprovalStateSnapshot } from '@/shared/command-approval';
+import type {
+  CommandApprovalMode,
+  CommandApprovalStateSnapshot,
+} from '@/shared/command-approval';
 
 import type { CommandApprovalStore } from './types';
 
 const INITIAL_SNAPSHOT: CommandApprovalStateSnapshot = {
   revision: 0,
   status: 'idle',
-};
-
-const terminalMessage = (
-  status: CommandApprovalStateSnapshot['status'],
-): string => {
-  switch (status) {
-    case 'approved':
-      return 'Command approved once. The recorded decision is complete.';
-    case 'denied':
-      return 'Command denied. Nothing was run.';
-    case 'expired':
-      return 'Command approval expired. Nothing was run.';
-    case 'cancelled':
-      return 'Command approval was cancelled. Nothing was run.';
-    case 'pending':
-      return 'Command approval pending.';
-    case 'idle':
-      return '';
-  }
+  mode: 'ask',
 };
 
 export const useStore = (): CommandApprovalStore => {
@@ -40,6 +26,9 @@ export const useStore = (): CommandApprovalStore => {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState<boolean>(false);
+  const [modePending, setModePending] = useState<boolean>(false);
+  const [selectedMode, setSelectedMode] =
+    useState<CommandApprovalMode>('ask');
   const revisionRef = useRef<number>(INITIAL_SNAPSHOT.revision);
 
   const acceptSnapshot = useCallback(
@@ -49,7 +38,9 @@ export const useStore = (): CommandApprovalStore => {
       }
       revisionRef.current = nextSnapshot.revision;
       setSnapshot(nextSnapshot);
+      setSelectedMode(nextSnapshot.mode);
       setActionPending(false);
+      setModePending(false);
       setActionError(null);
       setNowMs(Date.now());
     },
@@ -101,7 +92,7 @@ export const useStore = (): CommandApprovalStore => {
       try {
         const result =
           decision === 'approved'
-            ? await approveCommand(request.presentationId)
+            ? await approveCommand(request.presentationId, selectedMode)
             : await denyCommand(request.presentationId);
         if (!result.accepted) {
           setActionError(
@@ -116,7 +107,28 @@ export const useStore = (): CommandApprovalStore => {
         setActionPending(false);
       }
     },
-    [canAct, request],
+    [canAct, request, selectedMode],
+  );
+
+  const changeMode = useCallback(
+    async (mode: CommandApprovalMode, threadId?: string): Promise<void> => {
+      if (modePending || snapshot.status === 'pending') {
+        return;
+      }
+      setModePending(true);
+      setActionError(null);
+      try {
+        const result = await setCommandApprovalMode(mode, threadId);
+        if (!result.accepted) {
+          setActionError('Permission mode could not be changed.');
+          setModePending(false);
+        }
+      } catch {
+        setActionError('Permission mode could not be changed.');
+        setModePending(false);
+      }
+    },
+    [modePending, snapshot.status],
   );
 
   return {
@@ -125,8 +137,11 @@ export const useStore = (): CommandApprovalStore => {
     isOpen: request !== null,
     canAct,
     secondsRemaining,
-    statusMessage: terminalMessage(snapshot.status),
+    selectedMode,
+    modePending,
     actionError,
+    setSelectedMode,
+    changeMode,
     approve: () => submit('approved'),
     deny: () => submit('denied'),
   };

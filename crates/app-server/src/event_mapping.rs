@@ -240,9 +240,11 @@ pub(crate) fn map_fork_snapshot(snapshot: DurableThreadSnapshot) -> ThreadForkRe
 fn map_snapshot_parts(
     snapshot: DurableThreadSnapshot,
 ) -> (sugarcode_app_server_protocol::Thread, Vec<TurnSnapshot>) {
+    let title = sugarcode_state::derive_thread_title(&snapshot);
     (
         sugarcode_app_server_protocol::Thread {
             id: snapshot.id.into_string(),
+            title,
             origin: snapshot.origin.map(|origin| {
                 sugarcode_app_server_protocol::ThreadOrigin::Subagent {
                     parent_thread_id: origin.parent_thread_id.into_string(),

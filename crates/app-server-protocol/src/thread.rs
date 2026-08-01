@@ -23,6 +23,10 @@ pub const MAX_THREAD_SEARCH_QUERY_TERMS: usize = 16;
 pub struct Thread {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 256))]
+    #[ts(optional)]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub origin: Option<ThreadOrigin>,
 }

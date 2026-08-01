@@ -185,6 +185,7 @@ export const ThreadNavigator = ({
           <ThreadButton
             key={threadId}
             threadId={threadId}
+            title={store.navigator.threadTitles[threadId]}
             current={threadId === displayedThreadId}
             pending={
               active &&
@@ -554,6 +555,7 @@ const SectionHeading = ({
 
 type ThreadButtonProps = Readonly<{
   threadId: string;
+  title?: string;
   current: boolean;
   pending: boolean;
   disabled: boolean;
@@ -568,6 +570,7 @@ type ThreadButtonProps = Readonly<{
 
 const ThreadButton = ({
   threadId,
+  title,
   current,
   pending,
   disabled,
@@ -592,7 +595,7 @@ const ThreadButton = ({
       data-thread-item
       aria-current={current ? 'page' : undefined}
       aria-busy={pending}
-      aria-label={`${current ? 'Current ' : ''}Thread ${threadId}`}
+      aria-label={`${current ? 'Current ' : ''}${title ?? `Thread ${threadId}`}`}
       aria-disabled={disabled}
       onClick={() => {
         if (!disabled) {
@@ -609,7 +612,7 @@ const ThreadButton = ({
       }`}
     >
       <span className="min-w-0 flex-1 truncate text-sm font-normal">
-        {`${labelKind === 'chat' ? '聊天' : '任务'} ${threadId.slice(-4)}`}
+        {title ?? `${labelKind === 'chat' ? '聊天' : '任务'} ${threadId.slice(-4)}`}
       </span>
     </span>
     {actionsEnabled ? (

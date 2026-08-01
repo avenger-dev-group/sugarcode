@@ -74,6 +74,7 @@ fn rebuilt_discovery_and_search_hide_subagent_threads() {
         repository.list_threads(None, 50).expect("list roots").data,
         vec![sugarcode_state::DurableThreadSummary {
             id: root_id.clone(),
+            title: None,
         }]
     );
     assert_eq!(
@@ -81,7 +82,10 @@ fn rebuilt_discovery_and_search_hide_subagent_threads() {
             .search_threads("SugarCode deterministic", None, 50)
             .expect("search roots")
             .data,
-        vec![sugarcode_state::DurableThreadSummary { id: root_id }]
+        vec![sugarcode_state::DurableThreadSummary {
+            id: root_id,
+            title: None,
+        }]
     );
     assert_eq!(
         repository

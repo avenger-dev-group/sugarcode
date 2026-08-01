@@ -285,6 +285,7 @@ export const ThreadWorkbenchView = ({
   setNavigatorVisible,
   contextRailVisible = true,
   setContextRailVisible,
+  permissionControl,
 }: ThreadWorkbenchViewProps) => {
   const {
     transcriptContent,
@@ -603,6 +604,7 @@ export const ThreadWorkbenchView = ({
                         ))}
                       </SelectContent>
                     </Select>
+                    {permissionControl}
                     <p className="min-w-0 truncate text-xs text-secondary">
                       {store.thread.statusLabel}
                     </p>

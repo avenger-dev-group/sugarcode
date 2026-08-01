@@ -5,6 +5,7 @@ import {
   COMMAND_APPROVAL_DENY_CHANNEL,
   COMMAND_APPROVAL_STATE_CHANGED_CHANNEL,
   COMMAND_APPROVAL_STATE_GET_CHANNEL,
+  COMMAND_APPROVAL_MODE_SET_CHANNEL,
 } from '@/shared/command-approval';
 
 import type { CommandApprovalController } from './controller';
@@ -33,13 +34,25 @@ export const registerCommandApprovalIpc = (
 
   ipcMain.handle(
     COMMAND_APPROVAL_APPROVE_CHANNEL,
-    async (event, presentationId: unknown) => {
+    async (event, presentationId: unknown, mode: unknown) => {
       if (!isTrustedIpcSender(event, options)) {
         throw new Error(
           'Command approval response came from an untrusted frame.',
         );
       }
-      return options.controller.approve(presentationId);
+      return options.controller.approve(presentationId, mode);
+    },
+  );
+
+  ipcMain.handle(
+    COMMAND_APPROVAL_MODE_SET_CHANNEL,
+    (event, mode: unknown, threadId?: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error(
+          'Command approval mode change came from an untrusted frame.',
+        );
+      }
+      return options.controller.setMode(mode, threadId);
     },
   );
 
@@ -69,5 +82,6 @@ export const registerCommandApprovalIpc = (
     ipcMain.removeHandler(COMMAND_APPROVAL_STATE_GET_CHANNEL);
     ipcMain.removeHandler(COMMAND_APPROVAL_APPROVE_CHANNEL);
     ipcMain.removeHandler(COMMAND_APPROVAL_DENY_CHANNEL);
+    ipcMain.removeHandler(COMMAND_APPROVAL_MODE_SET_CHANNEL);
   };
 };

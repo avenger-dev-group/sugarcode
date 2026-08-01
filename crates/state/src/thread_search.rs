@@ -831,6 +831,7 @@ impl ThreadSearchProjection {
                 .into_iter()
                 .map(|id| DurableThreadSummary {
                     id: ThreadId::new(id),
+                    title: None,
                 })
                 .collect(),
             next_cursor,

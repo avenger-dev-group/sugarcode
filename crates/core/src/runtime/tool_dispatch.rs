@@ -5,7 +5,8 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
     if runtime.workspace_read.is_some() {
         definitions.push(ModelToolDefinition {
             name: "workspace/read".to_string(),
-            description: "Read one UTF-8 text file inside the active workspace scope.".to_string(),
+            description: "Read one UTF-8 text file inside the active workspace scope. Returns JSON with content, byte count and the exact SHA-256 to pass as baseSha256 to workspace/edit."
+                .to_string(),
             parameters: workspace_path_parameters(),
         });
     }
@@ -374,13 +375,24 @@ pub(super) fn map_workspace_read_outcome(
     outcome: WorkspaceReadOutcome,
 ) -> (CoreToolResult, String) {
     match outcome {
-        WorkspaceReadOutcome::Content { content, bytes } => (
-            CoreToolResult::Success {
-                content: content.clone(),
-                bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
-            },
-            content,
-        ),
+        WorkspaceReadOutcome::Content { content, bytes } => {
+            use sha2::Digest;
+
+            let sha256 = format!("{:x}", sha2::Sha256::digest(content.as_bytes()));
+            let payload = serde_json::to_string(&serde_json::json!({
+                "content": content,
+                "bytes": bytes,
+                "sha256": sha256,
+            }))
+            .expect("workspace/read result must serialize");
+            (
+                CoreToolResult::Success {
+                    content: payload.clone(),
+                    bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
+                },
+                payload,
+            )
+        }
         WorkspaceReadOutcome::Error { kind } => {
             let kind = match kind {
                 WorkspaceReadErrorKind::InvalidPath => CoreToolErrorKind::InvalidPath,

@@ -45,7 +45,10 @@ fn resumes_completed_history_across_two_cli_processes() {
         }),
         1,
     );
-    assert_eq!(listed[0]["result"]["data"], json!([{"id": thread_id}]));
+    assert_eq!(
+        listed[0]["result"]["data"],
+        json!([{"id": thread_id, "title": "Hello"}])
+    );
     assert_eq!(listed[0]["result"]["nextCursor"], Value::Null);
     let resumed = second.send(
         json!({
@@ -351,7 +354,19 @@ fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() 
     assert_eq!(messages[0]["role"], "user");
     assert_eq!(messages[1]["tool_calls"][0]["id"], "call_restart");
     assert_eq!(messages[2]["role"], "tool");
-    assert_eq!(messages[2]["content"], "persisted context");
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            messages[2]["content"]
+                .as_str()
+                .expect("workspace/read provider result")
+        )
+        .expect("workspace/read JSON"),
+        json!({
+            "bytes": 17,
+            "content": "persisted context",
+            "sha256": "adf56cb221dbe0d08f03449f00b0cc2156cf34f4b9449326debcf31abce3660a"
+        })
+    );
     assert_eq!(messages[3]["content"], "First final.");
     second.finish();
 }

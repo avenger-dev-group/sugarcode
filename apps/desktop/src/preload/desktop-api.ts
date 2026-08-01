@@ -5,9 +5,11 @@ import {
   COMMAND_APPROVAL_DENY_CHANNEL,
   COMMAND_APPROVAL_STATE_CHANGED_CHANNEL,
   COMMAND_APPROVAL_STATE_GET_CHANNEL,
+  COMMAND_APPROVAL_MODE_SET_CHANNEL,
   isCommandApprovalActionResult,
   isCommandApprovalStateSnapshot,
   type CommandApprovalActionResult,
+  type CommandApprovalMode,
   type CommandApprovalStateSnapshot,
 } from '@/shared/command-approval';
 import {
@@ -479,10 +481,12 @@ export const createDesktopApi = (
   },
   approveCommand: async (
     presentationId: string,
+    mode: CommandApprovalMode,
   ): Promise<CommandApprovalActionResult> => {
     const result: unknown = await ipcRenderer.invoke(
       COMMAND_APPROVAL_APPROVE_CHANNEL,
       presentationId,
+      mode,
     );
     if (!isCommandApprovalActionResult(result)) {
       throw new Error('Main returned an invalid command approval result.');
@@ -498,6 +502,20 @@ export const createDesktopApi = (
     );
     if (!isCommandApprovalActionResult(result)) {
       throw new Error('Main returned an invalid command approval result.');
+    }
+    return result;
+  },
+  setCommandApprovalMode: async (
+    mode: CommandApprovalMode,
+    threadId?: string,
+  ): Promise<CommandApprovalActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      COMMAND_APPROVAL_MODE_SET_CHANNEL,
+      mode,
+      threadId,
+    );
+    if (!isCommandApprovalActionResult(result)) {
+      throw new Error('Main returned an invalid command approval mode result.');
     }
     return result;
   },

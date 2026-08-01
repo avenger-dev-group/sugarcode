@@ -1,5 +1,16 @@
 use super::*;
 
+fn workspace_read_payload(content: &str) -> String {
+    use sha2::Digest;
+
+    serde_json::to_string(&serde_json::json!({
+        "content": content,
+        "bytes": content.len(),
+        "sha256": format!("{:x}", sha2::Sha256::digest(content.as_bytes())),
+    }))
+    .expect("workspace/read payload")
+}
+
 #[derive(Debug)]
 struct ConcurrentWorkspaceRead {
     barrier: Arc<tokio::sync::Barrier>,
@@ -109,9 +120,9 @@ async fn three_workspace_reads_execute_concurrently_and_replay_in_call_order() {
             .map(|result| (result.call_id.as_str(), tool_result_serialized(result)))
             .collect::<Vec<_>>(),
         vec![
-            ("call_a", "a.md".to_string()),
-            ("call_b", "b.md".to_string()),
-            ("call_c", "c.md".to_string()),
+            ("call_a", workspace_read_payload("a.md")),
+            ("call_b", workspace_read_payload("b.md")),
+            ("call_c", workspace_read_payload("c.md")),
         ]
     );
 }
@@ -186,6 +197,7 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
     {
         lifecycle.push(events.recv().await.expect("core event"));
     }
+    let expected_payload = workspace_read_payload("bounded context");
     assert!(lifecycle.iter().any(|event| {
         matches!(
             &event.kind,
@@ -210,7 +222,7 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
                     ..
                 },
                 ..
-            } if content == "bounded context"
+            } if content == &expected_payload
         )
     }));
 
@@ -236,7 +248,7 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
     assert_eq!(message_tool_calls(&messages[1]).len(), 1);
     let results = message_tool_results(&messages[2]);
     assert_eq!(results.len(), 1);
-    assert_eq!(tool_result_serialized(results[0]), "bounded context");
+    assert_eq!(tool_result_serialized(results[0]), expected_payload);
     drop(requests);
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
@@ -266,7 +278,7 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
                 ..
             },
             sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
-        ] if content == "bounded context" && text == "I read it."
+        ] if content == &workspace_read_payload("bounded context") && text == "I read it."
     ));
 }
 
@@ -343,7 +355,10 @@ async fn commentary_is_durable_and_replayed_before_its_tool_call() {
     let results = message_tool_results(&messages[3]);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].call_id, "call_commentary");
-    assert_eq!(tool_result_serialized(results[0]), "bounded context");
+    assert_eq!(
+        tool_result_serialized(results[0]),
+        workspace_read_payload("bounded context")
+    );
     drop(requests);
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");

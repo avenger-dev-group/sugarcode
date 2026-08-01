@@ -1,4 +1,5 @@
 use super::*;
+use crate::derive_thread_title;
 
 impl RolloutRepository {
     fn create_thread_record(
@@ -857,6 +858,12 @@ impl ThreadRepository for RolloutRepository {
         }
         let has_more = matching.len() > limit;
         matching.truncate(limit);
+        for summary in &mut matching {
+            summary.title = self
+                .threads
+                .get(&summary.id)
+                .and_then(|thread| derive_thread_title(&thread.snapshot));
+        }
         let next_cursor = has_more
             .then(|| matching.last().map(|thread| thread.id.clone()))
             .flatten();
@@ -900,6 +907,12 @@ impl ThreadRepository for RolloutRepository {
         }
         let has_more = results.len() > limit;
         results.truncate(limit);
+        for summary in &mut results {
+            summary.title = self
+                .threads
+                .get(&summary.id)
+                .and_then(|thread| derive_thread_title(&thread.snapshot));
+        }
         let next_cursor = has_more
             .then(|| results.last().map(|thread| thread.id.clone()))
             .flatten();

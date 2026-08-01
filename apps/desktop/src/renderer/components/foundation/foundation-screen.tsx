@@ -1,4 +1,8 @@
-import { CommandApprovalSurface } from '@/renderer/components/command-approval/command-approval-surface';
+import {
+  CommandApprovalModeControl,
+  CommandApprovalView,
+} from '@/renderer/components/command-approval/command-approval-surface';
+import { useStore as useCommandApprovalStore } from '@/renderer/components/command-approval/use-store';
 import { ConnectionStatusBar } from '@/renderer/components/connection/connection-status';
 import { McpApprovalSurface } from '@/renderer/components/mcp/approval-surface';
 import { SettingsDialog } from '@/renderer/components/settings/settings-dialog';
@@ -12,6 +16,7 @@ import { useStore } from './use-store';
 export const FoundationScreen = () => {
   const foundation = useStore();
   const threadStore = useThreadStore();
+  const commandApprovalStore = useCommandApprovalStore();
   const turnBusy =
     threadStore.thread.phase === 'starting' ||
     threadStore.thread.phase === 'inProgress' ||
@@ -41,6 +46,13 @@ export const FoundationScreen = () => {
             setContextRailOpen={foundation.setContextRailOpen}
             contextRailVisible={foundation.contextRailVisible}
             setContextRailVisible={foundation.setContextRailVisible}
+            permissionControl={
+              <CommandApprovalModeControl
+                store={commandApprovalStore}
+                threadId={threadStore.thread.threadIdentity}
+                disabled={turnBusy}
+              />
+            }
             navigationFooter={
               <SettingsDialog
                 isDark={foundation.isDark}
@@ -61,7 +73,7 @@ export const FoundationScreen = () => {
         </main>
       </OrchestrationStoreProvider>
       <ConnectionStatusBar />
-      <CommandApprovalSurface />
+      <CommandApprovalView store={commandApprovalStore} />
       <McpApprovalSurface />
     </div>
   );

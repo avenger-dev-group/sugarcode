@@ -266,6 +266,7 @@ export class ConnectionSupervisor {
     }
     this.workspacePath = workspacePath;
     this.workspaceRuntimeKind = runtimeKind;
+    this.commandApprovals.resetScope();
     this.preferredInitialThreadId = preferredThreadId;
     return true;
   };
@@ -291,6 +292,7 @@ export class ConnectionSupervisor {
     const previousPath = this.workspacePath;
     const previousRuntimeKind = this.workspaceRuntimeKind;
     const previousThreadId = this.conversation.getSnapshot().threadId ?? undefined;
+    this.commandApprovals.resetScope();
     try {
       if (!(await this.closeForRestart())) {
         return false;

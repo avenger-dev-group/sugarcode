@@ -222,7 +222,10 @@ fn indexes_a_materialized_thread_snapshot_in_one_rebuildable_update() {
             .search_threads("copied", None, 50)
             .expect("search")
             .data,
-        vec![sugarcode_state::DurableThreadSummary { id: thread(2) }]
+        vec![sugarcode_state::DurableThreadSummary {
+            id: thread(2),
+            title: None,
+        }]
     );
     drop(repository);
 

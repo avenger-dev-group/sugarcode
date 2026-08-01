@@ -21,6 +21,6 @@
 {"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr_0000000000000002","turn":{"id":"turn_0000000000000002","status":"completed"}}}
 {"id":"start-3","jsonrpc":"2.0","result":{"thread":{"id":"thr_0000000000000003"}}}
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000003"}}}
-{"id":"search-1","jsonrpc":"2.0","result":{"data":[{"id":"thr_0000000000000002"}],"nextCursor":"thr_0000000000000002"}}
-{"id":"search-2","jsonrpc":"2.0","result":{"data":[{"id":"thr_0000000000000001"}],"nextCursor":null}}
+{"id":"search-1","jsonrpc":"2.0","result":{"data":[{"id":"thr_0000000000000002","title":"Hello"}],"nextCursor":"thr_0000000000000002"}}
+{"id":"search-2","jsonrpc":"2.0","result":{"data":[{"id":"thr_0000000000000001","title":"Hello"}],"nextCursor":null}}
 {"id":"search-empty","jsonrpc":"2.0","result":{"data":[],"nextCursor":null}}

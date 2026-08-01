@@ -34,6 +34,14 @@
               "type": "null"
             }
           ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256,
+          "minLength": 1
         }
       },
       "required": [

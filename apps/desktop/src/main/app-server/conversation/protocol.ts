@@ -23,6 +23,7 @@ import {
   parseMcpConversationItem,
   type McpConversationItem,
 } from './mcp-protocol';
+import { isThreadTitle } from './thread-title';
 import { isToolValidationRejectedItem } from './tool-validation-protocol';
 
 export { parseThreadListResponse } from './thread-protocol';
@@ -270,6 +271,7 @@ export type ResumeTurn = Readonly<{
 
 export type ResumeSnapshot = Readonly<{
   threadId: string;
+  title?: string;
   origin?: Readonly<{
     type: 'subagent';
     parentThreadId: string;
@@ -632,6 +634,8 @@ export const parseThreadResumeResponse = (value: unknown): ResumeSnapshot => {
     !isRecord(value) ||
     !isRecord(value.thread) ||
     !isId(value.thread.id) ||
+    (Object.hasOwn(value.thread, 'title') &&
+      !isThreadTitle(value.thread.title)) ||
     !Array.isArray(value.turns)
   ) {
     throw new Error('Invalid thread/resume response.');
@@ -676,6 +680,9 @@ export const parseThreadResumeResponse = (value: unknown): ResumeSnapshot => {
   }
   return {
     threadId: value.thread.id,
+    ...(typeof value.thread.title === 'string'
+      ? { title: value.thread.title }
+      : {}),
     ...(origin ? { origin } : {}),
     turns,
   };

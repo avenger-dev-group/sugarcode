@@ -325,6 +325,7 @@ fn collaboration_items_and_descendant_origin_are_provider_neutral() {
     let descendant = ThreadResumeResponse {
         thread: Thread {
             id: "thr_0000000000000002".to_string(),
+            title: None,
             origin: Some(ThreadOrigin::Subagent {
                 parent_thread_id: "thr_0000000000000001".to_string(),
                 parent_turn_id: "turn_0000000000000001".to_string(),
@@ -400,6 +401,7 @@ fn descendant_list_bidirectional_fixtures_match_public_types() {
 fn thread_start_types_use_the_public_thread_dto() {
     let thread = Thread {
         id: "thr_0000000000000001".to_string(),
+        title: None,
         origin: None,
     };
 
@@ -536,6 +538,7 @@ fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
     let response = ThreadForkResponse {
         thread: Thread {
             id: "thr_0000000000000002".to_string(),
+            title: None,
             origin: None,
         },
         turns: vec![TurnSnapshot {
@@ -612,13 +615,14 @@ fn thread_list_response_contains_only_durable_identity_and_cursor() {
         serde_json::to_value(ThreadListResponse {
             data: vec![Thread {
                 id: "thr_0000000000000010".to_string(),
+                title: Some("修复登录流程".to_string()),
                 origin: None,
             }],
             next_cursor: Some("thr_0000000000000010".to_string()),
         })
         .expect("response serializes"),
         json!({
-            "data": [{"id": "thr_0000000000000010"}],
+            "data": [{"id": "thr_0000000000000010", "title": "修复登录流程"}],
             "nextCursor": "thr_0000000000000010"
         })
     );
@@ -662,13 +666,14 @@ fn thread_search_response_exposes_only_thread_identity_and_cursor() {
         serde_json::to_value(ThreadSearchResponse {
             data: vec![Thread {
                 id: "thr_0000000000000010".to_string(),
+                title: Some("修复登录流程".to_string()),
                 origin: None,
             }],
             next_cursor: Some("thr_0000000000000010".to_string()),
         })
         .expect("response serializes"),
         json!({
-            "data": [{"id": "thr_0000000000000010"}],
+            "data": [{"id": "thr_0000000000000010", "title": "修复登录流程"}],
             "nextCursor": "thr_0000000000000010"
         })
     );
@@ -1196,6 +1201,7 @@ fn thread_resume_returns_a_complete_snapshot() {
     let response = ThreadResumeResponse {
         thread: Thread {
             id: "thr_0000000000000001".to_string(),
+            title: None,
             origin: None,
         },
         turns: vec![TurnSnapshot {

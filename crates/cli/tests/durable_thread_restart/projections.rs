@@ -43,7 +43,10 @@ fn rebuilds_an_invalid_projection_then_lists_and_resumes_without_leaking_content
         }),
         1,
     );
-    assert_eq!(listed[0]["result"]["data"], json!([{"id": thread_id}]));
+    assert_eq!(
+        listed[0]["result"]["data"],
+        json!([{"id": thread_id, "title": "Hello"}])
+    );
     let resumed = second.send(
         json!({
             "jsonrpc": "2.0",
@@ -123,8 +126,8 @@ fn rebuilds_search_across_processes_without_affecting_list_or_resume() {
     assert_eq!(
         searched[0]["result"]["data"],
         json!([
-            {"id": "thr_0000000000000002"},
-            {"id": "thr_0000000000000001"}
+            {"id": "thr_0000000000000002", "title": "Hello"},
+            {"id": "thr_0000000000000001", "title": "Hello"}
         ])
     );
     assert_eq!(searched[0]["result"]["nextCursor"], Value::Null);

@@ -92,11 +92,13 @@ const INITIAL_SNAPSHOT: ConversationStateSnapshot = {
   navigator: {
     status: 'unavailable',
     activeThreadIds: [],
+    activeThreadTitles: {},
     activeTruncated: false,
     search: {
       query: '',
       status: 'idle',
       threadIds: [],
+      threadTitles: {},
       truncated: false,
     },
   },
@@ -919,6 +921,7 @@ export const toThreadNavigatorViewModel = (
   return {
     status: snapshot.navigator.status,
     threadIds,
+    threadTitles: snapshot.navigator.activeThreadTitles,
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
     pendingMutation: snapshot.navigator.pendingMutation ?? null,

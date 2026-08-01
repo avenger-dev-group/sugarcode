@@ -135,6 +135,7 @@ export type ThreadViewModel = Readonly<{
 export type ThreadNavigatorViewModel = Readonly<{
   status: 'loading' | 'ready' | 'error' | 'unavailable';
   threadIds: readonly string[];
+  threadTitles: Readonly<Record<string, string>>;
   selectedThreadId: string | null;
   pendingThreadId: string | null;
   pendingMutation: Readonly<{
@@ -195,6 +196,7 @@ export type ThreadWorkbenchViewProps = Readonly<{
   setNavigatorVisible?: (visible: boolean) => void;
   contextRailVisible?: boolean;
   setContextRailVisible?: (visible: boolean) => void;
+  permissionControl?: ReactNode;
 }>;
 
 export type TranscriptTurnProps = Readonly<{

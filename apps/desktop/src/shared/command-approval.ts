@@ -4,6 +4,9 @@ export const COMMAND_APPROVAL_STATE_CHANGED_CHANNEL =
   'command-approval-state:changed';
 export const COMMAND_APPROVAL_APPROVE_CHANNEL = 'command-approval:approve';
 export const COMMAND_APPROVAL_DENY_CHANNEL = 'command-approval:deny';
+export const COMMAND_APPROVAL_MODE_SET_CHANNEL = 'command-approval-mode:set';
+
+export type CommandApprovalMode = 'ask' | 'thread' | 'workspace';
 
 export type CommandApprovalStatus =
   | 'idle'
@@ -33,6 +36,8 @@ export type CommandApprovalViewModel = Readonly<{
 export type CommandApprovalStateSnapshot = Readonly<{
   revision: number;
   status: CommandApprovalStatus;
+  mode: CommandApprovalMode;
+  modeThreadId?: string;
   request?: CommandApprovalViewModel;
 }>;
 
@@ -52,11 +57,18 @@ export type CommandApprovalApi = Readonly<{
   ) => () => void;
   approveCommand: (
     presentationId: string,
+    mode: CommandApprovalMode,
   ) => Promise<CommandApprovalActionResult>;
   denyCommand: (
     presentationId: string,
   ) => Promise<CommandApprovalActionResult>;
+  setCommandApprovalMode: (
+    mode: CommandApprovalMode,
+    threadId?: string,
+  ) => Promise<CommandApprovalActionResult>;
 }>;
+
+const MODES = new Set<CommandApprovalMode>(['ask', 'thread', 'workspace']);
 
 const STATUSES = new Set<CommandApprovalStatus>([
   'idle',
@@ -131,12 +143,22 @@ export const isCommandApprovalStateSnapshot = (
 ): value is CommandApprovalStateSnapshot => {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['revision', 'status'], ['request']) ||
+    !hasOnlyKeys(
+      value,
+      ['revision', 'status', 'mode'],
+      ['request', 'modeThreadId'],
+    ) ||
     typeof value.revision !== 'number' ||
     !Number.isSafeInteger(value.revision) ||
     value.revision < 0 ||
     typeof value.status !== 'string' ||
-    !STATUSES.has(value.status as CommandApprovalStatus)
+    !STATUSES.has(value.status as CommandApprovalStatus) ||
+    typeof value.mode !== 'string' ||
+    !MODES.has(value.mode as CommandApprovalMode) ||
+    (Object.hasOwn(value, 'modeThreadId') &&
+      (value.mode !== 'thread' ||
+        typeof value.modeThreadId !== 'string' ||
+        value.modeThreadId.length === 0))
   ) {
     return false;
   }

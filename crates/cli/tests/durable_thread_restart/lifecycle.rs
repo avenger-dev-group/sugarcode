@@ -160,7 +160,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     );
     assert_eq!(
         hidden[0]["result"]["data"],
-        json!([{"id": "thr_0000000000000001"}])
+        json!([{"id": "thr_0000000000000001", "title": "Hello"}])
     );
     assert_eq!(
         first.send(
@@ -185,8 +185,8 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     assert_eq!(
         restored_list[0]["result"]["data"],
         json!([
-            {"id": "thr_0000000000000002"},
-            {"id": "thr_0000000000000001"}
+            {"id": "thr_0000000000000002", "title": "Hello"},
+            {"id": "thr_0000000000000001", "title": "Hello"}
         ])
     );
     let turn_after_restore = first.send(
@@ -224,8 +224,8 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     assert_eq!(
         listed[0]["result"]["data"],
         json!([
-            {"id": "thr_0000000000000002"},
-            {"id": "thr_0000000000000001"}
+            {"id": "thr_0000000000000002", "title": "Hello"},
+            {"id": "thr_0000000000000001", "title": "Hello"}
         ])
     );
     let searched = second.send(
@@ -240,8 +240,8 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     assert_eq!(
         searched[0]["result"]["data"],
         json!([
-            {"id": "thr_0000000000000002"},
-            {"id": "thr_0000000000000001"}
+            {"id": "thr_0000000000000002", "title": "Hello"},
+            {"id": "thr_0000000000000001", "title": "Hello"}
         ])
     );
     let resumed = second.send(
