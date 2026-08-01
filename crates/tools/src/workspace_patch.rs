@@ -27,9 +27,13 @@ use conflict::resolve_parent;
 use conflict::sha256;
 use conflict::target_state;
 use conflict::verify_original;
+#[cfg(test)]
 use diff::apply_hunks;
+use diff::apply_hunks_detailed;
 use diff::render_diff;
+#[cfg(test)]
 use parser::parse_patch;
+use parser::parse_patch_detailed;
 use text::TextFile;
 use text::encode_text;
 
@@ -44,7 +48,39 @@ pub const MAX_WORKSPACE_DIFF_LINES: usize = 5_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspacePatchArguments {
     pub path: String,
-    pub patch: String,
+    pub diff: String,
+    pub base_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceLineEdit {
+    pub start_line: u32,
+    pub delete_line_count: u32,
+    pub expected: String,
+    pub replacement: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceEditArguments {
+    pub path: String,
+    pub base_sha256: String,
+    pub edits: Vec<WorkspaceLineEdit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceEditDiagnostic {
+    pub edit_index: Option<u32>,
+    pub hunk_index: Option<u32>,
+    pub line: Option<u32>,
+    pub expected_summary: Option<String>,
+    pub actual_summary: Option<String>,
+    pub suggested_action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkspacePatchFailure {
+    kind: WorkspacePatchErrorKind,
+    diagnostic: WorkspaceEditDiagnostic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,8 +109,11 @@ pub enum WorkspacePatchErrorKind {
     BinaryFile,
     InvalidEncoding,
     InvalidNewline,
-    InvalidPatch,
-    PatchDoesNotApply,
+    HeaderCountMismatch,
+    RangeOutOfBounds,
+    ExpectedMismatch,
+    BaseRevisionMismatch,
+    UnsupportedDiffFeature,
     TooManyLines,
     LineTooLong,
     ResultTooLarge,
@@ -89,7 +128,13 @@ pub enum WorkspacePatchErrorKind {
 #[derive(Debug)]
 pub enum WorkspacePatchPrepareOutcome {
     Prepared(Box<WorkspacePatchPrepared>),
-    Error { kind: WorkspacePatchErrorKind },
+    Error {
+        kind: WorkspacePatchErrorKind,
+    },
+    ValidationRejected {
+        kind: WorkspacePatchErrorKind,
+        diagnostic: WorkspaceEditDiagnostic,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,6 +258,15 @@ pub trait WorkspacePatchExecutor: fmt::Debug + Send + Sync {
         prepared: WorkspacePatchPrepared,
         cancellation: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = WorkspacePatchCommitOutcome> + Send + 'a>>;
+
+    fn prepare_edit<'a>(
+        &'a self,
+        arguments: &'a WorkspaceEditArguments,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = WorkspacePatchPrepareOutcome> + Send + 'a>> {
+        let _ = (arguments, cancellation);
+        Box::pin(async { prepare_error(WorkspacePatchErrorKind::UnsupportedDiffFeature) })
+    }
 }
 
 impl WorkspacePatchExecutor for WorkspaceTool {
@@ -231,9 +285,48 @@ impl WorkspacePatchExecutor for WorkspaceTool {
     ) -> Pin<Box<dyn Future<Output = WorkspacePatchCommitOutcome> + Send + 'a>> {
         Box::pin(WorkspaceTool::commit_patch(self, prepared, cancellation))
     }
+
+    fn prepare_edit<'a>(
+        &'a self,
+        arguments: &'a WorkspaceEditArguments,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = WorkspacePatchPrepareOutcome> + Send + 'a>> {
+        Box::pin(WorkspaceTool::prepare_edit(self, arguments, cancellation))
+    }
 }
 
 impl WorkspaceTool {
+    pub async fn prepare_edit(
+        &self,
+        arguments: &WorkspaceEditArguments,
+        cancellation: &CancellationToken,
+    ) -> WorkspacePatchPrepareOutcome {
+        let diff = match line_edits_to_diff(&arguments.path, &arguments.edits) {
+            Ok(diff) => diff,
+            Err(failure) => return prepare_rejection(failure),
+        };
+        match self
+            .prepare_patch(
+                &WorkspacePatchArguments {
+                    path: arguments.path.clone(),
+                    diff,
+                    base_sha256: Some(arguments.base_sha256.clone()),
+                },
+                cancellation,
+            )
+            .await
+        {
+            WorkspacePatchPrepareOutcome::ValidationRejected {
+                kind,
+                mut diagnostic,
+            } => {
+                diagnostic.edit_index = diagnostic.hunk_index;
+                WorkspacePatchPrepareOutcome::ValidationRejected { kind, diagnostic }
+            }
+            outcome => outcome,
+        }
+    }
+
     pub async fn prepare_patch(
         &self,
         arguments: &WorkspacePatchArguments,
@@ -242,8 +335,8 @@ impl WorkspaceTool {
         if cancellation.is_cancelled() {
             return prepare_error(WorkspacePatchErrorKind::Cancelled);
         }
-        if arguments.patch.is_empty() || arguments.patch.len() > MAX_WORKSPACE_PATCH_BYTES {
-            return prepare_error(WorkspacePatchErrorKind::InvalidPatch);
+        if arguments.diff.is_empty() || arguments.diff.len() > MAX_WORKSPACE_PATCH_BYTES {
+            return prepare_error(WorkspacePatchErrorKind::UnsupportedDiffFeature);
         }
         let components = match validate_relative_path(&arguments.path) {
             Ok(components) => components,
@@ -286,13 +379,34 @@ impl WorkspaceTool {
             Ok(text) => text,
             Err(kind) => return prepare_error(kind),
         };
-        let patch = match parse_patch(&arguments.patch) {
+        let before_sha256 = sha256(&before);
+        if arguments
+            .base_sha256
+            .as_ref()
+            .is_some_and(|expected| expected != &before_sha256)
+        {
+            return prepare_rejection(WorkspacePatchFailure {
+                kind: WorkspacePatchErrorKind::BaseRevisionMismatch,
+                diagnostic: WorkspaceEditDiagnostic {
+                    edit_index: None,
+                    hunk_index: None,
+                    line: None,
+                    expected_summary: arguments
+                        .base_sha256
+                        .as_ref()
+                        .map(|value| format!("sha256={value}")),
+                    actual_summary: Some(format!("sha256={before_sha256}")),
+                    suggested_action: "readFileAndRebase".to_string(),
+                },
+            });
+        }
+        let patch = match parse_patch_detailed(&arguments.diff) {
             Ok(patch) => patch,
-            Err(kind) => return prepare_error(kind),
+            Err(failure) => return prepare_rejection(failure),
         };
-        let (after_lines, operations) = match apply_hunks(&text.lines, &patch) {
+        let (after_lines, operations) = match apply_hunks_detailed(&text.lines, &patch) {
             Ok(value) => value,
-            Err(kind) => return prepare_error(kind),
+            Err(failure) => return prepare_rejection(failure),
         };
         if after_lines.len() > MAX_WORKSPACE_FILE_LINES {
             return prepare_error(WorkspacePatchErrorKind::TooManyLines);
@@ -316,7 +430,6 @@ impl WorkspaceTool {
             Ok(diff) => diff,
             Err(kind) => return prepare_error(kind),
         };
-        let before_sha256 = sha256(&before);
         let after_sha256 = sha256(&after);
         WorkspacePatchPrepareOutcome::Prepared(Box::new(WorkspacePatchPrepared {
             path,
@@ -406,6 +519,184 @@ impl WorkspaceTool {
     }
 }
 
+fn line_edits_to_diff(
+    path: &str,
+    edits: &[WorkspaceLineEdit],
+) -> Result<String, WorkspacePatchFailure> {
+    if edits.is_empty() || edits.len() > MAX_WORKSPACE_PATCH_HUNKS {
+        return Err(validation_failure(
+            WorkspacePatchErrorKind::UnsupportedDiffFeature,
+            None,
+            None,
+            None,
+            None,
+            "provideOneTo128Edits",
+        ));
+    }
+    let mut diff = format!("--- a/{path}\n+++ b/{path}\n");
+    let mut previous_start = 0usize;
+    let mut previous_end = 0usize;
+    let mut line_delta = 0isize;
+    for (edit_offset, edit) in edits.iter().enumerate() {
+        let edit_index = u32::try_from(edit_offset + 1).ok();
+        let start = usize::try_from(edit.start_line).map_err(|_| {
+            validation_failure(
+                WorkspacePatchErrorKind::RangeOutOfBounds,
+                edit_index,
+                Some(edit.start_line),
+                None,
+                None,
+                "readFileAndRebase",
+            )
+        })?;
+        let delete_count = usize::try_from(edit.delete_line_count).map_err(|_| {
+            validation_failure(
+                WorkspacePatchErrorKind::RangeOutOfBounds,
+                edit_index,
+                Some(edit.start_line),
+                None,
+                None,
+                "readFileAndRebase",
+            )
+        })?;
+        if start == 0
+            || start <= previous_start
+            || (previous_end != 0 && start < previous_end)
+            || edit.expected.contains(['\r', '\0'])
+            || edit.replacement.contains(['\r', '\0'])
+        {
+            return Err(validation_failure(
+                WorkspacePatchErrorKind::RangeOutOfBounds,
+                edit_index,
+                Some(edit.start_line),
+                None,
+                None,
+                "readFileAndRebase",
+            ));
+        }
+        let expected = split_expected(&edit.expected, delete_count).map_err(|kind| {
+            validation_failure(
+                kind,
+                edit_index,
+                Some(edit.start_line),
+                Some(format!("deleteLineCount={delete_count}")),
+                Some(format!(
+                    "expectedLines={}",
+                    edit.expected.split('\n').count()
+                )),
+                "correctLineCounts",
+            )
+        })?;
+        let replacement = split_replacement(&edit.replacement);
+        if expected
+            .iter()
+            .chain(replacement.iter())
+            .any(|line| line.len() > MAX_WORKSPACE_LINE_BYTES)
+        {
+            return Err(validation_failure(
+                WorkspacePatchErrorKind::LineTooLong,
+                edit_index,
+                Some(edit.start_line),
+                None,
+                None,
+                "shortenReplacementLines",
+            ));
+        }
+        let old_start = if delete_count == 0 { start - 1 } else { start };
+        let new_cursor = (start - 1).checked_add_signed(line_delta).ok_or_else(|| {
+            validation_failure(
+                WorkspacePatchErrorKind::RangeOutOfBounds,
+                edit_index,
+                Some(edit.start_line),
+                None,
+                None,
+                "readFileAndRebase",
+            )
+        })?;
+        let new_start = if replacement.is_empty() {
+            new_cursor
+        } else {
+            new_cursor + 1
+        };
+        diff.push_str(&format!(
+            "@@ -{old_start},{delete_count} +{new_start},{} @@\n",
+            replacement.len()
+        ));
+        for line in &expected {
+            diff.push('-');
+            diff.push_str(line);
+            diff.push('\n');
+        }
+        for line in &replacement {
+            diff.push('+');
+            diff.push_str(line);
+            diff.push('\n');
+        }
+        if diff.len() > MAX_WORKSPACE_PATCH_BYTES {
+            return Err(validation_failure(
+                WorkspacePatchErrorKind::ResultTooLarge,
+                edit_index,
+                Some(edit.start_line),
+                None,
+                None,
+                "splitIntoSmallerEdits",
+            ));
+        }
+        line_delta = line_delta
+            .checked_add_unsigned(replacement.len())
+            .and_then(|value| value.checked_sub_unsigned(delete_count))
+            .ok_or_else(|| {
+                validation_failure(
+                    WorkspacePatchErrorKind::RangeOutOfBounds,
+                    edit_index,
+                    Some(edit.start_line),
+                    None,
+                    None,
+                    "readFileAndRebase",
+                )
+            })?;
+        previous_start = start;
+        previous_end = start.checked_add(delete_count).ok_or_else(|| {
+            validation_failure(
+                WorkspacePatchErrorKind::RangeOutOfBounds,
+                edit_index,
+                Some(edit.start_line),
+                None,
+                None,
+                "readFileAndRebase",
+            )
+        })?;
+    }
+    Ok(diff)
+}
+
+fn split_expected(
+    expected: &str,
+    delete_count: usize,
+) -> Result<Vec<&str>, WorkspacePatchErrorKind> {
+    if delete_count == 0 {
+        return if expected.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(WorkspacePatchErrorKind::HeaderCountMismatch)
+        };
+    }
+    let lines = expected.split('\n').collect::<Vec<_>>();
+    if lines.len() == delete_count {
+        Ok(lines)
+    } else {
+        Err(WorkspacePatchErrorKind::HeaderCountMismatch)
+    }
+}
+
+fn split_replacement(replacement: &str) -> Vec<&str> {
+    if replacement.is_empty() {
+        Vec::new()
+    } else {
+        replacement.split_terminator('\n').collect()
+    }
+}
+
 fn map_read_error(kind: WorkspaceReadErrorKind) -> WorkspacePatchErrorKind {
     match kind {
         WorkspaceReadErrorKind::InvalidPath => WorkspacePatchErrorKind::InvalidPath,
@@ -423,6 +714,41 @@ fn map_read_error(kind: WorkspaceReadErrorKind) -> WorkspacePatchErrorKind {
 
 fn prepare_error(kind: WorkspacePatchErrorKind) -> WorkspacePatchPrepareOutcome {
     WorkspacePatchPrepareOutcome::Error { kind }
+}
+
+fn prepare_rejection(failure: WorkspacePatchFailure) -> WorkspacePatchPrepareOutcome {
+    WorkspacePatchPrepareOutcome::ValidationRejected {
+        kind: failure.kind,
+        diagnostic: failure.diagnostic,
+    }
+}
+
+fn validation_failure(
+    kind: WorkspacePatchErrorKind,
+    edit_index: Option<u32>,
+    line: Option<u32>,
+    expected_summary: Option<String>,
+    actual_summary: Option<String>,
+    suggested_action: &str,
+) -> WorkspacePatchFailure {
+    WorkspacePatchFailure {
+        kind,
+        diagnostic: WorkspaceEditDiagnostic {
+            edit_index,
+            hunk_index: None,
+            line,
+            expected_summary,
+            actual_summary,
+            suggested_action: suggested_action.to_string(),
+        },
+    }
+}
+
+fn content_summary(value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("bytes={},sha256={}", value.len(), sha256(value.as_bytes())),
+        None => "eof".to_string(),
+    }
 }
 
 fn commit_error(kind: WorkspacePatchErrorKind) -> WorkspacePatchCommitOutcome {

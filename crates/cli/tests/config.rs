@@ -9,7 +9,7 @@ fn model_catalog(base_url: &str, model_id: &str) -> serde_json::Value {
         "defaultProfileId": "model_primary",
         "connections": [{
             "id": "conn_primary",
-            "kind": "openaiCompatible",
+            "providerFamily": "openai",
             "displayName": "Custom provider",
             "baseUrl": base_url,
             "enabled": true,
@@ -302,7 +302,7 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
                 "defaultProfileId": "model_primary",
                 "connections": [{
                     "id": "conn_primary",
-                    "kind": "openaiCompatible",
+                    "providerFamily": "openai",
                     "displayName": "Custom provider",
                     "baseUrl": "http://127.0.0.1:18081/v1",
                     "enabled": true,
@@ -313,8 +313,11 @@ fn model_configuration_accepts_http_and_show_reports_bearerless_configuration() 
                     "connectionId": "conn_primary",
                     "displayName": "Primary model",
                     "modelId": "replacement-model",
+                    "toolCalls": "auto",
                     "strictTools": "auto",
-                    "parallelTools": "auto"
+                    "parallelTools": "auto",
+                    "imageInput": "auto",
+                    "pdfInput": "auto"
                 }]
             },
             "credentialStatuses": [{
@@ -330,7 +333,7 @@ fn delete_model_api_key_command_preserves_the_rest_of_the_local_model_config() {
     let home = tempdir().expect("SugarCode home");
     fs::write(
         home.path().join("config.toml"),
-        "schema_version = 1\n\n[models]\ndefault_profile_id = \"model_primary\"\n\n[[models.connections]]\nid = \"conn_primary\"\nkind = \"openaiCompatible\"\ndisplay_name = \"Custom provider\"\nbase_url = \"http://127.0.0.1:18080/v1\"\nenabled = true\nwire_api = \"openaiChatCompletions\"\napi_key = \"secret\"\n\n[[models.profiles]]\nid = \"model_primary\"\nconnection_id = \"conn_primary\"\ndisplay_name = \"Primary model\"\nmodel_id = \"fixture-model\"\nstrict_tools = \"auto\"\nparallel_tools = \"auto\"\n",
+        "schema_version = 1\n\n[models]\ndefault_profile_id = \"model_primary\"\n\n[[models.connections]]\nid = \"conn_primary\"\nprovider_family = \"openai\"\ndisplay_name = \"Custom provider\"\nbase_url = \"http://127.0.0.1:18080/v1\"\nenabled = true\nwire_api = \"openaiChatCompletions\"\napi_key = \"secret\"\n\n[[models.profiles]]\nid = \"model_primary\"\nconnection_id = \"conn_primary\"\ndisplay_name = \"Primary model\"\nmodel_id = \"fixture-model\"\ntool_calls = \"auto\"\nstrict_tools = \"auto\"\nparallel_tools = \"auto\"\nimage_input = \"auto\"\npdf_input = \"auto\"\n",
     )
     .expect("write config");
 

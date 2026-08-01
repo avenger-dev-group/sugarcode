@@ -7,7 +7,7 @@ import {
   type ModelConfigValue,
   type ModelConnectionValue,
   type ModelProfileValue,
-  type ModelProviderKind,
+  type ModelProviderFamily,
   type ModelWireApi,
 } from '@/shared/model-config';
 import {
@@ -26,40 +26,28 @@ import type {
 
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   {
-    kind: 'openai',
+    providerFamily: 'openai',
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     wireApi: 'openaiResponses',
   },
   {
-    kind: 'anthropic',
+    providerFamily: 'anthropic',
     label: 'Anthropic',
     baseUrl: 'https://api.anthropic.com/v1',
     wireApi: 'anthropicMessages',
   },
   {
-    kind: 'gemini',
+    providerFamily: 'gemini',
     label: 'Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     wireApi: 'geminiGenerateContent',
-  },
-  {
-    kind: 'metallm',
-    label: 'MetaLLM',
-    baseUrl: 'http://127.0.0.1:8000/v1',
-    wireApi: 'openaiChatCompletions',
-  },
-  {
-    kind: 'openaiCompatible',
-    label: 'OpenAI compatible',
-    baseUrl: 'http://127.0.0.1:8000/v1',
-    wireApi: 'openaiChatCompletions',
   },
 ];
 
 const INITIAL_CONNECTION: ModelConnectionValue = {
   id: 'conn_openai',
-  kind: 'openai',
+  providerFamily: 'openai',
   displayName: 'OpenAI',
   baseUrl: 'https://api.openai.com/v1',
   enabled: true,
@@ -71,8 +59,11 @@ const INITIAL_PROFILE: ModelProfileValue = {
   connectionId: INITIAL_CONNECTION.id,
   displayName: 'Primary coding model',
   modelId: '',
+  toolCalls: 'auto',
   strictTools: 'auto',
   parallelTools: 'auto',
+  imageInput: 'auto',
+  pdfInput: 'auto',
 };
 
 const EMPTY_CONFIG: ModelConfigValue = {
@@ -107,8 +98,12 @@ const uniqueId = (prefix: string, existing: readonly string[]): string => {
   return `${prefix}_${existing.length + 2}`;
 };
 
-const presetFor = (kind: ModelProviderKind): ProviderPreset =>
-  PROVIDER_PRESETS.find((preset) => preset.kind === kind) ??
+const presetFor = (
+  providerFamily: ModelProviderFamily,
+): ProviderPreset =>
+  PROVIDER_PRESETS.find(
+    (preset) => preset.providerFamily === providerFamily,
+  ) ??
   PROVIDER_PRESETS[0];
 
 export const useStore = ({
@@ -229,7 +224,7 @@ export const useStore = ({
     );
     const connection: ModelConnectionValue = {
       id,
-      kind: 'openaiCompatible',
+      providerFamily: 'openai',
       displayName: 'New connection',
       baseUrl: 'http://127.0.0.1:8000/v1',
       enabled: true,
@@ -276,8 +271,11 @@ export const useStore = ({
       connectionId: selectedConnection.id,
       displayName: 'New model',
       modelId: '',
+      toolCalls: 'auto',
       strictTools: 'auto',
       parallelTools: 'auto',
+      imageInput: 'auto',
+      pdfInput: 'auto',
     };
     updateConfig((current) => ({
       ...current,
@@ -315,8 +313,11 @@ export const useStore = ({
       ...(model.contextWindowTokens
         ? { contextWindowTokens: model.contextWindowTokens }
         : {}),
+      toolCalls: 'auto',
       strictTools: 'auto',
       parallelTools: 'auto',
+      imageInput: 'auto',
+      pdfInput: 'auto',
     };
     updateConfig((current) => ({
       ...current,
@@ -459,10 +460,12 @@ export const useStore = ({
       .finally(() => setDiscovering(false));
   };
 
-  const changeProvider = (kind: ModelProviderKind): void => {
-    const preset = presetFor(kind);
+  const changeProvider = (
+    providerFamily: ModelProviderFamily,
+  ): void => {
+    const preset = presetFor(providerFamily);
     updateConnection({
-      kind,
+      providerFamily,
       displayName: preset.label,
       baseUrl: preset.baseUrl,
       wireApi: preset.wireApi,
@@ -497,8 +500,8 @@ export const useStore = ({
         defaultProfileId: id,
       })),
     updateConnection: (patch) => {
-      if (patch.kind) {
-        changeProvider(patch.kind);
+      if (patch.providerFamily) {
+        changeProvider(patch.providerFamily);
       } else {
         updateConnection(patch);
       }
@@ -525,10 +528,10 @@ const storeConnectionSaved = (
   ) ?? false;
 
 export const wireApiOptions = (
-  kind: ModelProviderKind,
+  providerFamily: ModelProviderFamily,
 ): readonly ModelWireApi[] => {
-  if (kind === 'openaiCompatible') {
+  if (providerFamily === 'openai') {
     return ['openaiResponses', 'openaiChatCompletions'];
   }
-  return [presetFor(kind).wireApi];
+  return [presetFor(providerFamily).wireApi];
 };

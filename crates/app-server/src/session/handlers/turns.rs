@@ -43,9 +43,15 @@ where
             )];
         }
 
-        let (core_request_id, outcome) = match self.agent.start_text_turn_with_model(
+        let input = params.input.map(|content| {
+            content
+                .into_iter()
+                .map(core_turn_input_part)
+                .collect::<Vec<_>>()
+        });
+        let (core_request_id, outcome) = match self.agent.start_content_turn_with_model(
             thread_id.clone(),
-            params.input,
+            input,
             params.model_profile_id,
         ) {
             Ok(result) => result,
@@ -203,5 +209,37 @@ where
             )],
             Err(_) => vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)],
         }
+    }
+}
+
+fn core_turn_input_part(
+    part: sugarcode_app_server_protocol::TurnInputPart,
+) -> sugarcode_protocol::CoreUserContentPart {
+    match part {
+        sugarcode_app_server_protocol::TurnInputPart::Text { text } => {
+            sugarcode_protocol::CoreUserContentPart::Text { text }
+        }
+        sugarcode_app_server_protocol::TurnInputPart::Image { asset } => {
+            sugarcode_protocol::CoreUserContentPart::Image {
+                asset: core_asset(asset),
+            }
+        }
+        sugarcode_app_server_protocol::TurnInputPart::Document { asset } => {
+            sugarcode_protocol::CoreUserContentPart::Document {
+                asset: core_asset(asset),
+            }
+        }
+    }
+}
+
+fn core_asset(
+    asset: sugarcode_app_server_protocol::AssetDescriptor,
+) -> sugarcode_protocol::CoreContentAsset {
+    sugarcode_protocol::CoreContentAsset {
+        asset_id: asset.asset_id,
+        sha256: asset.sha256,
+        media_type: asset.media_type,
+        original_name: asset.original_name,
+        size_bytes: u64::from(asset.size_bytes),
     }
 }

@@ -78,7 +78,7 @@ pub(super) fn create_temp(
     for _ in 0..32 {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let name = PathBuf::from(format!(
-            ".sugarcode-apply-patch-{}-{sequence:016x}.tmp",
+            ".sugarcode-workspace-write-{}-{sequence:016x}.tmp",
             std::process::id()
         ));
         let mut options = OpenOptions::new();

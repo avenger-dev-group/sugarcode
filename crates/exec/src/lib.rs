@@ -26,8 +26,10 @@ use sugarcode_agent_runtime::AgentSurfaceRuntimeParts;
 use sugarcode_agent_runtime::AgentSurfaceSession;
 use sugarcode_agent_runtime::ThreadWorkspaceBinding;
 use sugarcode_core::CommandApprovalOutcome;
+use sugarcode_core::CoreContentAsset;
 use sugarcode_core::CoreError;
 use sugarcode_core::CoreRuntime;
+use sugarcode_core::CoreUserContentPart;
 use sugarcode_core::McpToolApprovalOutcome;
 use sugarcode_core::TurnInterruptOutcome;
 use sugarcode_core::TurnStartOutcome;
@@ -58,6 +60,7 @@ pub struct ExecRequest {
     pub resume_thread_id: Option<String>,
     pub model_profile_id: Option<String>,
     pub prompt: String,
+    pub attachments: Vec<PathBuf>,
     pub output_format: ExecOutputFormat,
 }
 
@@ -105,6 +108,32 @@ where
             "model unavailable",
         );
     }
+    let content_store = match sugarcode_state::ContentStore::open(config.home()) {
+        Ok(store) => store,
+        Err(_) => {
+            return surface_error(
+                stdout,
+                stderr,
+                request.output_format,
+                EXEC_EXIT_CONFIGURATION,
+                ExecErrorCategoryV1::Configuration,
+                "content store unavailable",
+            );
+        }
+    };
+    let input = match import_turn_content(&content_store, request.prompt, request.attachments) {
+        Ok(input) => input,
+        Err(message) => {
+            return surface_error(
+                stdout,
+                stderr,
+                request.output_format,
+                EXEC_EXIT_INPUT,
+                ExecErrorCategoryV1::Input,
+                message,
+            );
+        }
+    };
     let command_supervisor_executable = match std::env::current_exe() {
         Ok(path) => path,
         Err(_) => {
@@ -144,10 +173,12 @@ where
     };
     run_with_runtime(
         runtime.into_parts(),
-        request.resume_thread_id,
-        request.model_profile_id,
-        request.prompt,
-        request.output_format,
+        RuntimeTurnRequest {
+            resume_thread_id: request.resume_thread_id,
+            model_profile_id: request.model_profile_id,
+            input,
+            output_format: request.output_format,
+        },
         stdout,
         stderr,
         cancellation,
@@ -155,12 +186,16 @@ where
     .await
 }
 
-async fn run_with_runtime<W, D>(
-    parts: AgentSurfaceRuntimeParts,
+struct RuntimeTurnRequest {
     resume_thread_id: Option<String>,
     model_profile_id: Option<String>,
-    prompt: String,
+    input: Vec<CoreUserContentPart>,
     output_format: ExecOutputFormat,
+}
+
+async fn run_with_runtime<W, D>(
+    parts: AgentSurfaceRuntimeParts,
+    request: RuntimeTurnRequest,
     stdout: &mut W,
     stderr: &mut D,
     cancellation: CancellationToken,
@@ -177,6 +212,7 @@ where
         workspace: _,
         mcp_capability: _,
         diagnostics,
+        content_store: _,
     } = parts;
     if write_diagnostics(stderr, &diagnostics).is_err() {
         let _ = session.shutdown().await;
@@ -184,9 +220,9 @@ where
     }
     let command_approval_task = tokio::spawn(deny_command_approvals(command_approvals));
     let mcp_approval_task = tokio::spawn(deny_mcp_approvals(mcp_approvals));
-    let mut output = OutputEmitter::new(output_format, stdout);
+    let mut output = OutputEmitter::new(request.output_format, stdout);
 
-    let (thread_id, mode, initial_event) = match resume_thread_id {
+    let (thread_id, mode, initial_event) = match request.resume_thread_id {
         Some(thread_id) => {
             let thread_id = ThreadId::new(thread_id);
             match session.resume_thread(&thread_id) {
@@ -297,67 +333,69 @@ where
         return code;
     }
 
-    let (core_request_id, outcome) =
-        match session.start_text_turn_with_model(thread_id.clone(), Some(prompt), model_profile_id)
-        {
-            Ok(result) => result,
-            Err(CoreError::ModelUnavailable) => {
-                let _ = session.shutdown().await;
-                let code = emitter_error(
-                    &mut output,
-                    stderr,
-                    EXEC_EXIT_CONFIGURATION,
-                    ExecErrorCategoryV1::Configuration,
-                    "model unavailable",
-                    Some(thread_id.as_str()),
-                    None,
-                );
-                finish_tasks(command_approval_task, mcp_approval_task);
-                return code;
-            }
-            Err(CoreError::InvalidInput | CoreError::ContextTooLarge) => {
-                let _ = session.shutdown().await;
-                let code = emitter_error(
-                    &mut output,
-                    stderr,
-                    EXEC_EXIT_INPUT,
-                    ExecErrorCategoryV1::Input,
-                    "invalid prompt",
-                    Some(thread_id.as_str()),
-                    None,
-                );
-                finish_tasks(command_approval_task, mcp_approval_task);
-                return code;
-            }
-            Err(CoreError::StateUnavailable) => {
-                let _ = session.shutdown().await;
-                let code = emitter_error(
-                    &mut output,
-                    stderr,
-                    EXEC_EXIT_CONFIGURATION,
-                    ExecErrorCategoryV1::Configuration,
-                    "durable thread state unavailable",
-                    Some(thread_id.as_str()),
-                    None,
-                );
-                finish_tasks(command_approval_task, mcp_approval_task);
-                return code;
-            }
-            Err(_) => {
-                let _ = session.shutdown().await;
-                let code = emitter_error(
-                    &mut output,
-                    stderr,
-                    EXEC_EXIT_INTERNAL,
-                    ExecErrorCategoryV1::Internal,
-                    "turn start failed",
-                    Some(thread_id.as_str()),
-                    None,
-                );
-                finish_tasks(command_approval_task, mcp_approval_task);
-                return code;
-            }
-        };
+    let (core_request_id, outcome) = match session.start_content_turn_with_model(
+        thread_id.clone(),
+        Some(request.input),
+        request.model_profile_id,
+    ) {
+        Ok(result) => result,
+        Err(CoreError::ModelUnavailable) => {
+            let _ = session.shutdown().await;
+            let code = emitter_error(
+                &mut output,
+                stderr,
+                EXEC_EXIT_CONFIGURATION,
+                ExecErrorCategoryV1::Configuration,
+                "model unavailable",
+                Some(thread_id.as_str()),
+                None,
+            );
+            finish_tasks(command_approval_task, mcp_approval_task);
+            return code;
+        }
+        Err(CoreError::InvalidInput | CoreError::ContextTooLarge) => {
+            let _ = session.shutdown().await;
+            let code = emitter_error(
+                &mut output,
+                stderr,
+                EXEC_EXIT_INPUT,
+                ExecErrorCategoryV1::Input,
+                "invalid prompt",
+                Some(thread_id.as_str()),
+                None,
+            );
+            finish_tasks(command_approval_task, mcp_approval_task);
+            return code;
+        }
+        Err(CoreError::StateUnavailable) => {
+            let _ = session.shutdown().await;
+            let code = emitter_error(
+                &mut output,
+                stderr,
+                EXEC_EXIT_CONFIGURATION,
+                ExecErrorCategoryV1::Configuration,
+                "durable thread state unavailable",
+                Some(thread_id.as_str()),
+                None,
+            );
+            finish_tasks(command_approval_task, mcp_approval_task);
+            return code;
+        }
+        Err(_) => {
+            let _ = session.shutdown().await;
+            let code = emitter_error(
+                &mut output,
+                stderr,
+                EXEC_EXIT_INTERNAL,
+                ExecErrorCategoryV1::Internal,
+                "turn start failed",
+                Some(thread_id.as_str()),
+                None,
+            );
+            finish_tasks(command_approval_task, mcp_approval_task);
+            return code;
+        }
+    };
 
     let mut active_turn_id = match &outcome {
         TurnStartOutcome::Accepted { turn_id } => Some(turn_id.clone()),
@@ -658,7 +696,10 @@ fn validate_request(request: &ExecRequest) -> Result<(), &'static str> {
     if request.workspace.is_none() && request.workspace_scope.is_some() {
         return Err("workspace scope requires a workspace");
     }
-    if request.prompt.trim().is_empty() || request.prompt.len() > MAX_EXEC_PROMPT_BYTES {
+    if (request.prompt.trim().is_empty() && request.attachments.is_empty())
+        || request.prompt.len() > MAX_EXEC_PROMPT_BYTES
+        || request.attachments.len() > sugarcode_state::MAX_TURN_ATTACHMENTS
+    {
         return Err("invalid prompt");
     }
     if request
@@ -678,6 +719,56 @@ fn validate_request(request: &ExecRequest) -> Result<(), &'static str> {
         return Err("invalid model profile id");
     }
     Ok(())
+}
+
+fn import_turn_content(
+    store: &sugarcode_state::ContentStore,
+    prompt: String,
+    attachments: Vec<PathBuf>,
+) -> Result<Vec<CoreUserContentPart>, &'static str> {
+    let mut content = Vec::with_capacity(usize::from(!prompt.is_empty()) + attachments.len());
+    if !prompt.is_empty() {
+        content.push(CoreUserContentPart::Text { text: prompt });
+    }
+    let mut total_bytes = 0u64;
+    for path in attachments {
+        let metadata = std::fs::symlink_metadata(&path).map_err(|_| "invalid attachment")?;
+        if !metadata.file_type().is_file() {
+            return Err("invalid attachment");
+        }
+        total_bytes = total_bytes
+            .checked_add(metadata.len())
+            .ok_or("attachments are too large")?;
+        if total_bytes > sugarcode_state::MAX_TURN_ATTACHMENT_BYTES {
+            return Err("attachments are too large");
+        }
+        let original_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or("invalid attachment")?
+            .to_owned();
+        let bytes = std::fs::read(&path).map_err(|_| "invalid attachment")?;
+        let asset = store
+            .import(original_name, None, &bytes)
+            .map_err(|_| "invalid attachment")?;
+        let asset_ref = CoreContentAsset {
+            asset_id: asset.asset_id,
+            sha256: asset.sha256,
+            media_type: asset.media_type,
+            original_name: asset.original_name,
+            size_bytes: asset.size_bytes,
+        };
+        content.push(match asset.kind {
+            sugarcode_state::ContentAssetKind::Image => {
+                CoreUserContentPart::Image { asset: asset_ref }
+            }
+            sugarcode_state::ContentAssetKind::Pdf | sugarcode_state::ContentAssetKind::Text => {
+                CoreUserContentPart::Document { asset: asset_ref }
+            }
+        });
+    }
+    Ok(content)
 }
 
 fn is_canonical_thread_id(value: &str) -> bool {

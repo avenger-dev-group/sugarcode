@@ -1,6 +1,7 @@
 use futures_util::future::BoxFuture;
 use sugarcode_core::CoreApi;
 use sugarcode_core::CoreError;
+use sugarcode_core::CoreUserContentPart;
 use sugarcode_core::TurnInterruptOutcome;
 use sugarcode_core::TurnStartOutcome;
 use sugarcode_protocol::CoreEvent;
@@ -110,6 +111,22 @@ where
         let outcome =
             self.core
                 .start_text_turn_with_model(request_id, thread_id, input, model_profile_id)?;
+        Ok((request_id, outcome))
+    }
+
+    pub fn start_content_turn_with_model(
+        &mut self,
+        thread_id: ThreadId,
+        input: Option<Vec<CoreUserContentPart>>,
+        model_profile_id: Option<String>,
+    ) -> Result<(CoreRequestId, TurnStartOutcome), CoreError> {
+        let request_id = self.next_request_id()?;
+        let outcome = self.core.start_content_turn_with_model(
+            request_id,
+            thread_id,
+            input,
+            model_profile_id,
+        )?;
         Ok((request_id, outcome))
     }
 

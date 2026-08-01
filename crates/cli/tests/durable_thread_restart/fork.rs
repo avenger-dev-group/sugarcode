@@ -20,7 +20,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": format!("source-turn-{sequence}"),
                 "method": "turn/start",
-                "params": {"threadId": "thr_0000000000000001", "input": "Hello"}
+                "params": {"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]}
             }),
             8,
         );
@@ -129,7 +129,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "jsonrpc": "2.0",
             "id": "continue-fork",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002", "input": "Hello"}
+            "params": {"threadId": "thr_0000000000000002", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
@@ -220,7 +220,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "jsonrpc": "2.0",
             "id": "fork-turn-after-restart",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002", "input": "Hello"}
+            "params": {"threadId": "thr_0000000000000002", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
@@ -249,7 +249,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "jsonrpc": "2.0",
             "id": "other-turn",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000003", "input": "Hello"}
+            "params": {"threadId": "thr_0000000000000003", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );

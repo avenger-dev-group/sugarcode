@@ -365,7 +365,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                         ));
                     } else {
                         if turn.status != super::DurableTurnStatus::Completed {
-                            return Err(corrupt(&path, offset as u64, "legacyTurnMustBeCompleted"));
+                            return Err(corrupt(&path, offset as u64, "completedTurnRequired"));
                         }
                         if turn.context_compaction.as_ref().is_some_and(|compaction| {
                             !crate::validate_context_compaction(&thread.turns, compaction)
@@ -638,13 +638,13 @@ fn terminal_items_match(
                 (
                     super::DurableItemSnapshot::UserMessage {
                         id: started_id,
-                        text: started_text,
+                        content: started_content,
                     },
                     super::DurableItemSnapshot::UserMessage {
                         id: terminal_id,
-                        text: terminal_text,
+                        content: terminal_content,
                     },
-                ) => started_id == terminal_id && started_text == terminal_text,
+                ) => started_id == terminal_id && started_content == terminal_content,
                 (
                     super::DurableItemSnapshot::AgentMessage { id: started_id, .. },
                     super::DurableItemSnapshot::AgentMessage {
@@ -676,6 +676,10 @@ fn terminal_items_match(
                 (
                     super::DurableItemSnapshot::ToolCall { .. },
                     super::DurableItemSnapshot::ToolCall { .. },
+                )
+                | (
+                    super::DurableItemSnapshot::ToolValidationRejected { .. },
+                    super::DurableItemSnapshot::ToolValidationRejected { .. },
                 )
                 | (
                     super::DurableItemSnapshot::ToolResult { .. },

@@ -1,9 +1,12 @@
 import type {
+  AssetImportParams,
+  AssetImportResponse,
   ThreadListResponse,
   ThreadSearchResponse,
   ThreadStartResponse,
   TurnInterruptResponse,
   TurnStartResponse,
+  TurnInputPart,
 } from '@sugarcode/app-server-protocol';
 
 import type { JsonlClient } from '../transport/jsonl-client';
@@ -58,9 +61,13 @@ export type ConversationRpc = Readonly<{
     signal?: AbortSignal,
   ) => Promise<void>;
   startThread: (signal?: AbortSignal) => Promise<ThreadStartResponse>;
+  importAsset: (
+    params: AssetImportParams,
+    signal?: AbortSignal,
+  ) => Promise<AssetImportResponse>;
   startTurn: (
     threadId: string,
-    input: string,
+    input: TurnInputPart[],
     modelProfileId?: string,
     signal?: AbortSignal,
   ) => Promise<TurnStartResponse>;
@@ -189,9 +196,26 @@ export class ConversationRpcClient implements ConversationRpc {
       await this.client.requestReady('thread/start', {}, signal),
     );
 
+  importAsset = async (
+    params: AssetImportParams,
+    signal?: AbortSignal,
+  ): Promise<AssetImportResponse> => {
+    const value = await this.client.requestReady('asset/import', params, signal);
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('asset' in value) ||
+      typeof value.asset !== 'object' ||
+      value.asset === null
+    ) {
+      throw new Error('Invalid asset/import response.');
+    }
+    return value as AssetImportResponse;
+  };
+
   startTurn = async (
     threadId: string,
-    input: string,
+    input: TurnInputPart[],
     modelProfileId?: string,
     signal?: AbortSignal,
   ): Promise<TurnStartResponse> =>

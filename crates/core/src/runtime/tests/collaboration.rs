@@ -76,10 +76,9 @@ impl ModelProvider for RoutingCollaborationProvider {
             .expect("requests")
             .push(request.clone());
         let is_child = request.messages.iter().any(|message| {
-            matches!(
-                message,
-                ModelMessage::Text { text, .. } if text.contains("SUBAGENT_MARKER")
-            )
+            message_texts(message)
+                .iter()
+                .any(|text| text.contains("SUBAGENT_MARKER"))
         });
         let events = if is_child {
             vec![
@@ -108,9 +107,10 @@ impl ModelResolver for CountingModelResolver {
             provider: self.provider.clone(),
             model: "fixture-model".to_string(),
             profile_id: profile_id.unwrap_or("model_primary").to_string(),
-            provider_kind: "openai".to_string(),
+            provider_family: "openai".to_string(),
+            wire_api: "openaiResponses".to_string(),
             display_name: "Fixture model".to_string(),
-            capabilities: ModelCapabilities::new(200_000, true, true),
+            capabilities: ModelCapabilities::new(200_000, true, true, true, true, true),
         })
     }
 }
@@ -214,15 +214,18 @@ async fn dispatch_wait_persists_hidden_child_origin_and_public_result() {
         Some(200_000)
     );
     assert!(requests.lock().expect("requests").iter().any(|request| {
-        matches!(
-            request.messages.as_slice(),
-            [
-                ..,
-                ModelMessage::ToolCallBatch(calls),
-                ModelMessage::ToolResult { call_id: dispatch, .. },
-                ModelMessage::ToolResult { call_id: wait, .. },
-            ] if calls.len() == 2 && dispatch == "call_dispatch" && wait == "call_wait"
-        )
+        let Some((results_message, prefix)) = request.messages.split_last() else {
+            return false;
+        };
+        let Some(calls_message) = prefix.last() else {
+            return false;
+        };
+        let calls = message_tool_calls(calls_message);
+        let results = message_tool_results(results_message);
+        calls.len() == 2
+            && results.len() == 2
+            && results[0].call_id == "call_dispatch"
+            && results[1].call_id == "call_wait"
     }));
 }
 

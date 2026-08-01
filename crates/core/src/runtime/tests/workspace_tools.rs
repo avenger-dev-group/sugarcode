@@ -97,28 +97,23 @@ async fn three_workspace_reads_execute_concurrently_and_replay_in_call_order() {
     assert_eq!(read.maximum.load(Ordering::Acquire), 3);
 
     let requests = requests.lock().expect("requests");
-    assert!(matches!(
-        requests[1].messages.as_slice(),
-        [
-            ModelMessage::Text { .. },
-            ModelMessage::ToolCallBatch(calls),
-            ModelMessage::ToolResult {
-                call_id: call_a,
-                content: content_a
-            },
-            ModelMessage::ToolResult {
-                call_id: call_b,
-                content: content_b
-            },
-            ModelMessage::ToolResult {
-                call_id: call_c,
-                content: content_c
-            }
-        ] if calls.len() == 3
-            && call_a == "call_a" && content_a == "a.md"
-            && call_b == "call_b" && content_b == "b.md"
-            && call_c == "call_c" && content_c == "c.md"
-    ));
+    let messages = &requests[1].messages;
+    assert_eq!(messages.len(), 3);
+    assert_eq!(message_texts(&messages[0]).len(), 1);
+    assert_eq!(message_tool_calls(&messages[1]).len(), 3);
+    let results = message_tool_results(&messages[2]);
+    assert_eq!(results.len(), 3);
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| (result.call_id.as_str(), tool_result_serialized(result)))
+            .collect::<Vec<_>>(),
+        vec![
+            ("call_a", "a.md".to_string()),
+            ("call_b", "b.md".to_string()),
+            ("call_c", "c.md".to_string()),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -196,11 +191,11 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
             &event.kind,
             CoreEventKind::ItemCompleted {
                 item: CoreItemSnapshot {
-                    kind: CoreItemKind::ToolCall { path, .. },
+                    kind: CoreItemKind::ToolCall { arguments, .. },
                     ..
                 },
                 ..
-            } if path == "README.txt"
+            } if arguments.get("path").and_then(serde_json::Value::as_str) == Some("README.txt")
         )
     }));
     assert!(lifecycle.iter().any(|event| {
@@ -235,14 +230,13 @@ async fn workspace_read_runs_one_durable_tool_round_before_the_final_answer() {
             .iter()
             .any(|tool| tool.name == "workspace/read")
     );
-    assert!(matches!(
-        requests[1].messages.as_slice(),
-        [
-            ModelMessage::Text { .. },
-            ModelMessage::ToolCall(_),
-            ModelMessage::ToolResult { content, .. }
-        ] if content == "bounded context"
-    ));
+    let messages = &requests[1].messages;
+    assert_eq!(messages.len(), 3);
+    assert_eq!(message_texts(&messages[0]).len(), 1);
+    assert_eq!(message_tool_calls(&messages[1]).len(), 1);
+    let results = message_tool_results(&messages[2]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(tool_result_serialized(results[0]), "bounded context");
     drop(requests);
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
@@ -336,18 +330,20 @@ async fn commentary_is_durable_and_replayed_before_its_tool_call() {
     ) {}
 
     let requests = requests.lock().expect("requests");
-    assert!(matches!(
-        requests[1].messages.as_slice(),
-        [
-            ModelMessage::Text { .. },
-            ModelMessage::Commentary { text },
-            ModelMessage::ToolCall(call),
-            ModelMessage::ToolResult { call_id, content }
-        ] if text == "I will inspect the workspace first."
-            && call.id == "call_commentary"
-            && call_id == "call_commentary"
-            && content == "bounded context"
-    ));
+    let messages = &requests[1].messages;
+    assert_eq!(messages.len(), 4);
+    assert_eq!(message_texts(&messages[0]).len(), 1);
+    assert_eq!(
+        message_texts(&messages[1]),
+        vec!["I will inspect the workspace first."]
+    );
+    let calls = message_tool_calls(&messages[2]);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].id, "call_commentary");
+    let results = message_tool_results(&messages[3]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].call_id, "call_commentary");
+    assert_eq!(tool_result_serialized(results[0]), "bounded context");
     drop(requests);
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
@@ -450,11 +446,13 @@ async fn workspace_list_uses_the_shared_authority_and_one_durable_tool_round() {
             .iter()
             .any(|tool| tool.name == "workspace/list")
     );
-    assert!(matches!(
-        requests[1].messages.last(),
-        Some(ModelMessage::ToolResult { content, .. })
-            if serde_json::from_str::<serde_json::Value>(content).expect("list JSON") == expected
-    ));
+    let results = message_tool_results(requests[1].messages.last().expect("result message"));
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&tool_result_serialized(results[0]))
+            .expect("list JSON"),
+        expected
+    );
     drop(requests);
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
@@ -468,14 +466,14 @@ async fn workspace_list_uses_the_shared_authority_and_one_durable_tool_round() {
         turn.items.as_slice(),
         [
             sugarcode_state::DurableItemSnapshot::UserMessage { .. },
-            sugarcode_state::DurableItemSnapshot::ToolCall { name, path, .. },
+            sugarcode_state::DurableItemSnapshot::ToolCall { name, arguments, .. },
             sugarcode_state::DurableItemSnapshot::ToolResult {
                 result: sugarcode_state::DurableToolResult::Success { content, .. },
                 ..
             },
             sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
         ] if name == "workspace/list"
-            && path == "."
+            && arguments.get("path").and_then(serde_json::Value::as_str) == Some(".")
             && serde_json::from_str::<serde_json::Value>(content).expect("durable list JSON") == expected
             && text == "I listed it."
     ));
@@ -540,11 +538,12 @@ async fn serialized_tool_result_limit_becomes_one_durable_error_result() {
     ) {}
 
     let requests = requests.lock().expect("requests");
-    assert!(matches!(
-        requests[1].messages.last(),
-        Some(ModelMessage::ToolResult { content, .. })
-            if content == "workspace/read error: resultTooLarge"
-    ));
+    let results = message_tool_results(requests[1].messages.last().expect("result message"));
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        tool_result_serialized(results[0]),
+        "workspace/read error: resultTooLarge"
+    );
     drop(requests);
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
     let turn = snapshot
@@ -620,13 +619,12 @@ async fn unknown_tool_calls_return_model_visible_errors_without_execution() {
         ) {}
         let requests = requests.lock().expect("requests");
         assert_eq!(requests.len(), 2);
-        assert!(matches!(
-            requests[1].messages.last(),
-            Some(ModelMessage::ToolResult { content, .. })
-                if content.contains("unknownTool")
-                    && content.contains("argumentsBytes=")
-                    && content.contains("argumentsSha256=")
-        ));
+        let results = message_tool_results(requests[1].messages.last().expect("result message"));
+        assert_eq!(results.len(), 1);
+        let content = tool_result_serialized(results[0]);
+        assert!(content.contains("unknownTool"));
+        assert!(content.contains("argumentsBytes="));
+        assert!(content.contains("argumentsSha256="));
         drop(requests);
         let snapshot = runtime.resume_thread(&thread_id).expect("resume");
         let turn = snapshot
@@ -638,10 +636,8 @@ async fn unknown_tool_calls_return_model_visible_errors_without_execution() {
         assert!(turn.error.is_none());
         assert!(turn.items.iter().any(|item| matches!(
             item,
-            sugarcode_state::DurableItemSnapshot::ToolResult {
-                result: sugarcode_state::DurableToolResult::Error { kind },
-                ..
-            } if kind == "unknownTool"
+            sugarcode_state::DurableItemSnapshot::ToolValidationRejected { kind, .. }
+                if kind == "unknownTool"
         )));
     }
 }
@@ -711,10 +707,8 @@ async fn invalid_tool_batch_is_rejected_without_partial_execution() {
     let results = requests[1]
         .messages
         .iter()
-        .filter_map(|message| match message {
-            ModelMessage::ToolResult { content, .. } => Some(content.as_str()),
-            _ => None,
-        })
+        .flat_map(message_tool_results)
+        .map(tool_result_serialized)
         .collect::<Vec<_>>();
     assert_eq!(results.len(), 2);
     assert!(results[0].contains("batchRejected"));
@@ -737,10 +731,9 @@ async fn invalid_tool_batch_is_rejected_without_partial_execution() {
         .items
         .iter()
         .filter_map(|item| match item {
-            sugarcode_state::DurableItemSnapshot::ToolResult {
-                result: sugarcode_state::DurableToolResult::Error { kind },
-                ..
-            } => Some(kind.as_str()),
+            sugarcode_state::DurableItemSnapshot::ToolValidationRejected { kind, .. } => {
+                Some(kind.as_str())
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1049,6 +1042,8 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
                             reasoning_output_tokens: None,
                             total_tokens: Some(15),
                         }),
+                        terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+                        provider_context: None,
                     })),
                 ]
             } else if call < 13 {
@@ -1071,6 +1066,8 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
                             },
                         }],
                         usage: None,
+                        terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+                        provider_context: None,
                     })),
                 ]
             };
@@ -1170,10 +1167,13 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
                 .iter()
                 .any(|tool| tool.name == "workspace/read")
         );
-        assert!(matches!(
-            recorded_requests[compaction_index + 1].messages.first(),
-            Some(ModelMessage::ContextCompaction { .. })
-        ));
+        assert!(
+            recorded_requests[compaction_index + 1]
+                .messages
+                .first()
+                .and_then(message_compaction)
+                .is_some()
+        );
     }
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
     let turn = snapshot
@@ -1213,11 +1213,13 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
     ) {}
     let requests = requests.lock().expect("requests");
     assert_eq!(requests.len(), 16);
-    assert!(matches!(
-        requests[15].messages.first(),
-        Some(ModelMessage::ContextCompaction { content })
-            if content.contains("Prior reads succeeded")
-    ));
+    assert!(
+        requests[15]
+            .messages
+            .first()
+            .and_then(message_compaction)
+            .is_some_and(|content| content.contains("Prior reads succeeded"))
+    );
     assert!(requests[15].context_bytes() < crate::context::COMPACTION_TARGET_BYTES);
 }
 
@@ -1305,10 +1307,13 @@ async fn growing_context_rejection_compacts_and_retries_the_same_turn() {
     assert_eq!(recorded_requests.len(), 4);
     assert!(recorded_requests[1].context_bytes() > recorded_requests[0].context_bytes());
     assert!(recorded_requests[2].tools.is_empty());
-    assert!(matches!(
-        recorded_requests[3].messages.first(),
-        Some(ModelMessage::ContextCompaction { .. })
-    ));
+    assert!(
+        recorded_requests[3]
+            .messages
+            .first()
+            .and_then(message_compaction)
+            .is_some()
+    );
     drop(recorded_requests);
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");

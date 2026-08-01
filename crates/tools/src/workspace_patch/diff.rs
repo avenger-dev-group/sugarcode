@@ -1,6 +1,9 @@
 use super::MAX_WORKSPACE_DIFF_BYTES;
 use super::MAX_WORKSPACE_DIFF_LINES;
+use super::WorkspaceEditDiagnostic;
 use super::WorkspacePatchErrorKind;
+use super::WorkspacePatchFailure;
+use super::content_summary;
 use super::parser::Hunk;
 use super::parser::PatchLine;
 
@@ -11,37 +14,76 @@ pub(super) enum DiffOperation {
     Add(String),
 }
 
+#[cfg(test)]
 pub(super) fn apply_hunks(
     before: &[String],
     hunks: &[Hunk],
 ) -> Result<(Vec<String>, Vec<DiffOperation>), WorkspacePatchErrorKind> {
+    apply_hunks_detailed(before, hunks).map_err(|failure| failure.kind)
+}
+
+pub(super) fn apply_hunks_detailed(
+    before: &[String],
+    hunks: &[Hunk],
+) -> Result<(Vec<String>, Vec<DiffOperation>), WorkspacePatchFailure> {
     let mut after = Vec::new();
     let mut operations = Vec::new();
     let mut old_cursor = 0usize;
     let mut new_cursor = 0usize;
     let mut changed = false;
-    for hunk in hunks {
+    for (hunk_offset, hunk) in hunks.iter().enumerate() {
+        let hunk_index = u32::try_from(hunk_offset + 1).ok();
         let expected_old = if hunk.old_count == 0 {
             hunk.old_start
         } else {
-            hunk.old_start
-                .checked_sub(1)
-                .ok_or(WorkspacePatchErrorKind::InvalidPatch)?
+            hunk.old_start.checked_sub(1).ok_or_else(|| {
+                apply_failure(
+                    WorkspacePatchErrorKind::RangeOutOfBounds,
+                    hunk_index,
+                    None,
+                    None,
+                    None,
+                    "readFileAndRebase",
+                )
+            })?
         };
         let expected_new = if hunk.new_count == 0 {
             hunk.new_start
         } else {
-            hunk.new_start
-                .checked_sub(1)
-                .ok_or(WorkspacePatchErrorKind::InvalidPatch)?
+            hunk.new_start.checked_sub(1).ok_or_else(|| {
+                apply_failure(
+                    WorkspacePatchErrorKind::RangeOutOfBounds,
+                    hunk_index,
+                    None,
+                    None,
+                    None,
+                    "readFileAndRebase",
+                )
+            })?
         };
         if expected_old < old_cursor || expected_new < new_cursor {
-            return Err(WorkspacePatchErrorKind::InvalidPatch);
+            return Err(apply_failure(
+                WorkspacePatchErrorKind::RangeOutOfBounds,
+                hunk_index,
+                None,
+                None,
+                None,
+                "readFileAndRebase",
+            ));
         }
         while old_cursor < expected_old {
             let line = before
                 .get(old_cursor)
-                .ok_or(WorkspacePatchErrorKind::PatchDoesNotApply)?
+                .ok_or_else(|| {
+                    apply_failure(
+                        WorkspacePatchErrorKind::RangeOutOfBounds,
+                        hunk_index,
+                        u32::try_from(old_cursor + 1).ok(),
+                        None,
+                        None,
+                        "readFileAndRebase",
+                    )
+                })?
                 .clone();
             after.push(line.clone());
             operations.push(DiffOperation::Equal(line));
@@ -49,13 +91,27 @@ pub(super) fn apply_hunks(
             new_cursor += 1;
         }
         if new_cursor != expected_new {
-            return Err(WorkspacePatchErrorKind::InvalidPatch);
+            return Err(apply_failure(
+                WorkspacePatchErrorKind::RangeOutOfBounds,
+                hunk_index,
+                u32::try_from(old_cursor + 1).ok(),
+                None,
+                None,
+                "readFileAndRebase",
+            ));
         }
         for line in &hunk.lines {
             match line {
                 PatchLine::Context(expected) => {
                     if before.get(old_cursor) != Some(expected) {
-                        return Err(WorkspacePatchErrorKind::PatchDoesNotApply);
+                        return Err(apply_failure(
+                            WorkspacePatchErrorKind::ExpectedMismatch,
+                            hunk_index,
+                            u32::try_from(old_cursor + 1).ok(),
+                            Some(content_summary(Some(expected))),
+                            Some(content_summary(before.get(old_cursor).map(String::as_str))),
+                            "readFileAndRebase",
+                        ));
                     }
                     after.push(expected.clone());
                     operations.push(DiffOperation::Equal(expected.clone()));
@@ -64,7 +120,14 @@ pub(super) fn apply_hunks(
                 }
                 PatchLine::Remove(expected) => {
                     if before.get(old_cursor) != Some(expected) {
-                        return Err(WorkspacePatchErrorKind::PatchDoesNotApply);
+                        return Err(apply_failure(
+                            WorkspacePatchErrorKind::ExpectedMismatch,
+                            hunk_index,
+                            u32::try_from(old_cursor + 1).ok(),
+                            Some(content_summary(Some(expected))),
+                            Some(content_summary(before.get(old_cursor).map(String::as_str))),
+                            "readFileAndRebase",
+                        ));
                     }
                     operations.push(DiffOperation::Remove(expected.clone()));
                     old_cursor += 1;
@@ -86,9 +149,37 @@ pub(super) fn apply_hunks(
         old_cursor += 1;
     }
     if !changed {
-        return Err(WorkspacePatchErrorKind::InvalidPatch);
+        return Err(apply_failure(
+            WorkspacePatchErrorKind::UnsupportedDiffFeature,
+            None,
+            None,
+            None,
+            None,
+            "includeAtLeastOneChange",
+        ));
     }
     Ok((after, operations))
+}
+
+fn apply_failure(
+    kind: WorkspacePatchErrorKind,
+    hunk_index: Option<u32>,
+    line: Option<u32>,
+    expected_summary: Option<String>,
+    actual_summary: Option<String>,
+    suggested_action: &str,
+) -> WorkspacePatchFailure {
+    WorkspacePatchFailure {
+        kind,
+        diagnostic: WorkspaceEditDiagnostic {
+            edit_index: None,
+            hunk_index,
+            line,
+            expected_summary,
+            actual_summary,
+            suggested_action: suggested_action.to_string(),
+        },
+    }
 }
 
 pub(super) fn render_diff(

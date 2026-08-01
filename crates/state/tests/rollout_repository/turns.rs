@@ -46,7 +46,9 @@ fn replay_accepts_globally_unique_incremental_items_out_of_file_order() {
         items: vec![
             DurableItemSnapshot::UserMessage {
                 id: ItemId::new("item_0000000000000001"),
-                text: "Review the child task.".to_string(),
+                content: vec![sugarcode_state::DurableUserContentPart::Text {
+                    text: "Review the child task.".to_string(),
+                }],
             },
             DurableItemSnapshot::AgentCommentary {
                 id: ItemId::new("item_0000000000000002"),
@@ -66,7 +68,9 @@ fn replay_accepts_globally_unique_incremental_items_out_of_file_order() {
         items: vec![
             DurableItemSnapshot::UserMessage {
                 id: ItemId::new("item_0000000000000003"),
-                text: "Continue the parent task.".to_string(),
+                content: vec![sugarcode_state::DurableUserContentPart::Text {
+                    text: "Continue the parent task.".to_string(),
+                }],
             },
             DurableItemSnapshot::AgentCommentary {
                 id: ItemId::new("item_0000000000000004"),
@@ -144,7 +148,9 @@ fn commentary_round_trips_through_the_jsonl_rollout() {
         items: vec![
             DurableItemSnapshot::UserMessage {
                 id: ItemId::new("item_0000000000000001"),
-                text: "Inspect the workspace.".to_string(),
+                content: vec![sugarcode_state::DurableUserContentPart::Text {
+                    text: "Inspect the workspace.".to_string(),
+                }],
             },
             DurableItemSnapshot::AgentCommentary {
                 id: ItemId::new("item_0000000000000002"),
@@ -154,11 +160,7 @@ fn commentary_round_trips_through_the_jsonl_rollout() {
                 id: ItemId::new("item_0000000000000003"),
                 call_id: "call_1".to_string(),
                 name: "workspace/read".to_string(),
-                path: "README.md".to_string(),
-                query: None,
-                patch: None,
-                command: None,
-                arguments: None,
+                arguments: json!({"path": "README.md"}),
             },
             DurableItemSnapshot::ToolResult {
                 id: ItemId::new("item_0000000000000004"),
@@ -214,7 +216,9 @@ fn collaboration_items_round_trip_through_incremental_rollout_records() {
     let turn_id = TurnId::new("turn_0000000000000001");
     let user = DurableItemSnapshot::UserMessage {
         id: ItemId::new("item_0000000000000001"),
-        text: "Review the project.".to_string(),
+        content: vec![sugarcode_state::DurableUserContentPart::Text {
+            text: "Review the project.".to_string(),
+        }],
     };
     let collaboration_items = vec![
         DurableItemSnapshot::AgentTask {
@@ -307,7 +311,9 @@ fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
     let thread_id = ThreadId::new("thr_0000000000000001");
     let mut items = vec![DurableItemSnapshot::UserMessage {
         id: ItemId::new("item_0000000000000001"),
-        text: "Read several large bounded results.".to_string(),
+        content: vec![sugarcode_state::DurableUserContentPart::Text {
+            text: "Read several large bounded results.".to_string(),
+        }],
     }];
     let content = "x".repeat(300 * 1024);
     for ordinal in 1..=4u64 {
@@ -317,11 +323,7 @@ fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
             id: ItemId::new(format!("item_{item_sequence:016}")),
             call_id: call_id.clone(),
             name: "workspace/read".to_string(),
-            path: format!("file-{ordinal}.txt"),
-            query: None,
-            patch: None,
-            command: None,
-            arguments: None,
+            arguments: json!({"path": format!("file-{ordinal}.txt")}),
         });
         items.push(DurableItemSnapshot::ToolResult {
             id: ItemId::new(format!("item_{:016}", item_sequence + 1)),
@@ -436,7 +438,9 @@ fn an_unfinished_checkpoint_is_retained_for_audit_but_remains_interrupted() {
         status: DurableTurnStatus::InProgress,
         items: vec![DurableItemSnapshot::UserMessage {
             id: ItemId::new("item_0000000000000002"),
-            text: "continue".to_string(),
+            content: vec![sugarcode_state::DurableUserContentPart::Text {
+                text: "continue".to_string(),
+            }],
         }],
         context_compaction: Some(checkpoint.clone()),
         workspace_instructions: None,
@@ -517,7 +521,6 @@ fn workspace_instruction_audit_survives_recovery_without_persisting_content() {
     assert!(rollout.contains("\"rootAgentsMdV1\""));
     assert!(rollout.contains(&"a".repeat(64)));
     assert!(!rollout.contains("private workspace instruction"));
-    assert!(!rollout.contains("\"content\""));
 }
 
 #[test]
@@ -549,7 +552,9 @@ fn an_unfinished_active_compaction_is_completed_as_interrupted_before_recovery_t
                     status: DurableTurnStatus::InProgress,
                     items: vec![DurableItemSnapshot::UserMessage {
                         id: ItemId::new("item_0000000000000001"),
-                        text: "Continue after compaction.".to_string(),
+                        content: vec![sugarcode_state::DurableUserContentPart::Text {
+                            text: "Continue after compaction.".to_string(),
+                        }],
                     }],
                     context_compaction: None,
                     workspace_instructions: None,
@@ -746,11 +751,7 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
         id: ItemId::new("item_0000000000000002"),
         call_id: "call_1".to_string(),
         name: "workspace/search".to_string(),
-        path: "src".to_string(),
-        query: Some("needle".to_string()),
-        patch: None,
-        command: None,
-        arguments: None,
+        arguments: json!({"path": "src", "query": "needle"}),
     };
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
@@ -764,7 +765,9 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
                     status: DurableTurnStatus::InProgress,
                     items: vec![DurableItemSnapshot::UserMessage {
                         id: ItemId::new("item_0000000000000001"),
-                        text: "Read it".to_string(),
+                        content: vec![sugarcode_state::DurableUserContentPart::Text {
+                            text: "Read it".to_string(),
+                        }],
                     }],
                     context_compaction: None,
                     workspace_instructions: None,
@@ -804,18 +807,16 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
     let turn_id = TurnId::new("turn_0000000000000001");
     let user = DurableItemSnapshot::UserMessage {
         id: ItemId::new("item_0000000000000001"),
-        text: "Run it".to_string(),
+        content: vec![sugarcode_state::DurableUserContentPart::Text {
+            text: "Run it".to_string(),
+        }],
     };
     let incremental = vec![
         DurableItemSnapshot::ToolCall {
             id: ItemId::new("item_0000000000000002"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
-            path: ".".to_string(),
-            query: None,
-            patch: None,
-            command: Some("/bin/echo".to_string()),
-            arguments: Some(vec!["ok".to_string()]),
+            arguments: json!({"command": "/bin/echo", "arguments": ["ok"], "cwd": "."}),
         },
         DurableItemSnapshot::CommandApprovalRequest {
             id: ItemId::new("item_0000000000000003"),
@@ -907,53 +908,6 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
         .expect("load")
         .expect("thread");
     assert_eq!(snapshot.turns[0].items[1..], incremental);
-    drop(repository);
-
-    let rollout = directory
-        .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
-    let legacy = fs::read_to_string(&rollout)
-        .expect("read rollout")
-        .lines()
-        .map(|line| {
-            let mut record =
-                serde_json::from_str::<serde_json::Value>(line).expect("parse rollout record");
-            remove_command_policy_fields(&mut record);
-            serde_json::to_string(&record).expect("serialize legacy rollout record")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    assert!(!legacy.contains("networkDeniedV1"), "{legacy}");
-    fs::write(&rollout, legacy).expect("rewrite legacy rollout fixture");
-    let repository = RolloutRepository::open(&home).expect("reopen legacy rollout");
-    let snapshot = repository
-        .load_thread(&thread_id)
-        .expect("load legacy rollout")
-        .expect("legacy thread");
-    assert!(
-        matches!(
-            &snapshot.turns[0].items[2],
-            DurableItemSnapshot::CommandApprovalRequest {
-                sandbox_policy: None,
-                network_policy: None,
-                ..
-            }
-        ),
-        "{:?}",
-        snapshot.turns[0].items[2]
-    );
-    assert!(matches!(
-        &snapshot.turns[0].items[4],
-        DurableItemSnapshot::ToolResult {
-            result: DurableToolResult::Process(DurableProcessResult {
-                sandbox_policy: None,
-                network_policy: None,
-                ..
-            }),
-            ..
-        }
-    ));
 }
 
 #[test]
@@ -964,18 +918,16 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
     let turn_id = TurnId::new("turn_0000000000000001");
     let user = DurableItemSnapshot::UserMessage {
         id: ItemId::new("item_0000000000000001"),
-        text: "Run it".to_string(),
+        content: vec![sugarcode_state::DurableUserContentPart::Text {
+            text: "Run it".to_string(),
+        }],
     };
     let incremental = [
         DurableItemSnapshot::ToolCall {
             id: ItemId::new("item_0000000000000002"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
-            path: ".".to_string(),
-            query: None,
-            patch: None,
-            command: Some("/bin/echo".to_string()),
-            arguments: Some(vec!["ok".to_string()]),
+            arguments: json!({"command": "/bin/echo", "arguments": ["ok"], "cwd": "."}),
         },
         DurableItemSnapshot::CommandApprovalRequest {
             id: ItemId::new("item_0000000000000003"),
@@ -1069,7 +1021,9 @@ fn execution_attempt_requires_matching_approved_shell_audit() {
                 status: DurableTurnStatus::InProgress,
                 items: vec![DurableItemSnapshot::UserMessage {
                     id: ItemId::new("item_0000000000000001"),
-                    text: "Run it".to_string(),
+                    content: vec![sugarcode_state::DurableUserContentPart::Text {
+                        text: "Run it".to_string(),
+                    }],
                 }],
                 context_compaction: None,
                 workspace_instructions: None,
@@ -1115,7 +1069,9 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
                 status: DurableTurnStatus::InProgress,
                 items: vec![DurableItemSnapshot::UserMessage {
                     id: ItemId::new("item_0000000000000001"),
-                    text: "Run it".to_string(),
+                    content: vec![sugarcode_state::DurableUserContentPart::Text {
+                        text: "Run it".to_string(),
+                    }],
                 }],
                 context_compaction: None,
                 workspace_instructions: None,
@@ -1130,11 +1086,7 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
             id: ItemId::new("item_0000000000000002"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
-            path: ".".to_string(),
-            query: None,
-            patch: None,
-            command: Some("/bin/echo".to_string()),
-            arguments: Some(vec!["ok".to_string()]),
+            arguments: json!({"command": "/bin/echo", "arguments": ["ok"], "cwd": "."}),
         },
         DurableItemSnapshot::CommandApprovalRequest {
             id: ItemId::new("item_0000000000000003"),
@@ -1202,28 +1154,6 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
         .expect("acknowledged attempt");
 }
 
-fn remove_command_policy_fields(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(object) => {
-            object.remove("sandboxPolicy");
-            object.remove("workspaceWritePolicy");
-            object.remove("networkPolicy");
-            object.remove("sandbox_policy");
-            object.remove("workspace_write_policy");
-            object.remove("network_policy");
-            for value in object.values_mut() {
-                remove_command_policy_fields(value);
-            }
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                remove_command_policy_fields(value);
-            }
-        }
-        _ => {}
-    }
-}
-
 #[test]
 fn file_change_proposal_survives_recovery_without_replaying_the_write() {
     let directory = tempdir().expect("home");
@@ -1255,7 +1185,9 @@ fn file_change_proposal_survives_recovery_without_replaying_the_write() {
                     status: DurableTurnStatus::InProgress,
                     items: vec![DurableItemSnapshot::UserMessage {
                         id: ItemId::new("item_0000000000000001"),
-                        text: "Update it".to_string(),
+                        content: vec![sugarcode_state::DurableUserContentPart::Text {
+                            text: "Update it".to_string(),
+                        }],
                     }],
                     context_compaction: None,
                     workspace_instructions: None,
@@ -1272,12 +1204,11 @@ fn file_change_proposal_survives_recovery_without_replaying_the_write() {
                 &DurableItemSnapshot::ToolCall {
                     id: ItemId::new("item_0000000000000002"),
                     call_id: "call_patch".to_string(),
-                    name: "workspace/apply-patch".to_string(),
-                    path: "notes.txt".to_string(),
-                    query: None,
-                    patch: Some("@@ -1,1 +1,1 @@\n-old\n+new\n".to_string()),
-                    command: None,
-                    arguments: None,
+                    name: "workspace/apply-diff".to_string(),
+                    arguments: json!({
+                        "path": "notes.txt",
+                        "diff": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+                    }),
                 },
             )
             .expect("tool call");
@@ -1362,7 +1293,9 @@ fn active_turn_rejects_lifecycle_records_and_non_terminal_fork_snapshots() {
     in_progress.id = TurnId::new("turn_0000000000000002");
     in_progress.items[0] = DurableItemSnapshot::UserMessage {
         id: ItemId::new("item_0000000000000003"),
-        text: "copied input".to_string(),
+        content: vec![sugarcode_state::DurableUserContentPart::Text {
+            text: "copied input".to_string(),
+        }],
     };
     in_progress.items[1] = DurableItemSnapshot::AgentMessage {
         id: ItemId::new("item_0000000000000004"),

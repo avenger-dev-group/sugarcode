@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn restart_keeps_threads_bound_to_their_scope_and_uses_the_new_process_scope() {
     const PATCH_CALL: &str = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_scope_patch\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-patch\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"patch\\\":\\\"@@ -1,3 +1,3 @@\\\\n one\\\\n-two\\\\n+scope-a\\\\n three\\\\n\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_scope_patch\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-diff\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"diff\\\":\\\"--- a/notes.txt\\\\n+++ b/notes.txt\\\\n@@ -1,3 +1,3 @@\\\\n one\\\\n-two\\\\n+scope-a\\\\n three\\\\n\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n"
     );
@@ -59,7 +59,7 @@ fn restart_keeps_threads_bound_to_their_scope_and_uses_the_new_process_scope() {
             "jsonrpc":"2.0",
             "id":"scope-a-turn",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":"Patch scope A"}
+            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Patch scope A"}]}
         }),
         14,
     );
@@ -107,7 +107,7 @@ fn restart_keeps_threads_bound_to_their_scope_and_uses_the_new_process_scope() {
             "jsonrpc":"2.0",
             "id":"scope-b-turn",
             "method":"turn/start",
-            "params":{"threadId":second_thread_id,"input":"List current scope"}
+            "params":{"threadId":second_thread_id,"input":[{"type":"text","text":"List current scope"}]}
         }),
         12,
     );

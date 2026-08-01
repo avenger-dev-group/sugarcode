@@ -13,6 +13,8 @@ export const CONVERSATION_THREAD_UNARCHIVE_CHANNEL =
 export const CONVERSATION_THREAD_DELETE_CHANNEL = 'conversation-thread:delete';
 
 export const MAX_CONVERSATION_INPUT_BYTES = 64 * 1024;
+export const MAX_CONVERSATION_ATTACHMENTS = 10;
+export const MAX_CONVERSATION_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_THREAD_SEARCH_BYTES = 256;
 export const MAX_FILE_CHANGE_DIFF_BYTES = 192 * 1024;
 export const MAX_FILE_CHANGE_DIFF_LINES = 5_000;
@@ -29,7 +31,24 @@ export type ConversationMessage = Readonly<{
   id: string;
   role: 'user' | 'agent';
   text: string;
+  attachments?: readonly ConversationAttachment[];
   status: ConversationMessageStatus;
+}>;
+
+export type ConversationAttachment = Readonly<{
+  assetId: string;
+  sha256: string;
+  mediaType: string;
+  originalName: string;
+  sizeBytes: number;
+  kind: 'image' | 'pdf' | 'text';
+  previewUrl?: string;
+}>;
+
+export type ConversationAttachmentUpload = Readonly<{
+  fileName: string;
+  mediaType?: string;
+  data: string;
 }>;
 
 export type ConversationCommentaryActivity = Readonly<{
@@ -361,15 +380,22 @@ export type ConversationTurnError = Readonly<{
 
 export type ConversationModelSelection = Readonly<{
   profileId: string;
-  providerKind:
-    | 'openai'
-    | 'anthropic'
-    | 'gemini'
-    | 'metallm'
-    | 'openaiCompatible';
+  providerFamily: 'openai' | 'anthropic' | 'gemini';
+  wireApi:
+    | 'openaiResponses'
+    | 'openaiChatCompletions'
+    | 'anthropicMessages'
+    | 'geminiGenerateContent';
   modelId: string;
   displayName: string;
   contextWindowTokens: number;
+  effectiveCapabilities: Readonly<{
+    toolCalls: boolean;
+    strictTools: boolean;
+    parallelTools: boolean;
+    imageInput: boolean;
+    pdfInput: boolean;
+  }>;
 }>;
 
 export type ConversationTurn = Readonly<{
@@ -473,6 +499,7 @@ export type ConversationApi = Readonly<{
 
 export type ConversationSendRequest = Readonly<{
   input: string;
+  attachments?: readonly ConversationAttachmentUpload[];
   modelProfileId?: string;
 }>;
 
@@ -649,7 +676,29 @@ const isMessage = (value: unknown): value is ConversationMessage =>
   (value.role === 'user' || value.role === 'agent') &&
   typeof value.text === 'string' &&
   typeof value.status === 'string' &&
-  MESSAGE_STATUSES.has(value.status as ConversationMessageStatus);
+  MESSAGE_STATUSES.has(value.status as ConversationMessageStatus) &&
+  (value.attachments === undefined ||
+    (Array.isArray(value.attachments) &&
+      value.attachments.length <= MAX_CONVERSATION_ATTACHMENTS &&
+      value.attachments.every(isConversationAttachment)));
+
+const isConversationAttachment = (
+  value: unknown,
+): value is ConversationAttachment =>
+  isRecord(value) &&
+  typeof value.assetId === 'string' &&
+  typeof value.sha256 === 'string' &&
+  typeof value.mediaType === 'string' &&
+  typeof value.originalName === 'string' &&
+  typeof value.sizeBytes === 'number' &&
+  Number.isSafeInteger(value.sizeBytes) &&
+  value.sizeBytes > 0 &&
+  (value.kind === 'image' || value.kind === 'pdf' || value.kind === 'text') &&
+  (value.previewUrl === undefined ||
+    (value.kind === 'image' &&
+      typeof value.previewUrl === 'string' &&
+      value.previewUrl.startsWith(`data:${value.mediaType};base64,`) &&
+      value.previewUrl.length <= 12 * 1024 * 1024));
 
 const isWorkspaceReadOutcome = (
   value: unknown,
@@ -1146,13 +1195,31 @@ const isTurn = (value: unknown): value is ConversationTurn => {
           'openai',
           'anthropic',
           'gemini',
-          'metallm',
-          'openaiCompatible',
-        ].includes(value.model.providerKind as string) ||
+        ].includes(value.model.providerFamily as string) ||
+        ![
+          'openaiResponses',
+          'openaiChatCompletions',
+          'anthropicMessages',
+          'geminiGenerateContent',
+        ].includes(value.model.wireApi as string) ||
         typeof value.model.modelId !== 'string' ||
         typeof value.model.displayName !== 'string' ||
         !Number.isInteger(value.model.contextWindowTokens) ||
-        (value.model.contextWindowTokens as number) < 4_096)) ||
+        (value.model.contextWindowTokens as number) < 4_096 ||
+        !isRecord(value.model.effectiveCapabilities) ||
+        ![
+          'toolCalls',
+          'strictTools',
+          'parallelTools',
+          'imageInput',
+          'pdfInput',
+        ].every(
+          (key) =>
+            typeof (
+              (value.model as Record<string, unknown>)
+                .effectiveCapabilities as Record<string, unknown>
+            )[key] === 'boolean',
+        ))) ||
     (Object.hasOwn(value, 'pendingAgentOutputs') &&
       (!Array.isArray(pendingAgentOutputs) ||
         pendingAgentOutputs.length > 1 ||
@@ -1418,12 +1485,37 @@ export const isConversationSendRequest = (
 ): value is ConversationSendRequest =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['input', 'modelProfileId'].includes(key),
+    ['input', 'attachments', 'modelProfileId'].includes(key),
   ) &&
-  isValidConversationInput(value.input) &&
+  typeof value.input === 'string' &&
+  new TextEncoder().encode(value.input).byteLength <=
+    MAX_CONVERSATION_INPUT_BYTES &&
+  (value.input.trim().length > 0 ||
+    (Array.isArray(value.attachments) && value.attachments.length > 0)) &&
+  (value.attachments === undefined ||
+    (Array.isArray(value.attachments) &&
+      value.attachments.length <= MAX_CONVERSATION_ATTACHMENTS &&
+      value.attachments.every(isConversationAttachmentUpload))) &&
   (value.modelProfileId === undefined ||
     (typeof value.modelProfileId === 'string' &&
       /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
+
+const isConversationAttachmentUpload = (
+  value: unknown,
+): value is ConversationAttachmentUpload =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['fileName', 'mediaType', 'data'].includes(key),
+  ) &&
+  typeof value.fileName === 'string' &&
+  value.fileName.length > 0 &&
+  value.fileName.length <= 255 &&
+  !/[\\/\p{Cc}]/u.test(value.fileName) &&
+  (value.mediaType === undefined ||
+    (typeof value.mediaType === 'string' && value.mediaType.length <= 127)) &&
+  typeof value.data === 'string' &&
+  value.data.length > 0 &&
+  value.data.length <= 27_962_032;
 
 export const isValidThreadSearchInput = (value: unknown): value is string => {
   if (

@@ -403,11 +403,7 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
         CoreItemKind::ToolCall {
             call_id: "call_1".to_string(),
             name: "workspace/search".to_string(),
-            path: "src".to_string(),
-            query: Some("needle".to_string()),
-            patch: None,
-            command: None,
-            arguments: None,
+            arguments: serde_json::json!({"path": "src", "query": "needle"}),
         },
     )
     .expect("tool call");
@@ -448,11 +444,7 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
         CoreItemKind::ToolCall {
             call_id: "call_2".to_string(),
             name: "workspace/read".to_string(),
-            path: "missing.txt".to_string(),
-            query: None,
-            patch: None,
-            command: None,
-            arguments: None,
+            arguments: serde_json::json!({"path": "missing.txt"}),
         },
     )
     .expect("failed call");
@@ -463,6 +455,8 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
         Some(DurableTurnError {
             kind: sugarcode_state::DurableTurnErrorKind::Server,
             retryable: true,
+            provider: None,
+            tool_schema: None,
         }),
         None,
     )
@@ -481,11 +475,7 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
         CoreItemKind::ToolCall {
             call_id: "call_3".to_string(),
             name: "workspace/read".to_string(),
-            path: "blocked.txt".to_string(),
-            query: None,
-            patch: None,
-            command: None,
-            arguments: None,
+            arguments: serde_json::json!({"path": "blocked.txt"}),
         },
     )
     .expect("interrupted call");
@@ -510,16 +500,14 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
             DurableItemSnapshot::ToolCall {
                 call_id,
                 name,
-                path,
-                query,
+                arguments,
                 ..
             },
             DurableItemSnapshot::ToolResult { .. },
             DurableItemSnapshot::AgentMessage { text, .. }
         ] if call_id == "call_1"
             && name == "workspace/search"
-            && path == "src"
-            && query.as_deref() == Some("needle")
+            && arguments == &serde_json::json!({"path": "src", "query": "needle"})
             && text == "answer"
     ));
     assert!(

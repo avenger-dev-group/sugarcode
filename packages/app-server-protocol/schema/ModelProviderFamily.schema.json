@@ -1,12 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ModelProviderKind",
+  "title": "ModelProviderFamily",
   "type": "string",
   "enum": [
     "openai",
     "anthropic",
-    "gemini",
-    "metallm",
-    "openaiCompatible"
+    "gemini"
   ]
 }

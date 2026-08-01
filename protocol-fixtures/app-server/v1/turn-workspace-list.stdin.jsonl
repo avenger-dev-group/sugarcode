@@ -1,4 +1,4 @@
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"golden-client","version":"1.0.0"}}}
 {"jsonrpc":"2.0","method":"initialized"}
 {"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}
-{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"List the workspace"}}
+{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"List the workspace"}]}}

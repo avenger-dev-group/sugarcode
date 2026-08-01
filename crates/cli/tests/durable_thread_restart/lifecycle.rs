@@ -21,7 +21,7 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                     "jsonrpc": "2.0",
                     "id": format!("turn-{sequence}"),
                     "method": "turn/start",
-                    "params": {"threadId": format!("thr_{sequence:016}"), "input": "Hello"}
+                    "params": {"threadId": format!("thr_{sequence:016}"), "input": [{"type":"text","text":"Hello"}]}
                 }),
                 8,
             );
@@ -90,7 +90,7 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
             "jsonrpc": "2.0",
             "id": "turn-3",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000004", "input": "Hello"}
+            "params": {"threadId": "thr_0000000000000004", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
@@ -131,7 +131,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
                 "jsonrpc": "2.0",
                 "id": format!("turn-{sequence}"),
                 "method": "turn/start",
-                "params": {"threadId": format!("thr_{sequence:016}"), "input": "Hello"}
+                "params": {"threadId": format!("thr_{sequence:016}"), "input": [{"type":"text","text":"Hello"}]}
             }),
             8,
         );
@@ -194,7 +194,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
             "jsonrpc": "2.0",
             "id": "turn-after-restore",
             "method": "turn/start",
-            "params": {"threadId": restored, "input": "Hello"}
+            "params": {"threadId": restored, "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
@@ -273,7 +273,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
             "jsonrpc": "2.0",
             "id": "turn-after-restart",
             "method": "turn/start",
-            "params": {"threadId": restored, "input": "Hello"}
+            "params": {"threadId": restored, "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
@@ -314,7 +314,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": format!("turn-{sequence}"),
                 "method": "turn/start",
-                "params": {"threadId": format!("thr_{sequence:016}"), "input": "Hello"}
+                "params": {"threadId": format!("thr_{sequence:016}"), "input": [{"type":"text","text":"Hello"}]}
             }),
             8,
         );
@@ -388,7 +388,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
         ("turn-deleted", "turn/start"),
     ] {
         let params = if method == "turn/start" {
-            json!({"threadId": "thr_0000000000000001", "input": "Hello"})
+            json!({"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]})
         } else {
             json!({"threadId": "thr_0000000000000001"})
         };
@@ -423,7 +423,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
             "jsonrpc": "2.0",
             "id": "turn-4",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000004", "input": "Hello"}
+            "params": {"threadId": "thr_0000000000000004", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );

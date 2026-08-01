@@ -40,6 +40,14 @@ export type WorkspaceBinding = { id: string, };
 
 export type InitializeResponse = { protocolVersion: number, serverInfo: ServerInfo, platform: PlatformInfo, capabilities: ServerCapabilities, workspace?: WorkspaceBinding, };
 
+export type AssetKind = "image" | "pdf" | "text";
+
+export type AssetDescriptor = { assetId: string, sha256: string, mediaType: string, originalName: string, sizeBytes: number, kind: AssetKind, pdfPages?: number, };
+
+export type AssetImportParams = { fileName: string, mediaType?: string, data: string, };
+
+export type AssetImportResponse = { asset: AssetDescriptor, };
+
 export type CommandApprovalResponseDecision = "approved" | "denied";
 
 export type CommandNetworkPolicy = "networkDeniedV1";
@@ -82,7 +90,7 @@ export type AgentTaskAccess = "readOnly" | "workspaceWrite";
 
 export type AgentTaskStatus = "queued" | "running" | "waitingApproval" | "completed" | "failed" | "interrupted" | "cancelled";
 
-export type Item = { "type": "userMessage", id: string, text: string, } | { "type": "agentMessage", id: string, text: string, } | { "type": "agentCommentary", id: string, text: string, } | { "type": "agentTask", id: string, orchestrationId: string, taskId: string, clientTaskKey: string, childThreadId: string, title: string, role: AgentTaskRole, access: AgentTaskAccess, dependsOn: Array<string>, taskMarkdown: string, } | { "type": "agentTaskAmendment", id: string, orchestrationId: string, taskId: string, amendmentMarkdown: string, } | { "type": "agentTaskResult", id: string, orchestrationId: string, taskId: string, status: AgentTaskStatus, summaryMarkdown: string, durationMs: bigint, } | { "type": "contextCompaction", id: string, strategy: ContextCompactionStrategy, ordinal: bigint, preContextBytes: bigint, sourceMessages: bigint, sourceBytes: bigint, sourceSha256: string, outcome?: ContextCompactionOutcome, } | { "type": "toolCall", id: string, callId: string, name: string, path: string, query?: string, command?: string, arguments?: Array<string>, } | { "type": "fileChange", id: string, callId: string, path: string, kind: FileChangeKind, diff: string, beforeSha256: string, afterSha256: string, beforeBytes: bigint, afterBytes: bigint, newlineStyle: FileChangeNewlineStyle, finalNewline: boolean, } | { "type": "commandApprovalRequest", id: string, approvalId: string, callId: string, command: string, arguments: Array<string>, cwd: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy?: CommandSandboxPolicy, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy?: CommandNetworkPolicy, } | { "type": "commandApprovalDecision", id: string, approvalId: string, decision: string, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, } | { "type": "commandExecutionAttempt", id: string, approvalId: string, callId: string, } | { "type": "mcpToolCall", id: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalRequest", id: string, approvalId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalDecision", id: string, approvalId: string, decision: string, } | { "type": "mcpToolExecutionAttempt", id: string, approvalId: string, callId: string, inventorySha256: string, } | { "type": "mcpToolResult", id: string, callId: string, name: string, result: McpToolResult, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
+export type Item = { "type": "userMessage", id: string, content: Array<TurnInputPart>, } | { "type": "agentMessage", id: string, text: string, } | { "type": "agentCommentary", id: string, text: string, } | { "type": "agentTask", id: string, orchestrationId: string, taskId: string, clientTaskKey: string, childThreadId: string, title: string, role: AgentTaskRole, access: AgentTaskAccess, dependsOn: Array<string>, taskMarkdown: string, } | { "type": "agentTaskAmendment", id: string, orchestrationId: string, taskId: string, amendmentMarkdown: string, } | { "type": "agentTaskResult", id: string, orchestrationId: string, taskId: string, status: AgentTaskStatus, summaryMarkdown: string, durationMs: bigint, } | { "type": "contextCompaction", id: string, strategy: ContextCompactionStrategy, ordinal: bigint, preContextBytes: bigint, sourceMessages: bigint, sourceBytes: bigint, sourceSha256: string, outcome?: ContextCompactionOutcome, } | { "type": "toolCall", id: string, callId: string, name: string, arguments: JsonValue, } | { "type": "toolValidationRejected", id: string, callId: string, name: string, kind: string, argumentsBytes: bigint, argumentsSha256: string, editIndex?: number, hunkIndex?: number, line?: number, expectedSummary?: string, actualSummary?: string, suggestedAction: string, } | { "type": "fileChange", id: string, callId: string, path: string, kind: FileChangeKind, diff: string, beforeSha256: string, afterSha256: string, beforeBytes: bigint, afterBytes: bigint, newlineStyle: FileChangeNewlineStyle, finalNewline: boolean, } | { "type": "commandApprovalRequest", id: string, approvalId: string, callId: string, command: string, arguments: Array<string>, cwd: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy?: CommandSandboxPolicy, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy?: CommandNetworkPolicy, } | { "type": "commandApprovalDecision", id: string, approvalId: string, decision: string, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, } | { "type": "commandExecutionAttempt", id: string, approvalId: string, callId: string, } | { "type": "mcpToolCall", id: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalRequest", id: string, approvalId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, } | { "type": "mcpToolCallApprovalDecision", id: string, approvalId: string, decision: string, } | { "type": "mcpToolExecutionAttempt", id: string, approvalId: string, callId: string, inventorySha256: string, } | { "type": "mcpToolResult", id: string, callId: string, name: string, result: McpToolResult, } | { "type": "toolResult", id: string, callId: string, name: string, result: ToolResult, };
 
 export type AgentOutputRef = { responseOrdinal: bigint, outputIndex: number, };
 
@@ -140,9 +148,13 @@ export type TurnSnapshot = { id: string, status: TurnSnapshotStatus, items: Arra
 
 export type ThreadResumeResponse = { thread: Thread, turns: Array<TurnSnapshot>, };
 
-export type ModelProviderKind = "openai" | "anthropic" | "gemini" | "metallm" | "openaiCompatible";
+export type ModelProviderFamily = "openai" | "anthropic" | "gemini";
 
-export type ModelSelectionSnapshot = { profileId: string, providerKind: ModelProviderKind, modelId: string, displayName: string, contextWindowTokens: number, };
+export type ModelWireApi = "openaiResponses" | "openaiChatCompletions" | "anthropicMessages" | "geminiGenerateContent";
+
+export type ModelSelectionCapabilities = { toolCalls: boolean, strictTools: boolean, parallelTools: boolean, imageInput: boolean, pdfInput: boolean, };
+
+export type ModelSelectionSnapshot = { profileId: string, providerFamily: ModelProviderFamily, wireApi: ModelWireApi, modelId: string, displayName: string, contextWindowTokens: number, effectiveCapabilities: ModelSelectionCapabilities, };
 
 export type Turn = { id: string, status: TurnStatus, model?: ModelSelectionSnapshot, error?: TurnError, };
 
@@ -150,9 +162,15 @@ export type TurnStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
 export type TurnErrorKind = "authentication" | "invalidRequest" | "rateLimited" | "timeout" | "transport" | "disconnected" | "server" | "protocol" | "incomplete" | "filtered" | "unsupportedOutput" | "unsupportedToolArguments" | "outputTooLarge" | "stateUnavailable";
 
-export type TurnError = { kind: TurnErrorKind, retryable: boolean, };
+export type TurnError = { kind: TurnErrorKind, retryable: boolean, provider?: ProviderErrorMetadata, toolSchema?: ToolSchemaError, };
 
-export type TurnStartParams = { threadId: string, input?: string, modelProfileId?: string, };
+export type ProviderErrorMetadata = { httpStatus: number, code: string | null, requestId: string | null, retryAfter: string | null, };
+
+export type ToolSchemaError = { toolName: string, reason: string, };
+
+export type TurnInputPart = { "type": "text", text: string, } | { "type": "image", asset: AssetDescriptor, } | { "type": "document", asset: AssetDescriptor, };
+
+export type TurnStartParams = { threadId: string, input?: Array<TurnInputPart>, modelProfileId?: string, };
 
 export type TurnStartResponse = { turn: Turn, };
 

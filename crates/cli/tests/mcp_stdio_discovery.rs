@@ -221,7 +221,7 @@ fn approved_streamable_http_call_completes_real_cli_round_trip() {
             "jsonrpc": "2.0",
             "id": "turn",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Use loopback HTTP MCP."}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Use loopback HTTP MCP."}]}
         }),
     );
 
@@ -496,7 +496,7 @@ fn approved_model_driven_call_completes_real_cli_round_trip() {
             "jsonrpc": "2.0",
             "id": "turn",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Use MCP."}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Use MCP."}]}
         }),
     );
 
@@ -724,7 +724,7 @@ fn multiple_selected_servers_complete_one_cross_server_turn() {
             "jsonrpc": "2.0",
             "id": "turn",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Use both MCP servers in order."}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Use both MCP servers in order."}]}
         }),
     );
 
@@ -931,7 +931,7 @@ fn selected_server_failure_never_falls_back_to_another_server() {
                 "jsonrpc": "2.0",
                 "id": "turn",
                 "method": "turn/start",
-                "params": {"threadId": thread_id, "input": "Call beta only."}
+                "params": {"threadId": thread_id, "input": [{"type":"text","text":"Call beta only."}]}
             }),
         );
 
@@ -1468,7 +1468,7 @@ fn configure_model(home: &Path, address: std::net::SocketAddr) {
                 "defaultProfileId": "model_fixture",
                 "connections": [{
                     "id": "conn_fixture",
-                    "kind": "openaiCompatible",
+                    "providerFamily": "openai",
                     "displayName": "Fixture provider",
                     "baseUrl": format!("http://{address}/v1"),
                     "enabled": true,

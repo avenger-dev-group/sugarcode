@@ -64,7 +64,7 @@ pub(super) async fn finish_failed_and_emit(
     usage: Option<ModelUsage>,
 ) {
     let core_error = map_model_error(error);
-    let durable_error = map_durable_error(core_error);
+    let durable_error = map_durable_error(core_error.clone());
     if let Ok(item) = finish(
         runtime,
         prepared,
@@ -130,12 +130,14 @@ pub(super) async fn finish_state_unavailable_and_emit(
     let error = CoreTurnError {
         kind: CoreTurnErrorKind::StateUnavailable,
         retryable: false,
+        provider: None,
+        tool_schema: None,
     };
     if let Ok(item) = finish(
         runtime,
         prepared,
         DurableTurnStatus::Failed,
-        Some(map_durable_error(error)),
+        Some(map_durable_error(error.clone())),
         None,
     ) {
         emit_terminal(
@@ -224,6 +226,21 @@ pub(super) fn clear_active(runtime: &CoreRuntime, thread_id: &ThreadId, turn_id:
 }
 
 fn map_model_error(error: ModelError) -> CoreTurnError {
+    let provider = error
+        .http_status()
+        .map(|http_status| CoreProviderErrorMetadata {
+            http_status,
+            code: error.provider_code().map(ToOwned::to_owned),
+            request_id: error.provider_request_id().map(ToOwned::to_owned),
+            retry_after: error.retry_after().map(ToOwned::to_owned),
+        });
+    let tool_schema = error
+        .tool_name()
+        .zip(error.schema_reason())
+        .map(|(tool_name, reason)| CoreToolSchemaError {
+            tool_name: tool_name.to_owned(),
+            reason: reason.to_owned(),
+        });
     CoreTurnError {
         kind: match error.kind() {
             ModelErrorKind::Authentication => CoreTurnErrorKind::Authentication,
@@ -242,12 +259,20 @@ fn map_model_error(error: ModelError) -> CoreTurnError {
             ModelErrorKind::OutputTooLarge => CoreTurnErrorKind::OutputTooLarge,
         },
         retryable: error.retryable(),
+        provider,
+        tool_schema,
     }
 }
 
 fn map_durable_error(error: CoreTurnError) -> DurableTurnError {
+    let CoreTurnError {
+        kind,
+        retryable,
+        provider,
+        tool_schema,
+    } = error;
     DurableTurnError {
-        kind: match error.kind {
+        kind: match kind {
             CoreTurnErrorKind::Authentication => DurableTurnErrorKind::Authentication,
             CoreTurnErrorKind::InvalidRequest => DurableTurnErrorKind::InvalidRequest,
             CoreTurnErrorKind::RateLimited => DurableTurnErrorKind::RateLimited,
@@ -265,7 +290,17 @@ fn map_durable_error(error: CoreTurnError) -> DurableTurnError {
             CoreTurnErrorKind::OutputTooLarge => DurableTurnErrorKind::OutputTooLarge,
             CoreTurnErrorKind::StateUnavailable => DurableTurnErrorKind::StateUnavailable,
         },
-        retryable: error.retryable,
+        retryable,
+        provider: provider.map(|provider| DurableProviderErrorMetadata {
+            http_status: provider.http_status,
+            code: provider.code,
+            request_id: provider.request_id,
+            retry_after: provider.retry_after,
+        }),
+        tool_schema: tool_schema.map(|error| DurableToolSchemaError {
+            tool_name: error.tool_name,
+            reason: error.reason,
+        }),
     }
 }
 

@@ -5,12 +5,14 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use sugarcode_model_provider::ModelInstruction;
+use sugarcode_protocol::CoreContentAsset;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreItemKind;
 use sugarcode_protocol::CoreItemSnapshot;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::CoreToolResult;
+use sugarcode_protocol::CoreUserContentPart;
 use sugarcode_protocol::ItemId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
@@ -41,8 +43,8 @@ mod snapshots;
 
 use memory_repository::MemoryThreadRepository;
 use snapshots::{
-    core_tool_result, durable_item_snapshot, durable_thread_snapshot, item_from_snapshot,
-    map_repository_error, tool_result_content,
+    core_tool_error_kind, core_tool_result, durable_item_snapshot, durable_thread_snapshot,
+    item_from_snapshot, map_repository_error, tool_result_content,
 };
 
 const DETERMINISTIC_AGENT_MESSAGE: &str = "SugarCode deterministic response.";
@@ -66,6 +68,9 @@ pub struct PreparedTextTurn {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreparedMessage {
+    UserContent {
+        content: Vec<CoreUserContentPart>,
+    },
     Text {
         role: PreparedMessageRole,
         text: String,
@@ -79,11 +84,7 @@ pub enum PreparedMessage {
     ToolCall {
         call_id: String,
         name: String,
-        path: String,
-        query: Option<String>,
-        patch: Option<String>,
-        command: Option<String>,
-        arguments: Option<Vec<String>>,
+        arguments: serde_json::Value,
     },
     ToolResult {
         call_id: String,
@@ -221,7 +222,7 @@ struct Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ItemKind {
     UserMessage {
-        text: String,
+        content: Vec<CoreUserContentPart>,
     },
     AgentMessage {
         text: String,
@@ -265,11 +266,20 @@ enum ItemKind {
     ToolCall {
         call_id: String,
         name: String,
-        path: String,
-        query: Option<String>,
-        patch: Option<String>,
-        command: Option<String>,
-        arguments: Option<Vec<String>>,
+        arguments: serde_json::Value,
+    },
+    ToolValidationRejected {
+        call_id: String,
+        name: String,
+        kind: sugarcode_protocol::CoreToolErrorKind,
+        arguments_bytes: u64,
+        arguments_sha256: String,
+        edit_index: Option<u32>,
+        hunk_index: Option<u32>,
+        line: Option<u32>,
+        expected_summary: Option<String>,
+        actual_summary: Option<String>,
+        suggested_action: String,
     },
     FileChange {
         call_id: String,
@@ -397,6 +407,7 @@ impl Item {
             | ItemKind::AgentTaskAmendment { .. }
             | ItemKind::AgentTaskResult { .. }
             | ItemKind::ToolCall { .. }
+            | ItemKind::ToolValidationRejected { .. }
             | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
@@ -422,7 +433,9 @@ impl Item {
 
     fn snapshot(&self) -> CoreItemSnapshot {
         let kind = match &self.kind {
-            ItemKind::UserMessage { text } => CoreItemKind::UserMessage { text: text.clone() },
+            ItemKind::UserMessage { content } => CoreItemKind::UserMessage {
+                content: content.clone(),
+            },
             ItemKind::AgentMessage { text } => CoreItemKind::AgentMessage { text: text.clone() },
             ItemKind::AgentCommentary { text } => {
                 CoreItemKind::AgentCommentary { text: text.clone() }
@@ -491,19 +504,36 @@ impl Item {
             ItemKind::ToolCall {
                 call_id,
                 name,
-                path,
-                query,
-                patch,
-                command,
                 arguments,
             } => CoreItemKind::ToolCall {
                 call_id: call_id.clone(),
                 name: name.clone(),
-                path: path.clone(),
-                query: query.clone(),
-                patch: patch.clone(),
-                command: command.clone(),
                 arguments: arguments.clone(),
+            },
+            ItemKind::ToolValidationRejected {
+                call_id,
+                name,
+                kind,
+                arguments_bytes,
+                arguments_sha256,
+                edit_index,
+                hunk_index,
+                line,
+                expected_summary,
+                actual_summary,
+                suggested_action,
+            } => CoreItemKind::ToolValidationRejected {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                kind: *kind,
+                arguments_bytes: *arguments_bytes,
+                arguments_sha256: arguments_sha256.clone(),
+                edit_index: *edit_index,
+                hunk_index: *hunk_index,
+                line: *line,
+                expected_summary: expected_summary.clone(),
+                actual_summary: actual_summary.clone(),
+                suggested_action: suggested_action.clone(),
             },
             ItemKind::FileChange {
                 call_id,
@@ -754,6 +784,22 @@ pub trait CoreApi {
     ) -> Result<TurnStartOutcome, CoreError> {
         self.start_text_turn(request_id, thread_id, input)
     }
+    fn start_content_turn_with_model(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+        input: Option<Vec<CoreUserContentPart>>,
+        model_profile_id: Option<String>,
+    ) -> Result<TurnStartOutcome, CoreError> {
+        let text = match input {
+            None => None,
+            Some(content) => match content.as_slice() {
+                [CoreUserContentPart::Text { text }] => Some(text.clone()),
+                _ => return Err(CoreError::InvalidInput),
+            },
+        };
+        self.start_text_turn_with_model(request_id, thread_id, text, model_profile_id)
+    }
     fn interrupt_turn(
         &mut self,
         _thread_id: &ThreadId,
@@ -830,10 +876,12 @@ impl Core {
             let mut items = BTreeMap::new();
             for durable_item in &durable_turn.items {
                 let item = match durable_item {
-                    DurableItemSnapshot::UserMessage { id, text } => Item {
+                    DurableItemSnapshot::UserMessage { id, content } => Item {
                         id: id.clone(),
                         state: ItemState::Completed,
-                        kind: ItemKind::UserMessage { text: text.clone() },
+                        kind: ItemKind::UserMessage {
+                            content: content.iter().map(core_user_content_part).collect(),
+                        },
                     },
                     DurableItemSnapshot::AgentMessage { id, text } => Item {
                         id: id.clone(),
@@ -936,10 +984,6 @@ impl Core {
                         id,
                         call_id,
                         name,
-                        path,
-                        query,
-                        patch,
-                        command,
                         arguments,
                     } => Item {
                         id: id.clone(),
@@ -947,11 +991,37 @@ impl Core {
                         kind: ItemKind::ToolCall {
                             call_id: call_id.clone(),
                             name: name.clone(),
-                            path: path.clone(),
-                            query: query.clone(),
-                            patch: patch.clone(),
-                            command: command.clone(),
                             arguments: arguments.clone(),
+                        },
+                    },
+                    DurableItemSnapshot::ToolValidationRejected {
+                        id,
+                        call_id,
+                        name,
+                        kind,
+                        arguments_bytes,
+                        arguments_sha256,
+                        edit_index,
+                        hunk_index,
+                        line,
+                        expected_summary,
+                        actual_summary,
+                        suggested_action,
+                    } => Item {
+                        id: id.clone(),
+                        state: ItemState::Completed,
+                        kind: ItemKind::ToolValidationRejected {
+                            call_id: call_id.clone(),
+                            name: name.clone(),
+                            kind: core_tool_error_kind(kind),
+                            arguments_bytes: *arguments_bytes,
+                            arguments_sha256: arguments_sha256.clone(),
+                            edit_index: *edit_index,
+                            hunk_index: *hunk_index,
+                            line: *line,
+                            expected_summary: expected_summary.clone(),
+                            actual_summary: actual_summary.clone(),
+                            suggested_action: suggested_action.clone(),
                         },
                     },
                     DurableItemSnapshot::FileChange {
@@ -1265,11 +1335,34 @@ impl Core {
         model: Option<DurableModelSelectionSnapshot>,
         compaction_target_bytes: usize,
     ) -> Result<PreparedTextTurn, CoreError> {
-        if input
-            .as_ref()
-            .is_some_and(|input| input.trim().is_empty() || input.len() > MAX_USER_MESSAGE_BYTES)
-        {
-            return Err(CoreError::InvalidInput);
+        self.prepare_content_turn_with_model_context(
+            request_id,
+            thread_id,
+            input.map(|text| vec![CoreUserContentPart::Text { text }]),
+            workspace_instructions,
+            workspace_skills,
+            instruction_context_bytes,
+            tool_context_bytes,
+            model,
+            compaction_target_bytes,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_content_turn_with_model_context(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+        input: Option<Vec<CoreUserContentPart>>,
+        workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
+        workspace_skills: Option<DurableWorkspaceSkillsAudit>,
+        instruction_context_bytes: usize,
+        tool_context_bytes: usize,
+        model: Option<DurableModelSelectionSnapshot>,
+        compaction_target_bytes: usize,
+    ) -> Result<PreparedTextTurn, CoreError> {
+        if let Some(input) = input.as_ref() {
+            validate_user_content(input)?;
         }
         let thread = self
             .threads
@@ -1310,10 +1403,9 @@ impl Core {
                 append_prepared_turn(&mut history, turn);
             }
         }
-        if let Some(input) = input.as_ref() {
-            history.push(PreparedMessage::Text {
-                role: PreparedMessageRole::User,
-                text: input.clone(),
+        if let Some(content) = input.as_ref() {
+            history.push(PreparedMessage::UserContent {
+                content: content.clone(),
             });
         } else if history.is_empty() {
             return Err(CoreError::InvalidInput);
@@ -1339,10 +1431,9 @@ impl Core {
             let mut compacted_history = vec![PreparedMessage::ContextCompaction {
                 content: provisional.message,
             }];
-            if let Some(input) = input.as_ref() {
-                compacted_history.push(PreparedMessage::Text {
-                    role: PreparedMessageRole::User,
-                    text: input.clone(),
+            if let Some(content) = input.as_ref() {
+                compacted_history.push(PreparedMessage::UserContent {
+                    content: content.clone(),
                 });
             }
             let post_context_bytes = crate::context::prepared_history_bytes(&compacted_history)
@@ -1385,10 +1476,10 @@ impl Core {
         let user_item = input
             .as_ref()
             .zip(user_item_id.as_ref())
-            .map(|(input, user_item_id)| CoreItemSnapshot {
+            .map(|(content, user_item_id)| CoreItemSnapshot {
                 id: user_item_id.clone(),
                 kind: CoreItemKind::UserMessage {
-                    text: input.clone(),
+                    content: content.clone(),
                 },
             });
         let mut durable_items = Vec::with_capacity(usize::from(user_item.is_some()));
@@ -1418,8 +1509,8 @@ impl Core {
                     id: user_item.id.clone(),
                     state: ItemState::Completed,
                     kind: ItemKind::UserMessage {
-                        text: match &user_item.kind {
-                            CoreItemKind::UserMessage { text } => text.clone(),
+                        content: match &user_item.kind {
+                            CoreItemKind::UserMessage { content } => content.clone(),
                             _ => unreachable!(),
                         },
                     },
@@ -1514,6 +1605,7 @@ impl Core {
                 | CoreItemKind::AgentTaskAmendment { .. }
                 | CoreItemKind::AgentTaskResult { .. }
                 | CoreItemKind::ToolCall { .. }
+                | CoreItemKind::ToolValidationRejected { .. }
                 | CoreItemKind::FileChange { .. }
                 | CoreItemKind::CommandApprovalRequest { .. }
                 | CoreItemKind::CommandApprovalDecision { .. }
@@ -1640,6 +1732,7 @@ impl Core {
             | ItemKind::AgentTaskAmendment { .. }
             | ItemKind::AgentTaskResult { .. }
             | ItemKind::ToolCall { .. }
+            | ItemKind::ToolValidationRejected { .. }
             | ItemKind::FileChange { .. }
             | ItemKind::CommandApprovalRequest { .. }
             | ItemKind::CommandApprovalDecision { .. }
@@ -1678,6 +1771,8 @@ impl Core {
             error: Some(DurableTurnError {
                 kind: DurableTurnErrorKind::OutputTooLarge,
                 retryable: false,
+                provider: None,
+                tool_schema: None,
             }),
             usage: Some(DurableUsage {
                 input_tokens: Some(u64::MAX),
@@ -1831,9 +1926,8 @@ fn append_prepared_turn(history: &mut Vec<PreparedMessage>, turn: &Turn) {
 
 fn prepared_message_for_item(item: &Item) -> Option<PreparedMessage> {
     match &item.kind {
-        ItemKind::UserMessage { text } => Some(PreparedMessage::Text {
-            role: PreparedMessageRole::User,
-            text: text.clone(),
+        ItemKind::UserMessage { content } => Some(PreparedMessage::UserContent {
+            content: content.clone(),
         }),
         ItemKind::AgentMessage { text } if !text.is_empty() => Some(PreparedMessage::Text {
             role: PreparedMessageRole::Assistant,
@@ -1851,20 +1945,13 @@ fn prepared_message_for_item(item: &Item) -> Option<PreparedMessage> {
         ItemKind::ToolCall {
             call_id,
             name,
-            path,
-            query,
-            patch,
-            command,
             arguments,
         } => Some(PreparedMessage::ToolCall {
             call_id: call_id.clone(),
             name: name.clone(),
-            path: path.clone(),
-            query: query.clone(),
-            patch: patch.clone(),
-            command: command.clone(),
             arguments: arguments.clone(),
         }),
+        ItemKind::ToolValidationRejected { .. } => None,
         ItemKind::CommandApprovalRequest { .. }
         | ItemKind::CommandApprovalDecision { .. }
         | ItemKind::CommandExecutionAttempt { .. }
@@ -1901,6 +1988,103 @@ fn prepared_message_for_item(item: &Item) -> Option<PreparedMessage> {
             call_id: call_id.clone(),
             content: tool_result_content(name, result),
         }),
+    }
+}
+
+fn validate_user_content(content: &[CoreUserContentPart]) -> Result<(), CoreError> {
+    if content.is_empty() {
+        return Err(CoreError::InvalidInput);
+    }
+    let mut text_bytes = 0usize;
+    let mut has_non_blank_text = false;
+    let mut attachment_count = 0usize;
+    let mut attachment_bytes = 0u64;
+    for part in content {
+        match part {
+            CoreUserContentPart::Text { text } => {
+                text_bytes = text_bytes
+                    .checked_add(text.len())
+                    .ok_or(CoreError::InvalidInput)?;
+                has_non_blank_text |= !text.trim().is_empty();
+            }
+            CoreUserContentPart::Image { asset } => {
+                validate_content_asset(asset, true)?;
+                attachment_count += 1;
+                attachment_bytes = attachment_bytes
+                    .checked_add(asset.size_bytes)
+                    .ok_or(CoreError::InvalidInput)?;
+            }
+            CoreUserContentPart::Document { asset } => {
+                validate_content_asset(asset, false)?;
+                attachment_count += 1;
+                attachment_bytes = attachment_bytes
+                    .checked_add(asset.size_bytes)
+                    .ok_or(CoreError::InvalidInput)?;
+            }
+        }
+    }
+    if text_bytes > MAX_USER_MESSAGE_BYTES
+        || attachment_count > sugarcode_state::MAX_TURN_ATTACHMENTS
+        || attachment_bytes > sugarcode_state::MAX_TURN_ATTACHMENT_BYTES
+        || (attachment_count == 0 && !has_non_blank_text)
+    {
+        return Err(CoreError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_content_asset(asset: &CoreContentAsset, image: bool) -> Result<(), CoreError> {
+    if asset.asset_id != format!("ast_{}", asset.sha256)
+        || asset.sha256.len() != 64
+        || !asset
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || asset.size_bytes == 0
+        || asset.original_name.is_empty()
+        || asset.original_name.len() > 255
+        || asset.original_name.chars().any(char::is_control)
+        || asset.original_name.contains(['/', '\\'])
+    {
+        return Err(CoreError::InvalidInput);
+    }
+    let media_type_valid = if image {
+        matches!(
+            asset.media_type.as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        )
+    } else {
+        asset.media_type == "application/pdf" || asset.media_type.starts_with("text/")
+    };
+    if !media_type_valid {
+        return Err(CoreError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn core_user_content_part(part: &sugarcode_state::DurableUserContentPart) -> CoreUserContentPart {
+    match part {
+        sugarcode_state::DurableUserContentPart::Text { text } => {
+            CoreUserContentPart::Text { text: text.clone() }
+        }
+        sugarcode_state::DurableUserContentPart::Image { asset } => CoreUserContentPart::Image {
+            asset: core_content_asset(asset),
+        },
+        sugarcode_state::DurableUserContentPart::Document { asset } => {
+            CoreUserContentPart::Document {
+                asset: core_content_asset(asset),
+            }
+        }
+    }
+}
+
+fn core_content_asset(asset: &sugarcode_state::DurableContentAsset) -> CoreContentAsset {
+    CoreContentAsset {
+        asset_id: asset.asset_id.clone(),
+        sha256: asset.sha256.clone(),
+        media_type: asset.media_type.clone(),
+        original_name: asset.original_name.clone(),
+        size_bytes: asset.size_bytes,
     }
 }
 

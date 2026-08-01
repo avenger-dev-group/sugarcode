@@ -45,20 +45,13 @@ export type WorkspaceLaunchContext = Readonly<{
   name: string;
 }>;
 
-type LegacyStoredSession = Readonly<{
-  schemaVersion: 1;
-  path: string;
-  /** Accepted only to read session files written by older Desktop builds. */
-  threadId?: string;
-}>;
-
 type StoredChat = Readonly<{
   threadId: string;
   directory?: string;
 }>;
 
 type StoredSession = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 1;
   projectPath?: string;
   projectThreadIds?: readonly string[];
   chatThreadIds?: readonly string[];
@@ -143,24 +136,6 @@ export class WorkspaceController {
     if (!stored) {
       return;
     }
-    if (stored.schemaVersion === 1) {
-      const validated = await validateDirectory(stored.path);
-      if (!validated) {
-        this.publish(
-          'failed',
-          'The saved workspace is missing or no longer allowed.',
-        );
-        return;
-      }
-      this.projectPath = validated;
-      this.workspacePath = validated;
-      this.workspaceKind = 'project';
-      this.generation = 1;
-      this.options.supervisor.configureInitialWorkspace(validated);
-      this.publish('selecting');
-      return;
-    }
-
     this.projectPath = stored.projectPath
       ? await validateDirectory(stored.projectPath)
       : null;
@@ -611,7 +586,7 @@ export class WorkspaceController {
   };
 
   private readStoredSession = async (): Promise<
-    StoredSession | LegacyStoredSession | null
+    StoredSession | null
   > => {
     try {
       const metadata = await lstat(this.options.sessionPath);
@@ -642,7 +617,7 @@ export class WorkspaceController {
       ...this.chatDirectories.keys(),
     ]);
     const stored: StoredSession = {
-      schemaVersion: 2,
+      schemaVersion: 1,
       ...(this.projectPath ? { projectPath: this.projectPath } : {}),
       projectThreadIds: this.projectThreadIds,
       chatThreadIds: this.chatThreadIds,
@@ -681,24 +656,13 @@ export class WorkspaceController {
 
 const isStoredSession = (
   value: unknown,
-): value is StoredSession | LegacyStoredSession => {
+): value is StoredSession => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false;
   }
   const record = value as Record<string, unknown>;
-  if (record.schemaVersion === 1) {
-    return (
-      Object.keys(record).every((key) =>
-        ['schemaVersion', 'path', 'threadId'].includes(key)
-      ) &&
-      typeof record.path === 'string' &&
-      path.isAbsolute(record.path) &&
-      Buffer.byteLength(record.path, 'utf8') <= 4096 &&
-      (record.threadId === undefined || isThreadId(record.threadId))
-    );
-  }
   if (
-    record.schemaVersion !== 2 ||
+    record.schemaVersion !== 1 ||
     !Object.keys(record).every((key) =>
       [
         'schemaVersion',

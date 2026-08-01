@@ -1,4 +1,5 @@
 use super::CURRENT_ROLLOUT_SCHEMA_VERSION;
+use super::DurableContentAsset;
 use super::DurableContextCompaction;
 use super::DurableContextCompactionStrategy;
 use super::DurableItemSnapshot;
@@ -10,6 +11,7 @@ use super::DurableTurnErrorKind;
 use super::DurableTurnSnapshot;
 use super::DurableTurnStatus;
 use super::DurableUsage;
+use super::DurableUserContentPart;
 use super::DurableWorkspaceInstructionsAudit;
 use super::DurableWorkspaceInstructionsSource;
 use super::DurableWorkspaceInstructionsStatus;
@@ -127,7 +129,7 @@ pub(super) struct StoredTurnRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_skills: Option<StoredWorkspaceSkillsAuditRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<StoredTurnErrorRef>,
+    pub error: Option<StoredTurnErrorRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<StoredUsageRef>,
 }
@@ -136,10 +138,22 @@ pub(super) struct StoredTurnRef<'a> {
 #[serde(rename_all = "camelCase")]
 pub(super) struct StoredModelSelectionRef<'a> {
     pub profile_id: &'a str,
-    pub provider_kind: &'a str,
+    pub provider_family: &'a str,
+    pub wire_api: &'a str,
     pub model_id: &'a str,
     pub display_name: &'a str,
     pub context_window_tokens: u32,
+    pub effective_capabilities: StoredModelSelectionCapabilitiesRef,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredModelSelectionCapabilitiesRef {
+    pub tool_calls: bool,
+    pub strict_tools: bool,
+    pub parallel_tools: bool,
+    pub image_input: bool,
+    pub pdf_input: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,7 +204,7 @@ pub(super) struct StoredWorkspaceSkillsAuditRef<'a> {
 pub(super) enum StoredItemRef<'a> {
     UserMessage {
         id: &'a str,
-        text: &'a str,
+        content: Vec<StoredUserContentPartRef<'a>>,
     },
     AgentMessage {
         id: &'a str,
@@ -243,15 +257,26 @@ pub(super) enum StoredItemRef<'a> {
         id: &'a str,
         call_id: &'a str,
         name: &'a str,
-        path: &'a str,
+        arguments: &'a serde_json::Value,
+    },
+    ToolValidationRejected {
+        id: &'a str,
+        call_id: &'a str,
+        name: &'a str,
+        kind: &'a str,
+        arguments_bytes: u64,
+        arguments_sha256: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
-        query: Option<&'a str>,
+        edit_index: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        patch: Option<&'a str>,
+        hunk_index: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        command: Option<&'a str>,
+        line: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        arguments: Option<&'a [String]>,
+        expected_summary: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actual_summary: Option<&'a str>,
+        suggested_action: &'a str,
     },
     FileChange {
         id: &'a str,
@@ -342,6 +367,24 @@ pub(super) enum StoredItemRef<'a> {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
+pub(super) enum StoredUserContentPartRef<'a> {
+    Text { text: &'a str },
+    Image { asset: StoredContentAssetRef<'a> },
+    Document { asset: StoredContentAssetRef<'a> },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredContentAssetRef<'a> {
+    asset_id: &'a str,
+    sha256: &'a str,
+    media_type: &'a str,
+    original_name: &'a str,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub(super) enum StoredActiveTurnCompactionOutcomeRef<'a> {
     Completed {
         post_context_bytes: u64,
@@ -414,9 +457,9 @@ pub(super) enum StoredProcessOutcomeRef {
 impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
     fn from(item: &'a DurableItemSnapshot) -> Self {
         match item {
-            DurableItemSnapshot::UserMessage { id, text } => Self::UserMessage {
+            DurableItemSnapshot::UserMessage { id, content } => Self::UserMessage {
                 id: id.as_str(),
-                text,
+                content: content.iter().map(StoredUserContentPartRef::from).collect(),
             },
             DurableItemSnapshot::AgentMessage { id, text } => Self::AgentMessage {
                 id: id.as_str(),
@@ -516,20 +559,39 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
                 id,
                 call_id,
                 name,
-                path,
-                query,
-                patch,
-                command,
                 arguments,
             } => Self::ToolCall {
                 id: id.as_str(),
                 call_id,
                 name,
-                path,
-                query: query.as_deref(),
-                patch: patch.as_deref(),
-                command: command.as_deref(),
-                arguments: arguments.as_deref(),
+                arguments,
+            },
+            DurableItemSnapshot::ToolValidationRejected {
+                id,
+                call_id,
+                name,
+                kind,
+                arguments_bytes,
+                arguments_sha256,
+                edit_index,
+                hunk_index,
+                line,
+                expected_summary,
+                actual_summary,
+                suggested_action,
+            } => Self::ToolValidationRejected {
+                id: id.as_str(),
+                call_id,
+                name,
+                kind,
+                arguments_bytes: *arguments_bytes,
+                arguments_sha256,
+                edit_index: *edit_index,
+                hunk_index: *hunk_index,
+                line: *line,
+                expected_summary: expected_summary.as_deref(),
+                actual_summary: actual_summary.as_deref(),
+                suggested_action,
             },
             DurableItemSnapshot::FileChange {
                 id,
@@ -745,11 +807,60 @@ impl<'a> From<&'a DurableItemSnapshot> for StoredItemRef<'a> {
     }
 }
 
+impl<'a> From<&'a DurableUserContentPart> for StoredUserContentPartRef<'a> {
+    fn from(part: &'a DurableUserContentPart) -> Self {
+        match part {
+            DurableUserContentPart::Text { text } => Self::Text { text },
+            DurableUserContentPart::Image { asset } => Self::Image {
+                asset: StoredContentAssetRef::from(asset),
+            },
+            DurableUserContentPart::Document { asset } => Self::Document {
+                asset: StoredContentAssetRef::from(asset),
+            },
+        }
+    }
+}
+
+impl<'a> From<&'a DurableContentAsset> for StoredContentAssetRef<'a> {
+    fn from(asset: &'a DurableContentAsset) -> Self {
+        Self {
+            asset_id: &asset.asset_id,
+            sha256: &asset.sha256,
+            media_type: &asset.media_type,
+            original_name: &asset.original_name,
+            size_bytes: asset.size_bytes,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct StoredTurnErrorRef {
+pub(super) struct StoredTurnErrorRef<'a> {
     pub kind: &'static str,
     pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<StoredProviderErrorRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_schema: Option<StoredToolSchemaErrorRef<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredProviderErrorRef<'a> {
+    pub http_status: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredToolSchemaErrorRef<'a> {
+    pub tool_name: &'a str,
+    pub reason: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -780,10 +891,18 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
             items: turn.items.iter().map(StoredItemRef::from).collect(),
             model: turn.model.as_ref().map(|model| StoredModelSelectionRef {
                 profile_id: &model.profile_id,
-                provider_kind: &model.provider_kind,
+                provider_family: &model.provider_family,
+                wire_api: &model.wire_api,
                 model_id: &model.model_id,
                 display_name: &model.display_name,
                 context_window_tokens: model.context_window_tokens,
+                effective_capabilities: StoredModelSelectionCapabilitiesRef {
+                    tool_calls: model.effective_capabilities.tool_calls,
+                    strict_tools: model.effective_capabilities.strict_tools,
+                    parallel_tools: model.effective_capabilities.parallel_tools,
+                    image_input: model.effective_capabilities.image_input,
+                    pdf_input: model.effective_capabilities.pdf_input,
+                },
             }),
             context_compaction: turn.context_compaction.as_ref().map(|compaction| {
                 StoredContextCompactionRef {
@@ -844,6 +963,22 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
             error: turn.error.as_ref().map(|error| StoredTurnErrorRef {
                 kind: stored_error_kind(error.kind),
                 retryable: error.retryable,
+                provider: error
+                    .provider
+                    .as_ref()
+                    .map(|provider| StoredProviderErrorRef {
+                        http_status: provider.http_status,
+                        code: provider.code.as_deref(),
+                        request_id: provider.request_id.as_deref(),
+                        retry_after: provider.retry_after.as_deref(),
+                    }),
+                tool_schema: error
+                    .tool_schema
+                    .as_ref()
+                    .map(|schema| StoredToolSchemaErrorRef {
+                        tool_name: &schema.tool_name,
+                        reason: &schema.reason,
+                    }),
             }),
             usage: turn.usage.as_ref().map(|usage| StoredUsageRef {
                 input_tokens: usage.input_tokens,
@@ -1047,10 +1182,22 @@ struct StoredTurn {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredModelSelection {
     profile_id: String,
-    provider_kind: String,
+    provider_family: String,
+    wire_api: String,
     model_id: String,
     display_name: String,
     context_window_tokens: u32,
+    effective_capabilities: StoredModelSelectionCapabilities,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredModelSelectionCapabilities {
+    tool_calls: bool,
+    strict_tools: bool,
+    parallel_tools: bool,
+    image_input: bool,
+    pdf_input: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1143,7 +1290,7 @@ enum StoredTurnStatus {
 enum StoredItem {
     UserMessage {
         id: String,
-        text: String,
+        content: Vec<StoredUserContentPart>,
     },
     AgentMessage {
         id: String,
@@ -1196,15 +1343,26 @@ enum StoredItem {
         id: String,
         call_id: String,
         name: String,
-        path: String,
+        arguments: serde_json::Value,
+    },
+    ToolValidationRejected {
+        id: String,
+        call_id: String,
+        name: String,
+        kind: String,
+        arguments_bytes: u64,
+        arguments_sha256: String,
         #[serde(default)]
-        query: Option<String>,
+        edit_index: Option<u32>,
         #[serde(default)]
-        patch: Option<String>,
+        hunk_index: Option<u32>,
         #[serde(default)]
-        command: Option<String>,
+        line: Option<u32>,
         #[serde(default)]
-        arguments: Option<Vec<String>>,
+        expected_summary: Option<String>,
+        #[serde(default)]
+        actual_summary: Option<String>,
+        suggested_action: String,
     },
     FileChange {
         id: String,
@@ -1295,6 +1453,24 @@ enum StoredItem {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+enum StoredUserContentPart {
+    Text { text: String },
+    Image { asset: StoredContentAsset },
+    Document { asset: StoredContentAsset },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredContentAsset {
+    asset_id: String,
+    sha256: String,
+    media_type: String,
+    original_name: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum StoredActiveTurnCompactionOutcome {
     Completed {
         post_context_bytes: u64,
@@ -1369,6 +1545,24 @@ enum StoredProcessOutcome {
 struct StoredTurnError {
     kind: StoredTurnErrorKind,
     retryable: bool,
+    provider: Option<StoredProviderError>,
+    tool_schema: Option<StoredToolSchemaError>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredProviderError {
+    http_status: u16,
+    code: Option<String>,
+    request_id: Option<String>,
+    retry_after: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredToolSchemaError {
+    tool_name: String,
+    reason: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1779,9 +1973,9 @@ fn decode_items(items: Vec<StoredItem>) -> Vec<DurableItemSnapshot> {
 
 fn decode_item(item: StoredItem) -> DurableItemSnapshot {
     match item {
-        StoredItem::UserMessage { id, text } => DurableItemSnapshot::UserMessage {
+        StoredItem::UserMessage { id, content } => DurableItemSnapshot::UserMessage {
             id: ItemId::new(id),
-            text,
+            content: content.into_iter().map(decode_user_content_part).collect(),
         },
         StoredItem::AgentMessage { id, text } => DurableItemSnapshot::AgentMessage {
             id: ItemId::new(id),
@@ -1881,20 +2075,39 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             id,
             call_id,
             name,
-            path,
-            query,
-            patch,
-            command,
             arguments,
         } => DurableItemSnapshot::ToolCall {
             id: ItemId::new(id),
             call_id,
             name,
-            path,
-            query,
-            patch,
-            command,
             arguments,
+        },
+        StoredItem::ToolValidationRejected {
+            id,
+            call_id,
+            name,
+            kind,
+            arguments_bytes,
+            arguments_sha256,
+            edit_index,
+            hunk_index,
+            line,
+            expected_summary,
+            actual_summary,
+            suggested_action,
+        } => DurableItemSnapshot::ToolValidationRejected {
+            id: ItemId::new(id),
+            call_id,
+            name,
+            kind,
+            arguments_bytes,
+            arguments_sha256,
+            edit_index,
+            hunk_index,
+            line,
+            expected_summary,
+            actual_summary,
+            suggested_action,
         },
         StoredItem::FileChange {
             id,
@@ -2118,9 +2331,37 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
     }
 }
 
+fn decode_user_content_part(part: StoredUserContentPart) -> DurableUserContentPart {
+    match part {
+        StoredUserContentPart::Text { text } => DurableUserContentPart::Text { text },
+        StoredUserContentPart::Image { asset } => DurableUserContentPart::Image {
+            asset: decode_content_asset(asset),
+        },
+        StoredUserContentPart::Document { asset } => DurableUserContentPart::Document {
+            asset: decode_content_asset(asset),
+        },
+    }
+}
+
+fn decode_content_asset(asset: StoredContentAsset) -> DurableContentAsset {
+    DurableContentAsset {
+        asset_id: asset.asset_id,
+        sha256: asset.sha256,
+        media_type: asset.media_type,
+        original_name: asset.original_name,
+        size_bytes: asset.size_bytes,
+    }
+}
+
 fn decode_error(error: StoredTurnError) -> DurableTurnError {
+    let StoredTurnError {
+        kind,
+        retryable,
+        provider,
+        tool_schema,
+    } = error;
     DurableTurnError {
-        kind: match error.kind {
+        kind: match kind {
             StoredTurnErrorKind::Authentication => DurableTurnErrorKind::Authentication,
             StoredTurnErrorKind::InvalidRequest => DurableTurnErrorKind::InvalidRequest,
             StoredTurnErrorKind::RateLimited => DurableTurnErrorKind::RateLimited,
@@ -2138,7 +2379,17 @@ fn decode_error(error: StoredTurnError) -> DurableTurnError {
             StoredTurnErrorKind::OutputTooLarge => DurableTurnErrorKind::OutputTooLarge,
             StoredTurnErrorKind::StateUnavailable => DurableTurnErrorKind::StateUnavailable,
         },
-        retryable: error.retryable,
+        retryable,
+        provider: provider.map(|provider| super::DurableProviderErrorMetadata {
+            http_status: provider.http_status,
+            code: provider.code,
+            request_id: provider.request_id,
+            retry_after: provider.retry_after,
+        }),
+        tool_schema: tool_schema.map(|error| super::DurableToolSchemaError {
+            tool_name: error.tool_name,
+            reason: error.reason,
+        }),
     }
 }
 
@@ -2220,10 +2471,18 @@ fn decode_usage(usage: StoredUsage) -> DurableUsage {
 fn decode_model_selection(model: StoredModelSelection) -> super::DurableModelSelectionSnapshot {
     super::DurableModelSelectionSnapshot {
         profile_id: model.profile_id,
-        provider_kind: model.provider_kind,
+        provider_family: model.provider_family,
+        wire_api: model.wire_api,
         model_id: model.model_id,
         display_name: model.display_name,
         context_window_tokens: model.context_window_tokens,
+        effective_capabilities: super::DurableModelSelectionCapabilities {
+            tool_calls: model.effective_capabilities.tool_calls,
+            strict_tools: model.effective_capabilities.strict_tools,
+            parallel_tools: model.effective_capabilities.parallel_tools,
+            image_input: model.effective_capabilities.image_input,
+            pdf_input: model.effective_capabilities.pdf_input,
+        },
     }
 }
 

@@ -46,7 +46,7 @@ fn resumes_forks_and_continues_completed_workspace_list_history_across_two_proce
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "List the workspace"
+                "input": [{"type":"text","text":"List the workspace"}]
             }
         }),
         12,
@@ -111,7 +111,7 @@ fn resumes_forks_and_continues_completed_workspace_list_history_across_two_proce
         .expect("resumed items");
     assert_eq!(original_items.len(), 4);
     assert_eq!(original_items[1]["name"], "workspace/list");
-    assert_eq!(original_items[1]["path"], ".");
+    assert_eq!(original_items[1]["arguments"]["path"], ".");
     assert_eq!(
         original_items[2]["result"]["content"],
         Value::String(original_result.clone())
@@ -230,7 +230,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "completed searchable marker"
+                "input": [{"type":"text","text":"completed searchable marker"}]
             }
         }),
         8,
@@ -243,7 +243,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "failed private marker"
+                "input": [{"type":"text","text":"failed private marker"}]
             }
         }),
         5,
@@ -257,7 +257,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "interrupted private marker"
+                "input": [{"type":"text","text":"interrupted private marker"}]
             }
         }),
         4,

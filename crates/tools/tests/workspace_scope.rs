@@ -107,7 +107,8 @@ async fn active_scope_rebases_every_structured_workspace_tool() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "src/lib.rs".to_string(),
-                patch: "@@ -1,3 +1,3 @@\n one\n-needle\n+updated\n two\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-needle\n+updated\n two\n".to_string(),
             },
             &cancellation,
         )
@@ -238,7 +239,8 @@ async fn scope_path_replacement_never_redirects_opened_authority() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "notes.txt".to_string(),
-                patch: "@@ -1,3 +1,3 @@\n one\n-two\n+updated\n three\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+updated\n three\n".to_string(),
             },
             &cancellation,
         )

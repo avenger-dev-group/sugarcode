@@ -1,12 +1,16 @@
 use super::*;
 use crate::workspace_patch::diff::DiffOperation;
 
+fn diff(body: &str) -> String {
+    format!("--- a/notes.txt\n+++ b/notes.txt\n{body}")
+}
+
 #[test]
 fn exact_hunks_apply_without_fuzz_and_render_three_lines_of_context() {
     let before = (1..=9)
         .map(|line| format!("line {line}"))
         .collect::<Vec<_>>();
-    let patch = parse_patch("@@ -5,1 +5,1 @@\n-line 5\n+changed\n").expect("patch");
+    let patch = parse_patch(&diff("@@ -5 +5 @@\n-line 5\n+changed\n")).expect("diff");
     let (after, operations) = apply_hunks(&before, &patch).expect("exact apply");
     assert_eq!(after[4], "changed");
     assert_eq!(
@@ -26,10 +30,10 @@ fn exact_hunks_apply_without_fuzz_and_render_three_lines_of_context() {
         )
     );
 
-    let mismatch = parse_patch("@@ -5,1 +5,1 @@\n-other\n+changed\n").expect("patch");
+    let mismatch = parse_patch(&diff("@@ -5 +5 @@\n-other\n+changed\n")).expect("diff");
     assert_eq!(
         apply_hunks(&before, &mismatch).unwrap_err(),
-        WorkspacePatchErrorKind::PatchDoesNotApply
+        WorkspacePatchErrorKind::ExpectedMismatch
     );
 }
 

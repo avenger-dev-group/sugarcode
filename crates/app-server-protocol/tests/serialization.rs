@@ -21,8 +21,10 @@ use sugarcode_app_server_protocol::JsonRpcError;
 use sugarcode_app_server_protocol::JsonRpcErrorObject;
 use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcVersion;
-use sugarcode_app_server_protocol::ModelProviderKind;
+use sugarcode_app_server_protocol::ModelProviderFamily;
+use sugarcode_app_server_protocol::ModelSelectionCapabilities;
 use sugarcode_app_server_protocol::ModelSelectionSnapshot;
+use sugarcode_app_server_protocol::ModelWireApi;
 use sugarcode_app_server_protocol::RequestId;
 use sugarcode_app_server_protocol::Thread;
 use sugarcode_app_server_protocol::ThreadArchiveParams;
@@ -677,10 +679,18 @@ fn turn_start_types_use_the_public_turn_dto() {
     let turn = Turn {
         model: Some(ModelSelectionSnapshot {
             profile_id: "model_primary".to_string(),
-            provider_kind: ModelProviderKind::OpenaiCompatible,
+            provider_family: ModelProviderFamily::Openai,
+            wire_api: ModelWireApi::OpenaiChatCompletions,
             model_id: "fixture-model".to_string(),
             display_name: "Fixture model".to_string(),
             context_window_tokens: 131_072,
+            effective_capabilities: ModelSelectionCapabilities {
+                tool_calls: true,
+                strict_tools: true,
+                parallel_tools: true,
+                image_input: true,
+                pdf_input: false,
+            },
         }),
         id: "turn_0000000000000001".to_string(),
         status: TurnStatus::InProgress,
@@ -695,10 +705,18 @@ fn turn_start_types_use_the_public_turn_dto() {
                 "id": "turn_0000000000000001",
                 "model": {
                     "profileId": "model_primary",
-                    "providerKind": "openaiCompatible",
+                    "providerFamily": "openai",
+                    "wireApi": "openaiChatCompletions",
                     "modelId": "fixture-model",
                     "displayName": "Fixture model",
-                    "contextWindowTokens": 131072
+                    "contextWindowTokens": 131072,
+                    "effectiveCapabilities": {
+                        "toolCalls": true,
+                        "strictTools": true,
+                        "parallelTools": true,
+                        "imageInput": true,
+                        "pdfInput": false
+                    }
                 },
                 "status": "inProgress"
             }
@@ -716,10 +734,18 @@ fn turn_start_types_use_the_public_turn_dto() {
                 "id": "turn_0000000000000001",
                 "model": {
                     "profileId": "model_primary",
-                    "providerKind": "openaiCompatible",
+                    "providerFamily": "openai",
+                    "wireApi": "openaiChatCompletions",
                     "modelId": "fixture-model",
                     "displayName": "Fixture model",
-                    "contextWindowTokens": 131072
+                    "contextWindowTokens": 131072,
+                    "effectiveCapabilities": {
+                        "toolCalls": true,
+                        "strictTools": true,
+                        "parallelTools": true,
+                        "imageInput": true,
+                        "pdfInput": false
+                    }
                 },
                 "status": "inProgress"
             }
@@ -875,10 +901,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
             id: "item_0000000000000002".to_string(),
             call_id: "call_1".to_string(),
             name: "workspace/read".to_string(),
-            path: "README.txt".to_string(),
-            query: None,
-            command: None,
-            arguments: None,
+            arguments: json!({"path": "README.txt"}),
         })
         .expect("tool call serializes"),
         json!({
@@ -886,7 +909,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
             "id": "item_0000000000000002",
             "callId": "call_1",
             "name": "workspace/read",
-            "path": "README.txt"
+            "arguments": {"path": "README.txt"}
         })
     );
     assert_eq!(
@@ -894,10 +917,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
             id: "item_0000000000000004".to_string(),
             call_id: "call_2".to_string(),
             name: "workspace/search".to_string(),
-            path: "src".to_string(),
-            query: Some("needle".to_string()),
-            command: None,
-            arguments: None,
+            arguments: json!({"path": "src", "query": "needle"}),
         })
         .expect("search tool call serializes"),
         json!({
@@ -905,8 +925,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
             "id": "item_0000000000000004",
             "callId": "call_2",
             "name": "workspace/search",
-            "path": "src",
-            "query": "needle"
+            "arguments": {"path": "src", "query": "needle"}
         })
     );
     assert_eq!(
@@ -940,6 +959,41 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
         json!({
             "type": "error",
             "kind": "resultTooLarge"
+        })
+    );
+}
+
+#[test]
+fn tool_validation_rejection_is_a_distinct_diagnostic_item() {
+    let item = Item::ToolValidationRejected {
+        id: "item_0000000000000003".to_string(),
+        call_id: "call_edit".to_string(),
+        name: "workspace/edit".to_string(),
+        kind: "expectedMismatch".to_string(),
+        arguments_bytes: 128,
+        arguments_sha256: "a".repeat(64),
+        edit_index: Some(2),
+        hunk_index: None,
+        line: Some(7),
+        expected_summary: Some("bytes=3 sha256=bbbb".to_string()),
+        actual_summary: Some("bytes=4 sha256=cccc".to_string()),
+        suggested_action: "Refresh the file and retry the edit.".to_string(),
+    };
+    assert_eq!(
+        serde_json::to_value(item).expect("validation item serializes"),
+        json!({
+            "type": "toolValidationRejected",
+            "id": "item_0000000000000003",
+            "callId": "call_edit",
+            "name": "workspace/edit",
+            "kind": "expectedMismatch",
+            "argumentsBytes": 128,
+            "argumentsSha256": "a".repeat(64),
+            "editIndex": 2,
+            "line": 7,
+            "expectedSummary": "bytes=3 sha256=bbbb",
+            "actualSummary": "bytes=4 sha256=cccc",
+            "suggestedAction": "Refresh the file and retry the edit."
         })
     );
 }
@@ -1045,18 +1099,20 @@ fn shell_approval_and_process_results_are_provider_neutral() {
 }
 
 #[test]
-fn turn_start_params_require_thread_id_and_accept_optional_text_input() {
+fn turn_start_params_require_thread_id_and_accept_ordered_content_input() {
     assert_eq!(
         serde_json::from_value::<TurnStartParams>(json!({
             "threadId": "thr_0000000000000001",
-            "input": "Hello",
+            "input": [{"type": "text", "text": "Hello"}],
             "modelProfileId": "model_primary"
         }))
         .expect("valid params"),
         TurnStartParams {
             model_profile_id: Some("model_primary".to_string()),
             thread_id: "thr_0000000000000001".to_string(),
-            input: Some("Hello".to_string()),
+            input: Some(vec![sugarcode_app_server_protocol::TurnInputPart::Text {
+                text: "Hello".to_string(),
+            }]),
         }
     );
     assert_eq!(
@@ -1122,6 +1178,8 @@ fn turn_interrupt_is_strict_and_terminal_errors_are_provider_neutral() {
             error: Some(TurnError {
                 kind: TurnErrorKind::RateLimited,
                 retryable: true,
+                provider: None,
+                tool_schema: None,
             }),
         })
         .expect("failed turn"),

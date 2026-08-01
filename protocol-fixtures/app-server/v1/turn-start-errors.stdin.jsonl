@@ -1,15 +1,15 @@
-{"jsonrpc":"2.0","id":"pre-init","method":"turn/start","params":{"threadId":"thr_missing","input":"Hello"}}
+{"jsonrpc":"2.0","id":"pre-init","method":"turn/start","params":{"threadId":"thr_missing","input":[{"type":"text","text":"Hello"}]}}
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"golden-client","version":"1.0.0"}}}
 {"jsonrpc":"2.0","method":"initialized"}
 {"jsonrpc":"2.0","id":"bad-missing","method":"turn/start"}
 {"jsonrpc":"2.0","id":"bad-null","method":"turn/start","params":null}
 {"jsonrpc":"2.0","id":"bad-array","method":"turn/start","params":[]}
-{"jsonrpc":"2.0","id":"bad-blank","method":"turn/start","params":{"threadId":" ","input":"Hello"}}
+{"jsonrpc":"2.0","id":"bad-blank","method":"turn/start","params":{"threadId":" ","input":[{"type":"text","text":"Hello"}]}}
 {"jsonrpc":"2.0","id":"bad-field","method":"turn/start","params":{"threadId":"thr_missing","input":[]}}
-{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_missing","input":"Hello"}}
+{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_missing","input":[{"type":"text","text":"Hello"}]}}
 {"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}
-{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}
-{"jsonrpc":"2.0","id":"thread-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}
-{"jsonrpc":"2.0","id":"duplicate-turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}
-{"jsonrpc":"2.0","id":"duplicate-turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}
-{"jsonrpc":"2.0","id":"turn-next","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}
+{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}
+{"jsonrpc":"2.0","id":"thread-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}
+{"jsonrpc":"2.0","id":"duplicate-turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}
+{"jsonrpc":"2.0","id":"duplicate-turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}
+{"jsonrpc":"2.0","id":"turn-next","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}

@@ -41,7 +41,7 @@ fn thread_resume_returns_the_complete_snapshot_without_notifications() {
     session
         .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
     session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     );
 
     let messages = session.process_line(
@@ -75,10 +75,10 @@ fn thread_fork_returns_a_complete_remapped_snapshot_then_started_notification() 
     session
         .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
     session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     );
     session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     );
 
     let messages = session.process_line(
@@ -190,7 +190,7 @@ fn thread_archive_excludes_the_thread_and_is_idempotent() {
     session
         .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
     session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     );
 
     for request_id in ["archive-1", "archive-2"] {
@@ -226,7 +226,7 @@ fn thread_archive_excludes_the_thread_and_is_idempotent() {
 
     for method in ["thread/resume", "turn/start"] {
         let params = if method == "turn/start" {
-            json!({"threadId": "thr_0000000000000001", "input": "Hello"})
+            json!({"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]})
         } else {
             json!({"threadId": "thr_0000000000000001"})
         };
@@ -293,7 +293,7 @@ fn thread_unarchive_restores_list_search_resume_and_turn_start() {
     session
         .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
     session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     );
     session.process_line(
         r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
@@ -318,7 +318,7 @@ fn thread_unarchive_restores_list_search_resume_and_turn_start() {
         (
             "turn-2",
             "turn/start",
-            json!({"threadId": "thr_0000000000000001", "input": "Hello"}),
+            json!({"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]}),
         ),
     ] {
         let messages = session.process_line(
@@ -389,7 +389,7 @@ fn thread_delete_is_terminal_for_active_and_archived_threads() {
                 "method": "turn/start",
                 "params": {
                     "threadId": format!("thr_000000000000000{}", &thread_request[7..]),
-                    "input": "Hello"
+                    "input": [{"type":"text","text":"Hello"}]
                 }
             })
             .to_string(),
@@ -426,7 +426,7 @@ fn thread_delete_is_terminal_for_active_and_archived_threads() {
         ("turn-deleted", "turn/start"),
     ] {
         let params = if method == "turn/start" {
-            json!({"threadId": "thr_0000000000000001", "input": "Hello"})
+            json!({"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]})
         } else {
             json!({"threadId": "thr_0000000000000001"})
         };

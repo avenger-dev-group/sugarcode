@@ -48,7 +48,7 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
             "jsonrpc":"2.0",
             "id":"turn-one",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":"Apply $review"}
+            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Apply $review"}]}
         }),
         8,
     );
@@ -60,7 +60,7 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
             "jsonrpc":"2.0",
             "id":"turn-two",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":"Apply $review again"}
+            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Apply $review again"}]}
         }),
         8,
     );
@@ -112,7 +112,7 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
             "jsonrpc":"2.0",
             "id":"turn-three",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":"Apply current $review"}
+            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Apply current $review"}]}
         }),
         8,
     );

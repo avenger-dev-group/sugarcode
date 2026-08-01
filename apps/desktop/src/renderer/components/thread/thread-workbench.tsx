@@ -1,5 +1,14 @@
-import { ArrowUp, PanelLeft, PanelRight, Square } from 'lucide-react';
-import { memo } from 'react';
+import {
+  ArrowUp,
+  FileText,
+  Image as ImageIcon,
+  PanelLeft,
+  PanelRight,
+  Paperclip,
+  Square,
+  X,
+} from 'lucide-react';
+import { memo, useRef } from 'react';
 
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
@@ -46,9 +55,36 @@ const TranscriptMessage = ({
         className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
         aria-label="Your message"
       >
-        <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
-          {entry.message.text}
-        </p>
+        {entry.message.attachments.length > 0 ? (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {entry.message.attachments.map((attachment) => (
+              <div
+                key={attachment.assetId}
+                className="flex max-w-56 items-center gap-2 rounded-xl bg-background/70 px-2.5 py-2"
+              >
+                {attachment.kind === 'image' && attachment.previewUrl ? (
+                  <img
+                    src={attachment.previewUrl}
+                    alt=""
+                    className="size-8 shrink-0 rounded-md object-cover"
+                  />
+                ) : attachment.kind === 'image' ? (
+                  <ImageIcon className="size-4 shrink-0" aria-hidden="true" />
+                ) : (
+                  <FileText className="size-4 shrink-0" aria-hidden="true" />
+                )}
+                <span className="truncate text-xs font-medium">
+                  {attachment.originalName}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {entry.message.text ? (
+          <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
+            {entry.message.text}
+          </p>
+        ) : null}
       </article>
     </div>
   );
@@ -260,6 +296,7 @@ export const ThreadWorkbenchView = ({
     beginPointerScroll,
     endPointerScroll,
   } = useTranscriptFollow(store.thread);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -424,10 +461,86 @@ export const ThreadWorkbenchView = ({
                 {store.actionError ?? store.thread.notice}
               </p>
             )}
-            <div className="overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)]">
+            <div
+              className="overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)]"
+              onDragOver={(event) => {
+                if (event.dataTransfer.types.includes('Files')) {
+                  event.preventDefault();
+                }
+              }}
+              onDrop={(event) => {
+                if (event.dataTransfer.files.length > 0) {
+                  event.preventDefault();
+                  void store.addAttachments(
+                    Array.from(event.dataTransfer.files),
+                  );
+                }
+              }}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain"
+                className="sr-only"
+                tabIndex={-1}
+                onChange={(event) => {
+                  void store.addAttachments(Array.from(event.target.files ?? []));
+                  event.target.value = '';
+                }}
+              />
+              {store.attachments.length > 0 ? (
+                <div className="flex gap-2 overflow-x-auto px-3 pt-3">
+                  {store.attachments.map((attachment) => (
+                    <div
+                      key={attachment.id}
+                      className="relative flex h-16 min-w-48 max-w-60 items-center gap-2.5 rounded-xl border bg-surface px-2.5 pr-8"
+                    >
+                      {attachment.previewUrl ? (
+                        <img
+                          src={attachment.previewUrl}
+                          alt=""
+                          className="size-11 shrink-0 rounded-lg object-cover"
+                        />
+                      ) : (
+                        <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-background">
+                          <FileText className="size-5 text-secondary" aria-hidden="true" />
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-medium">
+                          {attachment.fileName}
+                        </p>
+                        <p className="mt-0.5 text-[11px] text-tertiary">
+                          {Math.ceil(attachment.sizeBytes / 1024)} KiB
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="absolute right-1 top-1 size-7"
+                        aria-label={`Remove ${attachment.fileName}`}
+                        onClick={() => store.removeAttachment(attachment.id)}
+                      >
+                        <X className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <Textarea
                 value={store.draft}
                 onChange={(event) => store.setDraft(event.target.value)}
+                onPaste={(event) => {
+                  const files = Array.from(event.clipboardData.files).filter(
+                    (file) => file.type.startsWith('image/'),
+                  );
+                  if (files.length > 0) {
+                    event.preventDefault();
+                    void store.addAttachments(files);
+                  }
+                }}
                 onKeyDown={(event) => {
                   if (
                     event.key === 'Enter' &&
@@ -453,6 +566,17 @@ export const ThreadWorkbenchView = ({
               <div className="flex items-center justify-between gap-3 border-t px-3 py-2">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="size-7"
+                      aria-label="Attach files"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={store.modelSelectionDisabled}
+                    >
+                      <Paperclip className="size-4" aria-hidden="true" />
+                    </Button>
                     <Select
                       value={store.selectedModelProfileId || undefined}
                       onValueChange={store.setSelectedModelProfileId}

@@ -1,7 +1,12 @@
-const RECOVERABLE_VALIDATION_KINDS = new Set([
+const VALIDATION_KINDS = new Set([
   'batchRejected',
   'invalidArguments',
   'unknownTool',
+  'headerCountMismatch',
+  'rangeOutOfBounds',
+  'expectedMismatch',
+  'baseRevisionMismatch',
+  'unsupportedDiffFeature',
 ]);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -10,44 +15,50 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isId = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
 
-const hasOnlyKeys = (
-  value: Record<string, unknown>,
-  expected: readonly string[],
-): boolean => {
-  const actual = Object.keys(value).sort();
-  const sortedExpected = [...expected].sort();
-  return (
-    actual.length === sortedExpected.length &&
-    actual.every((key, index) => key === sortedExpected[index])
-  );
-};
+const isOptionalIndex = (value: unknown): boolean =>
+  value === undefined ||
+  (typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
 
-export const isRecoverableToolValidationItem = (
-  value: unknown,
-): boolean => {
+export const isToolValidationRejectedItem = (value: unknown): boolean => {
   if (
     !isRecord(value) ||
+    value.type !== 'toolValidationRejected' ||
     !isId(value.id) ||
     !isId(value.callId) ||
-    !isId(value.name)
+    !isId(value.name) ||
+    typeof value.kind !== 'string' ||
+    !VALIDATION_KINDS.has(value.kind) ||
+    typeof value.argumentsBytes !== 'number' ||
+    !Number.isSafeInteger(value.argumentsBytes) ||
+    value.argumentsBytes < 0 ||
+    value.argumentsBytes > 96 * 1024 ||
+    typeof value.argumentsSha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(value.argumentsSha256) ||
+    !isOptionalIndex(value.editIndex) ||
+    !isOptionalIndex(value.hunkIndex) ||
+    !isOptionalIndex(value.line) ||
+    (value.expectedSummary !== undefined &&
+      typeof value.expectedSummary !== 'string') ||
+    (value.actualSummary !== undefined &&
+      typeof value.actualSummary !== 'string') ||
+    !isId(value.suggestedAction)
   ) {
     return false;
   }
-
-  if (value.type === 'toolCall') {
-    return (
-      hasOnlyKeys(value, ['type', 'id', 'callId', 'name', 'path']) &&
-      value.path === ''
-    );
-  }
-
-  return (
-    value.type === 'toolResult' &&
-    hasOnlyKeys(value, ['type', 'id', 'callId', 'name', 'result']) &&
-    isRecord(value.result) &&
-    hasOnlyKeys(value.result, ['type', 'kind']) &&
-    value.result.type === 'error' &&
-    typeof value.result.kind === 'string' &&
-    RECOVERABLE_VALIDATION_KINDS.has(value.result.kind)
-  );
+  const allowedKeys = new Set([
+    'type',
+    'id',
+    'callId',
+    'name',
+    'kind',
+    'argumentsBytes',
+    'argumentsSha256',
+    'editIndex',
+    'hunkIndex',
+    'line',
+    'expectedSummary',
+    'actualSummary',
+    'suggestedAction',
+  ]);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
 };

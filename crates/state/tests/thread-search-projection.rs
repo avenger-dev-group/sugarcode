@@ -65,7 +65,9 @@ fn started_turn(sequence: u64, input: &str) -> DurableTurnSnapshot {
         items: vec![
             DurableItemSnapshot::UserMessage {
                 id: ItemId::new(format!("item_{:016}", sequence * 2 - 1)),
-                text: input.to_string(),
+                content: vec![sugarcode_state::DurableUserContentPart::Text {
+                    text: input.to_string(),
+                }],
             },
             DurableItemSnapshot::AgentMessage {
                 id: ItemId::new(format!("item_{:016}", sequence * 2)),
@@ -161,6 +163,8 @@ fn failed_and_interrupted_partial_output_is_never_searchable_even_after_rebuild(
                 terminal.error = Some(DurableTurnError {
                     kind: DurableTurnErrorKind::Protocol,
                     retryable: false,
+                    provider: None,
+                    tool_schema: None,
                 });
             }
             repository

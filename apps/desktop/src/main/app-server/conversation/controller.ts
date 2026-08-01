@@ -1,4 +1,7 @@
-import type { ThreadListResponse } from '@sugarcode/app-server-protocol';
+import type {
+  ThreadListResponse,
+  TurnInputPart,
+} from '@sugarcode/app-server-protocol';
 
 import type {
   ConversationActionResult,
@@ -65,6 +68,7 @@ type MutableMessage = {
   id: string;
   role: ConversationMessage['role'];
   text: string;
+  attachments?: ConversationMessage['attachments'];
   status: ConversationMessage['status'];
   agentOutput?: AgentOutputRef;
 };
@@ -284,6 +288,7 @@ export class ConversationController {
   private threadId: string | null = null;
   private activeTurnId: string | null = null;
   private turns: MutableTurn[] = [];
+  private readonly attachmentPreviews = new Map<string, string>();
   private notice: ConversationStateSnapshot['notice'];
   private bufferedLifecycle: ConversationLifecycle[] = [];
   private awaitingTurnResponse = false;
@@ -826,6 +831,7 @@ export class ConversationController {
     this.bufferedLifecycle = [];
     this.actionAbortController = new AbortController();
     this.publish();
+    const importedPreviewIds: string[] = [];
 
     try {
       if (!this.threadId) {
@@ -838,9 +844,37 @@ export class ConversationController {
       }
 
       this.awaitingTurnResponse = true;
+      const turnInput: TurnInputPart[] = [];
+      if (input.input.length > 0) {
+        turnInput.push({ type: 'text', text: input.input });
+      }
+      for (const attachment of input.attachments ?? []) {
+        const imported = await rpc.importAsset(
+          {
+            fileName: attachment.fileName,
+            ...(attachment.mediaType
+              ? { mediaType: attachment.mediaType }
+              : {}),
+            data: attachment.data,
+          },
+          this.actionAbortController.signal,
+        );
+        if (imported.asset.kind === 'image') {
+          importedPreviewIds.push(imported.asset.assetId);
+          this.attachmentPreviews.set(
+            imported.asset.assetId,
+            `data:${imported.asset.mediaType};base64,${attachment.data}`,
+          );
+        }
+        turnInput.push(
+          imported.asset.kind === 'image'
+            ? { type: 'image', asset: imported.asset }
+            : { type: 'document', asset: imported.asset },
+        );
+      }
       const response = await rpc.startTurn(
         this.threadId,
-        input.input,
+        turnInput,
         input.modelProfileId,
         this.actionAbortController.signal,
       );
@@ -860,6 +894,9 @@ export class ConversationController {
       this.drainBufferedLifecycle();
       return accepted();
     } catch (error) {
+      for (const assetId of importedPreviewIds) {
+        this.attachmentPreviews.delete(assetId);
+      }
       this.awaitingTurnResponse = false;
       this.bufferedLifecycle = [];
       this.actionAbortController = null;
@@ -1010,6 +1047,14 @@ export class ConversationController {
             role:
               lifecycle.params.item.type === 'userMessage' ? 'user' : 'agent',
             text: lifecycle.params.item.text,
+            ...(lifecycle.params.item.type === 'userMessage' &&
+            lifecycle.params.item.attachments.length > 0
+              ? {
+                  attachments: this.withAttachmentPreviews(
+                    lifecycle.params.item.attachments,
+                  ),
+                }
+              : {}),
             status: 'inProgress',
             ...(sourceOutput ? { agentOutput: { ...sourceOutput } } : {}),
           });
@@ -1228,7 +1273,7 @@ export class ConversationController {
           };
         } else if (lifecycle.params.item.type === 'workspacePatchCall') {
           if (turn.fileChange && !turn.fileChange.result) {
-            throw new Error('Duplicate workspace/apply-patch activity.');
+            throw new Error('Duplicate workspace/apply-diff activity.');
           }
           const activity: MutableFileChangeActivity = {
             id: lifecycle.params.item.id,
@@ -1266,7 +1311,7 @@ export class ConversationController {
             )
           ) {
             throw new Error(
-              'Workspace apply-patch result started out of order.',
+              'Workspace write result started out of order.',
             );
           }
           activity.result = {
@@ -1575,6 +1620,14 @@ export class ConversationController {
             throw new Error('AgentMessage completed before output resolution.');
           }
           message.text = lifecycle.params.item.text;
+          if (lifecycle.params.item.type === 'userMessage') {
+            message.attachments = this.withAttachmentPreviews(
+              lifecycle.params.item.attachments,
+            );
+            for (const attachment of lifecycle.params.item.attachments) {
+              this.attachmentPreviews.delete(attachment.assetId);
+            }
+          }
           message.status = 'completed';
         } else if (lifecycle.params.item.type === 'agentCommentary') {
           const commentary = turn.activities.find(
@@ -1723,7 +1776,7 @@ export class ConversationController {
             activity.callStatus !== 'inProgress'
           ) {
             throw new Error(
-              'Completed workspace/apply-patch call did not match its started Item.',
+              'Completed workspace/apply-diff call did not match its started Item.',
             );
           }
           activity.callStatus = 'completed';
@@ -1764,7 +1817,7 @@ export class ConversationController {
             )
           ) {
             throw new Error(
-              'Completed workspace/apply-patch result did not match its started Item.',
+              'Completed workspace/apply-diff result did not match its started Item.',
             );
           }
           result.status = 'completed';
@@ -2073,7 +2126,7 @@ export class ConversationController {
               turn.fileChange.result?.status !== 'completed'))
         ) {
           throw new Error(
-            'Turn completed before workspace/apply-patch activity completed.',
+            'Turn completed before workspace/apply-diff activity completed.',
           );
         }
         if (
@@ -2156,6 +2209,14 @@ export class ConversationController {
     }
     return message;
   };
+
+  private withAttachmentPreviews = (
+    attachments: NonNullable<ConversationMessage['attachments']>,
+  ): NonNullable<ConversationMessage['attachments']> =>
+    attachments.map((attachment) => {
+      const previewUrl = this.attachmentPreviews.get(attachment.assetId);
+      return previewUrl ? { ...attachment, previewUrl } : attachment;
+    });
 
   private resolvePendingAgentOutput = (
     turn: MutableTurn,
@@ -2253,7 +2314,7 @@ export class ConversationController {
   ): MutableFileChangeActivity => {
     if (!turn.fileChange || turn.fileChange.callId !== callId) {
       throw new Error(
-        'Workspace apply-patch lifecycle referenced another call.',
+        'Workspace write lifecycle referenced another call.',
       );
     }
     return turn.fileChange;

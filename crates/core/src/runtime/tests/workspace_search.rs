@@ -153,24 +153,26 @@ async fn workspace_search_persists_query_and_runs_one_bounded_tool_round() {
             .iter()
             .any(|tool| tool.name == "workspace/search")
     );
-    assert!(matches!(
-        requests[1].messages.as_slice(),
-        [
-            ModelMessage::Text { .. },
-            ModelMessage::ToolCall(ModelToolCall {
-                name,
-                arguments,
-                ..
-            }),
-            ModelMessage::ToolResult { content, .. }
-        ] if name == "workspace/search"
-            && arguments == &serde_json::json!({"path": "src", "query": "needle"})
-            && serde_json::from_str::<serde_json::Value>(content).expect("search result")
-                == serde_json::json!({
-                    "matches": [{"path": "src/lib.rs", "line": 2}],
-                    "truncated": false
-                })
-    ));
+    let messages = &requests[1].messages;
+    assert_eq!(messages.len(), 3);
+    assert_eq!(message_texts(&messages[0]).len(), 1);
+    let calls = message_tool_calls(&messages[1]);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "workspace/search");
+    assert_eq!(
+        calls[0].arguments,
+        serde_json::json!({"path": "src", "query": "needle"})
+    );
+    let results = message_tool_results(&messages[2]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&tool_result_serialized(results[0]))
+            .expect("search result"),
+        serde_json::json!({
+            "matches": [{"path": "src/lib.rs", "line": 2}],
+            "truncated": false
+        })
+    );
     drop(requests);
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
@@ -186,8 +188,7 @@ async fn workspace_search_persists_query_and_runs_one_bounded_tool_round() {
             sugarcode_state::DurableItemSnapshot::UserMessage { .. },
             sugarcode_state::DurableItemSnapshot::ToolCall {
                 name,
-                path,
-                query,
+                arguments,
                 ..
             },
             sugarcode_state::DurableItemSnapshot::ToolResult {
@@ -196,8 +197,7 @@ async fn workspace_search_persists_query_and_runs_one_bounded_tool_round() {
             },
             sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
         ] if name == "workspace/search"
-            && path == "src"
-            && query.as_deref() == Some("needle")
+            && arguments == &serde_json::json!({"path": "src", "query": "needle"})
             && serde_json::from_str::<serde_json::Value>(content).expect("durable search result")
                 == serde_json::json!({
                     "matches": [{"path": "src/lib.rs", "line": 2}],
@@ -286,9 +286,9 @@ async fn interrupting_workspace_search_keeps_only_the_durable_call() {
     assert!(matches!(
         turn.items.last(),
         Some(sugarcode_state::DurableItemSnapshot::ToolCall {
-            query: Some(query),
+            arguments,
             ..
-        }) if query == "needle"
+        }) if arguments.get("query").and_then(serde_json::Value::as_str) == Some("needle")
     ));
     assert!(!turn.items.iter().any(|item| matches!(
         item,

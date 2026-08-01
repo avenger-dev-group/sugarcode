@@ -11,7 +11,7 @@ const catalog = (contextWindowTokens?: number) => ({
   connections: [
     {
       id: 'conn_primary',
-      kind: 'openaiCompatible',
+      providerFamily: 'openai',
       displayName: 'Custom provider',
       baseUrl: 'http://127.0.0.1:18080/v1',
       enabled: true,
@@ -24,8 +24,11 @@ const catalog = (contextWindowTokens?: number) => ({
       connectionId: 'conn_primary',
       displayName: 'Primary model',
       modelId: 'fixture-model',
+      toolCalls: 'auto',
       strictTools: 'auto',
       parallelTools: 'auto',
+      imageInput: 'auto',
+      pdfInput: 'auto',
       ...(contextWindowTokens === undefined
         ? {}
         : { contextWindowTokens }),

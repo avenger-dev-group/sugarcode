@@ -313,7 +313,7 @@ export const FileChangeReview = ({
             <p className="text-sm font-medium leading-normal">{copy.label}</p>
             <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
               <FileDiff className="size-3" aria-hidden="true" />
-              workspace/apply-patch
+              workspace write
             </span>
           </div>
           <code className="mt-1 block min-w-0 break-all font-mono text-xs font-normal leading-normal text-secondary">

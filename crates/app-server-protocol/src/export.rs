@@ -5,6 +5,10 @@ use crate::AgentTaskAccess;
 use crate::AgentTaskRole;
 use crate::AgentTaskStatus;
 use crate::ApprovalSourceAgent;
+use crate::AssetDescriptor;
+use crate::AssetImportParams;
+use crate::AssetImportResponse;
+use crate::AssetKind;
 use crate::ClientInfo;
 use crate::CommandApprovalParams;
 use crate::CommandApprovalResponse;
@@ -34,10 +38,13 @@ use crate::McpToolCallApprovalParams;
 use crate::McpToolCallApprovalResponse;
 use crate::McpToolCallApprovalResponseDecision;
 use crate::McpToolResult;
-use crate::ModelProviderKind;
+use crate::ModelProviderFamily;
+use crate::ModelSelectionCapabilities;
 use crate::ModelSelectionSnapshot;
+use crate::ModelWireApi;
 use crate::PlatformInfo;
 use crate::ProcessOutcome;
+use crate::ProviderErrorMetadata;
 use crate::RequestId;
 use crate::ServerCapabilities;
 use crate::ServerInfo;
@@ -63,10 +70,12 @@ use crate::ThreadStartedNotification;
 use crate::ThreadUnarchiveParams;
 use crate::ThreadUnarchiveResponse;
 use crate::ToolResult;
+use crate::ToolSchemaError;
 use crate::Turn;
 use crate::TurnCompletedNotification;
 use crate::TurnError;
 use crate::TurnErrorKind;
+use crate::TurnInputPart;
 use crate::TurnInterruptParams;
 use crate::TurnInterruptResponse;
 use crate::TurnSnapshot;
@@ -124,6 +133,10 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         ServerCapabilities::decl(),
         WorkspaceBinding::decl(),
         InitializeResponse::decl(),
+        AssetKind::decl(),
+        AssetDescriptor::decl(),
+        AssetImportParams::decl(),
+        AssetImportResponse::decl(),
         CommandApprovalResponseDecision::decl(),
         CommandNetworkPolicy::decl(),
         CommandSandboxPolicy::decl(),
@@ -174,12 +187,17 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         TurnSnapshotStatus::decl(),
         TurnSnapshot::decl(),
         ThreadResumeResponse::decl(),
-        ModelProviderKind::decl(),
+        ModelProviderFamily::decl(),
+        ModelWireApi::decl(),
+        ModelSelectionCapabilities::decl(),
         ModelSelectionSnapshot::decl(),
         Turn::decl(),
         TurnStatus::decl(),
         TurnErrorKind::decl(),
         TurnError::decl(),
+        ProviderErrorMetadata::decl(),
+        ToolSchemaError::decl(),
+        TurnInputPart::decl(),
         TurnStartParams::decl(),
         TurnStartResponse::decl(),
         TurnStartedNotification::decl(),
@@ -250,6 +268,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("InitializeResponse.schema.json"),
         &schema_for!(InitializeResponse),
+    )?;
+    write_schema(
+        out_dir.join("AssetImportParams.schema.json"),
+        &schema_for!(AssetImportParams),
+    )?;
+    write_schema(
+        out_dir.join("AssetImportResponse.schema.json"),
+        &schema_for!(AssetImportResponse),
     )?;
     write_schema(
         out_dir.join("WorkspaceListParams.schema.json"),
@@ -466,8 +492,16 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
         &schema_for!(ThreadResumeResponse),
     )?;
     write_schema(
-        out_dir.join("ModelProviderKind.schema.json"),
-        &schema_for!(ModelProviderKind),
+        out_dir.join("ModelProviderFamily.schema.json"),
+        &schema_for!(ModelProviderFamily),
+    )?;
+    write_schema(
+        out_dir.join("ModelWireApi.schema.json"),
+        &schema_for!(ModelWireApi),
+    )?;
+    write_schema(
+        out_dir.join("ModelSelectionCapabilities.schema.json"),
+        &schema_for!(ModelSelectionCapabilities),
     )?;
     write_schema(
         out_dir.join("ModelSelectionSnapshot.schema.json"),

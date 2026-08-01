@@ -535,12 +535,26 @@ fn map_item(item: &CoreItemSnapshot) -> ExecItemV1 {
         CoreItemKind::ToolCall {
             call_id,
             name,
-            path,
+            arguments,
+        } => {
+            mapped.call_id = Some(call_id.clone());
+            mapped.name = Some(name.clone());
+            mapped.path = arguments
+                .get("path")
+                .or_else(|| arguments.get("cwd"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+        }
+        CoreItemKind::ToolValidationRejected {
+            call_id,
+            name,
+            kind,
+            suggested_action,
             ..
         } => {
             mapped.call_id = Some(call_id.clone());
             mapped.name = Some(name.clone());
-            mapped.path = Some(path.clone());
+            mapped.result = Some(format!("{kind}:{suggested_action}"));
         }
         CoreItemKind::FileChange {
             call_id,
@@ -638,6 +652,7 @@ fn item_kind(kind: &CoreItemKind) -> &'static str {
         CoreItemKind::AgentTaskResult { .. } => "agentTaskResult",
         CoreItemKind::ContextCompaction { .. } => "contextCompaction",
         CoreItemKind::ToolCall { .. } => "toolCall",
+        CoreItemKind::ToolValidationRejected { .. } => "toolValidationRejected",
         CoreItemKind::FileChange { .. } => "fileChange",
         CoreItemKind::CommandApprovalRequest { .. } => "commandApprovalRequest",
         CoreItemKind::CommandApprovalDecision { .. } => "commandApprovalDecision",

@@ -24,6 +24,7 @@ fn initialize_line(version: u32) -> String {
 }
 
 mod approval;
+mod assets;
 mod discovery;
 mod initialization;
 mod thread_lifecycle;

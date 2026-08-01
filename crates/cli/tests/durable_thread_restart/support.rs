@@ -371,7 +371,7 @@ pub(super) fn configure_model(home: &Path, address: std::net::SocketAddr) {
                 "defaultProfileId": "model_fixture",
                 "connections": [{
                     "id": "conn_fixture",
-                    "kind": "openaiCompatible",
+                    "providerFamily": "openai",
                     "displayName": "Fixture provider",
                     "baseUrl": format!("http://{address}/v1"),
                     "enabled": true,

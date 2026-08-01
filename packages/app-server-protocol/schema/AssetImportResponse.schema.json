@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssetImportResponse",
+  "type": "object",
+  "properties": {
+    "asset": {
+      "$ref": "#/$defs/AssetDescriptor"
+    }
+  },
+  "required": [
+    "asset"
+  ],
+  "$defs": {
+    "AssetDescriptor": {
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AssetKind"
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "originalName": {
+          "type": "string"
+        },
+        "pdfPages": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "assetId",
+        "sha256",
+        "mediaType",
+        "originalName",
+        "sizeBytes",
+        "kind"
+      ]
+    },
+    "AssetKind": {
+      "type": "string",
+      "enum": [
+        "image",
+        "pdf",
+        "text"
+      ]
+    }
+  }
+}

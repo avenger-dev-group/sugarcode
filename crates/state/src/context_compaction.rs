@@ -6,6 +6,7 @@ use crate::DurableProcessOutcome;
 use crate::DurableToolResult;
 use crate::DurableTurnSnapshot;
 use crate::DurableTurnStatus;
+use crate::DurableUserContentPart;
 use sha2::Digest;
 use sha2::Sha256;
 
@@ -29,8 +30,8 @@ pub fn build_context_compaction(
         let mut index = 0usize;
         while index < turn.items.len() {
             match &turn.items[index] {
-                DurableItemSnapshot::UserMessage { text, .. } => {
-                    push_text_entry(&mut canonical, "user", text);
+                DurableItemSnapshot::UserMessage { content, .. } => {
+                    push_user_content_entry(&mut canonical, content);
                     source_messages = source_messages.checked_add(1)?;
                 }
                 DurableItemSnapshot::AgentMessage { text, .. } if !text.is_empty() => {
@@ -76,6 +77,24 @@ pub fn build_context_compaction(
                     index = result_index;
                 }
                 DurableItemSnapshot::ToolResult { .. } => return None,
+                DurableItemSnapshot::ToolValidationRejected {
+                    name,
+                    kind,
+                    arguments_sha256,
+                    suggested_action,
+                    ..
+                } => {
+                    canonical.push_str("{\"type\":\"toolValidationRejected\",\"name\":");
+                    canonical.push_str(&json_string(name));
+                    canonical.push_str(",\"kind\":");
+                    canonical.push_str(&json_string(kind));
+                    canonical.push_str(",\"argumentsSha256\":");
+                    canonical.push_str(&json_string(arguments_sha256));
+                    canonical.push_str(",\"suggestedAction\":");
+                    canonical.push_str(&json_string(suggested_action));
+                    canonical.push_str("}\n");
+                    source_messages = source_messages.checked_add(1)?;
+                }
                 call @ DurableItemSnapshot::McpToolCall { call_id, .. } => {
                     let result_index = ((index + 1)..turn.items.len()).find(|candidate| {
                         matches!(
@@ -148,6 +167,35 @@ pub fn build_context_compaction(
         pre_context_bytes,
         post_context_bytes,
     })
+}
+
+fn push_user_content_entry(canonical: &mut String, content: &[DurableUserContentPart]) {
+    canonical.push_str("{\"role\":\"user\",\"content\":[");
+    for (index, part) in content.iter().enumerate() {
+        if index != 0 {
+            canonical.push(',');
+        }
+        match part {
+            DurableUserContentPart::Text { text } => {
+                canonical.push_str("{\"type\":\"text\",\"text\":");
+                canonical.push_str(&json_string(text));
+            }
+            DurableUserContentPart::Image { asset } => {
+                canonical.push_str("{\"type\":\"image\",\"assetId\":");
+                canonical.push_str(&json_string(&asset.asset_id));
+                canonical.push_str(",\"sha256\":");
+                canonical.push_str(&json_string(&asset.sha256));
+            }
+            DurableUserContentPart::Document { asset } => {
+                canonical.push_str("{\"type\":\"document\",\"assetId\":");
+                canonical.push_str(&json_string(&asset.asset_id));
+                canonical.push_str(",\"sha256\":");
+                canonical.push_str(&json_string(&asset.sha256));
+            }
+        }
+        canonical.push('}');
+    }
+    canonical.push_str("]}\n");
 }
 
 fn push_mcp_tool_entry(
@@ -248,40 +296,19 @@ fn push_text_entry(canonical: &mut String, role: &str, text: &str) {
 
 fn push_tool_entry(canonical: &mut String, call: &DurableItemSnapshot, result: &DurableToolResult) {
     let DurableItemSnapshot::ToolCall {
-        name,
-        path,
-        query,
-        patch,
-        command,
-        arguments,
-        ..
+        name, arguments, ..
     } = call
     else {
         unreachable!();
     };
     canonical.push_str("{\"type\":\"tool\",\"name\":");
     canonical.push_str(&json_string(name));
-    canonical.push_str(",\"path\":");
-    canonical.push_str(&json_string(path));
-    if let Some(query) = query {
-        canonical.push_str(",\"query\":");
-        canonical.push_str(&json_string(query));
-    }
-    if let Some(patch) = patch {
-        canonical.push_str(",\"patchBytes\":");
-        canonical.push_str(&patch.len().to_string());
-        canonical.push_str(",\"patchSha256\":");
-        canonical.push_str(&json_string(&sha256(patch.as_bytes())));
-    }
-    if let Some(command) = command {
-        canonical.push_str(",\"command\":");
-        canonical.push_str(&json_string(command));
-    }
-    if let Some(arguments) = arguments {
-        canonical.push_str(",\"arguments\":");
-        canonical
-            .push_str(&serde_json::to_string(arguments).expect("tool arguments must serialize"));
-    }
+    let serialized_arguments =
+        serde_json::to_vec(arguments).expect("tool arguments must serialize");
+    canonical.push_str(",\"argumentsBytes\":");
+    canonical.push_str(&serialized_arguments.len().to_string());
+    canonical.push_str(",\"argumentsSha256\":");
+    canonical.push_str(&json_string(&sha256(&serialized_arguments)));
     canonical.push_str(",\"result\":");
     push_result_receipt(canonical, result);
     canonical.push_str("}\n");

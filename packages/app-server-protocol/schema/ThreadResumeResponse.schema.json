@@ -45,6 +45,55 @@
         "cancelled"
       ]
     },
+    "AssetDescriptor": {
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AssetKind"
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "originalName": {
+          "type": "string"
+        },
+        "pdfPages": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "assetId",
+        "sha256",
+        "mediaType",
+        "originalName",
+        "sizeBytes",
+        "kind"
+      ]
+    },
+    "AssetKind": {
+      "type": "string",
+      "enum": [
+        "image",
+        "pdf",
+        "text"
+      ]
+    },
     "CommandNetworkPolicy": {
       "type": "string",
       "enum": [
@@ -153,10 +202,13 @@
         {
           "type": "object",
           "properties": {
-            "id": {
-              "type": "string"
+            "content": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TurnInputPart"
+              }
             },
-            "text": {
+            "id": {
               "type": "string"
             },
             "type": {
@@ -167,7 +219,7 @@
           "required": [
             "type",
             "id",
-            "text"
+            "content"
           ]
         },
         {
@@ -392,38 +444,15 @@
         {
           "type": "object",
           "properties": {
-            "arguments": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "string"
-              }
-            },
+            "arguments": true,
             "callId": {
               "type": "string"
-            },
-            "command": {
-              "type": [
-                "string",
-                "null"
-              ]
             },
             "id": {
               "type": "string"
             },
             "name": {
               "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "query": {
-              "type": [
-                "string",
-                "null"
-              ]
             },
             "type": {
               "type": "string",
@@ -435,7 +464,85 @@
             "id",
             "callId",
             "name",
-            "path"
+            "arguments"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "actualSummary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "argumentsBytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "argumentsSha256": {
+              "type": "string"
+            },
+            "callId": {
+              "type": "string"
+            },
+            "editIndex": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "expectedSummary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hunkIndex": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "line": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "name": {
+              "type": "string"
+            },
+            "suggestedAction": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "toolValidationRejected"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "callId",
+            "name",
+            "kind",
+            "argumentsBytes",
+            "argumentsSha256",
+            "suggestedAction"
           ]
         },
         {
@@ -917,14 +1024,39 @@
         }
       ]
     },
-    "ModelProviderKind": {
+    "ModelProviderFamily": {
       "type": "string",
       "enum": [
         "openai",
         "anthropic",
-        "gemini",
-        "metallm",
-        "openaiCompatible"
+        "gemini"
+      ]
+    },
+    "ModelSelectionCapabilities": {
+      "type": "object",
+      "properties": {
+        "imageInput": {
+          "type": "boolean"
+        },
+        "parallelTools": {
+          "type": "boolean"
+        },
+        "pdfInput": {
+          "type": "boolean"
+        },
+        "strictTools": {
+          "type": "boolean"
+        },
+        "toolCalls": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "toolCalls",
+        "strictTools",
+        "parallelTools",
+        "imageInput",
+        "pdfInput"
       ]
     },
     "ModelSelectionSnapshot": {
@@ -938,22 +1070,39 @@
         "displayName": {
           "type": "string"
         },
+        "effectiveCapabilities": {
+          "$ref": "#/$defs/ModelSelectionCapabilities"
+        },
         "modelId": {
           "type": "string"
         },
         "profileId": {
           "type": "string"
         },
-        "providerKind": {
-          "$ref": "#/$defs/ModelProviderKind"
+        "providerFamily": {
+          "$ref": "#/$defs/ModelProviderFamily"
+        },
+        "wireApi": {
+          "$ref": "#/$defs/ModelWireApi"
         }
       },
       "required": [
         "profileId",
-        "providerKind",
+        "providerFamily",
+        "wireApi",
         "modelId",
         "displayName",
-        "contextWindowTokens"
+        "contextWindowTokens",
+        "effectiveCapabilities"
+      ]
+    },
+    "ModelWireApi": {
+      "type": "string",
+      "enum": [
+        "openaiResponses",
+        "openaiChatCompletions",
+        "anthropicMessages",
+        "geminiGenerateContent"
       ]
     },
     "ProcessOutcome": {
@@ -1004,6 +1153,38 @@
             "type"
           ]
         }
+      ]
+    },
+    "ProviderErrorMetadata": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "httpStatus": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "requestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retryAfter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "httpStatus"
       ]
     },
     "Thread": {
@@ -1189,14 +1370,49 @@
         }
       ]
     },
+    "ToolSchemaError": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolName",
+        "reason"
+      ]
+    },
     "TurnError": {
       "type": "object",
       "properties": {
         "kind": {
           "$ref": "#/$defs/TurnErrorKind"
         },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderErrorMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "retryable": {
           "type": "boolean"
+        },
+        "toolSchema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolSchemaError"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1221,6 +1437,61 @@
         "unsupportedToolArguments",
         "outputTooLarge",
         "stateUnavailable"
+      ]
+    },
+    "TurnInputPart": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "asset": {
+              "$ref": "#/$defs/AssetDescriptor"
+            },
+            "type": {
+              "type": "string",
+              "const": "image"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "asset"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "asset": {
+              "$ref": "#/$defs/AssetDescriptor"
+            },
+            "type": {
+              "type": "string",
+              "const": "document"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "asset"
+          ]
+        }
       ]
     },
     "TurnSnapshot": {

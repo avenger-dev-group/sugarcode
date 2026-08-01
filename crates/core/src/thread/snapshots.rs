@@ -2,9 +2,9 @@ use super::*;
 
 pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnapshot {
     match &item.kind {
-        CoreItemKind::UserMessage { text } => DurableItemSnapshot::UserMessage {
+        CoreItemKind::UserMessage { content } => DurableItemSnapshot::UserMessage {
             id: item.id.clone(),
-            text: text.clone(),
+            content: content.iter().map(durable_user_content_part).collect(),
         },
         CoreItemKind::AgentMessage { text } => DurableItemSnapshot::AgentMessage {
             id: item.id.clone(),
@@ -86,20 +86,38 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
         CoreItemKind::ToolCall {
             call_id,
             name,
-            path,
-            query,
-            patch,
-            command,
             arguments,
         } => DurableItemSnapshot::ToolCall {
             id: item.id.clone(),
             call_id: call_id.clone(),
             name: name.clone(),
-            path: path.clone(),
-            query: query.clone(),
-            patch: patch.clone(),
-            command: command.clone(),
             arguments: arguments.clone(),
+        },
+        CoreItemKind::ToolValidationRejected {
+            call_id,
+            name,
+            kind,
+            arguments_bytes,
+            arguments_sha256,
+            edit_index,
+            hunk_index,
+            line,
+            expected_summary,
+            actual_summary,
+            suggested_action,
+        } => DurableItemSnapshot::ToolValidationRejected {
+            id: item.id.clone(),
+            call_id: call_id.clone(),
+            name: name.clone(),
+            kind: kind.to_string(),
+            arguments_bytes: *arguments_bytes,
+            arguments_sha256: arguments_sha256.clone(),
+            edit_index: *edit_index,
+            hunk_index: *hunk_index,
+            line: *line,
+            expected_summary: expected_summary.clone(),
+            actual_summary: actual_summary.clone(),
+            suggested_action: suggested_action.clone(),
         },
         CoreItemKind::FileChange {
             call_id,
@@ -252,7 +270,9 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
 
 pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) -> Item {
     let kind = match &snapshot.kind {
-        CoreItemKind::UserMessage { text } => ItemKind::UserMessage { text: text.clone() },
+        CoreItemKind::UserMessage { content } => ItemKind::UserMessage {
+            content: content.clone(),
+        },
         CoreItemKind::AgentMessage { text } => ItemKind::AgentMessage { text: text.clone() },
         CoreItemKind::AgentCommentary { text } => ItemKind::AgentCommentary { text: text.clone() },
         CoreItemKind::AgentTask {
@@ -319,19 +339,36 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
         CoreItemKind::ToolCall {
             call_id,
             name,
-            path,
-            query,
-            patch,
-            command,
             arguments,
         } => ItemKind::ToolCall {
             call_id: call_id.clone(),
             name: name.clone(),
-            path: path.clone(),
-            query: query.clone(),
-            patch: patch.clone(),
-            command: command.clone(),
             arguments: arguments.clone(),
+        },
+        CoreItemKind::ToolValidationRejected {
+            call_id,
+            name,
+            kind,
+            arguments_bytes,
+            arguments_sha256,
+            edit_index,
+            hunk_index,
+            line,
+            expected_summary,
+            actual_summary,
+            suggested_action,
+        } => ItemKind::ToolValidationRejected {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            kind: *kind,
+            arguments_bytes: *arguments_bytes,
+            arguments_sha256: arguments_sha256.clone(),
+            edit_index: *edit_index,
+            hunk_index: *hunk_index,
+            line: *line,
+            expected_summary: expected_summary.clone(),
+            actual_summary: actual_summary.clone(),
+            suggested_action: suggested_action.clone(),
         },
         CoreItemKind::FileChange {
             call_id,
@@ -468,6 +505,38 @@ pub(super) fn item_from_snapshot(snapshot: &CoreItemSnapshot, state: ItemState) 
         id: snapshot.id.clone(),
         state,
         kind,
+    }
+}
+
+fn durable_user_content_part(
+    part: &sugarcode_protocol::CoreUserContentPart,
+) -> sugarcode_state::DurableUserContentPart {
+    match part {
+        sugarcode_protocol::CoreUserContentPart::Text { text } => {
+            sugarcode_state::DurableUserContentPart::Text { text: text.clone() }
+        }
+        sugarcode_protocol::CoreUserContentPart::Image { asset } => {
+            sugarcode_state::DurableUserContentPart::Image {
+                asset: durable_content_asset(asset),
+            }
+        }
+        sugarcode_protocol::CoreUserContentPart::Document { asset } => {
+            sugarcode_state::DurableUserContentPart::Document {
+                asset: durable_content_asset(asset),
+            }
+        }
+    }
+}
+
+fn durable_content_asset(
+    asset: &sugarcode_protocol::CoreContentAsset,
+) -> sugarcode_state::DurableContentAsset {
+    sugarcode_state::DurableContentAsset {
+        asset_id: asset.asset_id.clone(),
+        sha256: asset.sha256.clone(),
+        media_type: asset.media_type.clone(),
+        original_name: asset.original_name.clone(),
+        size_bytes: asset.size_bytes,
     }
 }
 
@@ -656,8 +725,11 @@ pub(super) fn core_tool_error_kind(kind: &str) -> sugarcode_protocol::CoreToolEr
         "searchTimedOut" => CoreToolErrorKind::SearchTimedOut,
         "changedDuringSearch" => CoreToolErrorKind::ChangedDuringSearch,
         "resultTooLarge" => CoreToolErrorKind::ResultTooLarge,
-        "invalidPatch" => CoreToolErrorKind::InvalidPatch,
-        "patchDoesNotApply" => CoreToolErrorKind::PatchDoesNotApply,
+        "headerCountMismatch" => CoreToolErrorKind::HeaderCountMismatch,
+        "rangeOutOfBounds" => CoreToolErrorKind::RangeOutOfBounds,
+        "expectedMismatch" => CoreToolErrorKind::ExpectedMismatch,
+        "baseRevisionMismatch" => CoreToolErrorKind::BaseRevisionMismatch,
+        "unsupportedDiffFeature" => CoreToolErrorKind::UnsupportedDiffFeature,
         "tooManyLines" => CoreToolErrorKind::TooManyLines,
         "lineTooLong" => CoreToolErrorKind::LineTooLong,
         "hardLinkNotAllowed" => CoreToolErrorKind::HardLinkNotAllowed,

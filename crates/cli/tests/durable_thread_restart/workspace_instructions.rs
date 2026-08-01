@@ -30,7 +30,7 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "first input"
+                "input": [{"type":"text","text":"first input"}]
             }
         }),
         8,
@@ -68,7 +68,7 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "second input"
+                "input": [{"type":"text","text":"second input"}]
             }
         }),
         8,
@@ -101,7 +101,6 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
     assert!(rollout.contains("\"workspaceInstructions\""));
     assert!(!rollout.contains(FIRST_INSTRUCTION));
     assert!(!rollout.contains(SECOND_INSTRUCTION));
-    assert!(!rollout.contains("\"content\""));
 }
 
 #[test]
@@ -139,7 +138,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
             "jsonrpc":"2.0",
             "id":"turn-one",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":"apply scoped rules"}
+            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"apply scoped rules"}]}
         }),
         8,
     );
@@ -192,7 +191,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
             "jsonrpc":"2.0",
             "id":"turn-two",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":"apply current rules"}
+            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"apply current rules"}]}
         }),
         8,
     );

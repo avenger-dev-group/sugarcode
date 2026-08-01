@@ -646,9 +646,12 @@ fn transcript_from_snapshot(
 
 fn durable_item(item: &DurableItemSnapshot) -> (ItemId, String, String, Option<(String, String)>) {
     match item {
-        DurableItemSnapshot::UserMessage { id, text } => {
-            (id.clone(), "You".to_string(), text.clone(), None)
-        }
+        DurableItemSnapshot::UserMessage { id, content } => (
+            id.clone(),
+            "You".to_string(),
+            durable_user_content_text(content),
+            None,
+        ),
         DurableItemSnapshot::AgentMessage { id, text } => {
             (id.clone(), "Agent".to_string(), text.clone(), None)
         }
@@ -686,24 +689,12 @@ fn durable_item(item: &DurableItemSnapshot) -> (ItemId, String, String, Option<(
         DurableItemSnapshot::ToolCall {
             id,
             name,
-            path,
-            command,
             arguments,
             ..
         } => (
             id.clone(),
             "Tool".to_string(),
-            format!(
-                "{name} {}{}",
-                path,
-                command
-                    .as_ref()
-                    .map(|command| format!(
-                        " · {command} {}",
-                        arguments.as_deref().unwrap_or_default().join(" ")
-                    ))
-                    .unwrap_or_default()
-            ),
+            format!("{name} {arguments}"),
             None,
         ),
         DurableItemSnapshot::FileChange { id, path, diff, .. } => (
@@ -760,6 +751,7 @@ fn durable_item_id(item: &DurableItemSnapshot) -> ItemId {
         | DurableItemSnapshot::AgentTaskResult { id, .. }
         | DurableItemSnapshot::ContextCompaction { id, .. }
         | DurableItemSnapshot::ToolCall { id, .. }
+        | DurableItemSnapshot::ToolValidationRejected { id, .. }
         | DurableItemSnapshot::FileChange { id, .. }
         | DurableItemSnapshot::CommandApprovalRequest { id, .. }
         | DurableItemSnapshot::CommandApprovalDecision { id, .. }
@@ -775,7 +767,9 @@ fn durable_item_id(item: &DurableItemSnapshot) -> ItemId {
 
 fn live_item(kind: CoreItemKind) -> (String, String, Option<(String, String)>) {
     match kind {
-        CoreItemKind::UserMessage { text } => ("You".to_string(), text, None),
+        CoreItemKind::UserMessage { content } => {
+            ("You".to_string(), core_user_content_text(&content), None)
+        }
         CoreItemKind::AgentMessage { text } => ("Agent".to_string(), text, None),
         CoreItemKind::AgentCommentary { text } => ("Progress".to_string(), text, None),
         CoreItemKind::ContextCompaction {
@@ -806,22 +800,16 @@ fn live_item(kind: CoreItemKind) -> (String, String, Option<(String, String)>) {
             (label.to_string(), detail, None)
         }
         CoreItemKind::ToolCall {
+            name, arguments, ..
+        } => ("Tool".to_string(), format!("{name} {arguments}"), None),
+        CoreItemKind::ToolValidationRejected {
             name,
-            path,
-            command,
-            arguments,
+            kind,
+            suggested_action,
             ..
         } => (
-            "Tool".to_string(),
-            format!(
-                "{name} {path}{}",
-                command
-                    .map(|command| format!(
-                        " · {command} {}",
-                        arguments.unwrap_or_default().join(" ")
-                    ))
-                    .unwrap_or_default()
-            ),
+            "Tool validation".to_string(),
+            format!("{name}: {kind} · {suggested_action}"),
             None,
         ),
         CoreItemKind::FileChange { path, diff, .. } => {
@@ -848,4 +836,36 @@ fn live_item(kind: CoreItemKind) -> (String, String, Option<(String, String)>) {
         ),
         other => ("Activity".to_string(), format!("{other:?}"), None),
     }
+}
+
+fn durable_user_content_text(content: &[sugarcode_state::DurableUserContentPart]) -> String {
+    content
+        .iter()
+        .map(|part| match part {
+            sugarcode_state::DurableUserContentPart::Text { text } => text.clone(),
+            sugarcode_state::DurableUserContentPart::Image { asset } => {
+                format!("[image: {}]", asset.original_name)
+            }
+            sugarcode_state::DurableUserContentPart::Document { asset } => {
+                format!("[document: {}]", asset.original_name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn core_user_content_text(content: &[sugarcode_protocol::CoreUserContentPart]) -> String {
+    content
+        .iter()
+        .map(|part| match part {
+            sugarcode_protocol::CoreUserContentPart::Text { text } => text.clone(),
+            sugarcode_protocol::CoreUserContentPart::Image { asset } => {
+                format!("[image: {}]", asset.original_name)
+            }
+            sugarcode_protocol::CoreUserContentPart::Document { asset } => {
+                format!("[document: {}]", asset.original_name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

@@ -6,11 +6,11 @@ use sugarcode_state::MAX_CONFIG_BYTES;
 use sugarcode_state::MAX_MODEL_API_KEY_BYTES;
 use sugarcode_state::MAX_MODEL_CONTEXT_WINDOW_TOKENS;
 use sugarcode_state::MIN_MODEL_CONTEXT_WINDOW_TOKENS;
-use sugarcode_state::ModelCapabilityMode;
 use sugarcode_state::ModelCatalog;
 use sugarcode_state::ModelConnection;
 use sugarcode_state::ModelProfile;
-use sugarcode_state::ModelProviderKind;
+use sugarcode_state::ModelProfileCapabilities;
+use sugarcode_state::ModelProviderFamily;
 use sugarcode_state::ModelWireApi;
 use sugarcode_state::load_effective_config_for_home;
 use sugarcode_state::load_model_edit_config_for_home;
@@ -40,11 +40,11 @@ fn model_catalog(
         vec![
             ModelConnection::new(
                 "conn_primary".to_owned(),
-                ModelProviderKind::OpenAiCompatible,
+                ModelProviderFamily::OpenAi,
                 "Fixture provider".to_owned(),
                 Url::parse(endpoint).expect("URL"),
                 true,
-                Some(ModelWireApi::OpenAiChatCompletions),
+                ModelWireApi::OpenAiChatCompletions,
                 api_key.map(str::to_owned),
             )
             .expect("connection"),
@@ -56,8 +56,7 @@ fn model_catalog(
                 "Fixture model".to_owned(),
                 "fixture-model".to_owned(),
                 context_window_tokens,
-                ModelCapabilityMode::Auto,
-                ModelCapabilityMode::Auto,
+                ModelProfileCapabilities::default(),
             )
             .expect("profile"),
         ],
@@ -106,7 +105,7 @@ fn invalid_unknown_and_unsupported_config_are_safe_errors() {
 }
 
 #[test]
-fn legacy_single_model_is_repairable_and_does_not_block_runtime() {
+fn removed_single_model_shape_is_rejected_and_model_settings_can_replace_it() {
     let (directory, home) = resolved_home();
     fs::write(
         directory.path().join("config.toml"),
@@ -214,11 +213,11 @@ fn model_connection_accepts_http_and_https_transports() {
         assert!(
             ModelConnection::new(
                 "conn_primary".to_owned(),
-                ModelProviderKind::OpenAiCompatible,
+                ModelProviderFamily::OpenAi,
                 "Fixture".to_owned(),
                 Url::parse(endpoint).expect("URL"),
                 true,
-                Some(ModelWireApi::OpenAiChatCompletions),
+                ModelWireApi::OpenAiChatCompletions,
                 None,
             )
             .is_err(),
@@ -242,11 +241,11 @@ fn model_connections_accept_only_bounded_header_safe_api_keys() {
         assert!(
             ModelConnection::new(
                 "conn_primary".to_owned(),
-                ModelProviderKind::OpenAiCompatible,
+                ModelProviderFamily::OpenAi,
                 "Fixture".to_owned(),
                 Url::parse("https://example.com/v1").expect("URL"),
                 true,
-                Some(ModelWireApi::OpenAiChatCompletions),
+                ModelWireApi::OpenAiChatCompletions,
                 Some(invalid),
             )
             .is_err()
@@ -328,8 +327,7 @@ fn model_context_window_is_optional_and_bounded() {
                 "Fixture".to_owned(),
                 "fixture-model".to_owned(),
                 Some(invalid),
-                ModelCapabilityMode::Auto,
-                ModelCapabilityMode::Auto,
+                ModelProfileCapabilities::default(),
             )
             .is_err()
         );

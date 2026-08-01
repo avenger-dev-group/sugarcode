@@ -1,7 +1,10 @@
 use crate::BoxModelFuture;
+use crate::ModelContentPart;
+use crate::ModelContinuation;
 use crate::ModelError;
 use crate::ModelErrorKind;
 use crate::ModelEvent;
+use crate::ModelFinishReason;
 use crate::ModelInstruction;
 use crate::ModelMessage;
 use crate::ModelOutputItem;
@@ -10,9 +13,16 @@ use crate::ModelProvider;
 use crate::ModelRequest;
 use crate::ModelResponse;
 use crate::ModelRole;
+use crate::ModelStrictToolsMode;
+use crate::ModelTerminalMetadata;
 use crate::ModelTextPhase;
 use crate::ModelToolCall;
+use crate::ModelToolResultContent;
 use crate::ModelUsage;
+use crate::ProviderContextEnvelope;
+use crate::ProviderWireApi;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use eventsource_stream::EventStreamError;
 use eventsource_stream::Eventsource;
 use futures_util::FutureExt;
@@ -21,6 +31,7 @@ use reqwest::StatusCode;
 use reqwest::header::AUTHORIZATION;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderValue;
+use reqwest::header::RETRY_AFTER;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::MapAccess;
@@ -54,7 +65,7 @@ pub struct OpenAiChatCompletionsProvider {
     client: reqwest::Client,
     endpoint: Url,
     token: Option<Zeroizing<String>>,
-    strict_tools: bool,
+    strict_tools: ModelStrictToolsMode,
     parallel_tools: bool,
 }
 
@@ -64,13 +75,13 @@ impl OpenAiChatCompletionsProvider {
     }
 
     pub fn new_secret(endpoint: Url, token: Option<Zeroizing<String>>) -> Result<Self, ModelError> {
-        Self::new_secret_with_capabilities(endpoint, token, false, false)
+        Self::new_secret_with_capabilities(endpoint, token, ModelStrictToolsMode::Disabled, false)
     }
 
     pub fn new_secret_with_capabilities(
         endpoint: Url,
         token: Option<Zeroizing<String>>,
-        strict_tools: bool,
+        strict_tools: ModelStrictToolsMode,
         parallel_tools: bool,
     ) -> Result<Self, ModelError> {
         validate_endpoint(&endpoint)?;
@@ -104,7 +115,7 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
         async move {
             let (request, tool_names) = crate::tool_names::normalize_request(request).into_parts();
             let body =
-                ChatRequest::from_model_request(request, self.strict_tools, self.parallel_tools);
+                ChatRequest::from_model_request(request, self.strict_tools, self.parallel_tools)?;
             let allow_tools = !body.tools.is_empty();
             let mut builder = self.client.post(self.endpoint.clone()).json(&body);
             if let Some(token) = &self.token {
@@ -164,6 +175,11 @@ async fn process_stream(
     allow_tools: bool,
     tool_names: BTreeMap<String, String>,
 ) {
+    let provider_request_id = ["x-request-id", "request-id"]
+        .into_iter()
+        .find_map(|name| response.headers().get(name))
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
     let mut event_bytes = 0usize;
     let mut suffix = [0u8; 4];
     let bounded_bytes = response.bytes_stream().map(move |chunk| {
@@ -187,6 +203,7 @@ async fn process_stream(
     let mut finish = None;
     let mut usage = None;
     let mut output_text = String::new();
+    let mut reasoning_content = String::new();
     let mut semantic_output_bytes = 0usize;
     let mut tool_assemblers = BTreeMap::<u64, ToolCallAssembler>::new();
     let mut saw_unsupported_output = false;
@@ -227,6 +244,7 @@ async fn process_stream(
                 send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
                 return;
             };
+            let portable_text = output_text.clone();
             let mut output = Vec::new();
             match finish {
                 ChatFinish::Incomplete => {
@@ -302,10 +320,75 @@ async fn process_stream(
                     }
                 }
             }
+            let continuation = if output
+                .iter()
+                .any(|item| matches!(item.kind, ModelOutputItemKind::ToolCall(_)))
+            {
+                ModelContinuation::ToolCalls
+            } else {
+                ModelContinuation::Complete
+            };
+            let raw_tool_calls = output
+                .iter()
+                .filter_map(|item| match &item.kind {
+                    ModelOutputItemKind::ToolCall(call) => Some(ChatToolCall {
+                        id: call.id.clone(),
+                        kind: "function".to_owned(),
+                        function: ChatFunctionCall {
+                            name: tool_names
+                                .iter()
+                                .find_map(|(wire, internal)| {
+                                    (internal == &call.name).then_some(wire)
+                                })
+                                .unwrap_or(&call.name)
+                                .clone(),
+                            arguments: serde_json::to_string(&call.arguments)
+                                .expect("tool arguments serialize"),
+                        },
+                    }),
+                    ModelOutputItemKind::AssistantText { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            let reasoning_content = (!reasoning_content.is_empty())
+                .then_some(serde_json::Value::String(reasoning_content));
+            let context_payload = reasoning_content.as_ref().map(|reasoning_content| {
+                serde_json::to_vec(&ChatMessage {
+                    role: "assistant".to_owned(),
+                    content: (!portable_text.is_empty())
+                        .then_some(ChatContent::Text(portable_text)),
+                    tool_calls: raw_tool_calls,
+                    tool_call_id: None,
+                    reasoning_content: Some(reasoning_content.clone()),
+                })
+                .map_err(|_| ModelError::new(ModelErrorKind::Protocol, false))
+                .and_then(|payload| {
+                    ProviderContextEnvelope::new(
+                        ProviderWireApi::OpenAiChatCompletions,
+                        provider_request_id.clone(),
+                        payload,
+                    )
+                })
+            });
+            let provider_context = match context_payload.transpose() {
+                Ok(context) => context,
+                Err(error) => {
+                    send_error(&sender, error).await;
+                    return;
+                }
+            };
             let _ = sender
                 .send(Ok(ModelEvent::ResponseCompleted(ModelResponse {
                     output,
                     usage,
+                    terminal: ModelTerminalMetadata {
+                        finish_reason: match continuation {
+                            ModelContinuation::Complete => ModelFinishReason::Stop,
+                            ModelContinuation::ToolCalls => ModelFinishReason::ToolCalls,
+                        },
+                        provider_request_id,
+                        continuation,
+                    },
+                    provider_context,
                 })))
                 .await;
             return;
@@ -342,12 +425,34 @@ async fn process_stream(
             send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
             return;
         }
-        for choice in chunk.choices {
+        for mut choice in chunk.choices {
             if choice.delta.has_protocol_violation() {
                 send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
                 return;
             }
             saw_unsupported_output |= choice.delta.has_unsupported_output(allow_tools);
+            if let Some(reasoning) = choice.delta.reasoning_content.take() {
+                let Some(reasoning) = reasoning.as_str() else {
+                    send_error(
+                        &sender,
+                        ModelError::new(ModelErrorKind::UnsupportedOutput, false),
+                    )
+                    .await;
+                    return;
+                };
+                semantic_output_bytes = match semantic_output_bytes.checked_add(reasoning.len()) {
+                    Some(bytes) if bytes <= MAX_ACCUMULATED_SEMANTIC_OUTPUT_BYTES => bytes,
+                    _ => {
+                        send_error(
+                            &sender,
+                            ModelError::new(ModelErrorKind::OutputTooLarge, false),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                reasoning_content.push_str(reasoning);
+            }
             if let Some(content) = choice.delta.content
                 && !content.is_empty()
             {
@@ -531,19 +636,43 @@ fn map_reqwest_error(error: reqwest::Error) -> ModelError {
 
 async fn map_error_response(response: reqwest::Response) -> ModelError {
     let status = response.status();
-    if status == StatusCode::PAYLOAD_TOO_LARGE {
-        return ModelError::new(ModelErrorKind::ContextLengthExceeded, false);
-    }
-    if matches!(
-        status,
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
-    ) && bounded_error_body(response)
-        .await
-        .is_some_and(|body| is_context_length_error(&body))
-    {
-        return ModelError::new(ModelErrorKind::ContextLengthExceeded, false);
-    }
-    map_status(status)
+    let provider_request_id = ["x-request-id", "request-id"]
+        .into_iter()
+        .find_map(|name| error_header_text(response.headers(), name));
+    let retry_after = error_header_text(response.headers(), RETRY_AFTER.as_str());
+    let body = bounded_error_body(response).await;
+    let provider_code = body.as_deref().and_then(provider_error_code);
+    let context_length_exceeded = status == StatusCode::PAYLOAD_TOO_LARGE
+        || (matches!(
+            status,
+            StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+        ) && body.as_deref().is_some_and(is_context_length_error));
+    let error = if context_length_exceeded {
+        ModelError::new(ModelErrorKind::ContextLengthExceeded, false)
+    } else {
+        map_status(status)
+    };
+    error.with_provider_metadata(
+        status.as_u16(),
+        provider_code.as_deref(),
+        provider_request_id.as_deref(),
+        retry_after.as_deref(),
+    )
+}
+
+fn error_header_text(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
+}
+
+fn provider_error_code(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    ["/error/code", "/error/type", "/type"]
+        .into_iter()
+        .find_map(|pointer| value.pointer(pointer).and_then(serde_json::Value::as_str))
+        .map(ToOwned::to_owned)
 }
 
 async fn bounded_error_body(response: reqwest::Response) -> Option<Vec<u8>> {
@@ -614,28 +743,40 @@ struct StreamOptions {
 }
 
 impl ChatRequest {
-    fn from_model_request(request: ModelRequest, strict_tools: bool, parallel_tools: bool) -> Self {
+    fn from_model_request(
+        request: ModelRequest,
+        strict_tools: ModelStrictToolsMode,
+        parallel_tools: bool,
+    ) -> Result<Self, ModelError> {
         let mut messages = request
             .instructions
             .into_iter()
             .map(ChatMessage::from)
             .collect::<Vec<_>>();
-        messages.extend(chat_messages_from_model_messages(request.messages));
+        messages.extend(chat_messages_from_model_messages(request.messages)?);
         let tools = request
             .tools
             .into_iter()
-            .map(|tool| ChatToolDefinition {
-                kind: "function",
-                function: ChatFunctionDefinition {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.parameters,
-                    strict: strict_tools,
-                },
+            .map(|tool| {
+                let strict = crate::tool_schema::strict_for_tool(
+                    &tool.name,
+                    &tool.parameters,
+                    crate::tool_schema::ToolSchemaDialect::OpenAi,
+                    strict_tools,
+                )?;
+                Ok(ChatToolDefinition {
+                    kind: "function",
+                    function: ChatFunctionDefinition {
+                        name: tool.name,
+                        description: tool.description,
+                        parameters: tool.parameters,
+                        strict,
+                    },
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, ModelError>>()?;
         let parallel_tool_calls = (!tools.is_empty()).then_some(parallel_tools);
-        Self {
+        Ok(Self {
             model: request.model,
             messages,
             stream: true,
@@ -644,134 +785,283 @@ impl ChatRequest {
             },
             tools,
             parallel_tool_calls,
-        }
+        })
     }
 }
 
 impl From<ModelInstruction> for ChatMessage {
     fn from(instruction: ModelInstruction) -> Self {
         Self {
-            role: "developer",
-            content: Some(instruction.rendered_content()),
+            role: "developer".to_owned(),
+            content: Some(ChatContent::Text(instruction.rendered_content())),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct ChatMessage {
-    role: &'static str,
+    role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    content: Option<ChatContent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tool_calls: Vec<ChatToolCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<serde_json::Value>,
 }
 
-impl From<ModelMessage> for ChatMessage {
-    fn from(message: ModelMessage) -> Self {
-        match message {
-            ModelMessage::Text { role, text } => Self {
-                role: match role {
-                    ModelRole::User => "user",
-                    ModelRole::Assistant => "assistant",
-                },
-                content: Some(text),
-                tool_calls: Vec::new(),
-                tool_call_id: None,
-            },
-            ModelMessage::ContextCompaction { content } => Self {
-                role: "user",
-                content: Some(content),
-                tool_calls: Vec::new(),
-                tool_call_id: None,
-            },
-            ModelMessage::Commentary { text } => Self {
-                role: "assistant",
-                content: Some(text),
-                tool_calls: Vec::new(),
-                tool_call_id: None,
-            },
-            ModelMessage::ToolCall(call) => Self {
-                role: "assistant",
-                content: None,
-                tool_calls: vec![ChatToolCall {
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum ChatContent {
+    Text(String),
+    Parts(Vec<serde_json::Value>),
+}
+
+fn chat_messages_from_model_messages(
+    messages: Vec<ModelMessage>,
+) -> Result<Vec<ChatMessage>, ModelError> {
+    let mut rendered = Vec::with_capacity(messages.len());
+    for message in messages {
+        if let [ModelContentPart::ProviderContext(context)] = message.content.as_slice() {
+            if context.wire_api() != ProviderWireApi::OpenAiChatCompletions {
+                return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+            }
+            let mut restored: ChatMessage = serde_json::from_slice(context.payload())
+                .map_err(|_| ModelError::new(ModelErrorKind::Protocol, false))?;
+            restored.role = "assistant".to_owned();
+            rendered.push(restored);
+            continue;
+        }
+        let mut text = String::new();
+        let mut ordered_content = Vec::new();
+        let mut has_image = false;
+        let mut calls = Vec::new();
+        let mut results = Vec::new();
+        for part in message.content {
+            match part {
+                ModelContentPart::Text { text: part, .. }
+                | ModelContentPart::ContextCompaction { content: part } => {
+                    text.push_str(&part);
+                    ordered_content.push(serde_json::json!({"type": "text", "text": part}));
+                }
+                ModelContentPart::ToolCall { call } => calls.push(ChatToolCall {
                     id: call.id,
-                    kind: "function",
+                    kind: "function".to_owned(),
                     function: ChatFunctionCall {
                         name: call.name,
                         arguments: serde_json::to_string(&call.arguments)
                             .expect("tool arguments serialize"),
                     },
-                }],
-                tool_call_id: None,
-            },
-            ModelMessage::ToolCallBatch(calls) => Self {
-                role: "assistant",
-                content: None,
-                tool_calls: calls
-                    .into_iter()
-                    .map(|call| ChatToolCall {
-                        id: call.id,
-                        kind: "function",
-                        function: ChatFunctionCall {
-                            name: call.name,
-                            arguments: serde_json::to_string(&call.arguments)
-                                .expect("tool arguments serialize"),
+                }),
+                ModelContentPart::ToolResult { result } => results.push(result),
+                ModelContentPart::ImageAsset(asset) => {
+                    has_image = true;
+                    ordered_content.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!(
+                                "data:{};base64,{}",
+                                asset.media_type,
+                                BASE64_STANDARD.encode(&asset.bytes),
+                            ),
                         },
-                    })
-                    .collect(),
-                tool_call_id: None,
-            },
-            ModelMessage::ToolResult { call_id, content } => Self {
-                role: "tool",
-                content: Some(content),
+                    }));
+                }
+                ModelContentPart::PdfDocument(_) => {
+                    return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+                }
+                ModelContentPart::ProviderContext(_) => {
+                    return Err(ModelError::new(ModelErrorKind::Protocol, false));
+                }
+            }
+        }
+        if !results.is_empty() {
+            if !text.is_empty() || !calls.is_empty() || message.role != ModelRole::User {
+                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+            }
+            rendered.extend(results.into_iter().map(|result| ChatMessage {
+                role: "tool".to_owned(),
+                content: Some(ChatContent::Text(chat_tool_result_text(&result.content))),
                 tool_calls: Vec::new(),
-                tool_call_id: Some(call_id),
+                tool_call_id: Some(result.call_id),
+                reasoning_content: None,
+            }));
+            continue;
+        }
+        rendered.push(ChatMessage {
+            role: match message.role {
+                ModelRole::User => "user",
+                ModelRole::Assistant => "assistant",
+            }
+            .to_owned(),
+            content: if has_image {
+                Some(ChatContent::Parts(ordered_content))
+            } else {
+                (!text.is_empty()).then_some(ChatContent::Text(text))
             },
+            tool_calls: calls,
+            tool_call_id: None,
+            reasoning_content: None,
+        });
+    }
+    Ok(rendered)
+}
+
+fn chat_tool_result_text(content: &ModelToolResultContent) -> String {
+    match content {
+        ModelToolResultContent::Json(value) => value.to_string(),
+        ModelToolResultContent::Text(text) => text.clone(),
+        ModelToolResultContent::Error { kind, message } => {
+            serde_json::json!({"error": {"kind": kind, "message": message}}).to_string()
         }
     }
 }
 
-fn chat_messages_from_model_messages(messages: Vec<ModelMessage>) -> Vec<ChatMessage> {
-    let mut rendered = Vec::with_capacity(messages.len());
-    let mut pending_calls = Vec::new();
-    let mut pending_commentary = None;
-    let flush_calls = |rendered: &mut Vec<ChatMessage>,
-                       pending_commentary: &mut Option<String>,
-                       pending_calls: &mut Vec<ModelToolCall>| {
-        if pending_calls.is_empty() {
-            if let Some(text) = pending_commentary.take() {
-                rendered.push(ChatMessage::from(ModelMessage::Commentary { text }));
-            }
-            return;
-        }
-        let calls = std::mem::take(pending_calls);
-        let mut message = ChatMessage::from(ModelMessage::ToolCallBatch(calls));
-        message.content = pending_commentary.take();
-        rendered.push(message);
-    };
-    for message in messages {
-        match message {
-            ModelMessage::Commentary { text } => {
-                flush_calls(&mut rendered, &mut pending_commentary, &mut pending_calls);
-                pending_commentary = Some(text);
-            }
-            ModelMessage::ToolCall(call) => pending_calls.push(call),
-            ModelMessage::ToolCallBatch(calls) => {
-                pending_calls.extend(calls);
-                flush_calls(&mut rendered, &mut pending_commentary, &mut pending_calls);
-            }
-            other => {
-                flush_calls(&mut rendered, &mut pending_commentary, &mut pending_calls);
-                rendered.push(ChatMessage::from(other));
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ModelAssetRef;
+    use crate::ModelToolDefinition;
+    use crate::ModelToolResult;
+
+    #[test]
+    fn chat_strict_auto_is_resolved_per_tool() {
+        let request = ModelRequest {
+            model: "fixture".to_owned(),
+            instructions: Vec::new(),
+            messages: Vec::new(),
+            tools: vec![
+                ModelToolDefinition {
+                    name: "strict_tool".to_owned(),
+                    description: "strict".to_owned(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                        "additionalProperties": false
+                    }),
+                },
+                ModelToolDefinition {
+                    name: "loose_tool".to_owned(),
+                    description: "loose".to_owned(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}}
+                    }),
+                },
+            ],
+        };
+        let body = serde_json::to_value(
+            ChatRequest::from_model_request(request, ModelStrictToolsMode::Auto, true)
+                .expect("chat request"),
+        )
+        .expect("request JSON");
+        assert_eq!(body["tools"][0]["function"]["strict"], true);
+        assert_eq!(body["tools"][1]["function"]["strict"], false);
     }
-    flush_calls(&mut rendered, &mut pending_commentary, &mut pending_calls);
-    rendered
+
+    #[test]
+    fn chat_encodes_images_and_rejects_pdf_parts() {
+        let image = ModelAssetRef {
+            asset_id: format!("ast_{}", "a".repeat(64)),
+            sha256: "a".repeat(64),
+            media_type: "image/png".to_owned(),
+            original_name: "image.png".to_owned(),
+            size_bytes: 3,
+            bytes: b"png".to_vec(),
+        };
+        let messages = chat_messages_from_model_messages(vec![ModelMessage {
+            role: ModelRole::User,
+            content: vec![
+                ModelContentPart::Text {
+                    phase: ModelTextPhase::Final,
+                    text: "inspect".to_owned(),
+                },
+                ModelContentPart::ImageAsset(image.clone()),
+            ],
+        }])
+        .expect("image request");
+        let value = serde_json::to_value(&messages[0]).expect("chat message");
+        assert_eq!(value["content"][0]["type"], "text");
+        assert_eq!(value["content"][1]["type"], "image_url");
+        assert_eq!(
+            value["content"][1]["image_url"]["url"],
+            "data:image/png;base64,cG5n"
+        );
+
+        let result = chat_messages_from_model_messages(vec![ModelMessage {
+            role: ModelRole::User,
+            content: vec![ModelContentPart::PdfDocument(ModelAssetRef {
+                media_type: "application/pdf".to_owned(),
+                original_name: "document.pdf".to_owned(),
+                ..image
+            })],
+        }]);
+        let Err(error) = result else {
+            panic!("PDF must be rejected");
+        };
+        assert_eq!(error.kind(), ModelErrorKind::InvalidRequest);
+    }
+
+    #[test]
+    fn recognized_reasoning_extension_is_replayed_only_on_chat_wire() {
+        let raw = serde_json::json!({
+            "role": "assistant",
+            "content": "Checking.",
+            "reasoning_content": "opaque reasoning extension",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "workspace_read",
+                    "arguments": "{\"path\":\"README.md\"}"
+                }
+            }]
+        });
+        let context = ProviderContextEnvelope::new(
+            ProviderWireApi::OpenAiChatCompletions,
+            Some("request_fixture".to_owned()),
+            serde_json::to_vec(&raw).expect("context payload"),
+        )
+        .expect("context envelope");
+        let messages = chat_messages_from_model_messages(vec![
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: vec![ModelContentPart::ProviderContext(context)],
+            },
+            ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+                "call_1".to_owned(),
+                "contents".to_owned(),
+            )]),
+        ])
+        .expect("chat continuation");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&messages[0]).expect("assistant message"),
+            raw
+        );
+        assert_eq!(messages[1].role, "tool");
+        assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_1"));
+
+        let wrong_wire = ProviderContextEnvelope::new(
+            ProviderWireApi::OpenAiResponses,
+            None,
+            serde_json::to_vec(&serde_json::json!([])).expect("wrong payload"),
+        )
+        .expect("wrong-wire context");
+        let Err(error) = chat_messages_from_model_messages(vec![ModelMessage {
+            role: ModelRole::Assistant,
+            content: vec![ModelContentPart::ProviderContext(wrong_wire)],
+        }]) else {
+            panic!("cross-wire replay must fail");
+        };
+        assert_eq!(error.kind(), ModelErrorKind::InvalidRequest);
+    }
 }
 
 #[derive(Serialize)]
@@ -789,15 +1079,15 @@ struct ChatFunctionDefinition {
     strict: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct ChatToolCall {
     id: String,
     #[serde(rename = "type")]
-    kind: &'static str,
+    kind: String,
     function: ChatFunctionCall,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 struct ChatFunctionCall {
     name: String,
     arguments: String,

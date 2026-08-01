@@ -47,7 +47,8 @@ pub async fn run_stdio(
         parts.session,
         parts.workspace,
         parts.mcp_capability,
-    );
+    )
+    .with_content_store(parts.content_store);
     let input = tokio::io::BufReader::new(tokio::io::stdin());
     let output = tokio::io::BufWriter::new(tokio::io::stdout());
     stdio::serve_with_events_and_approvals(

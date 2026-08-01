@@ -24,7 +24,7 @@ fn base_agent_prompt_is_fixed_complete_and_provider_counted() {
         "collaboration/dispatch",
         "automatically compact older active-Turn context",
         "one concise process update",
-        "workspace/apply-patch",
+        "workspace/apply-diff",
         "shell/exec",
         "# Engineering workflow",
         "# Final response",

@@ -181,7 +181,9 @@ fn begin_mcp_turn(repository: &mut RolloutRepository, thread_id: &ThreadId) {
                 status: DurableTurnStatus::InProgress,
                 items: vec![DurableItemSnapshot::UserMessage {
                     id: ItemId::new("item_0000000000000001"),
-                    text: "Use MCP".to_string(),
+                    content: vec![sugarcode_state::DurableUserContentPart::Text {
+                        text: "Use MCP".to_string(),
+                    }],
                 }],
                 context_compaction: None,
                 workspace_instructions: None,
@@ -200,7 +202,9 @@ fn approved_attempt_items() -> Vec<DurableItemSnapshot> {
     vec![
         DurableItemSnapshot::UserMessage {
             id: ItemId::new("item_0000000000000001"),
-            text: "Use MCP".to_string(),
+            content: vec![sugarcode_state::DurableUserContentPart::Text {
+                text: "Use MCP".to_string(),
+            }],
         },
         DurableItemSnapshot::McpToolCall {
             id: ItemId::new("item_0000000000000002"),

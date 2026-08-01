@@ -1,3 +1,4 @@
+use serde_json::json;
 use std::fs;
 use std::io::Write;
 use sugarcode_protocol::ItemId;
@@ -51,7 +52,9 @@ fn started_text_turn() -> DurableTurnSnapshot {
         items: vec![
             DurableItemSnapshot::UserMessage {
                 id: ItemId::new("item_0000000000000001"),
-                text: "Hello".to_string(),
+                content: vec![sugarcode_state::DurableUserContentPart::Text {
+                    text: "Hello".to_string(),
+                }],
             },
             DurableItemSnapshot::AgentMessage {
                 id: ItemId::new("item_0000000000000002"),

@@ -29,18 +29,57 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
     }
     if runtime.workspace_patch.is_some() {
         definitions.push(ModelToolDefinition {
-            name: "workspace/apply-patch".to_string(),
+            name: "workspace/edit".to_string(),
             description:
-                "Apply strict unified hunks to one existing UTF-8 regular file inside the active workspace scope. The write capability is explicit, bounded, conflict-checked, and not a sandbox or persistent permission."
+                "Edit one existing UTF-8 regular file with exact, 1-based line splices against a required SHA-256 revision. All edit coordinates refer to the same original revision."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
                     "path": { "type": "string" },
-                    "patch": { "type": "string" }
+                    "baseSha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                    },
+                    "edits": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": sugarcode_tools::MAX_WORKSPACE_PATCH_HUNKS,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "startLine": { "type": "integer", "minimum": 1 },
+                                "deleteLineCount": { "type": "integer", "minimum": 0 },
+                                "expected": { "type": "string" },
+                                "replacement": { "type": "string" }
+                            },
+                            "required": [
+                                "startLine",
+                                "deleteLineCount",
+                                "expected",
+                                "replacement"
+                            ]
+                        }
+                    }
                 },
-                "required": ["path", "patch"]
+                "required": ["path", "baseSha256", "edits"]
+            }),
+        });
+        definitions.push(ModelToolDefinition {
+            name: "workspace/apply-diff".to_string(),
+            description:
+                "Apply one standard single-file unified diff to an existing UTF-8 regular file. Diff header paths are ignored; path is the only file authority. Rename, binary and multi-file diffs are rejected."
+                    .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "path": { "type": "string" },
+                    "diff": { "type": "string" }
+                },
+                "required": ["path", "diff"]
             }),
         });
     }
@@ -113,7 +152,8 @@ fn workspace_search_parameters() -> serde_json::Value {
 pub(super) struct WorkspaceToolArguments {
     pub path: String,
     pub query: Option<String>,
-    pub patch: Option<String>,
+    pub diff: Option<String>,
+    pub edit: Option<sugarcode_tools::WorkspaceEditArguments>,
 }
 
 pub(super) struct ShellToolArguments {
@@ -208,17 +248,22 @@ pub(super) fn workspace_tool_arguments(
 ) -> Result<WorkspaceToolArguments, ModelError> {
     if !matches!(
         call.name.as_str(),
-        "workspace/read" | "workspace/list" | "workspace/search" | "workspace/apply-patch"
+        "workspace/read"
+            | "workspace/list"
+            | "workspace/search"
+            | "workspace/edit"
+            | "workspace/apply-diff"
     ) {
         return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
     }
     let Some(arguments) = call.arguments.as_object() else {
         return Err(ModelError::new(ModelErrorKind::Protocol, false));
     };
-    let expected_len = usize::from(matches!(
-        call.name.as_str(),
-        "workspace/search" | "workspace/apply-patch"
-    )) + 1;
+    let expected_len = match call.name.as_str() {
+        "workspace/edit" => 3,
+        "workspace/search" | "workspace/apply-diff" => 2,
+        _ => 1,
+    };
     if arguments.len() != expected_len {
         return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
     }
@@ -238,10 +283,10 @@ pub(super) fn workspace_tool_arguments(
     } else {
         None
     };
-    let patch = if call.name == "workspace/apply-patch" {
+    let diff = if call.name == "workspace/apply-diff" {
         Some(
             arguments
-                .get("patch")
+                .get("diff")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
                 .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?,
@@ -249,7 +294,80 @@ pub(super) fn workspace_tool_arguments(
     } else {
         None
     };
-    Ok(WorkspaceToolArguments { path, query, patch })
+    let edit = if call.name == "workspace/edit" {
+        let base_sha256 = arguments
+            .get("baseSha256")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| {
+                value.len() == 64
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+            .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        let values = arguments
+            .get("edits")
+            .and_then(serde_json::Value::as_array)
+            .filter(|values| {
+                !values.is_empty() && values.len() <= sugarcode_tools::MAX_WORKSPACE_PATCH_HUNKS
+            })
+            .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        let mut edits = Vec::with_capacity(values.len());
+        let mut total_bytes = 0usize;
+        for value in values {
+            let value = value
+                .as_object()
+                .filter(|value| value.len() == 4)
+                .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+            let start_line = value
+                .get("startLine")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+            let delete_line_count = value
+                .get("deleteLineCount")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+            let expected = value
+                .get("expected")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+            let replacement = value
+                .get("replacement")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+            total_bytes = total_bytes
+                .checked_add(expected.len())
+                .and_then(|value| value.checked_add(replacement.len()))
+                .filter(|value| *value <= sugarcode_tools::MAX_WORKSPACE_PATCH_BYTES)
+                .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+            edits.push(sugarcode_tools::WorkspaceLineEdit {
+                start_line,
+                delete_line_count,
+                expected: expected.to_string(),
+                replacement: replacement.to_string(),
+            });
+        }
+        Some(sugarcode_tools::WorkspaceEditArguments {
+            path: path.clone(),
+            base_sha256: base_sha256.to_string(),
+            edits,
+        })
+    } else {
+        None
+    };
+    Ok(WorkspaceToolArguments {
+        path,
+        query,
+        diff,
+        edit,
+    })
+}
+
+pub(super) fn is_workspace_write_tool(name: &str) -> bool {
+    matches!(name, "workspace/edit" | "workspace/apply-diff")
 }
 
 pub(super) fn map_workspace_read_outcome(
@@ -402,8 +520,13 @@ pub(super) fn map_workspace_patch_error(kind: WorkspacePatchErrorKind) -> CoreTo
         WorkspacePatchErrorKind::BinaryFile => CoreToolErrorKind::BinaryFile,
         WorkspacePatchErrorKind::InvalidEncoding => CoreToolErrorKind::InvalidEncoding,
         WorkspacePatchErrorKind::InvalidNewline => CoreToolErrorKind::InvalidNewline,
-        WorkspacePatchErrorKind::InvalidPatch => CoreToolErrorKind::InvalidPatch,
-        WorkspacePatchErrorKind::PatchDoesNotApply => CoreToolErrorKind::PatchDoesNotApply,
+        WorkspacePatchErrorKind::HeaderCountMismatch => CoreToolErrorKind::HeaderCountMismatch,
+        WorkspacePatchErrorKind::RangeOutOfBounds => CoreToolErrorKind::RangeOutOfBounds,
+        WorkspacePatchErrorKind::ExpectedMismatch => CoreToolErrorKind::ExpectedMismatch,
+        WorkspacePatchErrorKind::BaseRevisionMismatch => CoreToolErrorKind::BaseRevisionMismatch,
+        WorkspacePatchErrorKind::UnsupportedDiffFeature => {
+            CoreToolErrorKind::UnsupportedDiffFeature
+        }
         WorkspacePatchErrorKind::TooManyLines => CoreToolErrorKind::TooManyLines,
         WorkspacePatchErrorKind::LineTooLong => CoreToolErrorKind::LineTooLong,
         WorkspacePatchErrorKind::ResultTooLarge => CoreToolErrorKind::ResultTooLarge,

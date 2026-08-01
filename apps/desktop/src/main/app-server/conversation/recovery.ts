@@ -197,6 +197,9 @@ export const recoverConversation = (
           role: item.type === 'userMessage' ? 'user' : 'agent',
           text: item.text,
           status: 'completed',
+          ...(item.type === 'userMessage' && item.attachments.length > 0
+            ? { attachments: item.attachments }
+            : {}),
         });
         continue;
       }
@@ -359,7 +362,7 @@ export const recoverConversation = (
       if (item.type === 'workspacePatchCall') {
         if (fileChange && !fileChange.result) {
           throw new Error(
-            'thread/resume returned overlapping workspace/apply-patch activity.',
+            'thread/resume returned overlapping workspace/apply-diff activity.',
           );
         }
         fileChange = {
@@ -421,7 +424,7 @@ export const recoverConversation = (
               fileChange.change.afterBytes !== item.outcome.afterBytes))
         ) {
           throw new Error(
-            'thread/resume returned an unmatched workspace/apply-patch result.',
+            'thread/resume returned an unmatched workspace/apply-diff result.',
           );
         }
         fileChange = {
@@ -789,7 +792,7 @@ export const recoverConversation = (
     }
     if (fileChange && turn.status !== 'interrupted' && !fileChange.result) {
       throw new Error(
-        'thread/resume returned terminal workspace/apply-patch activity without a result.',
+        'thread/resume returned terminal workspace/apply-diff activity without a result.',
       );
     }
     if (

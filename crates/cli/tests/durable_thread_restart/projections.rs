@@ -22,7 +22,7 @@ fn rebuilds_an_invalid_projection_then_lists_and_resumes_without_leaking_content
             "jsonrpc": "2.0",
             "id": "turn-1",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Hello"}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
@@ -85,7 +85,7 @@ fn rebuilds_search_across_processes_without_affecting_list_or_resume() {
                     "method": "turn/start",
                     "params": {
                         "threadId": format!("thr_{sequence:016}"),
-                        "input": "Hello"
+                        "input": [{"type":"text","text":"Hello"}]
                     }
                 }),
                 8,

@@ -7,6 +7,7 @@ use crate::CommandNetworkPolicy;
 use crate::CommandSandboxPolicy;
 use crate::CommandWorkspaceWritePolicy;
 use crate::CommandWorkspaceWriteRisk;
+use crate::TurnInputPart;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -44,7 +45,7 @@ pub enum AgentTaskStatus {
 pub enum Item {
     UserMessage {
         id: String,
-        text: String,
+        content: Vec<TurnInputPart>,
     },
     AgentMessage {
         id: String,
@@ -132,16 +133,39 @@ pub enum Item {
         #[ts(rename = "callId")]
         call_id: String,
         name: String,
-        path: String,
+        arguments: serde_json::Value,
+    },
+    ToolValidationRejected {
+        id: String,
+        #[serde(rename = "callId")]
+        #[ts(rename = "callId")]
+        call_id: String,
+        name: String,
+        kind: String,
+        #[serde(rename = "argumentsBytes")]
+        #[ts(rename = "argumentsBytes")]
+        arguments_bytes: u64,
+        #[serde(rename = "argumentsSha256")]
+        #[ts(rename = "argumentsSha256")]
+        arguments_sha256: String,
+        #[serde(rename = "editIndex", skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "editIndex", optional)]
+        edit_index: Option<u32>,
+        #[serde(rename = "hunkIndex", skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "hunkIndex", optional)]
+        hunk_index: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        query: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        command: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        arguments: Option<Vec<String>>,
+        line: Option<u32>,
+        #[serde(rename = "expectedSummary", skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "expectedSummary", optional)]
+        expected_summary: Option<String>,
+        #[serde(rename = "actualSummary", skip_serializing_if = "Option::is_none")]
+        #[ts(rename = "actualSummary", optional)]
+        actual_summary: Option<String>,
+        #[serde(rename = "suggestedAction")]
+        #[ts(rename = "suggestedAction")]
+        suggested_action: String,
     },
     FileChange {
         id: String,

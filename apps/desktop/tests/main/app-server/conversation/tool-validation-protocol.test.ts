@@ -1,30 +1,36 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isRecoverableToolValidationItem } from '../../../../src/main/app-server/conversation/tool-validation-protocol.ts';
+import { isToolValidationRejectedItem } from '../../../../src/main/app-server/conversation/tool-validation-protocol.ts';
 
-const redactedCall = {
-  type: 'toolCall',
+const rejection = {
+  type: 'toolValidationRejected',
   id: 'item_0000000000001405',
   callId: 'chatcmpl-tool-bde02b193a056385',
-  name: 'shell/exec',
-  path: '',
+  name: 'workspace/edit',
+  kind: 'expectedMismatch',
+  argumentsBytes: 218,
+  argumentsSha256: 'a'.repeat(64),
+  editIndex: 1,
+  hunkIndex: 1,
+  line: 12,
+  expectedSummary: `bytes=3,sha256=${'b'.repeat(64)}`,
+  actualSummary: `bytes=4,sha256=${'c'.repeat(64)}`,
+  suggestedAction: 'readFileAndRebase',
 };
 
-const validationResult = {
-  type: 'toolResult',
-  id: 'item_0000000000001406',
-  callId: 'chatcmpl-tool-bde02b193a056385',
-  name: 'shell/exec',
-  result: {
-    type: 'error',
-    kind: 'invalidArguments',
-  },
-};
-
-test('task 0035 rejected tool Items remain recoverable', () => {
-  assert.equal(isRecoverableToolValidationItem(redactedCall), true);
-  assert.equal(isRecoverableToolValidationItem(validationResult), true);
+test('public toolValidationRejected items are accepted without pseudo ToolCalls', () => {
+  assert.equal(isToolValidationRejectedItem(rejection), true);
+  assert.equal(
+    isToolValidationRejectedItem({
+      type: 'toolCall',
+      id: rejection.id,
+      callId: rejection.callId,
+      name: rejection.name,
+      arguments: {},
+    }),
+    false,
+  );
 });
 
 test('all model-facing validation rejection kinds remain recoverable', () => {
@@ -32,49 +38,27 @@ test('all model-facing validation rejection kinds remain recoverable', () => {
     'batchRejected',
     'invalidArguments',
     'unknownTool',
+    'headerCountMismatch',
+    'rangeOutOfBounds',
+    'expectedMismatch',
+    'baseRevisionMismatch',
+    'unsupportedDiffFeature',
   ]) {
-    assert.equal(
-      isRecoverableToolValidationItem({
-        ...validationResult,
-        result: { type: 'error', kind },
-      }),
-      true,
-    );
+    assert.equal(isToolValidationRejectedItem({ ...rejection, kind }), true);
   }
 });
 
-test('operational failures and non-redacted calls still require normal parsing', () => {
+test('malformed or operational records are not swallowed as validation items', () => {
   assert.equal(
-    isRecoverableToolValidationItem({
-      ...validationResult,
-      result: { type: 'error', kind: 'accessDenied' },
-    }),
+    isToolValidationRejectedItem({ ...rejection, kind: 'accessDenied' }),
     false,
   );
   assert.equal(
-    isRecoverableToolValidationItem({
-      ...redactedCall,
-      path: '.',
-      command: '/usr/bin/git',
-      arguments: ['status'],
-    }),
-    false,
-  );
-});
-
-test('malformed protocol records are never swallowed as model validation errors', () => {
-  assert.equal(
-    isRecoverableToolValidationItem({
-      ...redactedCall,
-      callId: '',
-    }),
+    isToolValidationRejectedItem({ ...rejection, argumentsSha256: 'bad' }),
     false,
   );
   assert.equal(
-    isRecoverableToolValidationItem({
-      ...validationResult,
-      unexpected: true,
-    }),
+    isToolValidationRejectedItem({ ...rejection, unexpected: true }),
     false,
   );
 });

@@ -1,4 +1,5 @@
 use crate::ModelError;
+use crate::ModelErrorKind;
 use futures_util::future::BoxFuture;
 use futures_util::stream::BoxStream;
 use std::fmt;
@@ -109,78 +110,262 @@ impl ModelInstructionSource {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub enum ModelMessage {
-    Text { role: ModelRole, text: String },
-    Commentary { text: String },
-    ContextCompaction { content: String },
-    ToolCall(ModelToolCall),
-    ToolCallBatch(Vec<ModelToolCall>),
-    ToolResult { call_id: String, content: String },
+pub struct ModelMessage {
+    pub role: ModelRole,
+    pub content: Vec<ModelContentPart>,
 }
 
-impl fmt::Debug for ModelMessage {
+impl ModelMessage {
+    pub fn user_text(text: String) -> Self {
+        Self {
+            role: ModelRole::User,
+            content: vec![ModelContentPart::Text {
+                phase: ModelTextPhase::Final,
+                text,
+            }],
+        }
+    }
+
+    pub fn assistant_text(phase: ModelTextPhase, text: String) -> Self {
+        Self {
+            role: ModelRole::Assistant,
+            content: vec![ModelContentPart::Text { phase, text }],
+        }
+    }
+
+    pub fn context_compaction(content: String) -> Self {
+        Self {
+            role: ModelRole::User,
+            content: vec![ModelContentPart::ContextCompaction { content }],
+        }
+    }
+
+    pub fn tool_calls(calls: Vec<ModelToolCall>) -> Self {
+        Self {
+            role: ModelRole::Assistant,
+            content: calls
+                .into_iter()
+                .map(|call| ModelContentPart::ToolCall { call })
+                .collect(),
+        }
+    }
+
+    pub fn tool_results(results: Vec<ModelToolResult>) -> Self {
+        Self {
+            role: ModelRole::User,
+            content: results
+                .into_iter()
+                .map(|result| ModelContentPart::ToolResult { result })
+                .collect(),
+        }
+    }
+
+    pub fn context_bytes(&self) -> usize {
+        self.content
+            .iter()
+            .map(ModelContentPart::context_bytes)
+            .try_fold(0usize, usize::checked_add)
+            .unwrap_or(usize::MAX)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ModelContentPart {
+    Text { phase: ModelTextPhase, text: String },
+    ContextCompaction { content: String },
+    ImageAsset(ModelAssetRef),
+    PdfDocument(ModelAssetRef),
+    ToolCall { call: ModelToolCall },
+    ToolResult { result: ModelToolResult },
+    ProviderContext(ProviderContextEnvelope),
+}
+
+impl ModelContentPart {
+    pub fn context_bytes(&self) -> usize {
+        match self {
+            Self::Text { text, .. } => text.len(),
+            Self::ContextCompaction { content } => content.len(),
+            Self::ImageAsset(asset) | Self::PdfDocument(asset) => asset.context_bytes(),
+            Self::ToolCall { call } => call.context_bytes(),
+            Self::ToolResult { result } => result.context_bytes(),
+            Self::ProviderContext(envelope) => envelope.payload.len(),
+        }
+    }
+}
+
+impl fmt::Debug for ModelContentPart {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Text { role, .. } => formatter
+            Self::Text { phase, text } => formatter
                 .debug_struct("Text")
-                .field("role", role)
-                .field("text", &"<redacted>")
+                .field("phase", phase)
+                .field("bytes", &text.len())
                 .finish(),
-            Self::Commentary { .. } => formatter
-                .debug_struct("Commentary")
-                .field("text", &"<redacted>")
-                .finish(),
-            Self::ContextCompaction { .. } => formatter
+            Self::ContextCompaction { content } => formatter
                 .debug_struct("ContextCompaction")
-                .field("content", &"<redacted>")
+                .field("bytes", &content.len())
                 .finish(),
-            Self::ToolCall(call) => formatter.debug_tuple("ToolCall").field(call).finish(),
-            Self::ToolCallBatch(calls) => formatter
-                .debug_tuple("ToolCallBatch")
-                .field(&calls.len())
-                .finish(),
-            Self::ToolResult { call_id, .. } => formatter
-                .debug_struct("ToolResult")
-                .field("call_id", call_id)
-                .field("content", &"<redacted>")
+            Self::ImageAsset(asset) => formatter.debug_tuple("ImageAsset").field(asset).finish(),
+            Self::PdfDocument(asset) => formatter.debug_tuple("PdfDocument").field(asset).finish(),
+            Self::ToolCall { call } => formatter.debug_tuple("ToolCall").field(call).finish(),
+            Self::ToolResult { result } => {
+                formatter.debug_tuple("ToolResult").field(result).finish()
+            }
+            Self::ProviderContext(envelope) => formatter
+                .debug_tuple("ProviderContext")
+                .field(envelope)
                 .finish(),
         }
     }
 }
 
-impl ModelMessage {
+impl fmt::Debug for ModelMessage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModelMessage")
+            .field("role", &self.role)
+            .field("content", &self.content)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ModelAssetRef {
+    pub asset_id: String,
+    pub sha256: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl ModelAssetRef {
+    fn context_bytes(&self) -> usize {
+        self.asset_id
+            .len()
+            .saturating_add(self.sha256.len())
+            .saturating_add(self.media_type.len())
+            .saturating_add(self.original_name.len())
+            .saturating_add(self.bytes.len())
+    }
+}
+
+impl fmt::Debug for ModelAssetRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModelAssetRef")
+            .field("asset_id", &self.asset_id)
+            .field("sha256", &self.sha256)
+            .field("media_type", &self.media_type)
+            .field("original_name", &self.original_name)
+            .field("size_bytes", &self.size_bytes)
+            .field("content", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ModelToolResult {
+    pub call_id: String,
+    pub content: ModelToolResultContent,
+}
+
+impl ModelToolResult {
+    pub fn from_serialized(call_id: String, content: String) -> Self {
+        let content = serde_json::from_str(&content)
+            .map(ModelToolResultContent::Json)
+            .unwrap_or(ModelToolResultContent::Text(content));
+        Self { call_id, content }
+    }
+
     pub fn context_bytes(&self) -> usize {
-        match self {
-            Self::Text { text, .. } => text.len(),
-            Self::Commentary { text } => text.len(),
-            Self::ContextCompaction { content } => content.len(),
-            Self::ToolCall(call) => call
-                .id
-                .len()
-                .checked_add(call.name.len())
-                .and_then(|total| {
-                    serde_json::to_vec(&call.arguments)
-                        .ok()
-                        .and_then(|arguments| total.checked_add(arguments.len()))
-                })
-                .unwrap_or(usize::MAX),
-            Self::ToolCallBatch(calls) => calls
-                .iter()
-                .map(|call| {
-                    call.id
-                        .len()
-                        .checked_add(call.name.len())
-                        .and_then(|total| {
-                            serde_json::to_vec(&call.arguments)
-                                .ok()
-                                .and_then(|arguments| total.checked_add(arguments.len()))
-                        })
-                        .unwrap_or(usize::MAX)
-                })
-                .try_fold(0usize, usize::checked_add)
-                .unwrap_or(usize::MAX),
-            Self::ToolResult { call_id, content } => call_id.len().saturating_add(content.len()),
+        self.call_id.len().saturating_add(match &self.content {
+            ModelToolResultContent::Json(value) => value.to_string().len(),
+            ModelToolResultContent::Text(text) => text.len(),
+            ModelToolResultContent::Error { kind, message } => {
+                kind.len().saturating_add(message.len())
+            }
+        })
+    }
+}
+
+impl fmt::Debug for ModelToolResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ModelToolResult")
+            .field("call_id", &self.call_id)
+            .field("content", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ModelToolResultContent {
+    Json(serde_json::Value),
+    Text(String),
+    Error { kind: String, message: String },
+}
+
+pub const MAX_PROVIDER_CONTEXT_BYTES: usize = 512 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderWireApi {
+    OpenAiResponses,
+    OpenAiChatCompletions,
+    AnthropicMessages,
+    GeminiGenerateContent,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProviderContextEnvelope {
+    wire_api: ProviderWireApi,
+    response_id: Option<String>,
+    payload: Vec<u8>,
+}
+
+impl ProviderContextEnvelope {
+    pub fn new(
+        wire_api: ProviderWireApi,
+        response_id: Option<String>,
+        payload: Vec<u8>,
+    ) -> Result<Self, ModelError> {
+        if payload.len() > MAX_PROVIDER_CONTEXT_BYTES {
+            return Err(ModelError::new(ModelErrorKind::OutputTooLarge, false));
         }
+        Ok(Self {
+            wire_api,
+            response_id,
+            payload,
+        })
+    }
+
+    pub const fn wire_api(&self) -> ProviderWireApi {
+        self.wire_api
+    }
+
+    pub fn response_id(&self) -> Option<&str> {
+        self.response_id.as_deref()
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
+impl fmt::Debug for ProviderContextEnvelope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderContextEnvelope")
+            .field("wire_api", &self.wire_api)
+            .field(
+                "response_id",
+                &self.response_id.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "payload",
+                &format_args!("<redacted:{} bytes>", self.payload.len()),
+            )
+            .finish()
     }
 }
 
@@ -219,6 +404,45 @@ impl fmt::Debug for ModelEvent {
 pub struct ModelResponse {
     pub output: Vec<ModelOutputItem>,
     pub usage: Option<ModelUsage>,
+    pub terminal: ModelTerminalMetadata,
+    pub provider_context: Option<ProviderContextEnvelope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelTerminalMetadata {
+    pub finish_reason: ModelFinishReason,
+    pub provider_request_id: Option<String>,
+    pub continuation: ModelContinuation,
+}
+
+impl ModelTerminalMetadata {
+    pub fn completed(continuation: ModelContinuation) -> Self {
+        Self {
+            finish_reason: match continuation {
+                ModelContinuation::Complete => ModelFinishReason::Stop,
+                ModelContinuation::ToolCalls => ModelFinishReason::ToolCalls,
+            },
+            provider_request_id: None,
+            continuation,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelFinishReason {
+    Stop,
+    ToolCalls,
+    MaxTokens,
+    Filtered,
+    Safety,
+    StopSequence,
+    Unknown(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelContinuation {
+    Complete,
+    ToolCalls,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +513,20 @@ pub struct ModelToolCall {
     pub id: String,
     pub name: String,
     pub arguments: serde_json::Value,
+}
+
+impl ModelToolCall {
+    fn context_bytes(&self) -> usize {
+        self.id
+            .len()
+            .checked_add(self.name.len())
+            .and_then(|total| {
+                serde_json::to_vec(&self.arguments)
+                    .ok()
+                    .and_then(|arguments| total.checked_add(arguments.len()))
+            })
+            .unwrap_or(usize::MAX)
+    }
 }
 
 impl fmt::Debug for ModelToolCall {

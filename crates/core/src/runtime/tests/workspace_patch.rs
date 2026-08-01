@@ -80,7 +80,7 @@ impl WorkspacePatchExecutor for RecordedPatchExecutor {
 }
 
 #[tokio::test]
-async fn invalid_apply_patch_arguments_are_returned_to_the_model_for_retry() {
+async fn rollout_0036_validation_rejection_allows_standard_diff_retry() {
     let directory = tempfile::tempdir().expect("workspace");
     let target = directory.path().join("notes.txt");
     std::fs::write(&target, "old\n").expect("workspace fixture");
@@ -89,17 +89,18 @@ async fn invalid_apply_patch_arguments_are_returned_to_the_model_for_retry() {
         rounds: Mutex::new(VecDeque::from([
             vec![Ok(model_event::tool_call(ModelToolCall {
                 id: "call_patch_invalid".to_string(),
-                name: "workspace/apply-patch".to_string(),
+                name: "workspace/apply-diff".to_string(),
                 arguments: serde_json::json!({
-                    "patch": "@@ -1,1 +1,1 @@\n-old\n+new\n"
+                    "path": "notes.txt",
+                    "diff": include_str!("fixtures/rollout_0036_header_count_mismatch.diff")
                 }),
             }))],
             vec![Ok(model_event::tool_call(ModelToolCall {
                 id: "call_patch_retry".to_string(),
-                name: "workspace/apply-patch".to_string(),
+                name: "workspace/apply-diff".to_string(),
                 arguments: serde_json::json!({
                     "path": "notes.txt",
-                    "patch": "@@ -1,1 +1,1 @@\n-old\n+new\n"
+                    "diff": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n"
                 }),
             }))],
             vec![
@@ -148,14 +149,13 @@ async fn invalid_apply_patch_arguments_are_returned_to_the_model_for_retry() {
     );
     let requests = requests.lock().expect("requests");
     assert_eq!(requests.len(), 3);
-    assert!(matches!(
-        requests[1].messages.last(),
-        Some(ModelMessage::ToolResult { content, .. })
-            if content.contains("invalidArguments")
-                && content.contains("argumentsBytes=")
-                && content.contains("argumentsSha256=")
-                && !content.contains("\"patch\"")
-    ));
+    let result = message_tool_results(requests[1].messages.last().expect("result message"));
+    assert_eq!(result.len(), 1);
+    let content = tool_result_serialized(result[0]);
+    assert!(content.contains("headerCountMismatch"));
+    assert!(content.contains("argumentsBytes="));
+    assert!(content.contains("argumentsSha256="));
+    assert!(!content.contains("\"patch\""));
     drop(requests);
     let turn = runtime
         .resume_thread(&thread_id)
@@ -167,10 +167,8 @@ async fn invalid_apply_patch_arguments_are_returned_to_the_model_for_retry() {
     assert_eq!(turn.status, DurableTurnStatus::Completed);
     assert!(turn.items.iter().any(|item| matches!(
         item,
-        sugarcode_state::DurableItemSnapshot::ToolResult {
-            result: sugarcode_state::DurableToolResult::Error { kind },
-            ..
-        } if kind == "invalidArguments"
+        sugarcode_state::DurableItemSnapshot::ToolValidationRejected { kind, .. }
+            if kind == "headerCountMismatch"
     )));
     assert!(turn.items.iter().any(|item| matches!(
         item,
@@ -185,10 +183,10 @@ async fn three_invalid_patches_end_with_explicit_terminal_kind() {
     let invalid_round = |id: &str, patch: &str| {
         vec![Ok(model_event::tool_call(ModelToolCall {
             id: id.to_string(),
-            name: "workspace/apply-patch".to_string(),
+            name: "workspace/apply-diff".to_string(),
             arguments: serde_json::json!({
                 "path": "notes.txt",
-                "patch": patch,
+                "diff": patch,
             }),
         }))]
     };
@@ -255,10 +253,10 @@ async fn successful_tool_call_resets_the_invalid_patch_sequence() {
     let patch_call = |id: &str| {
         vec![Ok(model_event::tool_call(ModelToolCall {
             id: id.to_string(),
-            name: "workspace/apply-patch".to_string(),
+            name: "workspace/apply-diff".to_string(),
             arguments: serde_json::json!({
                 "path": "notes.txt",
-                "patch": "@@\n old\n+new\n",
+                "diff": "--- a/notes.txt\n+++ b/notes.txt\n@@\n old\n+new\n",
             }),
         }))]
     };
@@ -330,10 +328,10 @@ async fn workspace_patch_persists_review_before_result_and_finishes_model_round(
             vec![
                 Ok(model_event::tool_call(ModelToolCall {
                     id: "call_patch".to_string(),
-                    name: "workspace/apply-patch".to_string(),
+                    name: "workspace/apply-diff".to_string(),
                     arguments: serde_json::json!({
                         "path": "notes.txt",
-                        "patch": "@@ -1,3 +1,3 @@\n one\n-two\n+second\n three\n"
+                        "diff": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+second\n three\n"
                     }),
                 })),
                 Ok(model_event::COMPLETED),
@@ -387,11 +385,12 @@ async fn workspace_patch_persists_review_before_result_and_finishes_model_round(
         completed_kinds.as_slice(),
         [
             CoreItemKind::UserMessage { .. },
-            CoreItemKind::ToolCall { patch: Some(_), .. },
+            CoreItemKind::ToolCall { arguments, .. },
             CoreItemKind::FileChange { diff, .. },
             CoreItemKind::ToolResult { result: CoreToolResult::Success { .. }, .. },
             CoreItemKind::AgentMessage { .. }
-        ] if diff.contains("-two\n+second")
+        ] if arguments.get("diff").and_then(serde_json::Value::as_str).is_some()
+            && diff.contains("-two\n+second")
     ));
     assert_eq!(
         std::fs::read_to_string(target).expect("updated file"),
@@ -407,11 +406,12 @@ async fn workspace_patch_persists_review_before_result_and_finishes_model_round(
         turn.items.as_slice(),
         [
             sugarcode_state::DurableItemSnapshot::UserMessage { .. },
-            sugarcode_state::DurableItemSnapshot::ToolCall { patch: Some(_), .. },
+            sugarcode_state::DurableItemSnapshot::ToolCall { arguments, .. },
             sugarcode_state::DurableItemSnapshot::FileChange { kind, .. },
             sugarcode_state::DurableItemSnapshot::ToolResult { .. },
             sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
-        ] if kind == "update"
+        ] if arguments.get("diff").and_then(serde_json::Value::as_str).is_some()
+            && kind == "update"
     ));
     let requests = requests.lock().expect("requests");
     assert_eq!(requests.len(), 2);
@@ -422,8 +422,86 @@ async fn workspace_patch_persists_review_before_result_and_finishes_model_round(
             .filter(|tool| tool.name.starts_with("workspace/"))
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["workspace/apply-patch"]
+        vec!["workspace/edit", "workspace/apply-diff"]
     );
+}
+
+#[tokio::test]
+async fn workspace_edit_uses_base_revision_and_original_line_coordinates() {
+    let directory = tempfile::tempdir().expect("workspace");
+    let target = directory.path().join("notes.txt");
+    let before = b"one\ntwo\nthree\nfour\n";
+    std::fs::write(&target, before).expect("workspace fixture");
+    let base_sha256 = format!("{:x}", Sha256::digest(before));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![
+                Ok(model_event::tool_call(ModelToolCall {
+                    id: "call_edit".to_string(),
+                    name: "workspace/edit".to_string(),
+                    arguments: serde_json::json!({
+                        "path": "notes.txt",
+                        "baseSha256": base_sha256,
+                        "edits": [
+                            {
+                                "startLine": 2,
+                                "deleteLineCount": 1,
+                                "expected": "two",
+                                "replacement": "second"
+                            },
+                            {
+                                "startLine": 5,
+                                "deleteLineCount": 0,
+                                "expected": "",
+                                "replacement": "five"
+                            }
+                        ]
+                    }),
+                })),
+                Ok(model_event::COMPLETED),
+            ],
+            vec![Ok(model_event::final_response("Updated it."))],
+        ])),
+        requests: Arc::clone(&requests),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let workspace_patch: Arc<dyn WorkspacePatchExecutor> = tool;
+    let (runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        None,
+        None,
+    );
+    let mut runtime = runtime.with_workspace_patch(Some(workspace_patch));
+    let TurnStartOutcome::Accepted { .. } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id,
+            Some("Edit the file".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("asynchronous turn");
+    };
+    while !matches!(
+        events.recv().await.expect("terminal").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+    assert_eq!(
+        std::fs::read_to_string(target).expect("updated file"),
+        "one\nsecond\nthree\nfour\nfive\n"
+    );
+    assert_eq!(requests.lock().expect("requests").len(), 2);
 }
 
 #[tokio::test]
@@ -432,10 +510,10 @@ async fn interruption_after_commit_barrier_records_result_before_interrupted_ter
         events: vec![
             Ok(model_event::tool_call(ModelToolCall {
                 id: "call_patch".to_string(),
-                name: "workspace/apply-patch".to_string(),
+                name: "workspace/apply-diff".to_string(),
                 arguments: serde_json::json!({
                     "path": "notes.txt",
-                    "patch": "@@ -1,1 +1,1 @@\n-old\n+new\n"
+                    "diff": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n"
                 }),
             })),
             Ok(model_event::COMPLETED),

@@ -86,10 +86,21 @@ pub struct DurableTurnSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableModelSelectionSnapshot {
     pub profile_id: String,
-    pub provider_kind: String,
+    pub provider_family: String,
+    pub wire_api: String,
     pub model_id: String,
     pub display_name: String,
     pub context_window_tokens: u32,
+    pub effective_capabilities: DurableModelSelectionCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableModelSelectionCapabilities {
+    pub tool_calls: bool,
+    pub strict_tools: bool,
+    pub parallel_tools: bool,
+    pub image_input: bool,
+    pub pdf_input: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +198,22 @@ pub enum DurableTurnErrorKind {
 pub struct DurableTurnError {
     pub kind: DurableTurnErrorKind,
     pub retryable: bool,
+    pub provider: Option<DurableProviderErrorMetadata>,
+    pub tool_schema: Option<DurableToolSchemaError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableProviderErrorMetadata {
+    pub http_status: u16,
+    pub code: Option<String>,
+    pub request_id: Option<String>,
+    pub retry_after: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableToolSchemaError {
+    pub tool_name: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -199,10 +226,26 @@ pub struct DurableUsage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableContentAsset {
+    pub asset_id: String,
+    pub sha256: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableUserContentPart {
+    Text { text: String },
+    Image { asset: DurableContentAsset },
+    Document { asset: DurableContentAsset },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DurableItemSnapshot {
     UserMessage {
         id: ItemId,
-        text: String,
+        content: Vec<DurableUserContentPart>,
     },
     AgentMessage {
         id: ItemId,
@@ -253,11 +296,21 @@ pub enum DurableItemSnapshot {
         id: ItemId,
         call_id: String,
         name: String,
-        path: String,
-        query: Option<String>,
-        patch: Option<String>,
-        command: Option<String>,
-        arguments: Option<Vec<String>>,
+        arguments: serde_json::Value,
+    },
+    ToolValidationRejected {
+        id: ItemId,
+        call_id: String,
+        name: String,
+        kind: String,
+        arguments_bytes: u64,
+        arguments_sha256: String,
+        edit_index: Option<u32>,
+        hunk_index: Option<u32>,
+        line: Option<u32>,
+        expected_summary: Option<String>,
+        actual_summary: Option<String>,
+        suggested_action: String,
     },
     FileChange {
         id: ItemId,
@@ -451,6 +504,7 @@ impl DurableItemSnapshot {
             | Self::AgentTaskResult { id, .. }
             | Self::ContextCompaction { id, .. }
             | Self::ToolCall { id, .. }
+            | Self::ToolValidationRejected { id, .. }
             | Self::FileChange { id, .. }
             | Self::CommandApprovalRequest { id, .. }
             | Self::CommandApprovalDecision { id, .. }
@@ -471,6 +525,24 @@ pub(crate) fn valid_incremental_item(
 ) -> Result<(), &'static str> {
     if !valid_file_change_item(item) {
         return Err("invalidFileChangeItem");
+    }
+    if let DurableItemSnapshot::ToolValidationRejected {
+        call_id,
+        name,
+        kind,
+        arguments_bytes,
+        arguments_sha256,
+        suggested_action,
+        ..
+    } = item
+        && (call_id.is_empty()
+            || name.is_empty()
+            || kind.is_empty()
+            || *arguments_bytes > 96 * 1024
+            || !valid_sha256(arguments_sha256)
+            || suggested_action.is_empty())
+    {
+        return Err("invalidToolValidationRejected");
     }
     if !valid_mcp_item(existing, item) {
         return Err("invalidMcpToolItem");
@@ -548,15 +620,13 @@ pub(crate) fn valid_incremental_item(
             DurableItemSnapshot::ToolCall {
                 call_id: existing_call_id,
                 name,
-                path,
-                command,
                 arguments,
                 ..
             } if existing_call_id == call_id && name == "shell/exec" => {
                 if matching_call.is_some() {
                     return Err("invalidCommandExecutionAttempt");
                 }
-                matching_call = Some((path, command, arguments));
+                matching_call = Some(arguments);
             }
             DurableItemSnapshot::CommandApprovalRequest {
                 approval_id: existing_approval_id,
@@ -614,7 +684,7 @@ pub(crate) fn valid_incremental_item(
             _ => {}
         }
     }
-    let Some((path, call_command, call_arguments)) = matching_call else {
+    let Some(call_arguments) = matching_call else {
         return Err("invalidCommandExecutionAttempt");
     };
     let Some((
@@ -631,9 +701,31 @@ pub(crate) fn valid_incremental_item(
     else {
         return Err("invalidCommandExecutionAttempt");
     };
-    if call_command.as_ref() != Some(request_command)
-        || call_arguments.as_ref() != Some(request_arguments)
-        || path != cwd
+    let call_command = call_arguments
+        .get("command")
+        .and_then(serde_json::Value::as_str);
+    let call_argv = call_arguments
+        .get("arguments")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+        });
+    let call_cwd = call_arguments
+        .get("cwd")
+        .and_then(serde_json::Value::as_str);
+    if call_command != Some(request_command.as_str())
+        || call_argv.as_deref()
+            != Some(
+                request_arguments
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+            )
+        || call_cwd != Some(cwd.as_str())
         || environment_policy != "minimalV1"
         || !sandboxed
         || sandbox_policy.as_deref() != Some("filesystemReadOnlyV1")
@@ -1012,16 +1104,29 @@ pub(crate) fn valid_workspace_skills_audit(audit: Option<&DurableWorkspaceSkills
 pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {
     match item {
         DurableItemSnapshot::ToolCall {
-            name, path, patch, ..
-        } => match patch {
-            Some(patch) => {
-                name == "workspace/apply-patch"
-                    && valid_patch_path(path)
-                    && !patch.is_empty()
-                    && patch.len() <= 96 * 1024
+            name, arguments, ..
+        } => {
+            if !matches!(name.as_str(), "workspace/edit" | "workspace/apply-diff") {
+                return true;
             }
-            None => name != "workspace/apply-patch",
-        },
+            let Some(path) = arguments.get("path").and_then(serde_json::Value::as_str) else {
+                return false;
+            };
+            let has_write = match name.as_str() {
+                "workspace/edit" => arguments
+                    .get("edits")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|edits| !edits.is_empty()),
+                "workspace/apply-diff" => arguments
+                    .get("diff")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|diff| !diff.is_empty()),
+                _ => false,
+            };
+            valid_patch_path(path)
+                && has_write
+                && serde_json::to_vec(arguments).is_ok_and(|encoded| encoded.len() <= 96 * 1024)
+        }
         DurableItemSnapshot::FileChange {
             path,
             kind,

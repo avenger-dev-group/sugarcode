@@ -5,6 +5,7 @@ use futures_util::stream;
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicUsize;
 use sugarcode_model_provider::BoxModelFuture;
+use sugarcode_model_provider::ModelTerminalMetadata;
 use sugarcode_tools::WorkspaceTool;
 use tokio::sync::oneshot;
 
@@ -14,6 +15,12 @@ mod model_event {
     pub const COMPLETED: ModelEvent = ModelEvent::ResponseCompleted(ModelResponse {
         output: Vec::new(),
         usage: None,
+        terminal: ModelTerminalMetadata {
+            finish_reason: ModelFinishReason::Stop,
+            provider_request_id: None,
+            continuation: ModelContinuation::Complete,
+        },
+        provider_context: None,
     });
 
     pub fn text_delta(delta: String) -> ModelEvent {
@@ -37,6 +44,8 @@ mod model_event {
                 },
             }],
             usage: None,
+            terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+            provider_context: None,
         })
     }
 
@@ -47,6 +56,8 @@ mod model_event {
                 kind: ModelOutputItemKind::ToolCall(call),
             }],
             usage: None,
+            terminal: ModelTerminalMetadata::completed(ModelContinuation::ToolCalls),
+            provider_context: None,
         })
     }
 
@@ -61,6 +72,8 @@ mod model_event {
                 })
                 .collect(),
             usage: None,
+            terminal: ModelTerminalMetadata::completed(ModelContinuation::ToolCalls),
+            provider_context: None,
         })
     }
 
@@ -68,8 +81,60 @@ mod model_event {
         ModelEvent::ResponseCompleted(ModelResponse {
             output: Vec::new(),
             usage: Some(usage),
+            terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+            provider_context: None,
         })
     }
+}
+
+fn message_texts(message: &ModelMessage) -> Vec<&str> {
+    message
+        .content
+        .iter()
+        .filter_map(|part| match part {
+            ModelContentPart::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn message_tool_calls(message: &ModelMessage) -> Vec<&ModelToolCall> {
+    message
+        .content
+        .iter()
+        .filter_map(|part| match part {
+            ModelContentPart::ToolCall { call } => Some(call),
+            _ => None,
+        })
+        .collect()
+}
+
+fn message_tool_results(message: &ModelMessage) -> Vec<&ModelToolResult> {
+    message
+        .content
+        .iter()
+        .filter_map(|part| match part {
+            ModelContentPart::ToolResult { result } => Some(result),
+            _ => None,
+        })
+        .collect()
+}
+
+fn tool_result_serialized(result: &ModelToolResult) -> String {
+    match &result.content {
+        ModelToolResultContent::Json(value) => value.to_string(),
+        ModelToolResultContent::Text(text) => text.clone(),
+        ModelToolResultContent::Error { kind, message } => {
+            serde_json::json!({"error": {"kind": kind, "message": message}}).to_string()
+        }
+    }
+}
+
+fn message_compaction(message: &ModelMessage) -> Option<&str> {
+    message.content.iter().find_map(|part| match part {
+        ModelContentPart::ContextCompaction { content } => Some(content.as_str()),
+        _ => None,
+    })
 }
 
 fn normalize_model_events(
@@ -126,11 +191,15 @@ fn normalize_model_events(
                             },
                         }],
                         usage: usage.take(),
+                        terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+                        provider_context: None,
                     })));
                 } else {
                     normalized.push(Ok(ModelEvent::ResponseCompleted(ModelResponse {
                         output: Vec::new(),
                         usage: usage.take(),
+                        terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+                        provider_context: None,
                     })));
                 }
             }
@@ -288,16 +357,16 @@ fn runtime(provider: RecordedProvider) -> (CoreRuntime, mpsc::Receiver<CoreEvent
 
 #[test]
 fn model_capabilities_derive_context_reserve_and_absolute_byte_cap() {
-    let default = ModelCapabilities::new(131_072, true, true);
+    let default = ModelCapabilities::new(131_072, true, true, true, true, true);
     assert_eq!(default.output_reserve_tokens, 16_384);
     assert_eq!(default.input_compaction_target_tokens(), 114_688);
     assert_eq!(default.input_compaction_target_bytes(), 344_064);
 
-    let small = ModelCapabilities::new(8_192, false, false);
+    let small = ModelCapabilities::new(8_192, true, false, false, true, false);
     assert_eq!(small.output_reserve_tokens, 4_096);
     assert_eq!(small.input_compaction_target_tokens(), 4_096);
 
-    let maximum = ModelCapabilities::new(2_097_152, false, false);
+    let maximum = ModelCapabilities::new(2_097_152, true, false, false, true, false);
     assert_eq!(
         maximum.input_compaction_target_bytes(),
         crate::context::MAX_PROVIDER_CONTEXT_BYTES

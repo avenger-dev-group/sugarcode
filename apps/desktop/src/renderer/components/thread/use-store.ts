@@ -26,6 +26,8 @@ import {
 } from '@/renderer/services/model-config';
 import {
   MAX_CONVERSATION_INPUT_BYTES,
+  MAX_CONVERSATION_ATTACHMENTS,
+  MAX_CONVERSATION_ATTACHMENT_BYTES,
   type ConversationActionResult,
   type ConversationMessageStatus,
   type ConversationCommandApprovalActivity,
@@ -59,6 +61,7 @@ import type {
   ThreadStore,
   ThreadNavigatorViewModel,
   ThreadViewModel,
+  DraftAttachmentViewModel,
   TranscriptFollow,
   TranscriptMessageViewModel,
   TurnViewModel,
@@ -322,13 +325,19 @@ export const toThreadViewModel = (
         if (message.role === 'user') {
           if (
             previousMessage?.role === 'user' &&
-            previousMessage.message.text === message.text
+            previousMessage.message.text === message.text &&
+            JSON.stringify(previousMessage.message.attachments) ===
+              JSON.stringify(message.attachments ?? [])
           ) {
             return previousMessage;
           }
           return {
             role: 'user',
-            message: { id: message.id, text: message.text },
+            message: {
+              id: message.id,
+              text: message.text,
+              attachments: message.attachments ?? [],
+            },
           };
         }
         const state = toAgentMessagePresentationState(
@@ -1067,6 +1076,7 @@ export const useStore = (): ThreadStore => {
   const [snapshot, setSnapshot] =
     useState<ConversationStateSnapshot>(INITIAL_SNAPSHOT);
   const [draft, setDraft] = useState<string>('');
+  const [attachments, setAttachments] = useState<DraftAttachmentViewModel[]>([]);
   const [navigatorOpen, setNavigatorOpen] = useState<boolean>(false);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -1141,6 +1151,10 @@ export const useStore = (): ThreadStore => {
   }, [modelInspection, snapshot.threadId, snapshot.turns]);
 
   const bytes = inputBytes(draft);
+  const attachmentBytes = attachments.reduce(
+    (total, attachment) => total + attachment.sizeBytes,
+    0,
+  );
   const phaseAllowsSend =
     snapshot.phase === 'idle' || snapshot.phase === 'ready';
   const canSend =
@@ -1148,7 +1162,7 @@ export const useStore = (): ThreadStore => {
     !snapshot.navigator.pendingThreadId &&
     !snapshot.navigator.pendingMutation &&
     !isSending &&
-    draft.trim().length > 0 &&
+    (draft.trim().length > 0 || attachments.length > 0) &&
     bytes <= MAX_CONVERSATION_INPUT_BYTES &&
     selectedModelProfileId.length > 0 &&
     Boolean(
@@ -1165,6 +1179,53 @@ export const useStore = (): ThreadStore => {
   const canStop =
     snapshot.phase === 'inProgress' || snapshot.phase === 'stopping';
 
+  const addAttachments = async (files: readonly File[]): Promise<void> => {
+    setActionError(null);
+    if (attachments.length + files.length > MAX_CONVERSATION_ATTACHMENTS) {
+      setActionError('A Turn can include at most 10 attachments.');
+      return;
+    }
+    const incomingBytes = files.reduce((total, file) => total + file.size, 0);
+    if (
+      attachmentBytes + incomingBytes >
+      MAX_CONVERSATION_ATTACHMENT_BYTES
+    ) {
+      setActionError('Attachments exceed the 20 MiB Turn limit.');
+      return;
+    }
+    try {
+      const imported = await Promise.all(
+        files.map(async (file): Promise<DraftAttachmentViewModel> => {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          let binary = '';
+          for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+          }
+          const data = btoa(binary);
+          return {
+            id: crypto.randomUUID(),
+            fileName: file.name,
+            mediaType: file.type,
+            sizeBytes: file.size,
+            data,
+            ...(file.type.startsWith('image/')
+              ? { previewUrl: `data:${file.type};base64,${data}` }
+              : {}),
+          };
+        }),
+      );
+      setAttachments((current) => [...current, ...imported]);
+    } catch {
+      setActionError('Desktop could not read one of these attachments.');
+    }
+  };
+
+  const removeAttachment = (id: string): void => {
+    setAttachments((current) =>
+      current.filter((attachment) => attachment.id !== id),
+    );
+  };
+
   const send = async (): Promise<void> => {
     if (!canSend) {
       return;
@@ -1174,10 +1235,22 @@ export const useStore = (): ThreadStore => {
     try {
       const result = await sendConversationMessage({
         input: draft,
+        ...(attachments.length > 0
+          ? {
+              attachments: attachments.map((attachment) => ({
+                fileName: attachment.fileName,
+                ...(attachment.mediaType
+                  ? { mediaType: attachment.mediaType }
+                  : {}),
+                data: attachment.data,
+              })),
+            }
+          : {}),
         modelProfileId: selectedModelProfileId,
       });
       if (result.accepted) {
         setDraft('');
+        setAttachments([]);
       } else {
         setActionError(
           result.reason === 'invalidInput'
@@ -1302,7 +1375,9 @@ export const useStore = (): ThreadStore => {
   const inputHint =
     bytes > MAX_CONVERSATION_INPUT_BYTES
       ? 'Message exceeds the 64 KiB limit'
-      : `${Math.ceil(bytes / 1024)} / 64 KiB`;
+      : attachments.length > 0
+        ? `${attachments.length} attachment${attachments.length === 1 ? '' : 's'} · ${Math.ceil(attachmentBytes / 1024)} KiB`
+        : `${Math.ceil(bytes / 1024)} / 64 KiB`;
   const navigator = useMemo(
     () => toThreadNavigatorViewModel(snapshot),
     [snapshot],
@@ -1341,6 +1416,7 @@ export const useStore = (): ThreadStore => {
     navigator,
     navigatorOpen,
     draft,
+    attachments,
     inputBytes: bytes,
     inputLimitBytes: MAX_CONVERSATION_INPUT_BYTES,
     inputHint,
@@ -1356,6 +1432,8 @@ export const useStore = (): ThreadStore => {
       snapshot.phase === 'stopping' ||
       isSending,
     setDraft,
+    addAttachments,
+    removeAttachment,
     setNavigatorOpen,
     setSelectedModelProfileId,
     startNewThread,

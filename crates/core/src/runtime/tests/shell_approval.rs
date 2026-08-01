@@ -290,8 +290,7 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
         [
             sugarcode_state::DurableItemSnapshot::UserMessage { .. },
             sugarcode_state::DurableItemSnapshot::ToolCall {
-                command: Some(command),
-                arguments: Some(arguments),
+                arguments,
                 ..
             },
             sugarcode_state::DurableItemSnapshot::CommandApprovalRequest {
@@ -319,8 +318,12 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                 ..
             },
             sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
-        ] if command == &test_absolute_command()
-            && arguments == &["approved output".to_string()]
+        ] if arguments == &serde_json::json!({
+                "description": "Print the approved test output.",
+                "command": test_absolute_command(),
+                "arguments": ["approved output"],
+                "cwd": "."
+            })
             && sandbox_policy == "filesystemReadOnlyV1"
             && workspace_write_policy == "commandWorkspaceWriteV1"
             && workspace_write_risk == "nonTransactionalWorkspaceTreeV1"

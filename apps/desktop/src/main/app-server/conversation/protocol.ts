@@ -23,14 +23,28 @@ import {
   parseMcpConversationItem,
   type McpConversationItem,
 } from './mcp-protocol';
-import { isRecoverableToolValidationItem } from './tool-validation-protocol';
+import { isToolValidationRejectedItem } from './tool-validation-protocol';
 
 export { parseThreadListResponse } from './thread-protocol';
 
-type TextItem = Extract<
+type AgentTextItem = Extract<
   ItemStartedNotification['item'],
-  { type: 'userMessage' | 'agentMessage' }
+  { type: 'agentMessage' }
 >;
+
+export type UserMessageItem = Readonly<{
+  type: 'userMessage';
+  id: string;
+  text: string;
+  attachments: readonly Readonly<{
+    assetId: string;
+    sha256: string;
+    mediaType: string;
+    originalName: string;
+    sizeBytes: number;
+    kind: 'image' | 'pdf' | 'text';
+  }>[];
+}>;
 
 export type AgentCommentaryItem = Readonly<{
   type: 'agentCommentary';
@@ -218,7 +232,8 @@ export type AgentTaskResultItem = Readonly<{
 }>;
 
 type ConversationItem =
-  | TextItem
+  | UserMessageItem
+  | AgentTextItem
   | AgentCommentaryItem
   | ContextCompactionItem
   | WorkspaceReadCallItem
@@ -530,24 +545,44 @@ const parseModelSelection = (
       'openai',
       'anthropic',
       'gemini',
-      'metallm',
-      'openaiCompatible',
-    ].includes(value.providerKind as string) ||
+    ].includes(value.providerFamily as string) ||
+    ![
+      'openaiResponses',
+      'openaiChatCompletions',
+      'anthropicMessages',
+      'geminiGenerateContent',
+    ].includes(value.wireApi as string) ||
     typeof value.modelId !== 'string' ||
     typeof value.displayName !== 'string' ||
     !Number.isInteger(value.contextWindowTokens) ||
     (value.contextWindowTokens as number) < 4_096 ||
-    (value.contextWindowTokens as number) > 2_097_152
+    (value.contextWindowTokens as number) > 2_097_152 ||
+    !isRecord(value.effectiveCapabilities) ||
+    ![
+      'toolCalls',
+      'strictTools',
+      'parallelTools',
+      'imageInput',
+      'pdfInput',
+    ].every(
+      (key) =>
+        typeof (
+          value.effectiveCapabilities as Record<string, unknown>
+        )[key] === 'boolean',
+    )
   ) {
     throw new Error('Invalid Turn model selection.');
   }
   return {
     profileId: value.profileId,
-    providerKind:
-      value.providerKind as ModelSelectionSnapshot['providerKind'],
+    providerFamily:
+      value.providerFamily as ModelSelectionSnapshot['providerFamily'],
+    wireApi: value.wireApi as ModelSelectionSnapshot['wireApi'],
     modelId: value.modelId,
     displayName: value.displayName,
     contextWindowTokens: value.contextWindowTokens as number,
+    effectiveCapabilities:
+      value.effectiveCapabilities as ModelSelectionSnapshot['effectiveCapabilities'],
   };
 };
 
@@ -670,10 +705,59 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
   if (!isRecord(value) || !isId(value.id) || typeof value.type !== 'string') {
     throw new Error('Invalid Item.');
   }
-  if (isRecoverableToolValidationItem(value)) {
+  if (isToolValidationRejectedItem(value)) {
     return null;
   }
-  if (value.type === 'userMessage' || value.type === 'agentMessage') {
+  if (value.type === 'userMessage') {
+    if (!Array.isArray(value.content)) {
+      throw new Error('Invalid userMessage content.');
+    }
+    const text: string[] = [];
+    const attachments: UserMessageItem['attachments'][number][] = [];
+    for (const part of value.content) {
+      if (!isRecord(part) || typeof part.type !== 'string') {
+        throw new Error('Invalid userMessage content part.');
+      }
+      if (part.type === 'text') {
+        if (typeof part.text !== 'string') {
+          throw new Error('Invalid userMessage text part.');
+        }
+        text.push(part.text);
+        continue;
+      }
+      if (
+        (part.type !== 'image' && part.type !== 'document') ||
+        !isRecord(part.asset) ||
+        typeof part.asset.assetId !== 'string' ||
+        typeof part.asset.sha256 !== 'string' ||
+        typeof part.asset.mediaType !== 'string' ||
+        typeof part.asset.originalName !== 'string' ||
+        typeof part.asset.sizeBytes !== 'number' ||
+        !Number.isSafeInteger(part.asset.sizeBytes) ||
+        part.asset.sizeBytes <= 0 ||
+        (part.asset.kind !== 'image' &&
+          part.asset.kind !== 'pdf' &&
+          part.asset.kind !== 'text')
+      ) {
+        throw new Error('Invalid userMessage attachment part.');
+      }
+      attachments.push({
+        assetId: part.asset.assetId,
+        sha256: part.asset.sha256,
+        mediaType: part.asset.mediaType,
+        originalName: part.asset.originalName,
+        sizeBytes: part.asset.sizeBytes,
+        kind: part.asset.kind,
+      });
+    }
+    return {
+      type: 'userMessage',
+      id: value.id,
+      text: text.join(''),
+      attachments,
+    };
+  }
+  if (value.type === 'agentMessage') {
     if (typeof value.text !== 'string') {
       throw new Error('Invalid text Item.');
     }
@@ -861,10 +945,17 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
     return mcpItem;
   }
   if (value.type === 'toolCall' && value.name === 'shell/exec') {
+    const argumentsValue = value.arguments;
     if (
       !isId(value.callId) ||
-      value.path !== '.' ||
-      Object.hasOwn(value, 'query')
+      !isRecord(argumentsValue) ||
+      Object.keys(argumentsValue).sort().join(',') !==
+        'arguments,command,cwd,description' ||
+      argumentsValue.cwd !== '.' ||
+      typeof argumentsValue.description !== 'string' ||
+      argumentsValue.description.length === 0 ||
+      utf8Bytes(argumentsValue.description) > 512 ||
+      hasControlCharacters(argumentsValue.description)
     ) {
       throw new Error('Invalid shell/exec ToolCall Item.');
     }
@@ -872,7 +963,10 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       type: 'commandCall',
       id: value.id,
       callId: value.callId,
-      ...validateCommandPayload(value.command, value.arguments),
+      ...validateCommandPayload(
+        argumentsValue.command,
+        argumentsValue.arguments,
+      ),
     };
   }
   if (value.type === 'commandApprovalRequest') {
@@ -1021,13 +1115,13 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
     };
   }
   if (value.type === 'toolCall' && value.name === 'workspace/read') {
+    const argumentsValue = value.arguments;
     if (
       !isId(value.callId) ||
-      typeof value.path !== 'string' ||
-      value.path.length === 0 ||
-      Object.hasOwn(value, 'query') ||
-      Object.hasOwn(value, 'command') ||
-      Object.hasOwn(value, 'arguments')
+      !isRecord(argumentsValue) ||
+      Object.keys(argumentsValue).join(',') !== 'path' ||
+      typeof argumentsValue.path !== 'string' ||
+      argumentsValue.path.length === 0
     ) {
       throw new Error('Invalid workspace/read ToolCall Item.');
     }
@@ -1035,7 +1129,7 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       type: 'workspaceReadCall',
       id: value.id,
       callId: value.callId,
-      path: value.path,
+      path: argumentsValue.path,
     };
   }
   if (value.type === 'toolResult' && value.name === 'workspace/read') {
@@ -1071,13 +1165,13 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
     throw new Error('Invalid workspace/read ToolResult outcome.');
   }
   if (value.type === 'toolCall' && value.name === 'workspace/list') {
+    const argumentsValue = value.arguments;
     if (
       !isId(value.callId) ||
-      typeof value.path !== 'string' ||
-      value.path.length === 0 ||
-      Object.hasOwn(value, 'query') ||
-      Object.hasOwn(value, 'command') ||
-      Object.hasOwn(value, 'arguments')
+      !isRecord(argumentsValue) ||
+      Object.keys(argumentsValue).join(',') !== 'path' ||
+      typeof argumentsValue.path !== 'string' ||
+      argumentsValue.path.length === 0
     ) {
       throw new Error('Invalid workspace/list ToolCall Item.');
     }
@@ -1085,7 +1179,7 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       type: 'workspaceListCall',
       id: value.id,
       callId: value.callId,
-      path: value.path,
+      path: argumentsValue.path,
     };
   }
   if (value.type === 'toolResult' && value.name === 'workspace/list') {
@@ -1125,17 +1219,22 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
     throw new Error('Invalid workspace/list ToolResult outcome.');
   }
   if (value.type === 'toolCall' && value.name === 'workspace/search') {
+    const argumentsValue = value.arguments;
     if (
       !isId(value.callId) ||
-      typeof value.path !== 'string' ||
-      value.path.length === 0 ||
-      typeof value.query !== 'string' ||
-      value.query.length === 0 ||
-      utf8Bytes(value.query) > MAX_WORKSPACE_SEARCH_QUERY_BYTES ||
-      Array.from(value.query).some((character) => /\p{Cc}/u.test(character)) ||
-      Array.from(value.query).every((character) => /\s/u.test(character)) ||
-      Object.hasOwn(value, 'command') ||
-      Object.hasOwn(value, 'arguments')
+      !isRecord(argumentsValue) ||
+      Object.keys(argumentsValue).sort().join(',') !== 'path,query' ||
+      typeof argumentsValue.path !== 'string' ||
+      argumentsValue.path.length === 0 ||
+      typeof argumentsValue.query !== 'string' ||
+      argumentsValue.query.length === 0 ||
+      utf8Bytes(argumentsValue.query) > MAX_WORKSPACE_SEARCH_QUERY_BYTES ||
+      Array.from(argumentsValue.query).some((character) =>
+        /\p{Cc}/u.test(character),
+      ) ||
+      Array.from(argumentsValue.query).every((character) =>
+        /\s/u.test(character),
+      )
     ) {
       throw new Error('Invalid workspace/search ToolCall Item.');
     }
@@ -1143,8 +1242,8 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       type: 'workspaceSearchCall',
       id: value.id,
       callId: value.callId,
-      path: value.path,
-      query: value.query,
+      path: argumentsValue.path,
+      query: argumentsValue.query,
     };
   }
   if (value.type === 'toolResult' && value.name === 'workspace/search') {

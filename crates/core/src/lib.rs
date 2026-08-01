@@ -23,6 +23,8 @@ pub use runtime::CoreRuntime;
 pub use runtime::ModelCapabilities;
 pub use runtime::ModelResolver;
 pub use runtime::ResolvedModel;
+pub use sugarcode_protocol::CoreContentAsset;
+pub use sugarcode_protocol::CoreUserContentPart;
 pub use thread::Core;
 pub use thread::CoreApi;
 pub use thread::CoreError;

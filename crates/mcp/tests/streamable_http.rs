@@ -90,7 +90,7 @@ async fn loopback_streamable_http_fails_closed_on_bad_status_content_type_and_ss
             sugarcode_mcp::DiscoveryErrorKind::InvalidSse,
         ),
         (
-            FixtureMode::LegacyEndpointEvent,
+            FixtureMode::UnsupportedEndpointEvent,
             sugarcode_mcp::DiscoveryErrorKind::InvalidSse,
         ),
         (
@@ -260,7 +260,7 @@ enum FixtureMode {
     Redirect,
     BadContentType,
     TruncatedSse,
-    LegacyEndpointEvent,
+    UnsupportedEndpointEvent,
     InvalidSession,
     SessionExpired,
     Drift,
@@ -328,7 +328,7 @@ fn fixture_response(mode: FixtureMode, index: usize) -> Vec<u8> {
                     b"data: {\"jsonrpc\":\"2.0\",\"id\":1",
                 );
             }
-            FixtureMode::LegacyEndpointEvent => {
+            FixtureMode::UnsupportedEndpointEvent => {
                 return response(
                     "200 OK",
                     &[("Content-Type", "text/event-stream")],

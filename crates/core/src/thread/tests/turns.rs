@@ -141,6 +141,8 @@ fn provider_history_excludes_failed_and_interrupted_partial_turns() {
         let error = (status == DurableTurnStatus::Failed).then_some(DurableTurnError {
             kind: sugarcode_state::DurableTurnErrorKind::Server,
             retryable: true,
+            provider: None,
+            tool_schema: None,
         });
         core.finish_text_turn(&thread_id, &prepared.turn_id, status, error, None)
             .expect("finish excluded turn");
@@ -155,9 +157,10 @@ fn provider_history_excludes_failed_and_interrupted_partial_turns() {
         .expect("prepare next turn");
     assert_eq!(
         prepared.history,
-        vec![PreparedMessage::Text {
-            role: PreparedMessageRole::User,
-            text: "included".to_string(),
+        vec![PreparedMessage::UserContent {
+            content: vec![sugarcode_protocol::CoreUserContentPart::Text {
+                text: "included".to_string(),
+            }],
         }]
     );
 }
@@ -201,9 +204,10 @@ fn provider_history_compacts_deterministically_above_the_compatibility_target() 
     assert!(content.starts_with("SugarCode deterministic persisted compaction v1\n"));
     assert_eq!(
         compacted.history[1],
-        PreparedMessage::Text {
-            role: PreparedMessageRole::User,
-            text: "after-compaction".to_string(),
+        PreparedMessage::UserContent {
+            content: vec![sugarcode_protocol::CoreUserContentPart::Text {
+                text: "after-compaction".to_string(),
+            }],
         }
     );
     core.start_agent_message(&thread_id, &compacted.turn_id)
@@ -413,9 +417,10 @@ fn omitted_input_continues_completed_history_without_a_user_item() {
     assert_eq!(
         continuation.history,
         vec![
-            PreparedMessage::Text {
-                role: PreparedMessageRole::User,
-                text: "Hello".to_string(),
+            PreparedMessage::UserContent {
+                content: vec![sugarcode_protocol::CoreUserContentPart::Text {
+                    text: "Hello".to_string(),
+                }],
             },
             PreparedMessage::Text {
                 role: PreparedMessageRole::Assistant,

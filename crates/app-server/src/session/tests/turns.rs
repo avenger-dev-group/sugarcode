@@ -14,7 +14,7 @@ fn turn_start_returns_response_then_complete_lifecycle() {
             "method": "turn/start",
             "params": {
                 "threadId": thread_id,
-                "input": "Hello"
+                "input": [{"type":"text","text":"Hello"}]
             }
         })
         .to_string(),
@@ -106,7 +106,7 @@ fn turn_start_rejects_invalid_params_without_accepting_the_request_id() {
     let thread_id = response_thread_id(&thread_messages).to_string();
 
     let mut invalid = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":" ","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":" ","input":[{"type":"text","text":"Hello"}]}}"#,
     );
     let JsonRpcMessage::Error(error) = invalid.pop().expect("invalid params response") else {
         panic!("expected error");
@@ -120,7 +120,7 @@ fn turn_start_rejects_invalid_params_without_accepting_the_request_id() {
             "method": "turn/start",
             "params": {
                 "threadId": thread_id,
-                "input": "Hello"
+                "input": [{"type":"text","text":"Hello"}]
             }
         })
         .to_string(),
@@ -141,7 +141,7 @@ fn missing_model_allows_thread_crud_and_returns_stable_reusable_error() {
         "method": "turn/start",
         "params": {
             "threadId": thread_id,
-            "input": "Hello"
+            "input": [{"type":"text","text":"Hello"}]
         }
     })
     .to_string();
@@ -161,7 +161,7 @@ fn terminal_interrupt_returns_turn_not_active_without_consuming_request_id() {
     let mut session = ready_session(Core::new());
     session.process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start"}"#);
     session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     );
     let mut interrupted = session.process_line(
         r#"{"jsonrpc":"2.0","id":"retry","method":"turn/interrupt","params":{"threadId":"thr_0000000000000001","turnId":"turn_0000000000000001"}}"#,
@@ -181,7 +181,7 @@ fn turn_start_rejects_missing_thread_without_accepting_the_request_id() {
     let mut session = ready_session(Core::new());
 
     let mut missing = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_missing","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_missing","input":[{"type":"text","text":"Hello"}]}}"#,
     );
     let JsonRpcMessage::Error(error) = missing.pop().expect("missing thread response") else {
         panic!("expected error");
@@ -199,7 +199,7 @@ fn turn_start_rejects_missing_thread_without_accepting_the_request_id() {
             "method": "turn/start",
             "params": {
                 "threadId": thread_id,
-                "input": "Hello"
+                "input": [{"type":"text","text":"Hello"}]
             }
         })
         .to_string(),
@@ -229,7 +229,7 @@ fn starts_consecutive_turns_in_the_same_thread_and_turns_in_other_threads() {
                 "method": "turn/start",
                 "params": {
                     "threadId": thread_id,
-                    "input": "Hello"
+                    "input": [{"type":"text","text":"Hello"}]
                 }
             })
             .to_string(),
@@ -278,7 +278,7 @@ fn accepted_request_ids_are_shared_across_lifecycle_methods() {
             "method": "turn/start",
             "params": {
                 "threadId": thread_id,
-                "input": "Hello"
+                "input": [{"type":"text","text":"Hello"}]
             }
         })
         .to_string(),
@@ -289,11 +289,11 @@ fn accepted_request_ids_are_shared_across_lifecycle_methods() {
     assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
 
     let turn = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     );
     assert_eq!(response_turn_id(&turn), "turn_0000000000000001");
     let mut repeated = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     );
     let JsonRpcMessage::Error(error) = repeated.pop().expect("duplicate response") else {
         panic!("expected error");
@@ -301,7 +301,7 @@ fn accepted_request_ids_are_shared_across_lifecycle_methods() {
     assert_eq!(error.error.code, ERROR_DUPLICATE_REQUEST);
 
     let second_turn = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     );
     assert_eq!(response_turn_id(&second_turn), "turn_0000000000000002");
 }
@@ -332,7 +332,7 @@ fn durable_state_failures_use_the_stable_public_error_without_details() {
         r#"{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"threadId":"thr_0000000000000001"}}"#,
         r#"{"jsonrpc":"2.0","id":"fork","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
         r#"{"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}"#,
-        r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#,
+        r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
     ] {
         let mut session = ready_session(StateUnavailableCore);
         let mut messages = session.process_line(request);
@@ -367,7 +367,7 @@ fn an_uncertain_archive_attempt_consumes_its_request_id() {
 #[test]
 fn an_uncertain_turn_start_attempt_consumes_its_request_id() {
     let mut session = ready_session(StateUnavailableCore);
-    let request = r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":"Hello"}}"#;
+    let request = r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#;
 
     let first = session.process_line(request);
     let JsonRpcMessage::Error(error) = &first[0] else {
@@ -456,7 +456,7 @@ fn turn_start_failure_returns_internal_error_without_notification() {
         let mut session = ready_session(TurnCore::new(behavior));
 
         let mut messages = session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing","input":"Hello"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing","input":[{"type":"text","text":"Hello"}]}}"#,
         );
 
         assert_eq!(messages.len(), 1);
@@ -479,7 +479,7 @@ fn mismatched_turn_event_correlation_returns_internal_error() {
     ] {
         let mut session = ready_session(TurnCore::new(behavior));
         let mut messages = session.process_line(
-            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing","input":"Hello"}}"#,
+            r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_existing","input":[{"type":"text","text":"Hello"}]}}"#,
         );
 
         assert_eq!(messages.len(), 1);

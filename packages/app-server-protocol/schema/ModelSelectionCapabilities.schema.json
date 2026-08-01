@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelSelectionCapabilities",
+  "type": "object",
+  "properties": {
+    "imageInput": {
+      "type": "boolean"
+    },
+    "parallelTools": {
+      "type": "boolean"
+    },
+    "pdfInput": {
+      "type": "boolean"
+    },
+    "strictTools": {
+      "type": "boolean"
+    },
+    "toolCalls": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "toolCalls",
+    "strictTools",
+    "parallelTools",
+    "imageInput",
+    "pdfInput"
+  ]
+}

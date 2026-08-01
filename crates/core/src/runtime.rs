@@ -27,9 +27,13 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
+use sugarcode_model_provider::ModelAssetRef;
+use sugarcode_model_provider::ModelContentPart;
+use sugarcode_model_provider::ModelContinuation;
 use sugarcode_model_provider::ModelError;
 use sugarcode_model_provider::ModelErrorKind;
 use sugarcode_model_provider::ModelEvent;
+use sugarcode_model_provider::ModelFinishReason;
 use sugarcode_model_provider::ModelInstruction;
 use sugarcode_model_provider::ModelInstructionSource;
 use sugarcode_model_provider::ModelMessage;
@@ -41,6 +45,8 @@ use sugarcode_model_provider::ModelRole;
 use sugarcode_model_provider::ModelTextPhase;
 use sugarcode_model_provider::ModelToolCall;
 use sugarcode_model_provider::ModelToolDefinition;
+use sugarcode_model_provider::ModelToolResult;
+use sugarcode_model_provider::ModelToolResultContent;
 use sugarcode_model_provider::ModelUsage;
 use sugarcode_protocol::CoreAgentOutputRef;
 use sugarcode_protocol::CoreContextCompactionOutcome;
@@ -52,17 +58,24 @@ use sugarcode_protocol::CoreFileChangeNewlineStyle;
 use sugarcode_protocol::CoreItemKind;
 use sugarcode_protocol::CoreItemSnapshot;
 use sugarcode_protocol::CoreMcpToolResult;
+use sugarcode_protocol::CoreProviderErrorMetadata;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::CoreToolErrorKind;
 use sugarcode_protocol::CoreToolResult;
+use sugarcode_protocol::CoreToolSchemaError;
 use sugarcode_protocol::CoreTurnError;
 use sugarcode_protocol::CoreTurnErrorKind;
+use sugarcode_protocol::CoreUserContentPart;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
+use sugarcode_state::ContentStore;
+use sugarcode_state::DurableModelSelectionCapabilities;
 use sugarcode_state::DurableModelSelectionSnapshot;
+use sugarcode_state::DurableProviderErrorMetadata;
 use sugarcode_state::DurableThreadOrigin;
 use sugarcode_state::DurableThreadPage;
 use sugarcode_state::DurableThreadSnapshot;
+use sugarcode_state::DurableToolSchemaError;
 use sugarcode_state::DurableTurnError;
 use sugarcode_state::DurableTurnErrorKind;
 use sugarcode_state::DurableTurnStatus;
@@ -78,6 +91,7 @@ use sugarcode_tools::ShellCommandErrorKind;
 use sugarcode_tools::ShellCommandExecution;
 use sugarcode_tools::ShellCommandExecutor;
 use sugarcode_tools::ShellCommandOutcome;
+use sugarcode_tools::WorkspaceEditDiagnostic;
 use sugarcode_tools::WorkspaceInstructionsSnapshot;
 use sugarcode_tools::WorkspaceListArguments;
 use sugarcode_tools::WorkspaceListErrorKind;
@@ -120,6 +134,7 @@ use terminal::finish_state_unavailable_and_emit;
 use terminal::send_event;
 use tool_dispatch::append_completed_agent_output_item;
 use tool_dispatch::append_completed_tool_item;
+use tool_dispatch::is_workspace_write_tool;
 use tool_dispatch::map_workspace_list_outcome;
 use tool_dispatch::map_workspace_patch_error;
 use tool_dispatch::map_workspace_read_outcome;
@@ -152,6 +167,7 @@ pub struct CoreRuntime {
     workspace_patch: Option<Arc<dyn WorkspacePatchExecutor>>,
     workspace_instructions: Option<Arc<WorkspaceInstructionsSnapshot>>,
     workspace_skills: Option<Arc<WorkspaceSkillsSnapshot>>,
+    content_store: Option<Arc<ContentStore>>,
     shell_executor: Option<Arc<dyn ShellCommandExecutor>>,
     approval_requester: Option<Arc<dyn CommandApprovalRequester>>,
     mcp_executor: Option<Arc<dyn McpToolExecutor>>,
@@ -167,7 +183,8 @@ pub struct ResolvedModel {
     pub provider: Arc<dyn ModelProvider>,
     pub model: String,
     pub profile_id: String,
-    pub provider_kind: String,
+    pub provider_family: String,
+    pub wire_api: String,
     pub display_name: String,
     pub capabilities: ModelCapabilities,
 }
@@ -176,22 +193,31 @@ pub struct ResolvedModel {
 pub struct ModelCapabilities {
     pub context_window_tokens: u32,
     pub output_reserve_tokens: u32,
+    pub tool_calls: bool,
     pub strict_tool_schema: bool,
     pub parallel_tool_calls: bool,
+    pub image_input: bool,
+    pub pdf_input: bool,
 }
 
 impl ModelCapabilities {
     pub fn new(
         context_window_tokens: u32,
+        tool_calls: bool,
         strict_tool_schema: bool,
         parallel_tool_calls: bool,
+        image_input: bool,
+        pdf_input: bool,
     ) -> Self {
         let output_reserve_tokens = 16_384_u32.min(4_096_u32.max(context_window_tokens / 4));
         Self {
             context_window_tokens,
             output_reserve_tokens,
+            tool_calls,
             strict_tool_schema,
             parallel_tool_calls,
+            image_input,
+            pdf_input,
         }
     }
 
@@ -228,7 +254,8 @@ impl ModelGatewaySource {
                     provider: resolved.provider,
                     model: Arc::from(resolved.model),
                     profile_id: Arc::from(resolved.profile_id),
-                    provider_kind: Arc::from(resolved.provider_kind),
+                    provider_family: Arc::from(resolved.provider_family),
+                    wire_api: Arc::from(resolved.wire_api),
                     display_name: Arc::from(resolved.display_name),
                     capabilities: resolved.capabilities,
                 })
@@ -242,7 +269,8 @@ struct ModelGateway {
     provider: Arc<dyn ModelProvider>,
     model: Arc<str>,
     profile_id: Arc<str>,
-    provider_kind: Arc<str>,
+    provider_family: Arc<str>,
+    wire_api: Arc<str>,
     display_name: Arc<str>,
     capabilities: ModelCapabilities,
 }
@@ -253,7 +281,8 @@ impl fmt::Debug for ModelGateway {
             .debug_struct("ModelGateway")
             .field("model", &self.model)
             .field("profile_id", &self.profile_id)
-            .field("provider_kind", &self.provider_kind)
+            .field("provider_family", &self.provider_family)
+            .field("wire_api", &self.wire_api)
             .field("display_name", &self.display_name)
             .field("capabilities", &self.capabilities)
             .finish_non_exhaustive()
@@ -344,9 +373,10 @@ impl CoreRuntime {
                     provider,
                     model: Arc::from(model),
                     profile_id: Arc::from("fixed"),
-                    provider_kind: Arc::from("fixed"),
+                    provider_family: Arc::from("openai"),
+                    wire_api: Arc::from("openaiResponses"),
                     display_name: Arc::from("Fixed model"),
-                    capabilities: ModelCapabilities::new(131_072, false, false),
+                    capabilities: ModelCapabilities::new(131_072, true, false, false, true, true),
                 })),
                 workspace_read,
                 workspace_list,
@@ -354,6 +384,7 @@ impl CoreRuntime {
                 workspace_patch: None,
                 workspace_instructions: None,
                 workspace_skills: None,
+                content_store: None,
                 shell_executor: None,
                 approval_requester: None,
                 mcp_executor: None,
@@ -386,6 +417,7 @@ impl CoreRuntime {
                 workspace_patch: None,
                 workspace_instructions: None,
                 workspace_skills: None,
+                content_store: None,
                 shell_executor: None,
                 approval_requester: None,
                 mcp_executor: None,
@@ -458,6 +490,11 @@ impl CoreRuntime {
         self
     }
 
+    pub fn with_content_store(mut self, content_store: Arc<ContentStore>) -> Self {
+        self.content_store = Some(content_store);
+        self
+    }
+
     pub fn with_mcp(
         mut self,
         executor: Arc<dyn McpToolExecutor>,
@@ -482,6 +519,7 @@ impl CoreRuntime {
                 workspace_patch: None,
                 workspace_instructions: None,
                 workspace_skills: None,
+                content_store: None,
                 shell_executor: None,
                 approval_requester: None,
                 mcp_executor: None,
@@ -577,7 +615,12 @@ impl CoreApi for CoreRuntime {
         thread_id: ThreadId,
         input: Option<String>,
     ) -> Result<TurnStartOutcome, CoreError> {
-        self.start_text_turn_with_model(request_id, thread_id, input, None)
+        self.start_content_turn_with_model(
+            request_id,
+            thread_id,
+            input.map(|text| vec![CoreUserContentPart::Text { text }]),
+            None,
+        )
     }
 
     fn start_text_turn_with_model(
@@ -585,6 +628,21 @@ impl CoreApi for CoreRuntime {
         request_id: CoreRequestId,
         thread_id: ThreadId,
         input: Option<String>,
+        model_profile_id: Option<String>,
+    ) -> Result<TurnStartOutcome, CoreError> {
+        self.start_content_turn_with_model(
+            request_id,
+            thread_id,
+            input.map(|text| vec![CoreUserContentPart::Text { text }]),
+            model_profile_id,
+        )
+    }
+
+    fn start_content_turn_with_model(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+        input: Option<Vec<CoreUserContentPart>>,
         model_profile_id: Option<String>,
     ) -> Result<TurnStartOutcome, CoreError> {
         let selected_profile_id = match model_profile_id {
@@ -601,10 +659,11 @@ impl CoreApi for CoreRuntime {
             .workspace_instructions
             .as_deref()
             .map(workspace_instructions_audit);
+        let selection_text = input.as_deref().map(user_content_text);
         let selection = self
             .workspace_skills
             .as_deref()
-            .map(|skills| skills.select(input.as_deref()))
+            .map(|skills| skills.select(selection_text.as_deref()))
             .transpose()
             .map_err(|_| CoreError::ContextTooLarge)?;
         let workspace_skills = self
@@ -634,18 +693,27 @@ impl CoreApi for CoreRuntime {
             .ok_or(CoreError::ContextTooLarge)?;
         let tool_context_bytes = AgentLoopState::default()
             .tools_for_round(self, &thread_id)
-            .iter()
-            .map(sugarcode_model_provider::ModelToolDefinition::context_bytes)
+            .into_iter()
+            .filter(|_| model_gateway.capabilities.tool_calls)
+            .map(|tool| tool.context_bytes())
             .try_fold(0usize, usize::checked_add)
             .ok_or(CoreError::ContextTooLarge)?;
         let model_snapshot = DurableModelSelectionSnapshot {
             profile_id: model_gateway.profile_id.to_string(),
-            provider_kind: model_gateway.provider_kind.to_string(),
+            provider_family: model_gateway.provider_family.to_string(),
+            wire_api: model_gateway.wire_api.to_string(),
             model_id: model_gateway.model.to_string(),
             display_name: model_gateway.display_name.to_string(),
             context_window_tokens: model_gateway.capabilities.context_window_tokens,
+            effective_capabilities: DurableModelSelectionCapabilities {
+                tool_calls: model_gateway.capabilities.tool_calls,
+                strict_tools: model_gateway.capabilities.strict_tool_schema,
+                parallel_tools: model_gateway.capabilities.parallel_tool_calls,
+                image_input: model_gateway.capabilities.image_input,
+                pdf_input: model_gateway.capabilities.pdf_input,
+            },
         };
-        let mut prepared = self.lock_core()?.prepare_text_turn_with_model_context(
+        let mut prepared = self.lock_core()?.prepare_content_turn_with_model_context(
             request_id,
             thread_id.clone(),
             input,
@@ -852,11 +920,36 @@ async fn run_turn(
         }
     }
 
-    let mut messages = prepared
+    let mut messages = match prepared
         .history
         .iter()
-        .map(prepared_model_message)
-        .collect::<Vec<_>>();
+        .map(|message| {
+            prepared_model_message(
+                message,
+                runtime.content_store.as_deref(),
+                model_gateway.capabilities,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(messages) => messages,
+        Err(error) => {
+            let terminal = claim_terminal(&terminal_state, Terminal::Failed(error));
+            match terminal {
+                Terminal::Failed(error) => {
+                    finish_failed_and_emit(&runtime, &prepared, error, None).await;
+                }
+                Terminal::Interrupted => {
+                    finish_interrupted_and_emit(&runtime, &prepared, None).await;
+                }
+                Terminal::Completed | Terminal::StateUnavailable => {
+                    finish_state_unavailable_and_emit(&runtime, &prepared).await;
+                }
+            }
+            clear_active(&runtime, &thread_id, &turn_id);
+            return;
+        }
+    };
     let mut usage = None;
     let mut agent_loop = AgentLoopState::default();
     let mut compaction_ordinal = 0u64;
@@ -869,12 +962,15 @@ async fn run_turn(
                 .collaboration
                 .take_amendments(&thread_id)
                 .into_iter()
-                .map(|amendment| ModelMessage::Text {
-                    role: ModelRole::User,
-                    text: format!("# Task amendment\n\n{amendment}"),
+                .map(|amendment| {
+                    ModelMessage::user_text(format!("# Task amendment\n\n{amendment}"))
                 }),
         );
-        let tools = agent_loop.tools_for_round(&runtime, &thread_id);
+        let tools = if model_gateway.capabilities.tool_calls {
+            agent_loop.tools_for_round(&runtime, &thread_id)
+        } else {
+            Vec::new()
+        };
         let initial_request = ModelRequest {
             model: model_gateway.model.to_string(),
             instructions: prepared.instructions.clone(),
@@ -1009,6 +1105,7 @@ async fn run_turn(
                 }
                 Some(Ok(ModelEvent::OutputTextDelta { .. })) => {}
                 Some(Ok(ModelEvent::ResponseCompleted(response))) => {
+                    let provider_context = response.provider_context.clone();
                     let trailing = tokio::select! {
                         biased;
                         _ = cancellation.cancelled() => break 'rounds Terminal::Interrupted,
@@ -1085,6 +1182,12 @@ async fn run_turn(
                             Vec::new()
                         }
                         CompletedRoundOutput::ToolUse { commentary, calls } => {
+                            if let Some(context) = provider_context.clone() {
+                                messages.push(ModelMessage {
+                                    role: ModelRole::Assistant,
+                                    content: vec![ModelContentPart::ProviderContext(context)],
+                                });
+                            }
                             if let Some((output_index, text)) = commentary {
                                 if let Err(error) = append_completed_agent_output_item(
                                     &runtime,
@@ -1099,7 +1202,12 @@ async fn run_turn(
                                 {
                                     break 'rounds error;
                                 }
-                                messages.push(ModelMessage::Commentary { text });
+                                if provider_context.is_none() {
+                                    messages.push(ModelMessage::assistant_text(
+                                        ModelTextPhase::Commentary,
+                                        text,
+                                    ));
+                                }
                             }
                             calls
                         }
@@ -1136,6 +1244,7 @@ async fn run_turn(
                                 &mut messages,
                                 &tool_calls,
                                 &rejection,
+                                provider_context.is_none(),
                             )
                             .await
                             {
@@ -1169,12 +1278,17 @@ async fn run_turn(
                             Ok(contents) => contents,
                             Err(error) => break 'rounds error,
                         };
-                        messages.push(ModelMessage::ToolCallBatch(tool_calls.clone()));
-                        messages.extend(tool_calls.drain(..).zip(contents).map(
-                            |(call, content)| ModelMessage::ToolResult {
-                                call_id: call.id,
-                                content,
-                            },
+                        if provider_context.is_none() {
+                            messages.push(ModelMessage::tool_calls(tool_calls.clone()));
+                        }
+                        messages.push(ModelMessage::tool_results(
+                            tool_calls
+                                .drain(..)
+                                .zip(contents)
+                                .map(|(call, content)| {
+                                    ModelToolResult::from_serialized(call.id, content)
+                                })
+                                .collect(),
                         ));
                         continue 'rounds;
                     }
@@ -1196,7 +1310,9 @@ async fn run_turn(
                             "workspace/read" => runtime.workspace_read.is_some(),
                             "workspace/list" => runtime.workspace_list.is_some(),
                             "workspace/search" => runtime.workspace_search.is_some(),
-                            "workspace/apply-patch" => runtime.workspace_patch.is_some(),
+                            "workspace/edit" | "workspace/apply-diff" => {
+                                runtime.workspace_patch.is_some()
+                            }
                             "shell/exec" => {
                                 runtime.shell_executor.is_some()
                                     && runtime.approval_requester.is_some()
@@ -1219,7 +1335,7 @@ async fn run_turn(
                                 false,
                             ));
                         }
-                        if call.name != "workspace/apply-patch" {
+                        if !is_workspace_write_tool(&call.name) {
                             agent_loop.reset_tool_execution_errors();
                         }
                         if call.name.starts_with("collaboration/") {
@@ -1230,11 +1346,7 @@ async fn run_turn(
                                     CoreItemKind::ToolCall {
                                         call_id: call.id.clone(),
                                         name: call.name.clone(),
-                                        path: String::new(),
-                                        query: None,
-                                        patch: None,
-                                        command: None,
-                                        arguments: None,
+                                        arguments: call.arguments.clone(),
                                     },
                                 )
                                 .await
@@ -1296,6 +1408,7 @@ async fn run_turn(
                             if record_executed_tool_call(
                                 &mut messages,
                                 &mut batch_results,
+                                provider_context.is_none(),
                                 batch_calls_persisted,
                                 call,
                                 content,
@@ -1511,6 +1624,7 @@ async fn run_turn(
                             if record_executed_tool_call(
                                 &mut messages,
                                 &mut batch_results,
+                                provider_context.is_none(),
                                 batch_calls_persisted,
                                 call,
                                 content,
@@ -1554,11 +1668,7 @@ async fn run_turn(
                                     CoreItemKind::ToolCall {
                                         call_id: call.id.clone(),
                                         name: call.name.clone(),
-                                        path: arguments.cwd.clone(),
-                                        query: None,
-                                        patch: None,
-                                        command: Some(arguments.command.clone()),
-                                        arguments: Some(arguments.arguments.clone()),
+                                        arguments: call.arguments.clone(),
                                     },
                                 )
                                 .await
@@ -1749,6 +1859,7 @@ async fn run_turn(
                             if record_executed_tool_call(
                                 &mut messages,
                                 &mut batch_results,
+                                provider_context.is_none(),
                                 batch_calls_persisted,
                                 call,
                                 content,
@@ -1767,13 +1878,11 @@ async fn run_turn(
                                 Some(
                                     runtime
                                         .collaboration
-                                        .acquire_workspace(
-                                            if call.name == "workspace/apply-patch" {
-                                                AgentAccess::WorkspaceWrite
-                                            } else {
-                                                AgentAccess::ReadOnly
-                                            },
-                                        )
+                                        .acquire_workspace(if is_workspace_write_tool(&call.name) {
+                                            AgentAccess::WorkspaceWrite
+                                        } else {
+                                            AgentAccess::ReadOnly
+                                        })
                                         .await,
                                 )
                             } else {
@@ -1787,33 +1896,37 @@ async fn run_turn(
                                 CoreItemKind::ToolCall {
                                     call_id: call.id.clone(),
                                     name: call.name.clone(),
-                                    path: arguments.path.clone(),
-                                    query: arguments.query.clone(),
-                                    patch: arguments.patch.clone(),
-                                    command: None,
-                                    arguments: None,
+                                    arguments: call.arguments.clone(),
                                 },
                             )
                             .await
                         {
                             break 'rounds error;
                         }
-                        if call.name == "workspace/apply-patch" {
-                            let prepare_outcome = runtime
+                        if is_workspace_write_tool(&call.name) {
+                            let executor = runtime
                                 .workspace_patch
                                 .as_ref()
-                                .expect("validated workspace/apply-patch executor")
-                                .prepare(
-                                    &WorkspacePatchArguments {
-                                        path: arguments.path.clone(),
-                                        patch: arguments
-                                            .patch
-                                            .clone()
-                                            .expect("validated workspace/apply-patch input"),
-                                    },
-                                    &cancellation,
-                                )
-                                .await;
+                                .expect("validated workspace write executor");
+                            let prepare_outcome = if let Some(edit) = arguments.edit.as_ref() {
+                                executor.prepare_edit(edit, &cancellation).await
+                            } else {
+                                executor
+                                    .prepare(
+                                        &WorkspacePatchArguments {
+                                            path: arguments.path.clone(),
+                                            diff: arguments
+                                                .diff
+                                                .clone()
+                                                .expect("validated workspace/apply-diff input"),
+                                            base_sha256: None,
+                                        },
+                                        &cancellation,
+                                    )
+                                    .await
+                            };
+                            let workspace_tool_name = call.name.as_str();
+                            let mut workspace_diagnostic = None;
                             let (mut result, mut content, interrupted_after_commit) =
                                 match prepare_outcome {
                                     WorkspacePatchPrepareOutcome::Error {
@@ -1823,7 +1936,19 @@ async fn run_turn(
                                         let kind = map_workspace_patch_error(kind);
                                         (
                                             CoreToolResult::Error { kind },
-                                            format!("workspace/apply-patch error: {kind}"),
+                                            format!("{workspace_tool_name} error: {kind}"),
+                                            false,
+                                        )
+                                    }
+                                    WorkspacePatchPrepareOutcome::ValidationRejected {
+                                        kind,
+                                        diagnostic,
+                                    } => {
+                                        workspace_diagnostic = Some(diagnostic);
+                                        let kind = map_workspace_patch_error(kind);
+                                        (
+                                            CoreToolResult::Error { kind },
+                                            format!("{workspace_tool_name} error: {kind}"),
                                             false,
                                         )
                                     }
@@ -1867,7 +1992,7 @@ async fn run_turn(
                                             let outcome = runtime
                                                 .workspace_patch
                                                 .as_ref()
-                                                .expect("validated workspace/apply-patch executor")
+                                                .expect("validated workspace write executor")
                                                 .commit(*proposal, &CancellationToken::new())
                                                 .await;
                                             let interrupted = cancellation.is_cancelled();
@@ -1889,9 +2014,7 @@ async fn run_turn(
                                                             "afterBytes": after_bytes,
                                                         }),
                                                     )
-                                                    .expect(
-                                                        "workspace/apply-patch result serializes",
-                                                    );
+                                                    .expect("workspace write result serializes");
                                                     (
                                                         CoreToolResult::Success {
                                                             bytes: content.len() as u64,
@@ -1906,7 +2029,7 @@ async fn run_turn(
                                                     (
                                                         CoreToolResult::Error { kind },
                                                         format!(
-                                                            "workspace/apply-patch error: {kind}"
+                                                            "{workspace_tool_name} error: {kind}"
                                                         ),
                                                         interrupted,
                                                     )
@@ -1917,8 +2040,9 @@ async fn run_turn(
                                                 CoreToolResult::Error {
                                                     kind: CoreToolErrorKind::ResultTooLarge,
                                                 },
-                                                "workspace/apply-patch error: resultTooLarge"
-                                                    .to_string(),
+                                                format!(
+                                                    "{workspace_tool_name} error: resultTooLarge"
+                                                ),
                                                 false,
                                             )
                                         }
@@ -1929,18 +2053,63 @@ async fn run_turn(
                                 result = CoreToolResult::Error {
                                     kind: CoreToolErrorKind::ResultTooLarge,
                                 };
-                                content = "workspace/apply-patch error: resultTooLarge".to_string();
+                                content = format!("{workspace_tool_name} error: resultTooLarge");
                                 result_bytes = serialized_tool_result_bytes(&result);
                             }
                             debug_assert!(result_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES);
                             let execution_error_signature = match &result {
                                 CoreToolResult::Error {
                                     kind:
-                                        kind @ (CoreToolErrorKind::InvalidPatch
-                                        | CoreToolErrorKind::PatchDoesNotApply),
-                                } => Some(format!("{}:{kind}", call.name)),
+                                        kind @ (CoreToolErrorKind::HeaderCountMismatch
+                                        | CoreToolErrorKind::RangeOutOfBounds
+                                        | CoreToolErrorKind::ExpectedMismatch
+                                        | CoreToolErrorKind::BaseRevisionMismatch
+                                        | CoreToolErrorKind::UnsupportedDiffFeature),
+                                } => {
+                                    let diagnostic = workspace_diagnostic.as_ref();
+                                    Some(format!(
+                                        "{}:{kind}:{:?}:{:?}:{:?}:{:?}:{:?}",
+                                        call.name,
+                                        diagnostic.and_then(|value| value.edit_index),
+                                        diagnostic.and_then(|value| value.hunk_index),
+                                        diagnostic.and_then(|value| value.line),
+                                        diagnostic
+                                            .and_then(|value| value.expected_summary.as_deref()),
+                                        diagnostic
+                                            .and_then(|value| value.actual_summary.as_deref()),
+                                    ))
+                                }
                                 _ => None,
                             };
+                            if let CoreToolResult::Error { kind } = &result
+                                && validation_rejection_action(*kind).is_some()
+                            {
+                                let arguments = serde_json::to_vec(&call.arguments)
+                                    .expect("tool arguments serialize");
+                                let diagnostic = workspace_diagnostic.as_ref();
+                                content = validation_rejection_content(
+                                    &call.name, *kind, &arguments, diagnostic,
+                                );
+                                if let Err(error) = append_completed_tool_item(
+                                    &runtime,
+                                    &prepared,
+                                    tool_validation_rejected_item(
+                                        &call,
+                                        *kind,
+                                        &arguments,
+                                        diagnostic.and_then(|value| value.edit_index),
+                                        diagnostic.and_then(|value| value.hunk_index),
+                                        diagnostic.and_then(|value| value.line),
+                                        diagnostic.and_then(|value| value.expected_summary.clone()),
+                                        diagnostic.and_then(|value| value.actual_summary.clone()),
+                                        diagnostic.map(|value| value.suggested_action.as_str()),
+                                    ),
+                                )
+                                .await
+                                {
+                                    break 'rounds error;
+                                }
+                            }
                             if let Err(error) = append_completed_tool_item(
                                 &runtime,
                                 &prepared,
@@ -1970,6 +2139,7 @@ async fn run_turn(
                             if record_executed_tool_call(
                                 &mut messages,
                                 &mut batch_results,
+                                provider_context.is_none(),
                                 batch_calls_persisted,
                                 call,
                                 content,
@@ -2077,6 +2247,7 @@ async fn run_turn(
                         if record_executed_tool_call(
                             &mut messages,
                             &mut batch_results,
+                            provider_context.is_none(),
                             batch_calls_persisted,
                             call,
                             content,
@@ -2135,7 +2306,7 @@ fn validate_tool_call_batch(
             "workspace/search" if runtime.workspace_search.is_some() => {
                 workspace_tool_arguments(call).map(|_| ())
             }
-            "workspace/apply-patch" if runtime.workspace_patch.is_some() => {
+            "workspace/edit" | "workspace/apply-diff" if runtime.workspace_patch.is_some() => {
                 workspace_tool_arguments(call).map(|_| ())
             }
             "shell/exec"
@@ -2219,54 +2390,112 @@ async fn record_rejected_tool_batch(
     messages: &mut Vec<ModelMessage>,
     calls: &[ModelToolCall],
     rejection: &ToolBatchRejection,
+    record_calls: bool,
 ) -> Result<(), Terminal> {
     let is_batch = calls.len() > 1;
-    if is_batch {
-        messages.push(ModelMessage::ToolCallBatch(calls.to_vec()));
+    if record_calls && is_batch {
+        messages.push(ModelMessage::tool_calls(calls.to_vec()));
     }
     for (call, validation_kind) in calls.iter().zip(&rejection.kinds) {
         let kind = validation_kind.unwrap_or(CoreToolErrorKind::BatchRejected);
         let arguments = serde_json::to_vec(&call.arguments).unwrap_or_default();
-        let arguments_sha256 = sha256(&arguments);
-        let content = format!(
-            "{} error: {}; argumentsBytes={}; argumentsSha256={arguments_sha256}",
-            call.name,
-            kind,
-            arguments.len(),
-        );
+        let content = validation_rejection_content(&call.name, kind, &arguments, None);
         append_completed_tool_item(
             runtime,
             prepared,
-            CoreItemKind::ToolCall {
-                call_id: call.id.clone(),
-                name: call.name.clone(),
-                path: String::new(),
-                query: None,
-                patch: None,
-                command: None,
-                arguments: None,
-            },
+            tool_validation_rejected_item(
+                call, kind, &arguments, None, None, None, None, None, None,
+            ),
         )
         .await?;
-        append_completed_tool_item(
-            runtime,
-            prepared,
-            CoreItemKind::ToolResult {
-                call_id: call.id.clone(),
-                name: call.name.clone(),
-                result: CoreToolResult::Error { kind },
-            },
-        )
-        .await?;
-        if !is_batch {
-            messages.push(ModelMessage::ToolCall(call.clone()));
+        if record_calls && !is_batch {
+            messages.push(ModelMessage::tool_calls(vec![call.clone()]));
         }
-        messages.push(ModelMessage::ToolResult {
-            call_id: call.id.clone(),
-            content,
-        });
+        messages.push(ModelMessage::tool_results(vec![
+            ModelToolResult::from_serialized(call.id.clone(), content),
+        ]));
     }
     Ok(())
+}
+
+fn validation_rejection_content(
+    tool_name: &str,
+    kind: CoreToolErrorKind,
+    arguments: &[u8],
+    diagnostic: Option<&WorkspaceEditDiagnostic>,
+) -> String {
+    let mut fields = vec![
+        format!("{tool_name} error: {kind}"),
+        format!("argumentsBytes={}", arguments.len()),
+        format!("argumentsSha256={}", sha256(arguments)),
+    ];
+    if let Some(edit_index) = diagnostic.and_then(|value| value.edit_index) {
+        fields.push(format!("editIndex={edit_index}"));
+    }
+    if let Some(hunk_index) = diagnostic.and_then(|value| value.hunk_index) {
+        fields.push(format!("hunkIndex={hunk_index}"));
+    }
+    if let Some(line) = diagnostic.and_then(|value| value.line) {
+        fields.push(format!("line={line}"));
+    }
+    if let Some(expected) = diagnostic.and_then(|value| value.expected_summary.as_deref()) {
+        fields.push(format!("expected={expected}"));
+    }
+    if let Some(actual) = diagnostic.and_then(|value| value.actual_summary.as_deref()) {
+        fields.push(format!("actual={actual}"));
+    }
+    fields.push(format!(
+        "suggestedAction={}",
+        diagnostic
+            .map(|value| value.suggested_action.as_str())
+            .or_else(|| validation_rejection_action(kind))
+            .unwrap_or("correctArguments")
+    ));
+    fields.join("; ")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tool_validation_rejected_item(
+    call: &ModelToolCall,
+    kind: CoreToolErrorKind,
+    arguments: &[u8],
+    edit_index: Option<u32>,
+    hunk_index: Option<u32>,
+    line: Option<u32>,
+    expected_summary: Option<String>,
+    actual_summary: Option<String>,
+    suggested_action: Option<&str>,
+) -> CoreItemKind {
+    CoreItemKind::ToolValidationRejected {
+        call_id: call.id.clone(),
+        name: call.name.clone(),
+        kind,
+        arguments_bytes: u64::try_from(arguments.len()).unwrap_or(u64::MAX),
+        arguments_sha256: sha256(arguments),
+        edit_index,
+        hunk_index,
+        line,
+        expected_summary,
+        actual_summary,
+        suggested_action: suggested_action
+            .or_else(|| validation_rejection_action(kind))
+            .unwrap_or("correctArguments")
+            .to_string(),
+    }
+}
+
+fn validation_rejection_action(kind: CoreToolErrorKind) -> Option<&'static str> {
+    match kind {
+        CoreToolErrorKind::InvalidArguments | CoreToolErrorKind::BatchRejected => {
+            Some("correctArguments")
+        }
+        CoreToolErrorKind::HeaderCountMismatch => Some("correctLineCounts"),
+        CoreToolErrorKind::RangeOutOfBounds
+        | CoreToolErrorKind::ExpectedMismatch
+        | CoreToolErrorKind::BaseRevisionMismatch => Some("readFileAndRebase"),
+        CoreToolErrorKind::UnsupportedDiffFeature => Some("useSingleFileUnifiedDiff"),
+        _ => None,
+    }
 }
 
 enum CompletedRoundOutput {
@@ -2284,6 +2513,21 @@ fn classify_model_response(
     response: ModelResponse,
     preview_text: &BTreeMap<u32, String>,
 ) -> Result<CompletedRoundOutput, ModelError> {
+    match &response.terminal.finish_reason {
+        ModelFinishReason::MaxTokens => {
+            return Err(ModelError::new(ModelErrorKind::Incomplete, false));
+        }
+        ModelFinishReason::Filtered | ModelFinishReason::Safety => {
+            return Err(ModelError::new(ModelErrorKind::Filtered, false));
+        }
+        ModelFinishReason::Unknown(_) => {
+            return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
+        }
+        ModelFinishReason::Stop
+        | ModelFinishReason::ToolCalls
+        | ModelFinishReason::StopSequence => {}
+    }
+    let continuation = response.terminal.continuation;
     if response
         .output
         .iter()
@@ -2301,6 +2545,9 @@ fn classify_model_response(
             phase: ModelTextPhase::Final,
             text,
         } => {
+            if continuation != ModelContinuation::Complete {
+                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+            }
             if output.next().is_some() {
                 return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
             }
@@ -2322,6 +2569,9 @@ fn classify_model_response(
             phase: ModelTextPhase::Commentary,
             text,
         } => {
+            if continuation != ModelContinuation::ToolCalls {
+                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+            }
             validate_completed_text(
                 first.output_index,
                 &text,
@@ -2346,6 +2596,9 @@ fn classify_model_response(
             })
         }
         ModelOutputItemKind::ToolCall(call) => {
+            if continuation != ModelContinuation::ToolCalls {
+                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+            }
             if !preview_text.is_empty() {
                 return Err(ModelError::new(ModelErrorKind::Protocol, false));
             }
@@ -2416,18 +2669,14 @@ async fn execute_read_only_tool_batch(
         .map(workspace_tool_arguments)
         .collect::<Result<Vec<_>, _>>()
         .map_err(Terminal::Failed)?;
-    for (call, arguments) in calls.iter().zip(&arguments) {
+    for call in calls {
         append_completed_tool_item(
             runtime,
             prepared,
             CoreItemKind::ToolCall {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
-                path: arguments.path.clone(),
-                query: arguments.query.clone(),
-                patch: None,
-                command: None,
-                arguments: None,
+                arguments: call.arguments.clone(),
             },
         )
         .await?;
@@ -2554,11 +2803,7 @@ async fn persist_mixed_batch_calls(
             CoreItemKind::ToolCall {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
-                path: String::new(),
-                query: None,
-                patch: None,
-                command: None,
-                arguments: None,
+                arguments: call.arguments.clone(),
             }
         } else if call.name.starts_with("mcp__") {
             let prepared_call = runtime
@@ -2590,26 +2835,18 @@ async fn persist_mixed_batch_calls(
                 inventory_sha256: prepared_call.inventory_sha256,
             }
         } else if call.name == "shell/exec" {
-            let arguments = shell_tool_arguments(call).map_err(Terminal::Failed)?;
+            shell_tool_arguments(call).map_err(Terminal::Failed)?;
             CoreItemKind::ToolCall {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
-                path: arguments.cwd,
-                query: None,
-                patch: None,
-                command: Some(arguments.command),
-                arguments: Some(arguments.arguments),
+                arguments: call.arguments.clone(),
             }
         } else {
-            let arguments = workspace_tool_arguments(call).map_err(Terminal::Failed)?;
+            workspace_tool_arguments(call).map_err(Terminal::Failed)?;
             CoreItemKind::ToolCall {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
-                path: arguments.path,
-                query: arguments.query,
-                patch: arguments.patch,
-                command: None,
-                arguments: None,
+                arguments: call.arguments.clone(),
             }
         };
         append_completed_tool_item(runtime, prepared, item).await?;
@@ -2620,34 +2857,36 @@ async fn persist_mixed_batch_calls(
 fn record_executed_tool_call(
     messages: &mut Vec<ModelMessage>,
     batch_results: &mut Vec<(ModelToolCall, String)>,
+    record_calls: bool,
     is_batch: bool,
     call: ModelToolCall,
     content: String,
     is_last: bool,
 ) -> bool {
     if !is_batch {
-        messages.push(ModelMessage::ToolCall(call.clone()));
-        messages.push(ModelMessage::ToolResult {
-            call_id: call.id,
-            content,
-        });
+        if record_calls {
+            messages.push(ModelMessage::tool_calls(vec![call.clone()]));
+        }
+        messages.push(ModelMessage::tool_results(vec![
+            ModelToolResult::from_serialized(call.id, content),
+        ]));
         return is_last;
     }
     batch_results.push((call, content));
     if !is_last {
         return false;
     }
-    messages.push(ModelMessage::ToolCallBatch(
-        batch_results.iter().map(|(call, _)| call.clone()).collect(),
-    ));
-    messages.extend(
+    if record_calls {
+        messages.push(ModelMessage::tool_calls(
+            batch_results.iter().map(|(call, _)| call.clone()).collect(),
+        ));
+    }
+    messages.push(ModelMessage::tool_results(
         batch_results
             .drain(..)
-            .map(|(call, content)| ModelMessage::ToolResult {
-                call_id: call.id,
-                content,
-            }),
-    );
+            .map(|(call, content)| ModelToolResult::from_serialized(call.id, content))
+            .collect(),
+    ));
     true
 }
 
@@ -2968,9 +3207,7 @@ async fn compact_active_turn(
 
     let summary_sha256 = sha256(summary.as_bytes());
     let mut compacted = Vec::with_capacity(1 + messages.len() - tail_start);
-    compacted.push(ModelMessage::ContextCompaction {
-        content: summary.clone(),
-    });
+    compacted.push(ModelMessage::context_compaction(summary.clone()));
     compacted.extend_from_slice(&messages[tail_start..]);
     let post_context_bytes = ModelRequest {
         model: model_gateway.model.to_string(),
@@ -3047,12 +3284,18 @@ fn recent_complete_tool_pair_start(messages: &[ModelMessage], maximum_pairs: usi
     let mut index = messages.len();
     let mut pairs = 0usize;
     while pairs < maximum_pairs && index >= 2 {
-        let (ModelMessage::ToolCall(call), ModelMessage::ToolResult { call_id, .. }) =
-            (&messages[index - 2], &messages[index - 1])
-        else {
+        let Some(calls) = message_tool_calls(&messages[index - 2]) else {
             break;
         };
-        if &call.id != call_id {
+        let Some(results) = message_tool_results(&messages[index - 1]) else {
+            break;
+        };
+        if calls.len() != results.len()
+            || calls
+                .iter()
+                .zip(results)
+                .any(|(call, result)| call.id != result.call_id)
+        {
             break;
         }
         index -= 2;
@@ -3063,8 +3306,8 @@ fn recent_complete_tool_pair_start(messages: &[ModelMessage], maximum_pairs: usi
 
 fn drop_oldest_complete_tool_pair(messages: &[ModelMessage], tail_start: usize) -> usize {
     if tail_start + 1 < messages.len()
-        && matches!(messages[tail_start], ModelMessage::ToolCall(_))
-        && matches!(messages[tail_start + 1], ModelMessage::ToolResult { .. })
+        && message_tool_calls(&messages[tail_start]).is_some()
+        && message_tool_results(&messages[tail_start + 1]).is_some()
     {
         tail_start + 2
     } else {
@@ -3075,50 +3318,85 @@ fn drop_oldest_complete_tool_pair(messages: &[ModelMessage], tail_start: usize) 
 fn model_messages_sha256(messages: &[ModelMessage]) -> String {
     let mut hasher = Sha256::new();
     for message in messages {
-        match message {
-            ModelMessage::Text { role, text } => {
-                hasher.update(match role {
-                    ModelRole::User => b"user".as_slice(),
-                    ModelRole::Assistant => b"assistant".as_slice(),
-                });
-                hasher.update(text.as_bytes());
-            }
-            ModelMessage::Commentary { text } => {
-                hasher.update(b"commentary");
-                hasher.update(text.as_bytes());
-            }
-            ModelMessage::ContextCompaction { content } => {
-                hasher.update(b"contextCompaction");
-                hasher.update(content.as_bytes());
-            }
-            ModelMessage::ToolCall(call) => {
-                hasher.update(b"toolCall");
-                hasher.update(call.id.as_bytes());
-                hasher.update(call.name.as_bytes());
-                if let Ok(arguments) = serde_json::to_vec(&call.arguments) {
-                    hasher.update(arguments);
+        hasher.update(match message.role {
+            ModelRole::User => b"user".as_slice(),
+            ModelRole::Assistant => b"assistant".as_slice(),
+        });
+        for part in &message.content {
+            match part {
+                ModelContentPart::Text { phase, text } => {
+                    hasher.update(match phase {
+                        ModelTextPhase::Final => b"final".as_slice(),
+                        ModelTextPhase::Commentary => b"commentary".as_slice(),
+                    });
+                    hasher.update(text.as_bytes());
                 }
-            }
-            ModelMessage::ToolCallBatch(calls) => {
-                hasher.update(b"toolCallBatch");
-                for call in calls {
+                ModelContentPart::ContextCompaction { content } => {
+                    hasher.update(b"contextCompaction");
+                    hasher.update(content.as_bytes());
+                }
+                ModelContentPart::ToolCall { call } => {
+                    hasher.update(b"toolCall");
                     hasher.update(call.id.as_bytes());
                     hasher.update(call.name.as_bytes());
                     if let Ok(arguments) = serde_json::to_vec(&call.arguments) {
                         hasher.update(arguments);
                     }
-                    hasher.update(b"\0");
+                }
+                ModelContentPart::ToolResult { result } => {
+                    hasher.update(b"toolResult");
+                    hasher.update(result.call_id.as_bytes());
+                    match &result.content {
+                        ModelToolResultContent::Json(value) => {
+                            if let Ok(bytes) = serde_json::to_vec(value) {
+                                hasher.update(bytes);
+                            }
+                        }
+                        ModelToolResultContent::Text(text) => hasher.update(text.as_bytes()),
+                        ModelToolResultContent::Error { kind, message } => {
+                            hasher.update(kind.as_bytes());
+                            hasher.update(message.as_bytes());
+                        }
+                    }
+                }
+                ModelContentPart::ImageAsset(asset) | ModelContentPart::PdfDocument(asset) => {
+                    hasher.update(asset.asset_id.as_bytes());
+                    hasher.update(asset.sha256.as_bytes());
+                }
+                ModelContentPart::ProviderContext(context) => {
+                    hasher.update(b"providerContext");
+                    hasher.update(context.payload());
                 }
             }
-            ModelMessage::ToolResult { call_id, content } => {
-                hasher.update(b"toolResult");
-                hasher.update(call_id.as_bytes());
-                hasher.update(content.as_bytes());
-            }
+            hasher.update(b"\0");
         }
         hasher.update(b"\n");
     }
     format!("{:x}", hasher.finalize())
+}
+
+fn message_tool_calls(message: &ModelMessage) -> Option<Vec<&ModelToolCall>> {
+    let calls = message
+        .content
+        .iter()
+        .map(|part| match part {
+            ModelContentPart::ToolCall { call } => Some(call),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!calls.is_empty() && message.role == ModelRole::Assistant).then_some(calls)
+}
+
+fn message_tool_results(message: &ModelMessage) -> Option<Vec<&ModelToolResult>> {
+    let results = message
+        .content
+        .iter()
+        .map(|part| match part {
+            ModelContentPart::ToolResult { result } => Some(result),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (!results.is_empty() && message.role == ModelRole::User).then_some(results)
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -3482,52 +3760,147 @@ fn core_network_policy(
     }
 }
 
-fn prepared_model_message(message: &PreparedMessage) -> ModelMessage {
-    match message {
-        PreparedMessage::Text { role, text } => ModelMessage::Text {
+fn prepared_model_message(
+    message: &PreparedMessage,
+    content_store: Option<&ContentStore>,
+    capabilities: ModelCapabilities,
+) -> Result<ModelMessage, ModelError> {
+    Ok(match message {
+        PreparedMessage::UserContent { content } => {
+            let mut model_content = Vec::with_capacity(content.len());
+            for part in content {
+                match part {
+                    CoreUserContentPart::Text { text } => {
+                        model_content.push(ModelContentPart::Text {
+                            phase: ModelTextPhase::Final,
+                            text: text.clone(),
+                        });
+                    }
+                    CoreUserContentPart::Image { asset } => {
+                        if !capabilities.image_input {
+                            return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+                        }
+                        model_content.push(ModelContentPart::ImageAsset(resolve_model_asset(
+                            content_store,
+                            asset,
+                        )?));
+                    }
+                    CoreUserContentPart::Document { asset }
+                        if asset.media_type.starts_with("text/") =>
+                    {
+                        let bytes = resolve_asset_bytes(content_store, asset)?;
+                        let text = String::from_utf8(bytes)
+                            .map_err(|_| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+                        model_content.push(ModelContentPart::Text {
+                            phase: ModelTextPhase::Final,
+                            text,
+                        });
+                    }
+                    CoreUserContentPart::Document { asset } => {
+                        if !capabilities.pdf_input || asset.media_type != "application/pdf" {
+                            return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+                        }
+                        model_content.push(ModelContentPart::PdfDocument(resolve_model_asset(
+                            content_store,
+                            asset,
+                        )?));
+                    }
+                }
+            }
+            ModelMessage {
+                role: ModelRole::User,
+                content: model_content,
+            }
+        }
+        PreparedMessage::Text { role, text } => ModelMessage {
             role: match role {
                 PreparedMessageRole::User => ModelRole::User,
                 PreparedMessageRole::Assistant => ModelRole::Assistant,
             },
-            text: text.clone(),
+            content: vec![ModelContentPart::Text {
+                phase: ModelTextPhase::Final,
+                text: text.clone(),
+            }],
         },
-        PreparedMessage::Commentary { text } => ModelMessage::Commentary { text: text.clone() },
-        PreparedMessage::ContextCompaction { content } => ModelMessage::ContextCompaction {
-            content: content.clone(),
-        },
+        PreparedMessage::Commentary { text } => {
+            ModelMessage::assistant_text(ModelTextPhase::Commentary, text.clone())
+        }
+        PreparedMessage::ContextCompaction { content } => {
+            ModelMessage::context_compaction(content.clone())
+        }
         PreparedMessage::ToolCall {
             call_id,
             name,
-            path,
-            query,
-            patch,
-            command,
             arguments,
-        } => ModelMessage::ToolCall(ModelToolCall {
+        } => ModelMessage::tool_calls(vec![ModelToolCall {
             id: call_id.clone(),
             name: name.clone(),
-            arguments: crate::context::prepared_tool_arguments(
-                path, query, patch, command, arguments,
-            ),
-        }),
-        PreparedMessage::ToolResult { call_id, content } => ModelMessage::ToolResult {
-            call_id: call_id.clone(),
-            content: content.clone(),
-        },
+            arguments: arguments.clone(),
+        }]),
+        PreparedMessage::ToolResult { call_id, content } => {
+            ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+                call_id.clone(),
+                content.clone(),
+            )])
+        }
         PreparedMessage::McpToolCall {
             call_id,
             name,
             arguments,
-        } => ModelMessage::ToolCall(ModelToolCall {
+        } => ModelMessage::tool_calls(vec![ModelToolCall {
             id: call_id.clone(),
             name: name.clone(),
             arguments: arguments.clone(),
-        }),
-        PreparedMessage::McpToolResult { call_id, content } => ModelMessage::ToolResult {
-            call_id: call_id.clone(),
-            content: content.clone(),
-        },
-    }
+        }]),
+        PreparedMessage::McpToolResult { call_id, content } => {
+            ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+                call_id.clone(),
+                content.clone(),
+            )])
+        }
+    })
+}
+
+fn resolve_asset_bytes(
+    content_store: Option<&ContentStore>,
+    asset: &sugarcode_protocol::CoreContentAsset,
+) -> Result<Vec<u8>, ModelError> {
+    content_store
+        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?
+        .read_verified_descriptor(
+            &asset.asset_id,
+            &asset.sha256,
+            &asset.media_type,
+            &asset.original_name,
+            asset.size_bytes,
+        )
+        .map_err(|_| ModelError::new(ModelErrorKind::InvalidRequest, false))
+}
+
+fn resolve_model_asset(
+    content_store: Option<&ContentStore>,
+    asset: &sugarcode_protocol::CoreContentAsset,
+) -> Result<ModelAssetRef, ModelError> {
+    let bytes = resolve_asset_bytes(content_store, asset)?;
+    Ok(ModelAssetRef {
+        asset_id: asset.asset_id.clone(),
+        sha256: asset.sha256.clone(),
+        media_type: asset.media_type.clone(),
+        original_name: asset.original_name.clone(),
+        size_bytes: asset.size_bytes,
+        bytes,
+    })
+}
+
+fn user_content_text(content: &[CoreUserContentPart]) -> String {
+    content
+        .iter()
+        .filter_map(|part| match part {
+            CoreUserContentPart::Text { text } => Some(text.as_str()),
+            CoreUserContentPart::Image { .. } | CoreUserContentPart::Document { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn accumulate_usage(total: &mut Option<ModelUsage>, next: ModelUsage) -> bool {

@@ -81,10 +81,26 @@ pub struct CoreAgentOutputRef {
     pub output_index: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreTurnError {
     pub kind: CoreTurnErrorKind,
     pub retryable: bool,
+    pub provider: Option<CoreProviderErrorMetadata>,
+    pub tool_schema: Option<CoreToolSchemaError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreProviderErrorMetadata {
+    pub http_status: u16,
+    pub code: Option<String>,
+    pub request_id: Option<String>,
+    pub retry_after: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreToolSchemaError {
+    pub tool_name: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

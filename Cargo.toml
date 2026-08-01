@@ -9,6 +9,7 @@ license = "MIT"
 rust-version = "1.96"
 
 [workspace.dependencies]
+base64 = "0.22.1"
 cap-fs-ext = "=4.0.2"
 cap-std = "4.0.2"
 crossterm = { version = "0.29.0", features = ["event-stream"] }

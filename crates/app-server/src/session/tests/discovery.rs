@@ -81,7 +81,7 @@ fn thread_search_returns_only_matching_threads_in_stable_id_order() {
         ));
         if sequence < 3 {
             session.process_line(&format!(
-                r#"{{"jsonrpc":"2.0","id":"turn-{sequence}","method":"turn/start","params":{{"threadId":"thr_{sequence:016}","input":"Hello"}}}}"#
+                r#"{{"jsonrpc":"2.0","id":"turn-{sequence}","method":"turn/start","params":{{"threadId":"thr_{sequence:016}","input":[{{"type":"text","text":"Hello"}}]}}}}"#
             ));
         }
     }

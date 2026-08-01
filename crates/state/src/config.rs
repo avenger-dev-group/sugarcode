@@ -33,22 +33,18 @@ pub const MAX_MCP_ARG_BYTES: usize = 8 * 1024;
 pub const MAX_MCP_ARGV_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelProviderKind {
+pub enum ModelProviderFamily {
     OpenAi,
     Anthropic,
     Gemini,
-    MetaLlm,
-    OpenAiCompatible,
 }
 
-impl ModelProviderKind {
+impl ModelProviderFamily {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
-            Self::MetaLlm => "metallm",
-            Self::OpenAiCompatible => "openaiCompatible",
         }
     }
 }
@@ -89,10 +85,49 @@ impl ModelCapabilityMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelProfileCapabilities {
+    tool_calls: ModelCapabilityMode,
+    strict_tools: ModelCapabilityMode,
+    parallel_tools: ModelCapabilityMode,
+    image_input: ModelCapabilityMode,
+    pdf_input: ModelCapabilityMode,
+}
+
+impl ModelProfileCapabilities {
+    pub const fn new(
+        tool_calls: ModelCapabilityMode,
+        strict_tools: ModelCapabilityMode,
+        parallel_tools: ModelCapabilityMode,
+        image_input: ModelCapabilityMode,
+        pdf_input: ModelCapabilityMode,
+    ) -> Self {
+        Self {
+            tool_calls,
+            strict_tools,
+            parallel_tools,
+            image_input,
+            pdf_input,
+        }
+    }
+}
+
+impl Default for ModelProfileCapabilities {
+    fn default() -> Self {
+        Self::new(
+            ModelCapabilityMode::Auto,
+            ModelCapabilityMode::Auto,
+            ModelCapabilityMode::Auto,
+            ModelCapabilityMode::Auto,
+            ModelCapabilityMode::Auto,
+        )
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct ModelConnection {
     id: String,
-    kind: ModelProviderKind,
+    provider_family: ModelProviderFamily,
     display_name: String,
     base_url: Url,
     enabled: bool,
@@ -103,11 +138,11 @@ pub struct ModelConnection {
 impl ModelConnection {
     pub fn new(
         id: String,
-        kind: ModelProviderKind,
+        provider_family: ModelProviderFamily,
         display_name: String,
         base_url: Url,
         enabled: bool,
-        wire_api: Option<ModelWireApi>,
+        wire_api: ModelWireApi,
         api_key: Option<String>,
     ) -> Result<Self, &'static str> {
         validate_model_id(&id)?;
@@ -116,10 +151,10 @@ impl ModelConnection {
         if let Some(api_key) = api_key.as_deref() {
             validate_model_api_key(api_key)?;
         }
-        let wire_api = resolve_wire_api(kind, wire_api)?;
+        validate_wire_api(provider_family, wire_api)?;
         Ok(Self {
             id,
-            kind,
+            provider_family,
             display_name,
             base_url,
             enabled,
@@ -132,8 +167,8 @@ impl ModelConnection {
         &self.id
     }
 
-    pub const fn kind(&self) -> ModelProviderKind {
-        self.kind
+    pub const fn provider_family(&self) -> ModelProviderFamily {
+        self.provider_family
     }
 
     pub fn display_name(&self) -> &str {
@@ -162,7 +197,7 @@ impl fmt::Debug for ModelConnection {
         formatter
             .debug_struct("ModelConnection")
             .field("id", &self.id)
-            .field("kind", &self.kind)
+            .field("provider_family", &self.provider_family)
             .field("display_name", &self.display_name)
             .field("base_url", &"<redacted>")
             .field("enabled", &self.enabled)
@@ -179,8 +214,7 @@ pub struct ModelProfile {
     display_name: String,
     model_id: String,
     context_window_tokens: Option<u32>,
-    strict_tools: ModelCapabilityMode,
-    parallel_tools: ModelCapabilityMode,
+    capabilities: ModelProfileCapabilities,
 }
 
 impl ModelProfile {
@@ -190,8 +224,7 @@ impl ModelProfile {
         display_name: String,
         model_id: String,
         context_window_tokens: Option<u32>,
-        strict_tools: ModelCapabilityMode,
-        parallel_tools: ModelCapabilityMode,
+        capabilities: ModelProfileCapabilities,
     ) -> Result<Self, &'static str> {
         validate_model_id(&id)?;
         validate_model_id(&connection_id)?;
@@ -208,8 +241,7 @@ impl ModelProfile {
             display_name,
             model_id,
             context_window_tokens,
-            strict_tools,
-            parallel_tools,
+            capabilities,
         })
     }
 
@@ -240,12 +272,24 @@ impl ModelProfile {
         }
     }
 
+    pub const fn tool_calls(&self) -> ModelCapabilityMode {
+        self.capabilities.tool_calls
+    }
+
     pub const fn strict_tools(&self) -> ModelCapabilityMode {
-        self.strict_tools
+        self.capabilities.strict_tools
     }
 
     pub const fn parallel_tools(&self) -> ModelCapabilityMode {
-        self.parallel_tools
+        self.capabilities.parallel_tools
+    }
+
+    pub const fn image_input(&self) -> ModelCapabilityMode {
+        self.capabilities.image_input
+    }
+
+    pub const fn pdf_input(&self) -> ModelCapabilityMode {
+        self.capabilities.pdf_input
     }
 }
 
@@ -281,6 +325,17 @@ impl ModelCatalog {
             !profile_ids.insert(profile.id()) || !connection_ids.contains(profile.connection_id())
         }) {
             return Err("invalidProfileReference");
+        }
+        for profile in &profiles {
+            let connection = connections
+                .iter()
+                .find(|connection| connection.id() == profile.connection_id())
+                .ok_or("invalidProfileReference")?;
+            if connection.wire_api() == ModelWireApi::OpenAiChatCompletions
+                && profile.pdf_input() == ModelCapabilityMode::Enabled
+            {
+                return Err("capabilityWireApiMismatch");
+            }
         }
         let Some(default_profile) = profiles
             .iter()
@@ -1119,7 +1174,7 @@ fn parse_model_connection(
         table,
         &[
             "id",
-            "kind",
+            "provider_family",
             "display_name",
             "base_url",
             "enabled",
@@ -1131,18 +1186,16 @@ fn parse_model_connection(
         path,
     )?;
     let id = required_model_string(table, "id", contents, path)?.to_owned();
-    let kind = match required_model_string(table, "kind", contents, path)? {
-        "openai" => ModelProviderKind::OpenAi,
-        "anthropic" => ModelProviderKind::Anthropic,
-        "gemini" => ModelProviderKind::Gemini,
-        "metallm" => ModelProviderKind::MetaLlm,
-        "openaiCompatible" => ModelProviderKind::OpenAiCompatible,
+    let provider_family = match required_model_string(table, "provider_family", contents, path)? {
+        "openai" => ModelProviderFamily::OpenAi,
+        "anthropic" => ModelProviderFamily::Anthropic,
+        "gemini" => ModelProviderFamily::Gemini,
         _ => {
             return Err(invalid_model_field(
                 path,
                 contents,
-                "kind",
-                "unsupportedProviderKind",
+                "provider_family",
+                "unsupportedProviderFamily",
             ));
         }
     };
@@ -1155,11 +1208,16 @@ fn parse_model_connection(
         .as_bool()
         .ok_or_else(|| invalid_model_field(path, contents, "enabled", "expectedBoolean"))?;
     let wire_api = match table.get("wire_api") {
-        None => None,
-        Some(toml::Value::String(value)) => Some(
-            parse_wire_api(value)
-                .map_err(|kind| invalid_model_field(path, contents, "wire_api", kind))?,
-        ),
+        None => {
+            return Err(invalid_model_field(
+                path,
+                contents,
+                "wire_api",
+                "missingField",
+            ));
+        }
+        Some(toml::Value::String(value)) => parse_wire_api(value)
+            .map_err(|kind| invalid_model_field(path, contents, "wire_api", kind))?,
         Some(_) => {
             return Err(invalid_model_field(
                 path,
@@ -1181,8 +1239,16 @@ fn parse_model_connection(
             ));
         }
     };
-    ModelConnection::new(id, kind, display_name, base_url, enabled, wire_api, api_key)
-        .map_err(|kind| invalid_model_field(path, contents, "connections", kind))
+    ModelConnection::new(
+        id,
+        provider_family,
+        display_name,
+        base_url,
+        enabled,
+        wire_api,
+        api_key,
+    )
+    .map_err(|kind| invalid_model_field(path, contents, "connections", kind))
 }
 
 fn parse_model_profile(
@@ -1201,8 +1267,11 @@ fn parse_model_profile(
             "display_name",
             "model_id",
             "context_window_tokens",
+            "tool_calls",
             "strict_tools",
             "parallel_tools",
+            "image_input",
+            "pdf_input",
         ],
         "models.profiles",
         contents,
@@ -1227,16 +1296,24 @@ fn parse_model_profile(
             ));
         }
     };
+    let tool_calls = optional_capability_mode(table, "tool_calls", contents, path)?;
     let strict_tools = optional_capability_mode(table, "strict_tools", contents, path)?;
     let parallel_tools = optional_capability_mode(table, "parallel_tools", contents, path)?;
+    let image_input = optional_capability_mode(table, "image_input", contents, path)?;
+    let pdf_input = optional_capability_mode(table, "pdf_input", contents, path)?;
     ModelProfile::new(
         required_model_string(table, "id", contents, path)?.to_owned(),
         required_model_string(table, "connection_id", contents, path)?.to_owned(),
         required_model_string(table, "display_name", contents, path)?.to_owned(),
         required_model_string(table, "model_id", contents, path)?.to_owned(),
         context_window_tokens,
-        strict_tools,
-        parallel_tools,
+        ModelProfileCapabilities::new(
+            tool_calls,
+            strict_tools,
+            parallel_tools,
+            image_input,
+            pdf_input,
+        ),
     )
     .map_err(|kind| invalid_model_field(path, contents, "profiles", kind))
 }
@@ -1698,29 +1775,18 @@ fn validate_model_base_url(endpoint: &Url) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn resolve_wire_api(
-    kind: ModelProviderKind,
-    wire_api: Option<ModelWireApi>,
-) -> Result<ModelWireApi, &'static str> {
-    let required = match kind {
-        ModelProviderKind::OpenAi => Some(ModelWireApi::OpenAiResponses),
-        ModelProviderKind::Anthropic => Some(ModelWireApi::AnthropicMessages),
-        ModelProviderKind::Gemini => Some(ModelWireApi::GeminiGenerateContent),
-        ModelProviderKind::MetaLlm => Some(ModelWireApi::OpenAiChatCompletions),
-        ModelProviderKind::OpenAiCompatible => None,
-    };
-    if let Some(required) = required {
-        if wire_api.is_some_and(|wire_api| wire_api != required) {
-            return Err("wireApiProviderMismatch");
-        }
-        return Ok(required);
-    }
-    match wire_api {
-        Some(ModelWireApi::OpenAiResponses | ModelWireApi::OpenAiChatCompletions) => {
-            Ok(wire_api.expect("checked as some"))
-        }
-        Some(_) => Err("wireApiProviderMismatch"),
-        None => Err("missingWireApi"),
+fn validate_wire_api(
+    provider_family: ModelProviderFamily,
+    wire_api: ModelWireApi,
+) -> Result<(), &'static str> {
+    match (provider_family, wire_api) {
+        (
+            ModelProviderFamily::OpenAi,
+            ModelWireApi::OpenAiResponses | ModelWireApi::OpenAiChatCompletions,
+        )
+        | (ModelProviderFamily::Anthropic, ModelWireApi::AnthropicMessages)
+        | (ModelProviderFamily::Gemini, ModelWireApi::GeminiGenerateContent) => Ok(()),
+        _ => Err("wireApiProviderMismatch"),
     }
 }
 
@@ -1795,8 +1861,8 @@ fn encode_config(
         for connection in models.connections() {
             output.push_str("\n[[models.connections]]\nid = ");
             output.push_str(&toml_string(connection.id()));
-            output.push_str("\nkind = ");
-            output.push_str(&toml_string(connection.kind().as_str()));
+            output.push_str("\nprovider_family = ");
+            output.push_str(&toml_string(connection.provider_family().as_str()));
             output.push_str("\ndisplay_name = ");
             output.push_str(&toml_string(connection.display_name()));
             output.push_str("\nbase_url = ");
@@ -1831,10 +1897,17 @@ fn encode_config(
                 output.push_str(&context_window_tokens.to_string());
                 output.push('\n');
             }
+            output.push_str("tool_calls = ");
+            output.push_str(&toml_string(profile.tool_calls().as_str()));
+            output.push('\n');
             output.push_str("strict_tools = ");
             output.push_str(&toml_string(profile.strict_tools().as_str()));
             output.push_str("\nparallel_tools = ");
             output.push_str(&toml_string(profile.parallel_tools().as_str()));
+            output.push_str("\nimage_input = ");
+            output.push_str(&toml_string(profile.image_input().as_str()));
+            output.push_str("\npdf_input = ");
+            output.push_str(&toml_string(profile.pdf_input().as_str()));
             output.push('\n');
         }
     }

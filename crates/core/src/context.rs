@@ -13,28 +13,32 @@ pub const COMPACTION_TARGET_BYTES: usize = (DEFAULT_PROVIDER_CONTEXT_TOKENS
 
 pub(crate) fn prepared_message_bytes(message: &PreparedMessage) -> usize {
     match message {
+        PreparedMessage::UserContent { content } => content
+            .iter()
+            .map(|part| match part {
+                sugarcode_protocol::CoreUserContentPart::Text { text } => text.len(),
+                sugarcode_protocol::CoreUserContentPart::Image { asset }
+                | sugarcode_protocol::CoreUserContentPart::Document { asset } => {
+                    usize::try_from(asset.size_bytes).unwrap_or(usize::MAX)
+                }
+            })
+            .fold(0usize, usize::saturating_add),
         PreparedMessage::Text { text, .. } => text.len(),
         PreparedMessage::Commentary { text } => text.len(),
         PreparedMessage::ContextCompaction { content } => content.len(),
         PreparedMessage::ToolCall {
             call_id,
             name,
-            path,
-            query,
-            patch,
-            command,
             arguments,
-        } => serde_json::to_vec(&prepared_tool_arguments(
-            path, query, patch, command, arguments,
-        ))
-        .ok()
-        .and_then(|arguments| {
-            call_id
-                .len()
-                .checked_add(name.len())
-                .and_then(|total| total.checked_add(arguments.len()))
-        })
-        .unwrap_or(usize::MAX),
+        } => serde_json::to_vec(arguments)
+            .ok()
+            .and_then(|arguments| {
+                call_id
+                    .len()
+                    .checked_add(name.len())
+                    .and_then(|total| total.checked_add(arguments.len()))
+            })
+            .unwrap_or(usize::MAX),
         PreparedMessage::ToolResult { call_id, content } => {
             call_id.len().saturating_add(content.len())
         }
@@ -62,25 +66,6 @@ pub(crate) fn prepared_history_bytes(history: &[PreparedMessage]) -> Option<usiz
         .iter()
         .map(prepared_message_bytes)
         .try_fold(0usize, usize::checked_add)
-}
-
-pub(crate) fn prepared_tool_arguments(
-    path: &str,
-    query: &Option<String>,
-    patch: &Option<String>,
-    command: &Option<String>,
-    arguments: &Option<Vec<String>>,
-) -> serde_json::Value {
-    match (command, arguments, query, patch) {
-        (Some(command), Some(arguments), _, _) => serde_json::json!({
-            "command": command,
-            "arguments": arguments,
-            "cwd": path,
-        }),
-        (_, _, Some(query), _) => serde_json::json!({ "path": path, "query": query }),
-        (_, _, _, Some(patch)) => serde_json::json!({ "path": path, "patch": patch }),
-        _ => serde_json::json!({ "path": path }),
-    }
 }
 
 #[cfg(test)]

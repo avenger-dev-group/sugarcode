@@ -1,3 +1,4 @@
+mod assets;
 mod discovery;
 mod initialization;
 mod thread_lifecycle;

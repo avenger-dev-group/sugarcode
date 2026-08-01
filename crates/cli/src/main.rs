@@ -27,7 +27,7 @@ struct TuiArgs {
     /// Active workspace scope relative to the explicit workspace root.
     #[arg(long, value_name = "RELATIVE_DIR", requires = "workspace")]
     workspace_scope: Option<String>,
-    /// Enable bounded workspace/apply-patch writes for this process only.
+    /// Enable bounded workspace/edit and workspace/apply-diff writes for this process only.
     #[arg(long, requires = "workspace")]
     allow_workspace_write: bool,
     /// Enable sandboxed shell-command writes inside the explicit workspace.
@@ -188,7 +188,7 @@ struct AppServerArgs {
     /// Keep durable Threads workspace-free while exposing an isolated Desktop chat directory.
     #[arg(long, hide = true, requires = "workspace")]
     unbound_threads: bool,
-    /// Enable bounded workspace/apply-patch writes for this process only.
+    /// Enable bounded workspace/edit and workspace/apply-diff writes for this process only.
     #[arg(long, requires = "workspace")]
     allow_workspace_write: bool,
     /// Enable sandboxed shell-command writes inside the explicit workspace.
@@ -225,7 +225,7 @@ struct ExecArgs {
     /// Active workspace scope relative to the explicit workspace root.
     #[arg(long, value_name = "RELATIVE_DIR", requires = "workspace")]
     workspace_scope: Option<String>,
-    /// Enable bounded workspace/apply-patch writes for this process only.
+    /// Enable bounded workspace/edit and workspace/apply-diff writes for this process only.
     #[arg(long, requires = "workspace")]
     allow_workspace_write: bool,
     /// Enable sandboxed shell-command writes inside the explicit workspace.
@@ -237,6 +237,9 @@ struct ExecArgs {
     /// Emit versioned JSON Lines instead of human-readable events.
     #[arg(long)]
     json: bool,
+    /// Attach an image, PDF, or UTF-8 text file to this Turn.
+    #[arg(long, value_name = "PATH", action = clap::ArgAction::Append)]
+    attach: Vec<PathBuf>,
     /// One prompt. When omitted, read a bounded prompt from non-terminal stdin.
     #[arg(value_name = "PROMPT")]
     prompt: Option<String>,
@@ -585,6 +588,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                     resume_thread_id: args.resume,
                     model_profile_id: args.model_profile,
                     prompt,
+                    attachments: args.attach,
                     output_format: if args.json {
                         sugarcode_exec::ExecOutputFormat::JsonLines
                     } else {

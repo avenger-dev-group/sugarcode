@@ -285,14 +285,16 @@ async fn approved_mcp_call_crosses_attempt_before_one_execution_and_second_round
             .collect::<Vec<_>>(),
         vec!["mcp__fixture__inspect"]
     );
-    assert!(matches!(
-        provider_requests[1].messages.as_slice(),
-        [
-            ModelMessage::Text { .. },
-            ModelMessage::ToolCall(_),
-            ModelMessage::ToolResult { content, .. }
-        ] if content == r#"{"isError":false,"text":["ok"]}"#
-    ));
+    let messages = &provider_requests[1].messages;
+    assert_eq!(messages.len(), 3);
+    assert_eq!(message_texts(&messages[0]).len(), 1);
+    assert_eq!(message_tool_calls(&messages[1]).len(), 1);
+    let results = message_tool_results(&messages[2]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        tool_result_serialized(results[0]),
+        r#"{"isError":false,"text":["ok"]}"#
+    );
     drop(provider_requests);
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
@@ -438,28 +440,20 @@ async fn effectful_tool_batch_is_not_limited_by_item_count() {
             .eq(["mcp__fixture__inspect"])
     }));
     let messages = &provider_requests[1].messages;
-    assert!(matches!(
-        messages.iter().find(|message| matches!(message, ModelMessage::ToolCallBatch(_))),
-        Some(ModelMessage::ToolCallBatch(calls)) if calls.len() == 5
-    ));
-    assert_eq!(
+    assert!(
         messages
             .iter()
-            .filter(|message| matches!(message, ModelMessage::ToolResult { .. }))
-            .count(),
-        5
+            .any(|message| message_tool_calls(message).len() == 5)
     );
+    assert_eq!(messages.iter().flat_map(message_tool_results).count(), 5);
     for ordinal in 1..=5 {
         let call_id = format!("call_mcp_{ordinal}");
-        assert!(messages.iter().any(|message| {
-            matches!(
-                message,
-                ModelMessage::ToolResult {
-                    call_id: result_call_id,
-                    ..
-                } if result_call_id == &call_id
-            )
-        }));
+        assert!(
+            messages
+                .iter()
+                .flat_map(message_tool_results)
+                .any(|result| result.call_id == call_id)
+        );
     }
     drop(provider_requests);
 

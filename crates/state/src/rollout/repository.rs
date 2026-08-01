@@ -333,13 +333,13 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                 (
                     DurableItemSnapshot::UserMessage {
                         id: started_id,
-                        text: started_text,
+                        content: started_content,
                     },
                     DurableItemSnapshot::UserMessage {
                         id: terminal_id,
-                        text: terminal_text,
+                        content: terminal_content,
                     },
-                ) => started_id == terminal_id && started_text == terminal_text,
+                ) => started_id == terminal_id && started_content == terminal_content,
                 (
                     DurableItemSnapshot::AgentMessage { id: started_id, .. },
                     DurableItemSnapshot::AgentMessage {
@@ -366,6 +366,10 @@ fn terminal_items_match(started: &[DurableItemSnapshot], terminal: &[DurableItem
                     },
                 ) => started_id == terminal_id,
                 (DurableItemSnapshot::ToolCall { .. }, DurableItemSnapshot::ToolCall { .. })
+                | (
+                    DurableItemSnapshot::ToolValidationRejected { .. },
+                    DurableItemSnapshot::ToolValidationRejected { .. },
+                )
                 | (
                     DurableItemSnapshot::ToolResult { .. },
                     DurableItemSnapshot::ToolResult { .. },

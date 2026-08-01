@@ -61,7 +61,7 @@ const parseSuccessContent = (
   try {
     parsed = JSON.parse(content);
   } catch {
-    throw new Error('Invalid workspace/apply-patch success content.');
+    throw new Error('Invalid workspace/apply-diff success content.');
   }
   if (
     !isRecord(parsed) ||
@@ -74,7 +74,7 @@ const parseSuccessContent = (
     !isBoundedByteCount(parsed.beforeBytes) ||
     !isBoundedByteCount(parsed.afterBytes)
   ) {
-    throw new Error('Invalid workspace/apply-patch success content.');
+    throw new Error('Invalid workspace/apply-diff success content.');
   }
   return {
     type: 'success',
@@ -89,23 +89,54 @@ const parseSuccessContent = (
 export const parseWorkspacePatchItem = (
   value: Record<string, unknown>,
 ): WorkspacePatchItem | null => {
-  if (value.type === 'toolCall' && value.name === 'workspace/apply-patch') {
+  const isWorkspaceWrite =
+    value.name === 'workspace/edit' || value.name === 'workspace/apply-diff';
+  if (value.type === 'toolCall' && isWorkspaceWrite) {
+    const argumentsValue = value.arguments;
     if (
       !isId(value.id) ||
       !isId(value.callId) ||
-      !isValidFileChangePath(value.path) ||
-      Object.hasOwn(value, 'query') ||
-      Object.hasOwn(value, 'command') ||
-      Object.hasOwn(value, 'arguments') ||
-      Object.hasOwn(value, 'patch')
+      !isRecord(argumentsValue) ||
+      !isValidFileChangePath(argumentsValue.path)
     ) {
-      throw new Error('Invalid workspace/apply-patch ToolCall Item.');
+      throw new Error('Invalid workspace write ToolCall Item.');
+    }
+    const allowedKeys =
+      value.name === 'workspace/edit'
+        ? new Set(['path', 'baseSha256', 'edits'])
+        : new Set(['path', 'baseSha256', 'diff']);
+    if (
+      Object.keys(argumentsValue).some((key) => !allowedKeys.has(key)) ||
+      (Object.hasOwn(argumentsValue, 'baseSha256') &&
+        !isValidSha256(argumentsValue.baseSha256)) ||
+      (value.name === 'workspace/apply-diff' &&
+        (typeof argumentsValue.diff !== 'string' ||
+          argumentsValue.diff.length === 0 ||
+          utf8Bytes(argumentsValue.diff) > 96 * 1024)) ||
+      (value.name === 'workspace/edit' &&
+        (!Array.isArray(argumentsValue.edits) ||
+          argumentsValue.edits.length === 0 ||
+          argumentsValue.edits.length > 128 ||
+          argumentsValue.edits.some(
+            (edit) =>
+              !isRecord(edit) ||
+              Object.keys(edit).sort().join(',') !==
+                'deleteLineCount,expected,replacement,startLine' ||
+              !Number.isSafeInteger(edit.startLine) ||
+              (edit.startLine as number) < 1 ||
+              !Number.isSafeInteger(edit.deleteLineCount) ||
+              (edit.deleteLineCount as number) < 0 ||
+              typeof edit.expected !== 'string' ||
+              typeof edit.replacement !== 'string',
+          )))
+    ) {
+      throw new Error('Invalid workspace write ToolCall arguments.');
     }
     return {
       type: 'workspacePatchCall',
       id: value.id,
       callId: value.callId,
-      path: value.path,
+      path: argumentsValue.path,
     };
   }
 
@@ -142,9 +173,9 @@ export const parseWorkspacePatchItem = (
     };
   }
 
-  if (value.type === 'toolResult' && value.name === 'workspace/apply-patch') {
+  if (value.type === 'toolResult' && isWorkspaceWrite) {
     if (!isId(value.id) || !isId(value.callId) || !isRecord(value.result)) {
-      throw new Error('Invalid workspace/apply-patch ToolResult Item.');
+      throw new Error('Invalid workspace write ToolResult Item.');
     }
     if (
       value.result.type === 'success' &&
@@ -171,7 +202,7 @@ export const parseWorkspacePatchItem = (
         outcome: { type: 'error', kind: value.result.kind },
       };
     }
-    throw new Error('Invalid workspace/apply-patch ToolResult outcome.');
+    throw new Error('Invalid workspace write ToolResult outcome.');
   }
 
   return null;

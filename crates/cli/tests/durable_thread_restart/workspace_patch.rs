@@ -1,14 +1,14 @@
 use super::*;
 
 #[test]
-fn resumes_forks_and_continues_patch_history_without_replaying_the_write() {
+fn resumes_forks_and_continues_line_edit_history_without_replaying_the_write() {
     const TOOL_CALL: &str = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_patch_restart\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-patch\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"patch\\\":\\\"@@ -1,3 +1,3 @@\\\\n one\\\\n-two\\\\n+second\\\\n three\\\\n\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_edit_restart\",\"type\":\"function\",\"function\":{\"name\":\"workspace/edit\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"baseSha256\\\":\\\"b6285c57e8797db5d4c51c80d6f11938afda9b11c6a003549709189e9b4b92a2\\\",\\\"edits\\\":[{\\\"startLine\\\":2,\\\"deleteLineCount\\\":1,\\\"expected\\\":\\\"two\\\",\\\"replacement\\\":\\\"second\\\"}]}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n"
     );
     const FIRST_FINAL: &str = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Patch complete.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Edit complete.\"},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
         "data: [DONE]\n\n"
     );
@@ -36,7 +36,7 @@ fn resumes_forks_and_continues_patch_history_without_replaying_the_write() {
             "jsonrpc":"2.0",
             "id":"patch-turn",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":"Update the file"}
+            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Update the file"}]}
         }),
         14,
     );
@@ -105,11 +105,22 @@ fn resumes_forks_and_continues_patch_history_without_replaying_the_write() {
     );
     assert_eq!(continued[5]["params"]["turn"]["status"], "completed");
     let request = &second.provider_requests()[0];
-    let serialized = request.to_string();
-    assert!(serialized.contains("workspace/apply-patch"));
-    assert!(serialized.contains("@@ -1,3 +1,3 @@"));
-    assert!(!serialized.contains("fileChange"));
-    assert!(!serialized.contains("--- a/notes.txt"));
+    let replayed_call = request["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find_map(|message| message["tool_calls"].as_array()?.first())
+        .expect("replayed tool call");
+    assert_eq!(replayed_call["function"]["name"], "workspace_edit");
+    let replayed_arguments: Value = serde_json::from_str(
+        replayed_call["function"]["arguments"]
+            .as_str()
+            .expect("serialized tool arguments"),
+    )
+    .expect("replayed tool arguments");
+    assert_eq!(replayed_arguments["path"], "notes.txt");
+    assert_eq!(replayed_arguments["edits"][0]["deleteLineCount"], 1);
+    assert!(replayed_arguments.get("diff").is_none());
     assert_eq!(
         fs::read_to_string(target).expect("file after restart"),
         "one\nsecond\nthree\n"

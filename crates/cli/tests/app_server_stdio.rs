@@ -487,9 +487,9 @@ fn workspace_search_tool_lifecycle_matches_golden_trace() {
 }
 
 #[test]
-fn workspace_apply_patch_lifecycle_matches_golden_trace() {
+fn workspace_apply_diff_lifecycle_matches_golden_trace() {
     const TOOL_CALL: &str = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_patch_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-patch\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"patch\\\":\\\"@@ -1,3 +1,3 @@\\\\n one\\\\n-two\\\\n+second\\\\n three\\\\n\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_patch_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-diff\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"diff\\\":\\\"--- a/notes.txt\\\\n+++ b/notes.txt\\\\n@@ -1,3 +1,3 @@\\\\n one\\\\n-two\\\\n+second\\\\n three\\\\n\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n"
     );
@@ -505,7 +505,7 @@ fn workspace_apply_patch_lifecycle_matches_golden_trace() {
     let _provider =
         MockProvider::start_with_bodies(sugarcode_home.path(), vec![TOOL_CALL, FINAL_ANSWER]);
     run_golden_with_options(
-        "turn-workspace-apply-patch",
+        "turn-workspace-apply-diff",
         &sugarcode_home,
         Some(workspace.path()),
         true,
@@ -797,7 +797,7 @@ fn approved_command_stays_bound_to_the_original_workspace_scope() {
             "jsonrpc": "2.0",
             "id": "turn",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Read marker"}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Read marker"}]}
         }),
     );
     assert_eq!(read_json(&mut stdout)["id"], "turn");
@@ -916,7 +916,7 @@ fn model_configuration_is_resolved_per_turn_without_restarting_app_server() {
         "jsonrpc": "2.0",
         "id": "missing-model",
         "method": "turn/start",
-        "params": {"threadId": thread_id, "input": "Hello"}
+        "params": {"threadId": thread_id, "input": [{"type":"text","text":"Hello"}]}
         }),
     );
     let missing_model = read_json(&mut stdout);
@@ -933,7 +933,7 @@ fn model_configuration_is_resolved_per_turn_without_restarting_app_server() {
             "jsonrpc": "2.0",
             "id": "configured-model",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Hello again"}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Hello again"}]}
         }),
     );
     assert_eq!(read_json(&mut stdout)["id"], "configured-model");
@@ -1000,7 +1000,7 @@ fn cli_interrupt_closes_http_stream_and_emits_one_interrupted_terminal() {
             "jsonrpc": "2.0",
             "id": "turn",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Hello"}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Hello"}]}
         }),
     );
     let turn_response = read_json(&mut stdout);
@@ -1131,7 +1131,7 @@ fn stdin_eof_interrupts_active_stream_flushes_terminal_and_replays_it_once() {
             "jsonrpc": "2.0",
             "id": "turn",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Hello"}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Hello"}]}
         }),
     );
     assert_eq!(read_json(&mut stdout)["id"], "turn");
@@ -1367,7 +1367,7 @@ fn run_golden_with_options(
         if !expects_response {
             if input_index + 1 == input_lines.len() {
                 while expected_index < expected_values.len() {
-                    let line = read_legacy_golden_line(&mut stdout, "golden terminal");
+                    let line = read_golden_protocol_line(&mut stdout, "golden terminal");
                     actual.push_str(&line);
                     expected_index += 1;
                 }
@@ -1375,7 +1375,7 @@ fn run_golden_with_options(
             continue;
         }
         loop {
-            let line = read_legacy_golden_line(&mut stdout, "golden response");
+            let line = read_golden_protocol_line(&mut stdout, "golden response");
             actual.push_str(&line);
             expected_index += 1;
             if expected_index >= expected_values.len()
@@ -1681,7 +1681,7 @@ fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
                 "defaultProfileId": "model_fixture",
                 "connections": [{
                     "id": "conn_fixture",
-                    "kind": "openaiCompatible",
+                    "providerFamily": "openai",
                     "displayName": "Fixture provider",
                     "baseUrl": format!("http://{address}/v1"),
                     "enabled": true,
@@ -1724,7 +1724,7 @@ fn read_json(stdout: &mut impl BufRead) -> Value {
     serde_json::from_str(&line).expect("JSON-RPC output")
 }
 
-fn read_legacy_golden_line(stdout: &mut impl BufRead, expected: &str) -> String {
+fn read_golden_protocol_line(stdout: &mut impl BufRead, expected: &str) -> String {
     loop {
         let mut line = String::new();
         assert!(
@@ -1745,10 +1745,10 @@ fn normalize_trace(output: &str) -> String {
         if value.get("method").and_then(Value::as_str) == Some("turn/agentOutput/delta") {
             continue;
         }
-        if value.get("method").and_then(Value::as_str) == Some("item/started") {
-            if let Some(params) = value.get_mut("params").and_then(Value::as_object_mut) {
-                params.remove("agentOutput");
-            }
+        if value.get("method").and_then(Value::as_str) == Some("item/started")
+            && let Some(params) = value.get_mut("params").and_then(Value::as_object_mut)
+        {
+            params.remove("agentOutput");
         }
         if let Some(platform) = value
             .get_mut("result")

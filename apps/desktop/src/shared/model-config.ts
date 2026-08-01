@@ -4,12 +4,7 @@ export const MODEL_CONFIG_DELETE_API_KEY_CHANNEL =
   'model-config:delete-api-key';
 export const MODEL_CONFIG_DISCOVER_CHANNEL = 'model-config:discover';
 
-export type ModelProviderKind =
-  | 'openai'
-  | 'anthropic'
-  | 'gemini'
-  | 'metallm'
-  | 'openaiCompatible';
+export type ModelProviderFamily = 'openai' | 'anthropic' | 'gemini';
 
 export type ModelWireApi =
   | 'openaiResponses'
@@ -22,7 +17,7 @@ export type ModelApiKeyStatus = 'notConfigured' | 'present';
 
 export type ModelConnectionValue = Readonly<{
   id: string;
-  kind: ModelProviderKind;
+  providerFamily: ModelProviderFamily;
   displayName: string;
   baseUrl: string;
   enabled: boolean;
@@ -35,8 +30,11 @@ export type ModelProfileValue = Readonly<{
   displayName: string;
   modelId: string;
   contextWindowTokens?: number;
+  toolCalls: ModelCapabilityMode;
   strictTools: ModelCapabilityMode;
   parallelTools: ModelCapabilityMode;
+  imageInput: ModelCapabilityMode;
+  pdfInput: ModelCapabilityMode;
 }>;
 
 export type ModelConfigValue = Readonly<{
@@ -132,12 +130,10 @@ const isDisplayName = (value: unknown): value is string =>
   value.trim().length > 0 &&
   byteLength(value) <= 128;
 
-const PROVIDER_KINDS: readonly ModelProviderKind[] = [
+const PROVIDER_FAMILIES: readonly ModelProviderFamily[] = [
   'openai',
   'anthropic',
   'gemini',
-  'metallm',
-  'openaiCompatible',
 ];
 
 const WIRE_APIS: readonly ModelWireApi[] = [
@@ -157,14 +153,16 @@ const isConnection = (value: unknown): value is ModelConnectionValue =>
   isRecord(value) &&
   hasOnlyKeys(value, [
     'id',
-    'kind',
+    'providerFamily',
     'displayName',
     'baseUrl',
     'enabled',
     'wireApi',
   ]) &&
   isId(value.id) &&
-  PROVIDER_KINDS.includes(value.kind as ModelProviderKind) &&
+  PROVIDER_FAMILIES.includes(
+    value.providerFamily as ModelProviderFamily,
+  ) &&
   isDisplayName(value.displayName) &&
   typeof value.baseUrl === 'string' &&
   byteLength(value.baseUrl) <= 16_384 &&
@@ -180,8 +178,11 @@ const isProfile = (value: unknown): value is ModelProfileValue =>
       'connectionId',
       'displayName',
       'modelId',
+      'toolCalls',
       'strictTools',
       'parallelTools',
+      'imageInput',
+      'pdfInput',
     ],
     ['contextWindowTokens'],
   ) &&
@@ -195,8 +196,11 @@ const isProfile = (value: unknown): value is ModelProfileValue =>
     (Number.isInteger(value.contextWindowTokens) &&
       (value.contextWindowTokens as number) >= 4_096 &&
       (value.contextWindowTokens as number) <= 2_097_152)) &&
+  CAPABILITY_MODES.includes(value.toolCalls as ModelCapabilityMode) &&
   CAPABILITY_MODES.includes(value.strictTools as ModelCapabilityMode) &&
-  CAPABILITY_MODES.includes(value.parallelTools as ModelCapabilityMode);
+  CAPABILITY_MODES.includes(value.parallelTools as ModelCapabilityMode) &&
+  CAPABILITY_MODES.includes(value.imageInput as ModelCapabilityMode) &&
+  CAPABILITY_MODES.includes(value.pdfInput as ModelCapabilityMode);
 
 export const isModelConfigValue = (
   value: unknown,
@@ -236,21 +240,26 @@ export const isModelConfigValue = (
     return false;
   }
   const wireApiMatches = connections.every((connection) => {
-    switch (connection.kind) {
+    switch (connection.providerFamily) {
       case 'openai':
-        return connection.wireApi === 'openaiResponses';
-      case 'anthropic':
-        return connection.wireApi === 'anthropicMessages';
-      case 'gemini':
-        return connection.wireApi === 'geminiGenerateContent';
-      case 'metallm':
-        return connection.wireApi === 'openaiChatCompletions';
-      case 'openaiCompatible':
         return [
           'openaiResponses',
           'openaiChatCompletions',
         ].includes(connection.wireApi);
+      case 'anthropic':
+        return connection.wireApi === 'anthropicMessages';
+      case 'gemini':
+        return connection.wireApi === 'geminiGenerateContent';
     }
+  });
+  const capabilitiesMatch = profiles.every((profile) => {
+    const connection = connections.find(
+      (candidate) => candidate.id === profile.connectionId,
+    );
+    return !(
+      connection?.wireApi === 'openaiChatCompletions' &&
+      profile.pdfInput === 'enabled'
+    );
   });
   const defaultProfile = profiles.find(
     (profile) => profile.id === value.defaultProfileId,
@@ -259,7 +268,11 @@ export const isModelConfigValue = (
     (connection) =>
       connection.id === defaultProfile?.connectionId,
   );
-  return wireApiMatches && defaultConnection?.enabled === true;
+  return (
+    wireApiMatches &&
+    capabilitiesMatch &&
+    defaultConnection?.enabled === true
+  );
 };
 
 const isCredentialStatus = (

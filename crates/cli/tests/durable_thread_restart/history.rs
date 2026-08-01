@@ -24,7 +24,7 @@ fn resumes_completed_history_across_two_cli_processes() {
             "jsonrpc": "2.0",
             "id": "turn-1",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Hello"}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
@@ -69,7 +69,7 @@ fn resumes_completed_history_across_two_cli_processes() {
             "jsonrpc": "2.0",
             "id": "turn-2",
             "method": "turn/start",
-            "params": {"threadId": thread_id, "input": "Hello"}
+            "params": {"threadId": thread_id, "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
@@ -161,7 +161,7 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
                 "method": "turn/start",
                 "params": {
                     "threadId": "thr_0000000000000001",
-                    "input": "u"
+                    "input": [{"type":"text","text":"u"}]
                 }
             }),
             8,
@@ -175,7 +175,7 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "checkpoint"
+                "input": [{"type":"text","text":"checkpoint"}]
             }
         }),
         8,
@@ -217,7 +217,7 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "continued"
+                "input": [{"type":"text","text":"continued"}]
             }
         }),
         8,
@@ -281,7 +281,7 @@ fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() 
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "Read context"
+                "input": [{"type":"text","text":"Read context"}]
             }
         }),
         12,

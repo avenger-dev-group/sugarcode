@@ -350,6 +350,7 @@ impl ThreadRepository for MemoryThreadRepository {
                         | DurableItemSnapshot::AgentTaskAmendment { .. }
                         | DurableItemSnapshot::AgentTaskResult { .. }
                         | DurableItemSnapshot::ToolCall { .. }
+                        | DurableItemSnapshot::ToolValidationRejected { .. }
                         | DurableItemSnapshot::FileChange { .. }
                         | DurableItemSnapshot::CommandApprovalRequest { .. }
                         | DurableItemSnapshot::CommandApprovalDecision { .. }

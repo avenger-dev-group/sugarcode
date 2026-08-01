@@ -7,6 +7,184 @@ fn cancellation() -> CancellationToken {
     CancellationToken::new()
 }
 
+fn edit(path: &str, before: &[u8], edits: Vec<WorkspaceLineEdit>) -> WorkspaceEditArguments {
+    WorkspaceEditArguments {
+        path: path.to_string(),
+        base_sha256: sha256(before),
+        edits,
+    }
+}
+
+#[tokio::test]
+async fn workspace_edit_applies_multiple_original_revision_line_splices() {
+    let workspace = tempdir().expect("workspace");
+    let before = b"one\ntwo\nthree\nfour\n";
+    fs::write(workspace.path().join("notes.txt"), before).expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let arguments = edit(
+        "notes.txt",
+        before,
+        vec![
+            WorkspaceLineEdit {
+                start_line: 1,
+                delete_line_count: 0,
+                expected: String::new(),
+                replacement: "zero".to_string(),
+            },
+            WorkspaceLineEdit {
+                start_line: 2,
+                delete_line_count: 2,
+                expected: "two\nthree".to_string(),
+                replacement: "second".to_string(),
+            },
+            WorkspaceLineEdit {
+                start_line: 5,
+                delete_line_count: 0,
+                expected: String::new(),
+                replacement: "five".to_string(),
+            },
+        ],
+    );
+    let WorkspacePatchPrepareOutcome::Prepared(prepared) =
+        tool.prepare_edit(&arguments, &cancellation()).await
+    else {
+        panic!("prepare line edit");
+    };
+    assert_eq!(
+        prepared.diff(),
+        concat!(
+            "--- a/notes.txt\n",
+            "+++ b/notes.txt\n",
+            "@@ -1,4 +1,5 @@\n",
+            "+zero\n",
+            " one\n",
+            "-two\n",
+            "-three\n",
+            "+second\n",
+            " four\n",
+            "+five\n",
+        )
+    );
+    assert!(matches!(
+        tool.commit_patch(*prepared, &cancellation()).await,
+        WorkspacePatchCommitOutcome::Applied { .. }
+    ));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("notes.txt")).expect("edited file"),
+        "zero\none\nsecond\nfour\nfive\n"
+    );
+}
+
+#[tokio::test]
+async fn workspace_edit_handles_blank_lines_missing_final_newline_and_conflicts() {
+    let workspace = tempdir().expect("workspace");
+    let before = b"one\ntwo";
+    fs::write(workspace.path().join("notes.txt"), before).expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let arguments = edit(
+        "notes.txt",
+        before,
+        vec![WorkspaceLineEdit {
+            start_line: 2,
+            delete_line_count: 1,
+            expected: "two".to_string(),
+            replacement: "\nsecond".to_string(),
+        }],
+    );
+    let WorkspacePatchPrepareOutcome::Prepared(prepared) =
+        tool.prepare_edit(&arguments, &cancellation()).await
+    else {
+        panic!("prepare line edit");
+    };
+    assert!(!prepared.final_newline());
+    assert!(matches!(
+        tool.commit_patch(*prepared, &cancellation()).await,
+        WorkspacePatchCommitOutcome::Applied { .. }
+    ));
+    assert_eq!(
+        fs::read(workspace.path().join("notes.txt")).expect("edited file"),
+        b"one\n\nsecond"
+    );
+
+    let stale = WorkspaceEditArguments {
+        path: "notes.txt".to_string(),
+        base_sha256: sha256(before),
+        edits: vec![WorkspaceLineEdit {
+            start_line: 1,
+            delete_line_count: 1,
+            expected: "one".to_string(),
+            replacement: "first".to_string(),
+        }],
+    };
+    assert!(matches!(
+        tool.prepare_edit(&stale, &cancellation()).await,
+        WorkspacePatchPrepareOutcome::ValidationRejected {
+            kind: WorkspacePatchErrorKind::BaseRevisionMismatch,
+            diagnostic: WorkspaceEditDiagnostic {
+                suggested_action,
+                ..
+            }
+        } if suggested_action == "readFileAndRebase"
+    ));
+}
+
+#[tokio::test]
+async fn workspace_edit_rejects_bad_counts_overlap_and_expected_content() {
+    let workspace = tempdir().expect("workspace");
+    let before = b"one\ntwo\nthree\n";
+    fs::write(workspace.path().join("notes.txt"), before).expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    for (edits, expected_kind, expected_edit_index) in [
+        (
+            vec![WorkspaceLineEdit {
+                start_line: 2,
+                delete_line_count: 2,
+                expected: "two".to_string(),
+                replacement: "changed".to_string(),
+            }],
+            WorkspacePatchErrorKind::HeaderCountMismatch,
+            1,
+        ),
+        (
+            vec![
+                WorkspaceLineEdit {
+                    start_line: 1,
+                    delete_line_count: 2,
+                    expected: "one\ntwo".to_string(),
+                    replacement: "first".to_string(),
+                },
+                WorkspaceLineEdit {
+                    start_line: 2,
+                    delete_line_count: 1,
+                    expected: "two".to_string(),
+                    replacement: "second".to_string(),
+                },
+            ],
+            WorkspacePatchErrorKind::RangeOutOfBounds,
+            2,
+        ),
+        (
+            vec![WorkspaceLineEdit {
+                start_line: 2,
+                delete_line_count: 1,
+                expected: "other".to_string(),
+                replacement: "second".to_string(),
+            }],
+            WorkspacePatchErrorKind::ExpectedMismatch,
+            1,
+        ),
+    ] {
+        assert!(matches!(
+            tool.prepare_edit(&edit("notes.txt", before, edits), &cancellation())
+                .await,
+            WorkspacePatchPrepareOutcome::ValidationRejected { kind, diagnostic }
+                if kind == expected_kind
+                    && diagnostic.edit_index == Some(expected_edit_index)
+                    && !diagnostic.suggested_action.is_empty()
+        ));
+    }
+}
+
 #[tokio::test]
 async fn workspace_patch_updates_one_existing_lf_file_and_returns_review_diff() {
     let workspace = tempdir().expect("workspace");
@@ -29,7 +207,8 @@ async fn workspace_patch_updates_one_existing_lf_file_and_returns_review_diff() 
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "notes.txt".to_string(),
-                patch: "@@ -1,3 +1,3 @@\n one\n-two\n+second\n three\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+second\n three\n".to_string(),
             },
             &cancellation(),
         )
@@ -76,7 +255,9 @@ async fn workspace_patch_preserves_crlf_and_missing_final_newline() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "notes.txt".to_string(),
-                patch: "@@ -2,1 +2,1 @@\n-two\n+second\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,1 +2,1 @@\n-two\n+second\n"
+                    .to_string(),
             },
             &cancellation(),
         )
@@ -107,7 +288,9 @@ async fn workspace_patch_detects_conflict_between_proposal_and_commit() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "notes.txt".to_string(),
-                patch: "@@ -2,1 +2,1 @@\n-two\n+second\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,1 +2,1 @@\n-two\n+second\n"
+                    .to_string(),
             },
             &cancellation(),
         )
@@ -187,7 +370,8 @@ async fn workspace_patch_rejects_oversized_patch_and_original_before_writing() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "notes.txt".to_string(),
-                patch: "x".repeat(MAX_WORKSPACE_PATCH_BYTES + 1),
+                base_sha256: None,
+                diff: "x".repeat(MAX_WORKSPACE_PATCH_BYTES + 1),
             },
             &cancellation(),
         )
@@ -195,7 +379,7 @@ async fn workspace_patch_rejects_oversized_patch_and_original_before_writing() {
     assert!(matches!(
         oversized_patch,
         WorkspacePatchPrepareOutcome::Error {
-            kind: WorkspacePatchErrorKind::InvalidPatch
+            kind: WorkspacePatchErrorKind::UnsupportedDiffFeature
         }
     ));
     assert_eq!(
@@ -209,7 +393,8 @@ async fn workspace_patch_rejects_oversized_patch_and_original_before_writing() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "notes.txt".to_string(),
-                patch: "@@ -1,1 +1,1 @@\n-old\n+new\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n".to_string(),
             },
             &cancellation(),
         )
@@ -232,7 +417,9 @@ async fn workspace_patch_rejects_mixed_newlines_and_non_applying_hunks() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "mixed.txt".to_string(),
-                patch: "@@ -1,1 +1,1 @@\n-one\n+first\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-one\n+first\n"
+                    .to_string(),
             },
             &cancellation(),
         )
@@ -247,15 +434,24 @@ async fn workspace_patch_rejects_mixed_newlines_and_non_applying_hunks() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "clean.txt".to_string(),
-                patch: "@@ -2,1 +2,1 @@\n-other\n+second\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -2,1 +2,1 @@\n-other\n+second\n"
+                    .to_string(),
             },
             &cancellation(),
         )
         .await;
     assert!(matches!(
         mismatch,
-        WorkspacePatchPrepareOutcome::Error {
-            kind: WorkspacePatchErrorKind::PatchDoesNotApply
+        WorkspacePatchPrepareOutcome::ValidationRejected {
+            kind: WorkspacePatchErrorKind::ExpectedMismatch,
+            diagnostic: WorkspaceEditDiagnostic {
+                hunk_index: Some(1),
+                line: Some(2),
+                expected_summary: Some(_),
+                actual_summary: Some(_),
+                ..
+            }
         }
     ));
 }
@@ -272,7 +468,9 @@ async fn workspace_patch_rejects_hard_link_targets() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "notes.txt".to_string(),
-                patch: "@@ -1,1 +1,1 @@\n-one\n+first\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-one\n+first\n"
+                    .to_string(),
             },
             &cancellation(),
         )
@@ -298,7 +496,9 @@ async fn workspace_patch_rejects_symlinked_parent_components() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "linked/notes.txt".to_string(),
-                patch: "@@ -1,1 +1,1 @@\n-one\n+first\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-one\n+first\n"
+                    .to_string(),
             },
             &cancellation(),
         )
@@ -329,7 +529,9 @@ async fn workspace_patch_rejects_junction_parent_components() {
         .prepare_patch(
             &WorkspacePatchArguments {
                 path: "linked/notes.txt".to_string(),
-                patch: "@@ -1,1 +1,1 @@\n-one\n+first\n".to_string(),
+                base_sha256: None,
+                diff: "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-one\n+first\n"
+                    .to_string(),
             },
             &cancellation(),
         )

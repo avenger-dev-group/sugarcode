@@ -8,6 +8,7 @@ import type {
 } from 'react';
 
 import type {
+  ConversationAttachment,
   ConversationPhase,
   ConversationTurnError,
   ConversationTurnStatus,
@@ -30,6 +31,16 @@ import type { PanelResizeHandle } from '../foundation/types';
 export type UserMessageViewModel = Readonly<{
   id: string;
   text: string;
+  attachments: readonly ConversationAttachment[];
+}>;
+
+export type DraftAttachmentViewModel = Readonly<{
+  id: string;
+  fileName: string;
+  mediaType: string;
+  sizeBytes: number;
+  data: string;
+  previewUrl?: string;
 }>;
 
 export type TranscriptMessageViewModel =
@@ -142,6 +153,7 @@ export type ThreadStore = Readonly<{
   navigator: ThreadNavigatorViewModel;
   navigatorOpen: boolean;
   draft: string;
+  attachments: readonly DraftAttachmentViewModel[];
   inputBytes: number;
   inputLimitBytes: number;
   inputHint: string;
@@ -157,6 +169,8 @@ export type ThreadStore = Readonly<{
   selectedModelProfileId: string;
   modelSelectionDisabled: boolean;
   setDraft: (value: string) => void;
+  addAttachments: (files: readonly File[]) => Promise<void>;
+  removeAttachment: (id: string) => void;
   setNavigatorOpen: (open: boolean) => void;
   setSelectedModelProfileId: (profileId: string) => void;
   startNewThread: () => Promise<void>;

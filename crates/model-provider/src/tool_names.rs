@@ -1,4 +1,4 @@
-use crate::ModelMessage;
+use crate::ModelContentPart;
 use crate::ModelRequest;
 use crate::ModelToolCall;
 use sha2::Digest;
@@ -34,14 +34,10 @@ pub(crate) fn normalize_request(mut request: ModelRequest) -> NormalizedRequest 
         .map(|tool| tool.name.clone())
         .collect::<BTreeSet<_>>();
     for message in &request.messages {
-        match message {
-            ModelMessage::ToolCall(call) => {
+        for part in &message.content {
+            if let ModelContentPart::ToolCall { call } = part {
                 names.insert(call.name.clone());
             }
-            ModelMessage::ToolCallBatch(calls) => {
-                names.extend(calls.iter().map(|call| call.name.clone()));
-            }
-            _ => {}
         }
     }
     let mut used = BTreeMap::<String, String>::new();
@@ -62,17 +58,16 @@ pub(crate) fn normalize_request(mut request: ModelRequest) -> NormalizedRequest 
         }
     }
     for message in &mut request.messages {
-        match message {
-            ModelMessage::ToolCall(call) => normalize_call(call, &internal_to_wire),
-            ModelMessage::ToolCallBatch(calls) => {
-                for call in calls {
+        for part in &mut message.content {
+            match part {
+                ModelContentPart::ToolCall { call } => {
                     normalize_call(call, &internal_to_wire);
                 }
+                ModelContentPart::ToolResult { result } => {
+                    result.call_id = normalized_call_id(&result.call_id);
+                }
+                _ => {}
             }
-            ModelMessage::ToolResult { call_id, .. } => {
-                *call_id = normalized_call_id(call_id);
-            }
-            _ => {}
         }
     }
     NormalizedRequest {
@@ -139,7 +134,10 @@ fn hash8(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ModelContentPart;
+    use crate::ModelMessage;
     use crate::ModelToolDefinition;
+    use crate::ModelToolResult;
 
     #[test]
     fn normalizes_colliding_names_and_pairs_historical_call_ids() {
@@ -159,15 +157,15 @@ mod tests {
                 },
             ],
             messages: vec![
-                ModelMessage::ToolCall(ModelToolCall {
+                ModelMessage::tool_calls(vec![ModelToolCall {
                     id: "call/with/slashes".to_owned(),
                     name: "workspace/read".to_owned(),
                     arguments: serde_json::json!({"path": "README.md"}),
-                }),
-                ModelMessage::ToolResult {
-                    call_id: "call/with/slashes".to_owned(),
-                    content: "ok".to_owned(),
-                },
+                }]),
+                ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+                    "call/with/slashes".to_owned(),
+                    "ok".to_owned(),
+                )]),
             ],
         };
         let normalized = normalize_request(request);
@@ -180,13 +178,14 @@ mod tests {
             normalized.internal_tool_name(&normalized.request.tools[0].name),
             "workspace/read"
         );
-        let ModelMessage::ToolCall(call) = &normalized.request.messages[0] else {
+        let ModelContentPart::ToolCall { call } = &normalized.request.messages[0].content[0] else {
             panic!("tool call");
         };
-        let ModelMessage::ToolResult { call_id, .. } = &normalized.request.messages[1] else {
+        let ModelContentPart::ToolResult { result } = &normalized.request.messages[1].content[0]
+        else {
             panic!("tool result");
         };
-        assert_eq!(call.id, *call_id);
+        assert_eq!(call.id, result.call_id);
         assert!(call.id.starts_with("call_"));
     }
 }

@@ -12,7 +12,8 @@
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
     "typecheck": "tsc --noEmit",
-    "check": "pnpm lint && pnpm typecheck"
+    "test:node": "node --test \"tests/**/*.test.ts\"",
+    "check": "pnpm lint && pnpm typecheck && pnpm test:node"
   },
   "keywords": [],
   "author": {

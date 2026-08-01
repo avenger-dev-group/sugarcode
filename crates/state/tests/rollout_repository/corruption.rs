@@ -52,7 +52,9 @@ fn rejects_a_tampered_persisted_compaction_without_echoing_its_message() {
         status: DurableTurnStatus::InProgress,
         items: vec![DurableItemSnapshot::UserMessage {
             id: ItemId::new("item_0000000000000002"),
-            text: "continue".to_string(),
+            content: vec![sugarcode_state::DurableUserContentPart::Text {
+                text: "continue".to_string(),
+            }],
         }],
         context_compaction: Some(checkpoint),
         workspace_instructions: None,

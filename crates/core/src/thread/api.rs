@@ -238,10 +238,10 @@ impl CoreApi for Core {
                     .checked_add(1)
                     .ok_or(CoreError::ItemIdExhausted)?;
                 let item = match source_item {
-                    DurableItemSnapshot::UserMessage { text, .. } => {
+                    DurableItemSnapshot::UserMessage { content, .. } => {
                         DurableItemSnapshot::UserMessage {
                             id: ItemId::new(format!("item_{item_sequence:016}")),
-                            text: text.clone(),
+                            content: content.clone(),
                         }
                     }
                     DurableItemSnapshot::AgentMessage { text, .. } => {
@@ -329,21 +329,40 @@ impl CoreApi for Core {
                     DurableItemSnapshot::ToolCall {
                         call_id,
                         name,
-                        path,
-                        query,
-                        patch,
-                        command,
                         arguments,
                         ..
                     } => DurableItemSnapshot::ToolCall {
                         id: ItemId::new(format!("item_{item_sequence:016}")),
                         call_id: call_id.clone(),
                         name: name.clone(),
-                        path: path.clone(),
-                        query: query.clone(),
-                        patch: patch.clone(),
-                        command: command.clone(),
                         arguments: arguments.clone(),
+                    },
+                    DurableItemSnapshot::ToolValidationRejected {
+                        call_id,
+                        name,
+                        kind,
+                        arguments_bytes,
+                        arguments_sha256,
+                        edit_index,
+                        hunk_index,
+                        line,
+                        expected_summary,
+                        actual_summary,
+                        suggested_action,
+                        ..
+                    } => DurableItemSnapshot::ToolValidationRejected {
+                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        kind: kind.clone(),
+                        arguments_bytes: *arguments_bytes,
+                        arguments_sha256: arguments_sha256.clone(),
+                        edit_index: *edit_index,
+                        hunk_index: *hunk_index,
+                        line: *line,
+                        expected_summary: expected_summary.clone(),
+                        actual_summary: actual_summary.clone(),
+                        suggested_action: suggested_action.clone(),
                     },
                     DurableItemSnapshot::FileChange {
                         call_id,

@@ -1,7 +1,9 @@
 use futures_util::StreamExt;
 use std::sync::Arc;
+use sugarcode_model_provider::ModelContinuation;
 use sugarcode_model_provider::ModelErrorKind;
 use sugarcode_model_provider::ModelEvent;
+use sugarcode_model_provider::ModelFinishReason;
 use sugarcode_model_provider::ModelInstruction;
 use sugarcode_model_provider::ModelInstructionSource;
 use sugarcode_model_provider::ModelMessage;
@@ -10,10 +12,11 @@ use sugarcode_model_provider::ModelOutputItemKind;
 use sugarcode_model_provider::ModelProvider;
 use sugarcode_model_provider::ModelRequest;
 use sugarcode_model_provider::ModelResponse;
-use sugarcode_model_provider::ModelRole;
+use sugarcode_model_provider::ModelTerminalMetadata;
 use sugarcode_model_provider::ModelTextPhase;
 use sugarcode_model_provider::ModelToolCall;
 use sugarcode_model_provider::ModelToolDefinition;
+use sugarcode_model_provider::ModelToolResult;
 use sugarcode_model_provider::ModelUsage;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
 use sugarcode_model_provider::WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX;
@@ -39,6 +42,12 @@ mod model_event {
     pub const COMPLETED: ModelEvent = ModelEvent::ResponseCompleted(ModelResponse {
         output: Vec::new(),
         usage: None,
+        terminal: ModelTerminalMetadata {
+            finish_reason: ModelFinishReason::Stop,
+            provider_request_id: None,
+            continuation: ModelContinuation::Complete,
+        },
+        provider_context: None,
     });
 
     pub fn text_delta(delta: String) -> ModelEvent {
@@ -59,6 +68,8 @@ mod model_event {
                 kind: ModelOutputItemKind::ToolCall(call),
             }],
             usage: None,
+            terminal: ModelTerminalMetadata::completed(ModelContinuation::ToolCalls),
+            provider_context: None,
         })
     }
 
@@ -73,6 +84,8 @@ mod model_event {
                 })
                 .collect(),
             usage: None,
+            terminal: ModelTerminalMetadata::completed(ModelContinuation::ToolCalls),
+            provider_context: None,
         })
     }
 
@@ -80,6 +93,8 @@ mod model_event {
         ModelEvent::ResponseCompleted(ModelResponse {
             output: Vec::new(),
             usage: Some(usage),
+            terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+            provider_context: None,
         })
     }
 }
@@ -134,6 +149,8 @@ fn normalize_expected_model_events(
                             },
                         }],
                         usage: usage.take(),
+                        terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+                        provider_context: None,
                     })));
                 }
             }
@@ -239,9 +256,7 @@ async fn workspace_skills_follow_agents_and_precede_compaction_history_and_input
     ];
     request.messages.insert(
         0,
-        ModelMessage::ContextCompaction {
-            content: "checkpoint".to_string(),
-        },
+        ModelMessage::context_compaction("checkpoint".to_string()),
     );
 
     let events = provider
@@ -294,12 +309,9 @@ async fn persisted_compaction_is_a_redacted_user_message_after_developer_instruc
         content: "Keep the repository green.".to_string(),
     });
     let compaction = "SugarCode deterministic persisted compaction v1\nreceipt".to_string();
-    request.messages.insert(
-        0,
-        ModelMessage::ContextCompaction {
-            content: compaction.clone(),
-        },
-    );
+    request
+        .messages
+        .insert(0, ModelMessage::context_compaction(compaction.clone()));
     let expected_context_bytes = request
         .instructions
         .iter()
@@ -441,27 +453,26 @@ async fn consecutive_persisted_tool_calls_are_replayed_as_one_assistant_batch() 
         capturing_response_server(SUCCESS.as_bytes().to_vec()).await;
     let mut request = request();
     request.messages = vec![
-        ModelMessage::Commentary {
-            text: "I will inspect the workspace.".to_string(),
-        },
-        ModelMessage::ToolCall(ModelToolCall {
-            id: "call_1".to_string(),
-            name: "workspace/read".to_string(),
-            arguments: serde_json::json!({ "path": "README.md" }),
-        }),
-        ModelMessage::ToolCall(ModelToolCall {
-            id: "call_2".to_string(),
-            name: "workspace/list".to_string(),
-            arguments: serde_json::json!({ "path": "." }),
-        }),
-        ModelMessage::ToolResult {
-            call_id: "call_1".to_string(),
-            content: "read result".to_string(),
-        },
-        ModelMessage::ToolResult {
-            call_id: "call_2".to_string(),
-            content: "list result".to_string(),
-        },
+        ModelMessage::assistant_text(
+            ModelTextPhase::Commentary,
+            "I will inspect the workspace.".to_string(),
+        ),
+        ModelMessage::tool_calls(vec![
+            ModelToolCall {
+                id: "call_1".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({ "path": "README.md" }),
+            },
+            ModelToolCall {
+                id: "call_2".to_string(),
+                name: "workspace/list".to_string(),
+                arguments: serde_json::json!({ "path": "." }),
+            },
+        ]),
+        ModelMessage::tool_results(vec![
+            ModelToolResult::from_serialized("call_1".to_string(), "read result".to_string()),
+            ModelToolResult::from_serialized("call_2".to_string(), "list result".to_string()),
+        ]),
     ];
     let events = provider(endpoint)
         .stream(request)
@@ -478,15 +489,16 @@ async fn consecutive_persisted_tool_calls_are_replayed_as_one_assistant_batch() 
         body["messages"][0]["content"],
         "I will inspect the workspace."
     );
+    assert_eq!(body["messages"][1]["role"], "assistant");
     assert_eq!(
-        body["messages"][0]["tool_calls"]
+        body["messages"][1]["tool_calls"]
             .as_array()
             .expect("assistant tool calls")
             .len(),
         2
     );
-    assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
-    assert_eq!(body["messages"][2]["tool_call_id"], "call_2");
+    assert_eq!(body["messages"][2]["tool_call_id"], "call_1");
+    assert_eq!(body["messages"][3]["tool_call_id"], "call_2");
 }
 
 #[tokio::test]
@@ -1067,13 +1079,27 @@ async fn provider_reasoning_content_is_not_classified_as_assistant_output() {
         .await;
     server.await.expect("mock server");
 
-    assert_eq!(
-        events,
-        normalize_expected_model_events(vec![
-            Ok(model_event::text_delta("Reviewed.".to_string())),
-            Ok(model_event::COMPLETED),
-        ])
-    );
+    assert!(matches!(
+        &events[0],
+        Ok(ModelEvent::OutputTextDelta { delta, .. }) if delta == "Reviewed."
+    ));
+    let Ok(ModelEvent::ResponseCompleted(response)) = &events[1] else {
+        panic!("completed response");
+    };
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::AssistantText {
+            phase: ModelTextPhase::Final,
+            text,
+        } if text == "Reviewed."
+    ));
+    let context = response
+        .provider_context
+        .as_ref()
+        .expect("reasoning continuation context");
+    let replay: serde_json::Value =
+        serde_json::from_slice(context.payload()).expect("chat continuation payload");
+    assert_eq!(replay["reasoning_content"], "private reasoning");
 }
 
 #[tokio::test]
@@ -1363,6 +1389,26 @@ async fn http_statuses_map_to_stable_retryable_errors() {
 }
 
 #[tokio::test]
+async fn http_error_exposes_only_bounded_provider_metadata() {
+    let (endpoint, server) = status_server_with_body(
+        429,
+        br#"{"error":{"code":"rate_limit_exceeded","message":"secret provider detail"}}"#,
+    )
+    .await;
+    let error = match provider(endpoint).stream(request()).await {
+        Ok(_) => panic!("rate limit must fail before streaming"),
+        Err(error) => error,
+    };
+    server.await.expect("mock server");
+
+    assert_eq!(error.http_status(), Some(429));
+    assert_eq!(error.provider_code(), Some("rate_limit_exceeded"));
+    assert_eq!(error.provider_request_id(), Some("req_fixture"));
+    assert_eq!(error.retry_after(), Some("7"));
+    assert!(!format!("{error:?}").contains("secret provider detail"));
+}
+
+#[tokio::test]
 async fn context_length_rejections_are_distinct_from_other_invalid_requests() {
     for (status, body) in [
         (413, ""),
@@ -1529,7 +1575,7 @@ async fn disconnect_before_done_is_retryable_transport_failure() {
         events[0],
         Ok(model_event::text_delta("partial".to_string()))
     );
-    let error = *events[1].as_ref().expect_err("disconnect error");
+    let error = events[1].as_ref().expect_err("disconnect error");
     assert_eq!(error.kind(), ModelErrorKind::Disconnected);
     assert!(error.retryable());
 }
@@ -1684,10 +1730,7 @@ fn request() -> ModelRequest {
     ModelRequest {
         model: "fixture-model".to_string(),
         instructions: Vec::new(),
-        messages: vec![ModelMessage::Text {
-            role: ModelRole::User,
-            text: "Hello".to_string(),
-        }],
+        messages: vec![ModelMessage::user_text("Hello".to_string())],
         tools: Vec::new(),
     }
 }
@@ -1843,7 +1886,7 @@ async fn status_server_with_body(status: u16, body: &[u8]) -> (Url, tokio::task:
         socket
             .write_all(
                 format!(
-                    "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nX-Request-Id: req_fixture\r\nRetry-After: 7\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 )
                 .as_bytes(),

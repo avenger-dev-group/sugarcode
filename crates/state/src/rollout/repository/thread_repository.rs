@@ -282,7 +282,7 @@ impl ThreadRepository for RolloutRepository {
     ) -> Result<(), RolloutError> {
         if turn.status != DurableTurnStatus::Completed {
             return Err(RolloutError::InvalidRecord {
-                kind: "legacyTurnMustBeCompleted",
+                kind: "completedTurnRequired",
             });
         }
         if turn.items.is_empty() {

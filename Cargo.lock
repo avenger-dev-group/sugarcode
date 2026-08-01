@@ -2676,6 +2676,7 @@ dependencies = [
 name = "sugarcode-app-server"
 version = "1.0.0"
 dependencies = [
+ "base64",
  "futures-util",
  "git2",
  "serde",
@@ -2782,6 +2783,7 @@ dependencies = [
 name = "sugarcode-model-provider"
 version = "1.0.0"
 dependencies = [
+ "base64",
  "eventsource-stream",
  "futures-util",
  "reqwest",

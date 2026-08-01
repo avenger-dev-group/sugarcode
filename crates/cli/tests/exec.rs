@@ -138,10 +138,13 @@ fn exec_input_configuration_and_turn_failures_have_deterministic_codes() {
         .output()
         .expect("run no-model exec");
     assert_eq!(no_model.status.code(), Some(3), "{no_model:?}");
+    let no_model_records = json_lines(&no_model.stdout);
+    assert_eq!(no_model_records.len(), 1, "{no_model:?}");
+    assert_eq!(no_model_records[0]["type"], "error");
+    assert!(no_model_records[0]["threadId"].is_null());
+    assert!(no_model_records[0]["turnId"].is_null());
     assert_eq!(
-        json_lines(&no_model.stdout)
-            .last()
-            .expect("configuration error")["category"],
+        no_model_records.last().expect("configuration error")["category"],
         "configuration"
     );
     assert_eq!(
@@ -518,7 +521,7 @@ fn configure_model(home: &std::path::Path, address: std::net::SocketAddr) {
                 "defaultProfileId": "model_fixture",
                 "connections": [{
                     "id": "conn_fixture",
-                    "kind": "openaiCompatible",
+                    "providerFamily": "openai",
                     "displayName": "Fixture provider",
                     "baseUrl": format!("http://{address}/v1"),
                     "enabled": true,

@@ -247,11 +247,13 @@ const verifyExec = async (
     .map((line) => JSON.parse(line) as Record<string, unknown>);
   const error = records.at(-1);
   if (
-    records[0]?.type !== 'runStarted' ||
+    records.length !== 1 ||
     error?.type !== 'error' ||
     error.version !== 1 ||
     error.exitCode !== 3 ||
-    error.category !== 'configuration'
+    error.category !== 'configuration' ||
+    error.threadId !== null ||
+    error.turnId !== null
   ) {
     throw new Error('The packaged headless exec smoke check failed.');
   }

@@ -133,7 +133,9 @@ export const ModelConfigSettingsPanel = (
                     {connection.displayName}
                   </span>
                   <span className="mt-0.5 block truncate text-xs text-tertiary">
-                    {connection.enabled ? connection.kind : 'Disabled'}
+                    {connection.enabled
+                      ? connection.providerFamily
+                      : 'Disabled'}
                   </span>
                 </button>
               ))}
@@ -171,11 +173,11 @@ export const ModelConfigSettingsPanel = (
                 <label className="grid gap-1.5 text-sm">
                   <span>Provider</span>
                   <Select
-                    value={store.selectedConnection.kind}
-                    onValueChange={(kind) =>
+                    value={store.selectedConnection.providerFamily}
+                    onValueChange={(providerFamily) =>
                       store.updateConnection({
-                        kind:
-                          kind as typeof store.selectedConnection.kind,
+                        providerFamily:
+                          providerFamily as typeof store.selectedConnection.providerFamily,
                       })
                     }
                   >
@@ -185,8 +187,8 @@ export const ModelConfigSettingsPanel = (
                     <SelectContent>
                       {PROVIDER_PRESETS.map((preset) => (
                         <SelectItem
-                          key={preset.kind}
-                          value={preset.kind}
+                          key={preset.providerFamily}
+                          value={preset.providerFamily}
                         >
                           {preset.label}
                         </SelectItem>
@@ -240,8 +242,7 @@ export const ModelConfigSettingsPanel = (
                   <Select
                     value={store.selectedConnection.wireApi}
                     disabled={
-                      store.selectedConnection.kind !==
-                      'openaiCompatible'
+                      store.selectedConnection.providerFamily !== 'openai'
                     }
                     onValueChange={(wireApi) =>
                       store.updateConnection({
@@ -254,13 +255,13 @@ export const ModelConfigSettingsPanel = (
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {wireApiOptions(store.selectedConnection.kind).map(
-                        (wireApi) => (
+                      {wireApiOptions(
+                        store.selectedConnection.providerFamily,
+                      ).map((wireApi) => (
                           <SelectItem key={wireApi} value={wireApi}>
                             {wireApi}
                           </SelectItem>
-                        ),
-                      )}
+                        ))}
                     </SelectContent>
                   </Select>
                 </label>
@@ -444,6 +445,31 @@ export const ModelConfigSettingsPanel = (
                       </div>
                       <div className="grid gap-4 sm:grid-cols-2">
                         <label className="grid gap-1.5 text-sm">
+                          <span>Tool calls</span>
+                          <Select
+                            value={profile.toolCalls}
+                            onValueChange={(toolCalls) =>
+                              store.updateProfile(profile.id, {
+                                toolCalls:
+                                  toolCalls as typeof profile.toolCalls,
+                              })
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {['auto', 'enabled', 'disabled'].map(
+                                (mode) => (
+                                  <SelectItem key={mode} value={mode}>
+                                    {mode}
+                                  </SelectItem>
+                                ),
+                              )}
+                            </SelectContent>
+                          </Select>
+                        </label>
+                        <label className="grid gap-1.5 text-sm">
                           <span>Strict tool schema</span>
                           <Select
                             value={profile.strictTools}
@@ -492,6 +518,62 @@ export const ModelConfigSettingsPanel = (
                               )}
                             </SelectContent>
                           </Select>
+                        </label>
+                        <label className="grid gap-1.5 text-sm">
+                          <span>Image input</span>
+                          <Select
+                            value={profile.imageInput}
+                            onValueChange={(imageInput) =>
+                              store.updateProfile(profile.id, {
+                                imageInput:
+                                  imageInput as typeof profile.imageInput,
+                              })
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {['auto', 'enabled', 'disabled'].map(
+                                (mode) => (
+                                  <SelectItem key={mode} value={mode}>
+                                    {mode}
+                                  </SelectItem>
+                                ),
+                              )}
+                            </SelectContent>
+                          </Select>
+                        </label>
+                        <label className="grid gap-1.5 text-sm">
+                          <span>PDF input</span>
+                          <Select
+                            value={profile.pdfInput}
+                            onValueChange={(pdfInput) =>
+                              store.updateProfile(profile.id, {
+                                pdfInput:
+                                  pdfInput as typeof profile.pdfInput,
+                              })
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {['auto', 'enabled', 'disabled'].map(
+                                (mode) => (
+                                  <SelectItem key={mode} value={mode}>
+                                    {mode}
+                                  </SelectItem>
+                                ),
+                              )}
+                            </SelectContent>
+                          </Select>
+                          {store.selectedConnection.wireApi ===
+                          'openaiChatCompletions' ? (
+                            <span className="text-xs text-tertiary">
+                              Chat Completions cannot accept PDF input.
+                            </span>
+                          ) : null}
                         </label>
                       </div>
                       <div className="grid gap-4 sm:grid-cols-[1fr_auto]">

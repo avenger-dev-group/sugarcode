@@ -14,7 +14,7 @@ fn config_value() -> serde_json::Value {
         "defaultProfileId": "model_primary",
         "connections": [{
             "id": "conn_primary",
-            "kind": "openaiCompatible",
+            "providerFamily": "openai",
             "displayName": "Fixture provider",
             "baseUrl": "http://127.0.0.1:18080/v1",
             "enabled": true,
@@ -55,7 +55,7 @@ fn validation_is_strict_and_returns_the_rust_owned_shape() {
                 "defaultProfileId": "model_primary",
                 "connections": [{
                     "id": "conn_primary",
-                    "kind": "openaiCompatible",
+                    "providerFamily": "openai",
                     "displayName": "Fixture provider",
                     "baseUrl": "http://127.0.0.1:18080/v1",
                     "enabled": true,
@@ -66,8 +66,11 @@ fn validation_is_strict_and_returns_the_rust_owned_shape() {
                     "connectionId": "conn_primary",
                     "displayName": "Fixture model",
                     "modelId": "fixture-model",
+                    "toolCalls": "auto",
                     "strictTools": "auto",
-                    "parallelTools": "auto"
+                    "parallelTools": "auto",
+                    "imageInput": "auto",
+                    "pdfInput": "auto"
                 }]
             }
         })

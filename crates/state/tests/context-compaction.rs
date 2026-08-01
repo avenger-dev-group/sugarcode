@@ -31,17 +31,15 @@ fn tool_history_becomes_a_deterministic_receipt_without_raw_output() {
     let turn = completed_turn(vec![
         DurableItemSnapshot::UserMessage {
             id: ItemId::new("item_0000000000000001"),
-            text: "Inspect src/lib.rs".to_string(),
+            content: vec![sugarcode_state::DurableUserContentPart::Text {
+                text: "Inspect src/lib.rs".to_string(),
+            }],
         },
         DurableItemSnapshot::ToolCall {
             id: ItemId::new("item_0000000000000002"),
             call_id: "call_1".to_string(),
             name: "workspace/read".to_string(),
-            path: "src/lib.rs".to_string(),
-            query: None,
-            patch: None,
-            command: None,
-            arguments: None,
+            arguments: serde_json::json!({"path": "src/lib.rs"}),
         },
         DurableItemSnapshot::FileChange {
             id: ItemId::new("item_0000000000000003"),

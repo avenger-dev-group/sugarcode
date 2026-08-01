@@ -14,7 +14,8 @@ use sugarcode_state::ModelCapabilityMode;
 use sugarcode_state::ModelCatalog;
 use sugarcode_state::ModelConnection;
 use sugarcode_state::ModelProfile;
-use sugarcode_state::ModelProviderKind;
+use sugarcode_state::ModelProfileCapabilities;
+use sugarcode_state::ModelProviderFamily;
 use sugarcode_state::ModelWireApi;
 use sugarcode_state::SugarCodeHome;
 use url::Url;
@@ -151,13 +152,15 @@ pub async fn discover_model_config(
         .and_then(|catalog| catalog.connection(connection_id))
         .filter(|connection| connection.enabled())
         .ok_or(ModelConfigCommandError::InvalidConfiguration)?;
-    let protocol = match connection.kind() {
-        ModelProviderKind::Anthropic => sugarcode_model_provider::ModelDiscoveryProtocol::Anthropic,
-        ModelProviderKind::Gemini => sugarcode_model_provider::ModelDiscoveryProtocol::Gemini,
-        ModelProviderKind::OpenAi
-        | ModelProviderKind::MetaLlm
-        | ModelProviderKind::OpenAiCompatible => {
+    let protocol = match connection.wire_api() {
+        ModelWireApi::OpenAiResponses | ModelWireApi::OpenAiChatCompletions => {
             sugarcode_model_provider::ModelDiscoveryProtocol::OpenAi
+        }
+        ModelWireApi::AnthropicMessages => {
+            sugarcode_model_provider::ModelDiscoveryProtocol::Anthropic
+        }
+        ModelWireApi::GeminiGenerateContent => {
+            sugarcode_model_provider::ModelDiscoveryProtocol::Gemini
         }
     };
     let models = sugarcode_model_provider::discover_models(
@@ -453,12 +456,8 @@ fn parse_model_catalog(
         .connections
         .into_iter()
         .map(|connection| {
-            let kind = parse_provider_kind(&connection.kind)?;
-            let wire_api = connection
-                .wire_api
-                .as_deref()
-                .map(parse_wire_api)
-                .transpose()?;
+            let provider_family = parse_provider_family(&connection.provider_family)?;
+            let wire_api = parse_wire_api(&connection.wire_api)?;
             let base_url = Url::parse(&connection.base_url)
                 .map_err(|_| ModelConfigCommandError::InvalidConfiguration)?;
             let api_key = match credentials {
@@ -472,7 +471,7 @@ fn parse_model_catalog(
             };
             ModelConnection::new(
                 connection.id,
-                kind,
+                provider_family,
                 connection.display_name,
                 base_url,
                 connection.enabled,
@@ -492,8 +491,13 @@ fn parse_model_catalog(
                 profile.display_name,
                 profile.model_id,
                 profile.context_window_tokens,
-                parse_capability_mode(profile.strict_tools.as_deref())?,
-                parse_capability_mode(profile.parallel_tools.as_deref())?,
+                ModelProfileCapabilities::new(
+                    parse_capability_mode(profile.tool_calls.as_deref())?,
+                    parse_capability_mode(profile.strict_tools.as_deref())?,
+                    parse_capability_mode(profile.parallel_tools.as_deref())?,
+                    parse_capability_mode(profile.image_input.as_deref())?,
+                    parse_capability_mode(profile.pdf_input.as_deref())?,
+                ),
             )
             .map_err(|_| ModelConfigCommandError::InvalidConfiguration)
         })
@@ -502,13 +506,11 @@ fn parse_model_catalog(
         .map_err(|_| ModelConfigCommandError::InvalidConfiguration)
 }
 
-fn parse_provider_kind(value: &str) -> Result<ModelProviderKind, ModelConfigCommandError> {
+fn parse_provider_family(value: &str) -> Result<ModelProviderFamily, ModelConfigCommandError> {
     match value {
-        "openai" => Ok(ModelProviderKind::OpenAi),
-        "anthropic" => Ok(ModelProviderKind::Anthropic),
-        "gemini" => Ok(ModelProviderKind::Gemini),
-        "metallm" => Ok(ModelProviderKind::MetaLlm),
-        "openaiCompatible" => Ok(ModelProviderKind::OpenAiCompatible),
+        "openai" => Ok(ModelProviderFamily::OpenAi),
+        "anthropic" => Ok(ModelProviderFamily::Anthropic),
+        "gemini" => Ok(ModelProviderFamily::Gemini),
         _ => Err(ModelConfigCommandError::InvalidConfiguration),
     }
 }
@@ -545,7 +547,7 @@ fn config_revision(models: Option<&ModelCatalog>) -> String {
             for connection in models.connections() {
                 hasher.update(connection.id().as_bytes());
                 hasher.update(b"\0");
-                hasher.update(connection.kind().as_str().as_bytes());
+                hasher.update(connection.provider_family().as_str().as_bytes());
                 hasher.update(b"\0");
                 hasher.update(connection.display_name().as_bytes());
                 hasher.update(b"\0");
@@ -575,9 +577,15 @@ fn config_revision(models: Option<&ModelCatalog>) -> String {
                         .as_bytes(),
                 );
                 hasher.update(b"\0");
+                hasher.update(profile.tool_calls().as_str().as_bytes());
+                hasher.update(b"\0");
                 hasher.update(profile.strict_tools().as_str().as_bytes());
                 hasher.update(b"\0");
                 hasher.update(profile.parallel_tools().as_str().as_bytes());
+                hasher.update(b"\0");
+                hasher.update(profile.image_input().as_str().as_bytes());
+                hasher.update(b"\0");
+                hasher.update(profile.pdf_input().as_str().as_bytes());
                 hasher.update(b"\0");
             }
         }
@@ -635,11 +643,11 @@ fn clone_connection(
 ) -> Result<ModelConnection, ModelConfigCommandError> {
     ModelConnection::new(
         connection.id().to_owned(),
-        connection.kind(),
+        connection.provider_family(),
         connection.display_name().to_owned(),
         connection.base_url().clone(),
         connection.enabled(),
-        Some(connection.wire_api()),
+        connection.wire_api(),
         api_key,
     )
     .map_err(|_| ModelConfigCommandError::InvalidConfiguration)
@@ -681,11 +689,11 @@ struct ModelCatalogInput {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ModelConnectionInput {
     id: String,
-    kind: String,
+    provider_family: String,
     display_name: String,
     base_url: String,
     enabled: bool,
-    wire_api: Option<String>,
+    wire_api: String,
 }
 
 #[derive(Deserialize)]
@@ -696,8 +704,11 @@ struct ModelProfileInput {
     display_name: String,
     model_id: String,
     context_window_tokens: Option<u32>,
+    tool_calls: Option<String>,
     strict_tools: Option<String>,
     parallel_tools: Option<String>,
+    image_input: Option<String>,
+    pdf_input: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -767,7 +778,7 @@ impl<'a> From<&'a ModelCatalog> for ModelCatalogView<'a> {
 #[serde(rename_all = "camelCase")]
 struct ModelConnectionView<'a> {
     id: &'a str,
-    kind: &'a str,
+    provider_family: &'a str,
     display_name: &'a str,
     base_url: &'a str,
     enabled: bool,
@@ -778,7 +789,7 @@ impl<'a> From<&'a ModelConnection> for ModelConnectionView<'a> {
     fn from(connection: &'a ModelConnection) -> Self {
         Self {
             id: connection.id(),
-            kind: connection.kind().as_str(),
+            provider_family: connection.provider_family().as_str(),
             display_name: connection.display_name(),
             base_url: connection.base_url().as_str(),
             enabled: connection.enabled(),
@@ -796,8 +807,11 @@ struct ModelProfileView<'a> {
     model_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     context_window_tokens: Option<u32>,
+    tool_calls: &'a str,
     strict_tools: &'a str,
     parallel_tools: &'a str,
+    image_input: &'a str,
+    pdf_input: &'a str,
 }
 
 impl<'a> From<&'a ModelProfile> for ModelProfileView<'a> {
@@ -808,8 +822,11 @@ impl<'a> From<&'a ModelProfile> for ModelProfileView<'a> {
             display_name: profile.display_name(),
             model_id: profile.model_id(),
             context_window_tokens: profile.context_window_tokens(),
+            tool_calls: profile.tool_calls().as_str(),
             strict_tools: profile.strict_tools().as_str(),
             parallel_tools: profile.parallel_tools().as_str(),
+            image_input: profile.image_input().as_str(),
+            pdf_input: profile.pdf_input().as_str(),
         }
     }
 }

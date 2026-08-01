@@ -31,9 +31,25 @@ pub struct CoreItemSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreContentAsset {
+    pub asset_id: String,
+    pub sha256: String,
+    pub media_type: String,
+    pub original_name: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreUserContentPart {
+    Text { text: String },
+    Image { asset: CoreContentAsset },
+    Document { asset: CoreContentAsset },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreItemKind {
     UserMessage {
-        text: String,
+        content: Vec<CoreUserContentPart>,
     },
     AgentMessage {
         text: String,
@@ -76,11 +92,20 @@ pub enum CoreItemKind {
     ToolCall {
         call_id: String,
         name: String,
-        path: String,
-        query: Option<String>,
-        patch: Option<String>,
-        command: Option<String>,
-        arguments: Option<Vec<String>>,
+        arguments: serde_json::Value,
+    },
+    ToolValidationRejected {
+        call_id: String,
+        name: String,
+        kind: CoreToolErrorKind,
+        arguments_bytes: u64,
+        arguments_sha256: String,
+        edit_index: Option<u32>,
+        hunk_index: Option<u32>,
+        line: Option<u32>,
+        expected_summary: Option<String>,
+        actual_summary: Option<String>,
+        suggested_action: String,
     },
     FileChange {
         call_id: String,
@@ -331,8 +356,11 @@ pub enum CoreToolErrorKind {
     SearchTimedOut,
     ChangedDuringSearch,
     ResultTooLarge,
-    InvalidPatch,
-    PatchDoesNotApply,
+    HeaderCountMismatch,
+    RangeOutOfBounds,
+    ExpectedMismatch,
+    BaseRevisionMismatch,
+    UnsupportedDiffFeature,
     TooManyLines,
     LineTooLong,
     HardLinkNotAllowed,
@@ -374,8 +402,11 @@ impl fmt::Display for CoreToolErrorKind {
             Self::SearchTimedOut => "searchTimedOut",
             Self::ChangedDuringSearch => "changedDuringSearch",
             Self::ResultTooLarge => "resultTooLarge",
-            Self::InvalidPatch => "invalidPatch",
-            Self::PatchDoesNotApply => "patchDoesNotApply",
+            Self::HeaderCountMismatch => "headerCountMismatch",
+            Self::RangeOutOfBounds => "rangeOutOfBounds",
+            Self::ExpectedMismatch => "expectedMismatch",
+            Self::BaseRevisionMismatch => "baseRevisionMismatch",
+            Self::UnsupportedDiffFeature => "unsupportedDiffFeature",
             Self::TooManyLines => "tooManyLines",
             Self::LineTooLong => "lineTooLong",
             Self::HardLinkNotAllowed => "hardLinkNotAllowed",

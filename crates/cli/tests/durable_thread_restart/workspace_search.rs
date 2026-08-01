@@ -48,7 +48,7 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
             "method": "turn/start",
             "params": {
                 "threadId": "thr_0000000000000001",
-                "input": "Find the marker"
+                "input": [{"type":"text","text":"Find the marker"}]
             }
         }),
         12,
@@ -116,8 +116,8 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
         .expect("resumed items");
     assert_eq!(original_items.len(), 4);
     assert_eq!(original_items[1]["name"], "workspace/search");
-    assert_eq!(original_items[1]["path"], "src");
-    assert_eq!(original_items[1]["query"], "needle");
+    assert_eq!(original_items[1]["arguments"]["path"], "src");
+    assert_eq!(original_items[1]["arguments"]["query"], "needle");
     assert_eq!(
         original_items[2]["result"]["content"],
         Value::String(original_result.clone())
@@ -151,7 +151,7 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
         assert_ne!(source["id"], forked["id"]);
         assert_eq!(source["type"], forked["type"]);
     }
-    assert_eq!(fork_items[1]["query"], "needle");
+    assert_eq!(fork_items[1]["arguments"]["query"], "needle");
     assert_eq!(
         fork_items[2]["result"]["content"],
         Value::String(original_result.clone())

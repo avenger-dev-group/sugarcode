@@ -5,6 +5,8 @@ use sugarcode_app_server_protocol::AgentOutputRef;
 use sugarcode_app_server_protocol::AgentTaskAccess;
 use sugarcode_app_server_protocol::AgentTaskRole;
 use sugarcode_app_server_protocol::AgentTaskStatus;
+use sugarcode_app_server_protocol::AssetDescriptor;
+use sugarcode_app_server_protocol::AssetKind;
 use sugarcode_app_server_protocol::ContextCompactionOutcome as PublicContextCompactionOutcome;
 use sugarcode_app_server_protocol::ContextCompactionStrategy as PublicContextCompactionStrategy;
 use sugarcode_app_server_protocol::Item as PublicItem;
@@ -14,15 +16,20 @@ use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcNotification;
 use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::McpToolResult as PublicMcpToolResult;
-use sugarcode_app_server_protocol::ModelProviderKind as PublicModelProviderKind;
+use sugarcode_app_server_protocol::ModelProviderFamily as PublicModelProviderFamily;
+use sugarcode_app_server_protocol::ModelSelectionCapabilities as PublicModelSelectionCapabilities;
 use sugarcode_app_server_protocol::ModelSelectionSnapshot as PublicModelSelectionSnapshot;
+use sugarcode_app_server_protocol::ModelWireApi as PublicModelWireApi;
+use sugarcode_app_server_protocol::ProviderErrorMetadata;
 use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
 use sugarcode_app_server_protocol::ToolResult as PublicToolResult;
+use sugarcode_app_server_protocol::ToolSchemaError;
 use sugarcode_app_server_protocol::Turn as PublicTurn;
 use sugarcode_app_server_protocol::TurnCompletedNotification;
 use sugarcode_app_server_protocol::TurnError;
 use sugarcode_app_server_protocol::TurnErrorKind;
+use sugarcode_app_server_protocol::TurnInputPart;
 use sugarcode_app_server_protocol::TurnSnapshot;
 use sugarcode_app_server_protocol::TurnSnapshotStatus;
 use sugarcode_app_server_protocol::TurnStartedNotification;
@@ -262,10 +269,15 @@ fn map_snapshot_parts(
                     .items
                     .into_iter()
                     .map(|item| match item {
-                        DurableItemSnapshot::UserMessage { id, text } => PublicItem::UserMessage {
-                            id: id.into_string(),
-                            text,
-                        },
+                        DurableItemSnapshot::UserMessage { id, content } => {
+                            PublicItem::UserMessage {
+                                id: id.into_string(),
+                                content: content
+                                    .into_iter()
+                                    .map(public_durable_content_part)
+                                    .collect(),
+                            }
+                        }
                         DurableItemSnapshot::AgentMessage { id, text } => {
                             PublicItem::AgentMessage {
                                 id: id.into_string(),
@@ -350,19 +362,39 @@ fn map_snapshot_parts(
                             id,
                             call_id,
                             name,
-                            path,
-                            query,
-                            patch: _,
-                            command,
                             arguments,
                         } => PublicItem::ToolCall {
                             id: id.into_string(),
                             call_id,
                             name,
-                            path,
-                            query,
-                            command,
                             arguments,
+                        },
+                        DurableItemSnapshot::ToolValidationRejected {
+                            id,
+                            call_id,
+                            name,
+                            kind,
+                            arguments_bytes,
+                            arguments_sha256,
+                            edit_index,
+                            hunk_index,
+                            line,
+                            expected_summary,
+                            actual_summary,
+                            suggested_action,
+                        } => PublicItem::ToolValidationRejected {
+                            id: id.into_string(),
+                            call_id,
+                            name,
+                            kind,
+                            arguments_bytes,
+                            arguments_sha256,
+                            edit_index,
+                            hunk_index,
+                            line,
+                            expected_summary,
+                            actual_summary,
+                            suggested_action,
                         },
                         DurableItemSnapshot::FileChange {
                             id,
@@ -674,25 +706,37 @@ pub(crate) fn map_model_selection(
 ) -> PublicModelSelectionSnapshot {
     PublicModelSelectionSnapshot {
         profile_id: model.profile_id,
-        provider_kind: match model.provider_kind.as_str() {
-            "openai" => PublicModelProviderKind::Openai,
-            "anthropic" => PublicModelProviderKind::Anthropic,
-            "gemini" => PublicModelProviderKind::Gemini,
-            "metallm" => PublicModelProviderKind::Metallm,
-            "openaiCompatible" => PublicModelProviderKind::OpenaiCompatible,
-            _ => PublicModelProviderKind::OpenaiCompatible,
+        provider_family: match model.provider_family.as_str() {
+            "openai" => PublicModelProviderFamily::Openai,
+            "anthropic" => PublicModelProviderFamily::Anthropic,
+            "gemini" => PublicModelProviderFamily::Gemini,
+            _ => unreachable!("rollout model provider family must be validated"),
+        },
+        wire_api: match model.wire_api.as_str() {
+            "openaiResponses" => PublicModelWireApi::OpenaiResponses,
+            "openaiChatCompletions" => PublicModelWireApi::OpenaiChatCompletions,
+            "anthropicMessages" => PublicModelWireApi::AnthropicMessages,
+            "geminiGenerateContent" => PublicModelWireApi::GeminiGenerateContent,
+            _ => unreachable!("rollout model wire API must be validated"),
         },
         model_id: model.model_id,
         display_name: model.display_name,
         context_window_tokens: model.context_window_tokens,
+        effective_capabilities: PublicModelSelectionCapabilities {
+            tool_calls: model.effective_capabilities.tool_calls,
+            strict_tools: model.effective_capabilities.strict_tools,
+            parallel_tools: model.effective_capabilities.parallel_tools,
+            image_input: model.effective_capabilities.image_input,
+            pdf_input: model.effective_capabilities.pdf_input,
+        },
     }
 }
 
 fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
     match item.kind {
-        CoreItemKind::UserMessage { text } => PublicItem::UserMessage {
+        CoreItemKind::UserMessage { content } => PublicItem::UserMessage {
             id: item.id.into_string(),
-            text,
+            content: content.into_iter().map(public_core_content_part).collect(),
         },
         CoreItemKind::AgentMessage { text } => PublicItem::AgentMessage {
             id: item.id.into_string(),
@@ -769,19 +813,38 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
         CoreItemKind::ToolCall {
             call_id,
             name,
-            path,
-            query,
-            patch: _,
-            command,
             arguments,
         } => PublicItem::ToolCall {
             id: item.id.into_string(),
             call_id,
             name,
-            path,
-            query,
-            command,
             arguments,
+        },
+        CoreItemKind::ToolValidationRejected {
+            call_id,
+            name,
+            kind,
+            arguments_bytes,
+            arguments_sha256,
+            edit_index,
+            hunk_index,
+            line,
+            expected_summary,
+            actual_summary,
+            suggested_action,
+        } => PublicItem::ToolValidationRejected {
+            id: item.id.into_string(),
+            call_id,
+            name,
+            kind: kind.to_string(),
+            arguments_bytes,
+            arguments_sha256,
+            edit_index,
+            hunk_index,
+            line,
+            expected_summary,
+            actual_summary,
+            suggested_action,
         },
         CoreItemKind::FileChange {
             call_id,
@@ -996,6 +1059,79 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
                 },
             },
         },
+    }
+}
+
+fn public_core_content_part(part: sugarcode_protocol::CoreUserContentPart) -> TurnInputPart {
+    match part {
+        sugarcode_protocol::CoreUserContentPart::Text { text } => TurnInputPart::Text { text },
+        sugarcode_protocol::CoreUserContentPart::Image { asset } => TurnInputPart::Image {
+            asset: public_asset(
+                asset.asset_id,
+                asset.sha256,
+                asset.media_type,
+                asset.original_name,
+                asset.size_bytes,
+            ),
+        },
+        sugarcode_protocol::CoreUserContentPart::Document { asset } => TurnInputPart::Document {
+            asset: public_asset(
+                asset.asset_id,
+                asset.sha256,
+                asset.media_type,
+                asset.original_name,
+                asset.size_bytes,
+            ),
+        },
+    }
+}
+
+fn public_durable_content_part(part: sugarcode_state::DurableUserContentPart) -> TurnInputPart {
+    match part {
+        sugarcode_state::DurableUserContentPart::Text { text } => TurnInputPart::Text { text },
+        sugarcode_state::DurableUserContentPart::Image { asset } => TurnInputPart::Image {
+            asset: public_asset(
+                asset.asset_id,
+                asset.sha256,
+                asset.media_type,
+                asset.original_name,
+                asset.size_bytes,
+            ),
+        },
+        sugarcode_state::DurableUserContentPart::Document { asset } => TurnInputPart::Document {
+            asset: public_asset(
+                asset.asset_id,
+                asset.sha256,
+                asset.media_type,
+                asset.original_name,
+                asset.size_bytes,
+            ),
+        },
+    }
+}
+
+fn public_asset(
+    asset_id: String,
+    sha256: String,
+    media_type: String,
+    original_name: String,
+    size_bytes: u64,
+) -> AssetDescriptor {
+    let kind = if media_type.starts_with("image/") {
+        AssetKind::Image
+    } else if media_type == "application/pdf" {
+        AssetKind::Pdf
+    } else {
+        AssetKind::Text
+    };
+    AssetDescriptor {
+        asset_id,
+        sha256,
+        media_type,
+        original_name,
+        size_bytes: u32::try_from(size_bytes).unwrap_or(u32::MAX),
+        kind,
+        pdf_pages: None,
     }
 }
 
@@ -1218,8 +1354,14 @@ fn public_sandbox_policy(
 }
 
 fn map_core_error(error: CoreTurnError) -> TurnError {
+    let CoreTurnError {
+        kind,
+        retryable,
+        provider,
+        tool_schema,
+    } = error;
     TurnError {
-        kind: match error.kind {
+        kind: match kind {
             CoreTurnErrorKind::Authentication => TurnErrorKind::Authentication,
             CoreTurnErrorKind::InvalidRequest => TurnErrorKind::InvalidRequest,
             CoreTurnErrorKind::RateLimited => TurnErrorKind::RateLimited,
@@ -1235,13 +1377,29 @@ fn map_core_error(error: CoreTurnError) -> TurnError {
             CoreTurnErrorKind::OutputTooLarge => TurnErrorKind::OutputTooLarge,
             CoreTurnErrorKind::StateUnavailable => TurnErrorKind::StateUnavailable,
         },
-        retryable: error.retryable,
+        retryable,
+        provider: provider.map(|provider| ProviderErrorMetadata {
+            http_status: provider.http_status,
+            code: provider.code,
+            request_id: provider.request_id,
+            retry_after: provider.retry_after,
+        }),
+        tool_schema: tool_schema.map(|error| ToolSchemaError {
+            tool_name: error.tool_name,
+            reason: error.reason,
+        }),
     }
 }
 
 fn map_durable_error(error: DurableTurnError) -> TurnError {
+    let DurableTurnError {
+        kind,
+        retryable,
+        provider,
+        tool_schema,
+    } = error;
     TurnError {
-        kind: match error.kind {
+        kind: match kind {
             DurableTurnErrorKind::Authentication => TurnErrorKind::Authentication,
             DurableTurnErrorKind::InvalidRequest => TurnErrorKind::InvalidRequest,
             DurableTurnErrorKind::RateLimited => TurnErrorKind::RateLimited,
@@ -1259,7 +1417,17 @@ fn map_durable_error(error: DurableTurnError) -> TurnError {
             DurableTurnErrorKind::OutputTooLarge => TurnErrorKind::OutputTooLarge,
             DurableTurnErrorKind::StateUnavailable => TurnErrorKind::StateUnavailable,
         },
-        retryable: error.retryable,
+        retryable,
+        provider: provider.map(|provider| ProviderErrorMetadata {
+            http_status: provider.http_status,
+            code: provider.code,
+            request_id: provider.request_id,
+            retry_after: provider.retry_after,
+        }),
+        tool_schema: tool_schema.map(|error| ToolSchemaError {
+            tool_name: error.tool_name,
+            reason: error.reason,
+        }),
     }
 }
 

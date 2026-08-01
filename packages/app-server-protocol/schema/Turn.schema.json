@@ -35,14 +35,39 @@
     "status"
   ],
   "$defs": {
-    "ModelProviderKind": {
+    "ModelProviderFamily": {
       "type": "string",
       "enum": [
         "openai",
         "anthropic",
-        "gemini",
-        "metallm",
-        "openaiCompatible"
+        "gemini"
+      ]
+    },
+    "ModelSelectionCapabilities": {
+      "type": "object",
+      "properties": {
+        "imageInput": {
+          "type": "boolean"
+        },
+        "parallelTools": {
+          "type": "boolean"
+        },
+        "pdfInput": {
+          "type": "boolean"
+        },
+        "strictTools": {
+          "type": "boolean"
+        },
+        "toolCalls": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "toolCalls",
+        "strictTools",
+        "parallelTools",
+        "imageInput",
+        "pdfInput"
       ]
     },
     "ModelSelectionSnapshot": {
@@ -56,22 +81,86 @@
         "displayName": {
           "type": "string"
         },
+        "effectiveCapabilities": {
+          "$ref": "#/$defs/ModelSelectionCapabilities"
+        },
         "modelId": {
           "type": "string"
         },
         "profileId": {
           "type": "string"
         },
-        "providerKind": {
-          "$ref": "#/$defs/ModelProviderKind"
+        "providerFamily": {
+          "$ref": "#/$defs/ModelProviderFamily"
+        },
+        "wireApi": {
+          "$ref": "#/$defs/ModelWireApi"
         }
       },
       "required": [
         "profileId",
-        "providerKind",
+        "providerFamily",
+        "wireApi",
         "modelId",
         "displayName",
-        "contextWindowTokens"
+        "contextWindowTokens",
+        "effectiveCapabilities"
+      ]
+    },
+    "ModelWireApi": {
+      "type": "string",
+      "enum": [
+        "openaiResponses",
+        "openaiChatCompletions",
+        "anthropicMessages",
+        "geminiGenerateContent"
+      ]
+    },
+    "ProviderErrorMetadata": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "httpStatus": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "requestId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retryAfter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "httpStatus"
+      ]
+    },
+    "ToolSchemaError": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolName",
+        "reason"
       ]
     },
     "TurnError": {
@@ -80,8 +169,28 @@
         "kind": {
           "$ref": "#/$defs/TurnErrorKind"
         },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderErrorMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "retryable": {
           "type": "boolean"
+        },
+        "toolSchema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolSchemaError"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [

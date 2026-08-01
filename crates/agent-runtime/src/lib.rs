@@ -23,12 +23,13 @@ use sugarcode_core::ModelResolver;
 use sugarcode_core::ResolvedModel;
 use sugarcode_model_provider::ModelError;
 use sugarcode_model_provider::ModelErrorKind;
+use sugarcode_model_provider::ModelStrictToolsMode;
 use sugarcode_model_provider::NativeModelProvider;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
 use sugarcode_protocol::CoreEvent;
+use sugarcode_state::ContentStore;
 use sugarcode_state::EffectiveConfig;
 use sugarcode_state::ModelCapabilityMode;
-use sugarcode_state::ModelProviderKind;
 use sugarcode_state::ModelWireApi;
 use sugarcode_state::RolloutRepository;
 use sugarcode_state::SugarCodeHome;
@@ -64,6 +65,7 @@ pub struct AgentSurfaceRuntime {
     workspace: Option<Arc<WorkspaceTool>>,
     mcp_capability: Option<McpToolCapability>,
     diagnostics: Vec<String>,
+    content_store: Arc<ContentStore>,
 }
 
 impl std::fmt::Debug for AgentSurfaceRuntime {
@@ -86,6 +88,7 @@ pub struct AgentSurfaceRuntimeParts {
     pub workspace: Option<Arc<WorkspaceTool>>,
     pub mcp_capability: Option<McpToolCapability>,
     pub diagnostics: Vec<String>,
+    pub content_store: Arc<ContentStore>,
 }
 
 #[derive(Clone)]
@@ -110,26 +113,21 @@ impl ModelResolver for LocalModelResolver {
         let token = connection
             .api_key()
             .map(|api_key| Zeroizing::new(api_key.to_owned()));
-        let strict_tools = resolve_capability(
-            profile.strict_tools(),
-            matches!(
-                connection.kind(),
-                ModelProviderKind::OpenAi | ModelProviderKind::Anthropic
-            ),
-        );
-        let parallel_tools = resolve_capability(
-            profile.parallel_tools(),
-            matches!(
-                connection.kind(),
-                ModelProviderKind::OpenAi
-                    | ModelProviderKind::Anthropic
-                    | ModelProviderKind::Gemini
-            ),
-        );
+        let ceiling = WireCapabilityCeiling::for_wire_api(connection.wire_api());
+        let tool_calls = resolve_capability(profile.tool_calls(), ceiling.tool_calls);
+        let strict_tools = resolve_capability(profile.strict_tools(), ceiling.strict_tools);
+        let strict_tools_mode =
+            resolve_strict_tools_mode(profile.strict_tools(), ceiling.strict_tools);
+        let parallel_tools = resolve_capability(profile.parallel_tools(), ceiling.parallel_tools);
+        let image_input = resolve_capability(profile.image_input(), ceiling.image_input);
+        let pdf_input = resolve_capability(profile.pdf_input(), ceiling.pdf_input);
         let capabilities = ModelCapabilities::new(
             profile.effective_context_window_tokens(),
+            tool_calls,
             strict_tools,
             parallel_tools,
+            image_input,
+            pdf_input,
         );
         let provider: Arc<dyn sugarcode_model_provider::ModelProvider> = match connection.wire_api()
         {
@@ -141,21 +139,21 @@ impl ModelResolver for LocalModelResolver {
                 Arc::new(OpenAiChatCompletionsProvider::new_secret_with_capabilities(
                     endpoint,
                     token,
-                    strict_tools,
+                    strict_tools_mode,
                     parallel_tools,
                 )?)
             }
             ModelWireApi::OpenAiResponses => Arc::new(NativeModelProvider::openai_responses(
                 connection.base_url().clone(),
                 token,
-                strict_tools,
+                strict_tools_mode,
                 parallel_tools,
                 capabilities.output_reserve_tokens,
             )?),
             ModelWireApi::AnthropicMessages => Arc::new(NativeModelProvider::anthropic_messages(
                 connection.base_url().clone(),
                 token,
-                strict_tools,
+                strict_tools_mode,
                 parallel_tools,
                 capabilities.output_reserve_tokens,
             )?),
@@ -163,7 +161,7 @@ impl ModelResolver for LocalModelResolver {
                 Arc::new(NativeModelProvider::gemini_generate_content(
                     connection.base_url().clone(),
                     token,
-                    strict_tools,
+                    strict_tools_mode,
                     parallel_tools,
                     capabilities.output_reserve_tokens,
                 )?)
@@ -173,10 +171,32 @@ impl ModelResolver for LocalModelResolver {
             provider,
             model: profile.model_id().to_string(),
             profile_id: profile.id().to_owned(),
-            provider_kind: connection.kind().as_str().to_owned(),
+            provider_family: connection.provider_family().as_str().to_owned(),
+            wire_api: connection.wire_api().as_str().to_owned(),
             display_name: profile.display_name().to_owned(),
             capabilities,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WireCapabilityCeiling {
+    tool_calls: bool,
+    strict_tools: bool,
+    parallel_tools: bool,
+    image_input: bool,
+    pdf_input: bool,
+}
+
+impl WireCapabilityCeiling {
+    const fn for_wire_api(wire_api: ModelWireApi) -> Self {
+        Self {
+            tool_calls: true,
+            strict_tools: true,
+            parallel_tools: true,
+            image_input: true,
+            pdf_input: !matches!(wire_api, ModelWireApi::OpenAiChatCompletions),
+        }
     }
 }
 
@@ -185,6 +205,17 @@ fn resolve_capability(mode: ModelCapabilityMode, automatic: bool) -> bool {
         ModelCapabilityMode::Auto => automatic,
         ModelCapabilityMode::Enabled => true,
         ModelCapabilityMode::Disabled => false,
+    }
+}
+
+fn resolve_strict_tools_mode(mode: ModelCapabilityMode, supported: bool) -> ModelStrictToolsMode {
+    if !supported {
+        return ModelStrictToolsMode::Disabled;
+    }
+    match mode {
+        ModelCapabilityMode::Auto => ModelStrictToolsMode::Auto,
+        ModelCapabilityMode::Enabled => ModelStrictToolsMode::Enabled,
+        ModelCapabilityMode::Disabled => ModelStrictToolsMode::Disabled,
     }
 }
 
@@ -265,6 +296,8 @@ impl AgentSurfaceRuntime {
             active_workspace_binding,
         )
         .map_err(io::Error::other)?;
+        let content_store =
+            Arc::new(ContentStore::open(options.config.home()).map_err(io::Error::other)?);
         let mut diagnostics = repository
             .diagnostics()
             .iter()
@@ -319,7 +352,8 @@ impl AgentSurfaceRuntime {
         let mut core = runtime
             .with_workspace_patch(workspace_patch)
             .with_workspace_instructions(workspace_instructions)
-            .with_workspace_skills(workspace_skills);
+            .with_workspace_skills(workspace_skills)
+            .with_content_store(Arc::clone(&content_store));
         let mcp_capability = McpToolCapability::default();
         let has_mcp = !mcp.is_empty();
         if has_mcp {
@@ -339,6 +373,7 @@ impl AgentSurfaceRuntime {
             workspace,
             mcp_capability: has_mcp.then_some(mcp_capability),
             diagnostics,
+            content_store,
         })
     }
 
@@ -351,6 +386,7 @@ impl AgentSurfaceRuntime {
             workspace: self.workspace,
             mcp_capability: self.mcp_capability,
             diagnostics: self.diagnostics,
+            content_store: self.content_store,
         }
     }
 }

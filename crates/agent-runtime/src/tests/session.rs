@@ -9,7 +9,8 @@ use sugarcode_state::ModelCapabilityMode;
 use sugarcode_state::ModelCatalog;
 use sugarcode_state::ModelConnection;
 use sugarcode_state::ModelProfile;
-use sugarcode_state::ModelProviderKind;
+use sugarcode_state::ModelProfileCapabilities;
+use sugarcode_state::ModelProviderFamily;
 use sugarcode_state::ModelWireApi;
 use url::Url;
 
@@ -49,21 +50,21 @@ fn local_model_resolver_honors_default_explicit_context_and_disabled_connections
     let connections = vec![
         ModelConnection::new(
             "conn_enabled".to_owned(),
-            ModelProviderKind::OpenAiCompatible,
+            ModelProviderFamily::OpenAi,
             "Enabled".to_owned(),
             Url::parse("http://127.0.0.1:18080/v1").expect("URL"),
             true,
-            Some(ModelWireApi::OpenAiChatCompletions),
+            ModelWireApi::OpenAiChatCompletions,
             None,
         )
         .expect("enabled connection"),
         ModelConnection::new(
             "conn_disabled".to_owned(),
-            ModelProviderKind::OpenAiCompatible,
+            ModelProviderFamily::OpenAi,
             "Disabled".to_owned(),
             Url::parse("http://127.0.0.1:18081/v1").expect("URL"),
             false,
-            Some(ModelWireApi::OpenAiChatCompletions),
+            ModelWireApi::OpenAiChatCompletions,
             None,
         )
         .expect("disabled connection"),
@@ -75,8 +76,7 @@ fn local_model_resolver_honors_default_explicit_context_and_disabled_connections
             "Default".to_owned(),
             "default-id".to_owned(),
             None,
-            ModelCapabilityMode::Auto,
-            ModelCapabilityMode::Auto,
+            ModelProfileCapabilities::default(),
         )
         .expect("default profile"),
         ModelProfile::new(
@@ -85,8 +85,13 @@ fn local_model_resolver_honors_default_explicit_context_and_disabled_connections
             "Custom".to_owned(),
             "custom-id".to_owned(),
             Some(200_000),
-            ModelCapabilityMode::Enabled,
-            ModelCapabilityMode::Enabled,
+            ModelProfileCapabilities::new(
+                ModelCapabilityMode::Enabled,
+                ModelCapabilityMode::Enabled,
+                ModelCapabilityMode::Enabled,
+                ModelCapabilityMode::Enabled,
+                ModelCapabilityMode::Disabled,
+            ),
         )
         .expect("custom profile"),
         ModelProfile::new(
@@ -95,8 +100,7 @@ fn local_model_resolver_honors_default_explicit_context_and_disabled_connections
             "Unavailable".to_owned(),
             "disabled-id".to_owned(),
             None,
-            ModelCapabilityMode::Auto,
-            ModelCapabilityMode::Auto,
+            ModelProfileCapabilities::default(),
         )
         .expect("disabled profile"),
     ];
@@ -110,8 +114,11 @@ fn local_model_resolver_honors_default_explicit_context_and_disabled_connections
     let default = resolver.resolve(None).expect("default model");
     assert_eq!(default.profile_id, "model_default");
     assert_eq!(default.capabilities.context_window_tokens, 131_072);
-    assert!(!default.capabilities.strict_tool_schema);
-    assert!(!default.capabilities.parallel_tool_calls);
+    assert!(default.capabilities.tool_calls);
+    assert!(default.capabilities.strict_tool_schema);
+    assert!(default.capabilities.parallel_tool_calls);
+    assert!(default.capabilities.image_input);
+    assert!(!default.capabilities.pdf_input);
 
     let custom = resolver
         .resolve(Some("model_custom"))

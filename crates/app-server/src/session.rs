@@ -14,6 +14,10 @@ use sugarcode_agent_runtime::PendingCommandApproval;
 use sugarcode_agent_runtime::PendingMcpToolApproval;
 use sugarcode_app_server_protocol::AgentTaskRole;
 use sugarcode_app_server_protocol::ApprovalSourceAgent;
+use sugarcode_app_server_protocol::AssetDescriptor;
+use sugarcode_app_server_protocol::AssetImportParams;
+use sugarcode_app_server_protocol::AssetImportResponse;
+use sugarcode_app_server_protocol::AssetKind;
 use sugarcode_app_server_protocol::CommandApprovalParams;
 use sugarcode_app_server_protocol::CommandApprovalResponse;
 use sugarcode_app_server_protocol::CommandApprovalResponseDecision;
@@ -104,6 +108,9 @@ use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
+use sugarcode_state::ContentAssetKind;
+use sugarcode_state::ContentStore;
+use sugarcode_state::ContentStoreError;
 use sugarcode_tools::GitCommitArguments;
 use sugarcode_tools::GitDiffArguments;
 use sugarcode_tools::GitMutationArguments;
@@ -149,6 +156,7 @@ pub struct Session<C = Core> {
     mcp_tool_call_approvals: bool,
     mcp_capability: Option<McpToolCapability>,
     workspace: Option<Arc<WorkspaceTool>>,
+    content_store: Option<Arc<ContentStore>>,
 }
 
 impl Default for Session<Core> {
@@ -184,6 +192,7 @@ where
             mcp_tool_call_approvals: false,
             mcp_capability: None,
             workspace: None,
+            content_store: None,
         }
     }
 
@@ -196,6 +205,11 @@ where
         session.workspace = workspace;
         session.mcp_capability = mcp_capability;
         session
+    }
+
+    pub(crate) fn with_content_store(mut self, content_store: Arc<ContentStore>) -> Self {
+        self.content_store = Some(content_store);
+        self
     }
 
     #[cfg(test)]
@@ -581,6 +595,20 @@ where
                     )];
                 }
                 self.start_turn(id, object.get("params").cloned())
+            }
+            "asset/import" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                vec![self.import_asset(id, object.get("params").cloned())]
             }
             "turn/interrupt" => {
                 let Some(id) = request_id else {
