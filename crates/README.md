@@ -43,6 +43,17 @@ external filters, signing, credential helpers, remotes or network operations.
 `app-server-protocol` remains the source of truth for those provider-neutral
 DTOs and their generated TypeScript/JSON Schema.
 
+`model-provider` owns four wire adapters grouped into three provider families:
+OpenAI Responses, OpenAI Chat Completions, Anthropic Messages and Gemini native
+`generateContent`. Core selects only by wire API. Provider continuations,
+signatures and reasoning envelopes never enter the public Desktop protocol.
+
+`state` owns the content-addressed `content/v1` asset store in addition to v1
+configuration and rollout. Rollout persists attachment descriptors, not Base64
+or absolute paths. `tools` exposes `workspace/edit` for revision-bound line
+splices and `workspace/apply-diff` for one-file standard unified diff; both
+share one review, commit-barrier and atomic-replacement pipeline.
+
 `agent-runtime` is the surface-neutral in-process composition and session
 boundary. `app-server` owns only JSON-RPC mapping on top of it. `exec` owns the
 separately versioned headless output/exit contract and always-denied

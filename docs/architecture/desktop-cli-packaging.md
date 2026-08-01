@@ -176,14 +176,13 @@ checks on native hosts. Packaging acceptance must not be replaced by
 cross-compilation alone because executable format, sandboxing, PTY/ConPTY and
 Electron resource layout are platform-specific.
 
-CI does not execute Desktop TypeScript tests. Desktop lint, type checks, Rust
-workspace tests and native Forge package smoke remain acceptance gates.
-
-The final Phase 7/8 native delivery is green in Actions run `30531423818`.
+CI executes Desktop lint, type checks and boundary-focused Node tests through
+`pnpm check`. Rust workspace tests, generated-protocol consistency and native
+Forge package smoke remain acceptance gates.
 
 ## 10. Release work still deferred
 
-Phase 9 owns:
+Release engineering still owns:
 
 - production signing identities and nested executable signing;
 - notarization where required;

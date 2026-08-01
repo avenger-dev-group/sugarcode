@@ -1,131 +1,126 @@
 # Model catalog and Turn selection
 
-## Boundary
+## Contract
 
-SugarCode separates reusable provider connections from model profiles.
-Connections contain endpoint and credential authority; profiles contain model
-identity and capability overrides. Provider wire/SDK types are confined to
-`crates/model-provider`. Core, rollout, app-server, exec, and Desktop exchange
-only provider-neutral request/event/response and model-selection values.
+SugarCode exposes three provider families and four wire APIs:
 
-Configuration, config-control contract, app-server protocol, and rollout all
-remain version 1. Because SugarCode is unreleased, the former `[model]` shape is
-not read or migrated. It is repairable from Settings and is overwritten on the
-first catalog save while a valid MCP section is retained.
-
-## Configuration
-
-`[models]` has one `default_profile_id`, up to 16 connections, and up to 128
-profiles. Built-in provider/wire mappings are fixed:
-
-| Provider | Wire API |
+| Provider family | Wire API |
 | --- | --- |
-| OpenAI | Responses |
-| Anthropic | Messages |
-| Gemini | GenerateContent |
-| MetaLLM | OpenAI Chat Completions |
-| OpenAI compatible | Responses or Chat Completions |
+| `openai` | `openaiResponses` or `openaiChatCompletions` |
+| `anthropic` | `anthropicMessages` |
+| `gemini` | `geminiGenerateContent` |
 
-Every profile references an existing connection. The default profile must use
-an enabled connection. A referenced connection cannot be deleted and the
-default profile must be changed before it can be deleted.
+LiteLLM, MetaLLM and other gateways use the compatible family and wire API
+with a custom Base URL. They have no provider enum, SDK or Runtime branch.
+`providerFamily` groups Settings and supplies defaults; endpoint construction,
+authentication, discovery, serialization and parsing route only by `wireApi`.
 
-`context_window_tokens` is optional and bounded from 4,096 through 2,097,152.
-Missing means 131,072 at runtime and remains omitted when saved. API keys stay
-inside the permission-restricted `config.toml`; inspection returns only a
-per-connection credential status. A full-catalog SHA-256 revision and atomic
-replacement guard every save, with exactly one `preserve`, `set`, or `delete`
-credential action per connection.
+Configuration, config control, rollout and app-server remain version 1. Their
+current v1 shape replaces earlier development shapes directly. There is no
+legacy decoder, migration or automatic removal of local SugarCode data.
+
+## Connections and profiles
+
+`[models]` owns one default profile, up to 16 connections and up to 128
+profiles. A connection contains provider family, wire API, display name, Base
+URL, enabled state and an optional API key. Keys remain in permission-restricted
+local configuration, are zeroized in memory and are represented to Desktop only
+as credential status. They never enter rollout, public protocol or diagnostics.
+
+A profile references one connection and contains model ID, display name,
+optional context window and five `auto | enabled | disabled` declarations:
+
+- `tool_calls`;
+- `strict_tools`;
+- `parallel_tools`;
+- `image_input`;
+- `pdf_input`.
+
+Every profile must reference an existing connection. The default profile must
+use an enabled connection. OpenAI Chat Completions cannot save
+`pdf_input = enabled`, because the wire ceiling forbids PDF input.
+
+Catalog updates are revision-guarded atomic replacements. Exactly one
+`preserve`, `set` or `delete` credential action accompanies each connection.
+An empty key field preserves the stored key; deletion is explicit.
 
 ## Discovery
 
-Discovery is an explicit read-only operation:
+Discovery is read-only and routes by wire API:
 
-- OpenAI, Anthropic, and Gemini use their Models APIs;
-- MetaLLM and compatible endpoints use `/models`;
-- candidates never modify configuration;
-- reliable bounded context metadata may prefill the editor;
-- only a user-saved context value affects runtime;
-- failure leaves the connection usable for manual model ID entry.
+- OpenAI Responses and Chat use the compatible Models endpoint;
+- Anthropic uses its native Models endpoint and authentication;
+- Gemini uses its native Models endpoint and authentication.
 
-A new or edited connection must first be saved so discovery uses the saved
-endpoint and credential. Saving performs local validation only and never sends
-a prompt or incurs inference cost.
+Discovery candidates never mutate configuration. Failure leaves manual model
+ID entry available. Context metadata is only a suggestion; only a saved profile
+value affects Runtime.
 
-## Turn resolution and freezing
+## Capability resolution
 
-Selection priority is:
+Effective capability is the intersection of:
 
-1. explicit `TurnStartParams.modelProfileId`;
-2. the current Thread's latest durable Turn profile;
-3. the catalog default profile.
+```text
+wire ceiling
+  ∩ profile declaration
+  ∩ per-tool schema convertibility
+  ∩ current Runtime capability
+```
 
-Resolution happens before `turnStarted` persistence. A successful resolution
-freezes the connection, wire API, provider adapter, credential, model ID, and
-capabilities for every provider round in that Turn. Settings edits affect only
-later Turns. Active compaction and descendant/audit Agents inherit the root
-Turn's frozen model. A missing, deleted, disabled, or invalid explicit/sticky
-profile blocks the send; there is no silent fallback to another provider.
+All four wire APIs support tools and image input. PDF is supported by OpenAI
+Responses, Anthropic Messages and Gemini native; Chat Completions rejects PDF
+before a provider request. `enabled` cannot exceed a hard wire ceiling.
 
-The public and durable snapshot contains only:
+`strictTools = auto` enables strict mode independently for every convertible
+tool. `strictTools = enabled` rejects the provider request before I/O and names
+the incompatible tool and schema reason. Parallel mode is emitted in each
+wire's native request form and the returned batch is checked by Core. Gemini's
+parallel setting is therefore behavioral, not presentation metadata.
+
+The frozen public and durable model snapshot contains:
 
 ```text
 profileId
-providerKind
+providerFamily
+wireApi
 modelId
 displayName
 contextWindowTokens
+effectiveCapabilities
 ```
 
-The context value is effective, so an omitted profile setting is recorded as
-131,072. Endpoints and credentials never enter rollout or public DTOs.
+Endpoints and credentials are intentionally absent.
 
-## Context capability
+## Turn resolution
 
-```text
-effectiveContextWindow =
-  profile.contextWindowTokens.unwrap_or(131072)
+Selection priority is:
 
-outputReserve =
-  min(16384, max(4096, effectiveContextWindow / 4))
+1. explicit `turn/start.modelProfileId`;
+2. the current Thread's most recent durable profile;
+3. the catalog default profile.
 
-inputCompactionTarget =
-  effectiveContextWindow - outputReserve
-```
+Resolution happens before `turnStarted` persistence. A successful resolution
+freezes connection, wire API, model ID, credential and effective capabilities
+for every provider round in the Turn. Settings edits affect later Turns only.
+Missing, disabled or invalid sticky selection blocks send; SugarCode never
+silently changes provider.
 
-Core uses a conservative three-byte-per-token estimate and independently caps
-one provider context at 4 MiB. Explicit provider context-length errors use the
-existing same-Turn compaction recovery. Discovery metadata has no runtime
-effect until saved into a profile.
+The default context window is 131,072 tokens. Core reserves at most 16,384
+tokens for output, estimates input conservatively at three UTF-8 bytes per
+token and separately caps one provider context at 4 MiB. Provider context
+rejection may trigger same-Turn compaction and retry.
 
-OpenAI and Anthropic automatically enable strict schemas where supported.
-OpenAI, Anthropic, and Gemini automatically enable parallel tool calls.
-MetaLLM and unknown compatible endpoints default to local validation with
-strict and parallel modes disabled unless explicitly overridden.
+## Tool schema and validation
 
-All four wire adapters consume SSE and normalize text deltas, completed output,
-tool calls, and usage into `ModelEvent`/`ModelResponse`. OpenAI Responses and
-Anthropic opt into their stream mode; Gemini uses
-`streamGenerateContent?alt=sse`; OpenAI Chat Completions retains its bounded
-stream parser. SSE records and accumulated semantic output are independently
-bounded, and dropping the Core stream closes the provider task.
+Adapters map internal tool names to request-local provider-safe names and keep
+the reverse map for replay and results. ToolCall history stores the original
+provider-neutral JSON arguments, so `workspace/edit`, collaboration and shell
+calls survive restart without reconstruction through obsolete special fields.
 
-When a provider returns explanatory text and tool calls in the same response,
-the adapter merges the text fragments into one `Commentary` output before the
-tool-call batch. Only a response without tool calls is classified as `Final`.
-This avoids treating the common “brief preamble, then inspect the workspace”
-shape as unsupported output.
-
-## Tool-name and argument compatibility
-
-Adapters convert internal names such as `workspace/read` to provider-safe
-function names. A collision receives the first eight hexadecimal SHA-256
-characters, and request-local maps preserve tool call/result pairing across
-historical replay and provider changes.
-
-Invalid tool arguments, unknown tools, and schema mismatches produce bounded
-model-visible error results. Public state records the category only; feedback
-adds argument byte count and SHA-256 but never the raw invalid payload. Any
-validation error rejects the entire call batch. Three consecutive identical
-error fingerprints terminate with `unsupportedToolArguments`; otherwise the
-model may regenerate the call in the same Turn.
+Invalid tool arguments and schema mismatches produce bounded model-visible
+feedback and a public `toolValidationRejected` Item. The Item carries kind,
+argument byte count and SHA-256, optional edit/hunk/line diagnostics, redacted
+expected/actual summaries and a suggested action. It never carries the raw
+invalid payload. Three consecutive failures with the same diagnostic
+fingerprint terminate as `unsupportedToolArguments`; a successful or different
+failure resets the sequence.

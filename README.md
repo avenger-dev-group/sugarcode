@@ -47,11 +47,24 @@ pnpm desktop:package
 pnpm desktop:make
 ```
 
-See [the process architecture](docs/architecture/process-boundary.md) for the
-Desktop/CLI boundary.
+Optional live-provider smoke accepts one or more saved profile IDs. Run it
+separately for OpenAI, Anthropic, Gemini and a compatible gateway before a
+release:
 
-## Implementation plan
+```bash
+pnpm smoke:provider -- PROFILE_ID [PROFILE_ID ...]
+```
 
-Read [`docs/PLAN.md`](docs/PLAN.md) before starting a new planning or
-implementation session. It records accepted decisions, current baseline,
-phase status, verification commands and the deferred release entry point.
+Architecture contracts are split by stable boundary:
+
+- [model protocol](docs/architecture/model-protocol.md);
+- [Runtime and persistence](docs/architecture/runtime-persistence.md);
+- [tools and workspace authority](docs/architecture/tools-workspace.md);
+- [app-server and Desktop](docs/architecture/app-server-desktop.md);
+- [model catalog](docs/architecture/model-catalog.md);
+- [Desktop CLI packaging](docs/architecture/desktop-cli-packaging.md).
+
+SugarCode is still under development. All config, rollout, app-server and
+Desktop contracts remain version 1, but their v1 shapes may be replaced in
+place. No compatibility reader or automatic deletion of local SugarCode data
+is provided.
