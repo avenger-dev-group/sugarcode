@@ -1489,17 +1489,33 @@ async fn done_without_finish_reason_is_a_protocol_error() {
 }
 
 #[tokio::test]
-async fn response_header_timeout_uses_virtual_time() {
+async fn response_headers_may_arrive_after_the_former_deadline() {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
-        .expect("bind header timeout server");
-    let address = listener.local_addr().expect("header timeout address");
+        .expect("bind delayed header server");
+    let address = listener.local_addr().expect("delayed header address");
     let (accepted_tx, accepted_rx) = oneshot::channel();
     let (release_tx, release_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
-        let (_socket, _) = listener.accept().await.expect("accept request");
+        let (mut socket, _) = listener.accept().await.expect("accept request");
+        read_request(&mut socket, true).await;
         let _ = accepted_tx.send(());
         let _ = release_rx.await;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    SUCCESS.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write delayed response headers");
+        socket
+            .write_all(SUCCESS.as_bytes())
+            .await
+            .expect("write delayed response body");
+        socket.flush().await.expect("flush delayed response");
     });
     let endpoint =
         Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint");
@@ -1507,22 +1523,25 @@ async fn response_header_timeout_uses_virtual_time() {
     accepted_rx.await.expect("request accepted");
     tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(31)).await;
-    let error = match client.await.expect("provider task") {
-        Ok(_) => panic!("missing response headers must time out"),
-        Err(error) => error,
-    };
+    tokio::task::yield_now().await;
+    assert!(!client.is_finished());
     let _ = release_tx.send(());
+    let events = client
+        .await
+        .expect("provider task")
+        .expect("stream starts after delayed headers")
+        .collect::<Vec<_>>()
+        .await;
     server.await.expect("mock server");
-    assert_eq!(error.kind(), ModelErrorKind::Timeout);
-    assert!(error.retryable());
+    assert!(events.iter().all(Result::is_ok));
 }
 
 #[tokio::test]
-async fn stream_idle_timeout_uses_virtual_time() {
+async fn stream_output_may_resume_after_the_former_idle_deadline() {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
-        .expect("bind idle timeout server");
-    let address = listener.local_addr().expect("idle timeout address");
+        .expect("bind delayed stream server");
+    let address = listener.local_addr().expect("delayed stream address");
     let (headers_tx, headers_rx) = oneshot::channel();
     let (release_tx, release_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
@@ -1537,6 +1556,19 @@ async fn stream_idle_timeout_uses_virtual_time() {
         socket.flush().await.expect("flush response headers");
         let _ = headers_tx.send(());
         let _ = release_rx.await;
+        socket
+            .write_all(format!("{:X}\r\n", SUCCESS.len()).as_bytes())
+            .await
+            .expect("write delayed chunk length");
+        socket
+            .write_all(SUCCESS.as_bytes())
+            .await
+            .expect("write delayed chunk");
+        socket
+            .write_all(b"\r\n0\r\n\r\n")
+            .await
+            .expect("finish delayed chunks");
+        socket.flush().await.expect("flush delayed chunks");
     });
     let endpoint =
         Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint");
@@ -1548,15 +1580,16 @@ async fn stream_idle_timeout_uses_virtual_time() {
     let next = tokio::spawn(async move { stream.next().await });
     tokio::task::yield_now().await;
     tokio::time::advance(std::time::Duration::from_secs(61)).await;
-    let error = next
+    tokio::task::yield_now().await;
+    assert!(!next.is_finished());
+    let _ = release_tx.send(());
+    let event = next
         .await
         .expect("stream task")
         .expect("terminal event")
-        .expect_err("idle stream must time out");
-    let _ = release_tx.send(());
+        .expect("stream resumes after idle period");
     server.await.expect("mock server");
-    assert_eq!(error.kind(), ModelErrorKind::Timeout);
-    assert!(error.retryable());
+    assert!(matches!(event, ModelEvent::OutputTextDelta { .. }));
 }
 
 #[tokio::test]

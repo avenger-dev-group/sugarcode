@@ -361,10 +361,13 @@ fn model_capabilities_derive_context_reserve_and_absolute_byte_cap() {
     assert_eq!(default.output_reserve_tokens, 16_384);
     assert_eq!(default.input_compaction_target_tokens(), 114_688);
     assert_eq!(default.input_compaction_target_bytes(), 344_064);
+    assert_eq!(default.active_turn_compaction_target_tokens(), 98_304);
+    assert_eq!(default.active_turn_compaction_target_bytes(), 294_912);
 
     let small = ModelCapabilities::new(8_192, true, false, false, true, false);
     assert_eq!(small.output_reserve_tokens, 4_096);
     assert_eq!(small.input_compaction_target_tokens(), 4_096);
+    assert_eq!(small.active_turn_compaction_target_tokens(), 2_048);
 
     let maximum = ModelCapabilities::new(2_097_152, true, false, false, true, false);
     assert_eq!(

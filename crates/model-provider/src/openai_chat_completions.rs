@@ -49,8 +49,6 @@ use zeroize::Zeroizing;
 
 const MODEL_STREAM_CAPACITY: usize = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_ERROR_RESPONSE_BYTES: usize = 16 * 1024;
 const MAX_SSE_EVENT_BYTES: usize = 256 * 1024;
@@ -125,10 +123,7 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
                 value.set_sensitive(true);
                 builder = builder.header(AUTHORIZATION, value);
             }
-            let response = tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, builder.send())
-                .await
-                .map_err(|_| ModelError::new(ModelErrorKind::Timeout, true))?
-                .map_err(map_reqwest_error)?;
+            let response = builder.send().await.map_err(map_reqwest_error)?;
             if !response.status().is_success() {
                 return Err(map_error_response(response).await);
             }
@@ -210,18 +205,14 @@ async fn process_stream(
     loop {
         let next = tokio::select! {
             _ = sender.closed() => return,
-            next = tokio::time::timeout(IDLE_TIMEOUT, stream.next()) => next,
+            next = stream.next() => next,
         };
         let event = match next {
-            Err(_) => {
-                send_error(&sender, ModelError::new(ModelErrorKind::Timeout, true)).await;
-                return;
-            }
-            Ok(None) => {
+            None => {
                 send_error(&sender, ModelError::new(ModelErrorKind::Disconnected, true)).await;
                 return;
             }
-            Ok(Some(Err(error))) => {
+            Some(Err(error)) => {
                 let error = match error {
                     EventStreamError::Transport(error)
                         if error.kind() != io::ErrorKind::InvalidData =>
@@ -237,7 +228,7 @@ async fn process_stream(
                 send_error(&sender, error).await;
                 return;
             }
-            Ok(Some(Ok(event))) => event,
+            Some(Ok(event)) => event,
         };
         if event.data == "[DONE]" {
             let Some(finish) = finish.take() else {

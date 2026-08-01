@@ -16,7 +16,7 @@ const FAILURE_SUMMARIES: Record<ConversationTurnError['kind'], string> = {
   unsupportedOutput: 'The model returned unsupported output',
   unsupportedToolArguments:
     'The model repeatedly returned invalid tool arguments',
-  outputTooLarge: 'The model output was too large',
+  outputTooLarge: 'The conversation exceeded the model context or output limit',
   stateUnavailable: 'SugarCode could not save this Turn safely',
 };
 
@@ -28,8 +28,10 @@ export const toTurnFailureViewModel = (
   guidance:
     error.kind === 'stateUnavailable'
       ? 'Restart SugarCode before continuing. Your earlier saved messages are unchanged.'
-      : error.retryable
-        ? 'You can send another message to retry.'
-        : 'Review the request or model configuration before trying again.',
+      : error.kind === 'outputTooLarge'
+        ? 'Start a new task or choose a model with a larger context window before trying again.'
+        : error.retryable
+          ? 'You can send another message to retry.'
+          : 'Review the request or model configuration before trying again.',
   retryable: error.retryable,
 });

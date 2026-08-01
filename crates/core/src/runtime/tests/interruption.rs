@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test(start_paused = true)]
-async fn active_turn_fails_after_the_thirty_minute_total_timeout() {
+async fn active_turn_remains_running_after_thirty_minutes_until_interrupted() {
     let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
         events: Vec::new(),
         stay_open: true,
@@ -27,28 +27,30 @@ async fn active_turn_fails_after_the_thirty_minute_total_timeout() {
             ..
         }
     ) {}
-    tokio::time::advance(TURN_TIMEOUT).await;
-
-    let error = loop {
-        if let CoreEventKind::TurnFailed { error, .. } =
-            events.recv().await.expect("timeout terminal").kind
-        {
-            break error;
+    tokio::time::advance(std::time::Duration::from_secs(30 * 60)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        runtime
+            .interrupt_turn(&thread_id, &turn_id)
+            .expect("interrupt long-running turn"),
+        TurnInterruptOutcome::Accepted
+    );
+    loop {
+        if matches!(
+            events.recv().await.expect("interrupted terminal").kind,
+            CoreEventKind::TurnInterrupted { .. }
+        ) {
+            break;
         }
-    };
-    assert_eq!(error.kind, CoreTurnErrorKind::Timeout);
-    assert!(!error.retryable);
+    }
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
     let turn = snapshot
         .turns
         .iter()
         .find(|turn| turn.id == turn_id)
         .expect("persisted turn");
-    assert_eq!(turn.status, DurableTurnStatus::Failed);
-    assert_eq!(
-        turn.error.as_ref().map(|error| error.kind),
-        Some(DurableTurnErrorKind::Timeout)
-    );
+    assert_eq!(turn.status, DurableTurnStatus::Interrupted);
+    assert!(turn.error.is_none());
 }
 
 #[tokio::test]

@@ -1161,7 +1161,11 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
             recorded_requests
                 .iter()
                 .filter(|request| !request.tools.is_empty())
-                .all(|request| request.context_bytes() <= crate::context::COMPACTION_TARGET_BYTES)
+                .all(|request| {
+                    request.context_bytes()
+                        <= ModelCapabilities::new(131_072, true, false, false, true, true)
+                            .active_turn_compaction_target_bytes()
+                })
         );
         let compaction_index = recorded_requests
             .iter()
@@ -1175,6 +1179,11 @@ async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn(
                 .last()
                 .map(|item| item.source),
             Some(ModelInstructionSource::SugarCodeActiveTurnCompactionV1)
+        );
+        assert!(
+            compaction_request.context_bytes()
+                <= ModelCapabilities::new(131_072, true, false, false, true, true)
+                    .input_compaction_target_bytes()
         );
         assert!(
             recorded_requests[compaction_index + 1]

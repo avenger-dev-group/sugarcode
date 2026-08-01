@@ -86,10 +86,10 @@ pub fn derive_thread_title(snapshot: &DurableThreadSnapshot) -> Option<String> {
 
     let first_user_message = user_messages.first().copied()?;
     for content in &user_messages {
-        if let Some(title) = title_from_text_content(content) {
-            if !is_generic_greeting(&title) {
-                return Some(title);
-            }
+        if let Some(title) = title_from_text_content(content)
+            && !is_generic_greeting(&title)
+        {
+            return Some(title);
         }
     }
 

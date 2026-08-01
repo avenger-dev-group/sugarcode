@@ -46,8 +46,6 @@ use zeroize::Zeroizing;
 
 const MODEL_STREAM_CAPACITY: usize = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_SSE_EVENT_BYTES: usize = 256 * 1024;
 const MAX_SEMANTIC_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 16 * 1024;
@@ -215,10 +213,7 @@ impl ModelProvider for NativeModelProvider {
                     }
                 }
             }
-            let response = tokio::time::timeout(RESPONSE_HEADER_TIMEOUT, builder.send())
-                .await
-                .map_err(|_| ModelError::new(ModelErrorKind::Timeout, true))?
-                .map_err(map_reqwest_error)?;
+            let response = builder.send().await.map_err(map_reqwest_error)?;
             let status = response.status();
             if !status.is_success() {
                 let provider_request_id = provider_request_id(response.headers());
@@ -294,14 +289,10 @@ async fn process_native_stream(
     loop {
         let next = tokio::select! {
             _ = sender.closed() => return,
-            next = tokio::time::timeout(IDLE_TIMEOUT, stream.next()) => next,
+            next = stream.next() => next,
         };
         let event = match next {
-            Err(_) => {
-                send_stream_error(&sender, ModelError::new(ModelErrorKind::Timeout, true)).await;
-                return;
-            }
-            Ok(None) => {
+            None => {
                 if protocol == NativeProtocol::GeminiGenerateContent {
                     match state.finish(&tool_names) {
                         Ok(response) => {
@@ -317,7 +308,7 @@ async fn process_native_stream(
                 }
                 return;
             }
-            Ok(Some(Err(error))) => {
+            Some(Err(error)) => {
                 let error = match error {
                     EventStreamError::Transport(error)
                         if error.kind() != io::ErrorKind::InvalidData =>
@@ -333,7 +324,7 @@ async fn process_native_stream(
                 send_stream_error(&sender, error).await;
                 return;
             }
-            Ok(Some(Ok(event))) => event,
+            Some(Ok(event)) => event,
         };
         if event.data.is_empty() || event.data == "[DONE]" {
             if event.data == "[DONE]" {

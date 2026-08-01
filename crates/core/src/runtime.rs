@@ -148,7 +148,6 @@ use tool_dispatch::workspace_tool_definitions;
 use crate::agent_instructions::sugarcode_active_turn_compaction_instruction_v1;
 use crate::agent_instructions::sugarcode_base_agent_instruction_v1;
 
-const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
 const MAX_ACTIVE_TURN_COMPACTION_BYTES: usize = 32 * 1024;
 const READ_ONLY_TOOL_CONCURRENCY: usize = 4;
@@ -228,6 +227,19 @@ impl ModelCapabilities {
 
     fn input_compaction_target_bytes(self) -> usize {
         usize::try_from(self.input_compaction_target_tokens())
+            .unwrap_or(usize::MAX)
+            .saturating_mul(3)
+            .min(crate::context::MAX_PROVIDER_CONTEXT_BYTES)
+    }
+
+    fn active_turn_compaction_target_tokens(self) -> u32 {
+        let input_target = self.input_compaction_target_tokens();
+        let recovery_reserve = self.output_reserve_tokens.min(input_target / 2);
+        input_target.saturating_sub(recovery_reserve)
+    }
+
+    fn active_turn_compaction_target_bytes(self) -> usize {
+        usize::try_from(self.active_turn_compaction_target_tokens())
             .unwrap_or(usize::MAX)
             .saturating_mul(3)
             .min(crate::context::MAX_PROVIDER_CONTEXT_BYTES)
@@ -742,50 +754,13 @@ impl CoreApi for CoreRuntime {
             );
         let runtime = self.clone();
         let turn_id = prepared.turn_id.clone();
-        tokio::spawn(async move {
-            let timeout_runtime = runtime.clone();
-            let timeout_prepared = prepared.clone();
-            let timeout_cancellation = cancellation.clone();
-            let timeout_terminal_state = terminal_state.clone();
-            if tokio::time::timeout(
-                TURN_TIMEOUT,
-                run_turn(
-                    runtime,
-                    prepared,
-                    model_gateway,
-                    cancellation,
-                    terminal_state,
-                ),
-            )
-            .await
-            .is_err()
-            {
-                timeout_cancellation.cancel();
-                let terminal = claim_terminal(
-                    &timeout_terminal_state,
-                    Terminal::Failed(ModelError::new(ModelErrorKind::Timeout, false)),
-                );
-                match terminal {
-                    Terminal::Interrupted => {
-                        finish_interrupted_and_emit(&timeout_runtime, &timeout_prepared, None)
-                            .await;
-                    }
-                    Terminal::Failed(error) => {
-                        finish_failed_and_emit(&timeout_runtime, &timeout_prepared, error, None)
-                            .await;
-                    }
-                    Terminal::Completed | Terminal::StateUnavailable => {
-                        finish_state_unavailable_and_emit(&timeout_runtime, &timeout_prepared)
-                            .await;
-                    }
-                }
-                clear_active(
-                    &timeout_runtime,
-                    &timeout_prepared.thread_id,
-                    &timeout_prepared.turn_id,
-                );
-            }
-        });
+        tokio::spawn(run_turn(
+            runtime,
+            prepared,
+            model_gateway,
+            cancellation,
+            terminal_state,
+        ));
         Ok(TurnStartOutcome::Accepted { turn_id })
     }
 
@@ -978,7 +953,9 @@ async fn run_turn(
             tools: tools.clone(),
         };
         if initial_request.context_bytes()
-            > model_gateway.capabilities.input_compaction_target_bytes()
+            > model_gateway
+                .capabilities
+                .active_turn_compaction_target_bytes()
         {
             compaction_ordinal = match compaction_ordinal.checked_add(1) {
                 Some(value) => value,
@@ -1008,7 +985,11 @@ async fn run_turn(
             messages: messages.clone(),
             tools: tools.clone(),
         };
-        if request.context_bytes() > model_gateway.capabilities.input_compaction_target_bytes() {
+        if request.context_bytes()
+            > model_gateway
+                .capabilities
+                .active_turn_compaction_target_bytes()
+        {
             break Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false));
         }
         let request_context_bytes = request.context_bytes();
@@ -2916,7 +2897,11 @@ async fn compact_active_turn(
         .checked_add(tool_bytes)
         .and_then(|bytes| bytes.checked_add(MAX_ACTIVE_TURN_COMPACTION_BYTES))
         .ok_or_else(output_too_large)?;
-    if fixed_post_bytes > model_gateway.capabilities.input_compaction_target_bytes() {
+    if fixed_post_bytes
+        > model_gateway
+            .capabilities
+            .active_turn_compaction_target_bytes()
+    {
         return Err(output_too_large());
     }
 
@@ -2930,7 +2915,10 @@ async fn compact_active_turn(
         if fixed_post_bytes
             .checked_add(tail_bytes)
             .is_some_and(|bytes| {
-                bytes <= model_gateway.capabilities.input_compaction_target_bytes()
+                bytes
+                    <= model_gateway
+                        .capabilities
+                        .active_turn_compaction_target_bytes()
             })
         {
             break;
@@ -2996,7 +2984,9 @@ async fn compact_active_turn(
         messages: source.to_vec(),
         tools: Vec::new(),
     };
-    if compaction_request.context_bytes() > crate::context::MAX_PROVIDER_CONTEXT_BYTES {
+    if compaction_request.context_bytes()
+        > model_gateway.capabilities.input_compaction_target_bytes()
+    {
         complete_compaction_item(
             runtime,
             prepared,
@@ -3216,7 +3206,11 @@ async fn compact_active_turn(
         tools: tools.to_vec(),
     }
     .context_bytes();
-    if post_context_bytes > model_gateway.capabilities.input_compaction_target_bytes() {
+    if post_context_bytes
+        > model_gateway
+            .capabilities
+            .active_turn_compaction_target_bytes()
+    {
         complete_compaction_item(
             runtime,
             prepared,
