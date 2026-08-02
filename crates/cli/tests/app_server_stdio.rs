@@ -221,8 +221,13 @@ fn workspace_read_tool_lifecycle_matches_golden_trace() {
     let workspace = tempfile::tempdir().expect("create isolated workspace");
     fs::write(workspace.path().join("context.txt"), "fixture context")
         .expect("write workspace fixture");
-    let _provider =
-        MockProvider::start_with_bodies(sugarcode_home.path(), vec![TOOL_CALL, FINAL_ANSWER]);
+    let _provider = MockProvider::start_with_owned_bodies(
+        sugarcode_home.path(),
+        vec![
+            with_fixture_usage(TOOL_CALL),
+            with_fixture_usage(FINAL_ANSWER),
+        ],
+    );
     run_golden(
         "turn-workspace-read",
         &sugarcode_home,
@@ -248,8 +253,13 @@ fn workspace_list_tool_lifecycle_matches_golden_trace() {
     fs::write(workspace.path().join("Alpha.txt"), "alpha").expect("write alpha fixture");
     fs::create_dir(workspace.path().join("src")).expect("write directory fixture");
     fs::write(workspace.path().join("src/nested.txt"), "nested").expect("write nested fixture");
-    let _provider =
-        MockProvider::start_with_bodies(sugarcode_home.path(), vec![TOOL_CALL, FINAL_ANSWER]);
+    let _provider = MockProvider::start_with_owned_bodies(
+        sugarcode_home.path(),
+        vec![
+            with_fixture_usage(TOOL_CALL),
+            with_fixture_usage(FINAL_ANSWER),
+        ],
+    );
     run_golden(
         "turn-workspace-list",
         &sugarcode_home,
@@ -486,8 +496,13 @@ fn workspace_search_tool_lifecycle_matches_golden_trace() {
     fs::create_dir(workspace.path().join("src")).expect("create src");
     fs::write(workspace.path().join("src/lib.rs"), "first\nneedle here\n")
         .expect("write search fixture");
-    let _provider =
-        MockProvider::start_with_bodies(sugarcode_home.path(), vec![TOOL_CALL, FINAL_ANSWER]);
+    let _provider = MockProvider::start_with_owned_bodies(
+        sugarcode_home.path(),
+        vec![
+            with_fixture_usage(TOOL_CALL),
+            with_fixture_usage(FINAL_ANSWER),
+        ],
+    );
     run_golden(
         "turn-workspace-search",
         &sugarcode_home,
@@ -511,8 +526,13 @@ fn workspace_apply_diff_lifecycle_matches_golden_trace() {
     let workspace = tempfile::tempdir().expect("create isolated workspace");
     let target = workspace.path().join("notes.txt");
     fs::write(&target, "one\ntwo\nthree\n").expect("write patch fixture");
-    let _provider =
-        MockProvider::start_with_bodies(sugarcode_home.path(), vec![TOOL_CALL, FINAL_ANSWER]);
+    let _provider = MockProvider::start_with_owned_bodies(
+        sugarcode_home.path(),
+        vec![
+            with_fixture_usage(TOOL_CALL),
+            with_fixture_usage(FINAL_ANSWER),
+        ],
+    );
     run_golden_with_options(
         "turn-workspace-apply-diff",
         &sugarcode_home,
@@ -1547,7 +1567,6 @@ impl MockProvider {
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn start_with_owned_bodies(home: &std::path::Path, bodies: Vec<String>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind mock provider");
         let address = listener.local_addr().expect("mock provider address");
@@ -1571,6 +1590,18 @@ impl MockProvider {
             thread: Some(thread),
         }
     }
+}
+
+fn with_fixture_usage(body: &str) -> String {
+    body.replacen(
+        "data: [DONE]\n\n",
+        concat!(
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,",
+            "\"completion_tokens\":3,\"total_tokens\":4}}\n\n",
+            "data: [DONE]\n\n"
+        ),
+        1,
+    )
 }
 
 impl Drop for MockProvider {
