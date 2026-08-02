@@ -190,10 +190,19 @@ fn turn_start_failures_match_golden_trace() {
 
 #[test]
 fn provider_terminal_error_matches_golden_trace() {
-    assert_golden_with_body(
-        "turn-provider-error",
-        include_str!("../../model-provider/tests/fixtures/terminal-error.sse"),
+    const NON_STREAMING_SERVER_ERROR: &str = concat!(
+        "{\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\"},",
+        "\"finish_reason\":\"insufficient_system_resource\"}]}"
     );
+    let sugarcode_home = tempfile::tempdir().expect("create isolated SugarCode home");
+    let _provider = MockProvider::start_with_bodies(
+        sugarcode_home.path(),
+        vec![
+            include_str!("../../model-provider/tests/fixtures/terminal-error.sse"),
+            NON_STREAMING_SERVER_ERROR,
+        ],
+    );
+    run_golden("turn-provider-error", &sugarcode_home, None);
 }
 
 #[test]

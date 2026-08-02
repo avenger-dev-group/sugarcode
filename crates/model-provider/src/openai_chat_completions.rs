@@ -1596,7 +1596,7 @@ impl ToolCallAssembler {
             serde_json::Value::Object(serde_json::Map::new())
         } else {
             parse_json_without_duplicates(&self.arguments)
-                .unwrap_or_else(|_| serde_json::Value::String(self.arguments))
+                .unwrap_or(serde_json::Value::String(self.arguments))
         };
         Ok(Some(ModelToolCall {
             id,

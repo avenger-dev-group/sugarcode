@@ -26,6 +26,10 @@ const SECOND_ANSWER: &str = concat!(
     "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
     "data: [DONE]\n\n"
 );
+const NON_STREAMING_SERVER_ERROR: &str = concat!(
+    "{\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\"},",
+    "\"finish_reason\":\"insufficient_system_resource\"}]}"
+);
 
 #[test]
 fn json_exec_creates_and_explicitly_resumes_one_durable_thread_from_stdin() {
@@ -181,7 +185,10 @@ fn exec_input_configuration_and_turn_failures_have_deterministic_codes() {
     let failed_home = tempfile::tempdir().expect("isolated failed-turn home");
     let _provider = MockProvider::start(
         failed_home.path(),
-        vec![include_str!("../../model-provider/tests/fixtures/terminal-error.sse").to_string()],
+        vec![
+            include_str!("../../model-provider/tests/fixtures/terminal-error.sse").to_string(),
+            NON_STREAMING_SERVER_ERROR.to_string(),
+        ],
     );
     let failed = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
         .arg("--home")

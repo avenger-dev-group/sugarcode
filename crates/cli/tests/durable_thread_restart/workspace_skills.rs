@@ -67,25 +67,21 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
     let first_requests = first.provider_requests();
     assert_eq!(first_requests.len(), 2);
     for request in &first_requests {
-        let messages = provider_messages_after_base_agent(request);
-        assert_eq!(messages[0]["role"], "developer");
-        assert_eq!(messages[1]["role"], "developer");
-        let inventory = messages[0]["content"].as_str().expect("Skill inventory");
-        let selected = messages[1]["content"].as_str().expect("selected Skill");
-        assert!(inventory.contains("boundedLocalWorkspaceSkillsV1"));
-        assert!(inventory.contains("first scoped review inventory marker"));
-        assert!(!inventory.contains("root review inventory marker"));
-        assert!(!inventory.contains("second scoped review inventory marker"));
-        assert!(selected.contains("first scoped review body marker"));
-        assert!(!selected.contains("root review body marker"));
-        assert!(!selected.contains("second scoped review body marker"));
+        let system = provider_system_instruction(request);
+        assert!(system.contains("boundedLocalWorkspaceSkillsV1"));
+        assert!(system.contains("first scoped review inventory marker"));
+        assert!(!system.contains("root review inventory marker"));
+        assert!(!system.contains("second scoped review inventory marker"));
+        assert!(system.contains("first scoped review body marker"));
+        assert!(!system.contains("root review body marker"));
+        assert!(!system.contains("second scoped review body marker"));
     }
     assert_eq!(
-        provider_messages_after_base_agent(&first_requests[0])[2]["content"],
+        provider_messages_after_base_agent(&first_requests[0])[0]["content"],
         "Apply $review"
     );
     assert_eq!(
-        provider_messages_after_base_agent(&first_requests[1])[4]["content"],
+        provider_messages_after_base_agent(&first_requests[1])[2]["content"],
         "Apply $review again"
     );
     assert_public_redaction(&(first_public, snapshotted_public));
@@ -117,16 +113,13 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
         8,
     );
     let restarted_request = &second.provider_requests()[0];
+    let system = provider_system_instruction(restarted_request);
     let messages = provider_messages_after_base_agent(restarted_request);
-    assert_eq!(messages[0]["role"], "developer");
-    assert_eq!(messages[1]["role"], "developer");
-    let inventory = messages[0]["content"].as_str().expect("Skill inventory");
-    let selected = messages[1]["content"].as_str().expect("selected Skill");
-    assert!(inventory.contains("second scoped review inventory marker"));
-    assert!(!inventory.contains("first scoped review inventory marker"));
-    assert!(selected.contains("second scoped review body marker"));
-    assert!(!selected.contains("first scoped review body marker"));
-    assert_eq!(messages[6]["content"], "Apply current $review");
+    assert!(system.contains("second scoped review inventory marker"));
+    assert!(!system.contains("first scoped review inventory marker"));
+    assert!(system.contains("second scoped review body marker"));
+    assert!(!system.contains("first scoped review body marker"));
+    assert_eq!(messages[4]["content"], "Apply current $review");
 
     let forked = second.send(
         json!({

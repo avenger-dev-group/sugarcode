@@ -643,8 +643,8 @@ impl GeminiStreamState {
                 .unwrap_or(0);
             return Ok((output_index, chunk.to_owned()));
         };
-        let (delta, cumulative) = if chunk.starts_with(current) {
-            (chunk[current.len()..].to_owned(), true)
+        let (delta, cumulative) = if let Some(delta) = chunk.strip_prefix(current) {
+            (delta.to_owned(), true)
         } else {
             (chunk.to_owned(), false)
         };

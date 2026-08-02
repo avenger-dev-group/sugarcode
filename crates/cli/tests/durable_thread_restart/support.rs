@@ -473,8 +473,7 @@ pub(super) fn read_recorded_request(stream: &mut TcpStream) -> Option<Value> {
         serde_json::from_slice(&request[header_end..header_end + content_length])
             .expect("provider request JSON");
     assert_eq!(request_body["stream"], true);
-    assert_eq!(request_body["stream_options"]["include_usage"], true);
-    for forbidden in ["response_format", "modalities", "audio"] {
+    for forbidden in ["stream_options", "response_format", "modalities", "audio"] {
         assert!(request_body.get(forbidden).is_none(), "{forbidden}");
     }
     Some(request_body)
@@ -564,10 +563,10 @@ pub(super) fn assert_active_archive_views(server: &mut RunningServer, request_pr
     );
 }
 
-pub(super) fn provider_messages_after_base_agent(request: &Value) -> &[Value] {
+pub(super) fn provider_system_instruction(request: &Value) -> &str {
     let messages = request["messages"].as_array().expect("provider messages");
     let base = messages.first().expect("built-in base agent message");
-    assert_eq!(base["role"], "developer");
+    assert_eq!(base["role"], "system");
     let content = base["content"]
         .as_str()
         .expect("built-in base agent content");
@@ -584,5 +583,11 @@ pub(super) fn provider_messages_after_base_agent(request: &Value) -> &[Value] {
             "built-in base agent prompt missing {section}"
         );
     }
+    content
+}
+
+pub(super) fn provider_messages_after_base_agent(request: &Value) -> &[Value] {
+    provider_system_instruction(request);
+    let messages = request["messages"].as_array().expect("provider messages");
     &messages[1..]
 }

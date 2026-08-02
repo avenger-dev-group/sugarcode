@@ -199,7 +199,10 @@ fn expected_workspace_tools() -> Vec<&'static str> {
 
 #[test]
 fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history() {
-    const FAILED_PARTIAL: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"failed private marker\"},\"finish_reason\":null}]}\n\n";
+    const FAILED_PARTIAL: &str = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"failed private marker\"},\"finish_reason\":null}]}\n\n",
+        "data: {not-json}\n\n"
+    );
     const INTERRUPTED_PARTIAL: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"interrupted private marker\"},\"finish_reason\":null}]}\n\n";
 
     let home = tempfile::tempdir().expect("isolated SugarCode home");
@@ -249,7 +252,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
         5,
     );
     assert_eq!(failed[4]["params"]["turn"]["status"], "failed");
-    assert_eq!(failed[4]["params"]["turn"]["error"]["kind"], "disconnected");
+    assert_eq!(failed[4]["params"]["turn"]["error"]["kind"], "protocol");
     let interrupted_opening = first.send(
         json!({
             "jsonrpc": "2.0",

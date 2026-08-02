@@ -36,11 +36,12 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
         8,
     );
     let first_request = &first.provider_requests()[0];
+    let system = provider_system_instruction(first_request);
+    assert_root_workspace_instruction(system, FIRST_INSTRUCTION);
     let messages = provider_messages_after_base_agent(first_request);
-    assert_eq!(messages.len(), 2);
-    assert_root_workspace_instruction(&messages[0], FIRST_INSTRUCTION);
+    assert_eq!(messages.len(), 1);
     assert_eq!(
-        messages[1],
+        messages[0],
         json!({"role": "user", "content": "first input"})
     );
     let first_public = serde_json::to_string(&first_public).expect("public JSON");
@@ -74,10 +75,11 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
         8,
     );
     let second_request = &second.provider_requests()[0];
+    let system = provider_system_instruction(second_request);
+    assert_root_workspace_instruction(system, SECOND_INSTRUCTION);
     let messages = provider_messages_after_base_agent(second_request);
-    assert_root_workspace_instruction(&messages[0], SECOND_INSTRUCTION);
     assert_eq!(
-        &messages[1..],
+        messages,
         json!([
             {"role": "user", "content": "first input"},
             {
@@ -143,9 +145,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
         8,
     );
     let first_request = &first.provider_requests()[0];
-    let first_developer = provider_messages_after_base_agent(first_request)[0]["content"]
-        .as_str()
-        .expect("developer message");
+    let first_developer = provider_system_instruction(first_request);
     assert!(first_developer.contains("boundedNestedWorkspaceInstructionsV1"));
     assert!(
         first_developer.contains("the later, deeper entry overrides the earlier, shallower entry")
@@ -196,9 +196,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
         8,
     );
     let second_request = &second.provider_requests()[0];
-    let second_developer = provider_messages_after_base_agent(second_request)[0]["content"]
-        .as_str()
-        .expect("developer message");
+    let second_developer = provider_system_instruction(second_request);
     assert!(second_developer.contains(SECOND_LEAF_INSTRUCTION));
     assert!(!second_developer.contains(FIRST_LEAF_INSTRUCTION));
     let public = serde_json::to_string(&(resumed, second_public)).expect("public JSON");
@@ -222,15 +220,10 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
     assert!(!rollout.contains("projects/active"));
 }
 
-fn assert_root_workspace_instruction(message: &Value, instruction: &str) {
-    assert_eq!(message["role"], "developer");
-    let content = message["content"]
-        .as_str()
-        .expect("root workspace instruction");
+fn assert_root_workspace_instruction(content: &str, instruction: &str) {
     assert!(
-        content.starts_with(
-            "Repository-specific instructions from the opened workspace root AGENTS.md"
-        )
+        content
+            .contains("Repository-specific instructions from the opened workspace root AGENTS.md")
     );
     assert!(content.contains("subordinate to SugarCode's built-in agent instructions"));
     assert!(content.ends_with(instruction));
