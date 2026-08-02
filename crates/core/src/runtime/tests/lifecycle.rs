@@ -1,5 +1,27 @@
 use super::*;
 
+#[test]
+fn completed_text_replaces_a_different_streaming_preview() {
+    let response = ModelResponse {
+        output: vec![sugarcode_model_provider::ModelOutputItem {
+            output_index: 0,
+            kind: ModelOutputItemKind::AssistantText {
+                phase: ModelTextPhase::Final,
+                text: "authoritative completed text".to_owned(),
+            },
+        }],
+        usage: None,
+        terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+        provider_context: None,
+    };
+    let preview = BTreeMap::from([(0, "provisional stream text".to_owned())]);
+
+    assert!(matches!(
+        classify_model_response(response, &preview).expect("completed response"),
+        CompletedRoundOutput::Final { text, .. } if text == "authoritative completed text"
+    ));
+}
+
 #[tokio::test]
 async fn successful_task_streams_and_persists_one_terminal_lifecycle() {
     let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {

@@ -492,7 +492,7 @@ pub struct ModelResponse {
     pub output: Vec<ModelOutputItem>,
     pub usage: Option<ModelUsage>,
     pub terminal: ModelTerminalMetadata,
-    pub provider_context: Option<ProviderContextEnvelope>,
+    pub provider_context: Option<Box<ProviderContextEnvelope>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

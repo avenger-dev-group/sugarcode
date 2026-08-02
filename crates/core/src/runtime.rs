@@ -1253,7 +1253,7 @@ async fn run_turn(
                             if let Some(context) = provider_context.clone() {
                                 messages.push(ModelMessage {
                                     role: ModelRole::Assistant,
-                                    content: vec![ModelContentPart::ProviderContext(context)],
+                                    content: vec![ModelContentPart::ProviderContext(*context)],
                                 });
                             }
                             if let Some((output_index, text)) = commentary {
@@ -1481,9 +1481,11 @@ async fn run_turn(
                                 &mut batch_results,
                                 provider_context.is_none(),
                                 batch_calls_persisted,
-                                call,
-                                content,
-                                pending_calls.is_empty(),
+                                ExecutedToolCall {
+                                    call,
+                                    content,
+                                    is_last: pending_calls.is_empty(),
+                                },
                             ) {
                                 continue 'rounds;
                             }
@@ -1698,9 +1700,11 @@ async fn run_turn(
                                 &mut batch_results,
                                 provider_context.is_none(),
                                 batch_calls_persisted,
-                                call,
-                                content,
-                                pending_calls.is_empty(),
+                                ExecutedToolCall {
+                                    call,
+                                    content,
+                                    is_last: pending_calls.is_empty(),
+                                },
                             ) {
                                 continue 'rounds;
                             }
@@ -1934,9 +1938,11 @@ async fn run_turn(
                                 &mut batch_results,
                                 provider_context.is_none(),
                                 batch_calls_persisted,
-                                call,
-                                content,
-                                pending_calls.is_empty(),
+                                ExecutedToolCall {
+                                    call,
+                                    content,
+                                    is_last: pending_calls.is_empty(),
+                                },
                             ) {
                                 continue 'rounds;
                             }
@@ -2215,9 +2221,11 @@ async fn run_turn(
                                 &mut batch_results,
                                 provider_context.is_none(),
                                 batch_calls_persisted,
-                                call,
-                                content,
-                                pending_calls.is_empty(),
+                                ExecutedToolCall {
+                                    call,
+                                    content,
+                                    is_last: pending_calls.is_empty(),
+                                },
                             ) {
                                 continue 'rounds;
                             }
@@ -2324,9 +2332,11 @@ async fn run_turn(
                             &mut batch_results,
                             provider_context.is_none(),
                             batch_calls_persisted,
-                            call,
-                            content,
-                            pending_calls.is_empty(),
+                            ExecutedToolCall {
+                                call,
+                                content,
+                                is_last: pending_calls.is_empty(),
+                            },
                         ) {
                             continue 'rounds;
                         }
@@ -2705,8 +2715,7 @@ fn validate_completed_text(
         return Err(output_too_large_error());
     }
     if !preview_text.is_empty()
-        && (preview_text.len() != 1
-            || preview_text.get(&output_index).map(String::as_str) != Some(text))
+        && (preview_text.len() != 1 || !preview_text.contains_key(&output_index))
     {
         return Err(ModelError::new(ModelErrorKind::Protocol, false));
     }
@@ -2931,16 +2940,25 @@ async fn persist_mixed_batch_calls(
     Ok(())
 }
 
+struct ExecutedToolCall {
+    call: ModelToolCall,
+    content: String,
+    is_last: bool,
+}
+
 fn record_executed_tool_call(
     messages: &mut Vec<ModelMessage>,
     portable_messages: &mut Vec<ModelMessage>,
     batch_results: &mut Vec<(ModelToolCall, String)>,
     record_calls: bool,
     is_batch: bool,
-    call: ModelToolCall,
-    content: String,
-    is_last: bool,
+    executed: ExecutedToolCall,
 ) -> bool {
+    let ExecutedToolCall {
+        call,
+        content,
+        is_last,
+    } = executed;
     if !is_batch {
         if record_calls {
             messages.push(ModelMessage::tool_calls(vec![call.clone()]));

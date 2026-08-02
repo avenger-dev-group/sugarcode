@@ -1221,7 +1221,7 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
             thread_id: "thr_0000000000000001".to_string(),
             turn_id: "turn_0000000000000001".to_string(),
             usage: TokenUsage {
-                last_request: sample.clone(),
+                last_request: sample,
                 turn_total: sample,
                 request_count: 2,
                 context_window_tokens: 200_000,

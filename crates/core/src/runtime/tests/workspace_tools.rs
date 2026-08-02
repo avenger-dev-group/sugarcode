@@ -1319,7 +1319,7 @@ async fn large_private_continuation_and_cumulative_usage_do_not_fake_context_ove
                         total_tokens: Some(61_000),
                     }),
                     terminal: ModelTerminalMetadata::completed(ModelContinuation::ToolCalls),
-                    provider_context: Some(context),
+                    provider_context: Some(Box::new(context)),
                 }))]
             } else {
                 vec![Ok(ModelEvent::ResponseCompleted(ModelResponse {

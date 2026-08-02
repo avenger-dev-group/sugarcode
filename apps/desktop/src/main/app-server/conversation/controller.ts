@@ -1087,11 +1087,7 @@ export class ConversationController {
           });
         } else if (lifecycle.params.item.type === 'agentCommentary') {
           if (sourceOutput) {
-            this.resolvePendingAgentOutput(
-              turn,
-              sourceOutput,
-              lifecycle.params.item.text,
-            );
+            this.resolvePendingAgentOutput(turn, sourceOutput);
           }
           turn.activities.push({
             type: 'commentary',
@@ -1643,11 +1639,7 @@ export class ConversationController {
           throw new Error('Agent delta did not match an active AgentMessage.');
         }
         if (message.agentOutput) {
-          this.resolvePendingAgentOutput(
-            turn,
-            message.agentOutput,
-            `${message.text}${lifecycle.params.delta}`,
-          );
+          this.resolvePendingAgentOutput(turn, message.agentOutput);
           delete message.agentOutput;
         }
         message.text += lifecycle.params.delta;
@@ -2274,7 +2266,6 @@ export class ConversationController {
   private resolvePendingAgentOutput = (
     turn: MutableTurn,
     output: AgentOutputRef,
-    completedText: string,
   ): void => {
     const index = turn.pendingAgentOutputs.findIndex(
       (candidate) =>
@@ -2283,9 +2274,6 @@ export class ConversationController {
     );
     if (index < 0) {
       return;
-    }
-    if (turn.pendingAgentOutputs[index]?.text !== completedText) {
-      throw new Error('Agent output preview did not match completed text.');
     }
     turn.pendingAgentOutputs.splice(index, 1);
   };
