@@ -1,0 +1,10 @@
+{
+  "kind": "protocol",
+  "retryable": false,
+  "protocol": {
+    "stage": "responseAssembly",
+    "code": "outputIndexMismatch",
+    "eventType": "response.completed",
+    "shapeSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  }
+}

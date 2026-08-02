@@ -1,5 +1,7 @@
 use super::*;
 use crate::ModelAssetRef;
+use crate::ModelInstruction;
+use crate::ModelInstructionSource;
 use crate::ModelToolDefinition;
 use crate::ModelToolResult;
 
@@ -37,6 +39,36 @@ fn chat_strict_auto_is_resolved_per_tool() {
     .expect("request JSON");
     assert_eq!(body["tools"][0]["function"]["strict"], true);
     assert_eq!(body["tools"][1]["function"]["strict"], false);
+}
+
+#[test]
+fn chat_compatibility_baseline_omits_optional_request_fields() {
+    let request = ModelRequest {
+        model: "fixture".to_owned(),
+        instructions: vec![ModelInstruction {
+            source: ModelInstructionSource::SugarCodeBaseAgentV1,
+            content: "instruction".to_owned(),
+        }],
+        messages: vec![ModelMessage::user_text("hello".to_owned())],
+        tools: vec![ModelToolDefinition {
+            name: "workspace/read".to_owned(),
+            description: "read".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        }],
+    };
+    let body = serde_json::to_value(
+        ChatRequest::from_model_request(request, ModelStrictToolsMode::Disabled, false)
+            .expect("chat request"),
+    )
+    .expect("request JSON");
+    assert_eq!(body["messages"][0]["role"], "system");
+    assert!(body.get("stream_options").is_none());
+    assert!(body.get("parallel_tool_calls").is_none());
+    assert!(body["tools"][0]["function"].get("strict").is_none());
 }
 
 #[test]

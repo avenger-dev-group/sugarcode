@@ -90,9 +90,9 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
             .as_ref()
             .is_some_and(|executor| executor.sandbox_policy().workspace_write.is_some())
         {
-            "Execute one exact absolute program and argv in the active workspace scope after per-command approval. This is not a shell. Filesystem reads and writes inside the active workspace scope are allowed, writes outside the active workspace scope are denied, and network access is denied."
+            "Execute one exact absolute program and argv in the active workspace scope after per-command approval. command must be an absolute executable path, never a bare command name or shell command line; encode flags and operands only as the JSON string array in argvJson and use cwd \".\". This is not a shell. The command inherits the host's non-sensitive PATH and language-toolchain environment, but credential variables are excluded. Filesystem reads and writes inside the active workspace scope are allowed, writes outside the active workspace scope are denied, and network access is denied."
         } else {
-            "Execute one exact absolute program and argv in the active workspace scope after per-command approval. This is not a shell. Filesystem reads are allowed wherever the SugarCode process can read, filesystem writes are denied, and network access is denied."
+            "Execute one exact absolute program and argv in the active workspace scope after per-command approval. command must be an absolute executable path, never a bare command name or shell command line; encode flags and operands only as the JSON string array in argvJson and use cwd \".\". This is not a shell. The command inherits the host's non-sensitive PATH and language-toolchain environment, but credential variables are excluded. Filesystem reads are allowed wherever the SugarCode process can read, filesystem writes are denied, and network access is denied."
         };
         definitions.push(ModelToolDefinition {
             name: "shell/exec".to_string(),
@@ -105,14 +105,21 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
                         "type": "string",
                         "description": "A short plain-language explanation shown in the approval UI. Describe the user-visible action without executable paths, argv, cwd, or policy names."
                     },
-                    "command": { "type": "string" },
-                    "arguments": {
-                        "type": "array",
-                        "items": { "type": "string" }
+                    "command": {
+                        "type": "string",
+                        "description": "One absolute executable path. Bare names such as git and command lines such as git status are invalid."
                     },
-                    "cwd": { "type": "string", "enum": ["."] }
+                    "argvJson": {
+                        "type": "string",
+                        "description": "A JSON-encoded array of argv strings after command, for example [\"status\",\"--short\"]. This is JSON array syntax, never a shell command line."
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "enum": ["."],
+                        "description": "Always use the active workspace scope represented by a single dot."
+                    }
                 },
-                "required": ["description", "command", "arguments", "cwd"]
+                "required": ["description", "command", "argvJson", "cwd"]
             }),
         });
     }
@@ -164,6 +171,142 @@ pub(super) struct ShellToolArguments {
     pub cwd: String,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ToolArgumentGuidance {
+    pub expected_summary: &'static str,
+    pub suggested_action: &'static str,
+}
+
+pub(super) fn shell_tool_argument_guidance(call: &ModelToolCall) -> Option<ToolArgumentGuidance> {
+    if call.name != "shell/exec" {
+        return None;
+    }
+    let Some(arguments) = call.arguments.as_object() else {
+        return Some(ToolArgumentGuidance {
+            expected_summary: "shell/exec arguments must be one object with exactly description, command, argvJson, and cwd",
+            suggested_action: "useExactShellExecSchema",
+        });
+    };
+    let argv_sources = ["argvJson", "argv", "arguments"]
+        .into_iter()
+        .filter(|name| arguments.contains_key(*name))
+        .count();
+    if arguments.len() != 4
+        || !arguments.contains_key("description")
+        || !arguments.contains_key("command")
+        || !arguments.contains_key("cwd")
+        || argv_sources != 1
+    {
+        return Some(ToolArgumentGuidance {
+            expected_summary: "include exactly description, command, argvJson, and cwd with no extra fields; argvJson must encode one JSON string array",
+            suggested_action: "useExactShellExecSchema",
+        });
+    }
+    let description = arguments
+        .get("description")
+        .and_then(serde_json::Value::as_str);
+    if description
+        .is_none_or(|value| value.is_empty() || value.len() > 512 || invalid_command_text(value))
+    {
+        return Some(ToolArgumentGuidance {
+            expected_summary: "description must be short plain language without executable paths, argv, cwd, or control characters",
+            suggested_action: "providePlainLanguageDescription",
+        });
+    }
+    let Some(command) = arguments.get("command").and_then(serde_json::Value::as_str) else {
+        return Some(ToolArgumentGuidance {
+            expected_summary: "command must be one absolute executable path string",
+            suggested_action: "useAbsoluteExecutablePath",
+        });
+    };
+    if command.is_empty()
+        || command.len() > sugarcode_tools::MAX_SHELL_COMMAND_BYTES
+        || !std::path::Path::new(command).is_absolute()
+        || invalid_command_path(command)
+        || invalid_command_text(command)
+    {
+        return Some(ToolArgumentGuidance {
+            expected_summary: "command must be one absolute executable path; never use a bare name or shell command line",
+            suggested_action: "useAbsoluteExecutablePath",
+        });
+    }
+    let values = match shell_argv(arguments) {
+        Ok(values) => values,
+        Err(guidance) => return Some(guidance),
+    };
+    if values.len() > sugarcode_tools::MAX_SHELL_ARGUMENT_COUNT {
+        return Some(ToolArgumentGuidance {
+            expected_summary: "argv exceeds the bounded item limit",
+            suggested_action: "reduceCommandArguments",
+        });
+    }
+    let mut total = command.len();
+    for value in &values {
+        let Some(next_total) = total.checked_add(value.len()) else {
+            return Some(ToolArgumentGuidance {
+                expected_summary: "argv exceeds the bounded byte limit",
+                suggested_action: "reduceCommandArguments",
+            });
+        };
+        total = next_total;
+        if value.len() > sugarcode_tools::MAX_SHELL_ARGUMENT_BYTES
+            || invalid_command_text(value)
+            || total > sugarcode_tools::MAX_SHELL_TOTAL_ARGUMENT_BYTES
+        {
+            return Some(ToolArgumentGuidance {
+                expected_summary: "every argv item must be a bounded string without control characters",
+                suggested_action: "encodeArgvAsJsonArray",
+            });
+        }
+    }
+    if arguments.get("cwd").and_then(serde_json::Value::as_str) != Some(".") {
+        return Some(ToolArgumentGuidance {
+            expected_summary: "cwd must be exactly \".\"",
+            suggested_action: "useActiveWorkspaceCwd",
+        });
+    }
+    None
+}
+
+fn shell_argv(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<String>, ToolArgumentGuidance> {
+    if let Some(value) = arguments.get("argvJson") {
+        let Some(encoded) = value.as_str() else {
+            return Err(ToolArgumentGuidance {
+                expected_summary: "argvJson must be a string containing JSON array syntax such as [\"status\",\"--short\"]",
+                suggested_action: "encodeArgvAsJsonArray",
+            });
+        };
+        return serde_json::from_str::<Vec<String>>(encoded).map_err(|_| ToolArgumentGuidance {
+            expected_summary:
+                "argvJson must contain only one valid JSON array of strings, never a shell command line",
+            suggested_action: "encodeArgvAsJsonArray",
+        });
+    }
+    let values = arguments
+        .get("argv")
+        .or_else(|| arguments.get("arguments"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or(ToolArgumentGuidance {
+            expected_summary:
+                "argvJson must contain JSON array syntax such as [\"status\",\"--short\"]",
+            suggested_action: "encodeArgvAsJsonArray",
+        })?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .ok_or(ToolArgumentGuidance {
+                    expected_summary: "every argv item must be a string",
+                    suggested_action: "encodeArgvAsJsonArray",
+                })
+        })
+        .collect()
+}
+
 pub(super) fn shell_tool_arguments(call: &ModelToolCall) -> Result<ShellToolArguments, ModelError> {
     if call.name != "shell/exec" {
         return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
@@ -171,7 +314,11 @@ pub(super) fn shell_tool_arguments(call: &ModelToolCall) -> Result<ShellToolArgu
     let Some(arguments) = call.arguments.as_object() else {
         return Err(ModelError::new(ModelErrorKind::Protocol, false));
     };
-    if arguments.len() != 4 {
+    let argv_sources = ["argvJson", "argv", "arguments"]
+        .into_iter()
+        .filter(|name| arguments.contains_key(*name))
+        .count();
+    if arguments.len() != 4 || argv_sources != 1 {
         return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
     }
     let description = arguments
@@ -182,10 +329,8 @@ pub(super) fn shell_tool_arguments(call: &ModelToolCall) -> Result<ShellToolArgu
         .get("command")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
-    let values = arguments
-        .get("arguments")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+    let values = shell_argv(arguments)
+        .map_err(|_| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
     let cwd = arguments
         .get("cwd")
         .and_then(serde_json::Value::as_str)
@@ -206,19 +351,16 @@ pub(super) fn shell_tool_arguments(call: &ModelToolCall) -> Result<ShellToolArgu
     let mut parsed = Vec::with_capacity(values.len());
     let mut total = command.len();
     for value in values {
-        let value = value
-            .as_str()
-            .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
         total = total
             .checked_add(value.len())
             .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
         if value.len() > sugarcode_tools::MAX_SHELL_ARGUMENT_BYTES
-            || invalid_command_text(value)
+            || invalid_command_text(&value)
             || total > sugarcode_tools::MAX_SHELL_TOTAL_ARGUMENT_BYTES
         {
             return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
         }
-        parsed.push(value.to_string());
+        parsed.push(value);
     }
     Ok(ShellToolArguments {
         description: description.to_string(),

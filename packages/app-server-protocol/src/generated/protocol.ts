@@ -98,6 +98,8 @@ export type ItemStartedNotification = { threadId: string, turnId: string, item: 
 
 export type AgentOutputDeltaNotification = { threadId: string, turnId: string, output: AgentOutputRef, delta: string, };
 
+export type AgentOutputDiscardedNotification = { threadId: string, turnId: string, output: AgentOutputRef, };
+
 export type AgentMessageDeltaNotification = { threadId: string, turnId: string, itemId: string, delta: string, };
 
 export type ItemCompletedNotification = { threadId: string, turnId: string, item: Item, };
@@ -162,9 +164,15 @@ export type TurnStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
 export type TurnErrorKind = "authentication" | "contextWindowExceeded" | "invalidRequest" | "rateLimited" | "timeout" | "transport" | "disconnected" | "server" | "protocol" | "incomplete" | "filtered" | "unsupportedOutput" | "unsupportedToolArguments" | "providerRequestTooLarge" | "providerResponseTooLarge" | "outputTooLarge" | "stateUnavailable";
 
-export type TurnError = { kind: TurnErrorKind, retryable: boolean, provider?: ProviderErrorMetadata, toolSchema?: ToolSchemaError, };
+export type TurnError = { kind: TurnErrorKind, retryable: boolean, provider?: ProviderErrorMetadata, protocol?: ModelProtocolDiagnostic, toolSchema?: ToolSchemaError, };
 
 export type ProviderErrorMetadata = { httpStatus: number, code: string | null, requestId: string | null, retryAfter: string | null, };
+
+export type ModelProtocolStage = "streamEvent" | "responseAssembly" | "outputNormalization" | "runtimeClassification";
+
+export type ModelProtocolCode = "wireMismatch" | "invalidEventShape" | "ambiguousOutputReconciliation" | "malformedToolCall" | "terminalLifecycleViolation" | "continuationOutputMismatch" | "outputIndexMismatch";
+
+export type ModelProtocolDiagnostic = { stage: ModelProtocolStage, code: ModelProtocolCode, eventType?: string, shapeSha256: string, };
 
 export type ToolSchemaError = { toolName: string, reason: string, };
 
@@ -176,7 +184,7 @@ export type TokenUsage = { lastRequest: TokenUsageSample, turnTotal: TokenUsageS
 
 export type TokenUsageUpdatedNotification = { threadId: string, turnId: string, usage: TokenUsage, };
 
-export type TurnWarningCode = "providerManagedContinuationFallback";
+export type TurnWarningCode = "providerManagedContinuationFallback" | "historicalContextDowngraded";
 
 export type TurnWarningNotification = { threadId: string, turnId: string, code: TurnWarningCode, };
 

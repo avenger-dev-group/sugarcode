@@ -383,6 +383,7 @@ pub(crate) fn map_core_event(event: &CoreEvent) -> Option<MappedExecEvent> {
             },
         },
         CoreEventKind::AgentOutputDelta { .. } => return None,
+        CoreEventKind::AgentOutputDiscarded { .. } => return None,
         CoreEventKind::AgentOutputResolved {
             thread_id,
             turn_id,

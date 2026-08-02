@@ -125,6 +125,7 @@ impl fmt::Debug for ModelInstruction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelInstructionSource {
     SugarCodeBaseAgentV1,
+    SugarCodeModelSwitchV1,
     SugarCodeActiveTurnCompactionV1,
     WorkspaceRootAgentsV1,
     WorkspaceAgentsHierarchyV1,
@@ -136,6 +137,7 @@ impl ModelInstructionSource {
     fn prefix(self) -> &'static str {
         match self {
             Self::SugarCodeBaseAgentV1 => "",
+            Self::SugarCodeModelSwitchV1 => "",
             Self::SugarCodeActiveTurnCompactionV1 => "",
             Self::WorkspaceRootAgentsV1 => WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX,
             Self::WorkspaceAgentsHierarchyV1 => WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX,
@@ -642,4 +644,11 @@ pub struct ModelUsage {
 
 pub trait ModelProvider: fmt::Debug + Send + Sync {
     fn stream(&self, request: ModelRequest) -> BoxModelFuture<'_>;
+
+    /// Replays a request that failed before producing semantic output using the
+    /// provider's most compatible delivery mode. Providers without a distinct
+    /// compatibility transport retain the regular streaming behavior.
+    fn retry_after_no_output(&self, request: ModelRequest) -> BoxModelFuture<'_> {
+        self.stream(request)
+    }
 }

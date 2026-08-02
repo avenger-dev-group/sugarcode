@@ -294,7 +294,35 @@ pub struct DurableTurnError {
     pub kind: DurableTurnErrorKind,
     pub retryable: bool,
     pub provider: Option<DurableProviderErrorMetadata>,
+    pub protocol: Option<DurableModelProtocolDiagnostic>,
     pub tool_schema: Option<DurableToolSchemaError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableModelProtocolDiagnostic {
+    pub stage: DurableModelProtocolStage,
+    pub code: DurableModelProtocolCode,
+    pub event_type: Option<String>,
+    pub shape_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableModelProtocolStage {
+    StreamEvent,
+    ResponseAssembly,
+    OutputNormalization,
+    RuntimeClassification,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableModelProtocolCode {
+    WireMismatch,
+    InvalidEventShape,
+    AmbiguousOutputReconciliation,
+    MalformedToolCall,
+    TerminalLifecycleViolation,
+    ContinuationOutputMismatch,
+    OutputIndexMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -816,32 +844,14 @@ pub(crate) fn valid_incremental_item(
     else {
         return Err("invalidCommandExecutionAttempt");
     };
-    let call_command = call_arguments
-        .get("command")
-        .and_then(serde_json::Value::as_str);
-    let call_argv = call_arguments
-        .get("arguments")
-        .and_then(serde_json::Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .collect::<Vec<_>>()
-        });
-    let call_cwd = call_arguments
-        .get("cwd")
-        .and_then(serde_json::Value::as_str);
-    if call_command != Some(request_command.as_str())
-        || call_argv.as_deref()
-            != Some(
-                request_arguments
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-            )
-        || call_cwd != Some(cwd.as_str())
-        || environment_policy != "minimalV1"
+    let Some((call_command, call_argv, call_cwd)) = shell_call_execution_arguments(call_arguments)
+    else {
+        return Err("invalidCommandExecutionAttempt");
+    };
+    if call_command != request_command
+        || call_argv != *request_arguments
+        || call_cwd != cwd
+        || !matches!(environment_policy.as_str(), "minimalV1" | "hostInheritedV1")
         || !sandboxed
         || sandbox_policy.as_deref() != Some("filesystemReadOnlyV1")
         || !matches!(
@@ -856,6 +866,33 @@ pub(crate) fn valid_incremental_item(
         return Err("invalidCommandExecutionAttempt");
     }
     Ok(())
+}
+
+fn shell_call_execution_arguments(
+    arguments: &serde_json::Value,
+) -> Option<(&str, Vec<String>, &str)> {
+    let object = arguments.as_object()?;
+    let command = object.get("command")?.as_str()?;
+    let cwd = object.get("cwd")?.as_str()?;
+    let argument_source_count = ["argvJson", "argv", "arguments"]
+        .into_iter()
+        .filter(|key| object.contains_key(*key))
+        .count();
+    if argument_source_count != 1 {
+        return None;
+    }
+    let argv = if let Some(value) = object.get("argvJson") {
+        serde_json::from_str::<Vec<String>>(value.as_str()?).ok()?
+    } else {
+        object
+            .get("argv")
+            .or_else(|| object.get("arguments"))?
+            .as_array()?
+            .iter()
+            .map(|value| value.as_str().map(ToOwned::to_owned))
+            .collect::<Option<Vec<_>>>()?
+    };
+    Some((command, argv, cwd))
 }
 
 fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) -> bool {

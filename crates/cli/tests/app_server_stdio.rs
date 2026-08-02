@@ -525,7 +525,7 @@ fn denied_shell_approval_matches_bidirectional_golden_trace() {
     let arguments = serde_json::to_string(&json!({
         "description": "Run the denied approval fixture.",
         "command": command,
-        "arguments": [],
+        "argvJson": "[]",
         "cwd": "."
     }))
     .expect("shell arguments");
@@ -569,11 +569,20 @@ fn denied_shell_approval_matches_bidirectional_golden_trace() {
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn approved_shell_approval_matches_execution_attempt_golden_trace() {
-    let command = env!("CARGO_BIN_EXE_sugarcode");
+    let sugarcode_executable = PathBuf::from(env!("CARGO_BIN_EXE_sugarcode"));
+    let sugarcode_directory = sugarcode_executable
+        .parent()
+        .expect("SugarCode test binary directory");
+    let mut command_search_path = vec![sugarcode_directory.to_path_buf()];
+    if let Some(host_path) = std::env::var_os("PATH") {
+        command_search_path.extend(std::env::split_paths(&host_path));
+    }
+    let command_search_path =
+        std::env::join_paths(command_search_path).expect("construct command search path");
     let arguments = serde_json::to_string(&json!({
         "description": "Check the SugarCode version.",
-        "command": command,
-        "arguments": ["version"],
+        "command": "/usr/bin/env",
+        "argvJson": "[\"sugarcode\",\"version\"]",
         "cwd": "."
     }))
     .expect("shell arguments");
@@ -607,13 +616,14 @@ fn approved_shell_approval_matches_execution_attempt_golden_trace() {
     let workspace = tempfile::tempdir().expect("create isolated workspace");
     let _provider =
         MockProvider::start_with_owned_bodies(sugarcode_home.path(), vec![tool_call, final_answer]);
-    run_golden_with_options(
+    run_golden_with_options_and_environment(
         "turn-shell-approval-approved",
         &sugarcode_home,
         Some(workspace.path()),
         false,
         false,
         true,
+        &[("PATH", command_search_path)],
     );
 }
 
@@ -624,7 +634,7 @@ fn informed_workspace_write_approval_mutates_the_real_workspace_and_matches_gold
     let arguments = serde_json::to_string(&json!({
         "description": "Update the workspace acceptance fixtures.",
         "command": command,
-        "arguments": ["__command-workspace-write-acceptance"],
+        "argvJson": "[\"__command-workspace-write-acceptance\"]",
         "cwd": "."
     }))
     .expect("shell arguments");
@@ -1331,6 +1341,26 @@ fn run_golden_with_options(
     allow_command_workspace_write: bool,
     expect_windows_shell_unavailable: bool,
 ) {
+    run_golden_with_options_and_environment(
+        name,
+        sugarcode_home,
+        workspace,
+        allow_workspace_write,
+        allow_command_workspace_write,
+        expect_windows_shell_unavailable,
+        &[],
+    );
+}
+
+fn run_golden_with_options_and_environment(
+    name: &str,
+    sugarcode_home: &tempfile::TempDir,
+    workspace: Option<&std::path::Path>,
+    allow_workspace_write: bool,
+    allow_command_workspace_write: bool,
+    expect_windows_shell_unavailable: bool,
+    environment: &[(&str, std::ffi::OsString)],
+) {
     let fixture_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol-fixtures/app-server/v1");
     let input = fs::read_to_string(fixture_root.join(format!("{name}.stdin.jsonl")))
@@ -1348,6 +1378,9 @@ fn run_golden_with_options(
     }
     if allow_command_workspace_write {
         command.arg("--allow-command-workspace-write");
+    }
+    for (name, value) in environment {
+        command.env(name, value);
     }
     let mut child = command
         .env("SUGARCODE_HOME", sugarcode_home.path())

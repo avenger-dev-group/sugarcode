@@ -115,14 +115,14 @@ impl ModelResolver for LocalModelResolver {
         let token = connection
             .api_key()
             .map(|api_key| Zeroizing::new(api_key.to_owned()));
-        let ceiling = WireCapabilityCeiling::for_wire_api(connection.wire_api());
-        let tool_calls = resolve_capability(profile.tool_calls(), ceiling.tool_calls);
-        let strict_tools = resolve_capability(profile.strict_tools(), ceiling.strict_tools);
+        let policy = WireCapabilityPolicy::for_wire_api(connection.wire_api());
+        let tool_calls = resolve_capability(profile.tool_calls(), policy.tool_calls);
+        let strict_tools = resolve_capability(profile.strict_tools(), policy.strict_tools);
         let strict_tools_mode =
-            resolve_strict_tools_mode(profile.strict_tools(), ceiling.strict_tools);
-        let parallel_tools = resolve_capability(profile.parallel_tools(), ceiling.parallel_tools);
-        let image_input = resolve_capability(profile.image_input(), ceiling.image_input);
-        let pdf_input = resolve_capability(profile.pdf_input(), ceiling.pdf_input);
+            resolve_strict_tools_mode(profile.strict_tools(), policy.strict_tools);
+        let parallel_tools = resolve_capability(profile.parallel_tools(), policy.parallel_tools);
+        let image_input = resolve_capability(profile.image_input(), policy.image_input);
+        let pdf_input = resolve_capability(profile.pdf_input(), policy.pdf_input);
         let capabilities = ModelCapabilities::new(
             profile.effective_context_window_tokens(),
             tool_calls,
@@ -192,40 +192,60 @@ impl ModelResolver for LocalModelResolver {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct WireCapabilityCeiling {
-    tool_calls: bool,
-    strict_tools: bool,
-    parallel_tools: bool,
-    image_input: bool,
-    pdf_input: bool,
+struct CapabilityPolicy {
+    supported: bool,
+    automatic: bool,
 }
 
-impl WireCapabilityCeiling {
+#[derive(Debug, Clone, Copy)]
+struct WireCapabilityPolicy {
+    tool_calls: CapabilityPolicy,
+    strict_tools: CapabilityPolicy,
+    parallel_tools: CapabilityPolicy,
+    image_input: CapabilityPolicy,
+    pdf_input: CapabilityPolicy,
+}
+
+impl WireCapabilityPolicy {
     const fn for_wire_api(wire_api: ModelWireApi) -> Self {
+        let baseline = CapabilityPolicy {
+            supported: true,
+            automatic: false,
+        };
         Self {
-            tool_calls: true,
-            strict_tools: true,
-            parallel_tools: true,
-            image_input: true,
-            pdf_input: !matches!(wire_api, ModelWireApi::OpenAiChatCompletions),
+            tool_calls: CapabilityPolicy {
+                supported: true,
+                automatic: true,
+            },
+            strict_tools: baseline,
+            parallel_tools: baseline,
+            image_input: baseline,
+            pdf_input: CapabilityPolicy {
+                supported: !matches!(wire_api, ModelWireApi::OpenAiChatCompletions),
+                automatic: false,
+            },
         }
     }
 }
 
-fn resolve_capability(mode: ModelCapabilityMode, automatic: bool) -> bool {
+fn resolve_capability(mode: ModelCapabilityMode, policy: CapabilityPolicy) -> bool {
     match mode {
-        ModelCapabilityMode::Auto => automatic,
-        ModelCapabilityMode::Enabled => true,
+        ModelCapabilityMode::Auto => policy.supported && policy.automatic,
+        ModelCapabilityMode::Enabled => policy.supported,
         ModelCapabilityMode::Disabled => false,
     }
 }
 
-fn resolve_strict_tools_mode(mode: ModelCapabilityMode, supported: bool) -> ModelStrictToolsMode {
-    if !supported {
+fn resolve_strict_tools_mode(
+    mode: ModelCapabilityMode,
+    policy: CapabilityPolicy,
+) -> ModelStrictToolsMode {
+    if !policy.supported {
         return ModelStrictToolsMode::Disabled;
     }
     match mode {
-        ModelCapabilityMode::Auto => ModelStrictToolsMode::Auto,
+        ModelCapabilityMode::Auto if policy.automatic => ModelStrictToolsMode::Auto,
+        ModelCapabilityMode::Auto => ModelStrictToolsMode::Disabled,
         ModelCapabilityMode::Enabled => ModelStrictToolsMode::Enabled,
         ModelCapabilityMode::Disabled => ModelStrictToolsMode::Disabled,
     }

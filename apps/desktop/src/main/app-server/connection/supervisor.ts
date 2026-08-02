@@ -130,6 +130,8 @@ const createDiagnostic = (
   summary: DIAGNOSTIC_SUMMARIES[code],
 });
 
+const PROTOCOL_RECOVERY_WINDOW_MS = 60_000;
+
 export class ConnectionSupervisor {
   readonly commandApprovals: CommandApprovalController;
   readonly conversation: ConversationController;
@@ -171,6 +173,8 @@ export class ConnectionSupervisor {
   private workspaceRuntimeKind: WorkspaceRuntimeKind = 'project';
   private workspaceBindingId: string | null = null;
   private preferredInitialThreadId: string | undefined;
+  private lastProtocolRecoveryAt = 0;
+  private protocolRecoveryPromise: Promise<void> | null = null;
 
   constructor(options: ConnectionSupervisorOptions) {
     this.options = {
@@ -251,10 +255,7 @@ export class ConnectionSupervisor {
   getResolvedCli = (): ResolvedCli | null => this.resolvedCli;
 
   getCliEnvironment = (): NodeJS.ProcessEnv =>
-    createCliEnvironment(
-      this.options.environment,
-      this.options.platform,
-    );
+    createCliEnvironment(this.options.environment);
 
   configureInitialWorkspace = (
     workspacePath: string | null,
@@ -544,10 +545,7 @@ export class ConnectionSupervisor {
       );
       return;
     }
-    const environment = createCliEnvironment(
-      this.options.environment,
-      this.options.platform,
-    );
+    const environment = createCliEnvironment(this.options.environment);
     try {
       const servers = this.options.discoverMcpServers
         ? await this.options.discoverMcpServers(this.resolvedCli, environment)
@@ -603,10 +601,7 @@ export class ConnectionSupervisor {
         {
           cwd: this.workspacePath ?? cli.workingDirectory,
           detached: false,
-          env: createCliEnvironment(
-            this.options.environment,
-            this.options.platform,
-          ),
+          env: createCliEnvironment(this.options.environment),
           shell: false,
           windowsHide: true,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -862,6 +857,21 @@ export class ConnectionSupervisor {
   };
 
   private failAndTerminate = (code: ConnectionDiagnosticCode): void => {
+    if (
+      code === 'protocol-invalid' &&
+      this.snapshot.status === 'ready' &&
+      !this.shuttingDown &&
+      !this.restarting &&
+      Date.now() - this.lastProtocolRecoveryAt >
+        PROTOCOL_RECOVERY_WINDOW_MS
+    ) {
+      this.lastProtocolRecoveryAt = Date.now();
+      this.protocolRecoveryPromise ??=
+        this.recoverFromProtocolFailure().finally(() => {
+          this.protocolRecoveryPromise = null;
+        });
+      return;
+    }
     this.fail(code);
     this.conversation.transportClosed();
     this.client?.close();
@@ -871,6 +881,29 @@ export class ConnectionSupervisor {
       !this.child.killed
     ) {
       this.child.kill();
+    }
+  };
+
+  private recoverFromProtocolFailure = async (): Promise<void> => {
+    const target = getCliTarget(this.options.platform, this.options.arch);
+    if (!target || !this.resolvedCli || this.shuttingDown) {
+      this.failAndTerminate('protocol-invalid');
+      return;
+    }
+    const preferredThreadId = this.conversation.getSnapshot().threadId;
+    const serverIds = this.mcpSession.getActiveServerIds();
+    if (!(await this.closeForRestart()) || this.shuttingDown) {
+      this.failAndTerminate('protocol-invalid');
+      return;
+    }
+    this.transition('connecting');
+    const connected = await this.connect(
+      serverIds,
+      preferredThreadId,
+      target.expectedPlatform,
+    );
+    if (!connected && !this.shuttingDown) {
+      this.failAndTerminate('protocol-invalid');
     }
   };
 

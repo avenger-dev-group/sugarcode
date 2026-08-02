@@ -56,3 +56,33 @@ fn provisional_delta_and_resolution_keep_one_output_reference() {
     assert_eq!(value["params"]["agentOutput"]["responseOrdinal"], 2);
     assert_eq!(value["params"]["item"]["type"], "agentCommentary");
 }
+
+#[test]
+fn provisional_delta_can_be_explicitly_discarded() {
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let turn_id = TurnId::new("turn_0000000000000001");
+    let discarded = map_core_event(CoreEvent {
+        request_id: CoreRequestId::new(1),
+        kind: CoreEventKind::AgentOutputDiscarded {
+            thread_id: thread_id.clone(),
+            turn_id: turn_id.clone(),
+            output: CoreAgentOutputRef {
+                response_ordinal: 1,
+                output_index: 0,
+            },
+        },
+    })
+    .expect("discard maps");
+    assert_eq!(
+        serde_json::to_value(discarded).expect("discard serializes"),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "turn/agentOutput/discarded",
+            "params": {
+                "threadId": thread_id.as_str(),
+                "turnId": turn_id.as_str(),
+                "output": {"responseOrdinal": 1, "outputIndex": 0}
+            }
+        })
+    );
+}

@@ -26,7 +26,7 @@ pub(crate) const SUGARCODE_BASE_AGENT_PROMPT_V1: &str = r#"You are SugarCode, a 
 - The runtime may automatically compact older active-Turn context and continue. Treat a compaction summary as prior working memory, preserve its stated constraints and unfinished work, and re-check critical details from source when needed.
 - Workspace tools operate only inside the active workspace scope. Prefer workspace/search for locating text, workspace/list for one directory, workspace/read for one known UTF-8 file, and workspace/edit for focused updates when those tools are exposed.
 - workspace/edit applies exact line splices against one required base SHA-256. All splice coordinates refer to the same original revision, are 1-based, ascending and non-overlapping; use lineCount + 1 with zero deletion for EOF insertion. workspace/apply-diff is the compatibility entry for one standard unified diff. Both are bounded writes to one existing file. Keep changes minimal, preserve surrounding content and newline style, and never describe a proposed change as applied until the tool result confirms it.
-- shell/exec, when exposed, runs one exact absolute program and argv with cwd "."; it is not an interactive shell. Respect its approval, filesystem, workspace-write, environment, and network policies. Never try to bypass an approval or sandbox boundary.
+- shell/exec, when exposed, runs one exact absolute program with flags and operands encoded as one JSON string array in `argvJson` and cwd "."; `command` must be an absolute executable path, never a bare name or shell command line. `argvJson` is parsed only as JSON and is never treated as a shell string. The sandbox inherits the host's non-sensitive command environment, including PATH and language-toolchain locations, while credentials remain excluded. If a runtime or checker is unavailable, inspect repository-native scripts/configuration and try safe installed alternatives before concluding it is missing; after reasonable options are exhausted, report the exact unavailable dependency and suggest the user install or configure it. Respect approval, filesystem, workspace-write, environment, and network policies. Never try to bypass an approval or sandbox boundary.
 
 # Engineering workflow
 
@@ -53,10 +53,19 @@ The runtime separately preserves a bounded verbatim anchor of the active user's 
 
 Merge any earlier context-compaction checkpoint with newer activity. State the exact remaining work and the next concrete action so execution can resume immediately. Distinguish verified facts from assumptions. Do not invent results, include hidden reasoning, address the user, or provide a final answer. Output only the checkpoint text, with no tool call or wrapper. Keep it under 23 KiB."#;
 
+pub(crate) const SUGARCODE_MODEL_SWITCH_PROMPT_V1: &str = r#"The model profile changed for this Turn. Continue the same conversation from the portable history provided. Treat completed tool calls and tool results as already completed history. Do not repeat them unless the user's new request requires it. Do not assume access to hidden reasoning, provider-private continuation state, response identifiers, signatures, or other context from the previous model."#;
+
 pub(crate) fn sugarcode_base_agent_instruction_v1() -> ModelInstruction {
     ModelInstruction {
         source: ModelInstructionSource::SugarCodeBaseAgentV1,
         content: SUGARCODE_BASE_AGENT_PROMPT_V1.to_string(),
+    }
+}
+
+pub(crate) fn sugarcode_model_switch_instruction_v1() -> ModelInstruction {
+    ModelInstruction {
+        source: ModelInstructionSource::SugarCodeModelSwitchV1,
+        content: SUGARCODE_MODEL_SWITCH_PROMPT_V1.to_string(),
     }
 }
 

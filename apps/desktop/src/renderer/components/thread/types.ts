@@ -58,6 +58,12 @@ export type TurnFailureViewModel = Readonly<{
   summary: string;
   guidance: string;
   retryable: boolean;
+  protocol?: Readonly<{
+    stage: string;
+    code: string;
+    eventType?: string;
+    fingerprint: string;
+  }>;
 }>;
 
 export type TurnModelViewModel = Readonly<{

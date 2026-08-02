@@ -22,7 +22,8 @@
     "TurnWarningCode": {
       "type": "string",
       "enum": [
-        "providerManagedContinuationFallback"
+        "providerManagedContinuationFallback",
+        "historicalContextDowngraded"
       ]
     }
   }

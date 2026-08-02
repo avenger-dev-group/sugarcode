@@ -212,6 +212,61 @@ fn anthropic_replays_thinking_signatures_and_block_order() {
 }
 
 #[test]
+fn anthropic_coalesces_portable_tool_batches_and_consecutive_roles() {
+    let request = continuation_request(vec![
+        ModelMessage::user_text("inspect".to_owned()),
+        ModelMessage::assistant_text(ModelTextPhase::Commentary, "checking".to_owned()),
+        ModelMessage::tool_calls(vec![ModelToolCall {
+            id: "call_1".to_owned(),
+            name: "workspace_read".to_owned(),
+            arguments: json!({"path": "a.md"}),
+        }]),
+        ModelMessage::tool_calls(vec![ModelToolCall {
+            id: "call_2".to_owned(),
+            name: "workspace_read".to_owned(),
+            arguments: json!({"path": "b.md"}),
+        }]),
+        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+            "call_1".to_owned(),
+            "a".to_owned(),
+        )]),
+        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+            "call_2".to_owned(),
+            "b".to_owned(),
+        )]),
+        ModelMessage::assistant_text(ModelTextPhase::Final, "done".to_owned()),
+        ModelMessage::user_text("retry".to_owned()),
+        ModelMessage::user_text("continue".to_owned()),
+    ]);
+
+    let body = anthropic_request(&request, ModelStrictToolsMode::Auto, 1024).expect("request");
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 5);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(
+        messages[1]["content"]
+            .as_array()
+            .expect("assistant content")
+            .iter()
+            .map(|block| block["type"].as_str().expect("block type"))
+            .collect::<Vec<_>>(),
+        ["text", "tool_use", "tool_use"]
+    );
+    assert_eq!(messages[2]["role"], "user");
+    assert_eq!(
+        messages[2]["content"]
+            .as_array()
+            .expect("tool result content")
+            .iter()
+            .map(|block| block["tool_use_id"].as_str().expect("tool use id"))
+            .collect::<Vec<_>>(),
+        ["call_1", "call_2"]
+    );
+    assert_eq!(messages[4]["role"], "user");
+    assert_eq!(messages[4]["content"].as_array().map(Vec::len), Some(2));
+}
+
+#[test]
 fn gemini_replays_thought_signatures_and_groups_parallel_function_responses() {
     let raw_content = json!({
         "role": "model",
@@ -304,6 +359,7 @@ async fn openai_sse_completion_restores_internal_tool_names_and_usage() {
         response.usage.and_then(|usage| usage.total_tokens),
         Some(15)
     );
+    assert!(response.provider_context.is_none());
     assert_eq!(response.terminal.finish_reason, ModelFinishReason::Stop);
 }
 
@@ -333,11 +389,146 @@ async fn openai_sse_ignores_optional_response_progress_events() {
     else {
         panic!("a Chat Completions chunk is not a Responses event");
     };
-    assert_eq!(error.kind(), ModelErrorKind::UnsupportedOutput);
+    assert_eq!(error.kind(), ModelErrorKind::Protocol);
+    assert_eq!(
+        error
+            .protocol_diagnostic()
+            .map(|diagnostic| diagnostic.code()),
+        Some(ModelProtocolCode::WireMismatch)
+    );
 }
 
 #[tokio::test]
-async fn openai_sse_uses_completed_output_items_over_response_snapshot() {
+async fn openai_sse_normalizes_compatible_cumulative_text_deltas() {
+    let (sender, mut receiver) = mpsc::channel(4);
+    let mut state = OpenAiStreamState::default();
+
+    for delta in ["A", "AB", "ABC"] {
+        state
+            .consume(
+                "response.output_text.delta",
+                json!({"output_index": 2, "delta": delta}),
+                &sender,
+                &tool_names(),
+            )
+            .await
+            .expect("compatible cumulative delta");
+    }
+
+    let deltas = (0..3)
+        .map(|_| receiver.try_recv().expect("normalized delta"))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("successful deltas");
+    assert_eq!(
+        deltas,
+        vec![
+            ModelEvent::OutputTextDelta {
+                output_index: 0,
+                delta: "A".to_owned(),
+            },
+            ModelEvent::OutputTextDelta {
+                output_index: 0,
+                delta: "B".to_owned(),
+            },
+            ModelEvent::OutputTextDelta {
+                output_index: 0,
+                delta: "C".to_owned(),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn openai_sse_preserves_standard_non_prefix_text_deltas() {
+    let (sender, mut receiver) = mpsc::channel(4);
+    let mut state = OpenAiStreamState::default();
+
+    for delta in ["Hello ", "world"] {
+        state
+            .consume(
+                "response.output_text.delta",
+                json!({"delta": delta}),
+                &sender,
+                &tool_names(),
+            )
+            .await
+            .expect("standard delta");
+    }
+
+    let text = (0..2)
+        .map(
+            |_| match receiver.try_recv().expect("text delta").expect("success") {
+                ModelEvent::OutputTextDelta { delta, .. } => delta,
+                _ => panic!("text delta"),
+            },
+        )
+        .collect::<String>();
+    assert_eq!(text, "Hello world");
+}
+
+#[tokio::test]
+async fn openai_sse_discards_only_an_oversized_provisional_preview() {
+    let (sender, mut receiver) = mpsc::channel(4);
+    let mut state = OpenAiStreamState::default();
+    state
+        .consume(
+            "response.output_text.delta",
+            json!({"output_index": 0, "delta": "preview"}),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("initial preview");
+    state
+        .consume(
+            "response.output_text.delta",
+            json!({
+                "output_index": 0,
+                "delta": "x".repeat(MAX_SEMANTIC_OUTPUT_BYTES + 1),
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("oversized provisional preview is presentation-only");
+    let StreamProgress::Complete(response) = state
+        .consume(
+            "response.completed",
+            json!({
+                "response": {
+                    "status": "completed",
+                    "output": [{
+                        "type": "message",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "Authoritative final answer."
+                        }]
+                    }]
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("authoritative completion remains valid")
+    else {
+        panic!("completion event");
+    };
+
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(Ok(ModelEvent::OutputTextDelta { delta, .. })) if delta == "preview"
+    ));
+    assert!(receiver.try_recv().is_err());
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::AssistantText { text, .. }
+            if text == "Authoritative final answer."
+    ));
+}
+
+#[tokio::test]
+async fn openai_sse_uses_completed_response_snapshot_as_authority() {
     let (sender, mut receiver) = mpsc::channel(4);
     let mut state = OpenAiStreamState::default();
     state
@@ -353,6 +544,7 @@ async fn openai_sse_uses_completed_output_items_over_response_snapshot() {
         .consume(
             "response.output_item.done",
             json!({
+                "output_index": 0,
                 "item": {
                     "type": "message",
                     "content": [{"type": "output_text", "text": "Final answer."}]
@@ -391,7 +583,287 @@ async fn openai_sse_uses_completed_output_items_over_response_snapshot() {
     ));
     assert!(matches!(
         &response.output[0].kind,
-        ModelOutputItemKind::AssistantText { text, .. } if text == "Final answer."
+        ModelOutputItemKind::AssistantText { text, .. } if text == "stale snapshot"
+    ));
+}
+
+#[tokio::test]
+async fn openai_sse_ignores_partial_done_items_when_snapshot_is_present() {
+    let (sender, mut receiver) = mpsc::channel(4);
+    let mut state = OpenAiStreamState::default();
+    state
+        .consume(
+            "response.output_text.delta",
+            json!({"output_index": 1, "delta": "Checking the project."}),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("commentary delta");
+    state
+        .consume(
+            "response.output_item.done",
+            json!({
+                "output_index": 2,
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "workspace_read",
+                    "arguments": "{\"path\":\"README.md\"}"
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("partial completed output item");
+    let StreamProgress::Complete(response) = state
+        .consume(
+            "response.completed",
+            json!({
+                "response": {
+                    "id": "resp_partial_done",
+                    "status": "completed",
+                    "output": [
+                        {"type": "reasoning", "id": "reasoning_1"},
+                        {
+                            "type": "message",
+                            "id": "message_1",
+                            "content": [{
+                                "type": "output_text",
+                                "text": "Checking the project."
+                            }]
+                        },
+                        {
+                            "type": "function_call",
+                            "id": "fc_1",
+                            "call_id": "call_1",
+                            "name": "workspace_read",
+                            "arguments": "{\"path\":\"stale.md\"}"
+                        }
+                    ],
+                    "usage": {"input_tokens": 12, "output_tokens": 3}
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("completed response")
+    else {
+        panic!("completion event");
+    };
+
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(Ok(ModelEvent::OutputTextDelta { delta, .. }))
+            if delta == "Checking the project."
+    ));
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::AssistantText {
+            phase: ModelTextPhase::Commentary,
+            text,
+        } if text == "Checking the project."
+    ));
+    assert!(matches!(
+        &response.output[1].kind,
+        ModelOutputItemKind::ToolCall(call)
+            if call.name == "workspace/read"
+                && call.arguments == json!({"path": "stale.md"})
+    ));
+}
+
+#[tokio::test]
+async fn openai_sse_uses_done_items_only_when_snapshot_is_empty() {
+    let (sender, _receiver) = mpsc::channel(4);
+    let mut state = OpenAiStreamState::default();
+    state
+        .consume(
+            "response.output_item.done",
+            json!({
+                "item": {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "workspace_read",
+                    "arguments": "{\"path\":\"README.md\"}"
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("unindexed completed output item");
+    let StreamProgress::Complete(response) = state
+        .consume(
+            "response.completed",
+            json!({
+            "response": {
+                        "status": "completed",
+                        "output": [
+
+                        ]
+                    }
+                }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("completed response")
+    else {
+        panic!("completion event");
+    };
+
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::ToolCall(call)
+            if call.name == "workspace/read"
+                && call.arguments == json!({"path": "README.md"})
+    ));
+}
+
+#[tokio::test]
+async fn openai_sse_deduplicates_stable_done_items_and_ignores_snapshot_ids() {
+    let (sender, _receiver) = mpsc::channel(4);
+    let mut duplicate = OpenAiStreamState::default();
+    for id in ["message_1", "message_1"] {
+        duplicate
+            .consume(
+                "response.output_item.done",
+                json!({
+                    "output_index": 0,
+                    "item": {
+                        "type": "message",
+                        "id": id,
+                        "content": [{"type": "output_text", "text": "Recovered."}]
+                    }
+                }),
+                &sender,
+                &tool_names(),
+            )
+            .await
+            .expect("buffer duplicate index until completion");
+    }
+    let StreamProgress::Complete(duplicate_response) = duplicate
+        .consume(
+            "response.completed",
+            json!({
+                "response": {
+                    "output": []
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("duplicate stable item is idempotent")
+    else {
+        panic!("completion event");
+    };
+    assert_eq!(duplicate_response.output.len(), 1);
+    assert!(matches!(
+        &duplicate_response.output[0].kind,
+        ModelOutputItemKind::AssistantText { text, .. } if text == "Recovered."
+    ));
+
+    let mut reidentified = OpenAiStreamState::default();
+    reidentified
+        .consume(
+            "response.output_item.done",
+            json!({
+                "output_index": 0,
+                "item": {
+                    "type": "message",
+                    "id": "gateway_stream_id",
+                    "content": [{"type": "output_text", "text": "Final answer."}]
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("buffer reidentified item");
+    let StreamProgress::Complete(response) = reidentified
+        .consume(
+            "response.completed",
+            json!({
+                "response": {
+                    "output": [{
+                        "type": "message",
+                        "id": "gateway_snapshot_id",
+                        "content": [{"type": "output_text", "text": "Stale answer."}]
+                    }]
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("reidentified output at the same index")
+    else {
+        panic!("completion event");
+    };
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::AssistantText { text, .. } if text == "Stale answer."
+    ));
+}
+
+#[tokio::test]
+async fn openai_sse_prefers_final_function_call_over_done_commentary() {
+    let (sender, _receiver) = mpsc::channel(4);
+    let mut state = OpenAiStreamState::default();
+    state
+        .consume(
+            "response.output_item.done",
+            json!({
+                "output_index": 0,
+                "item": {
+                    "type": "message",
+                    "id": "gateway_stream_message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": "I will inspect the project."
+                    }]
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("streamed commentary item");
+    let StreamProgress::Complete(response) = state
+        .consume(
+            "response.completed",
+            json!({
+                "response": {
+                    "status": "completed",
+                    "output": [{
+                        "type": "function_call",
+                        "id": "fc_snapshot",
+                        "call_id": "call_snapshot",
+                        "name": "workspace_read",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }]
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("completed response with reused index")
+    else {
+        panic!("completion event");
+    };
+
+    assert_eq!(response.output.len(), 1);
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::ToolCall(call)
+            if call.name == "workspace/read"
+                && call.arguments == json!({"path": "README.md"})
     ));
 }
 
@@ -414,6 +886,112 @@ fn openai_completed_response_preserves_visible_refusals() {
             text,
         } if text == "I cannot help with that."
     ));
+}
+
+#[test]
+fn openai_completed_response_normalizes_compatible_function_call_fields() {
+    let response = parse_openai_response(json!({
+        "id": "resp_tool",
+        "status": "completed",
+        "output": [{
+            "type": "function_call",
+            "id": "fc_1",
+            "name": "workspace_read",
+            "arguments": {"path": "README.md"}
+        }]
+    }))
+    .expect("compatible function call");
+
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::ToolCall(call)
+            if call.id == "fc_1"
+                && call.arguments == json!({"path": "README.md"})
+    ));
+}
+
+#[test]
+fn openai_completed_response_accepts_nested_functions_and_omitted_arguments() {
+    let response = parse_openai_response(json!({
+        "id": "resp_nested_tool",
+        "status": "completed",
+        "output": [{
+            "type": "function_call",
+            "id": "fc_nested",
+            "function": {"name": "workspace_read"},
+            "arguments": null
+        }]
+    }))
+    .expect("nested function call");
+
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::ToolCall(call)
+            if call.id == "fc_nested"
+                && call.name == "workspace_read"
+                && call.arguments == json!({})
+    ));
+}
+
+#[test]
+fn openai_completed_response_preserves_malformed_argument_text_for_schema_feedback() {
+    let response = parse_openai_response(json!({
+        "id": "resp_invalid_args",
+        "status": "completed",
+        "output": [{
+            "type": "function_call",
+            "id": "fc_invalid_args",
+            "name": "workspace_read",
+            "arguments": "{path: README.md}"
+        }]
+    }))
+    .expect("tool call remains classifiable");
+
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::ToolCall(call)
+            if call.arguments == json!("{path: README.md}")
+    ));
+}
+
+#[test]
+fn openai_completed_response_keeps_exact_replay_only_for_opaque_reasoning() {
+    let response = parse_openai_response(json!({
+        "id": "resp_reasoning_tool",
+        "status": "completed",
+        "output": [
+            {
+                "type": "reasoning",
+                "id": "reasoning_1",
+                "encrypted_content": "opaque"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "workspace_read",
+                "arguments": "{\"path\":\"README.md\"}"
+            }
+        ]
+    }))
+    .expect("opaque reasoning response");
+
+    assert!(response.provider_context.is_some());
+
+    let portable = parse_openai_response(json!({
+        "id": "resp_reasoning_without_ciphertext",
+        "status": "completed",
+        "output": [
+            {"type": "reasoning", "id": "reasoning_2", "summary": []},
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "workspace_read",
+                "arguments": "{\"path\":\"README.md\"}"
+            }
+        ]
+    }))
+    .expect("non-opaque reasoning response");
+    assert!(portable.provider_context.is_none());
 }
 
 #[tokio::test]
@@ -553,6 +1131,47 @@ async fn gemini_sse_accumulates_chunks_and_emits_deltas() {
         response.usage.and_then(|usage| usage.total_tokens),
         Some(12)
     );
+}
+
+#[tokio::test]
+async fn gemini_sse_merges_incremental_text_chunks_into_one_final_item() {
+    let (sender, mut receiver) = mpsc::channel(8);
+    let mut state = GeminiStreamState::default();
+    state
+        .consume(
+            json!({"candidates": [{"content": {"parts": [{"text": "fixture"}]}}]}),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("first chunk");
+    state
+        .consume(
+            json!({"candidates": [{"content": {"parts": [{"text": " answer"}]}}]}),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("second chunk");
+
+    assert!(matches!(
+        receiver.recv().await,
+        Some(Ok(ModelEvent::OutputTextDelta { delta, .. })) if delta == "fixture"
+    ));
+    assert!(matches!(
+        receiver.recv().await,
+        Some(Ok(ModelEvent::OutputTextDelta { delta, .. })) if delta == " answer"
+    ));
+    let response = state.response().expect("response");
+    assert_eq!(response.output.len(), 1);
+    assert!(matches!(
+        &response.output[0].kind,
+        ModelOutputItemKind::AssistantText {
+            phase: ModelTextPhase::Final,
+            text,
+        } if text == "fixture answer"
+    ));
+    assert_eq!(response.terminal.finish_reason, ModelFinishReason::Stop);
 }
 
 #[test]

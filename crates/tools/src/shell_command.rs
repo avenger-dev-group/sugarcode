@@ -3,6 +3,7 @@ use crate::CommandWorkspaceRoot;
 use crate::workspace_command_root::CommandWorkspaceRootIdentity;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::future::Future;
@@ -32,6 +33,53 @@ const SUPERVISOR_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(35);
 const SUPERVISOR_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const SUPERVISOR_RESULT_BYTES: usize = 2 * MAX_SHELL_OUTPUT_BYTES + 16 * 1_024;
 const SANDBOX_PROBE_SENTINEL: &str = "sugarcode-command-sandbox-probe-ok";
+const MAX_COMMAND_ENVIRONMENT_VARIABLES: usize = 256;
+const MAX_COMMAND_ENVIRONMENT_BYTES: usize = 128 * 1_024;
+const SENSITIVE_ENVIRONMENT_MARKERS: &[&str] = &[
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "AUTH",
+    "COOKIE",
+];
+const PRIORITY_ENVIRONMENT_NAMES: &[&str] = &[
+    "PATH",
+    "PATHEXT",
+    "HOME",
+    "USERPROFILE",
+    "SYSTEMROOT",
+    "WINDIR",
+    "SHELL",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOGNAME",
+    "USER",
+    "USERNAME",
+    "JAVA_HOME",
+    "NVM_BIN",
+    "NVM_DIR",
+    "PNPM_HOME",
+    "VOLTA_HOME",
+    "ASDF_DATA_DIR",
+    "MISE_DATA_DIR",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+    "GOPATH",
+    "GOROOT",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "BUN_INSTALL",
+    "DENO_INSTALL",
+    "SDKMAN_DIR",
+    "HOMEBREW_PREFIX",
+];
 
 pub type ShellCommandFuture = Pin<Box<dyn Future<Output = ShellCommandExecution> + Send + 'static>>;
 
@@ -111,6 +159,19 @@ pub struct NativeShellCommandExecutor {
     supervisor_executable: PathBuf,
     sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
     workspace_root: Arc<CommandWorkspaceRoot>,
+    environment: Arc<CommandEnvironment>,
+}
+
+#[derive(Clone)]
+struct CommandEnvironment(Vec<(String, String)>);
+
+impl fmt::Debug for CommandEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CommandEnvironment")
+            .field("variable_count", &self.0.len())
+            .finish()
+    }
 }
 
 impl NativeShellCommandExecutor {
@@ -130,17 +191,24 @@ impl NativeShellCommandExecutor {
         workspace_root: CommandWorkspaceRoot,
         sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
     ) -> Result<Self, sugarcode_sandbox::SandboxError> {
+        let environment = Arc::new(CommandEnvironment(host_command_environment()));
         let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(sandbox_policy)?;
-        probe_native_supervisor(&supervisor_executable, adapter.policy(), &workspace_root)
-            .map_err(|error| {
-                sugarcode_sandbox::SandboxError::unavailable(format!(
-                    "command sandbox supervisor probe failed: {error}"
-                ))
-            })?;
+        probe_native_supervisor(
+            &supervisor_executable,
+            adapter.policy(),
+            &workspace_root,
+            &environment.0,
+        )
+        .map_err(|error| {
+            sugarcode_sandbox::SandboxError::unavailable(format!(
+                "command sandbox supervisor probe failed: {error}"
+            ))
+        })?;
         Ok(Self {
             supervisor_executable,
             sandbox_policy: adapter.policy(),
             workspace_root: Arc::new(workspace_root),
+            environment,
         })
     }
 }
@@ -150,6 +218,7 @@ fn probe_native_supervisor(
     executable: &Path,
     sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
     workspace_root: &CommandWorkspaceRoot,
+    environment: &[(String, String)],
 ) -> Result<(), ShellCommandErrorKind> {
     let directory = workspace_root
         .try_clone_directory()
@@ -159,6 +228,7 @@ fn probe_native_supervisor(
     let request = SupervisorRequest {
         command: executable.to_string_lossy().into_owned(),
         arguments: vec!["__command-sandbox-probe".to_owned()],
+        environment: environment.to_vec(),
         sandbox_policy,
         workspace_root_fd,
         workspace_root_identity: workspace_root.identity(),
@@ -235,6 +305,7 @@ fn probe_native_supervisor(
     _executable: &Path,
     _sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
     _workspace_root: &CommandWorkspaceRoot,
+    _environment: &[(String, String)],
 ) -> Result<(), ShellCommandErrorKind> {
     Err(ShellCommandErrorKind::SandboxUnavailable)
 }
@@ -252,6 +323,7 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
         let executable = self.supervisor_executable.clone();
         let sandbox_policy = self.sandbox_policy;
         let workspace_root = Arc::clone(&self.workspace_root);
+        let environment = Arc::clone(&self.environment);
         Box::pin(async move {
             if validate_arguments(&arguments).is_err() {
                 return ShellCommandExecution::Error(ShellCommandErrorKind::InvalidArguments);
@@ -259,6 +331,7 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
             let request = SupervisorRequest {
                 command: arguments.command,
                 arguments: arguments.arguments,
+                environment: environment.0.clone(),
                 sandbox_policy,
                 #[cfg(unix)]
                 workspace_root_fd: -1,
@@ -275,6 +348,7 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
 struct SupervisorRequest {
     command: String,
     arguments: Vec<String>,
+    environment: Vec<(String, String)>,
     sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
     #[cfg(unix)]
     workspace_root_fd: i32,
@@ -517,7 +591,11 @@ fn execute_supervised(
     cancel_rx: std_mpsc::Receiver<()>,
 ) -> Result<ShellCommandOutput, ShellCommandErrorKind> {
     let working_directory = inherited_working_directory(&request)?;
-    let environment = minimal_environment();
+    let environment = request
+        .environment
+        .into_iter()
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        .collect();
     let started = Instant::now();
     let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(request.sandbox_policy)
         .map_err(|_| ShellCommandErrorKind::SandboxUnavailable)?;
@@ -616,6 +694,7 @@ fn validate_arguments(arguments: &ShellCommandArguments) -> Result<(), ShellComm
 
 fn validate_request(request: &SupervisorRequest) -> Result<(), ShellCommandErrorKind> {
     validate_command(&request.command, &request.arguments)?;
+    validate_command_environment(&request.environment)?;
     #[cfg(unix)]
     if request.workspace_root_fd < 3 {
         return Err(ShellCommandErrorKind::InvalidArguments);
@@ -696,6 +775,97 @@ fn map_sandbox_spawn_error(error: sugarcode_sandbox::SandboxSpawnError) -> Shell
     }
 }
 
+fn host_command_environment() -> Vec<(String, String)> {
+    filtered_command_environment(
+        std::env::vars_os().filter_map(|(name, value)| {
+            Some((name.into_string().ok()?, value.into_string().ok()?))
+        }),
+    )
+}
+
+fn filtered_command_environment(
+    variables: impl IntoIterator<Item = (String, String)>,
+) -> Vec<(String, String)> {
+    let mut candidates = variables
+        .into_iter()
+        .filter(|(name, value)| {
+            valid_environment_name(name)
+                && !value.contains('\0')
+                && !sensitive_environment_name(name)
+        })
+        .collect::<BTreeMap<_, _>>();
+    if !candidates.contains_key("LANG") {
+        candidates.insert("LANG".to_string(), "C".to_string());
+    }
+    if !candidates.contains_key("LC_ALL") {
+        candidates.insert("LC_ALL".to_string(), "C".to_string());
+    }
+
+    let mut ordered = Vec::with_capacity(candidates.len());
+    for priority in PRIORITY_ENVIRONMENT_NAMES {
+        if let Some((name, value)) = candidates.remove_entry(*priority) {
+            ordered.push((name, value));
+        }
+    }
+    ordered.extend(candidates);
+
+    let mut retained = Vec::new();
+    let mut retained_bytes = 0usize;
+    for (name, value) in ordered {
+        let Some(variable_bytes) = name.len().checked_add(value.len()) else {
+            continue;
+        };
+        let Some(next_bytes) = retained_bytes.checked_add(variable_bytes) else {
+            continue;
+        };
+        if retained.len() >= MAX_COMMAND_ENVIRONMENT_VARIABLES
+            || next_bytes > MAX_COMMAND_ENVIRONMENT_BYTES
+        {
+            continue;
+        }
+        retained_bytes = next_bytes;
+        retained.push((name, value));
+    }
+    retained
+}
+
+fn validate_command_environment(
+    environment: &[(String, String)],
+) -> Result<(), ShellCommandErrorKind> {
+    if environment.len() > MAX_COMMAND_ENVIRONMENT_VARIABLES {
+        return Err(ShellCommandErrorKind::InvalidArguments);
+    }
+    let mut total = 0usize;
+    for (name, value) in environment {
+        if !valid_environment_name(name) || value.contains('\0') || sensitive_environment_name(name)
+        {
+            return Err(ShellCommandErrorKind::InvalidArguments);
+        }
+        total = total
+            .checked_add(name.len())
+            .and_then(|total| total.checked_add(value.len()))
+            .ok_or(ShellCommandErrorKind::InvalidArguments)?;
+        if total > MAX_COMMAND_ENVIRONMENT_BYTES {
+            return Err(ShellCommandErrorKind::InvalidArguments);
+        }
+    }
+    Ok(())
+}
+
+fn valid_environment_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('=')
+        && !name.contains('\0')
+        && !name.chars().any(char::is_control)
+}
+
+fn sensitive_environment_name(name: &str) -> bool {
+    let uppercase = name.to_ascii_uppercase();
+    SENSITIVE_ENVIRONMENT_MARKERS
+        .iter()
+        .any(|marker| uppercase.contains(marker))
+}
+
 fn exit_outcome(status: std::process::ExitStatus) -> ShellCommandOutcome {
     if let Some(code) = status.code() {
         return ShellCommandOutcome::ExitCode {
@@ -712,23 +882,6 @@ fn exit_outcome(status: std::process::ExitStatus) -> ShellCommandOutcome {
     #[cfg(not(unix))]
     {
         ShellCommandOutcome::ExitCode { code: -1 }
-    }
-}
-
-fn minimal_environment() -> Vec<(OsString, OsString)> {
-    #[cfg(unix)]
-    {
-        vec![
-            (OsString::from("LANG"), OsString::from("C")),
-            (OsString::from("LC_ALL"), OsString::from("C")),
-        ]
-    }
-    #[cfg(windows)]
-    {
-        ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"]
-            .into_iter()
-            .filter_map(|name| std::env::var_os(name).map(|value| (OsString::from(name), value)))
-            .collect()
     }
 }
 

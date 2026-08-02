@@ -29,7 +29,7 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     providerFamily: 'openai',
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
-    wireApi: 'openaiResponses',
+    wireApi: 'openaiChatCompletions',
   },
   {
     providerFamily: 'anthropic',
@@ -51,7 +51,7 @@ const INITIAL_CONNECTION: ModelConnectionValue = {
   displayName: 'OpenAI',
   baseUrl: 'https://api.openai.com/v1',
   enabled: true,
-  wireApi: 'openaiResponses',
+  wireApi: 'openaiChatCompletions',
   continuationMode: 'localReplay',
 };
 
@@ -534,7 +534,7 @@ export const wireApiOptions = (
   providerFamily: ModelProviderFamily,
 ): readonly ModelWireApi[] => {
   if (providerFamily === 'openai') {
-    return ['openaiResponses', 'openaiChatCompletions'];
+    return ['openaiChatCompletions', 'openaiResponses'];
   }
   return [presetFor(providerFamily).wireApi];
 };

@@ -1024,6 +1024,52 @@
         }
       ]
     },
+    "ModelProtocolCode": {
+      "type": "string",
+      "enum": [
+        "wireMismatch",
+        "invalidEventShape",
+        "ambiguousOutputReconciliation",
+        "malformedToolCall",
+        "terminalLifecycleViolation",
+        "continuationOutputMismatch",
+        "outputIndexMismatch"
+      ]
+    },
+    "ModelProtocolDiagnostic": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ModelProtocolCode"
+        },
+        "eventType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shapeSha256": {
+          "type": "string"
+        },
+        "stage": {
+          "$ref": "#/$defs/ModelProtocolStage"
+        }
+      },
+      "required": [
+        "stage",
+        "code",
+        "shapeSha256"
+      ]
+    },
+    "ModelProtocolStage": {
+      "type": "string",
+      "enum": [
+        "streamEvent",
+        "responseAssembly",
+        "outputNormalization",
+        "runtimeClassification"
+      ]
+    },
     "ModelProviderFamily": {
       "type": "string",
       "enum": [
@@ -1481,6 +1527,16 @@
       "properties": {
         "kind": {
           "$ref": "#/$defs/TurnErrorKind"
+        },
+        "protocol": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelProtocolDiagnostic"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "provider": {
           "anyOf": [

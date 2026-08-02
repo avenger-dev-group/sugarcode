@@ -379,6 +379,23 @@ export type ConversationTurnError = Readonly<{
     | 'outputTooLarge'
     | 'stateUnavailable';
   retryable: boolean;
+  protocol?: Readonly<{
+    stage:
+      | 'streamEvent'
+      | 'responseAssembly'
+      | 'outputNormalization'
+      | 'runtimeClassification';
+    code:
+      | 'wireMismatch'
+      | 'invalidEventShape'
+      | 'ambiguousOutputReconciliation'
+      | 'malformedToolCall'
+      | 'terminalLifecycleViolation'
+      | 'continuationOutputMismatch'
+      | 'outputIndexMismatch';
+    eventType?: string;
+    shapeSha256: string;
+  }>;
 }>;
 
 export type ConversationTokenUsage = Readonly<{
@@ -586,6 +603,27 @@ const ERROR_KINDS = new Set<ConversationTurnError['kind']>([
   'stateUnavailable',
 ]);
 
+const PROTOCOL_STAGES = new Set<
+  NonNullable<ConversationTurnError['protocol']>['stage']
+>([
+  'streamEvent',
+  'responseAssembly',
+  'outputNormalization',
+  'runtimeClassification',
+]);
+
+const PROTOCOL_CODES = new Set<
+  NonNullable<ConversationTurnError['protocol']>['code']
+>([
+  'wireMismatch',
+  'invalidEventShape',
+  'ambiguousOutputReconciliation',
+  'malformedToolCall',
+  'terminalLifecycleViolation',
+  'continuationOutputMismatch',
+  'outputIndexMismatch',
+]);
+
 const COMMAND_APPROVAL_DECISIONS = new Set<ConversationCommandApprovalDecision>(
   [
     'approved',
@@ -713,7 +751,26 @@ const isTurnError = (value: unknown): value is ConversationTurnError =>
   isRecord(value) &&
   typeof value.kind === 'string' &&
   ERROR_KINDS.has(value.kind as ConversationTurnError['kind']) &&
-  typeof value.retryable === 'boolean';
+  typeof value.retryable === 'boolean' &&
+  (value.protocol === undefined ||
+    (isRecord(value.protocol) &&
+      typeof value.protocol.stage === 'string' &&
+      PROTOCOL_STAGES.has(
+        value.protocol.stage as NonNullable<
+          ConversationTurnError['protocol']
+        >['stage'],
+      ) &&
+      typeof value.protocol.code === 'string' &&
+      PROTOCOL_CODES.has(
+        value.protocol.code as NonNullable<
+          ConversationTurnError['protocol']
+        >['code'],
+      ) &&
+      (value.protocol.eventType === undefined ||
+        (typeof value.protocol.eventType === 'string' &&
+          /^[A-Za-z0-9_./-]{1,128}$/.test(value.protocol.eventType))) &&
+      typeof value.protocol.shapeSha256 === 'string' &&
+      /^[0-9a-f]{64}$/.test(value.protocol.shapeSha256)));
 
 const isMessage = (value: unknown): value is ConversationMessage =>
   isRecord(value) &&

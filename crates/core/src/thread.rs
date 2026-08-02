@@ -2,6 +2,7 @@ use futures_util::FutureExt;
 use futures_util::future::BoxFuture;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use sugarcode_model_provider::ModelInstruction;
@@ -61,6 +62,7 @@ pub struct PreparedTextTurn {
     pub user_item: Option<CoreItemSnapshot>,
     pub model: Option<DurableModelSelectionSnapshot>,
     pub history: Vec<PreparedMessage>,
+    pub current_input_index: Option<usize>,
     pub instructions: Vec<ModelInstruction>,
     pub workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
     pub workspace_skills: Option<DurableWorkspaceSkillsAudit>,
@@ -838,13 +840,20 @@ impl Core {
     }
 
     pub fn latest_model_profile_id(&self, thread_id: &ThreadId) -> Option<String> {
+        self.latest_model_selection(thread_id)
+            .map(|model| model.profile_id)
+    }
+
+    pub fn latest_model_selection(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Option<DurableModelSelectionSnapshot> {
         self.threads
             .get(thread_id)?
             .turns
             .values()
             .rev()
-            .find_map(|turn| turn.model.as_ref())
-            .map(|model| model.profile_id.clone())
+            .find_map(|turn| turn.model.clone())
     }
 
     pub fn thread_count(&self) -> usize {
@@ -1378,31 +1387,33 @@ impl Core {
             });
         }
 
-        let completed_turns = thread
+        let effective_turns = thread
             .turns
             .values()
-            .filter(|turn| turn.state == TurnState::Completed)
+            .filter(|turn| turn.state != TurnState::InProgress)
             .collect::<Vec<_>>();
-        let latest_compaction = completed_turns
+        let latest_compaction = effective_turns
             .iter()
             .rev()
-            .find_map(|turn| turn.context_compaction.as_ref());
+            .find(|turn| turn.state == TurnState::Completed)
+            .and_then(|turn| turn.context_compaction.as_ref());
         let mut history = Vec::new();
         if let Some(compaction) = latest_compaction {
             history.push(PreparedMessage::ContextCompaction {
                 content: compaction.message.clone(),
             });
-            for turn in completed_turns
+            for turn in effective_turns
                 .iter()
                 .filter(|turn| turn.id > compaction.through_turn_id)
             {
-                append_prepared_turn(&mut history, turn);
+                append_effective_turn(&mut history, turn);
             }
         } else {
-            for turn in &completed_turns {
-                append_prepared_turn(&mut history, turn);
+            for turn in &effective_turns {
+                append_effective_turn(&mut history, turn);
             }
         }
+        let current_input_index = input.as_ref().map(|_| history.len());
         if let Some(content) = input.as_ref() {
             history.push(PreparedMessage::UserContent {
                 content: content.clone(),
@@ -1418,12 +1429,12 @@ impl Core {
             .ok_or(CoreError::ContextTooLarge)?;
         let mut context_compaction = None;
         if pre_context_bytes > compaction_target_bytes {
-            let durable_completed_turns = completed_turns
+            let durable_effective_turns = effective_turns
                 .iter()
                 .map(|turn| durable_turn_snapshot(turn))
                 .collect::<Vec<_>>();
             let provisional = sugarcode_state::build_context_compaction(
-                &durable_completed_turns,
+                &durable_effective_turns,
                 u64::try_from(pre_context_bytes).map_err(|_| CoreError::ContextTooLarge)?,
                 0,
             )
@@ -1443,7 +1454,7 @@ impl Core {
                 return Err(CoreError::ContextTooLarge);
             }
             let compaction = sugarcode_state::build_context_compaction(
-                &durable_completed_turns,
+                &durable_effective_turns,
                 u64::try_from(pre_context_bytes).map_err(|_| CoreError::ContextTooLarge)?,
                 u64::try_from(post_context_bytes).map_err(|_| CoreError::ContextTooLarge)?,
             )
@@ -1548,6 +1559,7 @@ impl Core {
             user_item,
             model,
             history,
+            current_input_index,
             instructions: Vec::new(),
             workspace_instructions,
             workspace_skills,
@@ -1772,6 +1784,7 @@ impl Core {
                 kind: DurableTurnErrorKind::OutputTooLarge,
                 retryable: false,
                 provider: None,
+                protocol: None,
                 tool_schema: None,
             }),
             usage: Some(DurableUsage {
@@ -1920,6 +1933,70 @@ fn append_prepared_turn(history: &mut Vec<PreparedMessage>, turn: &Turn) {
             continue;
         }
         if let Some(message) = prepared_message_for_item(item) {
+            history.push(message);
+        }
+    }
+}
+
+fn append_effective_turn(history: &mut Vec<PreparedMessage>, turn: &Turn) {
+    if turn.state == TurnState::Completed {
+        append_prepared_turn(history, turn);
+        return;
+    }
+
+    let local_calls = turn
+        .items
+        .values()
+        .filter_map(|item| match &item.kind {
+            ItemKind::ToolCall { call_id, name, .. } => Some((call_id.clone(), name.clone())),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let local_results = turn
+        .items
+        .values()
+        .filter_map(|item| match &item.kind {
+            ItemKind::ToolResult { call_id, name, .. } => Some((call_id.clone(), name.clone())),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let mcp_calls = turn
+        .items
+        .values()
+        .filter_map(|item| match &item.kind {
+            ItemKind::McpToolCall { call_id, name, .. } => Some((call_id.clone(), name.clone())),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let mcp_results = turn
+        .items
+        .values()
+        .filter_map(|item| match &item.kind {
+            ItemKind::McpToolResult { call_id, name, .. } => Some((call_id.clone(), name.clone())),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+
+    for item in turn.items.values() {
+        let safe = match &item.kind {
+            ItemKind::ToolCall { call_id, name, .. } => {
+                local_results.contains(&(call_id.clone(), name.clone()))
+            }
+            ItemKind::ToolResult { call_id, name, .. } => {
+                local_calls.contains(&(call_id.clone(), name.clone()))
+            }
+            ItemKind::McpToolCall { call_id, name, .. } => {
+                mcp_results.contains(&(call_id.clone(), name.clone()))
+            }
+            ItemKind::McpToolResult { call_id, name, .. } => {
+                mcp_calls.contains(&(call_id.clone(), name.clone()))
+            }
+            ItemKind::AgentMessage { .. }
+            | ItemKind::AgentCommentary { .. }
+            | ItemKind::ContextCompaction { .. } => false,
+            _ => true,
+        };
+        if safe && let Some(message) = prepared_message_for_item(item) {
             history.push(message);
         }
     }

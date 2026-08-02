@@ -164,6 +164,7 @@ fn failed_and_interrupted_partial_output_is_never_searchable_even_after_rebuild(
                     kind: DurableTurnErrorKind::Protocol,
                     retryable: false,
                     provider: None,
+                    protocol: None,
                     tool_schema: None,
                 });
             }

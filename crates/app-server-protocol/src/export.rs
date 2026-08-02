@@ -1,5 +1,6 @@
 use crate::AgentMessageDeltaNotification;
 use crate::AgentOutputDeltaNotification;
+use crate::AgentOutputDiscardedNotification;
 use crate::AgentOutputRef;
 use crate::AgentTaskAccess;
 use crate::AgentTaskRole;
@@ -38,6 +39,9 @@ use crate::McpToolCallApprovalParams;
 use crate::McpToolCallApprovalResponse;
 use crate::McpToolCallApprovalResponseDecision;
 use crate::McpToolResult;
+use crate::ModelProtocolCode;
+use crate::ModelProtocolDiagnostic;
+use crate::ModelProtocolStage;
 use crate::ModelProviderFamily;
 use crate::ModelSelectionCapabilities;
 use crate::ModelSelectionSnapshot;
@@ -168,6 +172,7 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         AgentOutputRef::decl(),
         ItemStartedNotification::decl(),
         AgentOutputDeltaNotification::decl(),
+        AgentOutputDiscardedNotification::decl(),
         AgentMessageDeltaNotification::decl(),
         ItemCompletedNotification::decl(),
         Thread::decl(),
@@ -202,6 +207,9 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         TurnErrorKind::decl(),
         TurnError::decl(),
         ProviderErrorMetadata::decl(),
+        ModelProtocolStage::decl(),
+        ModelProtocolCode::decl(),
+        ModelProtocolDiagnostic::decl(),
         ToolSchemaError::decl(),
         TokenUsageSource::decl(),
         TokenUsageSample::decl(),
@@ -405,6 +413,10 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("AgentOutputDeltaNotification.schema.json"),
         &schema_for!(AgentOutputDeltaNotification),
+    )?;
+    write_schema(
+        out_dir.join("AgentOutputDiscardedNotification.schema.json"),
+        &schema_for!(AgentOutputDiscardedNotification),
     )?;
     write_schema(
         out_dir.join("AgentMessageDeltaNotification.schema.json"),

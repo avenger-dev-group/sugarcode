@@ -8,6 +8,9 @@ use crate::ModelFinishReason;
 use crate::ModelMessage;
 use crate::ModelOutputItem;
 use crate::ModelOutputItemKind;
+use crate::ModelProtocolCode;
+use crate::ModelProtocolDiagnostic;
+use crate::ModelProtocolStage;
 use crate::ModelProvider;
 use crate::ModelRequest;
 use crate::ModelResponse;
@@ -57,6 +60,7 @@ use streaming::OpenAiStreamState;
 
 const MODEL_STREAM_CAPACITY: usize = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MODEL_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_SSE_EVENT_BYTES: usize = crate::MAX_PROVIDER_RESPONSE_BYTES;
 const MAX_SEMANTIC_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 16 * 1024;
@@ -362,7 +366,14 @@ async fn process_native_stream(
     loop {
         let next = tokio::select! {
             _ = sender.closed() => return,
-            next = stream.next() => next,
+            next = tokio::time::timeout(MODEL_STREAM_IDLE_TIMEOUT, stream.next()) => next,
+        };
+        let next = match next {
+            Ok(next) => next,
+            Err(_) => {
+                send_stream_error(&sender, ModelError::new(ModelErrorKind::Timeout, true)).await;
+                return;
+            }
         };
         let event = match next {
             None => {
@@ -653,15 +664,27 @@ fn parse_openai_response(value: Value) -> Result<ModelResponse, ModelError> {
             .and_then(Value::as_u64),
         total_tokens: u64_field(usage, "total_tokens"),
     });
-    let provider_context = ProviderContextEnvelope::new_with_replay_tokens(
-        ProviderWireApi::OpenAiResponses,
-        value
-            .get("id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        serde_json::to_vec(output).map_err(|_| protocol_error())?,
-        usage.and_then(|usage| usage.output_tokens),
-    )?;
+    let provider_context = output
+        .iter()
+        .any(|item| {
+            item.get("type").and_then(Value::as_str) == Some("reasoning")
+                && item
+                    .get("encrypted_content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| !content.is_empty())
+        })
+        .then(|| {
+            ProviderContextEnvelope::new_with_replay_tokens(
+                ProviderWireApi::OpenAiResponses,
+                value
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                serde_json::to_vec(output).map_err(|_| protocol_error())?,
+                usage.and_then(|usage| usage.output_tokens),
+            )
+        })
+        .transpose()?;
     let mut items = Vec::new();
     for value in output {
         match value.get("type").and_then(Value::as_str) {
@@ -688,10 +711,60 @@ fn parse_openai_response(value: Value) -> Result<ModelResponse, ModelError> {
                 }
             }
             Some("function_call") => {
-                let id = required_string(value, "call_id")?;
-                let name = required_string(value, "name")?;
-                let arguments = required_string(value, "arguments")
-                    .and_then(|raw| serde_json::from_str(raw).map_err(|_| protocol_error()))?;
+                let nested = value.get("function").filter(|value| value.is_object());
+                let id = value
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| value.get("id").and_then(Value::as_str))
+                    .or_else(|| {
+                        nested.and_then(|value| value.get("call_id").and_then(Value::as_str))
+                    })
+                    .ok_or_else(|| {
+                        protocol_error_for_json(
+                            ModelProtocolStage::OutputNormalization,
+                            ModelProtocolCode::MalformedToolCall,
+                            Some("response.completed"),
+                            value,
+                        )
+                    })?;
+                let name = value
+                    .get("name")
+                    .or_else(|| nested.and_then(|value| value.get("name")))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        protocol_error_for_json(
+                            ModelProtocolStage::OutputNormalization,
+                            ModelProtocolCode::MalformedToolCall,
+                            Some("response.completed"),
+                            value,
+                        )
+                    })?;
+                let raw_arguments = value
+                    .get("arguments")
+                    .or_else(|| nested.and_then(|value| value.get("arguments")));
+                let arguments = match raw_arguments {
+                    Some(Value::String(raw)) => serde_json::from_str(raw)
+                        // Preserve malformed provider arguments as a
+                        // non-object value. Core's tool-schema boundary will
+                        // reject it and send bounded correction feedback; the
+                        // adapter must not execute or discard the call merely
+                        // because a gateway encoded invalid JSON text.
+                        .unwrap_or_else(|_| Value::String(raw.clone())),
+                    Some(arguments @ Value::Object(_)) => arguments.clone(),
+                    // A no-argument function is valid; several Responses
+                    // gateways omit `arguments` or send it as null. Let Core
+                    // perform the normal schema validation with an empty
+                    // object instead of discarding the tool call at parsing.
+                    None | Some(Value::Null) => serde_json::json!({}),
+                    Some(_) => {
+                        return Err(protocol_error_for_json(
+                            ModelProtocolStage::OutputNormalization,
+                            ModelProtocolCode::MalformedToolCall,
+                            Some("response.completed"),
+                            value,
+                        ));
+                    }
+                };
                 push_tool(&mut items, id, name, arguments);
             }
             Some("reasoning") => {}
@@ -721,7 +794,7 @@ fn parse_openai_response(value: Value) -> Result<ModelResponse, ModelError> {
                 ModelContinuation::Complete
             },
         },
-        provider_context: Some(Box::new(provider_context)),
+        provider_context: provider_context.map(Box::new),
     })
 }
 
@@ -876,7 +949,23 @@ fn map_error(status: StatusCode, body: &[u8]) -> ModelError {
 }
 
 fn protocol_error() -> ModelError {
-    ModelError::new(ModelErrorKind::Protocol, false)
+    protocol_error_for_json(
+        ModelProtocolStage::ResponseAssembly,
+        ModelProtocolCode::InvalidEventShape,
+        None,
+        &Value::Null,
+    )
+}
+
+fn protocol_error_for_json(
+    stage: ModelProtocolStage,
+    code: ModelProtocolCode,
+    event_type: Option<&str>,
+    value: &Value,
+) -> ModelError {
+    ModelError::new(ModelErrorKind::Protocol, false).with_protocol_diagnostic(
+        ModelProtocolDiagnostic::from_json_shape(stage, code, event_type, value),
+    )
 }
 
 fn provider_request_id(headers: &HeaderMap) -> Option<String> {

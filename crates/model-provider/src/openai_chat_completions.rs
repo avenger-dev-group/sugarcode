@@ -5,7 +5,6 @@ use crate::ModelError;
 use crate::ModelErrorKind;
 use crate::ModelEvent;
 use crate::ModelFinishReason;
-use crate::ModelInstruction;
 use crate::ModelMessage;
 use crate::ModelOutputItem;
 use crate::ModelOutputItemKind;
@@ -41,6 +40,8 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -49,6 +50,7 @@ use zeroize::Zeroizing;
 
 const MODEL_STREAM_CAPACITY: usize = 16;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MODEL_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_ERROR_RESPONSE_BYTES: usize = 16 * 1024;
 const MAX_SSE_EVENT_BYTES: usize = crate::MAX_PROVIDER_RESPONSE_BYTES;
@@ -58,6 +60,7 @@ const MAX_TOOL_ARGUMENT_BYTES: usize = 32 * 1024;
 const MAX_ACCUMULATED_SEMANTIC_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TOOL_COMMENTARY_BYTES: usize = 512;
 const MAX_OUTPUT_TEXT_BYTES: usize = 512 * 1024;
+static COMPATIBLE_TOOL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub struct OpenAiChatCompletionsProvider {
     client: reqwest::Client,
@@ -147,6 +150,38 @@ impl ModelProvider for OpenAiChatCompletionsProvider {
         }
         .boxed()
     }
+
+    fn retry_after_no_output(&self, request: ModelRequest) -> BoxModelFuture<'_> {
+        async move {
+            let (request, tool_names) = crate::tool_names::normalize_request(request).into_parts();
+            let mut body =
+                ChatRequest::from_model_request(request, self.strict_tools, self.parallel_tools)?;
+            body.stream = false;
+            let allow_tools = !body.tools.is_empty();
+            let mut builder = self.client.post(self.endpoint.clone()).json(&body);
+            if let Some(token) = &self.token {
+                let encoded = Zeroizing::new(format!("Bearer {}", token.as_str()));
+                let mut value = HeaderValue::from_str(encoded.as_str())
+                    .map_err(|_| ModelError::new(ModelErrorKind::Authentication, false))?;
+                value.set_sensitive(true);
+                builder = builder.header(AUTHORIZATION, value);
+            }
+            let response = builder.send().await.map_err(map_reqwest_error)?;
+            if !response.status().is_success() {
+                return Err(map_error_response(response).await);
+            }
+
+            let (sender, receiver) = mpsc::channel(MODEL_STREAM_CAPACITY);
+            tokio::spawn(process_non_stream_response(
+                response,
+                sender,
+                allow_tools,
+                tool_names,
+            ));
+            Ok(ReceiverStream::new(receiver).boxed())
+        }
+        .boxed()
+    }
 }
 
 fn validate_endpoint(endpoint: &Url) -> Result<(), ModelError> {
@@ -198,26 +233,67 @@ async fn process_stream(
     let mut finish = None;
     let mut usage: Option<ModelUsage> = None;
     let mut output_text = String::new();
-    let mut reasoning_content = String::new();
+    let mut reasoning = ChatReasoningState::default();
     let mut semantic_output_bytes = 0usize;
     let mut tool_assemblers = BTreeMap::<u64, ToolCallAssembler>::new();
     let mut saw_unsupported_output = false;
     loop {
         let next = tokio::select! {
             _ = sender.closed() => return,
-            next = stream.next() => next,
+            next = tokio::time::timeout(MODEL_STREAM_IDLE_TIMEOUT, stream.next()) => next,
+        };
+        let next = match next {
+            Ok(next) => next,
+            Err(_) => {
+                let retryable = reasoning.is_empty() && tool_assemblers.is_empty();
+                send_error(&sender, ModelError::new(ModelErrorKind::Timeout, retryable)).await;
+                return;
+            }
         };
         let event = match next {
             None => {
-                send_error(&sender, ModelError::new(ModelErrorKind::Disconnected, true)).await;
+                let finish = match finish.take() {
+                    Some(finish) => finish,
+                    None if output_text.is_empty()
+                        && tool_assemblers.is_empty()
+                        && reasoning.is_empty() =>
+                    {
+                        send_error(&sender, ModelError::new(ModelErrorKind::Disconnected, true))
+                            .await;
+                        return;
+                    }
+                    None => match infer_chat_finish(
+                        allow_tools,
+                        saw_unsupported_output,
+                        &mut tool_assemblers,
+                        &output_text,
+                    ) {
+                        Ok(finish) => finish,
+                        Err(error) => {
+                            send_error(&sender, error).await;
+                            return;
+                        }
+                    },
+                };
+                complete_chat_stream(
+                    &sender,
+                    finish,
+                    output_text,
+                    reasoning,
+                    usage,
+                    provider_request_id,
+                    &tool_names,
+                )
+                .await;
                 return;
             }
             Some(Err(error)) => {
+                let retryable = reasoning.is_empty() && tool_assemblers.is_empty();
                 let error = match error {
                     EventStreamError::Transport(error)
                         if error.kind() != io::ErrorKind::InvalidData =>
                     {
-                        ModelError::new(ModelErrorKind::Disconnected, true)
+                        ModelError::new(ModelErrorKind::Disconnected, retryable)
                     }
                     EventStreamError::Transport(error)
                         if error.kind() == io::ErrorKind::InvalidData =>
@@ -228,7 +304,7 @@ async fn process_stream(
                         ModelError::new(ModelErrorKind::Protocol, false)
                     }
                     EventStreamError::Transport(_) => {
-                        ModelError::new(ModelErrorKind::Disconnected, true)
+                        ModelError::new(ModelErrorKind::Disconnected, retryable)
                     }
                 };
                 send_error(&sender, error).await;
@@ -237,158 +313,32 @@ async fn process_stream(
             Some(Ok(event)) => event,
         };
         if event.data == "[DONE]" {
-            let Some(finish) = finish.take() else {
-                send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
-                return;
+            let finish = match finish.take() {
+                Some(finish) => Ok(finish),
+                None => infer_chat_finish(
+                    allow_tools,
+                    saw_unsupported_output,
+                    &mut tool_assemblers,
+                    &output_text,
+                ),
             };
-            let portable_text = output_text.clone();
-            let mut output = Vec::new();
-            match finish {
-                ChatFinish::Incomplete => {
-                    send_error(&sender, ModelError::new(ModelErrorKind::Incomplete, false)).await;
-                    return;
-                }
-                ChatFinish::Filtered => {
-                    send_error(&sender, ModelError::new(ModelErrorKind::Filtered, false)).await;
-                    return;
-                }
-                ChatFinish::Unsupported => {
-                    send_error(
-                        &sender,
-                        ModelError::new(ModelErrorKind::UnsupportedOutput, false),
-                    )
-                    .await;
-                    return;
-                }
-                ChatFinish::Final => {
-                    if !output_text
-                        .chars()
-                        .any(|character| !character.is_whitespace())
-                    {
-                        send_error(&sender, ModelError::new(ModelErrorKind::Incomplete, false))
-                            .await;
-                        return;
-                    }
-                    output.push(ModelOutputItem {
-                        output_index: 0,
-                        kind: ModelOutputItemKind::AssistantText {
-                            phase: ModelTextPhase::Final,
-                            text: output_text,
-                        },
-                    });
-                }
-                ChatFinish::ToolCalls(calls) => {
-                    if output_text.len() > MAX_TOOL_COMMENTARY_BYTES {
-                        send_error(
-                            &sender,
-                            ModelError::new(ModelErrorKind::OutputTooLarge, false),
-                        )
-                        .await;
-                        return;
-                    }
-                    if !output_text.is_empty() {
-                        output.push(ModelOutputItem {
-                            output_index: 0,
-                            kind: ModelOutputItemKind::AssistantText {
-                                phase: ModelTextPhase::Commentary,
-                                text: output_text,
-                            },
-                        });
-                    }
-                    for mut call in calls {
-                        if let Some(internal_name) = tool_names.get(&call.name) {
-                            call.name.clone_from(internal_name);
-                        }
-                        let output_index = match u32::try_from(output.len()) {
-                            Ok(output_index) => output_index,
-                            Err(_) => {
-                                send_error(
-                                    &sender,
-                                    ModelError::new(ModelErrorKind::OutputTooLarge, false),
-                                )
-                                .await;
-                                return;
-                            }
-                        };
-                        output.push(ModelOutputItem {
-                            output_index,
-                            kind: ModelOutputItemKind::ToolCall(call),
-                        });
-                    }
-                }
-            }
-            let continuation = if output
-                .iter()
-                .any(|item| matches!(item.kind, ModelOutputItemKind::ToolCall(_)))
-            {
-                ModelContinuation::ToolCalls
-            } else {
-                ModelContinuation::Complete
-            };
-            let raw_tool_calls = output
-                .iter()
-                .filter_map(|item| match &item.kind {
-                    ModelOutputItemKind::ToolCall(call) => Some(ChatToolCall {
-                        id: call.id.clone(),
-                        kind: "function".to_owned(),
-                        function: ChatFunctionCall {
-                            name: tool_names
-                                .iter()
-                                .find_map(|(wire, internal)| {
-                                    (internal == &call.name).then_some(wire)
-                                })
-                                .unwrap_or(&call.name)
-                                .clone(),
-                            arguments: serde_json::to_string(&call.arguments)
-                                .expect("tool arguments serialize"),
-                        },
-                    }),
-                    ModelOutputItemKind::AssistantText { .. } => None,
-                })
-                .collect::<Vec<_>>();
-            let reasoning_content = (!reasoning_content.is_empty())
-                .then_some(serde_json::Value::String(reasoning_content));
-            let context_payload = reasoning_content.as_ref().map(|reasoning_content| {
-                serde_json::to_vec(&ChatMessage {
-                    role: "assistant".to_owned(),
-                    content: (!portable_text.is_empty())
-                        .then_some(ChatContent::Text(portable_text)),
-                    tool_calls: raw_tool_calls,
-                    tool_call_id: None,
-                    reasoning_content: Some(reasoning_content.clone()),
-                })
-                .map_err(|_| ModelError::new(ModelErrorKind::Protocol, false))
-                .and_then(|payload| {
-                    ProviderContextEnvelope::new_with_replay_tokens(
-                        ProviderWireApi::OpenAiChatCompletions,
-                        provider_request_id.clone(),
-                        payload,
-                        usage.and_then(|usage| usage.output_tokens),
-                    )
-                })
-            });
-            let provider_context = match context_payload.transpose() {
-                Ok(context) => context,
+            let finish = match finish {
+                Ok(finish) => finish,
                 Err(error) => {
                     send_error(&sender, error).await;
                     return;
                 }
             };
-            let _ = sender
-                .send(Ok(ModelEvent::ResponseCompleted(ModelResponse {
-                    output,
-                    usage,
-                    terminal: ModelTerminalMetadata {
-                        finish_reason: match continuation {
-                            ModelContinuation::Complete => ModelFinishReason::Stop,
-                            ModelContinuation::ToolCalls => ModelFinishReason::ToolCalls,
-                        },
-                        provider_request_id,
-                        continuation,
-                    },
-                    provider_context: provider_context.map(Box::new),
-                })))
-                .await;
+            complete_chat_stream(
+                &sender,
+                finish,
+                output_text,
+                reasoning,
+                usage,
+                provider_request_id,
+                &tool_names,
+            )
+            .await;
             return;
         }
         let chunk = match serde_json::from_str::<ChatChunk>(&event.data) {
@@ -399,7 +349,8 @@ async fn process_stream(
             }
         };
         if chunk.error.is_some() {
-            send_error(&sender, ModelError::new(ModelErrorKind::Server, true)).await;
+            let retryable = reasoning.is_empty() && tool_assemblers.is_empty();
+            send_error(&sender, ModelError::new(ModelErrorKind::Server, retryable)).await;
             return;
         }
         if finish.is_some() {
@@ -429,8 +380,17 @@ async fn process_stream(
                 return;
             }
             saw_unsupported_output |= choice.delta.has_unsupported_output(allow_tools);
-            if let Some(reasoning) = choice.delta.reasoning_content.take() {
-                let Some(reasoning) = reasoning.as_str() else {
+            for (value, target) in [
+                (
+                    choice.delta.reasoning_content.take(),
+                    &mut reasoning.content,
+                ),
+                (choice.delta.reasoning.take(), &mut reasoning.reasoning),
+            ] {
+                let Some(value) = value else {
+                    continue;
+                };
+                let Some(fragment) = value.as_str() else {
                     send_error(
                         &sender,
                         ModelError::new(ModelErrorKind::UnsupportedOutput, false),
@@ -438,7 +398,7 @@ async fn process_stream(
                     .await;
                     return;
                 };
-                semantic_output_bytes = match semantic_output_bytes.checked_add(reasoning.len()) {
+                semantic_output_bytes = match semantic_output_bytes.checked_add(fragment.len()) {
                     Some(bytes) if bytes <= MAX_ACCUMULATED_SEMANTIC_OUTPUT_BYTES => bytes,
                     _ => {
                         send_error(
@@ -449,7 +409,26 @@ async fn process_stream(
                         return;
                     }
                 };
-                reasoning_content.push_str(reasoning);
+                target.push_str(fragment);
+            }
+            if let Some(details) = choice.delta.reasoning_details.take() {
+                let details_bytes =
+                    serde_json::to_vec(&details).map_or(usize::MAX, |value| value.len());
+                semantic_output_bytes = match semantic_output_bytes.checked_add(details_bytes) {
+                    Some(bytes) if bytes <= MAX_ACCUMULATED_SEMANTIC_OUTPUT_BYTES => bytes,
+                    _ => {
+                        send_error(
+                            &sender,
+                            ModelError::new(ModelErrorKind::OutputTooLarge, false),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                match details {
+                    serde_json::Value::Array(values) => reasoning.details.extend(values),
+                    value => reasoning.details.push(value),
+                }
             }
             if let Some(content) = choice.delta.content
                 && !content.is_empty()
@@ -543,18 +522,9 @@ async fn process_stream(
                             continue;
                         }
                         let assemblers = std::mem::take(&mut tool_assemblers);
-                        if assemblers
-                            .keys()
-                            .copied()
-                            .ne(0..u64::try_from(assemblers.len()).unwrap_or(u64::MAX))
-                        {
-                            send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false))
-                                .await;
-                            return;
-                        }
                         let calls = assemblers
-                            .into_values()
-                            .map(ToolCallAssembler::finish)
+                            .into_iter()
+                            .map(|(index, assembler)| assembler.finish(index))
                             .collect::<Result<Vec<_>, _>>();
                         match calls {
                             Ok(calls) => {
@@ -590,12 +560,463 @@ async fn process_stream(
     }
 }
 
+async fn process_non_stream_response(
+    response: reqwest::Response,
+    sender: mpsc::Sender<Result<ModelEvent, ModelError>>,
+    allow_tools: bool,
+    tool_names: BTreeMap<String, String>,
+) {
+    let provider_request_id = ["x-request-id", "request-id"]
+        .into_iter()
+        .find_map(|name| response.headers().get(name))
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    let body = match bounded_success_body(response).await {
+        Ok(body) => body,
+        Err(error) => {
+            send_error(&sender, error).await;
+            return;
+        }
+    };
+    let completion = match serde_json::from_slice::<ChatCompletion>(&body) {
+        Ok(completion) => completion,
+        Err(_) => {
+            send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
+            return;
+        }
+    };
+    if completion.error.is_some() || completion.choices.len() != 1 {
+        send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
+        return;
+    }
+    let mut choice = completion
+        .choices
+        .into_iter()
+        .next()
+        .expect("choice length checked");
+    if choice.index != 0 || choice.message.has_protocol_violation() {
+        send_error(&sender, ModelError::new(ModelErrorKind::Protocol, false)).await;
+        return;
+    }
+    let saw_unsupported_output = choice.message.has_unsupported_output(allow_tools);
+    let mut semantic_output_bytes = 0usize;
+    let mut reasoning = ChatReasoningState::default();
+    for (value, target) in [
+        (
+            choice.message.reasoning_content.take(),
+            &mut reasoning.content,
+        ),
+        (choice.message.reasoning.take(), &mut reasoning.reasoning),
+    ] {
+        let Some(value) = value else {
+            continue;
+        };
+        let Some(fragment) = value.as_str() else {
+            send_error(
+                &sender,
+                ModelError::new(ModelErrorKind::UnsupportedOutput, false),
+            )
+            .await;
+            return;
+        };
+        semantic_output_bytes = match semantic_output_bytes.checked_add(fragment.len()) {
+            Some(bytes) if bytes <= MAX_ACCUMULATED_SEMANTIC_OUTPUT_BYTES => bytes,
+            _ => {
+                send_error(
+                    &sender,
+                    ModelError::new(ModelErrorKind::OutputTooLarge, false),
+                )
+                .await;
+                return;
+            }
+        };
+        target.push_str(fragment);
+    }
+    if let Some(details) = choice.message.reasoning_details.take() {
+        let details_bytes = serde_json::to_vec(&details).map_or(usize::MAX, |value| value.len());
+        semantic_output_bytes = match semantic_output_bytes.checked_add(details_bytes) {
+            Some(bytes) if bytes <= MAX_ACCUMULATED_SEMANTIC_OUTPUT_BYTES => bytes,
+            _ => {
+                send_error(
+                    &sender,
+                    ModelError::new(ModelErrorKind::OutputTooLarge, false),
+                )
+                .await;
+                return;
+            }
+        };
+        match details {
+            serde_json::Value::Array(values) => reasoning.details.extend(values),
+            value => reasoning.details.push(value),
+        }
+    }
+    let output_text = choice.message.content.take().unwrap_or_default();
+    if output_text.len() > MAX_OUTPUT_TEXT_BYTES
+        || semantic_output_bytes
+            .checked_add(output_text.len())
+            .is_none_or(|bytes| bytes > MAX_ACCUMULATED_SEMANTIC_OUTPUT_BYTES)
+    {
+        send_error(
+            &sender,
+            ModelError::new(ModelErrorKind::OutputTooLarge, false),
+        )
+        .await;
+        return;
+    }
+
+    let mut tool_assemblers = BTreeMap::<u64, ToolCallAssembler>::new();
+    if let Some(tool_calls) = choice.message.tool_calls.take() {
+        for (index, mut tool_call) in tool_calls.into_iter().enumerate() {
+            let index = match u64::try_from(index) {
+                Ok(index) => index,
+                Err(_) => {
+                    send_error(
+                        &sender,
+                        ModelError::new(ModelErrorKind::OutputTooLarge, false),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            tool_call.index = index;
+            semantic_output_bytes = match tool_call
+                .accumulated_bytes()
+                .and_then(|bytes| semantic_output_bytes.checked_add(bytes))
+            {
+                Some(bytes) if bytes <= MAX_ACCUMULATED_SEMANTIC_OUTPUT_BYTES => bytes,
+                _ => {
+                    send_error(
+                        &sender,
+                        ModelError::new(ModelErrorKind::OutputTooLarge, false),
+                    )
+                    .await;
+                    return;
+                }
+            };
+            if let Err(error) = tool_assemblers.entry(index).or_default().push(tool_call) {
+                send_error(&sender, error).await;
+                return;
+            }
+        }
+    }
+    let finish = match finish_chat_response(
+        choice.finish_reason.as_deref(),
+        allow_tools,
+        saw_unsupported_output,
+        &mut tool_assemblers,
+        &output_text,
+    ) {
+        Ok(finish) => finish,
+        Err(error) => {
+            send_error(&sender, error).await;
+            return;
+        }
+    };
+    if !output_text.is_empty()
+        && sender
+            .send(Ok(ModelEvent::OutputTextDelta {
+                output_index: 0,
+                delta: output_text.clone(),
+            }))
+            .await
+            .is_err()
+    {
+        return;
+    }
+    complete_chat_stream(
+        &sender,
+        finish,
+        output_text,
+        reasoning,
+        completion.usage.map(ModelUsage::from),
+        provider_request_id,
+        &tool_names,
+    )
+    .await;
+}
+
+fn finish_chat_response(
+    finish_reason: Option<&str>,
+    allow_tools: bool,
+    saw_unsupported_output: bool,
+    tool_assemblers: &mut BTreeMap<u64, ToolCallAssembler>,
+    output_text: &str,
+) -> Result<ChatFinish, ModelError> {
+    match finish_reason {
+        None => infer_chat_finish(
+            allow_tools,
+            saw_unsupported_output,
+            tool_assemblers,
+            output_text,
+        ),
+        Some("stop") if tool_assemblers.is_empty() => Ok(if saw_unsupported_output {
+            ChatFinish::Unsupported
+        } else {
+            ChatFinish::Final
+        }),
+        Some("tool_calls" | "stop") => {
+            if tool_assemblers.is_empty() {
+                return Ok(ChatFinish::Unsupported);
+            }
+            let assemblers = std::mem::take(tool_assemblers);
+            let calls = assemblers
+                .into_iter()
+                .map(|(index, assembler)| assembler.finish(index))
+                .collect::<Result<Vec<_>, _>>()?;
+            if !allow_tools || saw_unsupported_output || calls.iter().any(Option::is_none) {
+                Ok(ChatFinish::Unsupported)
+            } else {
+                Ok(ChatFinish::ToolCalls(calls.into_iter().flatten().collect()))
+            }
+        }
+        Some("length") => Ok(ChatFinish::Incomplete),
+        Some("content_filter") => Ok(ChatFinish::Filtered),
+        Some("insufficient_system_resource") => Err(ModelError::new(ModelErrorKind::Server, true)),
+        Some("function_call") => Ok(ChatFinish::Unsupported),
+        Some(_) => Err(ModelError::new(ModelErrorKind::Protocol, false)),
+    }
+}
+
+fn infer_chat_finish(
+    allow_tools: bool,
+    saw_unsupported_output: bool,
+    tool_assemblers: &mut BTreeMap<u64, ToolCallAssembler>,
+    output_text: &str,
+) -> Result<ChatFinish, ModelError> {
+    if saw_unsupported_output {
+        return Ok(ChatFinish::Unsupported);
+    }
+    if !tool_assemblers.is_empty() {
+        if !allow_tools {
+            return Ok(ChatFinish::Unsupported);
+        }
+        let assemblers = std::mem::take(tool_assemblers);
+        let calls = assemblers
+            .into_iter()
+            .map(|(index, assembler)| assembler.finish(index))
+            .collect::<Result<Vec<_>, _>>()?;
+        if calls.iter().any(Option::is_none) {
+            return Ok(ChatFinish::Unsupported);
+        }
+        return Ok(ChatFinish::ToolCalls(calls.into_iter().flatten().collect()));
+    }
+    if output_text
+        .chars()
+        .any(|character| !character.is_whitespace())
+    {
+        Ok(ChatFinish::Final)
+    } else {
+        Ok(ChatFinish::Incomplete)
+    }
+}
+
+async fn complete_chat_stream(
+    sender: &mpsc::Sender<Result<ModelEvent, ModelError>>,
+    finish: ChatFinish,
+    mut output_text: String,
+    mut reasoning: ChatReasoningState,
+    usage: Option<ModelUsage>,
+    provider_request_id: Option<String>,
+    tool_names: &BTreeMap<String, String>,
+) {
+    if let Some((legacy_reasoning, visible)) = split_legacy_think(&output_text) {
+        if reasoning.is_empty() {
+            reasoning.content = legacy_reasoning;
+        }
+        output_text = visible;
+    }
+    let portable_text = output_text.clone();
+    let mut output = Vec::new();
+    match finish {
+        ChatFinish::Incomplete => {
+            send_error(sender, ModelError::new(ModelErrorKind::Incomplete, false)).await;
+            return;
+        }
+        ChatFinish::Filtered => {
+            send_error(sender, ModelError::new(ModelErrorKind::Filtered, false)).await;
+            return;
+        }
+        ChatFinish::Unsupported => {
+            send_error(
+                sender,
+                ModelError::new(ModelErrorKind::UnsupportedOutput, false),
+            )
+            .await;
+            return;
+        }
+        ChatFinish::Final => {
+            if !output_text
+                .chars()
+                .any(|character| !character.is_whitespace())
+            {
+                send_error(sender, ModelError::new(ModelErrorKind::Incomplete, false)).await;
+                return;
+            }
+            output.push(ModelOutputItem {
+                output_index: 0,
+                kind: ModelOutputItemKind::AssistantText {
+                    phase: ModelTextPhase::Final,
+                    text: output_text,
+                },
+            });
+        }
+        ChatFinish::ToolCalls(calls) => {
+            if output_text.len() > MAX_TOOL_COMMENTARY_BYTES {
+                send_error(
+                    sender,
+                    ModelError::new(ModelErrorKind::OutputTooLarge, false),
+                )
+                .await;
+                return;
+            }
+            if !output_text.is_empty() {
+                output.push(ModelOutputItem {
+                    output_index: 0,
+                    kind: ModelOutputItemKind::AssistantText {
+                        phase: ModelTextPhase::Commentary,
+                        text: output_text,
+                    },
+                });
+            }
+            for mut call in calls {
+                if let Some(internal_name) = tool_names.get(&call.name) {
+                    call.name.clone_from(internal_name);
+                }
+                let output_index = match u32::try_from(output.len()) {
+                    Ok(output_index) => output_index,
+                    Err(_) => {
+                        send_error(
+                            sender,
+                            ModelError::new(ModelErrorKind::OutputTooLarge, false),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                output.push(ModelOutputItem {
+                    output_index,
+                    kind: ModelOutputItemKind::ToolCall(call),
+                });
+            }
+        }
+    }
+    let continuation = if output
+        .iter()
+        .any(|item| matches!(item.kind, ModelOutputItemKind::ToolCall(_)))
+    {
+        ModelContinuation::ToolCalls
+    } else {
+        ModelContinuation::Complete
+    };
+    let raw_tool_calls = output
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ModelOutputItemKind::ToolCall(call) => Some(ChatToolCall {
+                id: call.id.clone(),
+                kind: "function".to_owned(),
+                function: ChatFunctionCall {
+                    name: tool_names
+                        .iter()
+                        .find_map(|(wire, internal)| (internal == &call.name).then_some(wire))
+                        .unwrap_or(&call.name)
+                        .clone(),
+                    arguments: serde_json::to_string(&call.arguments)
+                        .expect("tool arguments serialize"),
+                },
+            }),
+            ModelOutputItemKind::AssistantText { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let context_payload = (!reasoning.is_empty()).then(|| {
+        serde_json::to_vec(&ChatMessage {
+            role: "assistant".to_owned(),
+            content: (!portable_text.is_empty()).then_some(ChatContent::Text(portable_text)),
+            tool_calls: raw_tool_calls,
+            tool_call_id: None,
+            reasoning_content: (!reasoning.content.is_empty())
+                .then_some(serde_json::Value::String(reasoning.content)),
+            reasoning: (!reasoning.reasoning.is_empty())
+                .then_some(serde_json::Value::String(reasoning.reasoning)),
+            reasoning_details: (!reasoning.details.is_empty())
+                .then_some(serde_json::Value::Array(reasoning.details)),
+        })
+        .map_err(|_| ModelError::new(ModelErrorKind::Protocol, false))
+        .and_then(|payload| {
+            ProviderContextEnvelope::new_with_replay_tokens(
+                ProviderWireApi::OpenAiChatCompletions,
+                provider_request_id.clone(),
+                payload,
+                usage.and_then(|usage| usage.output_tokens),
+            )
+        })
+    });
+    let provider_context = match context_payload.transpose() {
+        Ok(context) => context,
+        Err(error) => {
+            send_error(sender, error).await;
+            return;
+        }
+    };
+    let _ = sender
+        .send(Ok(ModelEvent::ResponseCompleted(ModelResponse {
+            output,
+            usage,
+            terminal: ModelTerminalMetadata {
+                finish_reason: match continuation {
+                    ModelContinuation::Complete => ModelFinishReason::Stop,
+                    ModelContinuation::ToolCalls => ModelFinishReason::ToolCalls,
+                },
+                provider_request_id,
+                continuation,
+            },
+            provider_context: provider_context.map(Box::new),
+        })))
+        .await;
+}
+
 enum ChatFinish {
     Final,
     ToolCalls(Vec<ModelToolCall>),
     Incomplete,
     Filtered,
     Unsupported,
+}
+
+#[derive(Default)]
+struct ChatReasoningState {
+    content: String,
+    reasoning: String,
+    details: Vec<serde_json::Value>,
+}
+
+impl ChatReasoningState {
+    fn is_empty(&self) -> bool {
+        self.content.is_empty() && self.reasoning.is_empty() && self.details.is_empty()
+    }
+}
+
+fn split_legacy_think(content: &str) -> Option<(String, String)> {
+    let trimmed = content.trim_start_matches([' ', '\t', '\r', '\n']);
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    if trimmed.len() < OPEN.len() || !trimmed[..OPEN.len()].eq_ignore_ascii_case(OPEN) {
+        return None;
+    }
+    let body = &trimmed[OPEN.len()..];
+    let lower = body.to_ascii_lowercase();
+    let close = lower.rfind(CLOSE);
+    let (reasoning, visible) = match close {
+        Some(index) => (&body[..index], body[index + CLOSE.len()..].trim()),
+        None => (body, ""),
+    };
+    Some((
+        reasoning
+            .replace("<think>", "")
+            .replace("</think>", "")
+            .trim()
+            .to_owned(),
+        visible.to_owned(),
+    ))
 }
 
 fn is_usage_only_choices(choices: &[ChatChoice]) -> bool {
@@ -697,6 +1118,32 @@ async fn bounded_error_body(response: reqwest::Response) -> Option<Vec<u8>> {
     }
 }
 
+async fn bounded_success_body(response: reqwest::Response) -> Result<Vec<u8>, ModelError> {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    loop {
+        let chunk = match tokio::time::timeout(MODEL_STREAM_IDLE_TIMEOUT, stream.next()).await {
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(None) => return Ok(body),
+            Ok(Some(Err(_))) => {
+                return Err(ModelError::new(ModelErrorKind::Disconnected, true));
+            }
+            Err(_) => return Err(ModelError::new(ModelErrorKind::Timeout, true)),
+        };
+        if body
+            .len()
+            .checked_add(chunk.len())
+            .is_none_or(|bytes| bytes > crate::MAX_PROVIDER_RESPONSE_BYTES)
+        {
+            return Err(ModelError::new(
+                ModelErrorKind::ProviderResponseTooLarge,
+                false,
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+}
+
 fn is_context_length_error(body: &[u8]) -> bool {
     let text = String::from_utf8_lossy(body).to_ascii_lowercase();
     [
@@ -729,16 +1176,10 @@ struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
-    stream_options: StreamOptions,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ChatToolDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parallel_tool_calls: Option<bool>,
-}
-
-#[derive(Serialize)]
-struct StreamOptions {
-    include_usage: bool,
 }
 
 impl ChatRequest {
@@ -747,11 +1188,16 @@ impl ChatRequest {
         strict_tools: ModelStrictToolsMode,
         parallel_tools: bool,
     ) -> Result<Self, ModelError> {
-        let mut messages = request
+        let system = request
             .instructions
             .into_iter()
-            .map(ChatMessage::from)
-            .collect::<Vec<_>>();
+            .map(|instruction| instruction.rendered_content())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let mut messages = Vec::new();
+        if !system.is_empty() {
+            messages.push(ChatMessage::system(system));
+        }
         messages.extend(chat_messages_from_model_messages(request.messages)?);
         let tools = request
             .tools
@@ -769,33 +1215,32 @@ impl ChatRequest {
                         name: tool.name,
                         description: tool.description,
                         parameters: tool.parameters,
-                        strict,
+                        strict: (strict_tools != ModelStrictToolsMode::Disabled).then_some(strict),
                     },
                 })
             })
             .collect::<Result<Vec<_>, ModelError>>()?;
-        let parallel_tool_calls = (!tools.is_empty()).then_some(parallel_tools);
+        let parallel_tool_calls = (!tools.is_empty() && parallel_tools).then_some(true);
         Ok(Self {
             model: request.model,
             messages,
             stream: true,
-            stream_options: StreamOptions {
-                include_usage: true,
-            },
             tools,
             parallel_tool_calls,
         })
     }
 }
 
-impl From<ModelInstruction> for ChatMessage {
-    fn from(instruction: ModelInstruction) -> Self {
+impl ChatMessage {
+    fn system(content: String) -> Self {
         Self {
-            role: "developer".to_owned(),
-            content: Some(ChatContent::Text(instruction.rendered_content())),
+            role: "system".to_owned(),
+            content: Some(ChatContent::Text(content)),
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            reasoning: None,
+            reasoning_details: None,
         }
     }
 }
@@ -811,6 +1256,10 @@ struct ChatMessage {
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_details: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -888,6 +1337,8 @@ fn chat_messages_from_model_messages(
                 tool_calls: Vec::new(),
                 tool_call_id: Some(result.call_id),
                 reasoning_content: None,
+                reasoning: None,
+                reasoning_details: None,
             }));
             continue;
         }
@@ -905,6 +1356,8 @@ fn chat_messages_from_model_messages(
             tool_calls: calls,
             tool_call_id: None,
             reasoning_content: None,
+            reasoning: None,
+            reasoning_details: None,
         });
     }
     Ok(rendered)
@@ -932,7 +1385,8 @@ struct ChatFunctionDefinition {
     name: String,
     description: String,
     parameters: serde_json::Value,
-    strict: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strict: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -958,6 +1412,21 @@ struct ChatChunk {
 }
 
 #[derive(Deserialize)]
+struct ChatCompletion {
+    #[serde(default)]
+    choices: Vec<ChatCompletionChoice>,
+    usage: Option<ChatUsage>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct ChatCompletionChoice {
+    index: u64,
+    message: ChatDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct ChatChoice {
     index: u64,
     #[serde(default, deserialize_with = "deserialize_nullable_chat_delta")]
@@ -977,6 +1446,8 @@ struct ChatDelta {
     content: Option<String>,
     role: Option<String>,
     reasoning_content: Option<serde_json::Value>,
+    reasoning: Option<serde_json::Value>,
+    reasoning_details: Option<serde_json::Value>,
     tool_calls: Option<Vec<ChatToolCallDelta>>,
     function_call: Option<serde_json::Value>,
     refusal: Option<serde_json::Value>,
@@ -990,6 +1461,8 @@ impl ChatDelta {
         self.content.is_none()
             && self.role.is_none()
             && self.reasoning_content.is_none()
+            && self.reasoning.is_none()
+            && self.reasoning_details.is_none()
             && self
                 .tool_calls
                 .as_ref()
@@ -1019,6 +1492,7 @@ impl ChatDelta {
 
 #[derive(Deserialize)]
 struct ChatToolCallDelta {
+    #[serde(default)]
     index: u64,
     id: Option<String>,
     #[serde(rename = "type")]
@@ -1067,14 +1541,9 @@ impl ToolCallAssembler {
         {
             self.unsupported_kind = true;
         }
-        if let Some(id) = delta.id {
-            if id.is_empty()
-                || id.len() > MAX_TOOL_CALL_ID_BYTES
-                || !id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            {
-                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+        if let Some(id) = delta.id.filter(|id| !id.is_empty()) {
+            if id.len() > MAX_TOOL_CALL_ID_BYTES {
+                return Err(ModelError::new(ModelErrorKind::OutputTooLarge, false));
             }
             match &self.id {
                 Some(current) if current != &id => {
@@ -1112,21 +1581,23 @@ impl ToolCallAssembler {
         Ok(())
     }
 
-    fn finish(self) -> Result<Option<ModelToolCall>, ModelError> {
+    fn finish(self, provider_index: u64) -> Result<Option<ModelToolCall>, ModelError> {
         if self.unsupported_kind {
             return Ok(None);
         }
-        let id = self
-            .id
-            .ok_or_else(|| ModelError::new(ModelErrorKind::Protocol, false))?;
-        if !self.saw_function || self.name.is_empty() || self.arguments.is_empty() {
+        if !self.saw_function || self.name.is_empty() {
             return Err(ModelError::new(ModelErrorKind::Protocol, false));
         }
-        let arguments = parse_json_without_duplicates(&self.arguments)
-            .map_err(|_| ModelError::new(ModelErrorKind::Protocol, false))?;
-        if !arguments.is_object() {
-            return Err(ModelError::new(ModelErrorKind::Protocol, false));
-        }
+        let id = self.id.unwrap_or_else(|| {
+            let sequence = COMPATIBLE_TOOL_CALL_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            format!("compat_call_{sequence}_{provider_index}")
+        });
+        let arguments = if self.arguments.is_empty() {
+            serde_json::Value::Object(serde_json::Map::new())
+        } else {
+            parse_json_without_duplicates(&self.arguments)
+                .unwrap_or_else(|_| serde_json::Value::String(self.arguments))
+        };
         Ok(Some(ModelToolCall {
             id,
             name: self.name,

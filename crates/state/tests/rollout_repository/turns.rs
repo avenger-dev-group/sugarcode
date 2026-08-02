@@ -209,6 +209,57 @@ fn commentary_round_trips_through_the_jsonl_rollout() {
 }
 
 #[test]
+fn protocol_diagnostics_round_trip_without_sensitive_values() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id = ThreadId::new("thr_0000000000000001");
+    let started = started_text_turn();
+    let mut turn = started.clone();
+    turn.status = DurableTurnStatus::Failed;
+    turn.error = Some(sugarcode_state::DurableTurnError {
+        kind: sugarcode_state::DurableTurnErrorKind::Protocol,
+        retryable: false,
+        provider: None,
+        protocol: Some(sugarcode_state::DurableModelProtocolDiagnostic {
+            stage: sugarcode_state::DurableModelProtocolStage::OutputNormalization,
+            code: sugarcode_state::DurableModelProtocolCode::AmbiguousOutputReconciliation,
+            event_type: Some("response.completed".to_string()),
+            shape_sha256: "b".repeat(64),
+        }),
+        tool_schema: None,
+    });
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .begin_turn(&thread_id, &started)
+            .expect("turn start");
+        repository
+            .finish_turn(&thread_id, &turn)
+            .expect("failed turn");
+    }
+
+    let rollout = fs::read_to_string(
+        directory
+            .path()
+            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+    )
+    .expect("rollout");
+    assert!(rollout.contains("ambiguousOutputReconciliation"));
+    assert!(rollout.contains(&"b".repeat(64)));
+    assert!(!rollout.contains("tool-secret"));
+    let repository = RolloutRepository::open(&home).expect("replay");
+    assert_eq!(
+        repository
+            .load_thread(&thread_id)
+            .expect("load")
+            .expect("thread")
+            .turns,
+        vec![turn]
+    );
+}
+
+#[test]
 fn collaboration_items_round_trip_through_incremental_rollout_records() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
@@ -816,7 +867,12 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             id: ItemId::new("item_0000000000000002"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
-            arguments: json!({"command": "/bin/echo", "arguments": ["ok"], "cwd": "."}),
+            arguments: json!({
+                "description": "Print a test value",
+                "command": "/bin/echo",
+                "argvJson": "[\"ok\"]",
+                "cwd": "."
+            }),
         },
         DurableItemSnapshot::CommandApprovalRequest {
             id: ItemId::new("item_0000000000000003"),
@@ -825,7 +881,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             command: "/bin/echo".to_string(),
             arguments: vec!["ok".to_string()],
             cwd: ".".to_string(),
-            environment_policy: "minimalV1".to_string(),
+            environment_policy: "hostInheritedV1".to_string(),
             sandboxed: true,
             sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
             workspace_write_policy: None,
@@ -927,7 +983,12 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
             id: ItemId::new("item_0000000000000002"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
-            arguments: json!({"command": "/bin/echo", "arguments": ["ok"], "cwd": "."}),
+            arguments: json!({
+                "description": "Print a test value",
+                "command": "/bin/echo",
+                "argvJson": "[\"ok\"]",
+                "cwd": "."
+            }),
         },
         DurableItemSnapshot::CommandApprovalRequest {
             id: ItemId::new("item_0000000000000003"),
@@ -936,7 +997,7 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
             command: "/bin/echo".to_string(),
             arguments: vec!["ok".to_string()],
             cwd: ".".to_string(),
-            environment_policy: "minimalV1".to_string(),
+            environment_policy: "hostInheritedV1".to_string(),
             sandboxed: true,
             sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
             workspace_write_policy: Some("commandWorkspaceWriteV1".to_string()),

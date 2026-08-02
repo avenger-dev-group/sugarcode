@@ -1,6 +1,7 @@
 use serde_json::to_value;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
 use sugarcode_app_server_protocol::AgentOutputDeltaNotification;
+use sugarcode_app_server_protocol::AgentOutputDiscardedNotification;
 use sugarcode_app_server_protocol::AgentOutputRef;
 use sugarcode_app_server_protocol::AgentTaskAccess;
 use sugarcode_app_server_protocol::AgentTaskRole;
@@ -16,6 +17,9 @@ use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcNotification;
 use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::McpToolResult as PublicMcpToolResult;
+use sugarcode_app_server_protocol::ModelProtocolCode as PublicModelProtocolCode;
+use sugarcode_app_server_protocol::ModelProtocolDiagnostic as PublicModelProtocolDiagnostic;
+use sugarcode_app_server_protocol::ModelProtocolStage as PublicModelProtocolStage;
 use sugarcode_app_server_protocol::ModelProviderFamily as PublicModelProviderFamily;
 use sugarcode_app_server_protocol::ModelSelectionCapabilities as PublicModelSelectionCapabilities;
 use sugarcode_app_server_protocol::ModelSelectionSnapshot as PublicModelSelectionSnapshot;
@@ -43,6 +47,8 @@ use sugarcode_app_server_protocol::TurnWarningNotification;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreItemKind;
+use sugarcode_protocol::CoreModelProtocolCode;
+use sugarcode_protocol::CoreModelProtocolStage;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::CoreTokenUsage;
 use sugarcode_protocol::CoreTokenUsageSource;
@@ -50,6 +56,8 @@ use sugarcode_protocol::CoreTurnError;
 use sugarcode_protocol::CoreTurnErrorKind;
 use sugarcode_protocol::ThreadId;
 use sugarcode_state::DurableItemSnapshot;
+use sugarcode_state::DurableModelProtocolCode;
+use sugarcode_state::DurableModelProtocolStage;
 use sugarcode_state::DurableModelSelectionSnapshot;
 use sugarcode_state::DurableThreadSnapshot;
 use sugarcode_state::DurableTurnError;
@@ -645,6 +653,22 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
             })
             .map_err(|_| EventMappingError)?,
         ),
+        CoreEventKind::AgentOutputDiscarded {
+            thread_id,
+            turn_id,
+            output,
+        } => notification(
+            "turn/agentOutput/discarded",
+            to_value(AgentOutputDiscardedNotification {
+                thread_id: thread_id.into_string(),
+                turn_id: turn_id.into_string(),
+                output: AgentOutputRef {
+                    response_ordinal: output.response_ordinal,
+                    output_index: output.output_index,
+                },
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
         CoreEventKind::AgentMessageDelta {
             thread_id,
             turn_id,
@@ -698,6 +722,9 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
                 code: match code {
                     sugarcode_protocol::CoreWarningCode::ProviderManagedContinuationFallback => {
                         TurnWarningCode::ProviderManagedContinuationFallback
+                    }
+                    sugarcode_protocol::CoreWarningCode::HistoricalContextDowngraded => {
+                        TurnWarningCode::HistoricalContextDowngraded
                     }
                 },
             })
@@ -1456,6 +1483,7 @@ fn map_core_error(error: CoreTurnError) -> TurnError {
         kind,
         retryable,
         provider,
+        protocol,
         tool_schema,
     } = error;
     TurnError {
@@ -1485,6 +1513,12 @@ fn map_core_error(error: CoreTurnError) -> TurnError {
             request_id: provider.request_id,
             retry_after: provider.retry_after,
         }),
+        protocol: protocol.map(|diagnostic| PublicModelProtocolDiagnostic {
+            stage: map_core_protocol_stage(diagnostic.stage),
+            code: map_core_protocol_code(diagnostic.code),
+            event_type: diagnostic.event_type,
+            shape_sha256: diagnostic.shape_sha256,
+        }),
         tool_schema: tool_schema.map(|error| ToolSchemaError {
             tool_name: error.tool_name,
             reason: error.reason,
@@ -1497,6 +1531,7 @@ fn map_durable_error(error: DurableTurnError) -> TurnError {
         kind,
         retryable,
         provider,
+        protocol,
         tool_schema,
     } = error;
     TurnError {
@@ -1530,10 +1565,78 @@ fn map_durable_error(error: DurableTurnError) -> TurnError {
             request_id: provider.request_id,
             retry_after: provider.retry_after,
         }),
+        protocol: protocol.map(|diagnostic| PublicModelProtocolDiagnostic {
+            stage: match diagnostic.stage {
+                DurableModelProtocolStage::StreamEvent => PublicModelProtocolStage::StreamEvent,
+                DurableModelProtocolStage::ResponseAssembly => {
+                    PublicModelProtocolStage::ResponseAssembly
+                }
+                DurableModelProtocolStage::OutputNormalization => {
+                    PublicModelProtocolStage::OutputNormalization
+                }
+                DurableModelProtocolStage::RuntimeClassification => {
+                    PublicModelProtocolStage::RuntimeClassification
+                }
+            },
+            code: match diagnostic.code {
+                DurableModelProtocolCode::WireMismatch => PublicModelProtocolCode::WireMismatch,
+                DurableModelProtocolCode::InvalidEventShape => {
+                    PublicModelProtocolCode::InvalidEventShape
+                }
+                DurableModelProtocolCode::AmbiguousOutputReconciliation => {
+                    PublicModelProtocolCode::AmbiguousOutputReconciliation
+                }
+                DurableModelProtocolCode::MalformedToolCall => {
+                    PublicModelProtocolCode::MalformedToolCall
+                }
+                DurableModelProtocolCode::TerminalLifecycleViolation => {
+                    PublicModelProtocolCode::TerminalLifecycleViolation
+                }
+                DurableModelProtocolCode::ContinuationOutputMismatch => {
+                    PublicModelProtocolCode::ContinuationOutputMismatch
+                }
+                DurableModelProtocolCode::OutputIndexMismatch => {
+                    PublicModelProtocolCode::OutputIndexMismatch
+                }
+            },
+            event_type: diagnostic.event_type,
+            shape_sha256: diagnostic.shape_sha256,
+        }),
         tool_schema: tool_schema.map(|error| ToolSchemaError {
             tool_name: error.tool_name,
             reason: error.reason,
         }),
+    }
+}
+
+fn map_core_protocol_stage(stage: CoreModelProtocolStage) -> PublicModelProtocolStage {
+    match stage {
+        CoreModelProtocolStage::StreamEvent => PublicModelProtocolStage::StreamEvent,
+        CoreModelProtocolStage::ResponseAssembly => PublicModelProtocolStage::ResponseAssembly,
+        CoreModelProtocolStage::OutputNormalization => {
+            PublicModelProtocolStage::OutputNormalization
+        }
+        CoreModelProtocolStage::RuntimeClassification => {
+            PublicModelProtocolStage::RuntimeClassification
+        }
+    }
+}
+
+fn map_core_protocol_code(code: CoreModelProtocolCode) -> PublicModelProtocolCode {
+    match code {
+        CoreModelProtocolCode::WireMismatch => PublicModelProtocolCode::WireMismatch,
+        CoreModelProtocolCode::InvalidEventShape => PublicModelProtocolCode::InvalidEventShape,
+        CoreModelProtocolCode::AmbiguousOutputReconciliation => {
+            PublicModelProtocolCode::AmbiguousOutputReconciliation
+        }
+        CoreModelProtocolCode::MalformedToolCall => PublicModelProtocolCode::MalformedToolCall,
+        CoreModelProtocolCode::TerminalLifecycleViolation => {
+            PublicModelProtocolCode::TerminalLifecycleViolation
+        }
+        CoreModelProtocolCode::ContinuationOutputMismatch => {
+            PublicModelProtocolCode::ContinuationOutputMismatch
+        }
+        CoreModelProtocolCode::OutputIndexMismatch => PublicModelProtocolCode::OutputIndexMismatch,
     }
 }
 

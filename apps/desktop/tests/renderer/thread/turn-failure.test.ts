@@ -49,3 +49,41 @@ test('protocol failures direct users to the selected wire compatibility', () => 
   assert.match(failure.guidance, /wire API/);
   assert.match(failure.guidance, /switch model profiles/);
 });
+
+test('invalid request guidance is derived from status and wire, not model name', () => {
+  const responses = toTurnFailureViewModel(
+    { kind: 'invalidRequest', retryable: false },
+    'openaiResponses',
+  );
+  const chat = toTurnFailureViewModel(
+    { kind: 'invalidRequest', retryable: false },
+    'openaiChatCompletions',
+  );
+
+  assert.match(responses.guidance, /model ID/);
+  assert.match(responses.guidance, /Compatible Chat/);
+  assert.match(chat.guidance, /Base URL/);
+  assert.match(chat.guidance, /enabled capabilities/);
+});
+
+test('protocol diagnostics expose a specific reason and short safe fingerprint', () => {
+  const failure = toTurnFailureViewModel({
+    kind: 'protocol',
+    retryable: false,
+    protocol: {
+      stage: 'outputNormalization',
+      code: 'ambiguousOutputReconciliation',
+      eventType: 'response.completed',
+      shapeSha256: 'abcdef0123456789'.padEnd(64, '0'),
+    },
+  });
+
+  assert.match(failure.summary, /reconciled safely/);
+  assert.match(failure.guidance, /stopped instead of guessing/);
+  assert.deepEqual(failure.protocol, {
+    stage: 'outputNormalization',
+    code: 'ambiguousOutputReconciliation',
+    eventType: 'response.completed',
+    fingerprint: 'abcdef012345',
+  });
+});

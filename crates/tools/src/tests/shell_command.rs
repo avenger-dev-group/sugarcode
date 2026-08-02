@@ -53,6 +53,48 @@ fn sandbox_unavailable_is_a_stable_supervisor_error() {
 }
 
 #[test]
+fn command_environment_preserves_host_toolchains_without_credentials() {
+    let environment = filtered_command_environment([
+        ("PATH".to_string(), "/host/bin:/usr/bin".to_string()),
+        ("HOME".to_string(), "/host/home".to_string()),
+        ("JAVA_HOME".to_string(), "/host/java".to_string()),
+        ("NVM_BIN".to_string(), "/host/node/bin".to_string()),
+        ("PNPM_HOME".to_string(), "/host/pnpm".to_string()),
+        ("OPENAI_API_KEY".to_string(), "model-secret".to_string()),
+        ("GITHUB_TOKEN".to_string(), "git-secret".to_string()),
+        (
+            "REGISTRY_PASSWORD".to_string(),
+            "registry-secret".to_string(),
+        ),
+    ]);
+
+    assert!(environment.contains(&("PATH".to_string(), "/host/bin:/usr/bin".to_string())));
+    assert!(environment.contains(&("HOME".to_string(), "/host/home".to_string())));
+    assert!(environment.contains(&("JAVA_HOME".to_string(), "/host/java".to_string())));
+    assert!(environment.contains(&("NVM_BIN".to_string(), "/host/node/bin".to_string())));
+    assert!(environment.contains(&("PNPM_HOME".to_string(), "/host/pnpm".to_string())));
+    assert!(environment.contains(&("LANG".to_string(), "C".to_string())));
+    assert!(environment.contains(&("LC_ALL".to_string(), "C".to_string())));
+    assert!(!environment.iter().any(|(name, _)| matches!(
+        name.as_str(),
+        "OPENAI_API_KEY" | "GITHUB_TOKEN" | "REGISTRY_PASSWORD"
+    )));
+    assert!(!format!("{:?}", CommandEnvironment(environment)).contains("model-secret"));
+}
+
+#[test]
+fn supervisor_rejects_sensitive_or_malformed_environment_entries() {
+    assert_eq!(
+        validate_command_environment(&[("API_TOKEN".to_string(), "secret".to_string())]),
+        Err(ShellCommandErrorKind::InvalidArguments)
+    );
+    assert_eq!(
+        validate_command_environment(&[("BAD=NAME".to_string(), "value".to_string())]),
+        Err(ShellCommandErrorKind::InvalidArguments)
+    );
+}
+
+#[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn startup_probe_fails_closed_when_the_supervisor_cannot_spawn() {
     let directory = tempfile::tempdir().expect("workspace");

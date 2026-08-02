@@ -1,0 +1,9 @@
+data: {"id":"chat_fixture","choices":[{"index":0,"delta":{"content":"fixture"},"finish_reason":null}]}
+
+data: {"id":"chat_fixture","choices":[{"index":0,"delta":{"content":" answer"},"finish_reason":null}]}
+
+data: {"id":"chat_fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+: fixture terminator

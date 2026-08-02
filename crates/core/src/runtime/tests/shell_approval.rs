@@ -233,7 +233,7 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                     arguments: serde_json::json!({
                         "description": "Print the approved test output.",
                         "command": command,
-                        "arguments": ["approved output"],
+                        "argvJson": r#"["approved output"]"#,
                         "cwd": "."
                     }),
                 })),
@@ -294,6 +294,7 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                 ..
             },
             sugarcode_state::DurableItemSnapshot::CommandApprovalRequest {
+                environment_policy,
                 sandboxed: true,
                 sandbox_policy: Some(sandbox_policy),
                 workspace_write_policy: Some(workspace_write_policy),
@@ -321,9 +322,10 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
         ] if arguments == &serde_json::json!({
                 "description": "Print the approved test output.",
                 "command": test_absolute_command(),
-                "arguments": ["approved output"],
+                "argvJson": r#"["approved output"]"#,
                 "cwd": "."
             })
+            && environment_policy == "hostInheritedV1"
             && sandbox_policy == "filesystemReadOnlyV1"
             && workspace_write_policy == "commandWorkspaceWriteV1"
             && workspace_write_risk == "nonTransactionalWorkspaceTreeV1"
@@ -379,6 +381,22 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
                 .description
                 .contains("writes inside the active workspace scope")
             && tool.description.contains("network access is denied")
+            && tool
+                .parameters
+                .pointer("/properties/command/description")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|description| {
+                    description.contains("absolute executable path")
+                        && description.contains("Bare names")
+                })
+            && tool
+                .parameters
+                .pointer("/properties/argvJson/description")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|description| {
+                    description.contains("JSON-encoded array")
+                        && description.contains("never a shell command line")
+                })
     }));
     assert!(
         requests[1]
@@ -386,6 +404,99 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             .iter()
             .any(|tool| tool.name == "shell/exec")
     );
+}
+
+#[tokio::test]
+async fn invalid_shell_arguments_receive_field_specific_correction_guidance() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![
+                Ok(model_event::tool_call(ModelToolCall {
+                    id: "call_shell_invalid_path".to_string(),
+                    name: "shell/exec".to_string(),
+                    arguments: serde_json::json!({
+                        "description": "Inspect the working tree.",
+                        "command": "git",
+                        "arguments": ["status", "--short"],
+                        "cwd": "."
+                    }),
+                })),
+                Ok(model_event::COMPLETED),
+            ],
+            vec![
+                Ok(model_event::text_delta(
+                    "The command requires an absolute executable path.".to_string(),
+                )),
+                Ok(model_event::COMPLETED),
+            ],
+        ])),
+        requests: Arc::clone(&requests),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let (mut runtime, mut events) = CoreRuntime::new_with_shell(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        None,
+        None,
+        None,
+        Arc::new(RecordedShell),
+        Arc::new(FixedApproval(CommandApprovalOutcome::Approved)),
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Inspect the working tree".to_string()),
+        )
+        .expect("start shell turn")
+    else {
+        panic!("asynchronous turn");
+    };
+    while !matches!(
+        events.recv().await.expect("terminal event").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
+    let correction = requests[1]
+        .messages
+        .iter()
+        .flat_map(message_tool_results)
+        .map(tool_result_serialized)
+        .find(|content| content.contains("shell/exec error: invalidArguments"))
+        .expect("shell correction result");
+    assert!(correction.contains("expected=command must be one absolute executable path"));
+    assert!(correction.contains("suggestedAction=useAbsoluteExecutablePath"));
+    drop(requests);
+
+    let turn = runtime
+        .resume_thread(&thread_id)
+        .expect("resume")
+        .turns
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert!(turn.items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::ToolValidationRejected {
+            name,
+            expected_summary: Some(expected),
+            suggested_action,
+            ..
+        } if name == "shell/exec"
+            && expected.contains("absolute executable path")
+            && suggested_action == "useAbsoluteExecutablePath"
+    )));
 }
 
 #[tokio::test]
@@ -722,6 +833,28 @@ fn timed_out_process_result_retains_the_applied_command_policy() {
             ..
         })
     ));
+}
+
+#[test]
+fn missing_host_command_returns_actionable_model_guidance() {
+    let (result, content) = shell_execution_result(ShellCommandExecution::Error(
+        ShellCommandErrorKind::CommandNotFound,
+    ))
+    .expect("command failure result");
+    assert!(matches!(
+        result,
+        CoreToolResult::Error {
+            kind: CoreToolErrorKind::CommandNotFound
+        }
+    ));
+    let content: serde_json::Value = serde_json::from_str(&content).expect("structured guidance");
+    assert_eq!(content["status"], "error");
+    assert_eq!(content["kind"], "commandNotFound");
+    assert_eq!(content["environmentPolicy"], "hostInheritedV1");
+    assert_eq!(
+        content["suggestedAction"],
+        "inspectProjectConfigurationAndTryInstalledAlternativesThenReportMissingDependency"
+    );
 }
 
 fn has_requested_command_policy(items: &[sugarcode_state::DurableItemSnapshot]) -> bool {

@@ -23,6 +23,7 @@ import {
   parseMcpConversationItem,
   type McpConversationItem,
 } from './mcp-protocol';
+import { parseShellToolCallPayload } from './shell-tool-protocol';
 import { isThreadTitle } from './thread-title';
 import { isToolValidationRejectedItem } from './tool-validation-protocol';
 
@@ -334,6 +335,14 @@ export type ConversationLifecycle =
       }>;
     }>
   | Readonly<{
+      type: 'agentOutputDiscarded';
+      params: Readonly<{
+        threadId: string;
+        turnId: string;
+        output: AgentOutputRef;
+      }>;
+    }>
+  | Readonly<{
       type: 'itemCompleted';
       params: Omit<ItemCompletedNotification, 'item'> & {
         item: ConversationItem;
@@ -356,7 +365,9 @@ export type ConversationLifecycle =
       params: Readonly<{
         threadId: string;
         turnId: string;
-        code: 'providerManagedContinuationFallback';
+        code:
+          | 'providerManagedContinuationFallback'
+          | 'historicalContextDowngraded';
       }>;
     }>;
 
@@ -614,9 +625,37 @@ const parseTurnError = (value: unknown): TurnError | undefined => {
   ) {
     throw new Error('Invalid Turn error.');
   }
+  if (value.protocol !== undefined) {
+    if (
+      !isRecord(value.protocol) ||
+      ![
+        'streamEvent',
+        'responseAssembly',
+        'outputNormalization',
+        'runtimeClassification',
+      ].includes(value.protocol.stage as string) ||
+      ![
+        'wireMismatch',
+        'invalidEventShape',
+        'ambiguousOutputReconciliation',
+        'malformedToolCall',
+        'terminalLifecycleViolation',
+        'continuationOutputMismatch',
+        'outputIndexMismatch',
+      ].includes(value.protocol.code as string) ||
+      (value.protocol.eventType !== undefined &&
+        (typeof value.protocol.eventType !== 'string' ||
+          !/^[A-Za-z0-9_./-]{1,128}$/.test(value.protocol.eventType))) ||
+      typeof value.protocol.shapeSha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(value.protocol.shapeSha256)
+    ) {
+      throw new Error('Invalid Turn protocol diagnostic.');
+    }
+  }
   return {
     kind: value.kind as TurnError['kind'],
     retryable: value.retryable,
+    protocol: value.protocol as TurnError['protocol'],
   };
 };
 
@@ -1046,25 +1085,17 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
     const argumentsValue = value.arguments;
     if (
       !isId(value.callId) ||
-      !isRecord(argumentsValue) ||
-      Object.keys(argumentsValue).sort().join(',') !==
-        'arguments,command,cwd,description' ||
-      argumentsValue.cwd !== '.' ||
-      typeof argumentsValue.description !== 'string' ||
-      argumentsValue.description.length === 0 ||
-      utf8Bytes(argumentsValue.description) > 512 ||
-      hasControlCharacters(argumentsValue.description)
+      !isRecord(argumentsValue)
     ) {
       throw new Error('Invalid shell/exec ToolCall Item.');
     }
+    const payload = parseShellToolCallPayload(argumentsValue);
     return {
       type: 'commandCall',
       id: value.id,
       callId: value.callId,
-      ...validateCommandPayload(
-        argumentsValue.command,
-        argumentsValue.arguments,
-      ),
+      command: payload.command,
+      arguments: payload.arguments,
     };
   }
   if (value.type === 'commandApprovalRequest') {
@@ -1072,7 +1103,8 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       !isId(value.approvalId) ||
       !isId(value.callId) ||
       value.cwd !== '.' ||
-      value.environmentPolicy !== 'minimalV1' ||
+      (value.environmentPolicy !== 'minimalV1' &&
+        value.environmentPolicy !== 'hostInheritedV1') ||
       value.sandboxed !== true ||
       value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
       value.networkPolicy !== 'networkDeniedV1'
@@ -1480,6 +1512,19 @@ export const parseConversationLifecycle = (
         },
       };
     }
+    case 'turn/agentOutput/discarded': {
+      const correlation = parseThreadAndTurn(params);
+      if (!isRecord(params)) {
+        throw new Error('Invalid discarded Agent output notification.');
+      }
+      return {
+        type: 'agentOutputDiscarded',
+        params: {
+          ...correlation,
+          output: parseAgentOutputRef(params.output),
+        },
+      };
+    }
     case 'item/agentMessage/delta': {
       if (
         !isRecord(params) ||
@@ -1530,7 +1575,8 @@ export const parseConversationLifecycle = (
       const correlation = parseThreadAndTurn(params);
       if (
         !isRecord(params) ||
-        params.code !== 'providerManagedContinuationFallback'
+        params.code !== 'providerManagedContinuationFallback' &&
+        params.code !== 'historicalContextDowngraded'
       ) {
         throw new Error('Invalid turn warning notification.');
       }

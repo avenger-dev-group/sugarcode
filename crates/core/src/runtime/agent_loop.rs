@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 pub(super) const MAX_CONSECUTIVE_APPROVAL_DENIALS: u8 = 3;
 pub(super) const MAX_CONSECUTIVE_TOOL_ARGUMENT_ERRORS: u8 = 3;
 pub(super) const MAX_CONSECUTIVE_TOOL_EXECUTION_ERRORS: u8 = 3;
+pub(super) const MAX_TOTAL_NON_PROGRESS_ROUNDS: u8 = 4;
 
 #[derive(Debug, Default)]
 pub(super) struct AgentLoopState {
@@ -13,6 +14,7 @@ pub(super) struct AgentLoopState {
     consecutive_tool_argument_errors: u8,
     last_tool_execution_signature: Option<String>,
     consecutive_tool_execution_errors: u8,
+    total_non_progress_rounds: u8,
 }
 
 impl AgentLoopState {
@@ -47,6 +49,7 @@ impl AgentLoopState {
     pub(super) fn record_approval_denied(&mut self) -> bool {
         self.consecutive_approval_denials = self.consecutive_approval_denials.saturating_add(1);
         self.consecutive_approval_denials >= MAX_CONSECUTIVE_APPROVAL_DENIALS
+            || self.record_non_progress()
     }
 
     pub(super) fn reset_approval_denials(&mut self) {
@@ -54,14 +57,11 @@ impl AgentLoopState {
     }
 
     pub(super) fn record_tool_argument_error(&mut self, signature: String) -> bool {
-        if self.last_tool_validation_signature.as_deref() == Some(&signature) {
-            self.consecutive_tool_argument_errors =
-                self.consecutive_tool_argument_errors.saturating_add(1);
-        } else {
-            self.last_tool_validation_signature = Some(signature);
-            self.consecutive_tool_argument_errors = 1;
-        }
+        self.last_tool_validation_signature = Some(signature);
+        self.consecutive_tool_argument_errors =
+            self.consecutive_tool_argument_errors.saturating_add(1);
         self.consecutive_tool_argument_errors >= MAX_CONSECUTIVE_TOOL_ARGUMENT_ERRORS
+            || self.record_non_progress()
     }
 
     pub(super) fn reset_tool_argument_errors(&mut self) {
@@ -78,10 +78,16 @@ impl AgentLoopState {
             self.consecutive_tool_execution_errors = 1;
         }
         self.consecutive_tool_execution_errors >= MAX_CONSECUTIVE_TOOL_EXECUTION_ERRORS
+            || self.record_non_progress()
     }
 
     pub(super) fn reset_tool_execution_errors(&mut self) {
         self.last_tool_execution_signature = None;
         self.consecutive_tool_execution_errors = 0;
+    }
+
+    fn record_non_progress(&mut self) -> bool {
+        self.total_non_progress_rounds = self.total_non_progress_rounds.saturating_add(1);
+        self.total_non_progress_rounds >= MAX_TOTAL_NON_PROGRESS_ROUNDS
     }
 }

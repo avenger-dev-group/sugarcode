@@ -33,26 +33,32 @@ pub(super) fn openai_request(
                 crate::tool_schema::ToolSchemaDialect::OpenAi,
                 strict_tools,
             )?;
-            Ok(json!({
+            let mut definition = json!({
                 "type": "function",
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.parameters,
-                "strict": strict,
-            }))
+            });
+            if strict_tools != ModelStrictToolsMode::Disabled {
+                definition["strict"] = Value::Bool(strict);
+            }
+            Ok(definition)
         })
         .collect::<Result<Vec<_>, ModelError>>()?;
-    Ok(json!({
+    let mut body = json!({
         "model": request.model,
         "instructions": rendered_instructions(request),
         "input": input,
         "tools": tools,
-        "parallel_tool_calls": parallel_tools,
         "max_output_tokens": max_output_tokens,
         "store": false,
         "stream": true,
         "include": ["reasoning.encrypted_content"],
-    }))
+    });
+    if parallel_tools && !request.tools.is_empty() {
+        body["parallel_tool_calls"] = Value::Bool(true);
+    }
+    Ok(body)
 }
 
 pub(super) fn openai_provider_managed_request(
@@ -170,11 +176,7 @@ pub(super) fn anthropic_request(
     strict_tools: ModelStrictToolsMode,
     max_output_tokens: u32,
 ) -> Result<Value, ModelError> {
-    let messages = request
-        .messages
-        .iter()
-        .map(anthropic_message)
-        .collect::<Result<Vec<_>, _>>()?;
+    let messages = anthropic_messages(request)?;
     let tools = request
         .tools
         .iter()
@@ -185,12 +187,15 @@ pub(super) fn anthropic_request(
                 crate::tool_schema::ToolSchemaDialect::Anthropic,
                 strict_tools,
             )?;
-            Ok(json!({
+            let mut definition = json!({
                 "name": tool.name,
                 "description": tool.description,
                 "input_schema": tool.parameters,
-                "strict": strict,
-            }))
+            });
+            if strict_tools != ModelStrictToolsMode::Disabled {
+                definition["strict"] = Value::Bool(strict);
+            }
+            Ok(definition)
         })
         .collect::<Result<Vec<_>, ModelError>>()?;
     Ok(json!({
@@ -201,6 +206,29 @@ pub(super) fn anthropic_request(
         "tools": tools,
         "stream": true,
     }))
+}
+
+fn anthropic_messages(request: &ModelRequest) -> Result<Vec<Value>, ModelError> {
+    let mut messages = Vec::<Value>::new();
+    for source in &request.messages {
+        let mut message = anthropic_message(source)?;
+        if let Some(previous) = messages.last_mut()
+            && previous.get("role") == message.get("role")
+        {
+            let previous_content = previous
+                .get_mut("content")
+                .and_then(Value::as_array_mut)
+                .ok_or_else(protocol_error)?;
+            let content = message
+                .get_mut("content")
+                .and_then(Value::as_array_mut)
+                .ok_or_else(protocol_error)?;
+            previous_content.append(content);
+            continue;
+        }
+        messages.push(message);
+    }
+    Ok(messages)
 }
 
 fn anthropic_message(message: &ModelMessage) -> Result<Value, ModelError> {

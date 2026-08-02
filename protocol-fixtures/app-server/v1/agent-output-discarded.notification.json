@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "method": "turn/agentOutput/discarded",
+  "params": {
+    "threadId": "thr_0000000000000001",
+    "turnId": "turn_0000000000000001",
+    "output": {
+      "responseOrdinal": 1,
+      "outputIndex": 0
+    }
+  }
+}

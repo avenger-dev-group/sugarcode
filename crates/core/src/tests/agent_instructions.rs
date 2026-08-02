@@ -35,3 +35,23 @@ fn base_agent_prompt_is_fixed_complete_and_provider_counted() {
         );
     }
 }
+
+#[test]
+fn model_switch_prompt_is_provider_neutral_and_forbids_private_replay() {
+    let instruction = sugarcode_model_switch_instruction_v1();
+
+    assert_eq!(
+        instruction.source,
+        ModelInstructionSource::SugarCodeModelSwitchV1
+    );
+    assert!(instruction.content.contains("portable history"));
+    assert!(instruction.content.contains("completed tool calls"));
+    assert!(
+        instruction
+            .content
+            .contains("provider-private continuation")
+    );
+    assert!(!instruction.content.contains("OpenAI"));
+    assert!(!instruction.content.contains("Anthropic"));
+    assert!(!instruction.content.contains("Gemini"));
+}

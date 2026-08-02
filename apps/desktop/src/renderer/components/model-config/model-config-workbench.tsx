@@ -258,12 +258,23 @@ export const ModelConfigSettingsPanel = (
                       {wireApiOptions(
                         store.selectedConnection.providerFamily,
                       ).map((wireApi) => (
-                          <SelectItem key={wireApi} value={wireApi}>
-                            {wireApi}
-                          </SelectItem>
-                        ))}
+                        <SelectItem key={wireApi} value={wireApi}>
+                          {wireApi === 'openaiChatCompletions'
+                            ? 'Compatible Chat (default)'
+                            : wireApi === 'openaiResponses'
+                              ? 'Responses (advanced)'
+                              : wireApi}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
+                  {store.selectedConnection.providerFamily === 'openai' ? (
+                    <span className="text-xs text-secondary">
+                      Compatible Chat sends the smallest interoperable request.
+                      Choose Responses only when the endpoint explicitly supports
+                      that wire protocol.
+                    </span>
+                  ) : null}
                 </label>
                 <label className="flex items-center gap-2 self-end rounded-lg border px-3 py-2 text-sm">
                   <Checkbox
@@ -607,6 +618,12 @@ export const ModelConfigSettingsPanel = (
                           ) : null}
                         </label>
                       </div>
+                      <p className="text-xs text-secondary sm:col-span-2">
+                        Auto uses the compatibility baseline: sequential tools
+                        stay available, while strict tools, parallel calls and
+                        media require Enabled. SugarCode never guesses support
+                        from the model ID.
+                      </p>
                       <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
                         <label className="grid gap-1.5 text-sm">
                           <span>Context window (tokens)</span>

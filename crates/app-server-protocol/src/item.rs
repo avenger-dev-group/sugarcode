@@ -482,6 +482,15 @@ pub struct AgentOutputDeltaNotification {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
+pub struct AgentOutputDiscardedNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub output: AgentOutputRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
 pub struct AgentMessageDeltaNotification {
     pub thread_id: String,
     pub turn_id: String,

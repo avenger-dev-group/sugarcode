@@ -801,6 +801,7 @@ fn core_event_thread_id(kind: &CoreEventKind) -> Option<&ThreadId> {
         | CoreEventKind::ItemStarted { thread_id, .. }
         | CoreEventKind::AgentOutputDelta { thread_id, .. }
         | CoreEventKind::AgentOutputResolved { thread_id, .. }
+        | CoreEventKind::AgentOutputDiscarded { thread_id, .. }
         | CoreEventKind::AgentMessageDelta { thread_id, .. }
         | CoreEventKind::ItemCompleted { thread_id, .. }
         | CoreEventKind::TokenUsageUpdated { thread_id, .. }

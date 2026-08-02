@@ -1,6 +1,7 @@
 use serde_json::json;
 use sugarcode_app_server_protocol::AgentMessageDeltaNotification;
 use sugarcode_app_server_protocol::AgentOutputDeltaNotification;
+use sugarcode_app_server_protocol::AgentOutputDiscardedNotification;
 use sugarcode_app_server_protocol::AgentOutputRef;
 use sugarcode_app_server_protocol::AgentTaskAccess;
 use sugarcode_app_server_protocol::AgentTaskRole;
@@ -21,6 +22,9 @@ use sugarcode_app_server_protocol::JsonRpcError;
 use sugarcode_app_server_protocol::JsonRpcErrorObject;
 use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcVersion;
+use sugarcode_app_server_protocol::ModelProtocolCode;
+use sugarcode_app_server_protocol::ModelProtocolDiagnostic;
+use sugarcode_app_server_protocol::ModelProtocolStage;
 use sugarcode_app_server_protocol::ModelProviderFamily;
 use sugarcode_app_server_protocol::ModelSelectionCapabilities;
 use sugarcode_app_server_protocol::ModelSelectionSnapshot;
@@ -90,6 +94,12 @@ fn error_envelope_uses_json_rpc_2_and_null_unknown_id() {
             }
         })
     );
+    let legacy_error = serde_json::from_value::<TurnError>(json!({
+        "kind": "protocol",
+        "retryable": false
+    }))
+    .expect("v1 error without optional diagnostic");
+    assert_eq!(legacy_error.protocol, None);
 }
 
 #[test]
@@ -876,6 +886,27 @@ fn provisional_agent_output_fixture_is_additive_and_provider_neutral() {
 }
 
 #[test]
+fn discarded_agent_output_fixture_closes_a_provider_neutral_preview() {
+    let fixture = include_str!(
+        "../../../protocol-fixtures/app-server/v1/agent-output-discarded.notification.json"
+    );
+    let value: serde_json::Value = serde_json::from_str(fixture).expect("valid fixture JSON");
+    let params = value.get("params").cloned().expect("notification params");
+    assert_eq!(
+        serde_json::from_value::<AgentOutputDiscardedNotification>(params)
+            .expect("discarded Agent output notification"),
+        AgentOutputDiscardedNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn_id: "turn_0000000000000001".to_string(),
+            output: AgentOutputRef {
+                response_ordinal: 1,
+                output_index: 0,
+            },
+        }
+    );
+}
+
+#[test]
 fn agent_commentary_item_lifecycle_preserves_process_text() {
     let item = Item::AgentCommentary {
         id: "item_0000000000000002".to_string(),
@@ -1194,6 +1225,12 @@ fn turn_interrupt_is_strict_and_terminal_errors_are_provider_neutral() {
                 kind: TurnErrorKind::RateLimited,
                 retryable: true,
                 provider: None,
+                protocol: Some(ModelProtocolDiagnostic {
+                    stage: ModelProtocolStage::OutputNormalization,
+                    code: ModelProtocolCode::AmbiguousOutputReconciliation,
+                    event_type: Some("response.completed".to_string()),
+                    shape_sha256: "a".repeat(64),
+                }),
                 tool_schema: None,
             }),
             usage: None,
@@ -1202,9 +1239,30 @@ fn turn_interrupt_is_strict_and_terminal_errors_are_provider_neutral() {
         json!({
             "id": "turn_0000000000000001",
             "status": "failed",
-            "error": {"kind": "rateLimited", "retryable": true}
+            "error": {
+                "kind": "rateLimited",
+                "retryable": true,
+                "protocol": {
+                    "stage": "outputNormalization",
+                    "code": "ambiguousOutputReconciliation",
+                    "eventType": "response.completed",
+                    "shapeSha256": "a".repeat(64)
+                }
+            }
         })
     );
+}
+
+#[test]
+fn protocol_error_fixture_is_provider_neutral_and_additive() {
+    let fixture = include_str!("../../../protocol-fixtures/app-server/v1/turn-protocol-error.json");
+    let error: TurnError = serde_json::from_str(fixture).expect("protocol error fixture");
+    assert_eq!(error.kind, TurnErrorKind::Protocol);
+    let diagnostic = error.protocol.expect("protocol diagnostic");
+    assert_eq!(diagnostic.stage, ModelProtocolStage::ResponseAssembly);
+    assert_eq!(diagnostic.code, ModelProtocolCode::OutputIndexMismatch);
+    assert_eq!(diagnostic.event_type.as_deref(), Some("response.completed"));
+    assert_eq!(diagnostic.shape_sha256, "c".repeat(64));
 }
 
 #[test]
@@ -1264,6 +1322,19 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
             "threadId": "thr_0000000000000001",
             "turnId": "turn_0000000000000001",
             "code": "providerManagedContinuationFallback"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(TurnWarningNotification {
+            thread_id: "thr_0000000000000001".to_string(),
+            turn_id: "turn_0000000000000001".to_string(),
+            code: TurnWarningCode::HistoricalContextDowngraded,
+        })
+        .expect("historical downgrade warning"),
+        json!({
+            "threadId": "thr_0000000000000001",
+            "turnId": "turn_0000000000000001",
+            "code": "historicalContextDowngraded"
         })
     );
 }

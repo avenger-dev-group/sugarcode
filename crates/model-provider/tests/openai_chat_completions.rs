@@ -192,7 +192,96 @@ async fn recorded_success_stream_normalizes_text_and_usage() {
 }
 
 #[tokio::test]
-async fn built_in_base_precedes_workspace_instructions_as_redacted_developer_context() {
+async fn no_output_retry_uses_non_streaming_chat_and_normalizes_the_completion() {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "id": "chat_fixture",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Recovered through compatible Chat."
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 4,
+            "completion_tokens": 5,
+            "total_tokens": 9
+        }
+    }))
+    .expect("serialize completion fixture");
+    let (endpoint, server, request_rx) = capturing_response_server(body).await;
+    let events = provider(endpoint)
+        .retry_after_no_output(request())
+        .await
+        .expect("compatibility response starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    let request = request_rx.await.expect("captured request");
+
+    assert_eq!(request["stream"], false);
+    assert!(matches!(
+        events.as_slice(),
+        [
+            Ok(ModelEvent::OutputTextDelta { delta, .. }),
+            Ok(ModelEvent::ResponseCompleted(ModelResponse { output, usage: Some(usage), .. }))
+        ] if delta == "Recovered through compatible Chat."
+            && matches!(output.as_slice(), [ModelOutputItem {
+                kind: ModelOutputItemKind::AssistantText { text, .. }, ..
+            }] if text == "Recovered through compatible Chat.")
+            && usage.input_tokens == Some(4)
+            && usage.output_tokens == Some(5)
+            && usage.total_tokens == Some(9)
+    ));
+}
+
+#[tokio::test]
+async fn no_output_retry_normalizes_non_streaming_tool_calls() {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "id": "chat_tool_fixture",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_fixture",
+                    "type": "function",
+                    "function": {
+                        "name": "workspace_read",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }))
+    .expect("serialize tool completion fixture");
+    let (endpoint, server) =
+        response_server_with_options(body, Vec::new(), "application/json", true).await;
+    let events = provider(endpoint)
+        .retry_after_no_output(tool_request())
+        .await
+        .expect("compatibility response starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+
+    assert!(matches!(
+        events.as_slice(),
+        [Ok(ModelEvent::ResponseCompleted(ModelResponse { output, terminal, .. }))]
+            if matches!(output.as_slice(), [ModelOutputItem {
+                kind: ModelOutputItemKind::ToolCall(ModelToolCall { id, name, arguments }), ..
+            }] if id == "call_fixture"
+                && name == "workspace/read"
+                && arguments == &serde_json::json!({"path": "README.md"}))
+                && terminal.continuation == ModelContinuation::ToolCalls
+    ));
+}
+
+#[tokio::test]
+async fn built_in_base_precedes_workspace_instructions_as_redacted_system_context() {
     let (endpoint, server, request_rx) =
         capturing_response_server(SUCCESS.as_bytes().to_vec()).await;
     let provider = provider(endpoint);
@@ -221,18 +310,16 @@ async fn built_in_base_precedes_workspace_instructions_as_redacted_developer_con
     assert!(events.iter().all(Result::is_ok));
     server.await.expect("mock server");
     let body = request_rx.await.expect("captured request");
-    assert_eq!(body["messages"][0]["role"], "developer");
+    assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(
         body["messages"][0]["content"],
-        "You are SugarCode. Follow the built-in contract."
+        format!(
+            "You are SugarCode. Follow the built-in contract.\n\n\
+             {WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX}Keep the repository green."
+        )
     );
-    assert_eq!(body["messages"][1]["role"], "developer");
-    assert_eq!(
-        body["messages"][1]["content"],
-        format!("{WORKSPACE_ROOT_AGENTS_INSTRUCTION_PREFIX}Keep the repository green.")
-    );
-    assert_eq!(body["messages"][2]["role"], "user");
-    assert_eq!(body["messages"][2]["content"], "Hello");
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(body["messages"][1]["content"], "Hello");
 }
 
 #[tokio::test]
@@ -275,32 +362,23 @@ async fn workspace_skills_follow_agents_and_precede_compaction_history_and_input
             .iter()
             .map(|message| message["role"].as_str().expect("role"))
             .collect::<Vec<_>>(),
-        vec!["developer", "developer", "developer", "user", "user"]
+        vec!["system", "user", "user"]
     );
-    assert!(
-        messages[0]["content"]
-            .as_str()
-            .expect("agents")
-            .contains("boundedWorkspaceInstructionsV1")
-    );
-    assert!(
-        messages[1]["content"]
-            .as_str()
-            .expect("inventory")
-            .contains("Available bounded local workspace Skills")
-    );
-    assert!(
-        messages[2]["content"]
-            .as_str()
-            .expect("selected")
-            .contains("private body")
-    );
-    assert_eq!(messages[3]["content"], "checkpoint");
-    assert_eq!(messages[4]["content"], "Hello");
+    let system = messages[0]["content"].as_str().expect("system");
+    let agents = system
+        .find("boundedWorkspaceInstructionsV1")
+        .expect("agents");
+    let inventory = system
+        .find("Available bounded local workspace Skills")
+        .expect("inventory");
+    let selected = system.find("private body").expect("selected");
+    assert!(agents < inventory && inventory < selected);
+    assert_eq!(messages[1]["content"], "checkpoint");
+    assert_eq!(messages[2]["content"], "Hello");
 }
 
 #[tokio::test]
-async fn persisted_compaction_is_a_redacted_user_message_after_developer_instructions() {
+async fn persisted_compaction_is_a_redacted_user_message_after_system_instructions() {
     let (endpoint, server, request_rx) =
         capturing_response_server(SUCCESS.as_bytes().to_vec()).await;
     let provider = provider(endpoint);
@@ -335,7 +413,7 @@ async fn persisted_compaction_is_a_redacted_user_message_after_developer_instruc
     assert!(events.iter().all(Result::is_ok));
     server.await.expect("mock server");
     let body = request_rx.await.expect("captured request");
-    assert_eq!(body["messages"][0]["role"], "developer");
+    assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][1]["role"], "user");
     assert_eq!(body["messages"][1]["content"], compaction);
     assert_eq!(body["messages"][2]["role"], "user");
@@ -373,7 +451,7 @@ async fn nested_workspace_instructions_have_explicit_deeper_precedence() {
     let body = request_rx.await.expect("captured request");
     let content = body["messages"][0]["content"]
         .as_str()
-        .expect("developer content");
+        .expect("system content");
     assert!(content.starts_with(WORKSPACE_AGENTS_HIERARCHY_INSTRUCTION_PREFIX));
     assert!(content.contains("subordinate to SugarCode's built-in agent instructions"));
     assert!(
@@ -575,14 +653,6 @@ async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
         ),
         (
             concat!(
-                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
-                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
-                "data: [DONE]\n\n"
-            ),
-            ModelErrorKind::Protocol,
-        ),
-        (
-            concat!(
                 "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
                 "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_2\"}]},\"finish_reason\":null}]}\n\n",
                 "data: [DONE]\n\n"
@@ -591,37 +661,7 @@ async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
         ),
         (
             concat!(
-                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
-                "data: [DONE]\n\n"
-            ),
-            ModelErrorKind::Protocol,
-        ),
-        (
-            concat!(
                 "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0},{\"index\":1}]},\"finish_reason\":null}]}\n\n",
-                "data: [DONE]\n\n"
-            ),
-            ModelErrorKind::Protocol,
-        ),
-        (
-            concat!(
-                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n",
-                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
-                "data: [DONE]\n\n"
-            ),
-            ModelErrorKind::Protocol,
-        ),
-        (
-            concat!(
-                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"mcp__fixture__inspect\",\"arguments\":\"{\\\"value\\\":1,\\\"value\\\":2}\"}}]},\"finish_reason\":null}]}\n\n",
-                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
-                "data: [DONE]\n\n"
-            ),
-            ModelErrorKind::Protocol,
-        ),
-        (
-            concat!(
-                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"bad id\",\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
                 "data: [DONE]\n\n"
             ),
             ModelErrorKind::Protocol,
@@ -644,6 +684,81 @@ async fn structured_tool_call_error_matrix_is_stable_and_non_retryable() {
         assert_eq!(error.kind(), expected, "case {case_index}");
         assert!(!error.retryable());
     }
+}
+
+#[tokio::test]
+async fn compatible_tool_call_variants_reach_runtime_validation() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":7,\"type\":\"function\",\"function\":{\"name\":\"workspace/read\",\"arguments\":\"{\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(tool_request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    let Some(Ok(ModelEvent::ResponseCompleted(response))) = events.last() else {
+        panic!("compatible tool call must complete: {events:?}");
+    };
+    let ModelOutputItemKind::ToolCall(call) = &response.output[0].kind else {
+        panic!("tool call output");
+    };
+    assert_eq!(response.output[0].output_index, 0);
+    assert!(call.id.starts_with("compat_call_"));
+    assert_eq!(call.name, "workspace/read");
+    assert_eq!(call.arguments, serde_json::Value::String("{".to_owned()));
+}
+
+#[tokio::test]
+async fn reasoning_field_variants_are_private_compatible_context() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"private\",\"reasoning_details\":[{\"type\":\"summary\"}],\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    let Some(Ok(ModelEvent::ResponseCompleted(response))) = events.last() else {
+        panic!("reasoning response must complete: {events:?}");
+    };
+    assert!(response.provider_context.is_some());
+    let ModelOutputItemKind::AssistantText { text, .. } = &response.output[0].kind else {
+        panic!("assistant output");
+    };
+    assert_eq!(text, "answer");
+}
+
+#[tokio::test]
+async fn legacy_think_tags_are_removed_from_the_authoritative_answer() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<think>private reasoning</think>Final answer.\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    let Some(Ok(ModelEvent::ResponseCompleted(response))) = events.last() else {
+        panic!("legacy reasoning response must complete: {events:?}");
+    };
+    let ModelOutputItemKind::AssistantText { text, .. } = &response.output[0].kind else {
+        panic!("assistant output");
+    };
+    assert_eq!(text, "Final answer.");
+    assert!(response.provider_context.is_some());
 }
 
 #[tokio::test]
@@ -1459,7 +1574,7 @@ async fn terminal_reason_matrix_maps_to_stable_non_retryable_errors() {
         ),
         (
             "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[]},\"finish_reason\":null}]}",
-            ModelErrorKind::Protocol,
+            ModelErrorKind::Incomplete,
         ),
         (
             "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"fixture_unknown\"}]}",
@@ -1483,7 +1598,7 @@ async fn terminal_reason_matrix_maps_to_stable_non_retryable_errors() {
 }
 
 #[tokio::test]
-async fn done_without_finish_reason_is_a_protocol_error() {
+async fn done_without_finish_reason_is_a_non_retryable_incomplete_response() {
     let (endpoint, server) = response_server(b"data: [DONE]\n\n".to_vec(), Vec::new()).await;
     let error = provider(endpoint)
         .stream(request())
@@ -1492,9 +1607,9 @@ async fn done_without_finish_reason_is_a_protocol_error() {
         .next()
         .await
         .expect("terminal event")
-        .expect_err("DONE without finish must fail");
+        .expect_err("empty DONE response must fail");
     server.await.expect("mock server");
-    assert_eq!(error.kind(), ModelErrorKind::Protocol);
+    assert_eq!(error.kind(), ModelErrorKind::Incomplete);
     assert!(!error.retryable());
 }
 
@@ -1535,6 +1650,7 @@ async fn response_headers_may_arrive_after_the_former_deadline() {
     tokio::time::advance(std::time::Duration::from_secs(31)).await;
     tokio::task::yield_now().await;
     assert!(!client.is_finished());
+    tokio::time::resume();
     let _ = release_tx.send(());
     let events = client
         .await
@@ -1547,7 +1663,7 @@ async fn response_headers_may_arrive_after_the_former_deadline() {
 }
 
 #[tokio::test]
-async fn stream_output_may_resume_after_the_former_idle_deadline() {
+async fn stream_output_may_resume_before_the_idle_deadline() {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .expect("bind delayed stream server");
@@ -1586,10 +1702,7 @@ async fn stream_output_may_resume_after_the_former_idle_deadline() {
     headers_rx.await.expect("headers sent");
     let mut stream = client.await.expect("provider task").expect("stream starts");
     tokio::task::yield_now().await;
-    tokio::time::pause();
     let next = tokio::spawn(async move { stream.next().await });
-    tokio::task::yield_now().await;
-    tokio::time::advance(std::time::Duration::from_secs(61)).await;
     tokio::task::yield_now().await;
     assert!(!next.is_finished());
     let _ = release_tx.send(());
@@ -1603,7 +1716,45 @@ async fn stream_output_may_resume_after_the_former_idle_deadline() {
 }
 
 #[tokio::test]
-async fn disconnect_before_done_is_retryable_transport_failure() {
+async fn an_idle_event_stream_becomes_a_retryable_timeout() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind idle stream server");
+    let address = listener.local_addr().expect("idle stream address");
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept request");
+        read_request(&mut socket, true).await;
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("write response headers");
+        socket.flush().await.expect("flush response headers");
+        std::future::pending::<()>().await;
+    });
+    let endpoint =
+        Url::parse(&format!("http://{address}/v1/chat/completions")).expect("mock endpoint");
+    let mut stream = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts");
+    tokio::time::pause();
+    let next = tokio::spawn(async move { stream.next().await });
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_secs(121)).await;
+    let error = next
+        .await
+        .expect("stream task")
+        .expect("timeout event")
+        .expect_err("idle stream fails");
+    assert_eq!(error.kind(), ModelErrorKind::Timeout);
+    assert!(error.retryable());
+    server.abort();
+}
+
+#[tokio::test]
+async fn clean_eof_after_semantic_output_completes_without_done() {
     let (endpoint, server) = response_server(DISCONNECT.as_bytes().to_vec(), Vec::new()).await;
     let provider = provider(endpoint);
     let events = provider
@@ -1618,9 +1769,7 @@ async fn disconnect_before_done_is_retryable_transport_failure() {
         events[0],
         Ok(model_event::text_delta("partial".to_string()))
     );
-    let error = events[1].as_ref().expect_err("disconnect error");
-    assert_eq!(error.kind(), ModelErrorKind::Disconnected);
-    assert!(error.retryable());
+    assert!(matches!(events[1], Ok(ModelEvent::ResponseCompleted(_))));
 }
 
 #[tokio::test]
@@ -1989,16 +2138,13 @@ async fn read_request(socket: &mut TcpStream, expect_auth: bool) -> serde_json::
         .keys()
         .map(String::as_str)
         .collect::<std::collections::BTreeSet<_>>();
-    let mut expected =
-        std::collections::BTreeSet::from(["messages", "model", "stream", "stream_options"]);
+    let mut expected = std::collections::BTreeSet::from(["messages", "model", "stream"]);
     if body.get("tools").is_some() {
         expected.insert("tools");
-        expected.insert("parallel_tool_calls");
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "workspace_read");
-        assert_eq!(body["parallel_tool_calls"], false);
+        assert!(body["tools"][0]["function"].get("strict").is_none());
     }
     assert_eq!(keys, expected);
-    assert_eq!(body["stream_options"]["include_usage"], true);
     body
 }

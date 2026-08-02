@@ -102,7 +102,8 @@ export const parseCommandApprovalRequest = (
     ) ||
     value.cwd !== '.' ||
     value.approvalScope !== 'command' ||
-    value.environmentPolicy !== 'minimalV1' ||
+    (value.environmentPolicy !== 'minimalV1' &&
+      value.environmentPolicy !== 'hostInheritedV1') ||
     value.sandboxed !== true ||
     value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
     (value.workspaceWritePolicy !== undefined &&
@@ -158,7 +159,7 @@ export const parseCommandApprovalRequest = (
     arguments: [...argumentsList],
     cwd: '.',
     approvalScope: 'command',
-    environmentPolicy: 'minimalV1',
+    environmentPolicy: value.environmentPolicy,
     sandboxed: true,
     sandboxPolicy: 'filesystemReadOnlyV1',
     ...(normalizedSourceAgent

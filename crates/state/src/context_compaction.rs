@@ -9,6 +9,7 @@ use crate::DurableTurnStatus;
 use crate::DurableUserContentPart;
 use sha2::Digest;
 use sha2::Sha256;
+use std::collections::BTreeSet;
 
 pub const MAX_CONTEXT_COMPACTION_MESSAGE_BYTES: usize = 32 * 1024;
 const COMPACTION_PREFIX: &str = "SugarCode deterministic persisted compaction v1";
@@ -18,15 +19,55 @@ pub fn build_context_compaction(
     pre_context_bytes: u64,
     post_context_bytes: u64,
 ) -> Option<DurableContextCompaction> {
-    let completed = turns
+    let effective = turns
         .iter()
-        .filter(|turn| turn.status == DurableTurnStatus::Completed)
+        .filter(|turn| turn.status != DurableTurnStatus::InProgress)
         .collect::<Vec<_>>();
-    let through_turn_id = completed.last()?.id.clone();
+    let through_turn_id = effective.last()?.id.clone();
     let mut canonical = String::new();
     let mut source_messages = 0u64;
-    for turn in &completed {
+    for turn in &effective {
         canonical.push_str("{\"type\":\"turn\"}\n");
+        let local_calls = turn
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                DurableItemSnapshot::ToolCall { call_id, name, .. } => {
+                    Some((call_id.clone(), name.clone()))
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let local_results = turn
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                DurableItemSnapshot::ToolResult { call_id, name, .. } => {
+                    Some((call_id.clone(), name.clone()))
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let mcp_calls = turn
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                DurableItemSnapshot::McpToolCall { call_id, name, .. } => {
+                    Some((call_id.clone(), name.clone()))
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let mcp_results = turn
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                DurableItemSnapshot::McpToolResult { call_id, name, .. } => {
+                    Some((call_id.clone(), name.clone()))
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
         let mut index = 0usize;
         while index < turn.items.len() {
             match &turn.items[index] {
@@ -34,17 +75,24 @@ pub fn build_context_compaction(
                     push_user_content_entry(&mut canonical, content);
                     source_messages = source_messages.checked_add(1)?;
                 }
+                DurableItemSnapshot::AgentMessage { .. }
+                    if turn.status != DurableTurnStatus::Completed => {}
                 DurableItemSnapshot::AgentMessage { text, .. } if !text.is_empty() => {
                     push_text_entry(&mut canonical, "assistant", text);
                     source_messages = source_messages.checked_add(1)?;
                 }
                 DurableItemSnapshot::AgentMessage { .. } => {}
+                DurableItemSnapshot::AgentCommentary { .. }
+                    if turn.status != DurableTurnStatus::Completed => {}
                 DurableItemSnapshot::AgentCommentary { text, .. } if !text.is_empty() => {
                     push_text_entry(&mut canonical, "assistant_commentary", text);
                     source_messages = source_messages.checked_add(1)?;
                 }
                 DurableItemSnapshot::AgentCommentary { .. } => {}
                 DurableItemSnapshot::ContextCompaction { .. } => {}
+                DurableItemSnapshot::ToolCall { call_id, name, .. }
+                    if turn.status != DurableTurnStatus::Completed
+                        && !local_results.contains(&(call_id.clone(), name.clone())) => {}
                 call @ DurableItemSnapshot::ToolCall { call_id, .. } => {
                     let result_index = ((index + 1)..turn.items.len()).find(|candidate| {
                         matches!(
@@ -76,6 +124,9 @@ pub fn build_context_compaction(
                     source_messages = source_messages.checked_add(1)?;
                     index = result_index;
                 }
+                DurableItemSnapshot::ToolResult { call_id, name, .. }
+                    if turn.status != DurableTurnStatus::Completed
+                        && !local_calls.contains(&(call_id.clone(), name.clone())) => {}
                 DurableItemSnapshot::ToolResult { .. } => return None,
                 DurableItemSnapshot::ToolValidationRejected {
                     name,
@@ -95,6 +146,9 @@ pub fn build_context_compaction(
                     canonical.push_str("}\n");
                     source_messages = source_messages.checked_add(1)?;
                 }
+                DurableItemSnapshot::McpToolCall { call_id, name, .. }
+                    if turn.status != DurableTurnStatus::Completed
+                        && !mcp_results.contains(&(call_id.clone(), name.clone())) => {}
                 call @ DurableItemSnapshot::McpToolCall { call_id, .. } => {
                     let result_index = ((index + 1)..turn.items.len()).find(|candidate| {
                         matches!(
@@ -126,6 +180,9 @@ pub fn build_context_compaction(
                     source_messages = source_messages.checked_add(1)?;
                     index = result_index;
                 }
+                DurableItemSnapshot::McpToolResult { call_id, name, .. }
+                    if turn.status != DurableTurnStatus::Completed
+                        && !mcp_calls.contains(&(call_id.clone(), name.clone())) => {}
                 DurableItemSnapshot::McpToolResult { .. } => return None,
                 DurableItemSnapshot::FileChange { .. }
                 | DurableItemSnapshot::AgentTask { .. }
@@ -144,7 +201,7 @@ pub fn build_context_compaction(
 
     let source_bytes = u64::try_from(canonical.len()).ok()?;
     let source_sha256 = sha256(canonical.as_bytes());
-    let source_turns = u64::try_from(completed.len()).ok()?;
+    let source_turns = u64::try_from(effective.len()).ok()?;
     let message = render_message(
         &canonical,
         source_turns,

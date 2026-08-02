@@ -135,37 +135,14 @@ export const resolveCli = (
     : resolveDevelopmentCli(options.desktopAppPath, platform);
 };
 
-const copyEnvironmentValue = (
-  source: NodeJS.ProcessEnv,
-  target: NodeJS.ProcessEnv,
-  key: string,
-): void => {
-  const value = source[key];
-  if (value !== undefined) {
-    target[key] = value;
-  }
-};
-
 export const createCliEnvironment = (
   source: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv => {
   const environment: NodeJS.ProcessEnv = {};
-  const keys =
-    platform === 'win32'
-      ? ['SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'SUGARCODE_HOME']
-      : [
-          'HOME',
-          'TMPDIR',
-          'LANG',
-          'LC_ALL',
-          'SUGARCODE_HOME',
-          ...(platform === 'linux'
-            ? ['DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR']
-            : []),
-        ];
-  for (const key of keys) {
-    copyEnvironmentValue(source, environment, key);
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined) {
+      environment[key] = value;
+    }
   }
   return environment;
 };

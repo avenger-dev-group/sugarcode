@@ -6,7 +6,6 @@ import type {
 import type {
   ConversationActionResult,
   ConversationActivity,
-  ConversationAgentOutput,
   ConversationAgentTaskStatus,
   ConversationCommandApprovalDecision,
   ConversationCommentaryActivity,
@@ -42,6 +41,11 @@ import {
   type ConversationLifecycle,
   parseConversationLifecycle,
 } from './protocol';
+import {
+  appendPendingAgentOutput,
+  type MutableAgentOutput,
+  removePendingAgentOutput,
+} from './agent-output-lifecycle';
 import type {
   WorkspacePatchChangeItem,
   WorkspacePatchResultItem,
@@ -72,10 +76,6 @@ type MutableMessage = {
   attachments?: ConversationMessage['attachments'];
   status: ConversationMessage['status'];
   agentOutput?: AgentOutputRef;
-};
-
-type MutableAgentOutput = {
-  -readonly [Key in keyof ConversationAgentOutput]: ConversationAgentOutput[Key];
 };
 
 type MutableContextCompactionActivity = {
@@ -1087,7 +1087,7 @@ export class ConversationController {
           });
         } else if (lifecycle.params.item.type === 'agentCommentary') {
           if (sourceOutput) {
-            this.resolvePendingAgentOutput(turn, sourceOutput);
+            removePendingAgentOutput(turn.pendingAgentOutputs, sourceOutput);
           }
           turn.activities.push({
             type: 'commentary',
@@ -1596,7 +1596,9 @@ export class ConversationController {
         this.notice = {
           kind: 'warning',
           summary:
-            'Provider-managed continuation is unsupported by this endpoint. SugarCode continued with private local replay.',
+            lifecycle.params.code === 'historicalContextDowngraded'
+              ? 'Earlier image or PDF content was represented as attachment metadata because the selected model cannot accept that media type.'
+              : 'Provider-managed continuation is unsupported by this endpoint. SugarCode continued with private local replay.',
         };
         this.publish();
         return;
@@ -1606,26 +1608,23 @@ export class ConversationController {
           lifecycle.params.threadId,
           lifecycle.params.turnId,
         );
-        const { output, delta } = lifecycle.params;
-        let pending = turn.pendingAgentOutputs.find(
-          (candidate) =>
-            candidate.responseOrdinal === output.responseOrdinal &&
-            candidate.outputIndex === output.outputIndex,
+        appendPendingAgentOutput(
+          turn.pendingAgentOutputs,
+          lifecycle.params.output,
+          lifecycle.params.delta,
         );
-        if (!pending) {
-          if (turn.pendingAgentOutputs.length > 0) {
-            throw new Error('Multiple unresolved Agent outputs are unsupported.');
-          }
-          pending = { ...output, text: '' };
-          turn.pendingAgentOutputs.push(pending);
-        }
-        if (
-          new TextEncoder().encode(`${pending.text}${delta}`).byteLength >
-          512 * 1024
-        ) {
-          throw new Error('Agent output preview exceeded its size limit.');
-        }
-        pending.text += delta;
+        this.publish();
+        return;
+      }
+      case 'agentOutputDiscarded': {
+        const turn = this.requireCorrelatedTurn(
+          lifecycle.params.threadId,
+          lifecycle.params.turnId,
+        );
+        removePendingAgentOutput(
+          turn.pendingAgentOutputs,
+          lifecycle.params.output,
+        );
         this.publish();
         return;
       }
@@ -1639,7 +1638,10 @@ export class ConversationController {
           throw new Error('Agent delta did not match an active AgentMessage.');
         }
         if (message.agentOutput) {
-          this.resolvePendingAgentOutput(turn, message.agentOutput);
+          removePendingAgentOutput(
+            turn.pendingAgentOutputs,
+            message.agentOutput,
+          );
           delete message.agentOutput;
         }
         message.text += lifecycle.params.delta;
@@ -2262,21 +2264,6 @@ export class ConversationController {
       const previewUrl = this.attachmentPreviews.get(attachment.assetId);
       return previewUrl ? { ...attachment, previewUrl } : attachment;
     });
-
-  private resolvePendingAgentOutput = (
-    turn: MutableTurn,
-    output: AgentOutputRef,
-  ): void => {
-    const index = turn.pendingAgentOutputs.findIndex(
-      (candidate) =>
-        candidate.responseOrdinal === output.responseOrdinal &&
-        candidate.outputIndex === output.outputIndex,
-    );
-    if (index < 0) {
-      return;
-    }
-    turn.pendingAgentOutputs.splice(index, 1);
-  };
 
   private clearPendingAgentOutputs = (): boolean => {
     let changed = false;

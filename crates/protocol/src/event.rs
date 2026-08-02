@@ -48,6 +48,11 @@ pub enum CoreEventKind {
         output: CoreAgentOutputRef,
         item: CoreItemSnapshot,
     },
+    AgentOutputDiscarded {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        output: CoreAgentOutputRef,
+    },
     AgentMessageDelta {
         thread_id: ThreadId,
         turn_id: TurnId,
@@ -88,6 +93,7 @@ pub enum CoreEventKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreWarningCode {
     ProviderManagedContinuationFallback,
+    HistoricalContextDowngraded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +131,35 @@ pub struct CoreTurnError {
     pub kind: CoreTurnErrorKind,
     pub retryable: bool,
     pub provider: Option<CoreProviderErrorMetadata>,
+    pub protocol: Option<CoreModelProtocolDiagnostic>,
     pub tool_schema: Option<CoreToolSchemaError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreModelProtocolDiagnostic {
+    pub stage: CoreModelProtocolStage,
+    pub code: CoreModelProtocolCode,
+    pub event_type: Option<String>,
+    pub shape_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreModelProtocolStage {
+    StreamEvent,
+    ResponseAssembly,
+    OutputNormalization,
+    RuntimeClassification,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreModelProtocolCode {
+    WireMismatch,
+    InvalidEventShape,
+    AmbiguousOutputReconciliation,
+    MalformedToolCall,
+    TerminalLifecycleViolation,
+    ContinuationOutputMismatch,
+    OutputIndexMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

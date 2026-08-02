@@ -303,6 +303,14 @@ const TranscriptTurnView = ({ turn, progress, onStop }: TranscriptTurnProps) => 
             >
               {turn.failure.kind}
             </span>
+            {turn.failure.protocol ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="uppercase tracking-[0.14em]">
+                  Protocol {turn.failure.protocol.code} · {turn.failure.protocol.fingerprint}
+                </span>
+              </>
+            ) : null}
             <span aria-hidden="true">·</span>
             <span className="uppercase tracking-[0.14em]">
               {turn.failure.retryable

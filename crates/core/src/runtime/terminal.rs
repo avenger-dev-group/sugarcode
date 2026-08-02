@@ -124,6 +124,7 @@ pub(super) async fn finish_state_unavailable_and_emit(
         kind: CoreTurnErrorKind::StateUnavailable,
         retryable: false,
         provider: None,
+        protocol: None,
         tool_schema: None,
     };
     if let Ok(item) = finish(
@@ -234,6 +235,14 @@ fn map_model_error(error: ModelError) -> CoreTurnError {
             tool_name: tool_name.to_owned(),
             reason: reason.to_owned(),
         });
+    let protocol = error
+        .protocol_diagnostic()
+        .map(|diagnostic| CoreModelProtocolDiagnostic {
+            stage: map_protocol_stage(diagnostic.stage()),
+            code: map_protocol_code(diagnostic.code()),
+            event_type: diagnostic.event_type().map(ToOwned::to_owned),
+            shape_sha256: diagnostic.shape_sha256().to_owned(),
+        });
     CoreTurnError {
         kind: match error.kind() {
             ModelErrorKind::Authentication => CoreTurnErrorKind::Authentication,
@@ -255,6 +264,7 @@ fn map_model_error(error: ModelError) -> CoreTurnError {
         },
         retryable: error.retryable(),
         provider,
+        protocol,
         tool_schema,
     }
 }
@@ -264,6 +274,7 @@ fn map_durable_error(error: CoreTurnError) -> DurableTurnError {
         kind,
         retryable,
         provider,
+        protocol,
         tool_schema,
     } = error;
     DurableTurnError {
@@ -299,9 +310,73 @@ fn map_durable_error(error: CoreTurnError) -> DurableTurnError {
             request_id: provider.request_id,
             retry_after: provider.retry_after,
         }),
+        protocol: protocol.map(|diagnostic| DurableModelProtocolDiagnostic {
+            stage: match diagnostic.stage {
+                CoreModelProtocolStage::StreamEvent => DurableModelProtocolStage::StreamEvent,
+                CoreModelProtocolStage::ResponseAssembly => {
+                    DurableModelProtocolStage::ResponseAssembly
+                }
+                CoreModelProtocolStage::OutputNormalization => {
+                    DurableModelProtocolStage::OutputNormalization
+                }
+                CoreModelProtocolStage::RuntimeClassification => {
+                    DurableModelProtocolStage::RuntimeClassification
+                }
+            },
+            code: match diagnostic.code {
+                CoreModelProtocolCode::WireMismatch => DurableModelProtocolCode::WireMismatch,
+                CoreModelProtocolCode::InvalidEventShape => {
+                    DurableModelProtocolCode::InvalidEventShape
+                }
+                CoreModelProtocolCode::AmbiguousOutputReconciliation => {
+                    DurableModelProtocolCode::AmbiguousOutputReconciliation
+                }
+                CoreModelProtocolCode::MalformedToolCall => {
+                    DurableModelProtocolCode::MalformedToolCall
+                }
+                CoreModelProtocolCode::TerminalLifecycleViolation => {
+                    DurableModelProtocolCode::TerminalLifecycleViolation
+                }
+                CoreModelProtocolCode::ContinuationOutputMismatch => {
+                    DurableModelProtocolCode::ContinuationOutputMismatch
+                }
+                CoreModelProtocolCode::OutputIndexMismatch => {
+                    DurableModelProtocolCode::OutputIndexMismatch
+                }
+            },
+            event_type: diagnostic.event_type,
+            shape_sha256: diagnostic.shape_sha256,
+        }),
         tool_schema: tool_schema.map(|error| DurableToolSchemaError {
             tool_name: error.tool_name,
             reason: error.reason,
         }),
+    }
+}
+
+fn map_protocol_stage(stage: ModelProtocolStage) -> CoreModelProtocolStage {
+    match stage {
+        ModelProtocolStage::StreamEvent => CoreModelProtocolStage::StreamEvent,
+        ModelProtocolStage::ResponseAssembly => CoreModelProtocolStage::ResponseAssembly,
+        ModelProtocolStage::OutputNormalization => CoreModelProtocolStage::OutputNormalization,
+        ModelProtocolStage::RuntimeClassification => CoreModelProtocolStage::RuntimeClassification,
+    }
+}
+
+fn map_protocol_code(code: ModelProtocolCode) -> CoreModelProtocolCode {
+    match code {
+        ModelProtocolCode::WireMismatch => CoreModelProtocolCode::WireMismatch,
+        ModelProtocolCode::InvalidEventShape => CoreModelProtocolCode::InvalidEventShape,
+        ModelProtocolCode::AmbiguousOutputReconciliation => {
+            CoreModelProtocolCode::AmbiguousOutputReconciliation
+        }
+        ModelProtocolCode::MalformedToolCall => CoreModelProtocolCode::MalformedToolCall,
+        ModelProtocolCode::TerminalLifecycleViolation => {
+            CoreModelProtocolCode::TerminalLifecycleViolation
+        }
+        ModelProtocolCode::ContinuationOutputMismatch => {
+            CoreModelProtocolCode::ContinuationOutputMismatch
+        }
+        ModelProtocolCode::OutputIndexMismatch => CoreModelProtocolCode::OutputIndexMismatch,
     }
 }

@@ -1,8 +1,17 @@
 use super::*;
+use std::collections::BTreeSet;
 
 #[derive(Default)]
 pub(super) struct OpenAiStreamState {
-    output_items: Vec<Value>,
+    output_items: Vec<CompletedOpenAiOutputItem>,
+    text_previews: BTreeMap<u32, String>,
+    canonical_preview_indices: BTreeMap<u32, u32>,
+    suppressed_text_previews: BTreeSet<u32>,
+}
+
+struct CompletedOpenAiOutputItem {
+    output_index: Option<usize>,
+    item: Value,
 }
 
 impl OpenAiStreamState {
@@ -23,23 +32,88 @@ impl OpenAiStreamState {
         };
         match kind {
             "response.output_text.delta" => {
+                let provider_output_index = u32_field(&value, "output_index").unwrap_or(0);
+                if self
+                    .suppressed_text_previews
+                    .contains(&provider_output_index)
+                {
+                    return Ok(StreamProgress::Continue);
+                }
+                let next_canonical_index =
+                    u32::try_from(self.canonical_preview_indices.len()).unwrap_or(u32::MAX);
+                let output_index = *self
+                    .canonical_preview_indices
+                    .entry(provider_output_index)
+                    .or_insert(next_canonical_index);
                 let delta = required_string(&value, "delta")?;
-                send_text_delta(sender, 0, delta).await?;
+                let preview = self.text_previews.entry(provider_output_index).or_default();
+                let normalized = if delta.starts_with(preview.as_str()) {
+                    let suffix = delta[preview.len()..].to_owned();
+                    *preview = delta.to_owned();
+                    suffix
+                } else {
+                    preview.push_str(delta);
+                    delta.to_owned()
+                };
+                if preview.len() > MAX_SEMANTIC_OUTPUT_BYTES {
+                    self.text_previews.remove(&provider_output_index);
+                    self.suppressed_text_previews.insert(provider_output_index);
+                    return Ok(StreamProgress::Continue);
+                }
+                if !normalized.is_empty() {
+                    send_text_delta(sender, output_index, &normalized).await?;
+                }
                 Ok(StreamProgress::Continue)
             }
             "response.output_item.done" => {
-                if let Some(item) = value.get("item") {
-                    self.output_items.push(item.clone());
-                }
+                let item = value.get("item").cloned().ok_or_else(|| {
+                    protocol_error_for_json(
+                        ModelProtocolStage::StreamEvent,
+                        ModelProtocolCode::InvalidEventShape,
+                        Some(kind),
+                        &value,
+                    )
+                })?;
+                let output_index = value
+                    .get("output_index")
+                    .map(|index| {
+                        index
+                            .as_u64()
+                            .and_then(|index| usize::try_from(index).ok())
+                            .ok_or_else(|| {
+                                protocol_error_for_json(
+                                    ModelProtocolStage::StreamEvent,
+                                    ModelProtocolCode::InvalidEventShape,
+                                    Some(kind),
+                                    &value,
+                                )
+                            })
+                    })
+                    .transpose()?;
+                self.output_items
+                    .push(CompletedOpenAiOutputItem { output_index, item });
                 Ok(StreamProgress::Continue)
             }
             "response.completed" => {
                 let mut response = value.get("response").cloned().ok_or_else(protocol_error)?;
                 if !self.output_items.is_empty() {
-                    response.as_object_mut().ok_or_else(protocol_error)?.insert(
-                        "output".to_owned(),
-                        Value::Array(std::mem::take(&mut self.output_items)),
-                    );
+                    let snapshot = response
+                        .get("output")
+                        .and_then(Value::as_array)
+                        .ok_or_else(protocol_error)?;
+                    let completed = std::mem::take(&mut self.output_items);
+                    // The completed response is the semantic source of truth.
+                    // Done items are only a recovery source for gateways that
+                    // omit the output snapshot entirely or return it empty.
+                    let output = if snapshot.is_empty() {
+                        reconcile_openai_output_items(snapshot, completed)?
+                    } else {
+                        snapshot.to_vec()
+                    };
+                    response
+                        .as_object_mut()
+                        .ok_or_else(protocol_error)?
+                        .insert("output".to_owned(), Value::Array(output));
                 }
                 let response = normalize_response_output(parse_openai_response(response)?);
                 let response = map_response_tool_names(response, tool_names);
@@ -68,9 +142,108 @@ impl OpenAiStreamState {
             // Lifecycle and usage come from response.completed; output items
             // come from output_item.done. Optional progress events are ignored.
             kind if kind.starts_with("response.") => Ok(StreamProgress::Continue),
+            _ if value.get("choices").is_some() || event_name == "message" => {
+                Err(protocol_error_for_json(
+                    ModelProtocolStage::StreamEvent,
+                    ModelProtocolCode::WireMismatch,
+                    Some(event_name),
+                    &value,
+                ))
+            }
             _ => Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false)),
         }
     }
+}
+
+fn reconcile_openai_output_items(
+    snapshot: &[Value],
+    completed: Vec<CompletedOpenAiOutputItem>,
+) -> Result<Vec<Value>, ModelError> {
+    let diagnostic_shape = json!({
+        "snapshot": snapshot,
+        "completed": completed
+            .iter()
+            .map(|item| json!({
+                "output_index": item.output_index,
+                "item": &item.item,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    let ambiguous = || {
+        protocol_error_for_json(
+            ModelProtocolStage::ResponseAssembly,
+            ModelProtocolCode::AmbiguousOutputReconciliation,
+            Some("response.completed"),
+            &diagnostic_shape,
+        )
+    };
+    // The completed response is the semantic source of truth. Streamed done
+    // items are only a recovery source when a gateway omitted the response
+    // output entirely. Their numeric output_index is never used to reorder or
+    // reject an otherwise coherent completed response.
+    if snapshot.is_empty() {
+        let mut recovered = Vec::new();
+        let mut stable_items = BTreeMap::<(String, String), Value>::new();
+        for completed_item in completed {
+            if let Some(key) = openai_output_item_key(&completed_item.item) {
+                match stable_items.get(&key) {
+                    Some(existing) if existing == &completed_item.item => continue,
+                    Some(_) => return Err(ambiguous()),
+                    None => {
+                        stable_items.insert(key, completed_item.item.clone());
+                    }
+                }
+            }
+            recovered.push(completed_item.item);
+        }
+        return Ok(recovered);
+    }
+    let mut merged = snapshot.to_vec();
+    let mut snapshot_keys = BTreeMap::<(String, String), usize>::new();
+    for (index, item) in snapshot.iter().enumerate() {
+        if let Some(key) = openai_output_item_key(item)
+            && snapshot_keys.insert(key, index).is_some()
+        {
+            return Err(ambiguous());
+        }
+    }
+    for completed_item in completed {
+        let Some(key) = openai_output_item_key(&completed_item.item) else {
+            continue;
+        };
+        if let Some(index) = snapshot_keys.get(&key).copied() {
+            if !openai_output_items_same_kind(&merged[index], &completed_item.item) {
+                return Err(ambiguous());
+            }
+            continue;
+        }
+        // Preserve a stable function call that the gateway streamed but
+        // accidentally omitted from response.completed. Text/commentary is
+        // intentionally not appended because the completed snapshot owns the
+        // visible answer.
+        if completed_item.item.get("type").and_then(Value::as_str) == Some("function_call") {
+            merged.push(completed_item.item);
+        }
+    }
+    Ok(merged)
+}
+
+fn openai_output_item_key(item: &Value) -> Option<(String, String)> {
+    let kind = item.get("type")?.as_str()?;
+    let id = if kind == "function_call" {
+        item.get("call_id")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("id").and_then(Value::as_str))?
+    } else {
+        item.get("id")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("call_id").and_then(Value::as_str))?
+    };
+    Some((kind.to_owned(), id.to_owned()))
+}
+
+fn openai_output_items_same_kind(snapshot: &Value, completed: &Value) -> bool {
+    snapshot.get("type").and_then(Value::as_str) == completed.get("type").and_then(Value::as_str)
 }
 
 #[derive(Default)]
@@ -416,9 +589,10 @@ impl GeminiStreamState {
                     continue;
                 }
                 if let Some(text) = part.get("text").and_then(Value::as_str) {
-                    self.add_bytes(text.len())?;
-                    push_text(&mut self.output, text);
-                    send_text_delta(sender, 0, text).await?;
+                    let (output_index, delta) = self.push_text_chunk(text)?;
+                    if !delta.is_empty() {
+                        send_text_delta(sender, output_index, &delta).await?;
+                    }
                 } else if let Some(call) = part.get("functionCall") {
                     let index = self.output.len();
                     let id = call
@@ -452,6 +626,44 @@ impl GeminiStreamState {
         Ok(())
     }
 
+    fn push_text_chunk(&mut self, chunk: &str) -> Result<(u32, String), ModelError> {
+        let last_text = self.output.last().and_then(|item| match &item.kind {
+            ModelOutputItemKind::AssistantText { text, .. } => {
+                Some((item.output_index, text.as_str()))
+            }
+            ModelOutputItemKind::ToolCall(_) => None,
+        });
+        let Some((output_index, current)) = last_text else {
+            self.add_bytes(chunk.len())?;
+            push_text(&mut self.output, chunk);
+            let output_index = self
+                .output
+                .last()
+                .map(|item| item.output_index)
+                .unwrap_or(0);
+            return Ok((output_index, chunk.to_owned()));
+        };
+        let (delta, cumulative) = if chunk.starts_with(current) {
+            (chunk[current.len()..].to_owned(), true)
+        } else {
+            (chunk.to_owned(), false)
+        };
+        self.add_bytes(delta.len())?;
+        let Some(ModelOutputItem {
+            kind: ModelOutputItemKind::AssistantText { text, .. },
+            ..
+        }) = self.output.last_mut()
+        else {
+            return Err(protocol_error());
+        };
+        if cumulative {
+            *text = chunk.to_owned();
+        } else {
+            text.push_str(chunk);
+        }
+        Ok((output_index, delta))
+    }
+
     fn add_bytes(&mut self, bytes: usize) -> Result<(), ModelError> {
         self.semantic_bytes = self.semantic_bytes.saturating_add(bytes);
         if self.semantic_bytes > MAX_SEMANTIC_OUTPUT_BYTES {
@@ -480,7 +692,10 @@ impl GeminiStreamState {
                 }
                 Some(reason) => ModelFinishReason::Unknown(reason.to_owned()),
                 None if tool_call_count > 0 => ModelFinishReason::ToolCalls,
-                None => ModelFinishReason::Unknown("missing".to_owned()),
+                // Gemini streaming uses a clean HTTP/SSE EOF as its normal
+                // transport terminator. Semantic output is sufficient
+                // terminal evidence when the final chunk omits finishReason.
+                None => ModelFinishReason::Stop,
             },
             provider_request_id: self.provider_request_id.clone(),
             continuation: if tool_call_count > 0 {

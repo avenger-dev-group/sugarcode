@@ -52,7 +52,45 @@ pub struct TurnError {
     pub provider: Option<ProviderErrorMetadata>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub protocol: Option<ModelProtocolDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub tool_schema: Option<ToolSchemaError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct ModelProtocolDiagnostic {
+    pub stage: ModelProtocolStage,
+    pub code: ModelProtocolCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub event_type: Option<String>,
+    pub shape_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum ModelProtocolStage {
+    StreamEvent,
+    ResponseAssembly,
+    OutputNormalization,
+    RuntimeClassification,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum ModelProtocolCode {
+    WireMismatch,
+    InvalidEventShape,
+    AmbiguousOutputReconciliation,
+    MalformedToolCall,
+    TerminalLifecycleViolation,
+    ContinuationOutputMismatch,
+    OutputIndexMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
@@ -177,6 +215,7 @@ pub struct TokenUsageUpdatedNotification {
 #[ts(rename_all = "camelCase")]
 pub enum TurnWarningCode {
     ProviderManagedContinuationFallback,
+    HistoricalContextDowngraded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

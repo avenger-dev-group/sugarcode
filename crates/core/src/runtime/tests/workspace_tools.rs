@@ -1427,7 +1427,7 @@ async fn large_private_continuation_and_cumulative_usage_do_not_fake_context_ove
 }
 
 #[tokio::test]
-async fn growing_context_rejection_compacts_and_retries_the_same_turn() {
+async fn non_shrinking_context_compaction_fails_without_a_retry_loop() {
     #[derive(Debug)]
     struct ContextRejectingProvider {
         calls: AtomicUsize,
@@ -1452,10 +1452,6 @@ async fn growing_context_rejection_compacts_and_retries_the_same_turn() {
                     1 => Err(ModelError::new(ModelErrorKind::InvalidRequest, false)),
                     2 => Ok(stream::iter(vec![Ok(model_event::final_response(
                         "The task and successful read must be preserved.",
-                    ))])
-                    .boxed()),
-                    3 => Ok(stream::iter(vec![Ok(model_event::final_response(
-                        "Recovered after automatic context compaction.",
                     ))])
                     .boxed()),
                     _ => panic!("unexpected provider request"),
@@ -1503,20 +1499,13 @@ async fn growing_context_rejection_compacts_and_retries_the_same_turn() {
     };
     while !matches!(
         events.recv().await.expect("turn event").kind,
-        CoreEventKind::TurnCompleted { .. }
+        CoreEventKind::TurnFailed { .. }
     ) {}
 
     let recorded_requests = requests.lock().expect("requests");
-    assert_eq!(recorded_requests.len(), 4);
+    assert_eq!(recorded_requests.len(), 3);
     assert!(recorded_requests[1].context_bytes() > recorded_requests[0].context_bytes());
     assert!(recorded_requests[2].tools.is_empty());
-    assert!(
-        recorded_requests[3]
-            .messages
-            .first()
-            .and_then(message_compaction)
-            .is_some()
-    );
     drop(recorded_requests);
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
@@ -1525,19 +1514,21 @@ async fn growing_context_rejection_compacts_and_retries_the_same_turn() {
         .iter()
         .find(|turn| turn.id == turn_id)
         .expect("persisted turn");
-    assert_eq!(turn.status, DurableTurnStatus::Completed);
-    assert!(turn.error.is_none());
+    assert_eq!(turn.status, DurableTurnStatus::Failed);
+    assert_eq!(
+        turn.error.as_ref().map(|error| error.kind),
+        Some(DurableTurnErrorKind::ContextWindowExceeded)
+    );
     assert!(turn.items.iter().any(|item| matches!(
         item,
         sugarcode_state::DurableItemSnapshot::ContextCompaction {
-            outcome: Some(sugarcode_state::DurableActiveTurnCompactionOutcome::Completed { .. }),
+            outcome: Some(sugarcode_state::DurableActiveTurnCompactionOutcome::Failed { .. }),
             ..
         }
     )));
-    assert!(turn.items.iter().any(|item| matches!(
+    assert!(!turn.items.iter().any(|item| matches!(
         item,
-        sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
-            if text == "Recovered after automatic context compaction."
+        sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
     )));
 }
 

@@ -204,7 +204,6 @@ const verifyVersion = async (
       ...process.env,
       SUGARCODE_HOME: verificationHome,
     },
-    target.platform,
   );
   const result = await runProcess(executablePath, ['version'], {
     cwd: workingDirectory,
@@ -235,7 +234,6 @@ const verifyExec = async (
           ...process.env,
           SUGARCODE_HOME: verificationHome,
         },
-        target.platform,
       ),
       timeoutMs: HANDSHAKE_TIMEOUT_MS,
       expectedExitCodes: [3],
@@ -272,7 +270,6 @@ const verifyTuiRoute = async (
         ...process.env,
         SUGARCODE_HOME: verificationHome,
       },
-      target.platform,
     ),
     timeoutMs: HANDSHAKE_TIMEOUT_MS,
     expectedExitCodes: [1],
@@ -583,7 +580,6 @@ const verifyHandshake = async (
       ...process.env,
       SUGARCODE_HOME: verificationHome,
     },
-    target.platform,
   );
   const child = spawn(
     executablePath,

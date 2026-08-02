@@ -38,6 +38,9 @@ use sugarcode_model_provider::ModelInstruction;
 use sugarcode_model_provider::ModelInstructionSource;
 use sugarcode_model_provider::ModelMessage;
 use sugarcode_model_provider::ModelOutputItemKind;
+use sugarcode_model_provider::ModelProtocolCode;
+use sugarcode_model_provider::ModelProtocolDiagnostic;
+use sugarcode_model_provider::ModelProtocolStage;
 use sugarcode_model_provider::ModelProvider;
 use sugarcode_model_provider::ModelRequest;
 use sugarcode_model_provider::ModelResponse;
@@ -58,6 +61,9 @@ use sugarcode_protocol::CoreFileChangeNewlineStyle;
 use sugarcode_protocol::CoreItemKind;
 use sugarcode_protocol::CoreItemSnapshot;
 use sugarcode_protocol::CoreMcpToolResult;
+use sugarcode_protocol::CoreModelProtocolCode;
+use sugarcode_protocol::CoreModelProtocolDiagnostic;
+use sugarcode_protocol::CoreModelProtocolStage;
 use sugarcode_protocol::CoreProviderErrorMetadata;
 use sugarcode_protocol::CoreRequestId;
 use sugarcode_protocol::CoreTokenUsage;
@@ -72,6 +78,9 @@ use sugarcode_protocol::CoreUserContentPart;
 use sugarcode_protocol::ThreadId;
 use sugarcode_protocol::TurnId;
 use sugarcode_state::ContentStore;
+use sugarcode_state::DurableModelProtocolCode;
+use sugarcode_state::DurableModelProtocolDiagnostic;
+use sugarcode_state::DurableModelProtocolStage;
 use sugarcode_state::DurableModelSelectionCapabilities;
 use sugarcode_state::DurableModelSelectionSnapshot;
 use sugarcode_state::DurableProviderErrorMetadata;
@@ -137,6 +146,7 @@ use terminal::finish_interrupted;
 use terminal::finish_interrupted_and_emit;
 use terminal::finish_state_unavailable_and_emit;
 use terminal::send_event;
+use tool_dispatch::ToolArgumentGuidance;
 use tool_dispatch::append_completed_agent_output_item;
 use tool_dispatch::append_completed_tool_item;
 use tool_dispatch::is_workspace_write_tool;
@@ -146,15 +156,18 @@ use tool_dispatch::map_workspace_read_outcome;
 use tool_dispatch::map_workspace_search_outcome;
 use tool_dispatch::serialized_file_change_bytes;
 use tool_dispatch::serialized_tool_result_bytes;
+use tool_dispatch::shell_tool_argument_guidance;
 use tool_dispatch::shell_tool_arguments;
 use tool_dispatch::workspace_tool_arguments;
 use tool_dispatch::workspace_tool_definitions;
 
 use crate::agent_instructions::sugarcode_active_turn_compaction_instruction_v1;
 use crate::agent_instructions::sugarcode_base_agent_instruction_v1;
+use crate::agent_instructions::sugarcode_model_switch_instruction_v1;
 
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
 const MAX_ACTIVE_TURN_COMPACTION_BYTES: usize = 32 * 1024;
+const SHELL_ENVIRONMENT_POLICY: &str = "hostInheritedV1";
 const MAX_ACTIVE_TURN_COMPACTION_SUMMARY_BYTES: usize = 23 * 1024;
 const MAX_ACTIVE_TURN_TASK_ANCHOR_BYTES: usize = 7 * 1024;
 const READ_ONLY_TOOL_CONCURRENCY: usize = 4;
@@ -657,9 +670,12 @@ impl CoreApi for CoreRuntime {
         input: Option<Vec<CoreUserContentPart>>,
         model_profile_id: Option<String>,
     ) -> Result<TurnStartOutcome, CoreError> {
+        let previous_model = self.lock_core()?.latest_model_selection(&thread_id);
         let selected_profile_id = match model_profile_id {
             Some(profile_id) => Some(profile_id),
-            None => self.lock_core()?.latest_model_profile_id(&thread_id),
+            None => previous_model
+                .as_ref()
+                .map(|model| model.profile_id.clone()),
         };
         let model_gateway = self
             .model_gateway
@@ -683,6 +699,14 @@ impl CoreApi for CoreRuntime {
             .as_deref()
             .map(|skills| workspace_skills_audit(skills, selection.as_ref()));
         let mut instructions = vec![sugarcode_base_agent_instruction_v1()];
+        if previous_model.as_ref().is_some_and(|previous| {
+            previous.profile_id != model_gateway.profile_id.as_ref()
+                || previous.provider_family != model_gateway.provider_family.as_ref()
+                || previous.wire_api != model_gateway.wire_api.as_ref()
+                || previous.model_id != model_gateway.model.as_ref()
+        }) {
+            instructions.push(sugarcode_model_switch_instruction_v1());
+        }
         instructions.extend(workspace_model_instructions(self));
         if let Some(skills) = self.workspace_skills.as_deref()
             && !skills.inventory().is_empty()
@@ -895,15 +919,20 @@ async fn run_turn(
         }
     }
 
+    let mut historical_content_downgraded = false;
     let mut messages = match prepared
         .history
         .iter()
-        .map(|message| {
-            prepared_model_message(
+        .enumerate()
+        .map(|(index, message)| {
+            let (message, downgraded) = prepared_model_message(
                 message,
                 runtime.content_store.as_deref(),
                 model_gateway.capabilities,
-            )
+                prepared.current_input_index != Some(index),
+            )?;
+            historical_content_downgraded |= downgraded;
+            Ok(message)
         })
         .collect::<Result<Vec<_>, _>>()
     {
@@ -925,6 +954,23 @@ async fn run_turn(
             return;
         }
     };
+    if historical_content_downgraded
+        && !send_event(
+            &runtime,
+            &cancellation,
+            request_id,
+            CoreEventKind::Warning {
+                thread_id: thread_id.clone(),
+                turn_id: turn_id.clone(),
+                code: sugarcode_protocol::CoreWarningCode::HistoricalContextDowngraded,
+            },
+        )
+        .await
+    {
+        finish_interrupted_and_emit(&runtime, &prepared, None).await;
+        clear_active(&runtime, &thread_id, &turn_id);
+        return;
+    }
     let mut portable_messages = messages.clone();
     let task_anchor = active_turn_task_anchor(&portable_messages);
     let mut usage = RuntimeUsage::default();
@@ -933,6 +979,8 @@ async fn run_turn(
     let mut response_ordinal = 0u64;
     let mut context_recovery_attempts = 0usize;
     let mut last_successful_request_tokens = None::<u64>;
+    let mut pre_output_retry_used = false;
+    let mut retry_after_no_output_pending = false;
     let terminal = 'rounds: loop {
         let amendments = runtime
             .collaboration
@@ -1013,12 +1061,25 @@ async fn run_turn(
             ));
         }
         let request_context_tokens = request.estimated_context_tokens();
+        let retry_after_no_output = retry_after_no_output_pending;
+        retry_after_no_output_pending = false;
         let stream = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break 'rounds Terminal::Interrupted,
-            result = model_gateway.provider.stream(request) => result,
+            result = async {
+                if retry_after_no_output {
+                    model_gateway.provider.retry_after_no_output(request.clone()).await
+                } else {
+                    model_gateway.provider.stream(request.clone()).await
+                }
+            } => result,
         };
         let mut stream = match stream {
+            Err(error) if !pre_output_retry_used && retryable_before_semantic_output(&error) => {
+                pre_output_retry_used = true;
+                retry_after_no_output_pending = true;
+                continue 'rounds;
+            }
             Ok(stream) => stream,
             Err(error) => {
                 let should_recover = match error.kind() {
@@ -1082,6 +1143,7 @@ async fn run_turn(
             None => break Terminal::Failed(output_too_large_error()),
         };
         let mut preview_text = BTreeMap::<u32, String>::new();
+        let mut suppressed_previews = std::collections::BTreeSet::<u32>::new();
         loop {
             let next = tokio::select! {
                 biased;
@@ -1089,6 +1151,8 @@ async fn run_turn(
                 next = stream.next() => next,
             };
             match next {
+                Some(Ok(ModelEvent::OutputTextDelta { output_index, .. }))
+                    if suppressed_previews.contains(&output_index) => {}
                 Some(Ok(ModelEvent::OutputTextDelta {
                     output_index,
                     delta,
@@ -1099,7 +1163,28 @@ async fn run_turn(
                         .checked_add(delta.len())
                         .is_none_or(|bytes| bytes > crate::thread::MAX_AGENT_MESSAGE_BYTES)
                     {
-                        break 'rounds Terminal::Failed(output_too_large_error());
+                        let had_visible_preview = !preview.is_empty();
+                        preview_text.remove(&output_index);
+                        suppressed_previews.insert(output_index);
+                        if had_visible_preview
+                            && !send_event(
+                                &runtime,
+                                &CancellationToken::new(),
+                                request_id,
+                                CoreEventKind::AgentOutputDiscarded {
+                                    thread_id: thread_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                    output: CoreAgentOutputRef {
+                                        response_ordinal,
+                                        output_index,
+                                    },
+                                },
+                            )
+                            .await
+                        {
+                            break 'rounds Terminal::StateUnavailable;
+                        }
+                        continue;
                     }
                     preview.push_str(&delta);
                     if !send_event(
@@ -1142,6 +1227,7 @@ async fn run_turn(
                 }
                 Some(Ok(ModelEvent::Warning { .. })) => {}
                 Some(Ok(ModelEvent::ResponseCompleted(response))) => {
+                    pre_output_retry_used = false;
                     let provider_context = response.provider_context.clone();
                     let trailing = tokio::select! {
                         biased;
@@ -1149,9 +1235,9 @@ async fn run_turn(
                         trailing = stream.next() => trailing,
                     };
                     if trailing.is_some() {
-                        break 'rounds Terminal::Failed(ModelError::new(
-                            ModelErrorKind::Protocol,
-                            false,
+                        break 'rounds Terminal::Failed(runtime_protocol_error(
+                            ModelProtocolCode::TerminalLifecycleViolation,
+                            serde_json::json!({"completion": "response", "trailing": "event"}),
                         ));
                     }
                     last_successful_request_tokens = Some(request_context_tokens);
@@ -1178,6 +1264,34 @@ async fn run_turn(
                         Ok(output) => output,
                         Err(error) => break 'rounds Terminal::Failed(error),
                     };
+                    if matches!(
+                        &round_output,
+                        CompletedRoundOutput::ToolUse {
+                            commentary: None,
+                            ..
+                        }
+                    ) {
+                        let durable_event = CancellationToken::new();
+                        for output_index in preview_text.keys().copied() {
+                            if !send_event(
+                                &runtime,
+                                &durable_event,
+                                request_id,
+                                CoreEventKind::AgentOutputDiscarded {
+                                    thread_id: thread_id.clone(),
+                                    turn_id: turn_id.clone(),
+                                    output: CoreAgentOutputRef {
+                                        response_ordinal,
+                                        output_index,
+                                    },
+                                },
+                            )
+                            .await
+                            {
+                                break 'rounds Terminal::StateUnavailable;
+                            }
+                        }
+                    }
                     let mut tool_calls = match round_output {
                         CompletedRoundOutput::Final { output_index, text } => {
                             let item = match runtime
@@ -1771,7 +1885,7 @@ async fn run_turn(
                                     command: arguments.command.clone(),
                                     arguments: arguments.arguments.clone(),
                                     cwd: arguments.cwd.clone(),
-                                    environment_policy: "minimalV1".to_string(),
+                                    environment_policy: SHELL_ENVIRONMENT_POLICY.to_string(),
                                     sandboxed: true,
                                     sandbox_policy: Some(filesystem_policy),
                                     workspace_write_policy,
@@ -1796,7 +1910,7 @@ async fn run_turn(
                                     command: arguments.command.clone(),
                                     arguments: arguments.arguments.clone(),
                                     cwd: arguments.cwd.clone(),
-                                    environment_policy: "minimalV1".to_string(),
+                                    environment_policy: SHELL_ENVIRONMENT_POLICY.to_string(),
                                     sandboxed: true,
                                     sandbox_policy: filesystem_policy,
                                     workspace_write_policy,
@@ -2167,7 +2281,11 @@ async fn run_turn(
                                     .expect("tool arguments serialize");
                                 let diagnostic = workspace_diagnostic.as_ref();
                                 content = validation_rejection_content(
-                                    &call.name, *kind, &arguments, diagnostic,
+                                    &call.name,
+                                    *kind,
+                                    &arguments,
+                                    diagnostic,
+                                    None,
                                 );
                                 if let Err(error) = append_completed_tool_item(
                                     &runtime,
@@ -2343,8 +2461,22 @@ async fn run_turn(
                         continue 'tool_batch;
                     }
                 }
+                Some(Err(error))
+                    if preview_text.is_empty()
+                        && !pre_output_retry_used
+                        && retryable_before_semantic_output(&error) =>
+                {
+                    pre_output_retry_used = true;
+                    retry_after_no_output_pending = true;
+                    continue 'rounds;
+                }
                 Some(Err(error)) => break 'rounds Terminal::Failed(error),
                 None => {
+                    if preview_text.is_empty() && !pre_output_retry_used {
+                        pre_output_retry_used = true;
+                        retry_after_no_output_pending = true;
+                        continue 'rounds;
+                    }
                     break 'rounds Terminal::Failed(ModelError::new(
                         ModelErrorKind::Disconnected,
                         true,
@@ -2374,11 +2506,12 @@ fn validate_tool_call_batch(
 ) -> Result<(), ToolBatchValidationFailure> {
     let mut call_ids = std::collections::BTreeSet::new();
     let mut kinds = Vec::with_capacity(calls.len());
+    let mut guidance = Vec::with_capacity(calls.len());
     for call in calls {
         if !call_ids.insert(call.id.as_str()) {
-            return Err(ToolBatchValidationFailure::Fatal(ModelError::new(
-                ModelErrorKind::Protocol,
-                false,
+            return Err(ToolBatchValidationFailure::Fatal(runtime_protocol_error(
+                ModelProtocolCode::MalformedToolCall,
+                serde_json::json!({"calls": calls.len(), "duplicateId": true}),
             )));
         }
         let validation = match call.name.as_str() {
@@ -2432,14 +2565,15 @@ fn validate_tool_call_batch(
             }
             _ => {
                 kinds.push(Some(CoreToolErrorKind::UnknownTool));
+                guidance.push(None);
                 continue;
             }
         };
-        kinds.push(
-            validation
-                .err()
-                .map(|_| CoreToolErrorKind::InvalidArguments),
-        );
+        let kind = validation
+            .err()
+            .map(|_| CoreToolErrorKind::InvalidArguments);
+        guidance.push(kind.and_then(|_| shell_tool_argument_guidance(call)));
+        kinds.push(kind);
     }
     if kinds.iter().all(Option::is_none) {
         return Ok(());
@@ -2456,6 +2590,7 @@ fn validate_tool_call_batch(
     }
     Err(ToolBatchValidationFailure::Rejected(ToolBatchRejection {
         kinds,
+        guidance,
         fingerprint: format!("{:x}", hasher.finalize()),
     }))
 }
@@ -2467,6 +2602,7 @@ enum ToolBatchValidationFailure {
 
 struct ToolBatchRejection {
     kinds: Vec<Option<CoreToolErrorKind>>,
+    guidance: Vec<Option<ToolArgumentGuidance>>,
     fingerprint: String,
 }
 
@@ -2483,15 +2619,25 @@ async fn record_rejected_tool_batch(
     if record_calls && is_batch {
         messages.push(ModelMessage::tool_calls(calls.to_vec()));
     }
-    for (call, validation_kind) in calls.iter().zip(&rejection.kinds) {
+    for ((call, validation_kind), guidance) in
+        calls.iter().zip(&rejection.kinds).zip(&rejection.guidance)
+    {
         let kind = validation_kind.unwrap_or(CoreToolErrorKind::BatchRejected);
         let arguments = serde_json::to_vec(&call.arguments).unwrap_or_default();
-        let content = validation_rejection_content(&call.name, kind, &arguments, None);
+        let content = validation_rejection_content(&call.name, kind, &arguments, None, *guidance);
         append_completed_tool_item(
             runtime,
             prepared,
             tool_validation_rejected_item(
-                call, kind, &arguments, None, None, None, None, None, None,
+                call,
+                kind,
+                &arguments,
+                None,
+                None,
+                None,
+                guidance.map(|value| value.expected_summary.to_string()),
+                None,
+                guidance.map(|value| value.suggested_action),
             ),
         )
         .await?;
@@ -2510,6 +2656,7 @@ fn validation_rejection_content(
     kind: CoreToolErrorKind,
     arguments: &[u8],
     diagnostic: Option<&WorkspaceEditDiagnostic>,
+    guidance: Option<ToolArgumentGuidance>,
 ) -> String {
     let mut fields = vec![
         format!("{tool_name} error: {kind}"),
@@ -2525,7 +2672,10 @@ fn validation_rejection_content(
     if let Some(line) = diagnostic.and_then(|value| value.line) {
         fields.push(format!("line={line}"));
     }
-    if let Some(expected) = diagnostic.and_then(|value| value.expected_summary.as_deref()) {
+    if let Some(expected) = diagnostic
+        .and_then(|value| value.expected_summary.as_deref())
+        .or_else(|| guidance.map(|value| value.expected_summary))
+    {
         fields.push(format!("expected={expected}"));
     }
     if let Some(actual) = diagnostic.and_then(|value| value.actual_summary.as_deref()) {
@@ -2535,6 +2685,7 @@ fn validation_rejection_content(
         "suggestedAction={}",
         diagnostic
             .map(|value| value.suggested_action.as_str())
+            .or_else(|| guidance.map(|value| value.suggested_action))
             .or_else(|| validation_rejection_action(kind))
             .unwrap_or("correctArguments")
     ));
@@ -2596,6 +2747,17 @@ enum CompletedRoundOutput {
     },
 }
 
+fn runtime_protocol_error(code: ModelProtocolCode, shape: serde_json::Value) -> ModelError {
+    ModelError::new(ModelErrorKind::Protocol, false).with_protocol_diagnostic(
+        ModelProtocolDiagnostic::from_json_shape(
+            ModelProtocolStage::RuntimeClassification,
+            code,
+            Some("response.completed"),
+            &shape,
+        ),
+    )
+}
+
 fn classify_model_response(
     response: ModelResponse,
     preview_text: &BTreeMap<u32, String>,
@@ -2621,7 +2783,10 @@ fn classify_model_response(
         .enumerate()
         .any(|(index, item)| u32::try_from(index).ok() != Some(item.output_index))
     {
-        return Err(ModelError::new(ModelErrorKind::Protocol, false));
+        return Err(runtime_protocol_error(
+            ModelProtocolCode::OutputIndexMismatch,
+            serde_json::json!({"outputCount": response.output.len()}),
+        ));
     }
     let mut output = response.output.into_iter();
     let Some(first) = output.next() else {
@@ -2633,7 +2798,10 @@ fn classify_model_response(
             text,
         } => {
             if continuation != ModelContinuation::Complete {
-                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+                return Err(runtime_protocol_error(
+                    ModelProtocolCode::ContinuationOutputMismatch,
+                    serde_json::json!({"continuation": "toolCalls", "firstOutput": "finalText"}),
+                ));
             }
             if output.next().is_some() {
                 return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
@@ -2657,7 +2825,10 @@ fn classify_model_response(
             text,
         } => {
             if continuation != ModelContinuation::ToolCalls {
-                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+                return Err(runtime_protocol_error(
+                    ModelProtocolCode::ContinuationOutputMismatch,
+                    serde_json::json!({"continuation": "complete", "firstOutput": "commentary"}),
+                ));
             }
             validate_completed_text(
                 first.output_index,
@@ -2684,11 +2855,15 @@ fn classify_model_response(
         }
         ModelOutputItemKind::ToolCall(call) => {
             if continuation != ModelContinuation::ToolCalls {
-                return Err(ModelError::new(ModelErrorKind::Protocol, false));
+                return Err(runtime_protocol_error(
+                    ModelProtocolCode::ContinuationOutputMismatch,
+                    serde_json::json!({"continuation": "complete", "firstOutput": "toolCall"}),
+                ));
             }
-            if !preview_text.is_empty() {
-                return Err(ModelError::new(ModelErrorKind::Protocol, false));
-            }
+            // Text deltas are provisional. A compatible gateway may stream a
+            // short commentary preview and omit that message from the final
+            // snapshot when it returns the actionable tool call. The preview
+            // is not durable and must not block safe tool execution.
             let mut calls = vec![call];
             for item in output {
                 let ModelOutputItemKind::ToolCall(call) = item.kind else {
@@ -2717,7 +2892,13 @@ fn validate_completed_text(
     if !preview_text.is_empty()
         && (preview_text.len() != 1 || !preview_text.contains_key(&output_index))
     {
-        return Err(ModelError::new(ModelErrorKind::Protocol, false));
+        return Err(runtime_protocol_error(
+            ModelProtocolCode::OutputIndexMismatch,
+            serde_json::json!({
+                "completedOutputIndex": output_index,
+                "previewCount": preview_text.len(),
+            }),
+        ));
     }
     Ok(())
 }
@@ -3218,7 +3399,10 @@ async fn compact_active_turn(
                         trailing = stream.next() => trailing,
                     };
                     if trailing.is_some() {
-                        let error = ModelError::new(ModelErrorKind::Protocol, false);
+                        let error = runtime_protocol_error(
+                            ModelProtocolCode::TerminalLifecycleViolation,
+                            serde_json::json!({"completion": "compaction", "trailing": "event"}),
+                        );
                         complete_compaction_item(
                             runtime,
                             prepared,
@@ -3366,7 +3550,9 @@ async fn compact_active_turn(
         tools: tools.to_vec(),
     };
     let post_context_bytes = post_request.context_bytes();
-    if post_request.estimated_context_tokens() > active_target_tokens {
+    if post_context_bytes >= pre_context_bytes
+        || post_request.estimated_context_tokens() > active_target_tokens
+    {
         complete_compaction_item(
             runtime,
             prepared,
@@ -3716,6 +3902,18 @@ fn model_error_kind_name(kind: ModelErrorKind) -> &'static str {
     }
 }
 
+fn retryable_before_semantic_output(error: &ModelError) -> bool {
+    error.retryable()
+        && matches!(
+            error.kind(),
+            ModelErrorKind::Transport
+                | ModelErrorKind::Disconnected
+                | ModelErrorKind::Timeout
+                | ModelErrorKind::RateLimited
+                | ModelErrorKind::Server
+        )
+}
+
 fn workspace_instructions_audit(
     snapshot: &WorkspaceInstructionsSnapshot,
 ) -> DurableWorkspaceInstructionsAudit {
@@ -3872,7 +4070,21 @@ fn shell_execution_result(execution: ShellCommandExecution) -> Option<(CoreToolR
         }
     };
     let content = match &result {
-        CoreToolResult::Error { kind } => format!("shell/exec error: {kind}"),
+        CoreToolResult::Error { kind } => serde_json::to_string(&serde_json::json!({
+            "status": "error",
+            "kind": kind.to_string(),
+            "environmentPolicy": SHELL_ENVIRONMENT_POLICY,
+            "suggestedAction": match kind {
+                CoreToolErrorKind::CommandNotFound =>
+                    "inspectProjectConfigurationAndTryInstalledAlternativesThenReportMissingDependency",
+                CoreToolErrorKind::AccessDenied =>
+                    "reportSandboxOrHostPermissionBoundary",
+                CoreToolErrorKind::SandboxUnavailable =>
+                    "reportCommandSandboxUnavailable",
+                _ => "inspectFailureAndChooseAnotherSafeMethod",
+            },
+        }))
+        .expect("shell error result serializes"),
         CoreToolResult::Process(process) => serde_json::to_string(&serde_json::json!({
             "stdout": process.stdout,
             "stderr": process.stderr,
@@ -4050,8 +4262,10 @@ fn prepared_model_message(
     message: &PreparedMessage,
     content_store: Option<&ContentStore>,
     capabilities: ModelCapabilities,
-) -> Result<ModelMessage, ModelError> {
-    Ok(match message {
+    historical: bool,
+) -> Result<(ModelMessage, bool), ModelError> {
+    let mut historical_content_downgraded = false;
+    let message = match message {
         PreparedMessage::UserContent { content } => {
             let mut model_content = Vec::with_capacity(content.len());
             for part in content {
@@ -4064,7 +4278,12 @@ fn prepared_model_message(
                     }
                     CoreUserContentPart::Image { asset } => {
                         if !capabilities.image_input {
-                            return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+                            if !historical {
+                                return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+                            }
+                            historical_content_downgraded = true;
+                            model_content.push(historical_attachment_descriptor("image", asset));
+                            continue;
                         }
                         model_content.push(ModelContentPart::ImageAsset(resolve_model_asset(
                             content_store,
@@ -4084,7 +4303,12 @@ fn prepared_model_message(
                     }
                     CoreUserContentPart::Document { asset } => {
                         if !capabilities.pdf_input || asset.media_type != "application/pdf" {
-                            return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+                            if !historical {
+                                return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
+                            }
+                            historical_content_downgraded = true;
+                            model_content.push(historical_attachment_descriptor("document", asset));
+                            continue;
                         }
                         model_content.push(ModelContentPart::PdfDocument(resolve_model_asset(
                             content_store,
@@ -4144,7 +4368,21 @@ fn prepared_model_message(
                 content.clone(),
             )])
         }
-    })
+    };
+    Ok((message, historical_content_downgraded))
+}
+
+fn historical_attachment_descriptor(
+    kind: &str,
+    asset: &sugarcode_protocol::CoreContentAsset,
+) -> ModelContentPart {
+    ModelContentPart::Text {
+        phase: ModelTextPhase::Final,
+        text: format!(
+            "[Historical {kind} attachment omitted because the selected model cannot accept it: name={:?}, mediaType={}, sizeBytes={}, sha256={}]",
+            asset.original_name, asset.media_type, asset.size_bytes, asset.sha256
+        ),
+    }
 }
 
 fn resolve_asset_bytes(
@@ -4326,3 +4564,7 @@ fn add_optional_usage(left: Option<u64>, right: Option<u64>) -> Option<Option<u6
 #[cfg(test)]
 #[path = "runtime/tests/mod.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/runtime_model_switching.rs"]
+mod model_switching_tests;

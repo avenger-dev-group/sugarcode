@@ -115,9 +115,9 @@ fn local_model_resolver_honors_default_explicit_context_and_disabled_connections
     assert_eq!(default.profile_id, "model_default");
     assert_eq!(default.capabilities.context_window_tokens, 131_072);
     assert!(default.capabilities.tool_calls);
-    assert!(default.capabilities.strict_tool_schema);
-    assert!(default.capabilities.parallel_tool_calls);
-    assert!(default.capabilities.image_input);
+    assert!(!default.capabilities.strict_tool_schema);
+    assert!(!default.capabilities.parallel_tool_calls);
+    assert!(!default.capabilities.image_input);
     assert!(!default.capabilities.pdf_input);
 
     let custom = resolver

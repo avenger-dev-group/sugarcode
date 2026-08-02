@@ -456,6 +456,7 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
             kind: sugarcode_state::DurableTurnErrorKind::Server,
             retryable: true,
             provider: None,
+            protocol: None,
             tool_schema: None,
         }),
         None,

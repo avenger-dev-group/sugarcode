@@ -122,7 +122,7 @@ fn starts_consecutive_turns_after_completion_and_isolates_threads() {
 }
 
 #[test]
-fn provider_history_excludes_failed_and_interrupted_partial_turns() {
+fn provider_history_preserves_terminal_user_input_but_excludes_partial_output() {
     let mut core = Core::new();
     let thread_id = start_thread(&mut core, 1);
     for (request, status) in [
@@ -133,7 +133,7 @@ fn provider_history_excludes_failed_and_interrupted_partial_turns() {
             .prepare_text_turn(
                 CoreRequestId::new(request),
                 thread_id.clone(),
-                Some(format!("excluded-{request}")),
+                Some(format!("recoverable-{request}")),
             )
             .expect("prepare excluded turn");
         core.append_text_delta(&thread_id, &prepared.turn_id, "partial")
@@ -142,6 +142,7 @@ fn provider_history_excludes_failed_and_interrupted_partial_turns() {
             kind: sugarcode_state::DurableTurnErrorKind::Server,
             retryable: true,
             provider: None,
+            protocol: None,
             tool_schema: None,
         });
         core.finish_text_turn(&thread_id, &prepared.turn_id, status, error, None)
@@ -157,12 +158,87 @@ fn provider_history_excludes_failed_and_interrupted_partial_turns() {
         .expect("prepare next turn");
     assert_eq!(
         prepared.history,
-        vec![PreparedMessage::UserContent {
-            content: vec![sugarcode_protocol::CoreUserContentPart::Text {
-                text: "included".to_string(),
-            }],
-        }]
+        vec![
+            PreparedMessage::UserContent {
+                content: vec![sugarcode_protocol::CoreUserContentPart::Text {
+                    text: "recoverable-2".to_string(),
+                }],
+            },
+            PreparedMessage::UserContent {
+                content: vec![sugarcode_protocol::CoreUserContentPart::Text {
+                    text: "recoverable-3".to_string(),
+                }],
+            },
+            PreparedMessage::UserContent {
+                content: vec![sugarcode_protocol::CoreUserContentPart::Text {
+                    text: "included".to_string(),
+                }],
+            },
+        ]
     );
+}
+
+#[test]
+fn provider_history_preserves_balanced_tools_from_an_interrupted_turn() {
+    let mut core = Core::new();
+    let thread_id = start_thread(&mut core, 1);
+    let interrupted = core
+        .prepare_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Inspect the project".to_string()),
+        )
+        .expect("prepare interrupted turn");
+    core.append_completed_item(
+        &thread_id,
+        &interrupted.turn_id,
+        CoreItemKind::ToolCall {
+            call_id: "call_1".to_string(),
+            name: "workspace/list".to_string(),
+            arguments: serde_json::json!({"path": "."}),
+        },
+    )
+    .expect("tool call");
+    core.append_completed_item(
+        &thread_id,
+        &interrupted.turn_id,
+        CoreItemKind::ToolResult {
+            call_id: "call_1".to_string(),
+            name: "workspace/list".to_string(),
+            result: CoreToolResult::Success {
+                content: "project entries".to_string(),
+                bytes: 15,
+            },
+        },
+    )
+    .expect("tool result");
+    core.finish_turn(
+        &thread_id,
+        &interrupted.turn_id,
+        DurableTurnStatus::Interrupted,
+        None,
+        None,
+    )
+    .expect("interrupt turn");
+
+    let continued = core
+        .prepare_text_turn(
+            CoreRequestId::new(3),
+            thread_id,
+            Some("Continue".to_string()),
+        )
+        .expect("continue turn");
+    assert!(matches!(
+        continued.history.as_slice(),
+        [
+            PreparedMessage::UserContent { .. },
+            PreparedMessage::ToolCall { call_id, name, .. },
+            PreparedMessage::ToolResult { call_id: result_call_id, .. },
+            PreparedMessage::UserContent { .. },
+        ] if call_id == "call_1"
+            && result_call_id == "call_1"
+            && name == "workspace/list"
+    ));
 }
 
 #[test]
@@ -250,7 +326,7 @@ fn provider_history_compacts_deterministically_above_the_compatibility_target() 
 }
 
 #[test]
-fn interrupted_checkpoint_is_auditable_but_not_effective_context() {
+fn interrupted_checkpoint_is_rebuilt_with_recoverable_input() {
     let mut core = Core::new();
     let thread_id = start_thread(&mut core, 1);
     let maximum_output = "x".repeat(MAX_AGENT_MESSAGE_BYTES);
@@ -304,13 +380,17 @@ fn interrupted_checkpoint_is_auditable_but_not_effective_context() {
 
     let retried = core
         .prepare_text_turn(CoreRequestId::new(9), thread_id, Some("retry".to_string()))
-        .expect("rebuild checkpoint from completed originals");
-    assert_eq!(
-        retried.history[0],
-        PreparedMessage::ContextCompaction {
-            content: first_message.clone(),
-        }
-    );
+        .expect("rebuild checkpoint with interrupted input");
+    let PreparedMessage::ContextCompaction { content } = &retried.history[0] else {
+        panic!("rebuilt checkpoint");
+    };
+    assert_ne!(content, first_message);
+    assert!(content.contains("coveredTurns:7"));
+    assert!(matches!(
+        retried.history.last(),
+        Some(PreparedMessage::UserContent { content })
+            if matches!(content.as_slice(), [sugarcode_protocol::CoreUserContentPart::Text { text }] if text == "retry")
+    ));
 }
 
 #[test]
@@ -370,7 +450,7 @@ fn compaction_trigger_is_strictly_above_target_and_failure_is_atomic() {
             thread_id.clone(),
             Some("n".to_string()),
             None,
-            fixed_at_target + 1,
+            fixed_at_target,
             0,
         ),
         Err(CoreError::ContextTooLarge)
@@ -381,7 +461,7 @@ fn compaction_trigger_is_strictly_above_target_and_failure_is_atomic() {
             thread_id,
             Some("n".to_string()),
             None,
-            fixed_at_target,
+            fixed_at_target - 1,
             0,
         )
         .expect("failed compaction did not reserve a turn");

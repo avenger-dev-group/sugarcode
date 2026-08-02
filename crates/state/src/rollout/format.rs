@@ -841,7 +841,19 @@ pub(super) struct StoredTurnErrorRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<StoredProviderErrorRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<StoredModelProtocolDiagnosticRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_schema: Option<StoredToolSchemaErrorRef<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StoredModelProtocolDiagnosticRef<'a> {
+    pub stage: &'static str,
+    pub code: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<&'a str>,
+    pub shape_sha256: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -996,6 +1008,14 @@ impl<'a> From<&'a DurableTurnSnapshot> for StoredTurnRef<'a> {
                         request_id: provider.request_id.as_deref(),
                         retry_after: provider.retry_after.as_deref(),
                     }),
+                protocol: error.protocol.as_ref().map(|protocol| {
+                    StoredModelProtocolDiagnosticRef {
+                        stage: stored_protocol_stage(protocol.stage),
+                        code: stored_protocol_code(protocol.code),
+                        event_type: protocol.event_type.as_deref(),
+                        shape_sha256: &protocol.shape_sha256,
+                    }
+                }),
                 tool_schema: error
                     .tool_schema
                     .as_ref()
@@ -1048,6 +1068,29 @@ fn stored_error_kind(kind: DurableTurnErrorKind) -> &'static str {
         DurableTurnErrorKind::ProviderResponseTooLarge => "providerResponseTooLarge",
         DurableTurnErrorKind::OutputTooLarge => "outputTooLarge",
         DurableTurnErrorKind::StateUnavailable => "stateUnavailable",
+    }
+}
+
+fn stored_protocol_stage(stage: super::DurableModelProtocolStage) -> &'static str {
+    match stage {
+        super::DurableModelProtocolStage::StreamEvent => "streamEvent",
+        super::DurableModelProtocolStage::ResponseAssembly => "responseAssembly",
+        super::DurableModelProtocolStage::OutputNormalization => "outputNormalization",
+        super::DurableModelProtocolStage::RuntimeClassification => "runtimeClassification",
+    }
+}
+
+fn stored_protocol_code(code: super::DurableModelProtocolCode) -> &'static str {
+    match code {
+        super::DurableModelProtocolCode::WireMismatch => "wireMismatch",
+        super::DurableModelProtocolCode::InvalidEventShape => "invalidEventShape",
+        super::DurableModelProtocolCode::AmbiguousOutputReconciliation => {
+            "ambiguousOutputReconciliation"
+        }
+        super::DurableModelProtocolCode::MalformedToolCall => "malformedToolCall",
+        super::DurableModelProtocolCode::TerminalLifecycleViolation => "terminalLifecycleViolation",
+        super::DurableModelProtocolCode::ContinuationOutputMismatch => "continuationOutputMismatch",
+        super::DurableModelProtocolCode::OutputIndexMismatch => "outputIndexMismatch",
     }
 }
 
@@ -1587,7 +1630,38 @@ struct StoredTurnError {
     kind: StoredTurnErrorKind,
     retryable: bool,
     provider: Option<StoredProviderError>,
+    protocol: Option<StoredModelProtocolDiagnostic>,
     tool_schema: Option<StoredToolSchemaError>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredModelProtocolDiagnostic {
+    stage: StoredModelProtocolStage,
+    code: StoredModelProtocolCode,
+    event_type: Option<String>,
+    shape_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StoredModelProtocolStage {
+    StreamEvent,
+    ResponseAssembly,
+    OutputNormalization,
+    RuntimeClassification,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StoredModelProtocolCode {
+    WireMismatch,
+    InvalidEventShape,
+    AmbiguousOutputReconciliation,
+    MalformedToolCall,
+    TerminalLifecycleViolation,
+    ContinuationOutputMismatch,
+    OutputIndexMismatch,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2434,6 +2508,7 @@ fn decode_error(error: StoredTurnError) -> DurableTurnError {
         kind,
         retryable,
         provider,
+        protocol,
         tool_schema,
     } = error;
     DurableTurnError {
@@ -2470,6 +2545,47 @@ fn decode_error(error: StoredTurnError) -> DurableTurnError {
             code: provider.code,
             request_id: provider.request_id,
             retry_after: provider.retry_after,
+        }),
+        protocol: protocol.map(|diagnostic| super::DurableModelProtocolDiagnostic {
+            stage: match diagnostic.stage {
+                StoredModelProtocolStage::StreamEvent => {
+                    super::DurableModelProtocolStage::StreamEvent
+                }
+                StoredModelProtocolStage::ResponseAssembly => {
+                    super::DurableModelProtocolStage::ResponseAssembly
+                }
+                StoredModelProtocolStage::OutputNormalization => {
+                    super::DurableModelProtocolStage::OutputNormalization
+                }
+                StoredModelProtocolStage::RuntimeClassification => {
+                    super::DurableModelProtocolStage::RuntimeClassification
+                }
+            },
+            code: match diagnostic.code {
+                StoredModelProtocolCode::WireMismatch => {
+                    super::DurableModelProtocolCode::WireMismatch
+                }
+                StoredModelProtocolCode::InvalidEventShape => {
+                    super::DurableModelProtocolCode::InvalidEventShape
+                }
+                StoredModelProtocolCode::AmbiguousOutputReconciliation => {
+                    super::DurableModelProtocolCode::AmbiguousOutputReconciliation
+                }
+                StoredModelProtocolCode::MalformedToolCall => {
+                    super::DurableModelProtocolCode::MalformedToolCall
+                }
+                StoredModelProtocolCode::TerminalLifecycleViolation => {
+                    super::DurableModelProtocolCode::TerminalLifecycleViolation
+                }
+                StoredModelProtocolCode::ContinuationOutputMismatch => {
+                    super::DurableModelProtocolCode::ContinuationOutputMismatch
+                }
+                StoredModelProtocolCode::OutputIndexMismatch => {
+                    super::DurableModelProtocolCode::OutputIndexMismatch
+                }
+            },
+            event_type: diagnostic.event_type,
+            shape_sha256: diagnostic.shape_sha256,
         }),
         tool_schema: tool_schema.map(|error| super::DurableToolSchemaError {
             tool_name: error.tool_name,
