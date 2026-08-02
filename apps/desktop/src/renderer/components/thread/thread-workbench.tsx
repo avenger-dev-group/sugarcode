@@ -1,5 +1,6 @@
 import {
   ArrowUp,
+  CircleAlert,
   FileText,
   Image as ImageIcon,
   LoaderCircle,
@@ -177,7 +178,7 @@ const TurnActivityTimeline = ({
   );
 };
 
-const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
+const TranscriptTurnView = ({ turn, progress, onStop }: TranscriptTurnProps) => (
   <section
     className={
       turn.status === 'inProgress'
@@ -233,15 +234,44 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
       {turn.status === 'inProgress' &&
       !turn.pendingAgentOutputs?.length ? (
         <div
-          className="flex items-center gap-2 text-sm font-normal text-process"
+          className="flex items-start gap-2 text-sm font-normal text-process"
           role="status"
           aria-live="polite"
         >
-          <LoaderCircle
-            className="size-3.5 animate-spin"
-            aria-hidden="true"
-          />
-          <span>Agent 正在处理…</span>
+          {progress?.state === 'uncertain' ? (
+            <CircleAlert className="mt-0.5 size-3.5" aria-hidden="true" />
+          ) : (
+            <LoaderCircle
+              className="mt-0.5 size-3.5 animate-spin"
+              aria-hidden="true"
+            />
+          )}
+          <div className="min-w-0">
+            <p>
+              {progress?.label ?? 'Agent 正在处理…'}
+              {progress?.elapsedLabel ? (
+                <span aria-hidden="true"> · {progress.elapsedLabel}</span>
+              ) : null}
+            </p>
+            {progress?.detail ? (
+              <p className="mt-1 max-w-xl text-xs leading-normal text-secondary">
+                {progress.detail}
+              </p>
+            ) : null}
+            {progress?.state === 'waitingForModel' ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={onStop}
+                aria-label="停止当前任务"
+              >
+                <Square className="size-3 fill-current" aria-hidden="true" />
+                停止任务
+              </Button>
+            ) : null}
+          </div>
         </div>
       ) : null}
       {turn.failure ? (
@@ -257,6 +287,15 @@ const TranscriptTurnView = ({ turn }: TranscriptTurnProps) => (
             {turn.failure.guidance}
           </p>
           <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-[10px] text-tertiary">
+            {turn.model ? (
+              <>
+                <span className="uppercase tracking-[0.14em]">Model</span>
+                <span className="min-w-0 break-all tracking-[0.08em]">
+                  {turn.model.displayName} · {turn.model.wireApi}
+                </span>
+                <span aria-hidden="true">·</span>
+              </>
+            ) : null}
             <span className="uppercase tracking-[0.14em]">Failure kind</span>
             <span
               aria-label={`Exact Turn failure kind ${turn.failure.kind}`}
@@ -459,7 +498,16 @@ export const ThreadWorkbenchView = ({
             ) : (
               <div className="space-y-10">
                 {store.thread.turns.map((turn) => (
-                  <TranscriptTurn key={turn.id} turn={turn} />
+                  <TranscriptTurn
+                    key={turn.id}
+                    turn={turn}
+                    progress={
+                      store.activeTurnProgress?.turnId === turn.id
+                        ? store.activeTurnProgress
+                        : undefined
+                    }
+                    onStop={() => void store.stop()}
+                  />
                 ))}
               </div>
             )}
@@ -634,7 +682,13 @@ export const ThreadWorkbenchView = ({
                     </Select>
                     {permissionControl}
                     <p className="min-w-0 truncate text-xs text-secondary">
-                      {store.thread.statusLabel}
+                      {store.activeTurnProgress
+                        ? `${store.activeTurnProgress.label}${
+                            store.activeTurnProgress.elapsedLabel
+                              ? ` · ${store.activeTurnProgress.elapsedLabel}`
+                              : ''
+                          }`
+                        : store.thread.statusLabel}
                     </p>
                   </div>
                   <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-1.5 text-[11px]">

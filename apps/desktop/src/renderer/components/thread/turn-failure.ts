@@ -40,8 +40,10 @@ export const toTurnFailureViewModel = (
             ? 'Reduce large visible inputs or choose a provider endpoint with a larger request-body limit.'
             : error.kind === 'providerResponseTooLarge'
               ? 'The conversation may still fit the model window. Retry or switch provider endpoints; an unusually large private continuation response was rejected for safety.'
-        : error.retryable
-          ? 'You can send another message to retry.'
-          : 'Review the request or model configuration before trying again.',
+              : error.kind === 'protocol'
+                ? 'This model did not follow the selected wire API. Review the gateway compatibility or switch model profiles before trying again.'
+                : error.retryable
+                  ? 'You can send another message to retry.'
+                  : 'Review the request or model configuration before trying again.',
   retryable: error.retryable,
 });

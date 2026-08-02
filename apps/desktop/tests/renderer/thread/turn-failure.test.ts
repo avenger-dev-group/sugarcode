@@ -39,3 +39,13 @@ test('retryable failures retain retry guidance', () => {
 
   assert.equal(failure.guidance, 'You can send another message to retry.');
 });
+
+test('protocol failures direct users to the selected wire compatibility', () => {
+  const failure = toTurnFailureViewModel({
+    kind: 'protocol',
+    retryable: false,
+  });
+
+  assert.match(failure.guidance, /wire API/);
+  assert.match(failure.guidance, /switch model profiles/);
+});

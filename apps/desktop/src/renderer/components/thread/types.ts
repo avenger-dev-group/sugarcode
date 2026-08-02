@@ -60,6 +60,23 @@ export type TurnFailureViewModel = Readonly<{
   retryable: boolean;
 }>;
 
+export type TurnModelViewModel = Readonly<{
+  displayName: string;
+  wireApi:
+    | 'openaiResponses'
+    | 'openaiChatCompletions'
+    | 'anthropicMessages'
+    | 'geminiGenerateContent';
+}>;
+
+export type ActiveTurnProgressViewModel = Readonly<{
+  turnId: string;
+  state: 'working' | 'waitingForModel' | 'stopping' | 'uncertain';
+  label: string;
+  elapsedLabel?: string;
+  detail?: string;
+}>;
+
 export type TurnActivityViewModel =
   | Readonly<{
       type: 'commentary';
@@ -108,6 +125,7 @@ export type CompactToolActivity = Extract<
 export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
+  model?: TurnModelViewModel;
   messages: readonly TranscriptMessageViewModel[];
   pendingAgentOutputs?: readonly AgentMessageViewModel[];
   activities?: readonly TurnActivityViewModel[];
@@ -161,6 +179,7 @@ export type ThreadStore = Readonly<{
   contextBudgetHint: string | null;
   canSend: boolean;
   canStop: boolean;
+  activeTurnProgress: ActiveTurnProgressViewModel | null;
   isSending: boolean;
   actionError: string | null;
   modelOptions: readonly Readonly<{
@@ -202,6 +221,8 @@ export type ThreadWorkbenchViewProps = Readonly<{
 
 export type TranscriptTurnProps = Readonly<{
   turn: TurnViewModel;
+  progress?: ActiveTurnProgressViewModel;
+  onStop: () => void;
 }>;
 
 export type ActivityDisclosureStore = Readonly<{

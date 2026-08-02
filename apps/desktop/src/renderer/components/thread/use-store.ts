@@ -78,6 +78,7 @@ import {
   shouldFollowTranscriptAfterScroll,
 } from './transcript-follow';
 import { toTurnFailureViewModel } from './turn-failure';
+import { toActiveTurnProgress } from './turn-progress';
 
 export const useActivityDisclosureStore = (
   groupId: string,
@@ -326,6 +327,12 @@ export const toThreadViewModel = (
   );
   const turns = snapshot.turns.map((turn): TurnViewModel => {
     const previousTurn = previousTurns.get(turn.id);
+    const model = turn.model
+      ? {
+          displayName: turn.model.displayName,
+          wireApi: turn.model.wireApi,
+        }
+      : undefined;
     const messages = turn.messages.map(
       (message): TranscriptMessageViewModel => {
         const previousMessage = previousTurn?.messages.find(
@@ -857,6 +864,8 @@ export const toThreadViewModel = (
     const isError = turn.status === 'failed';
     if (
       previousTurn?.status === turn.status &&
+      previousTurn.model?.displayName === model?.displayName &&
+      previousTurn.model?.wireApi === model?.wireApi &&
       previousTurn.messages === stableMessages &&
       previousTurn.pendingAgentOutputs === pendingAgentOutputs &&
       previousTurn.contextCompactions === contextCompactions &&
@@ -876,6 +885,7 @@ export const toThreadViewModel = (
     return {
       id: turn.id,
       status: turn.status,
+      ...(model ? { model } : {}),
       messages: stableMessages,
       ...(pendingAgentOutputs ? { pendingAgentOutputs } : {}),
       ...(contextCompactions ? { contextCompactions } : {}),
@@ -1109,6 +1119,11 @@ export const useStore = (): ThreadStore => {
   const [navigatorOpen, setNavigatorOpen] = useState<boolean>(false);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [activeQuietSeconds, setActiveQuietSeconds] = useState<number>(0);
+  const activeProgressClock = useRef<{
+    turnId: string;
+    observedAt: number;
+  } | null>(null);
   const [modelInspection, setModelInspection] =
     useState<Awaited<ReturnType<typeof getModelConfig>> | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] =
@@ -1401,6 +1416,43 @@ export const useStore = (): ThreadStore => {
     previousThread.current = next;
     return next;
   }, [snapshot]);
+  const activeTurnSnapshot = snapshot.activeTurnId
+    ? snapshot.turns.find((turn) => turn.id === snapshot.activeTurnId)
+    : undefined;
+  const activeTurnView = snapshot.activeTurnId
+    ? thread.turns.find((turn) => turn.id === snapshot.activeTurnId)
+    : undefined;
+  const activeUsageKey = activeTurnSnapshot?.usage
+    ? JSON.stringify(activeTurnSnapshot.usage)
+    : '';
+
+  useEffect(() => {
+    const turnId = activeTurnView?.id;
+    if (!turnId || snapshot.phase !== 'inProgress') {
+      activeProgressClock.current = null;
+      setActiveQuietSeconds(0);
+      return;
+    }
+    activeProgressClock.current = {
+      turnId,
+      observedAt: window.performance.now(),
+    };
+    setActiveQuietSeconds(0);
+    const updateElapsed = (): void => {
+      const clock = activeProgressClock.current;
+      if (!clock || clock.turnId !== turnId) {
+        return;
+      }
+      setActiveQuietSeconds(
+        Math.max(
+          0,
+          Math.floor((window.performance.now() - clock.observedAt) / 1_000),
+        ),
+      );
+    };
+    const interval = window.setInterval(updateElapsed, 1_000);
+    return () => window.clearInterval(interval);
+  }, [activeTurnView, activeUsageKey, snapshot.phase]);
   const inputHint =
     bytes > MAX_CONVERSATION_INPUT_BYTES
       ? 'Message exceeds the 64 KiB limit'
@@ -1451,6 +1503,14 @@ export const useStore = (): ThreadStore => {
     }
     return available;
   }, [modelInspection, selectedModelProfileId]);
+  const activeTurnProgress = activeTurnView
+    ? toActiveTurnProgress(
+        activeTurnView.id,
+        activeTurnView.model?.displayName,
+        snapshot.phase,
+        activeQuietSeconds,
+      )
+    : null;
 
   return {
     thread,
@@ -1464,6 +1524,7 @@ export const useStore = (): ThreadStore => {
     contextBudgetHint,
     canSend,
     canStop,
+    activeTurnProgress,
     isSending,
     actionError,
     modelOptions,
