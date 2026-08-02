@@ -78,13 +78,38 @@ may coexist; a writer holds the exclusive permit. This coordinates SugarCode
 activity only and does not claim isolation from the user or another process.
 
 `shell/exec` is a separate authority. It requires an absolute executable,
-bounded argv, fixed workspace-relative cwd, minimal environment, no shell
-string or `PATH` lookup, an app-server approval decision and platform sandbox
-support. Desktop may remember the user's approval mode for the current Thread
-or workspace and answer later approval requests automatically; this does not
+bounded argv, fixed workspace-relative cwd, a filtered host command
+environment, no shell string, an app-server approval decision and platform
+sandbox support. `hostInheritedV1` preserves non-sensitive host variables such
+as `PATH`, `HOME`, locale/temp locations and language-toolchain roots, while
+names containing credential markers such as key, token, secret, password,
+credential, auth or cookie are excluded before the sandbox boundary. The
+trusted Desktop sidecar inherits the Desktop process environment; the command
+supervisor applies the credential filter again and bounds the resulting map.
+Desktop may remember the user's approval mode for the current Thread or
+workspace and answer later approval requests automatically; this does not
 expand filesystem, network, executable or workspace-write authority.
 Attempt-without-result means writes may have occurred. Shell executable rules
 are not weakened by model-relative file paths.
+
+The model-facing schema repeats the non-shell shape at both tool and field
+level: `command` is one absolute executable path, flags and operands are
+encoded as one JSON string array in `argvJson`, and `cwd` is `"."`. The scalar
+`argvJson` field avoids array coercion and the nested `arguments` naming
+collision in compatible function-call envelopes. Runtime parses it only as a
+JSON `Vec<String>` and still accepts the earlier array forms when replaying
+history; it never tokenizes a shell command string. A rejected call receives a
+bounded field-specific expected shape and suggested action, while durable
+diagnostics retain only that safe guidance plus argument byte count and
+SHA-256. SugarCode never repairs a bare command through `PATH`, splits a shell
+string or persists the rejected arguments. An explicitly invoked absolute
+program or script may use the inherited `PATH` internally, including
+`/usr/bin/env` shebang resolution. SugarCode does not bundle Node, Java or
+another project runtime: availability follows the host environment seen by the
+sidecar. A missing executable returns structured `commandNotFound` guidance;
+the Agent should inspect repository-native scripts/configuration, try safe
+installed alternatives and, only after those are exhausted, identify the exact
+missing dependency and suggest installation or configuration.
 
 ## Other native capabilities
 

@@ -68,6 +68,10 @@ Wire-specific continuation rules are:
 - OpenAI Chat preserves recognized reasoning extensions for compatible gateway
   continuation;
 - Anthropic preserves thinking, signatures, redacted thinking and block order;
+- Anthropic coalesces adjacent messages with the same role without changing
+  block order, keeping commentary plus parallel `tool_use` blocks in one
+  assistant message and their `tool_result` blocks in the immediately following
+  user message for strict compatible gateways;
 - Gemini preserves thought signatures and puts parallel function responses in
   one user content.
 
@@ -76,16 +80,22 @@ errors. They are never silently discarded.
 
 ## Requests and terminal metadata
 
-Every adapter emits a stream of bounded provisional events followed by exactly
-one typed completion. EOF before completion, duplicate completion or semantic
-events after completion are protocol errors. SSE record size and accumulated
-semantic output have independent limits.
+Every adapter normalizes provider records into bounded provisional text, final
+output, ToolCall, usage and typed error events. Provisional text is
+presentation-only; the completed typed output is the persistence boundary.
+Core resolves a preview to a durable text Item when it survives classification,
+or explicitly discards its provider-neutral output reference when the completed
+round contains only ToolCalls. Every preview therefore has a terminal lifecycle
+before a later provider request can emit another output reference.
+Duplicate completion or semantic events after completion are protocol errors.
+SSE record size and accumulated semantic output have independent limits.
 
-Generation requests do not impose response-header or stream-idle deadlines.
-Once connected, an adapter waits for provider output or a real transport/server
-terminal while Core retains explicit interruption authority. Connection setup
-remains bounded, and an HTTP 408 returned by the provider remains a typed,
-retryable provider timeout.
+Generation requests have no total Turn deadline. Connection setup remains
+bounded, and every wire has a 120-second SSE-record idle boundary so a gateway
+that accepts a request but never emits or closes cannot strand the Agent loop.
+Any valid SSE record resets that boundary, including private reasoning/progress
+records that are not rendered. A stall becomes a typed retryable timeout; an
+HTTP 408 returned by the provider maps to the same failure family.
 
 Terminal metadata normalizes:
 
@@ -100,20 +110,95 @@ An HTTP 413 without an explicit provider context/token diagnostic maps to
 `providerRequestTooLarge`; only a provider diagnostic that identifies the
 model window maps to `contextWindowExceeded`.
 
-OpenAI Responses streaming assembles authoritative output from ordered
-`response.output_item.done` events. `response.completed` is the authoritative
-lifecycle and usage boundary; its embedded output snapshot is used only when a
-compatible endpoint did not emit completed output-item events. Text deltas are
-provisional rendering hints and are not required to be byte-identical to the
-completed item. Known terminal events are handled explicitly; optional future
-`response.*` progress events may be ignored until completion so switching to a
-model with a larger event vocabulary cannot become `unsupportedOutput`. The
-assembled output remains strict: only portable messages, visible refusals,
-function calls and opaque reasoning are accepted, and a Chat Completions chunk
-on a Responses connection is still rejected as a wire mismatch. Because the
-outer `response.completed` event is already terminal evidence, a compatible
-gateway may omit its redundant inner `response.status`; an explicit unknown
-inner status remains unsupported.
+OpenAI Responses streaming treats a non-empty
+`response.completed.response.output` snapshot as the authoritative semantic
+output. Completed Item events are only a recovery source when that snapshot is
+empty; stable duplicate Items are deduplicated and a reused stable ID or call ID
+with conflicting semantic content remains a protocol error. Provider
+`output_index` is only an association hint. Sparse, regenerated or preview-only
+indices never fail the Turn, and the connector assigns contiguous provider-
+neutral indices to both provisional previews and authoritative output before
+Core correlation.
+Compatible function calls may use their stable Item `id` when `call_id` is
+absent and may provide arguments as a JSON object instead of encoded JSON text;
+both normalize into the same provider-neutral ToolCall. Gateways that wrap the
+function name/arguments under a nested `function` object are normalized too.
+Missing arguments become an empty object for normal schema validation; malformed
+encoded argument text is retained as a non-object so Core emits bounded tool
+schema correction feedback and never executes it.
+
+Text deltas are provisional rendering hints and are not required to be
+byte-identical to the completed item. Known terminal events are handled
+explicitly; optional future `response.*` progress events may be ignored until
+completion so switching to a model with a larger event vocabulary cannot become
+`unsupportedOutput`. The assembled output remains strict: only portable
+messages, visible refusals, function calls and opaque reasoning are accepted,
+and a Chat Completions chunk on a Responses connection is still rejected as a
+wire mismatch. Because the outer `response.completed` event is already terminal
+evidence, a compatible gateway may omit its redundant inner `response.status`;
+an explicit unknown inner status remains unsupported.
+
+Compatible Responses gateways that send the full text-so-far in successive
+`response.output_text.delta` events are normalized to provider-neutral suffix
+deltas per output index. If provisional rendering still reaches the local
+preview budget, Core explicitly discards that preview and continues to the
+authoritative completed snapshot. The connector also bounds the prefix retained
+for cumulative-delta detection; crossing that connector-local preview bound
+stops further preview emission for the output index without terminating stream
+assembly. A presentation-only preview limit never fails an otherwise bounded
+final response.
+
+Compatible Chat merges ordered Runtime instructions into one `system` message
+and omits
+`stream_options`, strict tool flags and parallel-tool flags in its baseline
+request. It accepts `finish_reason`, `[DONE]` or a clean EOF after semantic
+output as terminal evidence; usage is optional. Fragmented tool arguments,
+sparse tool indices and missing call IDs are normalized, while invalid argument
+JSON is retained for Core's recoverable schema feedback. Recognized
+`reasoning_content`, `reasoning`, `reasoning_details` and leading legacy
+`<think>` content remain private continuation context and do not become the
+durable final answer. If a streaming Chat request disconnects or times out
+before any semantic output, the single bounded retry uses the same endpoint,
+model, wire and request as a non-streaming Chat completion. The JSON completion
+passes through the same output, reasoning, tool-call, usage and size
+normalization; this delivery fallback is not a wire or model fallback.
+
+Gemini streamed text chunks are normalized into one contiguous canonical text
+item. Both ordinary incremental chunks and compatible gateways that repeat the
+full text-so-far produce only the unseen suffix as provisional output, and a
+clean SSE EOF after bounded semantic output is valid terminal evidence when the
+last chunk omits `finishReason`.
+
+Protocol failures carry an optional provider-neutral diagnostic. Its stage is
+one of `streamEvent`, `responseAssembly`, `outputNormalization` or
+`runtimeClassification`; its stable code is `wireMismatch`,
+`invalidEventShape`, `ambiguousOutputReconciliation`, `malformedToolCall`,
+`terminalLifecycleViolation`, `continuationOutputMismatch` or
+`outputIndexMismatch`. The diagnostic records only a bounded event type and the
+SHA-256 of a canonical JSON key/type skeleton. Field values, response text,
+reasoning, tool arguments, credentials and paths never enter the fingerprint or
+the public/durable diagnostic. A failure without this optional v1 field remains
+readable for rollout and client compatibility.
+
+Adapters do not switch wire APIs or automatically retry a protocol failure. A
+real Chat/Responses mismatch therefore fails before SugarCode can duplicate
+provider charges or tool side effects; normalization is limited to differences
+that are unambiguous inside the profile's declared wire.
+
+Core may retry the same frozen model once when opening or consuming the stream
+fails with transport, disconnect, timeout, 429 or 5xx semantics and no semantic
+output has been observed. The provider selects the compatible delivery for that
+one retry: Chat uses a non-streaming completion, while providers without a
+distinct delivery mode repeat their declared transport. There is no retry after
+a delta, no retry for 4xx request/protocol failures and no cross-wire or
+cross-model fallback.
+
+Responses local replay uses exact provider output only when the response
+contains an opaque reasoning Item that cannot be represented portably. Plain
+messages and function calls are rebuilt as minimal provider-neutral Responses
+input before ToolResults are appended. This avoids replaying response-only
+status/identity fields to compatible gateways that accept initial Responses
+tool calls but reject a full response snapshot on the continuation request.
 
 ## Native mapping
 

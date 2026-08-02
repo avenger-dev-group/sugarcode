@@ -14,6 +14,11 @@ LiteLLM, MetaLLM and other gateways use the compatible family and wire API
 with a custom Base URL. They have no provider enum, SDK or Runtime branch.
 `providerFamily` groups Settings and supplies defaults; endpoint construction,
 authentication, discovery, serialization and parsing route only by `wireApi`.
+SugarCode ships with no configured model, model ID allowlist or vendor-name
+capability rule. The empty Settings draft is not an enabled catalog. When a
+user creates a new OpenAI-compatible connection, its default wire is Compatible
+Chat (`openaiChatCompletions`); Responses remains an explicit advanced choice.
+Already saved connections retain their selected wire until the user edits them.
 
 Configuration, config control, rollout and app-server remain version 1. Their
 current v1 shape replaces earlier development shapes directly. There is no
@@ -67,15 +72,19 @@ wire ceiling
   ∩ current Runtime capability
 ```
 
-All four wire APIs support tools and image input. PDF is supported by OpenAI
-Responses, Anthropic Messages and Gemini native; Chat Completions rejects PDF
-before a provider request. `enabled` cannot exceed a hard wire ceiling.
+All four wire APIs have a hard representation ceiling for tools and images. PDF
+is representable by OpenAI Responses, Anthropic Messages and Gemini native;
+Chat Completions rejects an explicitly enabled PDF before provider I/O. A hard
+ceiling says only that the protocol can represent a feature; it is not evidence
+that a particular compatible gateway implements it.
 
-`strictTools = auto` enables strict mode independently for every convertible
-tool. `strictTools = enabled` rejects the provider request before I/O and names
-the incompatible tool and schema reason. Parallel mode is emitted in each
-wire's native request form and the returned batch is checked by Core. Gemini's
-parallel setting is therefore behavioral, not presentation metadata.
+`auto` is therefore the compatibility baseline: text streaming and sequential
+tool calls are enabled, while strict tools, parallel tools, image input and PDF
+input remain disabled. Only an explicit `enabled` declaration activates those
+optional request shapes, and it still cannot exceed the wire ceiling.
+`strictTools = enabled` rejects before I/O and names an incompatible tool and
+schema reason. An adapter omits optional strict/parallel/media fields when they
+are not explicitly active. No capability is inferred from a model ID.
 
 The frozen public and durable model snapshot contains:
 
@@ -105,10 +114,29 @@ for every provider round in the Turn. Settings edits affect later Turns only.
 Missing, disabled or invalid sticky selection blocks send; SugarCode never
 silently changes provider.
 
+When the frozen selection differs from the preceding Turn by profile ID,
+provider family, wire API or model ID, Runtime injects one provider-neutral
+model-switch instruction into that Turn. Comparing the full selection means an
+edit to one existing profile cannot disguise a model or wire change. The
+instruction tells the new model to continue from portable history, not to reuse
+provider-private continuation identifiers/signatures and not to repeat already
+completed tools. It is absent only when those selection identity fields are
+unchanged. Across Turns only user/assistant text, commentary, provider-neutral
+ToolCalls and ToolResults are portable; response IDs, encrypted reasoning and
+native signatures remain inside the original Turn and wire.
+
+Historical image or PDF content that the newly frozen model cannot accept is
+replaced with a bounded text descriptor containing kind, original name, media
+type, byte size and SHA-256. Runtime emits at most one
+`historicalContextDowngraded` warning for the affected Turn. A newly submitted
+attachment that the current profile cannot accept still fails before provider
+I/O and is never silently downgraded.
+
 The default context window is 131,072 tokens. Core reserves at most 16,384
 tokens for output, estimates input conservatively at three UTF-8 bytes per
 token and separately caps one provider context at 4 MiB. Provider context
-rejection may trigger same-Turn compaction and retry.
+rejection may trigger same-Turn compaction. The result is accepted only when it
+is smaller than the rejected request and under the recovery target.
 
 ## Tool schema and validation
 
@@ -121,6 +149,6 @@ Invalid tool arguments and schema mismatches produce bounded model-visible
 feedback and a public `toolValidationRejected` Item. The Item carries kind,
 argument byte count and SHA-256, optional edit/hunk/line diagnostics, redacted
 expected/actual summaries and a suggested action. It never carries the raw
-invalid payload. Three consecutive failures with the same diagnostic
-fingerprint terminate as `unsupportedToolArguments`; a successful or different
-failure resets the sequence.
+invalid payload. Three consecutive invalid tool rounds terminate as
+`unsupportedToolArguments`, even when the model changes the invalid payload or
+diagnostic fingerprint on each attempt. A valid tool batch resets the sequence.

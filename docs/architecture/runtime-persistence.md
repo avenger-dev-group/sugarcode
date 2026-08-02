@@ -64,17 +64,56 @@ rollout-only; the public `contextCompaction` Item contains byte counts, hashes
 and outcome. Tool receipts retain argument/result hashes rather than raw
 content when compacted.
 
+Failed and interrupted Turns remain conversation context at Item granularity.
+Their completed user input and balanced ToolCall/ToolResult pairs are portable
+to the next Turn, including after a wire switch or sidecar restart. Partial
+assistant text, incomplete commentary, orphaned calls, provider-private context
+and unfinished compaction checkpoints are excluded. This lets a later
+“continue” retain verified work without replaying an uncertain side effect.
+
+Within a Responses Turn, exact wire replay is selected only when an opaque
+reasoning Item is present. A text/tool-only response continues from normalized
+portable ToolCalls and ToolResults, avoiding response-only fields that some
+compatible gateways reject with a server error. This selection happens before
+the next request. Opening or consuming a provider stream may be retried once for
+transport, disconnect, timeout, 429 or 5xx failure only while no semantic
+output exists. Compatible Chat performs that one retry as a non-streaming JSON
+completion against the same endpoint, model and wire; other providers retain
+their declared transport. Failures after any delta and all request/protocol
+failures remain terminal for the current Turn.
+
+The Turn boundary is also the model-switch boundary. The next Turn reconstructs
+portable history from durable provider-neutral Items and may add one model-
+switch instruction; it never imports a preceding Turn's response ID, encrypted
+reasoning, thought signature or other native continuation. Unsupported
+historical image/PDF assets become bounded metadata-only text descriptors for
+that request, while unsupported assets submitted in the current Turn remain a
+pre-I/O error.
+
 Streaming text deltas are ephemeral presentation hints. The completed typed
 model item is authoritative for classification and durable storage, so a
 provider or compatible gateway may normalize the final text without requiring
 byte equality with the preview. Output identity and ordering must still match;
-unmatched or duplicate output references remain protocol failures.
+unmatched or duplicate output references remain protocol failures. A preview
+that is absent from a ToolCall-only completed snapshot is explicitly discarded
+and never becomes a durable Item; this lifecycle close happens before the next
+model request starts.
+
+The same discard boundary applies when a provisional preview reaches its local
+rendering budget. Core stops retaining further deltas for that output reference
+but continues parsing the provider stream; only the authoritative final text,
+tool arguments or tool result may produce an output-size Turn failure.
 
 The active Agent loop compacts from `estimated_context_tokens()`, never from
 cumulative Turn usage or continuation ciphertext bytes. The latest provider
 `input_tokens` is authoritative for observed requests; when usage is absent,
 visible messages, tool definitions and tool results use a conservative
 estimator, while private replay uses its recorded response output-token cost.
+
+Tool correction has both category-specific consecutive limits and one Turn-wide
+non-progress budget. Argument rejection, execution validation failure and
+approval denial share that budget even when successful reads occur between
+them, so alternating failure categories cannot keep a Turn alive indefinitely.
 In addition to the normal output allowance, the loop preserves a separate
 recovery reserve so that a tool-producing response and its results cannot leave
 the following compaction request without context space. Provider requests that
@@ -93,8 +132,9 @@ The checkpoint keeps the original task anchor and two recent complete tool
 batches. If the model-generated summary cannot be obtained, Runtime creates a
 deterministic extractive checkpoint from portable history and continues the
 same Turn. Provider `context_length_exceeded` triggers the same recovery path;
-termination is allowed only after two recovery attempts fail to reduce the
-request.
+the compacted request must be both smaller than the rejected request and below
+the recovery target. A non-shrinking or still-oversized result fails the current
+Turn as a recoverable context-window error without another compaction loop.
 
 Turn usage preserves billing semantics separately from context admission. It
 stores the last request, cumulative Turn total, maximum request input and
@@ -127,10 +167,30 @@ an invariant that makes durable continuation unsafe. User interruption,
 consumer closure and shutdown finish as `interrupted`. A Desktop protocol
 mismatch is a connection diagnostic and does not claim storage corruption.
 
-Tool validation is recoverable until the same diagnostic fingerprint occurs
-three consecutive times. It emits `toolValidationRejected` plus a bounded model
-result and keeps the sidecar alive. Provider transport/protocol errors, tool
-errors, Desktop protocol errors and durable-state failures remain distinct.
+Tool validation is recoverable for at most three consecutive invalid rounds,
+counted across changing argument payloads and fingerprints. It emits
+`toolValidationRejected` plus a bounded model result and keeps the sidecar
+alive. Shell argument rejection identifies the violated safe shape with a
+bounded expected summary and suggested action, without retaining the rejected
+command or arguments; the absolute-executable, JSON-only `argvJson` and
+fixed-cwd requirements remain unchanged. A valid batch resets the counter. Provider
+transport/protocol errors, tool errors, Desktop protocol errors and
+durable-state failures remain distinct; each model failure terminates only its
+Turn and does not terminate the app-server process or another Thread.
+
+Shell execution errors are model-visible structured results. In particular,
+`commandNotFound` identifies the active `hostInheritedV1` policy and directs
+the Agent to inspect project configuration and try safe installed alternatives
+before reporting the exact missing dependency. The result does not claim that
+the sandbox lacks a runtime merely because an earlier minimal environment
+removed `PATH`.
+
+A protocol error may persist `{ stage, code, eventType?, shapeSha256 }` in the
+existing rollout v1 Turn error. The field is optional, so earlier rollout
+records decode without migration. The shape hash is computed from JSON keys and
+types only; raw provider values, response bodies, reasoning, tool arguments,
+credentials and local paths are excluded. Public app-server mapping preserves
+the same provider-neutral diagnostic and never exposes an SDK type.
 
 Model-limit failures are also distinct: `contextWindowExceeded` is limited to
 one request that cannot fit after recovery, `providerRequestTooLarge` is an HTTP
