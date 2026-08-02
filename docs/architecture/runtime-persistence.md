@@ -55,16 +55,53 @@ arguments. This removes empty-path pseudo calls and preserves line edits,
 collaboration envelopes and shell descriptions across restart. Provider result
 history preserves call ordering and parallel batch relationships.
 
-Context compaction uses the frozen Turn model. Private checkpoint text is
+Runtime maintains two histories during an active Turn. Wire replay history
+retains native provider continuation in its exact block, signature and tool
+order; portable history retains only visible messages, tool calls, tool results
+and checkpoints. Compaction always reads portable history, so opaque provider
+continuation is neither summarized nor persisted. Private checkpoint text is
 rollout-only; the public `contextCompaction` Item contains byte counts, hashes
 and outcome. Tool receipts retain argument/result hashes rather than raw
 content when compacted.
 
-The active Agent loop compacts before reaching the maximum provider input
-budget. In addition to the normal output allowance, it preserves a separate
+Streaming text deltas are ephemeral presentation hints. The completed typed
+model item is authoritative for classification and durable storage, so a
+provider or compatible gateway may normalize the final text without requiring
+byte equality with the preview. Output identity and ordering must still match;
+unmatched or duplicate output references remain protocol failures.
+
+The active Agent loop compacts from `estimated_context_tokens()`, never from
+cumulative Turn usage or continuation ciphertext bytes. The latest provider
+`input_tokens` is authoritative for observed requests; when usage is absent,
+visible messages, tool definitions and tool results use a conservative
+estimator, while private replay uses its recorded response output-token cost.
+In addition to the normal output allowance, the loop preserves a separate
 recovery reserve so that a tool-producing response and its results cannot leave
 the following compaction request without context space. Provider requests that
 generate checkpoints remain within the normal input budget.
+
+An active-Turn checkpoint combines a bounded semantic execution summary with a
+separately derived, bounded verbatim anchor of the active user's original input.
+The anchor is retained independently of summary quality, while the semantic
+section records verified progress, remaining work and the next action. A final
+continuation directive requires the loop to resume the same task rather than
+answer generically or claim premature completion. The combined private
+checkpoint remains capped at 32 KiB; its recorded byte count and hash cover the
+exact combined content that will be replayed.
+
+The checkpoint keeps the original task anchor and two recent complete tool
+batches. If the model-generated summary cannot be obtained, Runtime creates a
+deterministic extractive checkpoint from portable history and continues the
+same Turn. Provider `context_length_exceeded` triggers the same recovery path;
+termination is allowed only after two recovery attempts fail to reduce the
+request.
+
+Turn usage preserves billing semantics separately from context admission. It
+stores the last request, cumulative Turn total, maximum request input and
+request count plus the frozen model window and whether values are provider-
+reported or estimated. Cumulative input may exceed the model window because it
+is the sum of several independent requests; that condition never triggers
+compaction or a context error.
 
 ## Content store
 
@@ -94,6 +131,13 @@ Tool validation is recoverable until the same diagnostic fingerprint occurs
 three consecutive times. It emits `toolValidationRejected` plus a bounded model
 result and keeps the sidecar alive. Provider transport/protocol errors, tool
 errors, Desktop protocol errors and durable-state failures remain distinct.
+
+Model-limit failures are also distinct: `contextWindowExceeded` is limited to
+one request that cannot fit after recovery, `providerRequestTooLarge` is an HTTP
+or gateway request-body limit, `providerResponseTooLarge` protects the 64/128
+MiB private-response resource boundary, and `outputTooLarge` is limited to
+visible or locally retained output. Existing durable `outputTooLarge` records
+retain their original meaning when replayed.
 
 Thread search indexes completed user/final assistant text only. Attachments,
 commentary, tool payloads, provider context, compaction bodies and diagnostics

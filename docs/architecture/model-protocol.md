@@ -11,6 +11,12 @@ The supported wires are OpenAI Responses, OpenAI Chat Completions, Anthropic
 Messages and Gemini native `generateContent`. Adapter selection is made from
 the frozen `wireApi`, not the UI provider family.
 
+The native multi-wire adapter keeps `native.rs` as its transport façade.
+Provider request serialization is isolated in `native/requests.rs`, streaming
+state assembly in `native/streaming.rs`, and module-owned unit coverage under
+`native/tests/`. Flat Chat Completions tests remain under `src/tests/` and are
+linked explicitly from their production module.
+
 ## Ordered content
 
 Messages preserve original part order. Supported parts are:
@@ -31,8 +37,22 @@ batch; Core never infers phase from fragment timing.
 
 `ProviderContextEnvelope` retains continuation material that cannot be reduced
 to portable text or tool history. It records wire API, response ownership,
-original position and bounded opaque bytes. Debug output reports metadata and
-byte counts only. App-server and logs never output the payload.
+original position, a payload handle, SHA-256, byte count and the provider-
+reported replay-token cost. Payloads through 256 KiB remain in memory; larger
+payloads use an anonymous temporary file whose last handle closes with the
+active Turn and whose operating-system lifetime cannot survive application
+restart. There is no pathname to serialize or log. Debug output reports only
+metadata, byte count and a bounded hash prefix; app-server, rollout and logs
+never output the payload, encrypted reasoning or storage details.
+
+Opaque byte size is a transport resource measurement, not a token estimate.
+Private replay uses the originating response's `output_tokens` when available;
+only absence of provider usage permits the conservative text estimator. A
+single continuation response is capped at 64 MiB and the provider-context
+handles in one request are capped at 128 MiB. Crossing either boundary is
+`providerResponseTooLarge`, never a claim that the model context is full. SSE
+records use the same 64 MiB safety boundary; visible text, tool arguments and
+locally retained tool output keep their separate `outputTooLarge` boundary.
 
 An envelope can be replayed only by the same wire API. When the selected wire
 changes between Turns, Core retains portable text and tool history and drops
@@ -40,8 +60,11 @@ non-portable envelopes.
 
 Wire-specific continuation rules are:
 
-- OpenAI Responses sends `store:false`, requests encrypted reasoning content
-  and manually replays complete output/reasoning items;
+- OpenAI Responses defaults to `localReplay`: it sends `store:false`, requests
+  encrypted reasoning content and manually replays complete output/reasoning
+  items. An explicit `providerManaged` connection uses `store:true` and
+  `previous_response_id`; an endpoint that rejects managed continuation is
+  retried once with local replay and emits a non-blocking warning;
 - OpenAI Chat preserves recognized reasoning extensions for compatible gateway
   continuation;
 - Anthropic preserves thinking, signatures, redacted thinking and block order;
@@ -73,6 +96,24 @@ Terminal metadata normalizes:
 
 Provider HTTP failures retain only redacted status, provider code, request ID
 and retry-after. Response bodies are bounded and never forwarded verbatim.
+An HTTP 413 without an explicit provider context/token diagnostic maps to
+`providerRequestTooLarge`; only a provider diagnostic that identifies the
+model window maps to `contextWindowExceeded`.
+
+OpenAI Responses streaming assembles authoritative output from ordered
+`response.output_item.done` events. `response.completed` is the authoritative
+lifecycle and usage boundary; its embedded output snapshot is used only when a
+compatible endpoint did not emit completed output-item events. Text deltas are
+provisional rendering hints and are not required to be byte-identical to the
+completed item. Known terminal events are handled explicitly; optional future
+`response.*` progress events may be ignored until completion so switching to a
+model with a larger event vocabulary cannot become `unsupportedOutput`. The
+assembled output remains strict: only portable messages, visible refusals,
+function calls and opaque reasoning are accepted, and a Chat Completions chunk
+on a Responses connection is still rejected as a wire mismatch. Because the
+outer `response.completed` event is already terminal evidence, a compatible
+gateway may omit its redundant inner `response.status`; an explicit unknown
+inner status remains unsupported.
 
 ## Native mapping
 

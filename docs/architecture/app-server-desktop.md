@@ -34,6 +34,14 @@ code, request ID and retry-after. A consumer disconnect interrupts the Turn.
 An app-server/Desktop contract mismatch transitions the connection to a
 diagnostic state; it is not mapped to `stateUnavailable`.
 
+`Turn` and `TurnSnapshot` may expose provider-neutral token usage. During an
+active Turn, `thread/tokenUsage/updated` carries `lastRequest`, cumulative
+`turnTotal`, `requestCount`, `contextWindowTokens` and a `provider` or
+`estimated` source. `turn/warning` is non-terminal; it currently reports that
+an OpenAI Responses endpoint rejected provider-managed continuation and that
+the same request continued through private local replay. Neither notification
+contains native provider objects or opaque continuation data.
+
 ## Desktop ownership
 
 Electron Main owns:
@@ -82,6 +90,39 @@ The transcript correlates every activity by call ID, including parallel or
 repeated read tools. File changes remain individually reviewable. Public
 validation Items keep the connection alive and need no empty-path ToolCall
 special case.
+
+Provisional Agent text is rendered through the same incremental Markdown
+projection as completed Agent messages. Because the provider-neutral delta does
+not reveal whether text will resolve as commentary or a final answer until round
+completion, Desktop presents it as a streaming Agent response first and then
+settles it into its durable final role without showing raw Markdown source.
+The stream preview is not a persistence or protocol invariant: when the
+provider's completed item differs because of gateway normalization or
+model-specific event assembly, the durable completed text replaces the preview
+instead of turning a successful model response into a Desktop protocol error.
+Transcript progress remains visible from local submission through Turn start,
+the first model delta and later model/tool gaps.
+
+Thread rows reserve a non-shrinking action column inside the navigator boundary;
+titles truncate within the remaining column and cannot push fork, archive or
+delete actions outside the visible/clickable area. The composer exposes the
+latest single-request input against the selected model's effective context
+window, then shows cumulative Turn usage and request count as secondary data.
+The cumulative value is explicitly allowed to exceed the window. Missing
+provider usage is prefixed as estimated. Compaction activity explains the
+output and recovery reserves and labels its fallback byte-derived token counts
+as conservative estimates rather than provider usage; continuation ciphertext
+never contributes to that estimate. The composer reads usage only from the
+latest Turn; when a newly started or failed Turn has no usage yet, it falls back
+to the selected model's context budget instead of displaying an earlier
+model's stale request and cumulative totals.
+
+The model settings page exposes `continuationMode` only for OpenAI Responses.
+`localReplay` is the privacy-first default (`store:false`) and uses more local
+bandwidth; `providerManaged` opts into `store:true + previous_response_id` and
+may reduce replay bandwidth at the cost of provider-side retention and endpoint
+compatibility. Chat Completions, Anthropic and Gemini always use local native
+history replay.
 
 ## Desktop validation and CI
 
