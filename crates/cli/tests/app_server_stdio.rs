@@ -530,7 +530,7 @@ fn workspace_apply_diff_lifecycle_matches_golden_trace() {
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn denied_shell_approval_matches_bidirectional_golden_trace() {
-    let command = env!("CARGO_BIN_EXE_sugarcode");
+    let command = "/fixture/denied-command";
     let arguments = serde_json::to_string(&json!({
         "description": "Run the denied approval fixture.",
         "command": command,
