@@ -247,23 +247,31 @@ pub(crate) fn map_turn_lifecycle(
     })
 }
 
-pub(crate) fn map_thread_snapshot(snapshot: DurableThreadSnapshot) -> ThreadResumeResponse {
-    let (thread, turns) = map_snapshot_parts(snapshot);
+pub(crate) fn map_thread_snapshot(
+    snapshot: DurableThreadSnapshot,
+    workspace_id: &str,
+) -> ThreadResumeResponse {
+    let (thread, turns) = map_snapshot_parts(snapshot, workspace_id);
     ThreadResumeResponse { thread, turns }
 }
 
-pub(crate) fn map_fork_snapshot(snapshot: DurableThreadSnapshot) -> ThreadForkResponse {
-    let (thread, turns) = map_snapshot_parts(snapshot);
+pub(crate) fn map_fork_snapshot(
+    snapshot: DurableThreadSnapshot,
+    workspace_id: &str,
+) -> ThreadForkResponse {
+    let (thread, turns) = map_snapshot_parts(snapshot, workspace_id);
     ThreadForkResponse { thread, turns }
 }
 
 fn map_snapshot_parts(
     snapshot: DurableThreadSnapshot,
+    workspace_id: &str,
 ) -> (sugarcode_app_server_protocol::Thread, Vec<TurnSnapshot>) {
     let title = sugarcode_state::derive_thread_title(&snapshot);
     (
         sugarcode_app_server_protocol::Thread {
             id: snapshot.id.into_string(),
+            workspace_id: workspace_id.to_owned(),
             title,
             origin: snapshot.origin.map(|origin| {
                 sugarcode_app_server_protocol::ThreadOrigin::Subagent {

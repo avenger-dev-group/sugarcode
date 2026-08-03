@@ -7,7 +7,6 @@ use crate::SugarCodeHome;
 use crate::rollout::CURRENT_ROLLOUT_SCHEMA_VERSION;
 use crate::rollout::MAX_ROLLOUT_FILES;
 use crate::rollout::RolloutThreadState;
-use crate::rollout::parse_canonical_id;
 use rusqlite::Connection;
 use rusqlite::ErrorCode;
 use rusqlite::OpenFlags;
@@ -67,14 +66,17 @@ CREATE TABLE threads (
     last_rollout_sequence INTEGER NOT NULL CHECK (last_rollout_sequence >= 1),
     lifecycle TEXT NOT NULL CHECK (lifecycle IN ('active', 'archived', 'deleted')),
     CHECK (
-        length(thread_id) BETWEEN 20 AND 24
-        AND substr(thread_id, 1, 4) = 'thr_'
-        AND substr(thread_id, 5) NOT GLOB '*[^0-9]*'
+        length(thread_id) = 36
+        AND lower(thread_id) = thread_id
+        AND substr(thread_id, 9, 1) = '-'
+        AND substr(thread_id, 14, 1) = '-'
+        AND substr(thread_id, 15, 1) = '7'
+        AND substr(thread_id, 19, 1) = '-'
+        AND substr(thread_id, 20, 1) GLOB '[89ab]'
+        AND substr(thread_id, 24, 1) = '-'
+        AND replace(thread_id, '-', '') NOT GLOB '*[^0-9a-f]*'
     ),
-    CHECK (
-        length(thread_order_key) = 20
-        AND thread_order_key NOT GLOB '*[^0-9]*'
-    )
+    CHECK (thread_order_key = thread_id)
 ) STRICT;
 CREATE UNIQUE INDEX thread_discovery_order
     ON threads(thread_order_key DESC);
@@ -650,17 +652,19 @@ impl ThreadDiscoveryProjection {
         }
         let has_more = ids.len() > limit;
         ids.truncate(limit);
-        let next_cursor = has_more
-            .then(|| ids.last().cloned())
-            .flatten()
-            .map(ThreadId::new);
+        let ids = ids
+            .into_iter()
+            .map(|id| {
+                ThreadId::parse(id).map_err(|_| RolloutError::InvalidRecord {
+                    kind: "projectionThreadId",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let next_cursor = has_more.then(|| ids.last().cloned()).flatten();
         Ok(DurableThreadPage {
             data: ids
                 .into_iter()
-                .map(|id| DurableThreadSummary {
-                    id: ThreadId::new(id),
-                    title: None,
-                })
+                .map(|id| DurableThreadSummary { id, title: None })
                 .collect(),
             next_cursor,
         })

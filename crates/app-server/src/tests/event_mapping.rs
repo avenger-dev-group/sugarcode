@@ -6,8 +6,9 @@ use sugarcode_protocol::TurnId;
 
 #[test]
 fn provisional_delta_and_resolution_keep_one_output_reference() {
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let output = CoreAgentOutputRef {
         response_ordinal: 2,
         output_index: 0,
@@ -43,7 +44,8 @@ fn provisional_delta_and_resolution_keep_one_output_reference() {
             turn_id,
             output,
             item: CoreItemSnapshot {
-                id: ItemId::new("item_0000000000000001"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                    .expect("valid item UUIDv7"),
                 kind: CoreItemKind::AgentCommentary {
                     text: "Inspecting".to_string(),
                 },
@@ -59,8 +61,9 @@ fn provisional_delta_and_resolution_keep_one_output_reference() {
 
 #[test]
 fn provisional_delta_can_be_explicitly_discarded() {
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let discarded = map_core_event(CoreEvent {
         request_id: CoreRequestId::new(1),
         kind: CoreEventKind::AgentOutputDiscarded {

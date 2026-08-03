@@ -28,7 +28,6 @@ export const WorkspaceWorkbench = () => {
         </p>
         <Button
           type="button"
-          size="icon-xs"
           variant="ghost"
           disabled={store.state.status !== 'ready'}
           onClick={() => void store.refresh()}
@@ -38,7 +37,6 @@ export const WorkspaceWorkbench = () => {
         </Button>
         <Button
           type="button"
-          size="icon-xs"
           variant="ghost"
           disabled={store.state.status === 'selecting'}
           onClick={() => void store.chooseWorkspace()}

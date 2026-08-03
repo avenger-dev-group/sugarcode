@@ -48,7 +48,7 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
             "jsonrpc":"2.0",
             "id":"turn-one",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Apply $review"}]}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Apply $review"}]}
         }),
         8,
     );
@@ -60,7 +60,7 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
             "jsonrpc":"2.0",
             "id":"turn-two",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Apply $review again"}]}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Apply $review again"}]}
         }),
         8,
     );
@@ -99,7 +99,7 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
             "jsonrpc":"2.0",
             "id":"resume",
             "method":"thread/resume",
-            "params":{"threadId":"thr_0000000000000001"}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -108,7 +108,7 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
             "jsonrpc":"2.0",
             "id":"turn-three",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Apply current $review"}]}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Apply current $review"}]}
         }),
         8,
     );
@@ -126,11 +126,14 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
             "jsonrpc":"2.0",
             "id":"fork",
             "method":"thread/fork",
-            "params":{"threadId":"thr_0000000000000001"}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001"}
         }),
         2,
     );
-    assert_eq!(forked[0]["result"]["thread"]["id"], "thr_0000000000000002");
+    assert_eq!(
+        forked[0]["result"]["thread"]["id"],
+        "00000000-0000-7000-8000-000000000002"
+    );
     let searched = second.send(
         json!({
             "jsonrpc":"2.0",
@@ -144,12 +147,8 @@ fn skills_are_process_snapshotted_resumed_forked_and_kept_out_of_public_state() 
     assert_public_redaction(&(resumed, restarted_public, forked, searched));
     second.finish();
 
-    let source_rollout =
-        fs::read_to_string(home.path().join("rollouts/v1/thr_0000000000000001.jsonl"))
-            .expect("source rollout");
-    let fork_rollout =
-        fs::read_to_string(home.path().join("rollouts/v1/thr_0000000000000002.jsonl"))
-            .expect("fork rollout");
+    let source_rollout = fs::read_to_string(rollout_path(home.path(), 1)).expect("source rollout");
+    let fork_rollout = fs::read_to_string(rollout_path(home.path(), 2)).expect("fork rollout");
     for rollout in [&source_rollout, &fork_rollout] {
         assert!(rollout.contains("\"workspaceSkills\""));
         assert!(rollout.contains("\"source\":\"rootToActiveScopeAgentsSkillsV1\""));

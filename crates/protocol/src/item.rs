@@ -1,12 +1,22 @@
+use crate::IdentifierParseError;
 use crate::ThreadId;
+use crate::identifier;
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
+use serde::Serializer;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ItemId(String);
 
 impl ItemId {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn new_v7() -> Self {
+        Self(identifier::new_v7())
+    }
+
+    pub fn parse(value: impl Into<String>) -> Result<Self, IdentifierParseError> {
+        identifier::parse_v7("item ID", value).map(Self)
     }
 
     pub fn as_str(&self) -> &str {
@@ -21,6 +31,24 @@ impl ItemId {
 impl fmt::Display for ItemId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
+    }
+}
+
+impl Serialize for ItemId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ItemId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::parse(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 

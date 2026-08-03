@@ -345,8 +345,9 @@ fn command_approval_only_session() -> Session<Core> {
 fn request(approval_id: &str) -> CommandApprovalRequest {
     CommandApprovalRequest {
         approval_id: approval_id.to_string(),
-        thread_id: ThreadId::new("thr_0000000000000001"),
-        turn_id: TurnId::new("turn_0000000000000001"),
+        thread_id: ThreadId::parse("00000000-0000-7000-8000-000000000001")
+            .expect("valid thread UUIDv7"),
+        turn_id: TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
         call_id: "call_1".to_string(),
         description: "Print a greeting.".to_string(),
         command: if cfg!(windows) {
@@ -368,8 +369,9 @@ fn request(approval_id: &str) -> CommandApprovalRequest {
 fn mcp_request(approval_id: &str) -> McpToolApprovalRequest {
     McpToolApprovalRequest {
         approval_id: approval_id.to_string(),
-        thread_id: ThreadId::new("thr_0000000000000001"),
-        turn_id: TurnId::new("turn_0000000000000001"),
+        thread_id: ThreadId::parse("00000000-0000-7000-8000-000000000001")
+            .expect("valid thread UUIDv7"),
+        turn_id: TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
         call_id: "call_mcp".to_string(),
         name: "mcp__fixture__inspect".to_string(),
         arguments: json!({"value": ["arbitrary", 2]}),

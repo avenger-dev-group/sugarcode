@@ -21,14 +21,14 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                     "jsonrpc": "2.0",
                     "id": format!("turn-{sequence}"),
                     "method": "turn/start",
-                    "params": {"threadId": format!("thr_{sequence:016}"), "input": [{"type":"text","text":"Hello"}]}
+                    "params": {"threadId": format!("00000000-0000-7000-8000-{sequence:012}"), "input": [{"type":"text","text":"Hello"}]}
                 }),
                 8,
             );
         }
     }
 
-    let archived = "thr_0000000000000002";
+    let archived = "00000000-0000-7000-8000-000000000002";
     let archive = first.send(
         json!({
             "jsonrpc": "2.0",
@@ -67,7 +67,7 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
             "jsonrpc": "2.0",
             "id": "resume-active",
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -84,23 +84,26 @@ fn archives_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
         }),
         2,
     );
-    assert_eq!(next[0]["result"]["thread"]["id"], "thr_0000000000000004");
+    assert_eq!(
+        next[0]["result"]["thread"]["id"],
+        "00000000-0000-7000-8000-000000000004"
+    );
     let next_turn = second.send(
         json!({
             "jsonrpc": "2.0",
             "id": "turn-3",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000004", "input": [{"type":"text","text":"Hello"}]}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000004", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
-        "turn_0000000000000003"
+        "00000000-0001-7000-8000-000000000003"
     );
     assert_eq!(
         next_turn[4]["params"]["item"]["id"],
-        "item_0000000000000006"
+        "00000000-0002-7000-8000-000000000006"
     );
 
     let stderr = second.finish_with_diagnostics();
@@ -131,13 +134,13 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
                 "jsonrpc": "2.0",
                 "id": format!("turn-{sequence}"),
                 "method": "turn/start",
-                "params": {"threadId": format!("thr_{sequence:016}"), "input": [{"type":"text","text":"Hello"}]}
+                "params": {"threadId": format!("00000000-0000-7000-8000-{sequence:012}"), "input": [{"type":"text","text":"Hello"}]}
             }),
             8,
         );
     }
 
-    let restored = "thr_0000000000000002";
+    let restored = "00000000-0000-7000-8000-000000000002";
     assert_eq!(
         first.send(
             json!({
@@ -160,7 +163,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     );
     assert_eq!(
         hidden[0]["result"]["data"],
-        json!([{"id": "thr_0000000000000001", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000001", "title": "Hello"}])
     );
     assert_eq!(
         first.send(
@@ -185,8 +188,8 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     assert_eq!(
         restored_list[0]["result"]["data"],
         json!([
-            {"id": "thr_0000000000000002", "title": "Hello"},
-            {"id": "thr_0000000000000001", "title": "Hello"}
+            {"id": "00000000-0000-7000-8000-000000000002", "title": "Hello"},
+            {"id": "00000000-0000-7000-8000-000000000001", "title": "Hello"}
         ])
     );
     let turn_after_restore = first.send(
@@ -200,7 +203,7 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     );
     assert_eq!(
         turn_after_restore[0]["result"]["turn"]["id"],
-        "turn_0000000000000003"
+        "00000000-0001-7000-8000-000000000003"
     );
     first.finish();
 
@@ -224,8 +227,8 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     assert_eq!(
         listed[0]["result"]["data"],
         json!([
-            {"id": "thr_0000000000000002", "title": "Hello"},
-            {"id": "thr_0000000000000001", "title": "Hello"}
+            {"id": "00000000-0000-7000-8000-000000000002", "title": "Hello"},
+            {"id": "00000000-0000-7000-8000-000000000001", "title": "Hello"}
         ])
     );
     let searched = second.send(
@@ -240,8 +243,8 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     assert_eq!(
         searched[0]["result"]["data"],
         json!([
-            {"id": "thr_0000000000000002", "title": "Hello"},
-            {"id": "thr_0000000000000001", "title": "Hello"}
+            {"id": "00000000-0000-7000-8000-000000000002", "title": "Hello"},
+            {"id": "00000000-0000-7000-8000-000000000001", "title": "Hello"}
         ])
     );
     let resumed = second.send(
@@ -262,11 +265,11 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     );
     assert_eq!(
         resumed[0]["result"]["turns"][0]["id"],
-        "turn_0000000000000002"
+        "00000000-0001-7000-8000-000000000002"
     );
     assert_eq!(
         resumed[0]["result"]["turns"][1]["id"],
-        "turn_0000000000000003"
+        "00000000-0001-7000-8000-000000000003"
     );
     let next_turn = second.send(
         json!({
@@ -279,11 +282,11 @@ fn unarchives_across_two_processes_and_rebuilds_both_projections_from_rollouts()
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
-        "turn_0000000000000004"
+        "00000000-0001-7000-8000-000000000004"
     );
     assert_eq!(
         next_turn[4]["params"]["item"]["id"],
-        "item_0000000000000008"
+        "00000000-0002-7000-8000-000000000008"
     );
 
     let stderr = second.finish_with_diagnostics();
@@ -314,7 +317,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": format!("turn-{sequence}"),
                 "method": "turn/start",
-                "params": {"threadId": format!("thr_{sequence:016}"), "input": [{"type":"text","text":"Hello"}]}
+                "params": {"threadId": format!("00000000-0000-7000-8000-{sequence:012}"), "input": [{"type":"text","text":"Hello"}]}
             }),
             8,
         );
@@ -326,7 +329,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": "delete-active",
                 "method": "thread/delete",
-                "params": {"threadId": "thr_0000000000000001"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
             }),
             1,
         )[0]["result"],
@@ -338,7 +341,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": "archive",
                 "method": "thread/archive",
-                "params": {"threadId": "thr_0000000000000002"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
             }),
             1,
         )[0]["result"],
@@ -350,7 +353,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": "delete-archived",
                 "method": "thread/delete",
-                "params": {"threadId": "thr_0000000000000002"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
             }),
             1,
         )[0]["result"],
@@ -362,7 +365,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": "delete-again",
                 "method": "thread/delete",
-                "params": {"threadId": "thr_0000000000000001"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
             }),
             1,
         )[0]["result"],
@@ -388,9 +391,9 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
         ("turn-deleted", "turn/start"),
     ] {
         let params = if method == "turn/start" {
-            json!({"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]})
+            json!({"threadId": "00000000-0000-7000-8000-000000000001", "input": [{"type":"text","text":"Hello"}]})
         } else {
-            json!({"threadId": "thr_0000000000000001"})
+            json!({"threadId": "00000000-0000-7000-8000-000000000001"})
         };
         let response = second.send(
             json!({
@@ -404,7 +407,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
         assert_eq!(response[0]["error"]["code"], -32004);
         assert_eq!(
             response[0]["error"]["data"],
-            json!({"threadId": "thr_0000000000000001"})
+            json!({"threadId": "00000000-0000-7000-8000-000000000001"})
         );
     }
 
@@ -417,23 +420,26 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
         }),
         2,
     );
-    assert_eq!(next[0]["result"]["thread"]["id"], "thr_0000000000000004");
+    assert_eq!(
+        next[0]["result"]["thread"]["id"],
+        "00000000-0000-7000-8000-000000000004"
+    );
     let next_turn = second.send(
         json!({
             "jsonrpc": "2.0",
             "id": "turn-4",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000004", "input": [{"type":"text","text":"Hello"}]}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000004", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
-        "turn_0000000000000004"
+        "00000000-0001-7000-8000-000000000004"
     );
     assert_eq!(
         next_turn[4]["params"]["item"]["id"],
-        "item_0000000000000008"
+        "00000000-0002-7000-8000-000000000008"
     );
 
     let stderr = second.finish_with_diagnostics();

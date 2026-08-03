@@ -23,6 +23,7 @@ export type CommandApprovalStore = Readonly<{
 
 export type CommandApprovalViewProps = Readonly<{
   store: CommandApprovalStore;
+  activeThreadId: string | null;
 }>;
 
 export type CommandApprovalModeControlProps = Readonly<{

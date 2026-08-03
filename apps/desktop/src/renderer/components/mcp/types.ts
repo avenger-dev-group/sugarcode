@@ -28,6 +28,11 @@ export type McpSessionPanelProps = Readonly<{
   embedded?: boolean;
 }>;
 
+export type McpApprovalSurfaceProps = Readonly<{
+  store: McpStore;
+  activeThreadId: string | null;
+}>;
+
 export type McpActivityState =
   | 'awaiting'
   | 'denied'

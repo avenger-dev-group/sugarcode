@@ -2700,6 +2700,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]
@@ -2801,7 +2802,9 @@ dependencies = [
 name = "sugarcode-protocol"
 version = "1.0.0"
 dependencies = [
+ "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

@@ -1,12 +1,9 @@
 use futures_util::FutureExt;
 use futures_util::future::BoxFuture;
-use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
-use std::sync::Arc;
-use std::sync::Mutex;
 use sugarcode_model_provider::ModelInstruction;
 use sugarcode_protocol::CoreContentAsset;
 use sugarcode_protocol::CoreEvent;
@@ -35,7 +32,6 @@ use sugarcode_state::DurableTurnStatus;
 use sugarcode_state::DurableUsage;
 use sugarcode_state::DurableWorkspaceInstructionsAudit;
 use sugarcode_state::DurableWorkspaceSkillsAudit;
-use sugarcode_state::IdSequences;
 use sugarcode_state::RolloutError;
 use sugarcode_state::ThreadRepository;
 use sugarcode_state::terminal_turn_record_fits;
@@ -819,93 +815,18 @@ pub trait CoreApi {
 #[derive(Debug)]
 pub struct Core {
     threads: BTreeMap<ThreadId, Thread>,
-    last_thread_sequence: u64,
-    last_turn_sequence: u64,
-    last_item_sequence: u64,
     repository: Box<dyn ThreadRepository>,
-    id_allocator: CoreIdAllocator,
-}
-
-#[derive(Clone, Debug)]
-pub struct CoreIdAllocator {
-    sequences: Arc<Mutex<IdSequences>>,
-}
-
-impl CoreIdAllocator {
-    pub fn new(sequences: IdSequences) -> Self {
-        Self {
-            sequences: Arc::new(Mutex::new(sequences)),
-        }
-    }
-
-    fn reserve_after(
-        &self,
-        minimum: IdSequences,
-        threads: u64,
-        turns: u64,
-        items: u64,
-    ) -> Result<IdSequences, CoreError> {
-        let mut sequences = self
-            .sequences
-            .lock()
-            .map_err(|_| CoreError::Internal("ID allocator is unavailable".to_string()))?;
-        sequences.thread = sequences.thread.max(minimum.thread);
-        sequences.turn = sequences.turn.max(minimum.turn);
-        sequences.item = sequences.item.max(minimum.item);
-        let next = IdSequences {
-            thread: sequences
-                .thread
-                .checked_add(threads)
-                .ok_or(CoreError::ThreadIdExhausted)?,
-            turn: sequences
-                .turn
-                .checked_add(turns)
-                .ok_or(CoreError::TurnIdExhausted)?,
-            item: sequences
-                .item
-                .checked_add(items)
-                .ok_or(CoreError::ItemIdExhausted)?,
-        };
-        *sequences = next;
-        Ok(next)
-    }
 }
 
 impl Core {
-    fn reserve_ids(&self, threads: u64, turns: u64, items: u64) -> Result<IdSequences, CoreError> {
-        self.id_allocator.reserve_after(
-            IdSequences {
-                thread: self.last_thread_sequence,
-                turn: self.last_turn_sequence,
-                item: self.last_item_sequence,
-            },
-            threads,
-            turns,
-            items,
-        )
-    }
-
     pub fn new() -> Self {
         Self::with_repository(Box::new(MemoryThreadRepository::default()))
     }
 
     pub fn with_repository(repository: Box<dyn ThreadRepository>) -> Self {
-        let sequences = repository.id_sequences();
-        Self::with_repository_and_id_allocator(repository, CoreIdAllocator::new(sequences))
-    }
-
-    pub fn with_repository_and_id_allocator(
-        repository: Box<dyn ThreadRepository>,
-        id_allocator: CoreIdAllocator,
-    ) -> Self {
-        let sequences = repository.id_sequences();
         Self {
             threads: BTreeMap::new(),
-            last_thread_sequence: sequences.thread,
-            last_turn_sequence: sequences.turn,
-            last_item_sequence: sequences.item,
             repository,
-            id_allocator,
         }
     }
 
@@ -1538,12 +1459,8 @@ impl Core {
             return Err(CoreError::ContextTooLarge);
         }
 
-        let reserved = self.reserve_ids(0, 1, u64::from(input.is_some()))?;
-        let turn_sequence = reserved.turn;
-        let turn_id = TurnId::new(format!("turn_{turn_sequence:016}"));
-        let user_item_sequence = input.is_some().then_some(reserved.item);
-        let user_item_id =
-            user_item_sequence.map(|sequence| ItemId::new(format!("item_{sequence:016}")));
+        let turn_id = TurnId::new_v7();
+        let user_item_id = input.is_some().then(ItemId::new_v7);
         let user_item = input
             .as_ref()
             .zip(user_item_id.as_ref())
@@ -1607,11 +1524,6 @@ impl Core {
             .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
         thread.active_turn_id = Some(turn_id.clone());
         thread.turns.insert(turn_id.clone(), turn);
-        self.last_turn_sequence = turn_sequence;
-        if let Some(sequence) = user_item_sequence {
-            self.last_item_sequence = sequence;
-        }
-
         Ok(PreparedTextTurn {
             request_id,
             thread_id,
@@ -1639,8 +1551,7 @@ impl Core {
         if turn.state != TurnState::InProgress || turn.active_item_id.is_some() {
             return Err(CoreError::TurnNotInProgress(turn_id.clone()));
         }
-        let sequence = self.reserve_ids(0, 0, 1)?.item;
-        let item_id = ItemId::new(format!("item_{sequence:016}"));
+        let item_id = ItemId::new_v7();
         let snapshot = CoreItemSnapshot {
             id: item_id.clone(),
             kind: CoreItemKind::AgentMessage {
@@ -1656,7 +1567,6 @@ impl Core {
             .and_then(|thread| thread.turns.get_mut(turn_id))
             .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
         turn.add_item(Item::new_agent_message(item_id))?;
-        self.last_item_sequence = sequence;
         Ok(snapshot)
     }
 
@@ -1698,9 +1608,8 @@ impl Core {
         if turn.state != TurnState::InProgress || turn.active_item_id.is_some() {
             return Err(CoreError::TurnNotInProgress(turn_id.clone()));
         }
-        let sequence = self.reserve_ids(0, 0, 1)?.item;
         let snapshot = CoreItemSnapshot {
-            id: ItemId::new(format!("item_{sequence:016}")),
+            id: ItemId::new_v7(),
             kind,
         };
         self.repository
@@ -1721,7 +1630,6 @@ impl Core {
             .and_then(|thread| thread.turns.get_mut(turn_id))
             .ok_or_else(|| CoreError::NoActiveTurn(thread_id.clone()))?;
         turn.items.insert(item.id.clone(), item);
-        self.last_item_sequence = sequence;
         Ok(snapshot)
     }
 

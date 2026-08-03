@@ -14,11 +14,14 @@ import {
 import { Button } from '@/renderer/components/ui/button';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { focusWorkspaceTask } from '@/renderer/services/workspace';
+import { isApprovalVisibleForThread } from '@/renderer/utils/approval-visibility';
 
-import { useStore } from './use-store';
+import type { McpApprovalSurfaceProps } from './types';
 
-const McpApprovalSurfaceContent = () => {
-  const store = useStore();
+const McpApprovalSurfaceContent = ({
+  store,
+  activeThreadId,
+}: McpApprovalSurfaceProps) => {
   const denyRef = useRef<HTMLButtonElement>(null);
   const request = store.approvalRequest;
   const submitting =
@@ -26,7 +29,12 @@ const McpApprovalSurfaceContent = () => {
     request?.actionState === 'submittingDenial';
 
   return (
-    <AlertDialog open={request !== null}>
+    <AlertDialog
+      open={isApprovalVisibleForThread(
+        request?.threadId,
+        activeThreadId,
+      )}
+    >
       {request ? (
         <AlertDialogContent
           onEscapeKeyDown={(event) => {
@@ -197,7 +205,7 @@ const McpApprovalSurfaceContent = () => {
   );
 };
 
-export const McpApprovalSurface = () =>
+export const McpApprovalSurface = (props: McpApprovalSurfaceProps) =>
   typeof window.sugarcode?.getMcpApprovalState === 'function' ? (
-    <McpApprovalSurfaceContent />
+    <McpApprovalSurfaceContent {...props} />
   ) : null;

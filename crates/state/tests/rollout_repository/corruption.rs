@@ -8,12 +8,13 @@ fn rejects_an_empty_completed_turn_before_writing() {
         ..Default::default()
     })
     .expect("resolve home");
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     let path = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let before = fs::read(&path).expect("read before");
 
     let error = repository
@@ -21,7 +22,8 @@ fn rejects_an_empty_completed_turn_before_writing() {
             &thread_id,
             &DurableTurnSnapshot {
                 model: None,
-                id: TurnId::new("turn_0000000000000001"),
+                id: TurnId::parse("00000000-0001-7000-8000-000000000001")
+                    .expect("valid turn UUIDv7"),
                 status: DurableTurnStatus::Completed,
                 items: Vec::new(),
                 context_compaction: None,
@@ -41,17 +43,18 @@ fn rejects_an_empty_completed_turn_before_writing() {
 fn rejects_a_tampered_persisted_compaction_without_echoing_its_message() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let prior = completed_turn(1);
     let checkpoint =
         sugarcode_state::build_context_compaction(std::slice::from_ref(&prior), 3_200_000, 30_000)
             .expect("checkpoint");
     let started = DurableTurnSnapshot {
         model: None,
-        id: TurnId::new("turn_0000000000000002"),
+        id: TurnId::parse("00000000-0001-7000-8000-000000000002").expect("valid turn UUIDv7"),
         status: DurableTurnStatus::InProgress,
         items: vec![DurableItemSnapshot::UserMessage {
-            id: ItemId::new("item_0000000000000002"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             content: vec![sugarcode_state::DurableUserContentPart::Text {
                 text: "continue".to_string(),
             }],
@@ -75,7 +78,7 @@ fn rejects_a_tampered_persisted_compaction_without_echoing_its_message() {
 
     let path = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let mut records = fs::read_to_string(&path)
         .expect("rollout")
         .lines()
@@ -108,7 +111,8 @@ fn rejects_a_tampered_persisted_compaction_without_echoing_its_message() {
 fn rejects_invalid_workspace_skills_audit_with_redacted_diagnostics() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut started = started_text_turn();
     started.workspace_skills = Some(DurableWorkspaceSkillsAudit {
         source: DurableWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1,
@@ -131,7 +135,7 @@ fn rejects_invalid_workspace_skills_audit_with_redacted_diagnostics() {
     }
     let path = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let mut records = fs::read_to_string(&path)
         .expect("rollout")
         .lines()
@@ -177,14 +181,15 @@ fn recovers_only_an_unterminated_final_record() {
         ..Default::default()
     })
     .expect("resolve home");
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
         repository.create_thread(&thread_id).expect("thread");
     }
     let path = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(&path)
@@ -206,7 +211,7 @@ fn recovers_only_an_unterminated_final_record() {
     );
     assert_eq!(
         fs::read_to_string(path).expect("read repaired"),
-        "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n"
+        "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n"
     );
 }
 
@@ -225,7 +230,7 @@ fn terminated_corruption_is_fatal_and_does_not_echo_record_contents() {
     fs::write(
         directory
             .path()
-            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
         format!("{{broken:{sentinel}}}\n"),
     )
     .expect("write corrupt rollout");
@@ -248,8 +253,8 @@ fn corrupt_complete_prefix_is_not_mutated_when_an_unterminated_tail_exists() {
     }
     let path = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
-    let contents = b"{\"schemaVersion\":1,\"sequence\":99,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\nunfinished";
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
+    let contents = b"{\"schemaVersion\":1,\"sequence\":99,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\nunfinished";
     fs::write(&path, contents).expect("write corrupt rollout");
 
     let error = RolloutRepository::open(&home).expect_err("corrupt prefix must fail");
@@ -263,21 +268,21 @@ fn rejects_unknown_versions_types_sequences_and_non_utf8_records() {
     for (name, bytes, expected_kind) in [
         (
             "unsupported version",
-            br#"{"schemaVersion":2,"sequence":1,"type":"threadCreated","threadId":"thr_0000000000000001"}
+            br#"{"schemaVersion":2,"sequence":1,"type":"threadCreated","threadId":"00000000-0000-7000-8000-000000000001"}
 "#
             .as_slice(),
             "unsupportedSchemaVersion",
         ),
         (
             "unknown type",
-            br#"{"schemaVersion":1,"sequence":1,"type":"futureRecord","threadId":"thr_0000000000000001"}
+            br#"{"schemaVersion":1,"sequence":1,"type":"futureRecord","threadId":"00000000-0000-7000-8000-000000000001"}
 "#
             .as_slice(),
             "unknownRecordType",
         ),
         (
             "invalid sequence",
-            br#"{"schemaVersion":1,"sequence":2,"type":"threadCreated","threadId":"thr_0000000000000001"}
+            br#"{"schemaVersion":1,"sequence":2,"type":"threadCreated","threadId":"00000000-0000-7000-8000-000000000001"}
 "#
             .as_slice(),
             "invalidSequence",
@@ -296,7 +301,7 @@ fn rejects_unknown_versions_types_sequences_and_non_utf8_records() {
         fs::write(
             directory
                 .path()
-                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+                .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
             bytes,
         )
         .expect("write corrupt record");
@@ -315,34 +320,34 @@ fn rejects_duplicate_archive_and_records_after_archive_without_echoing_content()
         (
             "duplicate archive",
             concat!(
-                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadArchived\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n"
             ),
             "duplicateThreadArchive",
         ),
         (
             "turn after archive",
             concat!(
-                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"turnCompleted\",\"threadId\":\"thr_0000000000000001\",\"turn\":{\"id\":\"turn_0000000000000001\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"item_0000000000000001\",\"text\":\"private-archive-sentinel\"}]}}\n"
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadArchived\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"turnCompleted\",\"threadId\":\"00000000-0000-7000-8000-000000000001\",\"turn\":{\"id\":\"00000000-0001-7000-8000-000000000001\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"00000000-0002-7000-8000-000000000001\",\"text\":\"private-archive-sentinel\"}]}}\n"
             ),
             "recordAfterThreadArchive",
         ),
         (
             "unarchive while active",
             concat!(
-                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadUnarchived\",\"threadId\":\"thr_0000000000000001\",\"private\":\"private-archive-sentinel\"}\n"
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadUnarchived\",\"threadId\":\"00000000-0000-7000-8000-000000000001\",\"private\":\"private-archive-sentinel\"}\n"
             ),
             "invalidRecordShape",
         ),
         (
             "valid-shaped unarchive while active",
             concat!(
-                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadUnarchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadUnarchived\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n"
             ),
             "threadUnarchiveWhileActive",
         ),
@@ -355,7 +360,7 @@ fn rejects_duplicate_archive_and_records_after_archive_without_echoing_content()
         fs::write(
             directory
                 .path()
-                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+                .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
             records,
         )
         .expect("write invalid rollout");
@@ -375,36 +380,36 @@ fn rejects_duplicate_delete_and_records_after_delete_without_echoing_content() {
         (
             "duplicate delete",
             concat!(
-                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n"
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadDeleted\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n"
             ),
             "duplicateThreadDelete",
         ),
         (
             "turn after delete",
             concat!(
-                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"turnCompleted\",\"threadId\":\"thr_0000000000000001\",\"turn\":{\"id\":\"turn_0000000000000001\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"item_0000000000000001\",\"text\":\"private-delete-sentinel\"}]}}\n"
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"turnCompleted\",\"threadId\":\"00000000-0000-7000-8000-000000000001\",\"turn\":{\"id\":\"00000000-0001-7000-8000-000000000001\",\"status\":\"completed\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"00000000-0002-7000-8000-000000000001\",\"text\":\"private-delete-sentinel\"}]}}\n"
             ),
             "recordAfterThreadDelete",
         ),
         (
             "archive after delete",
             concat!(
-                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadArchived\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n"
             ),
             "recordAfterThreadDelete",
         ),
         (
             "unarchive after delete",
             concat!(
-                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n",
-                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadUnarchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+                "{\"schemaVersion\":1,\"sequence\":1,\"type\":\"threadCreated\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":2,\"type\":\"threadDeleted\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n",
+                "{\"schemaVersion\":1,\"sequence\":3,\"type\":\"threadUnarchived\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n"
             ),
             "recordAfterThreadDelete",
         ),
@@ -417,7 +422,7 @@ fn rejects_duplicate_delete_and_records_after_delete_without_echoing_content() {
         fs::write(
             directory
                 .path()
-                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+                .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
             records,
         )
         .expect("write invalid rollout");
@@ -444,7 +449,7 @@ fn removes_an_empty_unacknowledged_create_artifact() {
     }
     let path = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     fs::write(&path, []).expect("empty create artifact");
 
     let repository = RolloutRepository::open(&home).expect("empty artifact recovers");
@@ -464,7 +469,7 @@ fn removes_an_unacknowledged_fork_create_artifact() {
     }
     let path = directory
         .path()
-        .join("rollouts/v1/.thr_0000000000000001.fork.tmp");
+        .join("rollouts/v1/.00000000-0000-7000-8000-000000000001.fork.tmp");
     fs::write(&path, b"private-fork-create-sentinel").expect("fork artifact");
 
     let repository = RolloutRepository::open(&home).expect("artifact recovers");
@@ -509,12 +514,13 @@ fn refuses_to_follow_a_rollout_replaced_by_a_symlink_before_append() {
         ..Default::default()
     })
     .expect("resolve home");
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     let rollout = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let target = directory.path().join("outside.jsonl");
     fs::write(&target, b"outside").expect("outside target");
     fs::remove_file(&rollout).expect("replace rollout");

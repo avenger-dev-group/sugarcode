@@ -95,7 +95,6 @@ pub use rollout::DurableWorkspaceInstructionsStatus;
 pub use rollout::DurableWorkspaceSkillsAudit;
 pub use rollout::DurableWorkspaceSkillsSource;
 pub use rollout::DurableWorkspaceSkillsStatus;
-pub use rollout::IdSequences;
 pub use rollout::ProjectionDiagnostic;
 pub use rollout::RolloutDiagnostic;
 pub use rollout::RolloutError;

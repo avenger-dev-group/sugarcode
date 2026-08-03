@@ -4,8 +4,10 @@ use super::*;
 fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let source_id = ThreadId::new("thr_0000000000000001");
-    let fork_id = ThreadId::new("thr_0000000000000002");
+    let source_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let fork_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000002").expect("valid thread UUIDv7");
     let fork = DurableThreadSnapshot {
         id: fork_id.clone(),
         turns: vec![completed_turn(2), completed_turn(3)],
@@ -41,9 +43,6 @@ fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
                 .expect("fork"),
             fork
         );
-        assert_eq!(repository.id_sequences().thread, 2);
-        assert_eq!(repository.id_sequences().turn, 3);
-        assert_eq!(repository.id_sequences().item, 3);
         assert_eq!(
             repository
                 .list_threads(None, 50)
@@ -68,7 +67,7 @@ fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
 
     let rollout = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000002.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000002.jsonl");
     let contents = fs::read_to_string(&rollout).expect("fork rollout");
     let records = contents
         .lines()
@@ -83,14 +82,23 @@ fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
     assert_eq!(records[5]["type"], "turnStarted");
     assert_eq!(records[8]["type"], "turnCompleted");
     assert_eq!(records[0]["threadId"], fork_id.as_str());
-    assert_eq!(records[1]["turn"]["id"], "turn_0000000000000002");
-    assert_eq!(records[2]["item"]["id"], "item_0000000000000002");
-    assert_eq!(records[3]["item"]["id"], "item_0000000000000002");
+    assert_eq!(
+        records[1]["turn"]["id"],
+        "00000000-0001-7000-8000-000000000002"
+    );
+    assert_eq!(
+        records[2]["item"]["id"],
+        "00000000-0002-7000-8000-000000000002"
+    );
+    assert_eq!(
+        records[3]["item"]["id"],
+        "00000000-0002-7000-8000-000000000002"
+    );
     assert_eq!(records[4]["turn"]["items"], serde_json::json!([]));
     assert!(
         !directory
             .path()
-            .join("rollouts/v1/.thr_0000000000000002.fork.tmp")
+            .join("rollouts/v1/.00000000-0000-7000-8000-000000000002.fork.tmp")
             .exists()
     );
 
@@ -108,17 +116,19 @@ fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
 fn fork_temp_collision_leaves_no_visible_thread_and_poisoned_state_recovers_on_replay() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let source_id = ThreadId::new("thr_0000000000000001");
-    let fork_id = ThreadId::new("thr_0000000000000002");
+    let source_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let fork_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000002").expect("valid thread UUIDv7");
     let source_path = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let temp_path = directory
         .path()
-        .join("rollouts/v1/.thr_0000000000000002.fork.tmp");
+        .join("rollouts/v1/.00000000-0000-7000-8000-000000000002.fork.tmp");
     let final_path = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000002.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000002.jsonl");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&source_id).expect("source");
     repository
@@ -160,7 +170,6 @@ fn fork_temp_collision_leaves_no_visible_thread_and_poisoned_state_recovers_on_r
             .expect("fork lookup")
             .is_none()
     );
-    assert_eq!(repository.id_sequences().thread, 1);
     assert_eq!(
         repository.diagnostics()[0].kind,
         "forkCreateArtifactRecovered"
@@ -178,10 +187,15 @@ fn fork_discovery_update_failure_never_rolls_back_the_durable_snapshot() {
     let home = resolved_temp_home(&directory);
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository
-        .create_thread(&ThreadId::new("thr_0000000000000001"))
+        .create_thread(
+            &ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7"),
+        )
         .expect("source");
     repository
-        .append_completed_turn(&ThreadId::new("thr_0000000000000001"), &completed_turn(1))
+        .append_completed_turn(
+            &ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7"),
+            &completed_turn(1),
+        )
         .expect("source turn");
     let database = directory
         .path()
@@ -190,7 +204,8 @@ fn fork_discovery_update_failure_never_rolls_back_the_durable_snapshot() {
     blocker
         .execute_batch("BEGIN EXCLUSIVE")
         .expect("hold discovery lock");
-    let fork_id = ThreadId::new("thr_0000000000000002");
+    let fork_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000002").expect("valid thread UUIDv7");
 
     repository
         .create_thread_snapshot(&DurableThreadSnapshot {

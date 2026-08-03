@@ -78,11 +78,11 @@ fn resumes_completed_history_across_two_cli_processes() {
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
-        "turn_0000000000000002"
+        "00000000-0001-7000-8000-000000000002"
     );
     assert_eq!(
         next_turn[4]["params"]["item"]["id"],
-        "item_0000000000000004"
+        "00000000-0002-7000-8000-000000000004"
     );
     let second_requests = second.provider_requests();
     assert_eq!(
@@ -163,7 +163,7 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
                 "id": format!("large-{turn}"),
                 "method": "turn/start",
                 "params": {
-                    "threadId": "thr_0000000000000001",
+                    "threadId": "00000000-0000-7000-8000-000000000001",
                     "input": [{"type":"text","text":"u"}]
                 }
             }),
@@ -177,7 +177,7 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
             "id": "checkpoint",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"checkpoint"}]
             }
         }),
@@ -197,8 +197,7 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
     assert_eq!(checkpoint_messages[1]["content"], "checkpoint");
     first.finish();
 
-    let rollout = fs::read_to_string(home.path().join("rollouts/v1/thr_0000000000000001.jsonl"))
-        .expect("rollout");
+    let rollout = fs::read_to_string(rollout_path(home.path(), 1)).expect("rollout");
     assert!(rollout.contains("\"contextCompaction\""));
     assert!(rollout.contains("\"deterministicExtractiveV1\""));
 
@@ -209,7 +208,7 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
             "jsonrpc": "2.0",
             "id": "resume",
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -219,7 +218,7 @@ fn persisted_compaction_is_reused_after_a_real_cli_restart() {
             "id": "continued",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"continued"}]
             }
         }),
@@ -283,7 +282,7 @@ fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() 
             "id": "tool-turn",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"Read context"}]
             }
         }),
@@ -310,7 +309,7 @@ fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() 
             "jsonrpc": "2.0",
             "id": "resume",
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -326,7 +325,7 @@ fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() 
             "jsonrpc": "2.0",
             "id": "fork",
             "method": "thread/fork",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         2,
     );
@@ -344,7 +343,7 @@ fn resumes_forks_and_continues_completed_tool_history_in_a_second_cli_process() 
             "jsonrpc": "2.0",
             "id": "continue",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
         }),
         6,
     );

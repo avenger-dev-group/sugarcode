@@ -61,23 +61,8 @@ type StoredProject = Readonly<{
   workspaceId?: string;
 }>;
 
-type LegacyStoredSession = Readonly<{
-  schemaVersion: 1;
-  projectPath?: string;
-  projectThreadIds?: readonly string[];
-  chatThreadIds?: readonly string[];
-  active:
-    | Readonly<{ kind: 'project' }>
-    | Readonly<{
-        kind: 'chat';
-        directory: string;
-        threadId?: string;
-      }>;
-  chats: readonly StoredChat[];
-}>;
-
 type StoredSession = Readonly<{
-  schemaVersion: 2;
+  schemaVersion: 1;
   projects: readonly StoredProject[];
   active:
     | Readonly<{ kind: 'project'; projectId: string }>
@@ -91,8 +76,9 @@ type StoredSession = Readonly<{
 
 const isThreadId = (value: unknown): value is string =>
   typeof value === 'string' &&
-  value.length <= 128 &&
-  /^thr_[A-Za-z0-9_-]+$/u.test(value);
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+    value,
+  );
 
 const sameIds = (
   left: readonly string[],
@@ -380,7 +366,13 @@ export class WorkspaceController {
   clear = (): Promise<WorkspaceSelectResult> =>
     this.activateChat({});
 
-  observeConversation = (conversation: ConversationStateSnapshot): void => {
+  observeConversation = (
+    workspaceId: string,
+    conversation: ConversationStateSnapshot,
+  ): void => {
+    if (workspaceId !== this.options.supervisor.getWorkspaceBindingId()) {
+      return;
+    }
     if (
       conversation.phase === 'unavailable' ||
       conversation.navigator.status !== 'ready'
@@ -389,7 +381,32 @@ export class WorkspaceController {
     }
     const nextIds = conversation.navigator.activeThreadIds;
     if (this.workspaceKind === 'project') {
-      if (!sameIds(this.projectThreadIds, nextIds)) {
+      let membershipChanged = false;
+      for (const threadId of nextIds) {
+        const chatIndex = this.chatThreadIds.indexOf(threadId);
+        if (chatIndex >= 0) {
+          this.chatThreadIds = this.chatThreadIds.filter(
+            (candidate) => candidate !== threadId,
+          );
+          this.chatDirectories.delete(threadId);
+          this.chatTitles.delete(threadId);
+          this.chatWorkspaceIds.delete(threadId);
+          membershipChanged = true;
+        }
+      }
+      for (const [projectId, project] of this.projects) {
+        if (projectId === this.activeProjectId) {
+          continue;
+        }
+        const filtered = project.threadIds.filter(
+          (threadId) => !nextIds.includes(threadId),
+        );
+        if (!sameIds(project.threadIds, filtered)) {
+          this.projects.set(projectId, { ...project, threadIds: filtered });
+          membershipChanged = true;
+        }
+      }
+      if (!sameIds(this.projectThreadIds, nextIds) || membershipChanged) {
         this.projectThreadIds = [...nextIds];
         this.refreshActiveProjectRecord();
         if (this.snapshot.status === 'ready') {
@@ -403,9 +420,31 @@ export class WorkspaceController {
       return;
     }
 
-    let changed = !sameIds(this.chatThreadIds, nextIds);
-    if (changed) {
-      this.chatThreadIds = [...nextIds];
+    const otherChatIds = this.chatThreadIds.filter(
+      (threadId) => this.chatWorkspaceIds.get(threadId) !== workspaceId,
+    );
+    const nextChatIds = [
+      ...nextIds,
+      ...otherChatIds.filter((threadId) => !nextIds.includes(threadId)),
+    ];
+    let changed = !sameIds(this.chatThreadIds, nextChatIds);
+    this.chatThreadIds = nextChatIds;
+    for (const threadId of nextIds) {
+      this.chatWorkspaceIds.set(threadId, workspaceId);
+    }
+    if (nextIds.length > 0) {
+      this.projectThreadIds = this.projectThreadIds.filter(
+        (threadId) => !nextIds.includes(threadId),
+      );
+      for (const [projectId, project] of this.projects) {
+        const filtered = project.threadIds.filter(
+          (threadId) => !nextIds.includes(threadId),
+        );
+        if (!sameIds(project.threadIds, filtered)) {
+          this.projects.set(projectId, { ...project, threadIds: filtered });
+          changed = true;
+        }
+      }
     }
     if (
       conversation.threadId &&
@@ -419,10 +458,7 @@ export class WorkspaceController {
       if (title) {
         this.chatTitles.set(conversation.threadId, title);
       }
-      const workspaceId = this.options.supervisor.getWorkspaceBindingId();
-      if (workspaceId) {
-        this.chatWorkspaceIds.set(conversation.threadId, workspaceId);
-      }
+      this.chatWorkspaceIds.set(conversation.threadId, workspaceId);
       if (!this.chatThreadIds.includes(conversation.threadId)) {
         this.chatThreadIds = [
           conversation.threadId,
@@ -712,9 +748,7 @@ export class WorkspaceController {
       if (isStoredSession(value)) {
         return value;
       }
-      return isLegacyStoredSession(value)
-        ? migrateLegacySession(value)
-        : null;
+      return null;
     } catch {
       return null;
     }
@@ -735,7 +769,7 @@ export class WorkspaceController {
       ...this.chatDirectories.keys(),
     ]);
     const stored: StoredSession = {
-      schemaVersion: 2,
+      schemaVersion: 1,
       projects: [...this.projects.values()],
       active:
         this.workspaceKind === 'project'
@@ -785,7 +819,7 @@ const isStoredSession = (
   }
   const record = value as Record<string, unknown>;
   if (
-    record.schemaVersion !== 2 ||
+    record.schemaVersion !== 1 ||
     !Object.keys(record).every((key) =>
       ['schemaVersion', 'projects', 'active', 'chats'].includes(key)
     ) ||
@@ -798,8 +832,18 @@ const isStoredSession = (
     return false;
   }
   const chatsValid = record.chats.every(isStoredChat);
+  const projectThreadIdList = record.projects.flatMap(
+    (project) => (project as StoredProject).threadIds,
+  );
+  const projectThreadIds = new Set(projectThreadIdList);
+  const chatThreadIds = (record.chats as StoredChat[]).map(
+    (chat) => chat.threadId,
+  );
   if (
     !chatsValid ||
+    projectThreadIds.size !== projectThreadIdList.length ||
+    new Set(chatThreadIds).size !== chatThreadIds.length ||
+    chatThreadIds.some((threadId) => projectThreadIds.has(threadId)) ||
     typeof record.active !== 'object' ||
     record.active === null ||
     Array.isArray(record.active)
@@ -886,69 +930,6 @@ const isStoredChat = (value: unknown): value is StoredChat => {
     (record.title === undefined ||
       (typeof record.title === 'string' && record.title.length > 0))
   );
-};
-
-const isLegacyStoredSession = (
-  value: unknown,
-): value is LegacyStoredSession => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    record.schemaVersion !== 1 ||
-    !Array.isArray(record.chats) ||
-    !record.chats.every(isStoredChat) ||
-    (record.projectPath !== undefined &&
-      (typeof record.projectPath !== 'string' ||
-        !path.isAbsolute(record.projectPath))) ||
-    (record.projectThreadIds !== undefined &&
-      (!Array.isArray(record.projectThreadIds) ||
-        !record.projectThreadIds.every(isThreadId))) ||
-    (record.chatThreadIds !== undefined &&
-      (!Array.isArray(record.chatThreadIds) ||
-        !record.chatThreadIds.every(isThreadId))) ||
-    typeof record.active !== 'object' ||
-    record.active === null
-  ) {
-    return false;
-  }
-  const active = record.active as Record<string, unknown>;
-  return active.kind === 'project'
-    ? typeof record.projectPath === 'string'
-    : active.kind === 'chat' &&
-        typeof active.directory === 'string' &&
-        path.isAbsolute(active.directory) &&
-        (active.threadId === undefined || isThreadId(active.threadId));
-};
-
-const migrateLegacySession = (
-  legacy: LegacyStoredSession,
-): StoredSession => {
-  const projectId = randomUUID();
-  const projects: StoredProject[] = legacy.projectPath
-    ? [
-        {
-          id: projectId,
-          path: legacy.projectPath,
-          name: path.basename(legacy.projectPath),
-          threadIds: legacy.projectThreadIds ?? [],
-          lastOpenedAtMs: Date.now(),
-        },
-      ]
-    : [];
-  return {
-    schemaVersion: 2,
-    projects,
-    active:
-      legacy.active.kind === 'project'
-        ? { kind: 'project', projectId }
-        : legacy.active,
-    chats: legacy.chats.map((chat) => ({
-      ...chat,
-      title: chat.title ?? chat.threadId,
-    })),
-  };
 };
 
 const validateDirectory = async (

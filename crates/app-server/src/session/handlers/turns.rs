@@ -33,7 +33,7 @@ where
             )];
         }
 
-        let thread_id = ThreadId::new(params.thread_id.clone());
+        let thread_id = ThreadId::parse(params.thread_id.clone()).expect("validated thread ID");
         if !self.agent.contains_thread(&thread_id) {
             return vec![error(
                 Some(id),
@@ -166,8 +166,8 @@ where
                 None,
             )];
         }
-        let thread_id = ThreadId::new(params.thread_id.clone());
-        let turn_id = TurnId::new(params.turn_id.clone());
+        let thread_id = ThreadId::parse(params.thread_id.clone()).expect("validated thread ID");
+        let turn_id = TurnId::parse(params.turn_id.clone()).expect("validated turn ID");
         if !self.agent.contains_thread(&thread_id) {
             return vec![error(
                 Some(id),

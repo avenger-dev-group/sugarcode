@@ -40,7 +40,10 @@ where
             )];
         }
 
-        let cursor = params.cursor.as_deref().map(ThreadId::new);
+        let cursor = params
+            .cursor
+            .as_deref()
+            .map(|cursor| ThreadId::parse(cursor).expect("validated thread cursor"));
         let limit = params.limit.unwrap_or(DEFAULT_THREAD_LIST_LIMIT) as usize;
         let page = match self.agent.list_threads(cursor.as_ref(), limit) {
             Ok(page) => page,
@@ -71,6 +74,7 @@ where
                 .into_iter()
                 .map(|summary| PublicThread {
                     id: summary.id.into_string(),
+                    workspace_id: params.workspace_id.clone(),
                     title: summary.title,
                     origin: None,
                 })
@@ -121,7 +125,10 @@ where
             )];
         }
 
-        let cursor = params.cursor.as_deref().map(ThreadId::new);
+        let cursor = params
+            .cursor
+            .as_deref()
+            .map(|cursor| ThreadId::parse(cursor).expect("validated thread cursor"));
         let limit = params.limit.unwrap_or(DEFAULT_THREAD_SEARCH_LIMIT) as usize;
         let page = match self
             .agent
@@ -147,6 +154,7 @@ where
                 .into_iter()
                 .map(|summary| PublicThread {
                     id: summary.id.into_string(),
+                    workspace_id: params.workspace_id.clone(),
                     title: summary.title,
                     origin: None,
                 })

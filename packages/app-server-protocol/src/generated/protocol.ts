@@ -104,7 +104,7 @@ export type AgentMessageDeltaNotification = { threadId: string, turnId: string, 
 
 export type ItemCompletedNotification = { threadId: string, turnId: string, item: Item, };
 
-export type Thread = { id: string, title?: string, origin?: ThreadOrigin, };
+export type Thread = { id: string, workspaceId: string, title?: string, origin?: ThreadOrigin, };
 
 export type ThreadOrigin = { "type": "subagent", parentThreadId: string, parentTurnId: string, orchestrationId: string, taskId: string, role: AgentTaskRole, };
 

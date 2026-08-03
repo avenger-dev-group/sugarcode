@@ -1,6 +1,5 @@
 use super::DurableThreadLifecycle;
 use super::DurableThreadSnapshot;
-use super::IdSequences;
 use super::MAX_ROLLOUT_FILE_BYTES;
 use super::MAX_ROLLOUT_FILES;
 use super::MAX_ROLLOUT_RECORD_BYTES;
@@ -27,7 +26,6 @@ use sugarcode_protocol::TurnId;
 #[derive(Debug)]
 pub(super) struct ReplayResult {
     pub threads: BTreeMap<ThreadId, RolloutThreadState>,
-    pub sequences: IdSequences,
     pub diagnostics: Vec<RolloutDiagnostic>,
     pub retained_bytes: u64,
     pub record_count: usize,
@@ -76,7 +74,6 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
     }
 
     let mut threads = BTreeMap::new();
-    let mut sequences = IdSequences::default();
     let mut total_bytes = 0u64;
     let mut retained_bytes = 0u64;
     let mut total_records = 0usize;
@@ -138,10 +135,6 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
         };
 
         let expected_thread_id = thread_id_from_path(&path)?;
-        sequences.thread = sequences.thread.max(
-            parse_canonical_id(expected_thread_id.as_str(), "thr_", "thread")
-                .map_err(|_| corrupt(&path, 0, "invalidThreadId"))?,
-        );
         let mut snapshot: Option<DurableThreadSnapshot> = None;
         let mut workspace_binding_id: Option<String> = None;
         let mut turn_record_sequences = Vec::new();
@@ -225,14 +218,7 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     }) {
                         return Err(corrupt(&path, offset as u64, "invalidContextCompaction"));
                     }
-                    validate_new_turn(
-                        &turn,
-                        &path,
-                        offset as u64,
-                        &mut turn_ids,
-                        &mut item_ids,
-                        &mut sequences,
-                    )?;
+                    validate_new_turn(&turn, &path, offset as u64, &mut turn_ids, &mut item_ids)?;
                     turn.status = super::DurableTurnStatus::Interrupted;
                     pending_turn_id = Some(turn.id.clone());
                     thread.turns.push(turn);
@@ -268,12 +254,9 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     ) {
                         return Err(corrupt(&path, offset as u64, "invalidIncrementalItem"));
                     }
-                    let item_sequence = parse_canonical_id(item.id().as_str(), "item_", "item")
-                        .map_err(|_| corrupt(&path, offset as u64, "invalidItemId"))?;
                     if !item_ids.insert(item.id().clone()) {
                         return Err(corrupt(&path, offset as u64, "duplicateItemId"));
                     }
-                    sequences.item = sequences.item.max(item_sequence);
                     thread
                         .turns
                         .last_mut()
@@ -378,7 +361,6 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                             offset as u64,
                             &mut turn_ids,
                             &mut item_ids,
-                            &mut sequences,
                         )?;
                         thread.turns.push(turn);
                         turn_record_sequences.push(sequence);
@@ -619,7 +601,6 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
 
     Ok(ReplayResult {
         threads,
-        sequences,
         diagnostics,
         retained_bytes,
         record_count: total_records,
@@ -765,7 +746,6 @@ fn validate_new_turn(
     offset: u64,
     turn_ids: &mut BTreeSet<TurnId>,
     item_ids: &mut BTreeSet<sugarcode_protocol::ItemId>,
-    sequences: &mut IdSequences,
 ) -> Result<(), RolloutError> {
     if !super::valid_workspace_instructions_audit(turn.workspace_instructions.as_ref()) {
         return Err(corrupt(path, offset, "invalidWorkspaceInstructionsAudit"));
@@ -773,22 +753,16 @@ fn validate_new_turn(
     if !super::valid_workspace_skills_audit(turn.workspace_skills.as_ref()) {
         return Err(corrupt(path, offset, "invalidWorkspaceSkillsAudit"));
     }
-    let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")
-        .map_err(|_| corrupt(path, offset, "invalidTurnId"))?;
     if !turn_ids.insert(turn.id.clone()) {
         return Err(corrupt(path, offset, "duplicateTurnId"));
     }
-    sequences.turn = sequences.turn.max(turn_sequence);
     if turn.items.is_empty() && turn.status != super::DurableTurnStatus::InProgress {
         return Err(corrupt(path, offset, "emptyCompletedTurn"));
     }
     for item in &turn.items {
-        let item_sequence = parse_canonical_id(item.id().as_str(), "item_", "item")
-            .map_err(|_| corrupt(path, offset, "invalidItemId"))?;
         if !item_ids.insert(item.id().clone()) {
             return Err(corrupt(path, offset, "duplicateItemId"));
         }
-        sequences.item = sequences.item.max(item_sequence);
     }
     Ok(())
 }
@@ -803,27 +777,7 @@ fn is_fork_create_artifact(path: &Path) -> bool {
     else {
         return false;
     };
-    parse_canonical_id(thread_id, "thr_", "thread").is_ok()
-}
-
-pub(crate) fn parse_canonical_id(
-    value: &str,
-    prefix: &str,
-    kind: &'static str,
-) -> Result<u64, RolloutError> {
-    let digits = value
-        .strip_prefix(prefix)
-        .ok_or(RolloutError::InvalidId { kind })?;
-    if digits.len() < 16 || digits.len() > 20 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(RolloutError::InvalidId { kind });
-    }
-    let sequence = digits
-        .parse::<u64>()
-        .map_err(|_| RolloutError::InvalidId { kind })?;
-    if format!("{sequence:016}") != digits {
-        return Err(RolloutError::InvalidId { kind });
-    }
-    Ok(sequence)
+    ThreadId::parse(thread_id).is_ok()
 }
 
 fn thread_id_from_path(path: &Path) -> Result<ThreadId, RolloutError> {
@@ -831,8 +785,7 @@ fn thread_id_from_path(path: &Path) -> Result<ThreadId, RolloutError> {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .ok_or(RolloutError::InvalidId { kind: "thread" })?;
-    parse_canonical_id(stem, "thr_", "thread").map_err(|_| corrupt(path, 0, "invalidThreadId"))?;
-    Ok(ThreadId::new(stem))
+    ThreadId::parse(stem).map_err(|_| corrupt(path, 0, "invalidThreadId"))
 }
 
 pub(super) fn unavailable(path: &Path, error: io::Error) -> RolloutError {

@@ -6,8 +6,10 @@ fn workspace_bound_repositories_never_resume_foreign_or_unbound_threads() {
     let home = resolved_temp_home(&directory);
     let binding_a = "a".repeat(64);
     let binding_b = "b".repeat(64);
-    let thread_a = ThreadId::new("thr_0000000000000001");
-    let thread_b = ThreadId::new("thr_0000000000000002");
+    let thread_a =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let thread_b =
+        ThreadId::parse("00000000-0000-7000-8000-000000000002").expect("valid thread UUIDv7");
 
     {
         let mut repository =
@@ -46,7 +48,7 @@ fn workspace_bound_repositories_never_resume_foreign_or_unbound_threads() {
     let record = fs::read_to_string(
         directory
             .path()
-            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
     )
     .expect("rollout");
     assert!(record.contains(&format!("\"workspaceBindingId\":\"{binding_a}\"")));
@@ -57,8 +59,10 @@ fn workspace_free_repositories_only_resume_independent_threads() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
     let binding = "a".repeat(64);
-    let project_thread = ThreadId::new("thr_0000000000000001");
-    let independent_thread = ThreadId::new("thr_0000000000000002");
+    let project_thread =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let independent_thread =
+        ThreadId::parse("00000000-0000-7000-8000-000000000002").expect("valid thread UUIDv7");
 
     {
         let mut repository = RolloutRepository::open_with_workspace_binding(&home, Some(&binding))

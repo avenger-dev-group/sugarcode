@@ -75,6 +75,7 @@ src/renderer/
 - 禁止使用 `text-foreground/60`、`text-white/50` 或硬编码 RGBA 绕过语义变量。
 - `--primary` 是主文字和主题前景色的唯一源值；`--foreground` 只是兼容现有组件的别名，必须引用 `--primary`，不得另建 `--text-primary`。
 - 状态色仅用于成功、警告、错误和正在执行等明确状态。
+- 成功状态统一使用 `--success` / `text-success` / `bg-success`，不得在组件中硬编码绿色。
 - 禁用态可以在正确语义色的基础上使用组件级 `disabled:opacity-*`。语法高亮、终端、遮罩和状态色可按各自功能使用专用颜色。
 
 对应 CSS token：
@@ -85,6 +86,7 @@ src/renderer/
 --process
 --tertiary
 --background
+--success
 --user-message
 --user-message-foreground
 ```

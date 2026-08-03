@@ -225,7 +225,24 @@ where
 
     let (thread_id, mode, initial_event) = match request.resume_thread_id {
         Some(thread_id) => {
-            let thread_id = ThreadId::new(thread_id);
+            let thread_id = match ThreadId::parse(thread_id) {
+                Ok(thread_id) => thread_id,
+                Err(_) => {
+                    let _ = session.shutdown().await;
+                    let code = emitter_error(
+                        &mut output,
+                        stderr,
+                        EXEC_EXIT_INPUT,
+                        ExecErrorCategoryV1::Input,
+                        "thread ID must be a canonical UUIDv7",
+                        None,
+                        None,
+                    );
+                    command_approval_task.abort();
+                    mcp_approval_task.abort();
+                    return code;
+                }
+            };
             match session.resume_thread(&thread_id) {
                 Ok(_) => (thread_id, ExecRunModeV1::Resume, None),
                 Err(CoreError::ThreadNotFound(_)) => {
@@ -773,11 +790,7 @@ fn import_turn_content(
 }
 
 fn is_canonical_thread_id(value: &str) -> bool {
-    value.len() == 20
-        && value.starts_with("thr_")
-        && value.as_bytes()[4..]
-            .iter()
-            .all(|byte| byte.is_ascii_digit())
+    ThreadId::parse(value).is_ok()
 }
 
 fn surface_error<W, D>(

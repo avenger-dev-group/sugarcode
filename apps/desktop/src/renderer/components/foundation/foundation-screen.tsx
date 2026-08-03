@@ -5,6 +5,7 @@ import {
 import { useStore as useCommandApprovalStore } from '@/renderer/components/command-approval/use-store';
 import { ConnectionStatusBar } from '@/renderer/components/connection/connection-status';
 import { McpApprovalSurface } from '@/renderer/components/mcp/approval-surface';
+import { useStore as useMcpStore } from '@/renderer/components/mcp/use-store';
 import { SettingsDialog } from '@/renderer/components/settings/settings-dialog';
 import { ThreadWorkbenchView } from '@/renderer/components/thread/thread-workbench';
 import { useStore as useThreadStore } from '@/renderer/components/thread/use-store';
@@ -17,6 +18,16 @@ export const FoundationScreen = () => {
   const foundation = useStore();
   const threadStore = useThreadStore();
   const commandApprovalStore = useCommandApprovalStore();
+  const mcpStore = useMcpStore();
+  const activeThreadId = threadStore.thread.threadIdentity;
+  const approvalThreadIds = Array.from(
+    new Set(
+      [
+        commandApprovalStore.request?.threadId,
+        mcpStore.approvalRequest?.threadId,
+      ].filter((threadId): threadId is string => threadId !== undefined),
+    ),
+  );
   const turnBusy =
     threadStore.thread.phase === 'starting' ||
     threadStore.thread.phase === 'inProgress' ||
@@ -54,12 +65,19 @@ export const FoundationScreen = () => {
               />
             }
             contextRail={<ContextRail />}
+            approvalThreadIds={approvalThreadIds}
           />
         </main>
       </OrchestrationStoreProvider>
       <ConnectionStatusBar />
-      <CommandApprovalView store={commandApprovalStore} />
-      <McpApprovalSurface />
+      <CommandApprovalView
+        store={commandApprovalStore}
+        activeThreadId={activeThreadId}
+      />
+      <McpApprovalSurface
+        store={mcpStore}
+        activeThreadId={activeThreadId}
+      />
     </div>
   );
 };

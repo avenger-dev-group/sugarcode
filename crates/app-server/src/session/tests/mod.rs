@@ -83,6 +83,27 @@ fn notification_thread_id(messages: &[JsonRpcMessage]) -> &str {
         .expect("notification thread id")
 }
 
+fn start_test_thread<C: CoreApi>(session: &mut Session<C>, request_id: &str) -> String {
+    let messages = session.process_line(
+        &json!({"jsonrpc":"2.0", "id":request_id, "method":"thread/start"}).to_string(),
+    );
+    response_thread_id(&messages).to_owned()
+}
+
+fn start_test_turn<C: CoreApi>(
+    session: &mut Session<C>,
+    request_id: &str,
+    thread_id: &str,
+) -> Vec<JsonRpcMessage> {
+    session.process_line(
+        &json!({
+            "jsonrpc":"2.0", "id":request_id, "method":"turn/start",
+            "params":{"threadId":thread_id, "input":[{"type":"text","text":"Hello"}]}
+        })
+        .to_string(),
+    )
+}
+
 struct FailingCore;
 
 impl CoreApi for FailingCore {
@@ -128,7 +149,8 @@ impl CoreApi for MismatchedCore {
         Ok(CoreEvent {
             request_id: CoreRequestId::new(request_id.get() + 1),
             kind: CoreEventKind::ThreadStarted {
-                thread_id: ThreadId::new("thr_wrong_request"),
+                thread_id: ThreadId::parse("00000000-0000-7000-8000-000000000012")
+                    .expect("valid thread UUIDv7"),
             },
         })
     }
@@ -224,13 +246,14 @@ impl CoreApi for TurnCore {
         Ok(CoreEvent {
             request_id,
             kind: CoreEventKind::ThreadStarted {
-                thread_id: ThreadId::new("thr_existing"),
+                thread_id: ThreadId::parse("00000000-0000-7000-8000-000000000010")
+                    .expect("valid thread UUIDv7"),
             },
         })
     }
 
     fn contains_thread(&self, thread_id: &ThreadId) -> bool {
-        thread_id.as_str() == "thr_existing"
+        thread_id.as_str() == "00000000-0000-7000-8000-000000000010"
     }
 
     fn list_threads(
@@ -271,8 +294,10 @@ impl CoreApi for TurnCore {
             TurnCoreBehavior::WrongThread => {
                 let mut events = valid_turn_events(request_id, thread_id);
                 events[3].kind = CoreEventKind::ItemCompleted {
-                    thread_id: ThreadId::new("thr_wrong"),
-                    turn_id: TurnId::new("turn_test"),
+                    thread_id: ThreadId::parse("00000000-0000-7000-8000-000000000011")
+                        .expect("valid thread UUIDv7"),
+                    turn_id: TurnId::parse("00000000-0001-7000-8000-000000000099")
+                        .expect("valid turn UUIDv7"),
                     item: completed_test_item(),
                 };
                 Ok(events)
@@ -285,10 +310,13 @@ impl CoreApi for TurnCore {
             TurnCoreBehavior::WrongCompletedText => {
                 let mut events = valid_turn_events(request_id, thread_id);
                 events[3].kind = CoreEventKind::ItemCompleted {
-                    thread_id: ThreadId::new("thr_existing"),
-                    turn_id: TurnId::new("turn_test"),
+                    thread_id: ThreadId::parse("00000000-0000-7000-8000-000000000010")
+                        .expect("valid thread UUIDv7"),
+                    turn_id: TurnId::parse("00000000-0001-7000-8000-000000000099")
+                        .expect("valid turn UUIDv7"),
                     item: CoreItemSnapshot {
-                        id: ItemId::new("item_test"),
+                        id: ItemId::parse("00000000-0002-7000-8000-000000000099")
+                            .expect("valid item UUIDv7"),
                         kind: CoreItemKind::AgentMessage {
                             text: "contradictory text".to_string(),
                         },
@@ -301,7 +329,7 @@ impl CoreApi for TurnCore {
 }
 
 fn valid_turn_events(request_id: CoreRequestId, thread_id: ThreadId) -> Vec<CoreEvent> {
-    let turn_id = TurnId::new("turn_test");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000099").expect("valid turn UUIDv7");
     let mut events = vec![
         CoreEvent {
             request_id,
@@ -316,7 +344,8 @@ fn valid_turn_events(request_id: CoreRequestId, thread_id: ThreadId) -> Vec<Core
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone(),
                 item: CoreItemSnapshot {
-                    id: ItemId::new("item_test"),
+                    id: ItemId::parse("00000000-0002-7000-8000-000000000099")
+                        .expect("valid item UUIDv7"),
                     kind: CoreItemKind::AgentMessage {
                         text: String::new(),
                     },
@@ -328,7 +357,8 @@ fn valid_turn_events(request_id: CoreRequestId, thread_id: ThreadId) -> Vec<Core
             kind: CoreEventKind::AgentMessageDelta {
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone(),
-                item_id: ItemId::new("item_test"),
+                item_id: ItemId::parse("00000000-0002-7000-8000-000000000099")
+                    .expect("valid item UUIDv7"),
                 delta: "test response".to_string(),
             },
         },
@@ -352,7 +382,7 @@ fn valid_turn_events(request_id: CoreRequestId, thread_id: ThreadId) -> Vec<Core
 
 fn completed_test_item() -> CoreItemSnapshot {
     CoreItemSnapshot {
-        id: ItemId::new("item_test"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000099").expect("valid item UUIDv7"),
         kind: CoreItemKind::AgentMessage {
             text: "test response".to_string(),
         },

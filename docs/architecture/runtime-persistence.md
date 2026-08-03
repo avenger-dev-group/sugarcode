@@ -18,8 +18,10 @@ state machines.
 
 Desktop's multi-workspace app-server keeps one global control session and
 creates one lazy runtime context per registered canonical root. Those contexts
-share the same rollout repository and process-wide Core ID allocator but retain
-separate workspace capabilities, instruction scopes and active-Turn ownership.
+share the same rollout repository but retain separate workspace capabilities,
+instruction scopes and active-Turn ownership. Thread, Turn and Item identity is
+a canonical lowercase UUIDv7 generated at creation; no process-wide numeric
+allocator or replay-time maximum-ID scan exists.
 Thread-to-workspace routing is restored from durable descriptors when an idle
 context is reloaded; a context unload never deletes rollout or search state.
 
@@ -51,13 +53,22 @@ shapes are intentionally incompatible with earlier development data. There is
 no dual reader or migration and repository code never deletes `~/.sugarcode`.
 
 Desktop's local window/session registry is a separate presentation record. Its
-schema version is `2` and has a one-time reader for the former single-project
-schema; it is not a rollout, app-server or model contract migration.
+schema version remains `1`, and only the current UUIDv7 shape is readable. No
+compatibility reader or migration exists; stale development session data is
+intentionally incompatible and is never removed by the app.
 
 Restart converts unfinished Turns and unfinished compaction checkpoints to
 Interrupted. It never retries an external call, reapplies a file change or
 fabricates a ToolResult. Fork copies completed history with fresh globally
 unique IDs and no shared future state.
+
+Rollout files remain `rollouts/v1/<thread-uuid>.jsonl`, and their internal
+`sequence` remains the append order inside one rollout rather than an identity
+source. Discovery and search remain schema-1 databases under `projections/v1`.
+Their Thread cursor is the canonical UUIDv7 string ordered by SQLite binary
+collation descending. Search documents use a SQLite-generated integer
+`document_id` only as the FTS rowid; the UUIDv7 Item ID stays a unique value and
+is never converted into an integer.
 
 ## Model history
 

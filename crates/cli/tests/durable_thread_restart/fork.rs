@@ -20,39 +20,42 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": format!("source-turn-{sequence}"),
                 "method": "turn/start",
-                "params": {"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000001", "input": [{"type":"text","text":"Hello"}]}
             }),
             8,
         );
     }
 
-    let source_rollout = home.path().join("rollouts/v1/thr_0000000000000001.jsonl");
+    let source_rollout = rollout_path(home.path(), 1);
     let source_before_fork = fs::read(&source_rollout).expect("read source rollout before fork");
     let forked = first.send(
         json!({
             "jsonrpc": "2.0",
             "id": "fork",
             "method": "thread/fork",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         2,
     );
-    assert_eq!(forked[0]["result"]["thread"]["id"], "thr_0000000000000002");
+    assert_eq!(
+        forked[0]["result"]["thread"]["id"],
+        "00000000-0000-7000-8000-000000000002"
+    );
     assert_eq!(
         forked[0]["result"]["turns"][0]["id"],
-        "turn_0000000000000003"
+        "00000000-0001-7000-8000-000000000003"
     );
     assert_eq!(
         forked[0]["result"]["turns"][0]["items"][0]["id"],
-        "item_0000000000000005"
+        "00000000-0002-7000-8000-000000000005"
     );
     assert_eq!(
         forked[0]["result"]["turns"][1]["id"],
-        "turn_0000000000000004"
+        "00000000-0001-7000-8000-000000000004"
     );
     assert_eq!(
         forked[0]["result"]["turns"][1]["items"][0]["id"],
-        "item_0000000000000007"
+        "00000000-0002-7000-8000-000000000007"
     );
     assert_eq!(forked[1]["method"], "thread/started");
     assert_eq!(
@@ -67,7 +70,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": "archive-fork",
                 "method": "thread/archive",
-                "params": {"threadId": "thr_0000000000000002"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
             }),
             1,
         )[0]["result"],
@@ -79,7 +82,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": "resume-hidden-fork",
                 "method": "thread/resume",
-                "params": {"threadId": "thr_0000000000000002"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
             }),
             1,
         )[0]["error"]["code"],
@@ -91,7 +94,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": "resume-source",
                 "method": "thread/resume",
-                "params": {"threadId": "thr_0000000000000001"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
             }),
             1,
         )[0]["result"]["turns"]
@@ -106,7 +109,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": "unarchive-fork",
                 "method": "thread/unarchive",
-                "params": {"threadId": "thr_0000000000000002"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
             }),
             1,
         )[0]["result"],
@@ -118,7 +121,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": "delete-source",
                 "method": "thread/delete",
-                "params": {"threadId": "thr_0000000000000001"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
             }),
             1,
         )[0]["result"],
@@ -129,17 +132,17 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "jsonrpc": "2.0",
             "id": "continue-fork",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002", "input": [{"type":"text","text":"Hello"}]}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000002", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
     assert_eq!(
         continued[0]["result"]["turn"]["id"],
-        "turn_0000000000000005"
+        "00000000-0001-7000-8000-000000000005"
     );
     assert_eq!(
         continued[4]["params"]["item"]["id"],
-        "item_0000000000000010"
+        "00000000-0002-7000-8000-000000000010"
     );
     first.finish();
 
@@ -162,7 +165,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         listed[0]["result"]["data"],
-        json!([{"id": "thr_0000000000000002", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000002", "title": "Hello"}])
     );
     let searched = second.send(
         json!({
@@ -175,14 +178,14 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         searched[0]["result"]["data"],
-        json!([{"id": "thr_0000000000000002", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000002", "title": "Hello"}])
     );
     let resumed = second.send(
         json!({
             "jsonrpc": "2.0",
             "id": "resume-fork-after-restart",
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000002"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
         }),
         1,
     );
@@ -196,11 +199,11 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     for (index, sequence) in (3..=5).enumerate() {
         assert_eq!(
             resumed[0]["result"]["turns"][index]["id"],
-            format!("turn_{sequence:016}")
+            format!("00000000-0001-7000-8000-{sequence:012}")
         );
         assert_eq!(
             resumed[0]["result"]["turns"][index]["items"][0]["id"],
-            format!("item_{:016}", sequence * 2 - 1)
+            format!("00000000-0002-7000-8000-{:012}", sequence * 2 - 1)
         );
     }
     assert_eq!(
@@ -209,7 +212,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": "fork-deleted-source",
                 "method": "thread/fork",
-                "params": {"threadId": "thr_0000000000000001"}
+                "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
             }),
             1,
         )[0]["error"]["code"],
@@ -220,17 +223,17 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
             "jsonrpc": "2.0",
             "id": "fork-turn-after-restart",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002", "input": [{"type":"text","text":"Hello"}]}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000002", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
     assert_eq!(
         next_turn[0]["result"]["turn"]["id"],
-        "turn_0000000000000006"
+        "00000000-0001-7000-8000-000000000006"
     );
     assert_eq!(
         next_turn[4]["params"]["item"]["id"],
-        "item_0000000000000012"
+        "00000000-0002-7000-8000-000000000012"
     );
     let next_thread = second.send(
         json!({
@@ -242,24 +245,24 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         next_thread[0]["result"]["thread"]["id"],
-        "thr_0000000000000003"
+        "00000000-0000-7000-8000-000000000003"
     );
     let other_turn = second.send(
         json!({
             "jsonrpc": "2.0",
             "id": "other-turn",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000003", "input": [{"type":"text","text":"Hello"}]}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000003", "input": [{"type":"text","text":"Hello"}]}
         }),
         8,
     );
     assert_eq!(
         other_turn[0]["result"]["turn"]["id"],
-        "turn_0000000000000007"
+        "00000000-0001-7000-8000-000000000007"
     );
     assert_eq!(
         other_turn[4]["params"]["item"]["id"],
-        "item_0000000000000014"
+        "00000000-0002-7000-8000-000000000014"
     );
 
     let stderr = second.finish_with_diagnostics();

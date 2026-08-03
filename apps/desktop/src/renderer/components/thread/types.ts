@@ -231,6 +231,7 @@ export type ThreadWorkbenchViewProps = Readonly<{
   navigationFooter?: ReactNode;
   contextRail?: ReactNode;
   permissionControl?: ReactNode;
+  approvalThreadIds?: readonly string[];
 }>;
 
 export type TranscriptTurnProps = Readonly<{

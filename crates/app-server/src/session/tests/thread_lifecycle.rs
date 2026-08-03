@@ -7,45 +7,39 @@ fn thread_start_returns_response_then_notification() {
     let messages =
         session.process_line(r#"{"jsonrpc":"2.0","id":"start-1","method":"thread/start"}"#);
 
+    assert_eq!(messages.len(), 2);
+    let thread_id = response_thread_id(&messages);
+    assert!(ThreadId::parse(thread_id).is_ok());
+    let JsonRpcMessage::Notification(notification) = &messages[1] else {
+        panic!("expected started notification");
+    };
     assert_eq!(
-        messages
-            .into_iter()
-            .map(|message| serde_json::to_value(message).expect("message serializes"))
-            .collect::<Vec<_>>(),
-        vec![
-            json!({
-                "jsonrpc": "2.0",
-                "id": "start-1",
-                "result": {
-                    "thread": {
-                        "id": "thr_0000000000000001"
-                    }
-                }
-            }),
-            json!({
-                "jsonrpc": "2.0",
-                "method": "thread/started",
-                "params": {
-                    "thread": {
-                        "id": "thr_0000000000000001"
-                    }
-                }
-            }),
-        ]
+        notification.params.as_ref().expect("params")["thread"],
+        json!({"id": thread_id, "workspaceId": "unbound"})
     );
 }
 
 #[test]
 fn thread_resume_returns_the_complete_snapshot_without_notifications() {
     let mut session = ready_session(Core::new());
-    session
+    let started = session
         .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
-    session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
+    let thread_id = response_thread_id(&started).to_owned();
+    let turn = session.process_line(
+        &json!({
+            "jsonrpc":"2.0", "id":"turn-1", "method":"turn/start",
+            "params":{"threadId":thread_id, "input":[{"type":"text","text":"Hello"}]}
+        })
+        .to_string(),
     );
+    let turn_id = response_turn_id(&turn).to_owned();
+    let item_id = serde_json::to_value(&turn[2]).expect("item started")["params"]["item"]["id"]
+        .as_str()
+        .expect("item id")
+        .to_owned();
 
     let messages = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"resume-1","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}"#,
+        &json!({"jsonrpc":"2.0","id":"resume-1","method":"thread/resume","params":{"threadId":thread_id}}).to_string(),
     );
     assert_eq!(messages.len(), 1);
     assert_eq!(
@@ -54,13 +48,13 @@ fn thread_resume_returns_the_complete_snapshot_without_notifications() {
             "jsonrpc": "2.0",
             "id": "resume-1",
             "result": {
-                "thread": {"id": "thr_0000000000000001"},
+                "thread": {"id": thread_id, "workspaceId": "unbound"},
                 "turns": [{
-                    "id": "turn_0000000000000001",
+                    "id": turn_id,
                     "status": "completed",
                     "items": [{
                         "type": "agentMessage",
-                        "id": "item_0000000000000001",
+                        "id": item_id,
                         "text": "SugarCode deterministic response."
                     }]
                 }]
@@ -72,60 +66,29 @@ fn thread_resume_returns_the_complete_snapshot_without_notifications() {
 #[test]
 fn thread_fork_returns_a_complete_remapped_snapshot_then_started_notification() {
     let mut session = ready_session(Core::new());
-    session
+    let started = session
         .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
-    session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
-    );
-    session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-2","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
-    );
+    let source_id = response_thread_id(&started).to_owned();
+    for id in ["turn-1", "turn-2"] {
+        session.process_line(
+            &json!({
+                "jsonrpc":"2.0", "id":id, "method":"turn/start",
+                "params":{"threadId":source_id, "input":[{"type":"text","text":"Hello"}]}
+            })
+            .to_string(),
+        );
+    }
 
     let messages = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"fork-1","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
+        &json!({"jsonrpc":"2.0","id":"fork-1","method":"thread/fork","params":{"threadId":source_id}}).to_string(),
     );
-    assert_eq!(
-        messages
-            .into_iter()
-            .map(|message| serde_json::to_value(message).expect("message serializes"))
-            .collect::<Vec<_>>(),
-        vec![
-            json!({
-                "jsonrpc": "2.0",
-                "id": "fork-1",
-                "result": {
-                    "thread": {"id": "thr_0000000000000002"},
-                    "turns": [
-                        {
-                            "id": "turn_0000000000000003",
-                            "status": "completed",
-                            "items": [{
-                                "type": "agentMessage",
-                                "id": "item_0000000000000003",
-                                "text": "SugarCode deterministic response."
-                            }]
-                        },
-                        {
-                            "id": "turn_0000000000000004",
-                            "status": "completed",
-                            "items": [{
-                                "type": "agentMessage",
-                                "id": "item_0000000000000004",
-                                "text": "SugarCode deterministic response."
-                            }]
-                        }
-                    ]
-                }
-            }),
-            json!({
-                "jsonrpc": "2.0",
-                "method": "thread/started",
-                "params": {
-                    "thread": {"id": "thr_0000000000000002"}
-                }
-            }),
-        ]
-    );
+    assert_eq!(messages.len(), 2);
+    let fork_id = response_thread_id(&messages);
+    assert_ne!(fork_id, source_id);
+    assert!(ThreadId::parse(fork_id).is_ok());
+    let value = serde_json::to_value(&messages[0]).expect("fork response");
+    assert_eq!(value["result"]["thread"]["workspaceId"], "unbound");
+    assert_eq!(value["result"]["turns"].as_array().expect("turns").len(), 2);
 }
 
 #[test]
@@ -133,9 +96,9 @@ fn thread_fork_validates_and_requires_an_active_source_before_consuming_request_
     let mut session = ready_session(Core::new());
 
     for params in [
-        json!({"threadId": "thr_missing"}),
-        json!({"sourceThreadId": "thr_0000000000000001"}),
-        json!({"threadId": "thr_0000000000000001", "turnId": "turn_0000000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000099"}),
+        json!({"sourceThreadId": "00000000-0000-7000-8000-000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "turnId": "00000000-0001-7000-8000-000000000001"}),
     ] {
         let messages = session.process_line(
             &json!({
@@ -154,30 +117,19 @@ fn thread_fork_validates_and_requires_an_active_source_before_consuming_request_
         );
     }
 
-    session
-        .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
-    session.process_line(
-        r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
-    let archived = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
+    let thread_id = start_test_thread(&mut session, "thread-1");
+    session.process_line(&json!({"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":thread_id}}).to_string());
+    let archived = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":thread_id}}).to_string());
     let JsonRpcMessage::Error(error) = &archived[0] else {
         panic!("expected archived source error");
     };
     assert_eq!(error.error.code, ERROR_THREAD_NOT_FOUND);
 
-    session.process_line(
-        r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
-    let success = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
-    assert_eq!(response_thread_id(&success), "thr_0000000000000002");
+    session.process_line(&json!({"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":thread_id}}).to_string());
+    let success = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":thread_id}}).to_string());
+    assert_ne!(response_thread_id(&success), thread_id);
 
-    let duplicate = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
+    let duplicate = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":thread_id}}).to_string());
     let JsonRpcMessage::Error(error) = &duplicate[0] else {
         panic!("expected duplicate error");
     };
@@ -187,11 +139,8 @@ fn thread_fork_validates_and_requires_an_active_source_before_consuming_request_
 #[test]
 fn thread_archive_excludes_the_thread_and_is_idempotent() {
     let mut session = ready_session(Core::new());
-    session
-        .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
-    session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
-    );
+    let thread_id = start_test_thread(&mut session, "thread-1");
+    start_test_turn(&mut session, "turn-1", &thread_id);
 
     for request_id in ["archive-1", "archive-2"] {
         let messages = session.process_line(
@@ -199,7 +148,7 @@ fn thread_archive_excludes_the_thread_and_is_idempotent() {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": "thread/archive",
-                "params": {"threadId": "thr_0000000000000001"}
+                "params": {"threadId": thread_id}
             })
             .to_string(),
         );
@@ -226,9 +175,9 @@ fn thread_archive_excludes_the_thread_and_is_idempotent() {
 
     for method in ["thread/resume", "turn/start"] {
         let params = if method == "turn/start" {
-            json!({"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]})
+            json!({"threadId": thread_id, "input": [{"type":"text","text":"Hello"}]})
         } else {
-            json!({"threadId": "thr_0000000000000001"})
+            json!({"threadId": thread_id})
         };
         let messages = session.process_line(
             &json!({
@@ -251,8 +200,8 @@ fn thread_archive_rejects_invalid_and_missing_targets_without_consuming_request_
     let mut session = ready_session(Core::new());
 
     for params in [
-        json!({"threadId": "thr_missing"}),
-        json!({"threadId": "thr_0000000000000001", "path": "/tmp"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000099"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "path": "/tmp"}),
     ] {
         let messages = session.process_line(
             &json!({
@@ -271,16 +220,11 @@ fn thread_archive_rejects_invalid_and_missing_targets_without_consuming_request_
         );
     }
 
-    session
-        .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
-    let success = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
+    let thread_id = start_test_thread(&mut session, "thread-1");
+    let success = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/archive","params":{"threadId":thread_id}}).to_string());
     assert!(matches!(success[0], JsonRpcMessage::Response(_)));
 
-    let duplicate = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
+    let duplicate = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/archive","params":{"threadId":thread_id}}).to_string());
     let JsonRpcMessage::Error(error) = &duplicate[0] else {
         panic!("expected duplicate error");
     };
@@ -290,17 +234,12 @@ fn thread_archive_rejects_invalid_and_missing_targets_without_consuming_request_
 #[test]
 fn thread_unarchive_restores_list_search_resume_and_turn_start() {
     let mut session = ready_session(Core::new());
-    session
-        .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
-    session.process_line(
-        r#"{"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
-    );
-    session.process_line(
-        r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
+    let thread_id = start_test_thread(&mut session, "thread-1");
+    start_test_turn(&mut session, "turn-1", &thread_id);
+    session.process_line(&json!({"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":thread_id}}).to_string());
 
     let restored = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
+        &json!({"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":thread_id}}).to_string(),
     );
     assert_eq!(
         serde_json::to_value(&restored[0]).expect("message serializes"),
@@ -310,15 +249,11 @@ fn thread_unarchive_restores_list_search_resume_and_turn_start() {
     for (id, method, params) in [
         ("list", "thread/list", json!({})),
         ("search", "thread/search", json!({"query": "SugarCode"})),
-        (
-            "resume",
-            "thread/resume",
-            json!({"threadId": "thr_0000000000000001"}),
-        ),
+        ("resume", "thread/resume", json!({"threadId": thread_id})),
         (
             "turn-2",
             "turn/start",
-            json!({"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]}),
+            json!({"threadId": thread_id, "input": [{"type":"text","text":"Hello"}]}),
         ),
     ] {
         let messages = session.process_line(
@@ -341,8 +276,8 @@ fn thread_unarchive_restores_list_search_resume_and_turn_start() {
 fn thread_unarchive_validates_before_consuming_and_active_noop_consumes_request_id() {
     let mut session = ready_session(Core::new());
     for params in [
-        json!({"threadId": "thr_missing"}),
-        json!({"threadId": "thr_0000000000000001", "resume": true}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000099"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "resume": true}),
     ] {
         let messages = session.process_line(
             &json!({
@@ -360,15 +295,10 @@ fn thread_unarchive_validates_before_consuming_and_active_noop_consumes_request_
             error.error.code == ERROR_INVALID_PARAMS || error.error.code == ERROR_THREAD_NOT_FOUND
         );
     }
-    session
-        .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
-    let success = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
+    let thread_id = start_test_thread(&mut session, "thread-1");
+    let success = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":thread_id}}).to_string());
     assert!(matches!(success[0], JsonRpcMessage::Response(_)));
-    let duplicate = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
+    let duplicate = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":thread_id}}).to_string());
     let JsonRpcMessage::Error(error) = &duplicate[0] else {
         panic!("expected duplicate error");
     };
@@ -378,31 +308,32 @@ fn thread_unarchive_validates_before_consuming_and_active_noop_consumes_request_
 #[test]
 fn thread_delete_is_terminal_for_active_and_archived_threads() {
     let mut session = ready_session(Core::new());
+    let mut thread_ids = Vec::new();
     for (thread_request, turn_request) in [("thread-1", "turn-1"), ("thread-2", "turn-2")] {
-        session.process_line(
+        let started = session.process_line(
             &json!({"jsonrpc": "2.0", "id": thread_request, "method": "thread/start"}).to_string(),
         );
+        let thread_id = response_thread_id(&started).to_owned();
+        thread_ids.push(thread_id.clone());
         session.process_line(
             &json!({
                 "jsonrpc": "2.0",
                 "id": turn_request,
                 "method": "turn/start",
                 "params": {
-                    "threadId": format!("thr_000000000000000{}", &thread_request[7..]),
+                    "threadId": thread_id,
                     "input": [{"type":"text","text":"Hello"}]
                 }
             })
             .to_string(),
         );
     }
-    session.process_line(
-        r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"thr_0000000000000002"}}"#,
-    );
+    session.process_line(&json!({"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":thread_ids[1]}}).to_string());
 
     for (request_id, thread_id) in [
-        ("delete-active", "thr_0000000000000001"),
-        ("delete-archived", "thr_0000000000000002"),
-        ("delete-again", "thr_0000000000000001"),
+        ("delete-active", thread_ids[0].as_str()),
+        ("delete-archived", thread_ids[1].as_str()),
+        ("delete-again", thread_ids[0].as_str()),
     ] {
         let messages = session.process_line(
             &json!({
@@ -426,9 +357,9 @@ fn thread_delete_is_terminal_for_active_and_archived_threads() {
         ("turn-deleted", "turn/start"),
     ] {
         let params = if method == "turn/start" {
-            json!({"threadId": "thr_0000000000000001", "input": [{"type":"text","text":"Hello"}]})
+            json!({"threadId": thread_ids[0], "input": [{"type":"text","text":"Hello"}]})
         } else {
-            json!({"threadId": "thr_0000000000000001"})
+            json!({"threadId": thread_ids[0]})
         };
         let messages = session.process_line(
             &json!({
@@ -450,8 +381,8 @@ fn thread_delete_is_terminal_for_active_and_archived_threads() {
 fn thread_delete_validates_before_consuming_its_request_id() {
     let mut session = ready_session(Core::new());
     for params in [
-        json!({"threadId": "thr_missing"}),
-        json!({"threadId": "thr_0000000000000001", "force": true}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000099"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "force": true}),
     ] {
         let messages = session.process_line(
             &json!({
@@ -469,15 +400,10 @@ fn thread_delete_validates_before_consuming_its_request_id() {
             error.error.code == ERROR_INVALID_PARAMS || error.error.code == ERROR_THREAD_NOT_FOUND
         );
     }
-    session
-        .process_line(r#"{"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}"#);
-    let success = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
+    let thread_id = start_test_thread(&mut session, "thread-1");
+    let success = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"threadId":thread_id}}).to_string());
     assert!(matches!(success[0], JsonRpcMessage::Response(_)));
-    let duplicate = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"threadId":"thr_0000000000000001"}}"#,
-    );
+    let duplicate = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"threadId":thread_id}}).to_string());
     let JsonRpcMessage::Error(error) = &duplicate[0] else {
         panic!("expected duplicate error");
     };
@@ -498,5 +424,5 @@ fn invalid_params_do_not_reach_core() {
 
     let messages = session
         .process_line(r#"{"jsonrpc":"2.0","id":"good","method":"thread/start","params":{}}"#);
-    assert_eq!(response_thread_id(&messages), "thr_0000000000000001");
+    assert!(ThreadId::parse(response_thread_id(&messages)).is_ok());
 }

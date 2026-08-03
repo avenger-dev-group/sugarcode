@@ -14,13 +14,6 @@ impl RolloutRepositoryStore {
         })
     }
 
-    pub fn id_sequences(&self) -> IdSequences {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .id_sequences()
-    }
-
     pub fn diagnostics(&self) -> Vec<String> {
         let repository = self
             .inner
@@ -78,10 +71,6 @@ impl WorkspaceRolloutRepository {
 }
 
 impl ThreadRepository for WorkspaceRolloutRepository {
-    fn id_sequences(&self) -> IdSequences {
-        self.store.id_sequences()
-    }
-
     fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
         self.with_repository(|repository| repository.create_thread(thread_id))
     }

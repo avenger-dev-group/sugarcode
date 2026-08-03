@@ -1,16 +1,17 @@
 use super::*;
 
 #[test]
-fn starts_deterministic_threads_and_correlates_events() {
+fn starts_uuid_threads_and_correlates_events() {
     let mut core = Core::new();
 
     let first_request_id = CoreRequestId::new(7);
     let first_thread_id = start_thread(&mut core, first_request_id.get());
-    assert_eq!(first_thread_id.as_str(), "thr_0000000000000001");
+    assert!(ThreadId::parse(first_thread_id.as_str()).is_ok());
     assert!(core.contains_thread(&first_thread_id));
 
     let second_thread_id = start_thread(&mut core, 8);
-    assert_eq!(second_thread_id.as_str(), "thr_0000000000000002");
+    assert!(ThreadId::parse(second_thread_id.as_str()).is_ok());
+    assert_ne!(first_thread_id, second_thread_id);
     assert!(core.contains_thread(&second_thread_id));
     assert_eq!(core.thread_count(), 2);
 }
@@ -69,15 +70,18 @@ fn archive_is_idempotent_and_hides_thread_without_reusing_ids() {
     );
 
     let next = start_thread(&mut core, 4);
-    assert_eq!(next.as_str(), "thr_0000000000000002");
+    assert!(ThreadId::parse(next.as_str()).is_ok());
+    assert_ne!(next, archived);
 }
 
 #[test]
 fn unarchive_is_idempotent_restores_history_and_allows_the_next_turn() {
     let mut core = Core::new();
     let thread_id = start_thread(&mut core, 1);
-    core.start_turn(CoreRequestId::new(2), thread_id.clone())
+    let first = core
+        .start_turn(CoreRequestId::new(2), thread_id.clone())
         .expect("first turn");
+    let first_turn_id = turn_id(&first);
     core.archive_thread(&thread_id).expect("archive");
 
     core.unarchive_thread(&thread_id).expect("unarchive");
@@ -105,10 +109,13 @@ fn unarchive_is_idempotent_restores_history_and_allows_the_next_turn() {
     let events = core
         .start_turn(CoreRequestId::new(3), thread_id.clone())
         .expect("turn after unarchive");
-    assert_eq!(turn_id(&events).as_str(), "turn_0000000000000002");
+    let next_turn_id = turn_id(&events);
+    assert!(TurnId::parse(next_turn_id.as_str()).is_ok());
+    assert_ne!(next_turn_id, first_turn_id);
     assert_eq!(core.turn_count(&thread_id), 2);
 
-    let missing = ThreadId::new("thr_0000000000000099");
+    let missing =
+        ThreadId::parse("00000000-0000-7000-8000-000000000099").expect("valid thread UUIDv7");
     assert_eq!(
         core.unarchive_thread(&missing),
         Err(CoreError::ThreadNotFound(missing))
@@ -116,7 +123,7 @@ fn unarchive_is_idempotent_restores_history_and_allows_the_next_turn() {
 }
 
 #[test]
-fn delete_is_terminal_idempotent_and_preserves_id_sequences() {
+fn delete_is_terminal_and_idempotent() {
     let mut core = Core::new();
     let active = start_thread(&mut core, 1);
     core.start_turn(CoreRequestId::new(2), active.clone())
@@ -158,15 +165,17 @@ fn delete_is_terminal_idempotent_and_preserves_id_sequences() {
     );
 
     let next = start_thread(&mut core, 6);
-    assert_eq!(next.as_str(), "thr_0000000000000003");
+    assert!(ThreadId::parse(next.as_str()).is_ok());
+    assert_ne!(next, active);
+    assert_ne!(next, archived);
     let events = core
         .start_turn(CoreRequestId::new(7), next)
         .expect("next turn");
-    assert_eq!(turn_id(&events).as_str(), "turn_0000000000000003");
+    assert!(TurnId::parse(turn_id(&events).as_str()).is_ok());
     let CoreEventKind::ItemStarted { item, .. } = &events[1].kind else {
         panic!("expected item started");
     };
-    assert_eq!(item.id.as_str(), "item_0000000000000003");
+    assert!(ItemId::parse(item.id.as_str()).is_ok());
 }
 
 #[test]
@@ -179,19 +188,22 @@ fn fork_remaps_complete_history_and_keeps_threads_independent() {
         .expect("second source turn");
 
     let fork = core.fork_thread(&source).expect("fork");
-    assert_eq!(fork.id.as_str(), "thr_0000000000000002");
+    assert!(ThreadId::parse(fork.id.as_str()).is_ok());
+    assert_ne!(fork.id, source);
     assert_eq!(fork.lifecycle, DurableThreadLifecycle::Active);
     assert_eq!(fork.turns.len(), 2);
-    assert_eq!(fork.turns[0].id.as_str(), "turn_0000000000000003");
-    assert_eq!(fork.turns[1].id.as_str(), "turn_0000000000000004");
-    assert_eq!(
-        fork.turns[0].items[0].id().as_str(),
-        "item_0000000000000003"
+    assert!(
+        fork.turns
+            .iter()
+            .all(|turn| TurnId::parse(turn.id.as_str()).is_ok())
     );
-    assert_eq!(
-        fork.turns[1].items[0].id().as_str(),
-        "item_0000000000000004"
-    );
+    assert_ne!(fork.turns[0].id, fork.turns[1].id);
+    assert!(fork.turns.iter().all(|turn| {
+        turn.items
+            .iter()
+            .all(|item| ItemId::parse(item.id().as_str()).is_ok())
+    }));
+    assert_ne!(fork.turns[0].items[0].id(), fork.turns[1].items[0].id());
     let source_snapshot = core.resume_thread(&source).expect("source snapshot");
     let DurableItemSnapshot::AgentMessage {
         text: source_text, ..
@@ -221,11 +233,19 @@ fn fork_remaps_complete_history_and_keeps_threads_independent() {
     let continued = core
         .start_turn(CoreRequestId::new(4), fork.id.clone())
         .expect("continue fork");
-    assert_eq!(turn_id(&continued).as_str(), "turn_0000000000000005");
+    let continued_turn_id = turn_id(&continued);
+    assert!(TurnId::parse(continued_turn_id.as_str()).is_ok());
+    assert!(fork.turns.iter().all(|turn| turn.id != continued_turn_id));
     let CoreEventKind::ItemStarted { item, .. } = &continued[1].kind else {
         panic!("expected item started");
     };
-    assert_eq!(item.id.as_str(), "item_0000000000000005");
+    assert!(ItemId::parse(item.id.as_str()).is_ok());
+    assert!(
+        fork.turns
+            .iter()
+            .flat_map(|turn| &turn.items)
+            .all(|fork_item| fork_item.id() != &item.id)
+    );
 }
 
 #[test]
@@ -521,7 +541,7 @@ fn fork_copies_completed_tool_history_and_excludes_failed_and_interrupted_tool_t
 }
 
 #[test]
-fn fork_rejects_inactive_or_missing_sources_without_allocating_ids() {
+fn fork_rejects_inactive_or_missing_sources() {
     let mut core = Core::new();
     let archived = start_thread(&mut core, 1);
     core.archive_thread(&archived).expect("archive");
@@ -535,48 +555,15 @@ fn fork_rejects_inactive_or_missing_sources_without_allocating_ids() {
         core.fork_thread(&deleted),
         Err(CoreError::ThreadNotFound(deleted.clone()))
     );
-    let missing = ThreadId::new("thr_0000000000000099");
+    let missing =
+        ThreadId::parse("00000000-0000-7000-8000-000000000099").expect("valid thread UUIDv7");
     assert_eq!(
         core.fork_thread(&missing),
         Err(CoreError::ThreadNotFound(missing))
     );
 
     let next = start_thread(&mut core, 3);
-    assert_eq!(next.as_str(), "thr_0000000000000003");
-}
-
-#[test]
-fn fork_id_exhaustion_never_materializes_a_partial_thread() {
-    let mut thread_exhausted = Core::new();
-    let source = start_thread(&mut thread_exhausted, 1);
-    thread_exhausted.last_thread_sequence = u64::MAX;
-    assert_eq!(
-        thread_exhausted.fork_thread(&source),
-        Err(CoreError::ThreadIdExhausted)
-    );
-    assert_eq!(thread_exhausted.thread_count(), 1);
-
-    let mut turn_exhausted = Core::new();
-    let source = start_thread(&mut turn_exhausted, 1);
-    turn_exhausted
-        .start_turn(CoreRequestId::new(2), source.clone())
-        .expect("source turn");
-    turn_exhausted.last_turn_sequence = u64::MAX;
-    assert_eq!(
-        turn_exhausted.fork_thread(&source),
-        Err(CoreError::TurnIdExhausted)
-    );
-    assert_eq!(turn_exhausted.thread_count(), 1);
-
-    let mut item_exhausted = Core::new();
-    let source = start_thread(&mut item_exhausted, 1);
-    item_exhausted
-        .start_turn(CoreRequestId::new(2), source.clone())
-        .expect("source turn");
-    item_exhausted.last_item_sequence = u64::MAX;
-    assert_eq!(
-        item_exhausted.fork_thread(&source),
-        Err(CoreError::ItemIdExhausted)
-    );
-    assert_eq!(item_exhausted.thread_count(), 1);
+    assert!(ThreadId::parse(next.as_str()).is_ok());
+    assert_ne!(next, archived);
+    assert_ne!(next, deleted);
 }

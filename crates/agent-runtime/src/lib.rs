@@ -16,7 +16,6 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use sugarcode_core::Core;
-use sugarcode_core::CoreIdAllocator;
 use sugarcode_core::CoreRuntime;
 use sugarcode_core::McpToolCapability;
 use sugarcode_core::ModelCapabilities;
@@ -65,7 +64,6 @@ pub struct AgentSurfaceLaunchOptions {
 
 pub struct AgentSurfaceRepository {
     pub repository: Box<dyn ThreadRepository>,
-    pub id_allocator: CoreIdAllocator,
     pub diagnostics: Vec<String>,
 }
 
@@ -74,7 +72,6 @@ impl std::fmt::Debug for AgentSurfaceRepository {
         formatter
             .debug_struct("AgentSurfaceRepository")
             .field("repository", &self.repository)
-            .field("id_allocator", &self.id_allocator)
             .field("diagnostic_count", &self.diagnostics.len())
             .finish()
     }
@@ -334,12 +331,8 @@ impl AgentSurfaceRuntime {
             }
             ThreadWorkspaceBinding::Unbound => None,
         };
-        let (repository, id_allocator, mut diagnostics) = match options.repository {
-            Some(repository) => (
-                repository.repository,
-                repository.id_allocator,
-                repository.diagnostics,
-            ),
+        let (repository, mut diagnostics) = match options.repository {
+            Some(repository) => (repository.repository, repository.diagnostics),
             None => {
                 let repository = RolloutRepository::open_with_workspace_binding(
                     options.config.home(),
@@ -363,17 +356,15 @@ impl AgentSurfaceRuntime {
                             .map(ToString::to_string),
                     )
                     .collect();
-                let id_allocator = CoreIdAllocator::new(repository.id_sequences());
                 (
                     Box::new(repository) as Box<dyn ThreadRepository>,
-                    id_allocator,
                     diagnostics,
                 )
             }
         };
         let content_store =
             Arc::new(ContentStore::open(options.config.home()).map_err(io::Error::other)?);
-        let core = Core::with_repository_and_id_allocator(repository, id_allocator);
+        let core = Core::with_repository(repository);
         let (approval_requester, command_approvals) = ChannelCommandApprovalRequester::channel(4);
         let (mcp_approval_requester, mcp_approvals) = ChannelMcpToolApprovalRequester::channel(1);
         let (runtime, events) = CoreRuntime::new_with_model_resolver(

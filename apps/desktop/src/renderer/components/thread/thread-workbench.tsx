@@ -321,6 +321,7 @@ export const ThreadWorkbenchView = ({
   navigationFooter,
   contextRail,
   permissionControl,
+  approvalThreadIds = [],
 }: ThreadWorkbenchViewProps) => {
   const {
     transcriptContent,
@@ -355,6 +356,7 @@ export const ThreadWorkbenchView = ({
             store={store}
             footer={navigationFooter}
             onToggleNavigator={onToggleNavigator}
+            approvalThreadIds={approvalThreadIds}
           />
         </aside>
       ) : null}

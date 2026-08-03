@@ -47,7 +47,7 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
             "id": "search-turn",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"Find the marker"}]
             }
         }),
@@ -107,7 +107,7 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
             "jsonrpc": "2.0",
             "id": "resume-search",
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -139,7 +139,7 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
             "jsonrpc": "2.0",
             "id": "fork-search",
             "method": "thread/fork",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         2,
     );
@@ -162,7 +162,7 @@ fn resumes_forks_and_continues_completed_workspace_search_history_across_two_pro
             "jsonrpc": "2.0",
             "id": "continue-search",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
         }),
         6,
     );

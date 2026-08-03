@@ -3,20 +3,10 @@ use super::*;
 #[derive(Debug, Default)]
 pub(super) struct MemoryThreadRepository {
     threads: BTreeMap<ThreadId, DurableThreadSnapshot>,
-    sequences: IdSequences,
 }
 
 impl ThreadRepository for MemoryThreadRepository {
-    fn id_sequences(&self) -> IdSequences {
-        self.sequences
-    }
-
     fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
-        let sequence = thread_id
-            .as_str()
-            .strip_prefix("thr_")
-            .and_then(|digits| digits.parse::<u64>().ok())
-            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
         if self.threads.contains_key(thread_id) {
             return Err(RolloutError::Collision { kind: "thread" });
         }
@@ -29,7 +19,6 @@ impl ThreadRepository for MemoryThreadRepository {
                 origin: None,
             },
         );
-        self.sequences.thread = sequence;
         Ok(())
     }
 
@@ -59,31 +48,7 @@ impl ThreadRepository for MemoryThreadRepository {
         {
             return Err(RolloutError::Collision { kind: "thread" });
         }
-        let thread_sequence = parse_thread_sequence(&snapshot.id)?;
-        let mut turn_sequence = self.sequences.turn;
-        let mut item_sequence = self.sequences.item;
-        for turn in &snapshot.turns {
-            turn_sequence = turn
-                .id
-                .as_str()
-                .strip_prefix("turn_")
-                .and_then(|digits| digits.parse().ok())
-                .ok_or(RolloutError::InvalidId { kind: "turn" })?;
-            for item in &turn.items {
-                item_sequence = item
-                    .id()
-                    .as_str()
-                    .strip_prefix("item_")
-                    .and_then(|digits| digits.parse().ok())
-                    .ok_or(RolloutError::InvalidId { kind: "item" })?;
-            }
-        }
         self.threads.insert(snapshot.id.clone(), snapshot.clone());
-        self.sequences = IdSequences {
-            thread: thread_sequence,
-            turn: turn_sequence,
-            item: item_sequence,
-        };
         Ok(())
     }
 
@@ -106,20 +71,6 @@ impl ThreadRepository for MemoryThreadRepository {
             });
         }
         thread.turns.push(turn.clone());
-        self.sequences.turn = turn
-            .id
-            .as_str()
-            .strip_prefix("turn_")
-            .and_then(|digits| digits.parse().ok())
-            .ok_or(RolloutError::InvalidId { kind: "turn" })?;
-        if let Some(item) = turn.items.last() {
-            self.sequences.item = item
-                .id()
-                .as_str()
-                .strip_prefix("item_")
-                .and_then(|digits| digits.parse().ok())
-                .ok_or(RolloutError::InvalidId { kind: "item" })?;
-        }
         Ok(())
     }
 
@@ -169,12 +120,6 @@ impl ThreadRepository for MemoryThreadRepository {
                 kind: "turnNotActive",
             })?;
         turn.items.push(item.clone());
-        self.sequences.item = item
-            .id()
-            .as_str()
-            .strip_prefix("item_")
-            .and_then(|digits| digits.parse().ok())
-            .ok_or(RolloutError::InvalidId { kind: "item" })?;
         Ok(())
     }
 
@@ -286,20 +231,18 @@ impl ThreadRepository for MemoryThreadRepository {
         cursor: Option<&ThreadId>,
         limit: usize,
     ) -> Result<DurableThreadPage, RolloutError> {
-        let cursor_sequence = cursor.map(parse_thread_sequence).transpose()?;
         let mut threads = self
             .threads
             .values()
             .filter(|thread| {
                 thread.lifecycle == DurableThreadLifecycle::Active && thread.origin.is_none()
             })
-            .map(|thread| Ok((parse_thread_sequence(&thread.id)?, thread.id.clone())))
-            .collect::<Result<Vec<_>, RolloutError>>()?;
-        threads.sort_unstable_by_key(|thread| Reverse(thread.0));
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>();
+        threads.sort_unstable_by(|left, right| right.cmp(left));
         let mut ids = threads
             .into_iter()
-            .filter(|(sequence, _)| cursor_sequence.is_none_or(|cursor| *sequence < cursor))
-            .map(|(_, id)| id)
+            .filter(|thread_id| cursor.is_none_or(|cursor| thread_id < cursor))
             .take(limit + 1)
             .collect::<Vec<_>>();
         let has_more = ids.len() > limit;
@@ -331,7 +274,6 @@ impl ThreadRepository for MemoryThreadRepository {
             });
         }
         let terms = validate_search_query(query)?;
-        let cursor_sequence = cursor.map(parse_thread_sequence).transpose()?;
         let mut matches = self
             .threads
             .values()
@@ -369,21 +311,15 @@ impl ThreadRepository for MemoryThreadRepository {
                         | DurableItemSnapshot::ToolResult { .. } => false,
                     })
             })
-            .map(|thread| {
-                Ok((
-                    parse_thread_sequence(&thread.id)?,
-                    DurableThreadSummary {
-                        id: thread.id.clone(),
-                        title: sugarcode_state::derive_thread_title(thread),
-                    },
-                ))
+            .map(|thread| DurableThreadSummary {
+                id: thread.id.clone(),
+                title: sugarcode_state::derive_thread_title(thread),
             })
-            .collect::<Result<Vec<_>, RolloutError>>()?;
-        matches.sort_unstable_by_key(|(sequence, _)| Reverse(*sequence));
+            .collect::<Vec<_>>();
+        matches.sort_unstable_by(|left, right| right.id.cmp(&left.id));
         let mut data = matches
             .into_iter()
-            .filter(|(sequence, _)| cursor_sequence.is_none_or(|cursor| *sequence < cursor))
-            .map(|(_, summary)| summary)
+            .filter(|summary| cursor.is_none_or(|cursor| summary.id < *cursor))
             .take(limit + 1)
             .collect::<Vec<_>>();
         let has_more = data.len() > limit;
@@ -411,13 +347,4 @@ fn validate_search_query(query: &str) -> Result<Vec<String>, RolloutError> {
         });
     }
     Ok(terms.into_iter().map(str::to_lowercase).collect())
-}
-
-fn parse_thread_sequence(thread_id: &ThreadId) -> Result<u64, RolloutError> {
-    thread_id
-        .as_str()
-        .strip_prefix("thr_")
-        .and_then(|digits| digits.parse::<u64>().ok())
-        .filter(|sequence| format!("{sequence:016}") == thread_id.as_str()[4..])
-        .ok_or(RolloutError::InvalidId { kind: "thread" })
 }

@@ -1,8 +1,8 @@
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"golden-client","version":"1.0.0"}}}
 {"jsonrpc":"2.0","method":"initialized"}
 {"jsonrpc":"2.0","id":"bad-missing","method":"thread/resume","params":{}}
-{"jsonrpc":"2.0","id":"bad-path","method":"thread/resume","params":{"threadId":"../thr_0000000000000001"}}
-{"jsonrpc":"2.0","id":"retry","method":"thread/resume","params":{"threadId":"thr_0000000000009999"}}
+{"jsonrpc":"2.0","id":"bad-path","method":"thread/resume","params":{"threadId":"../00000000-0000-7000-8000-000000000001"}}
+{"jsonrpc":"2.0","id":"retry","method":"thread/resume","params":{"threadId":"00000000-0000-7000-8000-000000009999"}}
 {"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}
-{"jsonrpc":"2.0","id":"retry","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}
-{"jsonrpc":"2.0","id":"retry","method":"thread/resume","params":{"threadId":"thr_0000000000000001"}}
+{"jsonrpc":"2.0","id":"retry","method":"thread/resume","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
+{"jsonrpc":"2.0","id":"retry","method":"thread/resume","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}

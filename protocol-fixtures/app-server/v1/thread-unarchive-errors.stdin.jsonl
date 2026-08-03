@@ -1,10 +1,10 @@
-{"jsonrpc":"2.0","id":"early","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}
+{"jsonrpc":"2.0","id":"early","method":"thread/unarchive","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"golden-client","version":"1.0.0"}}}
 {"jsonrpc":"2.0","method":"initialized"}
 {"jsonrpc":"2.0","id":"missing","method":"thread/unarchive","params":{}}
 {"jsonrpc":"2.0","id":"invalid","method":"thread/unarchive","params":{"threadId":"thr_missing"}}
-{"jsonrpc":"2.0","id":"unknown","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001","resume":true}}
-{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}
+{"jsonrpc":"2.0","id":"unknown","method":"thread/unarchive","params":{"threadId":"00000000-0000-7000-8000-000000000001","resume":true}}
+{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
 {"jsonrpc":"2.0","id":"start","method":"thread/start"}
-{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}
-{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"thr_0000000000000001"}}
+{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
+{"jsonrpc":"2.0","id":"retry","method":"thread/unarchive","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}

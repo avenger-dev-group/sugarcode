@@ -31,6 +31,7 @@ import type {
   ConnectionStatus,
 } from '@/shared/connection';
 import type { McpConfiguredServer } from '@/shared/mcp';
+import type { ConversationStateSnapshot } from '@/shared/conversation';
 
 import {
   CliResolutionError,
@@ -231,6 +232,7 @@ export class ConnectionSupervisor {
         this.workspaceTransaction ||
         this.gitTransaction,
     });
+    this.conversation.subscribeScoped(this.rememberScopedThreads);
     this.mcpSession = new McpSessionController({
       getRestartBlock: this.getMcpRestartBlock,
       restart: this.restartWithMcp,
@@ -360,10 +362,14 @@ export class ConnectionSupervisor {
         this.client,
         workspaceId,
       );
-      if (!(await this.conversation.switchWorkspace(preferredThreadId))) {
+      if (
+        !(await this.conversation.switchWorkspace(
+          workspaceId,
+          preferredThreadId,
+        ))
+      ) {
         throw new Error('Workspace projection could not be restored.');
       }
-      this.rememberCurrentWorkspaceThreads();
       return true;
     } catch {
       this.workspacePath = previousPath;
@@ -379,6 +385,7 @@ export class ConnectionSupervisor {
         );
         if (workspaceId === previousWorkspaceId) {
           await this.conversation.switchWorkspace(
+            workspaceId,
             previousThreadId ?? undefined,
           );
         }
@@ -510,7 +517,7 @@ export class ConnectionSupervisor {
   private beginWorkspaceTransaction = ():
     | Readonly<{ release: () => void }>
     | ModelConfigRestartBlock => {
-    const block = this.getModelConfigRestartBlock();
+    const block = this.getWorkspaceSwitchBlock();
     if (block) {
       return block;
     }
@@ -735,7 +742,10 @@ export class ConnectionSupervisor {
         this.rememberStartedThread(notification);
         this.commandApprovals.handleNotification(notification);
         this.mcpApprovals.handleNotification(notification);
-        this.conversation.handleNotification(notification);
+        this.conversation.handleNotification(
+          notification,
+          this.notificationWorkspaceId(notification) ?? '',
+        );
       },
       onFatalError: () => {
         if (generation === this.connectionGeneration) {
@@ -797,7 +807,10 @@ export class ConnectionSupervisor {
           ? new ConversationRpcClient(this.client, this.workspaceBindingId)
           : null;
         const restored = restoreConversation
-          ? await this.conversation.restoreForConnection(preferredThreadId)
+          ? await this.conversation.restoreForConnection(
+              this.workspaceBindingId as string,
+              preferredThreadId,
+            )
           : true;
         if (
           this.shuttingDown ||
@@ -807,7 +820,6 @@ export class ConnectionSupervisor {
         }
         if (restored) {
           this.conversation.connectionReady();
-          this.rememberCurrentWorkspaceThreads();
         }
         this.transition('ready');
         return true;
@@ -960,20 +972,19 @@ export class ConnectionSupervisor {
     };
   };
 
-  private rememberCurrentWorkspaceThreads = (): void => {
-    if (!this.workspaceBindingId) {
-      return;
-    }
-    const snapshot = this.conversation.getSnapshot();
+  private rememberScopedThreads = (
+    workspaceId: string,
+    snapshot: ConversationStateSnapshot,
+  ): void => {
     for (const threadId of snapshot.navigator.activeThreadIds) {
-      this.threadWorkspaceIds.set(threadId, this.workspaceBindingId);
+      this.threadWorkspaceIds.set(threadId, workspaceId);
       const title = snapshot.navigator.activeThreadTitles[threadId];
       if (title) {
         this.threadTitles.set(threadId, title);
       }
     }
     if (snapshot.threadId) {
-      this.threadWorkspaceIds.set(snapshot.threadId, this.workspaceBindingId);
+      this.threadWorkspaceIds.set(snapshot.threadId, workspaceId);
     }
   };
 
@@ -982,7 +993,6 @@ export class ConnectionSupervisor {
   ): void => {
     if (
       notification.method !== 'thread/started' ||
-      !this.workspaceBindingId ||
       typeof notification.params !== 'object' ||
       notification.params === null
     ) {
@@ -993,13 +1003,35 @@ export class ConnectionSupervisor {
       return;
     }
     const threadId = (thread as Record<string, unknown>).id;
-    if (typeof threadId === 'string') {
-      this.threadWorkspaceIds.set(threadId, this.workspaceBindingId);
+    const workspaceId = (thread as Record<string, unknown>).workspaceId;
+    if (typeof threadId === 'string' && typeof workspaceId === 'string') {
+      this.threadWorkspaceIds.set(threadId, workspaceId);
       const title = (thread as Record<string, unknown>).title;
       if (typeof title === 'string' && title.length > 0) {
         this.threadTitles.set(threadId, title);
       }
     }
+  };
+
+  private notificationWorkspaceId = (
+    notification: Extract<ServerMessage, { kind: 'notification' }>,
+  ): string | null => {
+    if (typeof notification.params !== 'object' || notification.params === null) {
+      return null;
+    }
+    const params = notification.params as Record<string, unknown>;
+    if (notification.method === 'thread/started') {
+      const thread = params.thread;
+      if (typeof thread !== 'object' || thread === null) {
+        return null;
+      }
+      const workspaceId = (thread as Record<string, unknown>).workspaceId;
+      return typeof workspaceId === 'string' ? workspaceId : null;
+    }
+    const threadId = params.threadId;
+    return typeof threadId === 'string'
+      ? (this.threadWorkspaceIds.get(threadId) ?? null)
+      : null;
   };
 
   private presentNextApproval = (): void => {

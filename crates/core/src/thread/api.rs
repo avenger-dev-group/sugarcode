@@ -14,8 +14,7 @@ impl Core {
         request_id: CoreRequestId,
         origin: Option<DurableThreadOrigin>,
     ) -> Result<CoreEvent, CoreError> {
-        let sequence = self.reserve_ids(1, 0, 0)?.thread;
-        let thread_id = ThreadId::new(format!("thr_{sequence:016}"));
+        let thread_id = ThreadId::new_v7();
         let thread = Thread {
             id: thread_id.clone(),
             origin: origin.clone(),
@@ -32,8 +31,6 @@ impl Core {
         }
         .map_err(map_repository_error)?;
         self.threads.insert(thread_id.clone(), thread);
-        self.last_thread_sequence = sequence;
-
         Ok(CoreEvent {
             request_id,
             kind: CoreEventKind::ThreadStarted { thread_id },
@@ -200,25 +197,10 @@ impl CoreApi for Core {
             .iter()
             .filter(|turn| turn.status == DurableTurnStatus::Completed)
             .collect::<Vec<_>>();
-        let turn_count =
-            u64::try_from(completed_turns.len()).map_err(|_| CoreError::TurnIdExhausted)?;
-        let item_count = completed_turns.iter().try_fold(0u64, |count, turn| {
-            u64::try_from(turn.items.len())
-                .ok()
-                .and_then(|items| count.checked_add(items))
-                .ok_or(CoreError::ItemIdExhausted)
-        })?;
-        let reserved = self.reserve_ids(1, turn_count, item_count)?;
-        let thread_sequence = reserved.thread;
-        let mut turn_sequence = reserved.turn - turn_count;
-        let mut item_sequence = reserved.item - item_count;
         let mut turns = Vec::new();
         let mut remapped_turn_ids = BTreeMap::new();
         for source_turn in completed_turns {
-            turn_sequence = turn_sequence
-                .checked_add(1)
-                .ok_or(CoreError::TurnIdExhausted)?;
-            let remapped_turn_id = TurnId::new(format!("turn_{turn_sequence:016}"));
+            let remapped_turn_id = TurnId::new_v7();
             let context_compaction = source_turn
                 .context_compaction
                 .as_ref()
@@ -238,25 +220,23 @@ impl CoreApi for Core {
                 .transpose()?;
             let mut items = Vec::with_capacity(source_turn.items.len());
             for source_item in &source_turn.items {
-                item_sequence = item_sequence
-                    .checked_add(1)
-                    .ok_or(CoreError::ItemIdExhausted)?;
+                let remapped_item_id = ItemId::new_v7();
                 let item = match source_item {
                     DurableItemSnapshot::UserMessage { content, .. } => {
                         DurableItemSnapshot::UserMessage {
-                            id: ItemId::new(format!("item_{item_sequence:016}")),
+                            id: remapped_item_id.clone(),
                             content: content.clone(),
                         }
                     }
                     DurableItemSnapshot::AgentMessage { text, .. } => {
                         DurableItemSnapshot::AgentMessage {
-                            id: ItemId::new(format!("item_{item_sequence:016}")),
+                            id: remapped_item_id.clone(),
                             text: text.clone(),
                         }
                     }
                     DurableItemSnapshot::AgentCommentary { text, .. } => {
                         DurableItemSnapshot::AgentCommentary {
-                            id: ItemId::new(format!("item_{item_sequence:016}")),
+                            id: remapped_item_id.clone(),
                             text: text.clone(),
                         }
                     }
@@ -272,7 +252,7 @@ impl CoreApi for Core {
                         task_markdown,
                         ..
                     } => DurableItemSnapshot::AgentTask {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         orchestration_id: orchestration_id.clone(),
                         task_id: task_id.clone(),
                         client_task_key: client_task_key.clone(),
@@ -289,7 +269,7 @@ impl CoreApi for Core {
                         amendment_markdown,
                         ..
                     } => DurableItemSnapshot::AgentTaskAmendment {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         orchestration_id: orchestration_id.clone(),
                         task_id: task_id.clone(),
                         amendment_markdown: amendment_markdown.clone(),
@@ -302,7 +282,7 @@ impl CoreApi for Core {
                         duration_ms,
                         ..
                     } => DurableItemSnapshot::AgentTaskResult {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         orchestration_id: orchestration_id.clone(),
                         task_id: task_id.clone(),
                         status: status.clone(),
@@ -320,7 +300,7 @@ impl CoreApi for Core {
                         summary,
                         ..
                     } => DurableItemSnapshot::ContextCompaction {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         strategy: strategy.clone(),
                         ordinal: *ordinal,
                         pre_context_bytes: *pre_context_bytes,
@@ -336,7 +316,7 @@ impl CoreApi for Core {
                         arguments,
                         ..
                     } => DurableItemSnapshot::ToolCall {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         call_id: call_id.clone(),
                         name: name.clone(),
                         arguments: arguments.clone(),
@@ -355,7 +335,7 @@ impl CoreApi for Core {
                         suggested_action,
                         ..
                     } => DurableItemSnapshot::ToolValidationRejected {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         call_id: call_id.clone(),
                         name: name.clone(),
                         kind: kind.clone(),
@@ -381,7 +361,7 @@ impl CoreApi for Core {
                         final_newline,
                         ..
                     } => DurableItemSnapshot::FileChange {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         call_id: call_id.clone(),
                         path: path.clone(),
                         kind: kind.clone(),
@@ -407,7 +387,7 @@ impl CoreApi for Core {
                         network_policy,
                         ..
                     } => DurableItemSnapshot::CommandApprovalRequest {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         approval_id: approval_id.clone(),
                         call_id: call_id.clone(),
                         command: command.clone(),
@@ -426,7 +406,7 @@ impl CoreApi for Core {
                         workspace_write_risk_acknowledgement,
                         ..
                     } => DurableItemSnapshot::CommandApprovalDecision {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         approval_id: approval_id.clone(),
                         decision: decision.clone(),
                         workspace_write_risk_acknowledgement: workspace_write_risk_acknowledgement
@@ -437,7 +417,7 @@ impl CoreApi for Core {
                         call_id,
                         ..
                     } => DurableItemSnapshot::CommandExecutionAttempt {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         approval_id: approval_id.clone(),
                         call_id: call_id.clone(),
                     },
@@ -450,7 +430,7 @@ impl CoreApi for Core {
                         inventory_sha256,
                         ..
                     } => DurableItemSnapshot::McpToolCall {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         call_id: call_id.clone(),
                         name: name.clone(),
                         arguments: arguments.clone(),
@@ -468,7 +448,7 @@ impl CoreApi for Core {
                         inventory_sha256,
                         ..
                     } => DurableItemSnapshot::McpToolCallApprovalRequest {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         approval_id: approval_id.clone(),
                         call_id: call_id.clone(),
                         name: name.clone(),
@@ -482,7 +462,7 @@ impl CoreApi for Core {
                         decision,
                         ..
                     } => DurableItemSnapshot::McpToolCallApprovalDecision {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         approval_id: approval_id.clone(),
                         decision: decision.clone(),
                     },
@@ -492,7 +472,7 @@ impl CoreApi for Core {
                         inventory_sha256,
                         ..
                     } => DurableItemSnapshot::McpToolExecutionAttempt {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         approval_id: approval_id.clone(),
                         call_id: call_id.clone(),
                         inventory_sha256: inventory_sha256.clone(),
@@ -503,7 +483,7 @@ impl CoreApi for Core {
                         result,
                         ..
                     } => DurableItemSnapshot::McpToolResult {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         call_id: call_id.clone(),
                         name: name.clone(),
                         result: result.clone(),
@@ -514,7 +494,7 @@ impl CoreApi for Core {
                         result,
                         ..
                     } => DurableItemSnapshot::ToolResult {
-                        id: ItemId::new(format!("item_{item_sequence:016}")),
+                        id: remapped_item_id.clone(),
                         call_id: call_id.clone(),
                         name: name.clone(),
                         result: result.clone(),
@@ -536,7 +516,7 @@ impl CoreApi for Core {
             remapped_turn_ids.insert(source_turn.id.clone(), remapped_turn_id);
         }
         let snapshot = DurableThreadSnapshot {
-            id: ThreadId::new(format!("thr_{thread_sequence:016}")),
+            id: ThreadId::new_v7(),
             turns,
             lifecycle: DurableThreadLifecycle::Active,
             origin: None,
@@ -545,9 +525,6 @@ impl CoreApi for Core {
             .create_thread_snapshot(&snapshot)
             .map_err(map_repository_error)?;
         self.materialize_snapshot(&snapshot);
-        self.last_thread_sequence = thread_sequence;
-        self.last_turn_sequence = turn_sequence;
-        self.last_item_sequence = item_sequence;
         Ok(snapshot)
     }
 
@@ -598,11 +575,8 @@ impl CoreApi for Core {
             });
         }
 
-        let reserved = self.reserve_ids(0, 1, 1)?;
-        let turn_sequence = reserved.turn;
-        let item_sequence = reserved.item;
-        let turn_id = TurnId::new(format!("turn_{turn_sequence:016}"));
-        let item_id = ItemId::new(format!("item_{item_sequence:016}"));
+        let turn_id = TurnId::new_v7();
+        let item_id = ItemId::new_v7();
 
         let mut turn = Turn::new(turn_id.clone(), request_id);
         let mut item = Item::new_agent_message(item_id.clone());
@@ -631,9 +605,6 @@ impl CoreApi for Core {
             .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?
             .turns
             .insert(turn_id.clone(), turn);
-        self.last_turn_sequence = turn_sequence;
-        self.last_item_sequence = item_sequence;
-
         Ok(vec![
             CoreEvent {
                 request_id,

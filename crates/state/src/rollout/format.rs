@@ -1101,7 +1101,7 @@ struct StoredThreadCreated {
     sequence: u64,
     #[serde(rename = "type")]
     record_type: ThreadCreatedType,
-    thread_id: String,
+    thread_id: ThreadId,
     #[serde(default)]
     workspace_binding_id: Option<String>,
     #[serde(default)]
@@ -1111,8 +1111,8 @@ struct StoredThreadCreated {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredThreadOrigin {
-    parent_thread_id: String,
-    parent_turn_id: String,
+    parent_thread_id: ThreadId,
+    parent_turn_id: TurnId,
     orchestration_id: String,
     task_id: String,
     role: String,
@@ -1131,7 +1131,7 @@ struct StoredTurnCompleted {
     sequence: u64,
     #[serde(rename = "type")]
     record_type: TurnCompletedType,
-    thread_id: String,
+    thread_id: ThreadId,
     turn: StoredTurn,
 }
 
@@ -1142,7 +1142,7 @@ struct StoredTurnStarted {
     sequence: u64,
     #[serde(rename = "type")]
     record_type: TurnStartedType,
-    thread_id: String,
+    thread_id: ThreadId,
     turn: StoredTurn,
 }
 
@@ -1153,8 +1153,8 @@ struct StoredTurnItemAdded {
     sequence: u64,
     #[serde(rename = "type")]
     record_type: TurnItemAddedType,
-    thread_id: String,
-    turn_id: String,
+    thread_id: ThreadId,
+    turn_id: TurnId,
     item: StoredItem,
 }
 
@@ -1165,8 +1165,8 @@ struct StoredTurnItemCompleted {
     sequence: u64,
     #[serde(rename = "type")]
     record_type: TurnItemCompletedType,
-    thread_id: String,
-    turn_id: String,
+    thread_id: ThreadId,
+    turn_id: TurnId,
     item: StoredItem,
 }
 
@@ -1177,7 +1177,7 @@ struct StoredThreadArchived {
     sequence: u64,
     #[serde(rename = "type")]
     record_type: ThreadArchivedType,
-    thread_id: String,
+    thread_id: ThreadId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1187,7 +1187,7 @@ struct StoredThreadUnarchived {
     sequence: u64,
     #[serde(rename = "type")]
     record_type: ThreadUnarchivedType,
-    thread_id: String,
+    thread_id: ThreadId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1197,7 +1197,7 @@ struct StoredThreadDeleted {
     sequence: u64,
     #[serde(rename = "type")]
     record_type: ThreadDeletedType,
-    thread_id: String,
+    thread_id: ThreadId,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1245,7 +1245,7 @@ enum ThreadDeletedType {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredTurn {
-    id: String,
+    id: TurnId,
     status: StoredTurnStatus,
     items: Vec<StoredItem>,
     #[serde(default)]
@@ -1317,7 +1317,7 @@ enum StoredWorkspaceSkillsStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredContextCompaction {
     strategy: StoredContextCompactionStrategy,
-    through_turn_id: String,
+    through_turn_id: TurnId,
     source_turns: u64,
     source_messages: u64,
     source_bytes: u64,
@@ -1373,23 +1373,23 @@ enum StoredTurnStatus {
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 enum StoredItem {
     UserMessage {
-        id: String,
+        id: ItemId,
         content: Vec<StoredUserContentPart>,
     },
     AgentMessage {
-        id: String,
+        id: ItemId,
         text: String,
     },
     AgentCommentary {
-        id: String,
+        id: ItemId,
         text: String,
     },
     AgentTask {
-        id: String,
+        id: ItemId,
         orchestration_id: String,
         task_id: String,
         client_task_key: String,
-        child_thread_id: String,
+        child_thread_id: ThreadId,
         title: String,
         role: String,
         access: String,
@@ -1397,13 +1397,13 @@ enum StoredItem {
         task_markdown: String,
     },
     AgentTaskAmendment {
-        id: String,
+        id: ItemId,
         orchestration_id: String,
         task_id: String,
         amendment_markdown: String,
     },
     AgentTaskResult {
-        id: String,
+        id: ItemId,
         orchestration_id: String,
         task_id: String,
         status: String,
@@ -1411,7 +1411,7 @@ enum StoredItem {
         duration_ms: u64,
     },
     ContextCompaction {
-        id: String,
+        id: ItemId,
         strategy: String,
         ordinal: u64,
         pre_context_bytes: u64,
@@ -1424,13 +1424,13 @@ enum StoredItem {
         summary: Option<String>,
     },
     ToolCall {
-        id: String,
+        id: ItemId,
         call_id: String,
         name: String,
         arguments: serde_json::Value,
     },
     ToolValidationRejected {
-        id: String,
+        id: ItemId,
         call_id: String,
         name: String,
         kind: String,
@@ -1449,7 +1449,7 @@ enum StoredItem {
         suggested_action: String,
     },
     FileChange {
-        id: String,
+        id: ItemId,
         call_id: String,
         path: String,
         kind: String,
@@ -1462,7 +1462,7 @@ enum StoredItem {
         final_newline: bool,
     },
     CommandApprovalRequest {
-        id: String,
+        id: ItemId,
         approval_id: String,
         call_id: String,
         command: String,
@@ -1480,19 +1480,19 @@ enum StoredItem {
         network_policy: Option<String>,
     },
     CommandApprovalDecision {
-        id: String,
+        id: ItemId,
         approval_id: String,
         decision: String,
         #[serde(default)]
         workspace_write_risk_acknowledgement: Option<String>,
     },
     CommandExecutionAttempt {
-        id: String,
+        id: ItemId,
         approval_id: String,
         call_id: String,
     },
     McpToolCall {
-        id: String,
+        id: ItemId,
         call_id: String,
         name: String,
         arguments: serde_json::Value,
@@ -1501,7 +1501,7 @@ enum StoredItem {
         inventory_sha256: String,
     },
     McpToolCallApprovalRequest {
-        id: String,
+        id: ItemId,
         approval_id: String,
         call_id: String,
         name: String,
@@ -1511,24 +1511,24 @@ enum StoredItem {
         inventory_sha256: String,
     },
     McpToolCallApprovalDecision {
-        id: String,
+        id: ItemId,
         approval_id: String,
         decision: String,
     },
     McpToolExecutionAttempt {
-        id: String,
+        id: ItemId,
         approval_id: String,
         call_id: String,
         inventory_sha256: String,
     },
     McpToolResult {
-        id: String,
+        id: ItemId,
         call_id: String,
         name: String,
         result: StoredMcpToolResult,
     },
     ToolResult {
-        id: String,
+        id: ItemId,
         call_id: String,
         name: String,
         result: StoredToolResult,
@@ -1885,11 +1885,11 @@ pub(super) fn decode_record(
             debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
             Ok(DecodedRecord::ThreadCreated {
                 sequence,
-                thread_id: ThreadId::new(thread_id),
+                thread_id: thread_id,
                 workspace_binding_id,
                 origin: origin.map(|origin| DurableThreadOrigin {
-                    parent_thread_id: ThreadId::new(origin.parent_thread_id),
-                    parent_turn_id: TurnId::new(origin.parent_turn_id),
+                    parent_thread_id: origin.parent_thread_id,
+                    parent_turn_id: origin.parent_turn_id,
                     orchestration_id: origin.orchestration_id,
                     task_id: origin.task_id,
                     role: origin.role,
@@ -1937,9 +1937,9 @@ pub(super) fn decode_record(
             };
             Ok(DecodedRecord::TurnCompleted {
                 sequence,
-                thread_id: ThreadId::new(thread_id),
+                thread_id: thread_id,
                 turn: DurableTurnSnapshot {
-                    id: TurnId::new(id),
+                    id: id,
                     status,
                     items: decode_items(items),
                     model: model.map(decode_model_selection),
@@ -1989,9 +1989,9 @@ pub(super) fn decode_record(
             }
             Ok(DecodedRecord::TurnStarted {
                 sequence,
-                thread_id: ThreadId::new(thread_id),
+                thread_id: thread_id,
                 turn: DurableTurnSnapshot {
-                    id: TurnId::new(id),
+                    id: id,
                     status: DurableTurnStatus::InProgress,
                     items: decode_items(items),
                     model: model.map(decode_model_selection),
@@ -2023,8 +2023,8 @@ pub(super) fn decode_record(
             debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
             Ok(DecodedRecord::TurnItemAdded {
                 sequence,
-                thread_id: ThreadId::new(thread_id),
-                turn_id: TurnId::new(turn_id),
+                thread_id: thread_id,
+                turn_id: turn_id,
                 item: decode_item(item),
             })
         }
@@ -2048,8 +2048,8 @@ pub(super) fn decode_record(
             debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
             Ok(DecodedRecord::TurnItemCompleted {
                 sequence,
-                thread_id: ThreadId::new(thread_id),
-                turn_id: TurnId::new(turn_id),
+                thread_id: thread_id,
+                turn_id: turn_id,
                 item: decode_item(item),
             })
         }
@@ -2070,7 +2070,7 @@ pub(super) fn decode_record(
             debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
             Ok(DecodedRecord::ThreadArchived {
                 sequence,
-                thread_id: ThreadId::new(thread_id),
+                thread_id: thread_id,
             })
         }
         "threadUnarchived" => {
@@ -2090,7 +2090,7 @@ pub(super) fn decode_record(
             debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
             Ok(DecodedRecord::ThreadUnarchived {
                 sequence,
-                thread_id: ThreadId::new(thread_id),
+                thread_id: thread_id,
             })
         }
         "threadDeleted" => {
@@ -2110,7 +2110,7 @@ pub(super) fn decode_record(
             debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
             Ok(DecodedRecord::ThreadDeleted {
                 sequence,
-                thread_id: ThreadId::new(thread_id),
+                thread_id: thread_id,
             })
         }
         _ => unreachable!("record type checked above"),
@@ -2124,17 +2124,13 @@ fn decode_items(items: Vec<StoredItem>) -> Vec<DurableItemSnapshot> {
 fn decode_item(item: StoredItem) -> DurableItemSnapshot {
     match item {
         StoredItem::UserMessage { id, content } => DurableItemSnapshot::UserMessage {
-            id: ItemId::new(id),
+            id: id,
             content: content.into_iter().map(decode_user_content_part).collect(),
         },
-        StoredItem::AgentMessage { id, text } => DurableItemSnapshot::AgentMessage {
-            id: ItemId::new(id),
-            text,
-        },
-        StoredItem::AgentCommentary { id, text } => DurableItemSnapshot::AgentCommentary {
-            id: ItemId::new(id),
-            text,
-        },
+        StoredItem::AgentMessage { id, text } => DurableItemSnapshot::AgentMessage { id: id, text },
+        StoredItem::AgentCommentary { id, text } => {
+            DurableItemSnapshot::AgentCommentary { id: id, text }
+        }
         StoredItem::AgentTask {
             id,
             orchestration_id,
@@ -2147,11 +2143,11 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             depends_on,
             task_markdown,
         } => DurableItemSnapshot::AgentTask {
-            id: ItemId::new(id),
+            id: id,
             orchestration_id,
             task_id,
             client_task_key,
-            child_thread_id: ThreadId::new(child_thread_id),
+            child_thread_id: child_thread_id,
             title,
             role,
             access,
@@ -2164,7 +2160,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             task_id,
             amendment_markdown,
         } => DurableItemSnapshot::AgentTaskAmendment {
-            id: ItemId::new(id),
+            id: id,
             orchestration_id,
             task_id,
             amendment_markdown,
@@ -2177,7 +2173,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             summary_markdown,
             duration_ms,
         } => DurableItemSnapshot::AgentTaskResult {
-            id: ItemId::new(id),
+            id: id,
             orchestration_id,
             task_id,
             status,
@@ -2195,7 +2191,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             outcome,
             summary,
         } => DurableItemSnapshot::ContextCompaction {
-            id: ItemId::new(id),
+            id: id,
             strategy,
             ordinal,
             pre_context_bytes,
@@ -2227,7 +2223,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             name,
             arguments,
         } => DurableItemSnapshot::ToolCall {
-            id: ItemId::new(id),
+            id: id,
             call_id,
             name,
             arguments,
@@ -2246,7 +2242,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             actual_summary,
             suggested_action,
         } => DurableItemSnapshot::ToolValidationRejected {
-            id: ItemId::new(id),
+            id: id,
             call_id,
             name,
             kind,
@@ -2272,7 +2268,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             newline_style,
             final_newline,
         } => DurableItemSnapshot::FileChange {
-            id: ItemId::new(id),
+            id: id,
             call_id,
             path,
             kind,
@@ -2298,7 +2294,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             workspace_write_risk,
             network_policy,
         } => DurableItemSnapshot::CommandApprovalRequest {
-            id: ItemId::new(id),
+            id: id,
             approval_id,
             call_id,
             command,
@@ -2317,7 +2313,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             decision,
             workspace_write_risk_acknowledgement,
         } => DurableItemSnapshot::CommandApprovalDecision {
-            id: ItemId::new(id),
+            id: id,
             approval_id,
             decision,
             workspace_write_risk_acknowledgement,
@@ -2327,7 +2323,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             approval_id,
             call_id,
         } => DurableItemSnapshot::CommandExecutionAttempt {
-            id: ItemId::new(id),
+            id: id,
             approval_id,
             call_id,
         },
@@ -2340,7 +2336,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             arguments_sha256,
             inventory_sha256,
         } => DurableItemSnapshot::McpToolCall {
-            id: ItemId::new(id),
+            id: id,
             call_id,
             name,
             arguments,
@@ -2358,7 +2354,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             arguments_sha256,
             inventory_sha256,
         } => DurableItemSnapshot::McpToolCallApprovalRequest {
-            id: ItemId::new(id),
+            id: id,
             approval_id,
             call_id,
             name,
@@ -2372,7 +2368,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             approval_id,
             decision,
         } => DurableItemSnapshot::McpToolCallApprovalDecision {
-            id: ItemId::new(id),
+            id: id,
             approval_id,
             decision,
         },
@@ -2382,7 +2378,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             call_id,
             inventory_sha256,
         } => DurableItemSnapshot::McpToolExecutionAttempt {
-            id: ItemId::new(id),
+            id: id,
             approval_id,
             call_id,
             inventory_sha256,
@@ -2393,7 +2389,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             name,
             result,
         } => DurableItemSnapshot::McpToolResult {
-            id: ItemId::new(id),
+            id: id,
             call_id,
             name,
             result: match result {
@@ -2433,7 +2429,7 @@ fn decode_item(item: StoredItem) -> DurableItemSnapshot {
             name,
             result,
         } => DurableItemSnapshot::ToolResult {
-            id: ItemId::new(id),
+            id: id,
             call_id,
             name,
             result: match result {
@@ -2646,7 +2642,7 @@ fn decode_context_compaction(compaction: StoredContextCompaction) -> DurableCont
                 DurableContextCompactionStrategy::DeterministicExtractiveV1
             }
         },
-        through_turn_id: TurnId::new(compaction.through_turn_id),
+        through_turn_id: compaction.through_turn_id,
         source_turns: compaction.source_turns,
         source_messages: compaction.source_messages,
         source_bytes: compaction.source_bytes,

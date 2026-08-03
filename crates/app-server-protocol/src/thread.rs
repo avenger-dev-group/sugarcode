@@ -18,7 +18,11 @@ pub const MAX_THREAD_SEARCH_QUERY_TERMS: usize = 16;
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct Thread {
+    #[schemars(regex(
+        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    ))]
     pub id: String,
+    pub workspace_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 256))]
     #[ts(optional)]
@@ -53,7 +57,10 @@ pub enum ThreadOrigin {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ThreadDescendantsListParams {
-    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    #[schemars(regex(
+        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    ))]
+    #[serde(deserialize_with = "deserialize_thread_id")]
     pub thread_id: String,
 }
 
@@ -75,7 +82,9 @@ pub struct ThreadStartResponse {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ThreadArchiveParams {
-    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    #[schemars(regex(
+        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    ))]
     pub thread_id: String,
 }
 
@@ -109,7 +118,9 @@ pub struct ThreadArchiveResponse {}
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ThreadUnarchiveParams {
-    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    #[schemars(regex(
+        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    ))]
     pub thread_id: String,
 }
 
@@ -143,7 +154,9 @@ pub struct ThreadUnarchiveResponse {}
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ThreadDeleteParams {
-    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    #[schemars(regex(
+        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    ))]
     pub thread_id: String,
 }
 
@@ -177,7 +190,9 @@ pub struct ThreadDeleteResponse {}
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ThreadForkParams {
-    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    #[schemars(regex(
+        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    ))]
     pub thread_id: String,
 }
 
@@ -207,7 +222,9 @@ struct ThreadForkParamsWire {
 #[ts(rename_all = "camelCase")]
 pub struct ThreadListParams {
     pub workspace_id: String,
-    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    #[schemars(regex(
+        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    ))]
     #[ts(optional = nullable)]
     pub cursor: Option<String>,
     #[schemars(range(min = 1, max = 100))]
@@ -265,7 +282,9 @@ pub struct ThreadSearchParams {
     pub workspace_id: String,
     #[schemars(length(min = 1, max = 256))]
     pub query: String,
-    #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
+    #[schemars(regex(
+        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    ))]
     #[ts(optional = nullable)]
     pub cursor: Option<String>,
     #[schemars(range(min = 1, max = 100))]
@@ -362,15 +381,19 @@ struct ThreadResumeParamsWire {
 }
 
 fn is_canonical_thread_id(value: &str) -> bool {
-    let Some(digits) = value.strip_prefix("thr_") else {
-        return false;
-    };
-    if digits.len() < 16 || digits.len() > 20 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return false;
+    crate::is_canonical_uuid_v7(value)
+}
+
+fn deserialize_thread_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if is_canonical_thread_id(&value) {
+        Ok(value)
+    } else {
+        Err(de::Error::custom("threadId must be a canonical UUIDv7"))
     }
-    digits
-        .parse::<u64>()
-        .is_ok_and(|sequence| format!("{sequence:016}") == digits)
 }
 
 fn is_valid_search_query(value: &str) -> bool {

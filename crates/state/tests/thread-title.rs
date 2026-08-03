@@ -6,17 +6,19 @@ use sugarcode_state::{
 
 fn snapshot(messages: Vec<Vec<DurableUserContentPart>>) -> DurableThreadSnapshot {
     DurableThreadSnapshot {
-        id: ThreadId::new("thr_0000000000000001"),
+        id: ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7"),
         lifecycle: DurableThreadLifecycle::Active,
         origin: None,
         turns: messages
             .into_iter()
             .enumerate()
             .map(|(index, content)| DurableTurnSnapshot {
-                id: TurnId::new(format!("turn_{:016}", index + 1)),
+                id: TurnId::parse(format!("00000000-0001-7000-8000-{:012}", index + 1))
+                    .expect("valid turn UUIDv7"),
                 status: DurableTurnStatus::Completed,
                 items: vec![DurableItemSnapshot::UserMessage {
-                    id: ItemId::new(format!("item_{:016}", index + 1)),
+                    id: ItemId::parse(format!("00000000-0002-7000-8000-{:012}", index + 1))
+                        .expect("valid item UUIDv7"),
                     content,
                 }],
                 model: None,

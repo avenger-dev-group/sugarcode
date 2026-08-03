@@ -77,16 +77,13 @@ pub(super) fn build_database(
                 let DurableItemSnapshot::AgentMessage { id, text } = item else {
                     continue;
                 };
-                let document_id = item_document_id(id.as_str())?;
                 let digest = Sha256::digest(text.as_bytes());
                 transaction
                     .execute(
                         "INSERT INTO search_documents (
-                            document_id, thread_id, rollout_sequence, item_index,
-                            item_id, text_sha256
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            thread_id, rollout_sequence, item_index, item_id, text_sha256
+                         ) VALUES (?1, ?2, ?3, ?4, ?5)",
                         params![
-                            document_id,
                             snapshot.id.as_str(),
                             rollout_sequence,
                             bounded_i64(item_index, path, "searchableItems")?,
@@ -95,6 +92,7 @@ pub(super) fn build_database(
                         ],
                     )
                     .map_err(|error| sqlite_error(path, "rebuild", error))?;
+                let document_id = transaction.last_insert_rowid();
                 transaction
                     .execute(
                         "INSERT INTO search_fts(rowid, text) VALUES (?1, ?2)",
@@ -188,7 +186,10 @@ pub(super) fn validate_projection(
         let order_key: String = row.get(1)?;
         let sequence: i64 = row.get(2)?;
         let lifecycle: String = row.get(3)?;
-        let Some(state) = threads.get(&ThreadId::new(thread_id)) else {
+        let Ok(thread_id) = ThreadId::parse(thread_id) else {
+            return Err(rusqlite::Error::InvalidQuery);
+        };
+        let Some(state) = threads.get(&thread_id) else {
             return Err(rusqlite::Error::InvalidQuery);
         };
         let snapshot = &state.snapshot;
@@ -208,35 +209,32 @@ pub(super) fn validate_projection(
 
     let expected_documents = expected_documents(threads)?;
     let mut documents = connection.prepare(
-        "SELECT document_id, thread_id, rollout_sequence, item_index,
-                item_id, text_sha256
-         FROM search_documents ORDER BY document_id ASC",
+        "SELECT thread_id, rollout_sequence, item_index, item_id, text_sha256
+         FROM search_documents ORDER BY thread_id, rollout_sequence, item_index",
     )?;
     let actual = documents
         .query_map([], |row| {
             Ok(ExpectedDocument {
-                document_id: row.get(0)?,
-                thread_id: row.get(1)?,
-                rollout_sequence: row.get(2)?,
-                item_index: row.get(3)?,
-                item_id: row.get(4)?,
-                text_sha256: row.get(5)?,
+                thread_id: row.get(0)?,
+                rollout_sequence: row.get(1)?,
+                item_index: row.get(2)?,
+                item_id: row.get(3)?,
+                text_sha256: row.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if actual != expected_documents {
         return Err(rusqlite::Error::InvalidQuery);
     }
+    let document_ids = connection
+        .prepare("SELECT document_id FROM search_documents ORDER BY document_id ASC")?
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let fts_rowids = connection
         .prepare("SELECT rowid FROM search_fts ORDER BY rowid ASC")?
         .query_map([], |row| row.get::<_, i64>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if fts_rowids
-        != expected_documents
-            .iter()
-            .map(|document| document.document_id)
-            .collect::<Vec<_>>()
-    {
+    if fts_rowids != document_ids {
         return Err(rusqlite::Error::InvalidQuery);
     }
     Ok(())
@@ -244,7 +242,6 @@ pub(super) fn validate_projection(
 
 #[derive(Debug, PartialEq, Eq)]
 struct ExpectedDocument {
-    document_id: i64,
     thread_id: String,
     rollout_sequence: i64,
     item_index: i64,
@@ -267,8 +264,6 @@ fn expected_documents(
                     continue;
                 };
                 documents.push(ExpectedDocument {
-                    document_id: item_document_id(id.as_str())
-                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                     thread_id: snapshot.id.as_str().to_string(),
                     rollout_sequence: i64::try_from(*record_sequence)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -280,7 +275,13 @@ fn expected_documents(
             }
         }
     }
-    documents.sort_unstable_by_key(|document| document.document_id);
+    documents.sort_unstable_by(|left, right| {
+        (&left.thread_id, left.rollout_sequence, left.item_index).cmp(&(
+            &right.thread_id,
+            right.rollout_sequence,
+            right.item_index,
+        ))
+    });
     Ok(documents)
 }
 
@@ -369,8 +370,7 @@ pub(super) fn open_existing_database(path: &Path) -> rusqlite::Result<Connection
 }
 
 pub(super) fn thread_order_key(thread_id: &ThreadId) -> Result<String, RolloutError> {
-    let sequence = parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
-    Ok(format!("{sequence:020}"))
+    Ok(thread_id.as_str().to_owned())
 }
 
 fn lifecycle_name(lifecycle: DurableThreadLifecycle) -> &'static str {
@@ -379,13 +379,6 @@ fn lifecycle_name(lifecycle: DurableThreadLifecycle) -> &'static str {
         DurableThreadLifecycle::Archived => "archived",
         DurableThreadLifecycle::Deleted => "deleted",
     }
-}
-
-pub(super) fn item_document_id(item_id: &str) -> Result<i64, RolloutError> {
-    let sequence = parse_canonical_id(item_id, "item_", "item")?;
-    i64::try_from(sequence).map_err(|_| RolloutError::InvalidRecord {
-        kind: "searchDocumentId",
-    })
 }
 
 pub(super) fn bounded_i64(

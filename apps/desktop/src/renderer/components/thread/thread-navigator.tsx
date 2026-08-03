@@ -8,6 +8,7 @@ import {
   PanelLeftClose,
   Plus,
   RotateCcw,
+  ShieldQuestion,
   Trash2,
 } from 'lucide-react';
 import {
@@ -39,6 +40,7 @@ type ThreadNavigatorProps = Readonly<{
   store: ThreadStore;
   footer?: ReactNode;
   onToggleNavigator?: () => void;
+  approvalThreadIds?: readonly string[];
 }>;
 
 type ThreadLabelKind = 'project' | 'chat';
@@ -69,6 +71,7 @@ export const ThreadNavigator = ({
   store,
   footer,
   onToggleNavigator,
+  approvalThreadIds = [],
 }: ThreadNavigatorProps) => {
   const [deleteThreadId, setDeleteThreadId] = useState<string | null>(
     null,
@@ -223,6 +226,7 @@ export const ThreadNavigator = ({
             }
             running={store.navigator.runningThreadIds.includes(threadId)}
             unread={store.navigator.unreadThreadIds.includes(threadId)}
+            approvalRequired={approvalThreadIds.includes(threadId)}
             disabled={itemDisabled}
             mutationDisabled={
               navigationDisabled ||
@@ -581,6 +585,7 @@ type ThreadButtonProps = Readonly<{
   pending: boolean;
   running: boolean;
   unread: boolean;
+  approvalRequired: boolean;
   disabled: boolean;
   mutationDisabled: boolean;
   labelKind: ThreadLabelKind;
@@ -599,6 +604,7 @@ const ThreadButton = ({
   pending,
   running,
   unread,
+  approvalRequired,
   disabled,
   mutationDisabled,
   labelKind,
@@ -611,7 +617,7 @@ const ThreadButton = ({
 }: ThreadButtonProps) => (
   <div
     data-thread-row
-    className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-stretch overflow-hidden rounded-lg ${
+    className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-stretch overflow-hidden rounded-lg ${
       current
         ? 'bg-surface-hover text-foreground'
         : 'text-secondary hover:bg-surface-hover hover:text-foreground'
@@ -642,17 +648,6 @@ const ThreadButton = ({
       <span className="min-w-0 flex-1 truncate text-sm font-normal">
         {title ?? `${labelKind === 'chat' ? '聊天' : '任务'} ${threadId.slice(-4)}`}
       </span>
-      {running ? (
-        <LoaderCircle
-          className="ml-2 size-3.5 shrink-0 animate-spin text-process"
-          aria-label="后台运行中"
-        />
-      ) : unread ? (
-        <span
-          className="ml-2 size-2 shrink-0 rounded-full bg-primary"
-          aria-label="有未读更新"
-        />
-      ) : null}
     </span>
     {actionsEnabled ? (
       <div
@@ -694,6 +689,28 @@ const ThreadButton = ({
           <Trash2 aria-hidden="true" />
         </ThreadActionButton>
       </div>
+    ) : (
+      <span />
+    )}
+    {approvalRequired ? (
+      <span
+        className="mr-2 inline-flex h-5 shrink-0 self-center items-center gap-1 rounded-full border bg-background px-1.5 text-[11px] font-medium text-secondary"
+        role="status"
+      >
+        <ShieldQuestion className="size-3" aria-hidden="true" />
+        需要审批
+      </span>
+    ) : pending || running ? (
+      <LoaderCircle
+        className="mr-2 size-3.5 shrink-0 self-center animate-spin text-process"
+        aria-label={pending ? '正在打开会话' : '后台运行中'}
+      />
+    ) : unread ? (
+      <span
+        className="mr-2 size-2.5 shrink-0 self-center rounded-full bg-success"
+        aria-label="任务已完成，有未读更新"
+        role="status"
+      />
     ) : null}
   </div>
 );

@@ -5,7 +5,8 @@ use sha2::{Digest, Sha256};
 fn approved_attempt_without_result_recovers_once_as_interrupted_and_preserves_audit() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let items = approved_attempt_items();
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
@@ -13,7 +14,12 @@ fn approved_attempt_without_result_recovers_once_as_interrupted_and_preserves_au
         begin_mcp_turn(&mut repository, &thread_id);
         for item in &items[1..] {
             repository
-                .append_turn_item(&thread_id, &TurnId::new("turn_0000000000000001"), item)
+                .append_turn_item(
+                    &thread_id,
+                    &TurnId::parse("00000000-0001-7000-8000-000000000001")
+                        .expect("valid turn UUIDv7"),
+                    item,
+                )
                 .expect("MCP audit item");
         }
     }
@@ -52,27 +58,36 @@ fn approved_attempt_without_result_recovers_once_as_interrupted_and_preserves_au
 fn denied_call_blocks_its_attempt_but_a_later_call_can_recover() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     begin_mcp_turn(&mut repository, &thread_id);
     let mut items = approved_attempt_items();
     items[3] = DurableItemSnapshot::McpToolCallApprovalDecision {
-        id: ItemId::new("item_0000000000000004"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000004").expect("valid item UUIDv7"),
         approval_id: "approval/mcp".to_string(),
         decision: "denied".to_string(),
     };
     for item in &items[1..4] {
         repository
-            .append_turn_item(&thread_id, &TurnId::new("turn_0000000000000001"), item)
+            .append_turn_item(
+                &thread_id,
+                &TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
+                item,
+            )
             .expect("pre-attempt item");
     }
     let rollout = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let before = fs::read(&rollout).expect("before invalid attempt");
     assert!(matches!(
-        repository.append_turn_item(&thread_id, &TurnId::new("turn_0000000000000001"), &items[4],),
+        repository.append_turn_item(
+            &thread_id,
+            &TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
+            &items[4],
+        ),
         Err(RolloutError::InvalidRecord {
             kind: "invalidMcpToolItem"
         })
@@ -80,7 +95,7 @@ fn denied_call_blocks_its_attempt_but_a_later_call_can_recover() {
     assert_eq!(fs::read(&rollout).expect("after invalid attempt"), before);
 
     let result = DurableItemSnapshot::McpToolResult {
-        id: ItemId::new("item_0000000000000005"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000005").expect("valid item UUIDv7"),
         call_id: "call_mcp".to_string(),
         name: "mcp__fixture__inspect".to_string(),
         result: DurableMcpToolResult::Error {
@@ -89,13 +104,17 @@ fn denied_call_blocks_its_attempt_but_a_later_call_can_recover() {
         },
     };
     repository
-        .append_turn_item(&thread_id, &TurnId::new("turn_0000000000000001"), &result)
+        .append_turn_item(
+            &thread_id,
+            &TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
+            &result,
+        )
         .expect("denied result");
     let next_call = completed_call_items(2).remove(0);
     repository
         .append_turn_item(
             &thread_id,
-            &TurnId::new("turn_0000000000000001"),
+            &TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
             &next_call,
         )
         .expect("a new call may recover after the denied result");
@@ -105,8 +124,9 @@ fn denied_call_blocks_its_attempt_but_a_later_call_can_recover() {
 fn completed_call_count_is_unbounded_but_duplicate_call_ids_are_rejected() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     begin_mcp_turn(&mut repository, &thread_id);
@@ -121,7 +141,7 @@ fn completed_call_count_is_unbounded_but_duplicate_call_ids_are_rejected() {
 
     let rollout = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let before = fs::read(&rollout).expect("before invalid call");
     let mut duplicate = completed_call_items(9).remove(0);
     if let DurableItemSnapshot::McpToolCall { call_id, .. } = &mut duplicate {
@@ -140,8 +160,9 @@ fn completed_call_count_is_unbounded_but_duplicate_call_ids_are_rejected() {
 fn different_server_hashes_are_valid_but_each_server_inventory_stays_frozen() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     begin_mcp_turn(&mut repository, &thread_id);
@@ -177,10 +198,12 @@ fn begin_mcp_turn(repository: &mut RolloutRepository, thread_id: &ThreadId) {
             thread_id,
             &DurableTurnSnapshot {
                 model: None,
-                id: TurnId::new("turn_0000000000000001"),
+                id: TurnId::parse("00000000-0001-7000-8000-000000000001")
+                    .expect("valid turn UUIDv7"),
                 status: DurableTurnStatus::InProgress,
                 items: vec![DurableItemSnapshot::UserMessage {
-                    id: ItemId::new("item_0000000000000001"),
+                    id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                        .expect("valid item UUIDv7"),
                     content: vec![sugarcode_state::DurableUserContentPart::Text {
                         text: "Use MCP".to_string(),
                     }],
@@ -201,13 +224,13 @@ fn approved_attempt_items() -> Vec<DurableItemSnapshot> {
     let arguments_sha256 = format!("{:x}", Sha256::digest(&bytes));
     vec![
         DurableItemSnapshot::UserMessage {
-            id: ItemId::new("item_0000000000000001"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000001").expect("valid item UUIDv7"),
             content: vec![sugarcode_state::DurableUserContentPart::Text {
                 text: "Use MCP".to_string(),
             }],
         },
         DurableItemSnapshot::McpToolCall {
-            id: ItemId::new("item_0000000000000002"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             call_id: "call_mcp".to_string(),
             name: "mcp__fixture__inspect".to_string(),
             arguments: arguments.clone(),
@@ -216,7 +239,7 @@ fn approved_attempt_items() -> Vec<DurableItemSnapshot> {
             inventory_sha256: "b".repeat(64),
         },
         DurableItemSnapshot::McpToolCallApprovalRequest {
-            id: ItemId::new("item_0000000000000003"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
             approval_id: "approval/mcp".to_string(),
             call_id: "call_mcp".to_string(),
             name: "mcp__fixture__inspect".to_string(),
@@ -226,12 +249,12 @@ fn approved_attempt_items() -> Vec<DurableItemSnapshot> {
             inventory_sha256: "b".repeat(64),
         },
         DurableItemSnapshot::McpToolCallApprovalDecision {
-            id: ItemId::new("item_0000000000000004"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000004").expect("valid item UUIDv7"),
             approval_id: "approval/mcp".to_string(),
             decision: "approved".to_string(),
         },
         DurableItemSnapshot::McpToolExecutionAttempt {
-            id: ItemId::new("item_0000000000000005"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000005").expect("valid item UUIDv7"),
             approval_id: "approval/mcp".to_string(),
             call_id: "call_mcp".to_string(),
             inventory_sha256: "b".repeat(64),
@@ -253,7 +276,13 @@ fn completed_call_items_for(
     let arguments_sha256 = format!("{:x}", Sha256::digest(&bytes));
     let content = format!(r#"{{"isError":false,"ordinal":{ordinal}}}"#);
     let result_sha256 = format!("{:x}", Sha256::digest(content.as_bytes()));
-    let item = |offset| ItemId::new(format!("item_{:016}", 2 + (ordinal - 1) * 5 + offset));
+    let item = |offset| {
+        ItemId::parse(format!(
+            "00000000-0002-7000-8000-{:012}",
+            2 + (ordinal - 1) * 5 + offset
+        ))
+        .expect("valid item UUIDv7")
+    };
     let call_id = format!("call_mcp_{ordinal}");
     let approval_id = format!("approval/mcp/{ordinal}");
     let name = format!("mcp__{server_id}__inspect");

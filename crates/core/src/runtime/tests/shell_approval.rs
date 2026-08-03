@@ -111,10 +111,6 @@ struct FailOnAttemptRepository {
 }
 
 impl sugarcode_state::ThreadRepository for FailOnAttemptRepository {
-    fn id_sequences(&self) -> sugarcode_state::IdSequences {
-        self.inner.id_sequences()
-    }
-
     fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), sugarcode_state::RolloutError> {
         self.inner.create_thread(thread_id)
     }

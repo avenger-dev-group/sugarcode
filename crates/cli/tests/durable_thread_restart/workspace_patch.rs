@@ -36,7 +36,7 @@ fn resumes_forks_and_continues_line_edit_history_without_replaying_the_write() {
             "jsonrpc":"2.0",
             "id":"patch-turn",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Update the file"}]}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Update the file"}]}
         }),
         14,
     );
@@ -55,7 +55,7 @@ fn resumes_forks_and_continues_line_edit_history_without_replaying_the_write() {
             "jsonrpc":"2.0",
             "id":"resume-patch",
             "method":"thread/resume",
-            "params":{"threadId":"thr_0000000000000001"}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -83,7 +83,7 @@ fn resumes_forks_and_continues_line_edit_history_without_replaying_the_write() {
             "jsonrpc":"2.0",
             "id":"fork-patch",
             "method":"thread/fork",
-            "params":{"threadId":"thr_0000000000000001"}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001"}
         }),
         2,
     );
@@ -99,7 +99,7 @@ fn resumes_forks_and_continues_line_edit_history_without_replaying_the_write() {
             "jsonrpc":"2.0",
             "id":"continue-patch",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000002"}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000002"}
         }),
         6,
     );

@@ -45,7 +45,7 @@ fn resumes_forks_and_continues_completed_workspace_list_history_across_two_proce
             "id": "list-turn",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"List the workspace"}]
             }
         }),
@@ -102,7 +102,7 @@ fn resumes_forks_and_continues_completed_workspace_list_history_across_two_proce
             "jsonrpc": "2.0",
             "id": "resume-list",
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -133,7 +133,7 @@ fn resumes_forks_and_continues_completed_workspace_list_history_across_two_proce
             "jsonrpc": "2.0",
             "id": "fork-list",
             "method": "thread/fork",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         2,
     );
@@ -155,7 +155,7 @@ fn resumes_forks_and_continues_completed_workspace_list_history_across_two_proce
             "jsonrpc": "2.0",
             "id": "continue-list",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
         }),
         6,
     );
@@ -232,7 +232,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "id": "completed",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"completed searchable marker"}]
             }
         }),
@@ -245,7 +245,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "id": "failed",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"failed private marker"}]
             }
         }),
@@ -259,7 +259,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "id": "interrupted",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"interrupted private marker"}]
             }
         }),
@@ -275,8 +275,8 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "id": "interrupt",
             "method": "turn/interrupt",
             "params": {
-                "threadId": "thr_0000000000000001",
-                "turnId": "turn_0000000000000003"
+                "threadId": "00000000-0000-7000-8000-000000000001",
+                "turnId": "00000000-0001-7000-8000-000000000003"
             }
         }),
         2,
@@ -304,7 +304,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "jsonrpc": "2.0",
             "id": "resume",
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -321,7 +321,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
         (
             "SugarCode deterministic",
             json!([{
-                "id": "thr_0000000000000001",
+                "id": "00000000-0000-7000-8000-000000000001",
                 "title": "completed searchable marker"
             }]),
         ),
@@ -345,7 +345,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "jsonrpc": "2.0",
             "id": "fork",
             "method": "thread/fork",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         2,
     );
@@ -357,7 +357,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
             "jsonrpc": "2.0",
             "id": "continue",
             "method": "turn/start",
-            "params": {"threadId": "thr_0000000000000002"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
         }),
         6,
     );

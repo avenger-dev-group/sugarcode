@@ -8,7 +8,8 @@ fn persists_and_replays_completed_thread_history() {
         ..Default::default()
     })
     .expect("resolve home");
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
 
     {
         let mut repository = RolloutRepository::open(&home).expect("open repository");
@@ -27,31 +28,32 @@ fn persists_and_replays_completed_thread_history() {
         .expect("thread exists");
     assert_eq!(history.id, thread_id);
     assert_eq!(history.turns, vec![completed_turn(1)]);
-    assert_eq!(repository.id_sequences().thread, 1);
-    assert_eq!(repository.id_sequences().turn, 1);
-    assert_eq!(repository.id_sequences().item, 1);
 }
 
 #[test]
 fn replay_accepts_globally_unique_incremental_items_out_of_file_order() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let earlier_file = ThreadId::new("thr_0000000000000001");
-    let later_file = ThreadId::new("thr_0000000000000002");
+    let earlier_file =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let later_file =
+        ThreadId::parse("00000000-0000-7000-8000-000000000002").expect("valid thread UUIDv7");
 
     let later_turn = DurableTurnSnapshot {
         model: None,
-        id: TurnId::new("turn_0000000000000001"),
+        id: TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
         status: DurableTurnStatus::Completed,
         items: vec![
             DurableItemSnapshot::UserMessage {
-                id: ItemId::new("item_0000000000000001"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                    .expect("valid item UUIDv7"),
                 content: vec![sugarcode_state::DurableUserContentPart::Text {
                     text: "Review the child task.".to_string(),
                 }],
             },
             DurableItemSnapshot::AgentCommentary {
-                id: ItemId::new("item_0000000000000002"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000002")
+                    .expect("valid item UUIDv7"),
                 text: "Inspecting the child task.".to_string(),
             },
         ],
@@ -63,17 +65,19 @@ fn replay_accepts_globally_unique_incremental_items_out_of_file_order() {
     };
     let earlier_turn = DurableTurnSnapshot {
         model: None,
-        id: TurnId::new("turn_0000000000000002"),
+        id: TurnId::parse("00000000-0001-7000-8000-000000000002").expect("valid turn UUIDv7"),
         status: DurableTurnStatus::Completed,
         items: vec![
             DurableItemSnapshot::UserMessage {
-                id: ItemId::new("item_0000000000000003"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000003")
+                    .expect("valid item UUIDv7"),
                 content: vec![sugarcode_state::DurableUserContentPart::Text {
                     text: "Continue the parent task.".to_string(),
                 }],
             },
             DurableItemSnapshot::AgentCommentary {
-                id: ItemId::new("item_0000000000000004"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000004")
+                    .expect("valid item UUIDv7"),
                 text: "Continuing the parent task.".to_string(),
             },
         ],
@@ -117,7 +121,6 @@ fn replay_accepts_globally_unique_incremental_items_out_of_file_order() {
     }
 
     let repository = RolloutRepository::open(&home).expect("replay out-of-order files");
-    assert_eq!(repository.id_sequences().item, 4);
     assert_eq!(
         repository
             .load_thread(&earlier_file)
@@ -140,30 +143,35 @@ fn replay_accepts_globally_unique_incremental_items_out_of_file_order() {
 fn commentary_round_trips_through_the_jsonl_rollout() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let turn = DurableTurnSnapshot {
         model: None,
-        id: TurnId::new("turn_0000000000000001"),
+        id: TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
         status: DurableTurnStatus::Completed,
         items: vec![
             DurableItemSnapshot::UserMessage {
-                id: ItemId::new("item_0000000000000001"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                    .expect("valid item UUIDv7"),
                 content: vec![sugarcode_state::DurableUserContentPart::Text {
                     text: "Inspect the workspace.".to_string(),
                 }],
             },
             DurableItemSnapshot::AgentCommentary {
-                id: ItemId::new("item_0000000000000002"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000002")
+                    .expect("valid item UUIDv7"),
                 text: "I will inspect the workspace first.".to_string(),
             },
             DurableItemSnapshot::ToolCall {
-                id: ItemId::new("item_0000000000000003"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000003")
+                    .expect("valid item UUIDv7"),
                 call_id: "call_1".to_string(),
                 name: "workspace/read".to_string(),
                 arguments: json!({"path": "README.md"}),
             },
             DurableItemSnapshot::ToolResult {
-                id: ItemId::new("item_0000000000000004"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000004")
+                    .expect("valid item UUIDv7"),
                 call_id: "call_1".to_string(),
                 name: "workspace/read".to_string(),
                 result: DurableToolResult::Success {
@@ -172,7 +180,8 @@ fn commentary_round_trips_through_the_jsonl_rollout() {
                 },
             },
             DurableItemSnapshot::AgentMessage {
-                id: ItemId::new("item_0000000000000005"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000005")
+                    .expect("valid item UUIDv7"),
                 text: "Done.".to_string(),
             },
         ],
@@ -193,7 +202,7 @@ fn commentary_round_trips_through_the_jsonl_rollout() {
     let rollout = fs::read_to_string(
         directory
             .path()
-            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
     )
     .expect("rollout");
     assert!(rollout.contains("\"type\":\"agentCommentary\""));
@@ -212,7 +221,8 @@ fn commentary_round_trips_through_the_jsonl_rollout() {
 fn protocol_diagnostics_round_trip_without_sensitive_values() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let started = started_text_turn();
     let mut turn = started.clone();
     turn.status = DurableTurnStatus::Failed;
@@ -242,7 +252,7 @@ fn protocol_diagnostics_round_trip_without_sensitive_values() {
     let rollout = fs::read_to_string(
         directory
             .path()
-            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
     )
     .expect("rollout");
     assert!(rollout.contains("ambiguousOutputReconciliation"));
@@ -263,21 +273,23 @@ fn protocol_diagnostics_round_trip_without_sensitive_values() {
 fn collaboration_items_round_trip_through_incremental_rollout_records() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let user = DurableItemSnapshot::UserMessage {
-        id: ItemId::new("item_0000000000000001"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000001").expect("valid item UUIDv7"),
         content: vec![sugarcode_state::DurableUserContentPart::Text {
             text: "Review the project.".to_string(),
         }],
     };
     let collaboration_items = vec![
         DurableItemSnapshot::AgentTask {
-            id: ItemId::new("item_0000000000000002"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             orchestration_id: "orch/1".to_string(),
             task_id: "orch/1/explore".to_string(),
             client_task_key: "explore".to_string(),
-            child_thread_id: ThreadId::new("thr_0000000000000002"),
+            child_thread_id: ThreadId::parse("00000000-0000-7000-8000-000000000002")
+                .expect("valid thread UUIDv7"),
             title: "Explore".to_string(),
             role: "explorer".to_string(),
             access: "readOnly".to_string(),
@@ -285,13 +297,13 @@ fn collaboration_items_round_trip_through_incremental_rollout_records() {
             task_markdown: "# Objective\nExplore.".to_string(),
         },
         DurableItemSnapshot::AgentTaskAmendment {
-            id: ItemId::new("item_0000000000000003"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
             orchestration_id: "orch/1".to_string(),
             task_id: "orch/1/explore".to_string(),
             amendment_markdown: "Inspect tests too.".to_string(),
         },
         DurableItemSnapshot::AgentTaskResult {
-            id: ItemId::new("item_0000000000000004"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000004").expect("valid item UUIDv7"),
             orchestration_id: "orch/1".to_string(),
             task_id: "orch/1/explore".to_string(),
             status: "completed".to_string(),
@@ -359,9 +371,10 @@ fn collaboration_items_round_trip_through_incremental_rollout_records() {
 fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut items = vec![DurableItemSnapshot::UserMessage {
-        id: ItemId::new("item_0000000000000001"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000001").expect("valid item UUIDv7"),
         content: vec![sugarcode_state::DurableUserContentPart::Text {
             text: "Read several large bounded results.".to_string(),
         }],
@@ -371,13 +384,15 @@ fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
         let item_sequence = ordinal * 2;
         let call_id = format!("call_{ordinal}");
         items.push(DurableItemSnapshot::ToolCall {
-            id: ItemId::new(format!("item_{item_sequence:016}")),
+            id: ItemId::parse(format!("00000000-0002-7000-8000-{item_sequence:012}"))
+                .expect("valid item UUIDv7"),
             call_id: call_id.clone(),
             name: "workspace/read".to_string(),
             arguments: json!({"path": format!("file-{ordinal}.txt")}),
         });
         items.push(DurableItemSnapshot::ToolResult {
-            id: ItemId::new(format!("item_{:016}", item_sequence + 1)),
+            id: ItemId::parse(format!("00000000-0002-7000-8000-{:012}", item_sequence + 1))
+                .expect("valid item UUIDv7"),
             call_id,
             name: "workspace/read".to_string(),
             result: DurableToolResult::Success {
@@ -387,12 +402,12 @@ fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
         });
     }
     items.push(DurableItemSnapshot::AgentMessage {
-        id: ItemId::new("item_0000000000000010"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000010").expect("valid item UUIDv7"),
         text: "Done.".to_string(),
     });
     let turn = DurableTurnSnapshot {
         model: None,
-        id: TurnId::new("turn_0000000000000001"),
+        id: TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
         status: DurableTurnStatus::Completed,
         items,
         context_compaction: None,
@@ -410,7 +425,7 @@ fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
     }
     let path = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let records = fs::read_to_string(path).expect("rollout");
     assert!(records.len() > 1024 * 1024);
     let terminal = records.lines().last().expect("terminal record");
@@ -432,7 +447,8 @@ fn incremental_item_records_replay_turn_content_above_the_old_terminal_limit() {
 fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
         repository.create_thread(&thread_id).expect("thread");
@@ -460,7 +476,7 @@ fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
 
     let rollout = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     let records = fs::read_to_string(&rollout).expect("read recovered rollout");
     assert_eq!(records.lines().count(), 7);
     assert!(records.contains("\"type\":\"turnItemStarted\""));
@@ -478,17 +494,18 @@ fn an_unfinished_started_turn_replays_as_one_interrupted_terminal() {
 fn an_unfinished_checkpoint_is_retained_for_audit_but_remains_interrupted() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let prior = completed_turn(1);
     let checkpoint =
         sugarcode_state::build_context_compaction(std::slice::from_ref(&prior), 3_200_000, 30_000)
             .expect("checkpoint");
     let started = DurableTurnSnapshot {
         model: None,
-        id: TurnId::new("turn_0000000000000002"),
+        id: TurnId::parse("00000000-0001-7000-8000-000000000002").expect("valid turn UUIDv7"),
         status: DurableTurnStatus::InProgress,
         items: vec![DurableItemSnapshot::UserMessage {
-            id: ItemId::new("item_0000000000000002"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             content: vec![sugarcode_state::DurableUserContentPart::Text {
                 text: "continue".to_string(),
             }],
@@ -533,7 +550,8 @@ fn an_unfinished_checkpoint_is_retained_for_audit_but_remains_interrupted() {
 fn workspace_instruction_audit_survives_recovery_without_persisting_content() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let audit = DurableWorkspaceInstructionsAudit {
         source: DurableWorkspaceInstructionsSource::RootAgentsMdV1,
         status: DurableWorkspaceInstructionsStatus::Present,
@@ -565,7 +583,7 @@ fn workspace_instruction_audit_survives_recovery_without_persisting_content() {
     let rollout = fs::read_to_string(
         directory
             .path()
-            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
     )
     .expect("rollout");
     assert!(rollout.contains("\"workspaceInstructions\""));
@@ -578,10 +596,11 @@ fn workspace_instruction_audit_survives_recovery_without_persisting_content() {
 fn an_unfinished_active_compaction_is_completed_as_interrupted_before_recovery_terminal() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let compaction = DurableItemSnapshot::ContextCompaction {
-        id: ItemId::new("item_0000000000000002"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
         strategy: "modelGeneratedActiveTurnV1".to_string(),
         ordinal: 1,
         pre_context_bytes: 3_200_000,
@@ -602,7 +621,8 @@ fn an_unfinished_active_compaction_is_completed_as_interrupted_before_recovery_t
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![DurableItemSnapshot::UserMessage {
-                        id: ItemId::new("item_0000000000000001"),
+                        id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                            .expect("valid item UUIDv7"),
                         content: vec![sugarcode_state::DurableUserContentPart::Text {
                             text: "Continue after compaction.".to_string(),
                         }],
@@ -638,7 +658,7 @@ fn an_unfinished_active_compaction_is_completed_as_interrupted_before_recovery_t
     let records = fs::read_to_string(
         directory
             .path()
-            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
     )
     .expect("rollout")
     .lines()
@@ -664,7 +684,8 @@ fn an_unfinished_active_compaction_is_completed_as_interrupted_before_recovery_t
 fn nested_workspace_manifest_audit_survives_recovery_without_scope_or_content() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let audit = DurableWorkspaceInstructionsAudit {
         source: DurableWorkspaceInstructionsSource::RootToActiveScopeAgentsMdV1,
         status: DurableWorkspaceInstructionsStatus::Present,
@@ -696,7 +717,7 @@ fn nested_workspace_manifest_audit_survives_recovery_without_scope_or_content() 
     let rollout = fs::read_to_string(
         directory
             .path()
-            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
     )
     .expect("rollout");
     assert!(rollout.contains("\"rootToActiveScopeAgentsMdV1\""));
@@ -709,7 +730,8 @@ fn nested_workspace_manifest_audit_survives_recovery_without_scope_or_content() 
 fn workspace_skills_audit_survives_recovery_without_inventory_path_or_content() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let audit = DurableWorkspaceSkillsAudit {
         source: DurableWorkspaceSkillsSource::RootToActiveScopeAgentsSkillsV1,
         status: DurableWorkspaceSkillsStatus::Present,
@@ -744,7 +766,7 @@ fn workspace_skills_audit_survives_recovery_without_inventory_path_or_content() 
     let rollout = fs::read_to_string(
         directory
             .path()
-            .join("rollouts/v1/thr_0000000000000001.jsonl"),
+            .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
     )
     .expect("rollout");
     assert!(rollout.contains("\"workspaceSkills\""));
@@ -758,7 +780,8 @@ fn workspace_skills_audit_survives_recovery_without_inventory_path_or_content() 
 fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
         repository.create_thread(&thread_id).expect("thread");
@@ -767,7 +790,8 @@ fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
                 &thread_id,
                 &DurableTurnSnapshot {
                     model: None,
-                    id: TurnId::new("turn_0000000000000001"),
+                    id: TurnId::parse("00000000-0001-7000-8000-000000000001")
+                        .expect("valid turn UUIDv7"),
                     status: DurableTurnStatus::InProgress,
                     items: Vec::new(),
                     context_compaction: None,
@@ -796,10 +820,11 @@ fn an_empty_inputless_started_turn_replays_as_one_interrupted_terminal() {
 fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let tool_call = DurableItemSnapshot::ToolCall {
-        id: ItemId::new("item_0000000000000002"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
         call_id: "call_1".to_string(),
         name: "workspace/search".to_string(),
         arguments: json!({"path": "src", "query": "needle"}),
@@ -815,7 +840,8 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![DurableItemSnapshot::UserMessage {
-                        id: ItemId::new("item_0000000000000001"),
+                        id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                            .expect("valid item UUIDv7"),
                         content: vec![sugarcode_state::DurableUserContentPart::Text {
                             text: "Read it".to_string(),
                         }],
@@ -847,24 +873,24 @@ fn a_durable_tool_call_query_survives_recovery_without_an_unwritten_result() {
             .iter()
             .any(|item| matches!(item, DurableItemSnapshot::ToolResult { .. }))
     );
-    assert_eq!(repository.id_sequences().item, 2);
 }
 
 #[test]
 fn shell_approval_audit_and_process_result_survive_recovery() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let user = DurableItemSnapshot::UserMessage {
-        id: ItemId::new("item_0000000000000001"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000001").expect("valid item UUIDv7"),
         content: vec![sugarcode_state::DurableUserContentPart::Text {
             text: "Run it".to_string(),
         }],
     };
     let incremental = vec![
         DurableItemSnapshot::ToolCall {
-            id: ItemId::new("item_0000000000000002"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
             arguments: json!({
@@ -875,7 +901,7 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             }),
         },
         DurableItemSnapshot::CommandApprovalRequest {
-            id: ItemId::new("item_0000000000000003"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
             approval_id: "approval/one".to_string(),
             call_id: "call_shell".to_string(),
             command: "/bin/echo".to_string(),
@@ -889,13 +915,13 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
             workspace_write_risk: None,
         },
         DurableItemSnapshot::CommandApprovalDecision {
-            id: ItemId::new("item_0000000000000004"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000004").expect("valid item UUIDv7"),
             approval_id: "approval/one".to_string(),
             decision: "approved".to_string(),
             workspace_write_risk_acknowledgement: None,
         },
         DurableItemSnapshot::ToolResult {
-            id: ItemId::new("item_0000000000000005"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000005").expect("valid item UUIDv7"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
             result: DurableToolResult::Process(DurableProcessResult {
@@ -970,17 +996,18 @@ fn shell_approval_audit_and_process_result_survive_recovery() {
 fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_replayed() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let user = DurableItemSnapshot::UserMessage {
-        id: ItemId::new("item_0000000000000001"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000001").expect("valid item UUIDv7"),
         content: vec![sugarcode_state::DurableUserContentPart::Text {
             text: "Run it".to_string(),
         }],
     };
     let incremental = [
         DurableItemSnapshot::ToolCall {
-            id: ItemId::new("item_0000000000000002"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
             arguments: json!({
@@ -991,7 +1018,7 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
             }),
         },
         DurableItemSnapshot::CommandApprovalRequest {
-            id: ItemId::new("item_0000000000000003"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
             approval_id: "approval/one".to_string(),
             call_id: "call_shell".to_string(),
             command: "/bin/echo".to_string(),
@@ -1005,7 +1032,7 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
             workspace_write_risk: Some("nonTransactionalWorkspaceTreeV1".to_string()),
         },
         DurableItemSnapshot::CommandApprovalDecision {
-            id: ItemId::new("item_0000000000000004"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000004").expect("valid item UUIDv7"),
             approval_id: "approval/one".to_string(),
             decision: "approved".to_string(),
             workspace_write_risk_acknowledgement: Some(
@@ -1013,7 +1040,7 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
             ),
         },
         DurableItemSnapshot::CommandExecutionAttempt {
-            id: ItemId::new("item_0000000000000005"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000005").expect("valid item UUIDv7"),
             approval_id: "approval/one".to_string(),
             call_id: "call_shell".to_string(),
         },
@@ -1062,15 +1089,15 @@ fn workspace_write_attempt_without_result_recovers_as_interrupted_and_is_not_rep
         item,
         DurableItemSnapshot::ToolResult { .. } | DurableItemSnapshot::FileChange { .. }
     )));
-    assert_eq!(repository.id_sequences().item, 5);
 }
 
 #[test]
 fn execution_attempt_requires_matching_approved_shell_audit() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     repository
@@ -1081,7 +1108,8 @@ fn execution_attempt_requires_matching_approved_shell_audit() {
                 id: turn_id.clone(),
                 status: DurableTurnStatus::InProgress,
                 items: vec![DurableItemSnapshot::UserMessage {
-                    id: ItemId::new("item_0000000000000001"),
+                    id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                        .expect("valid item UUIDv7"),
                     content: vec![sugarcode_state::DurableUserContentPart::Text {
                         text: "Run it".to_string(),
                     }],
@@ -1099,7 +1127,8 @@ fn execution_attempt_requires_matching_approved_shell_audit() {
             &thread_id,
             &turn_id,
             &DurableItemSnapshot::CommandExecutionAttempt {
-                id: ItemId::new("item_0000000000000002"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000002")
+                    .expect("valid item UUIDv7"),
                 approval_id: "approval/missing".to_string(),
                 call_id: "call_missing".to_string(),
             },
@@ -1117,8 +1146,9 @@ fn execution_attempt_requires_matching_approved_shell_audit() {
 fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     repository
@@ -1129,7 +1159,8 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
                 id: turn_id.clone(),
                 status: DurableTurnStatus::InProgress,
                 items: vec![DurableItemSnapshot::UserMessage {
-                    id: ItemId::new("item_0000000000000001"),
+                    id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                        .expect("valid item UUIDv7"),
                     content: vec![sugarcode_state::DurableUserContentPart::Text {
                         text: "Run it".to_string(),
                     }],
@@ -1144,13 +1175,13 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
         .expect("turn start");
     for item in [
         DurableItemSnapshot::ToolCall {
-            id: ItemId::new("item_0000000000000002"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
             arguments: json!({"command": "/bin/echo", "arguments": ["ok"], "cwd": "."}),
         },
         DurableItemSnapshot::CommandApprovalRequest {
-            id: ItemId::new("item_0000000000000003"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
             approval_id: "approval/one".to_string(),
             call_id: "call_shell".to_string(),
             command: "/bin/echo".to_string(),
@@ -1174,7 +1205,8 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
             &thread_id,
             &turn_id,
             &DurableItemSnapshot::CommandApprovalDecision {
-                id: ItemId::new("item_0000000000000004"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000004")
+                    .expect("valid item UUIDv7"),
                 approval_id: "approval/one".to_string(),
                 decision: "approved".to_string(),
                 workspace_write_risk_acknowledgement: None,
@@ -1193,7 +1225,8 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
             &thread_id,
             &turn_id,
             &DurableItemSnapshot::CommandApprovalDecision {
-                id: ItemId::new("item_0000000000000004"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000004")
+                    .expect("valid item UUIDv7"),
                 approval_id: "approval/one".to_string(),
                 decision: "approved".to_string(),
                 workspace_write_risk_acknowledgement: Some(
@@ -1207,7 +1240,8 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
             &thread_id,
             &turn_id,
             &DurableItemSnapshot::CommandExecutionAttempt {
-                id: ItemId::new("item_0000000000000005"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000005")
+                    .expect("valid item UUIDv7"),
                 approval_id: "approval/one".to_string(),
                 call_id: "call_shell".to_string(),
             },
@@ -1219,10 +1253,11 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
 fn file_change_proposal_survives_recovery_without_replaying_the_write() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let proposal = DurableItemSnapshot::FileChange {
-        id: ItemId::new("item_0000000000000003"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
         call_id: "call_patch".to_string(),
         path: "notes.txt".to_string(),
         kind: "update".to_string(),
@@ -1245,7 +1280,8 @@ fn file_change_proposal_survives_recovery_without_replaying_the_write() {
                     id: turn_id.clone(),
                     status: DurableTurnStatus::InProgress,
                     items: vec![DurableItemSnapshot::UserMessage {
-                        id: ItemId::new("item_0000000000000001"),
+                        id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                            .expect("valid item UUIDv7"),
                         content: vec![sugarcode_state::DurableUserContentPart::Text {
                             text: "Update it".to_string(),
                         }],
@@ -1263,7 +1299,8 @@ fn file_change_proposal_survives_recovery_without_replaying_the_write() {
                 &thread_id,
                 &turn_id,
                 &DurableItemSnapshot::ToolCall {
-                    id: ItemId::new("item_0000000000000002"),
+                    id: ItemId::parse("00000000-0002-7000-8000-000000000002")
+                        .expect("valid item UUIDv7"),
                     call_id: "call_patch".to_string(),
                     name: "workspace/apply-diff".to_string(),
                     arguments: json!({
@@ -1296,7 +1333,8 @@ fn file_change_proposal_survives_recovery_without_replaying_the_write() {
 fn a_started_turn_is_replaced_by_its_single_terminal_record() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     let started = started_text_turn();
@@ -1329,7 +1367,8 @@ fn a_started_turn_is_replaced_by_its_single_terminal_record() {
 fn active_turn_rejects_lifecycle_records_and_non_terminal_fork_snapshots() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     repository
@@ -1351,21 +1390,23 @@ fn active_turn_rejects_lifecycle_records_and_non_terminal_fork_snapshots() {
         ));
     }
     let mut in_progress = started_text_turn();
-    in_progress.id = TurnId::new("turn_0000000000000002");
+    in_progress.id =
+        TurnId::parse("00000000-0001-7000-8000-000000000002").expect("valid turn UUIDv7");
     in_progress.items[0] = DurableItemSnapshot::UserMessage {
-        id: ItemId::new("item_0000000000000003"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
         content: vec![sugarcode_state::DurableUserContentPart::Text {
             text: "copied input".to_string(),
         }],
     };
     in_progress.items[1] = DurableItemSnapshot::AgentMessage {
-        id: ItemId::new("item_0000000000000004"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000004").expect("valid item UUIDv7"),
         text: String::new(),
     };
     assert!(matches!(
         repository
             .create_thread_snapshot(&DurableThreadSnapshot {
-                id: ThreadId::new("thr_0000000000000002"),
+                id: ThreadId::parse("00000000-0000-7000-8000-000000000002")
+                    .expect("valid thread UUIDv7"),
                 turns: vec![in_progress],
                 lifecycle: DurableThreadLifecycle::Active,
                 origin: None,
@@ -1381,7 +1422,8 @@ fn active_turn_rejects_lifecycle_records_and_non_terminal_fork_snapshots() {
 fn replay_rejects_lifecycle_record_while_turn_is_pending() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
         repository.create_thread(&thread_id).expect("thread");
@@ -1391,7 +1433,7 @@ fn replay_rejects_lifecycle_record_while_turn_is_pending() {
     }
     let rollout = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
     writeln!(
         fs::OpenOptions::new()
             .append(true)

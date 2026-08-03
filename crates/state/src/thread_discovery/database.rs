@@ -160,7 +160,10 @@ pub(super) fn validate_projection(
         let order_key: String = row.get(1)?;
         let record_sequence: i64 = row.get(2)?;
         let lifecycle: String = row.get(3)?;
-        let Some(state) = threads.get(&ThreadId::new(thread_id.clone())) else {
+        let Ok(thread_id) = ThreadId::parse(thread_id) else {
+            return Err(rusqlite::Error::InvalidQuery);
+        };
+        let Some(state) = threads.get(&thread_id) else {
             return Err(rusqlite::Error::InvalidQuery);
         };
         let snapshot = &state.snapshot;
@@ -200,8 +203,7 @@ pub(super) fn open_existing_database(path: &Path) -> rusqlite::Result<Connection
 }
 
 pub(super) fn thread_order_key(thread_id: &ThreadId) -> Result<String, RolloutError> {
-    let sequence = parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
-    Ok(format!("{sequence:020}"))
+    Ok(thread_id.as_str().to_owned())
 }
 
 pub(super) fn lifecycle_name(lifecycle: DurableThreadLifecycle) -> &'static str {

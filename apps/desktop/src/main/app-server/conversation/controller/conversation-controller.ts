@@ -43,11 +43,17 @@ import type { ServerMessage } from '../../transport/server-message';
 const MAX_BUFFERED_LIFECYCLE = 64;
 
 type ConversationProjection = {
+  workspaceId: string;
   phase: ConversationStateSnapshot['phase'];
   activeTurnId: string | null;
   turns: MutableTurn[];
   notice: ConversationStateSnapshot['notice'];
 };
+
+export type ScopedConversationStateListener = (
+  workspaceId: string,
+  snapshot: ConversationStateSnapshot,
+) => void;
 
 type ConversationControllerOptions = Readonly<{
   getRpc: () => ConversationRpc | null;
@@ -69,6 +75,8 @@ export class ConversationController extends ConversationLifecycleController {
   private readonly onProtocolFailure: ConversationControllerOptions['onProtocolFailure'];
   private readonly getActionBlocked: () => boolean;
   private readonly listeners = new Set<ConversationStateListener>();
+  private readonly scopedListeners = new Set<ScopedConversationStateListener>();
+  private workspaceId: string | null = null;
   private revision = 0;
   private bufferedLifecycle: ConversationLifecycle[] = [];
   private awaitingTurnResponse = false;
@@ -94,6 +102,11 @@ export class ConversationController extends ConversationLifecycleController {
   subscribe = (listener: ConversationStateListener): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  };
+
+  subscribeScoped = (listener: ScopedConversationStateListener): (() => void) => {
+    this.scopedListeners.add(listener);
+    return () => this.scopedListeners.delete(listener);
   };
 
   setAgentApprovalTasks = (waitingTaskIds: ReadonlySet<string>): void => {
@@ -125,11 +138,8 @@ export class ConversationController extends ConversationLifecycleController {
     }
   };
 
-  loadThreadIndex = async (): Promise<boolean> => {
-    return this.restoreForConnection();
-  };
-
   switchWorkspace = async (
+    workspaceId: string,
     preferredThreadId?: string,
   ): Promise<boolean> => {
     const rpc = this.getRpc();
@@ -137,6 +147,7 @@ export class ConversationController extends ConversationLifecycleController {
       return false;
     }
     this.saveSelectedProjection();
+    this.workspaceId = workspaceId;
     this.selectionAbortController?.abort();
     this.searchAbortController?.abort();
     const abortController = new AbortController();
@@ -156,7 +167,7 @@ export class ConversationController extends ConversationLifecycleController {
           throw new Error('Preferred Thread is not bound to this workspace.');
         }
         const cached = this.projections.get(preferredThreadId);
-        if (cached) {
+        if (cached?.workspaceId === workspaceId) {
           this.restoreProjection(preferredThreadId, cached);
         } else {
           const snapshot = await rpc.resumeThread(
@@ -194,6 +205,7 @@ export class ConversationController extends ConversationLifecycleController {
   };
 
   restoreForConnection = async (
+    workspaceId: string,
     preferredThreadId?: string,
   ): Promise<boolean> => {
     const rpc = this.getRpc();
@@ -202,6 +214,7 @@ export class ConversationController extends ConversationLifecycleController {
     }
 
     const abortController = new AbortController();
+    this.workspaceId = workspaceId;
     this.actionAbortController = abortController;
     try {
       const listed = rpc.listActiveThreads
@@ -846,6 +859,7 @@ export class ConversationController extends ConversationLifecycleController {
 
   handleNotification = (
     message: Extract<ServerMessage, { kind: 'notification' }>,
+    workspaceId: string,
   ): void => {
     let lifecycle: ConversationLifecycle | null;
     try {
@@ -857,15 +871,29 @@ export class ConversationController extends ConversationLifecycleController {
         lifecycle.type === 'threadStarted'
           ? lifecycle.params.thread.id
           : lifecycle.params.threadId;
+      if (
+        lifecycle.type === 'threadStarted' &&
+        lifecycle.params.thread.workspaceId !== workspaceId
+      ) {
+        throw new Error('Thread lifecycle workspace binding changed in transit.');
+      }
       const belongsToPendingNewThread =
-        this.threadId === null && this.phase === 'starting';
+        workspaceId === this.workspaceId &&
+        this.threadId === null &&
+        this.phase === 'starting';
+      if (targetThreadId === this.threadId && workspaceId !== this.workspaceId) {
+        throw new Error('Selected Thread received another workspace lifecycle.');
+      }
       if (!belongsToPendingNewThread && targetThreadId !== this.threadId) {
         const target = this.projections.get(targetThreadId);
-        if (!target) {
+        if (!target || target.workspaceId !== workspaceId) {
           throw new Error('Lifecycle referenced an unknown background Thread.');
         }
         const selectedThreadId = this.threadId;
+        const selectedProjection = this.captureSelectedProjection();
+        const selectedWorkspaceId = this.workspaceId;
         this.saveSelectedProjection();
+        this.workspaceId = workspaceId;
         this.restoreProjection(targetThreadId, target);
         this.publishSuspended = true;
         try {
@@ -873,10 +901,8 @@ export class ConversationController extends ConversationLifecycleController {
           this.saveSelectedProjection();
         } finally {
           this.publishSuspended = false;
-          const selected = this.projections.get(selectedThreadId);
-          if (selected) {
-            this.restoreProjection(selectedThreadId, selected);
-          }
+          this.workspaceId = selectedWorkspaceId;
+          this.restoreProjection(selectedThreadId, selectedProjection);
         }
         if (
           lifecycle.type === 'turnCompleted' &&
@@ -998,6 +1024,12 @@ export class ConversationController extends ConversationLifecycleController {
   };
 
   private applyActiveThreadList = (listed: ThreadListResponse): void => {
+    if (
+      !this.workspaceId ||
+      listed.data.some((thread) => thread.workspaceId !== this.workspaceId)
+    ) {
+      throw new Error('Thread index crossed workspace ownership.');
+    }
     this.navigator.activeThreadIds = listed.data.map((thread) => thread.id);
     this.navigator.activeThreadTitles = Object.fromEntries(
       listed.data.flatMap((thread) =>
@@ -1060,18 +1092,24 @@ export class ConversationController extends ConversationLifecycleController {
     if (!this.threadId) {
       return;
     }
-    this.projections.set(this.threadId, {
-      phase: this.phase,
-      activeTurnId: this.activeTurnId,
-      turns: this.turns,
-      notice: this.notice,
-    });
+    this.projections.set(this.threadId, this.captureSelectedProjection());
   };
 
+  private captureSelectedProjection = (): ConversationProjection => ({
+    workspaceId: this.workspaceId ?? 'unbound',
+    phase: this.phase,
+    activeTurnId: this.activeTurnId,
+    turns: this.turns,
+    notice: this.notice,
+  });
+
   private restoreProjection = (
-    threadId: string,
+    threadId: string | null,
     projection: ConversationProjection,
   ): void => {
+    if (this.workspaceId !== projection.workspaceId) {
+      throw new Error('Conversation projection belongs to another workspace.');
+    }
     this.threadId = threadId;
     this.phase = projection.phase;
     this.activeTurnId = projection.activeTurnId;
@@ -1119,14 +1157,21 @@ export class ConversationController extends ConversationLifecycleController {
       notice: this.notice,
     });
     const runningThreadIds = [...this.projections.entries()]
-      .filter(([, projection]) => projection.activeTurnId !== null)
+      .filter(
+        ([, projection]) =>
+          projection.workspaceId === this.workspaceId &&
+          projection.activeTurnId !== null,
+      )
       .map(([threadId]) => threadId);
     return {
       ...snapshot,
       navigator: {
         ...snapshot.navigator,
         runningThreadIds,
-        unreadThreadIds: [...this.unreadThreadIds],
+        unreadThreadIds: [...this.unreadThreadIds].filter(
+          (threadId) =>
+            this.projections.get(threadId)?.workspaceId === this.workspaceId,
+        ),
       },
     };
   };
@@ -1140,6 +1185,11 @@ export class ConversationController extends ConversationLifecycleController {
     const snapshot = this.createSnapshot();
     for (const listener of this.listeners) {
       listener(snapshot);
+    }
+    if (this.workspaceId) {
+      for (const listener of this.scopedListeners) {
+        listener(this.workspaceId, snapshot);
+      }
     }
   };
 }

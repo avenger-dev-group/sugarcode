@@ -6,10 +6,11 @@ import type { ResumeSnapshot } from '../../../../src/main/app-server/conversatio
 
 test('an interrupted batch may contain multiple declared command calls', () => {
   const snapshot: ResumeSnapshot = {
-    threadId: 'thr_0000000000000017',
+    threadId: '00000000-0000-7000-8000-000000000017',
+    workspaceId: 'workspace-test',
     turns: [
       {
-        id: 'turn_0000000000000036',
+        id: '00000000-0001-7000-8000-000000000036',
         status: 'interrupted',
         items: [
           {
@@ -55,10 +56,11 @@ test('an interrupted batch may contain multiple declared command calls', () => {
 
 test('a completed turn cannot leave a declared command call unresolved', () => {
   const snapshot: ResumeSnapshot = {
-    threadId: 'thr_0000000000000017',
+    threadId: '00000000-0000-7000-8000-000000000017',
+    workspaceId: 'workspace-test',
     turns: [
       {
-        id: 'turn_0000000000000036',
+        id: '00000000-0001-7000-8000-000000000036',
         status: 'completed',
         items: [
           {

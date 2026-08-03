@@ -4,4 +4,4 @@
 {"jsonrpc":"2.0","id":"start-2","method":"thread/start"}
 {"jsonrpc":"2.0","id":"start-3","method":"thread/start"}
 {"jsonrpc":"2.0","id":"list-1","method":"thread/list","params":{"limit":2}}
-{"jsonrpc":"2.0","id":"list-2","method":"thread/list","params":{"cursor":"thr_0000000000000002","limit":2}}
+{"jsonrpc":"2.0","id":"list-2","method":"thread/list","params":{"cursor":"00000000-0000-7000-8000-000000000002","limit":2}}

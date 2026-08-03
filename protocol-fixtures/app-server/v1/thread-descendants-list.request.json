@@ -1,1 +1,1 @@
-{"jsonrpc":"2.0","id":"descendants-1","method":"thread/descendants/list","params":{"threadId":"thr_0000000000000001"}}
+{"jsonrpc":"2.0","id":"descendants-1","method":"thread/descendants/list","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}

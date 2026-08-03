@@ -10,6 +10,11 @@ mod turn;
 mod workspace;
 mod workspace_git;
 
+pub(crate) fn is_canonical_uuid_v7(value: &str) -> bool {
+    uuid::Uuid::parse_str(value)
+        .is_ok_and(|id| id.get_version_num() == 7 && id.hyphenated().to_string() == value)
+}
+
 pub use asset::AssetDescriptor;
 pub use asset::AssetImportParams;
 pub use asset::AssetImportResponse;

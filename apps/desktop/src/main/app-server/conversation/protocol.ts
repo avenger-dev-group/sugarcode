@@ -293,6 +293,7 @@ export type TokenUsageValue = Readonly<{
 
 export type ResumeSnapshot = Readonly<{
   threadId: string;
+  workspaceId: string;
   title?: string;
   origin?: Readonly<{
     type: 'subagent';
@@ -376,6 +377,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isId = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
+
+const UUID_V7_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export const isUuidV7 = (value: unknown): value is string =>
+  typeof value === 'string' && UUID_V7_PATTERN.test(value);
 
 const MAX_WORKSPACE_LIST_ENTRIES = 1_000;
 const MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES = 1_024;
@@ -715,7 +722,7 @@ const parseModelSelection = (
 const parseTurn = (value: unknown): TurnStartResponse['turn'] => {
   if (
     !isRecord(value) ||
-    !isId(value.id) ||
+    !isUuidV7(value.id) ||
     typeof value.status !== 'string' ||
     !TURN_STATUSES.has(value.status)
   ) {
@@ -740,14 +747,21 @@ const parseTurn = (value: unknown): TurnStartResponse['turn'] => {
 export const parseThreadStartResponse = (
   value: unknown,
 ): ThreadStartResponse => {
-  if (!isRecord(value) || !isRecord(value.thread) || !isId(value.thread.id)) {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.thread) ||
+    !isUuidV7(value.thread.id) ||
+    !isId(value.thread.workspaceId)
+  ) {
     throw new Error('Invalid thread/start response.');
   }
-  return { thread: { id: value.thread.id } };
+  return {
+    thread: { id: value.thread.id, workspaceId: value.thread.workspaceId },
+  };
 };
 
 const parseResumeItem = (value: unknown): ResumeItem => {
-  if (!isRecord(value) || !isId(value.id) || typeof value.type !== 'string') {
+  if (!isRecord(value) || !isUuidV7(value.id) || typeof value.type !== 'string') {
     throw new Error('Invalid Item in thread/resume response.');
   }
   return parseConversationItem(value) ?? { type: 'other', id: value.id };
@@ -757,7 +771,8 @@ export const parseThreadResumeResponse = (value: unknown): ResumeSnapshot => {
   if (
     !isRecord(value) ||
     !isRecord(value.thread) ||
-    !isId(value.thread.id) ||
+    !isUuidV7(value.thread.id) ||
+    !isId(value.thread.workspaceId) ||
     (Object.hasOwn(value.thread, 'title') &&
       !isThreadTitle(value.thread.title)) ||
     !Array.isArray(value.turns)
@@ -808,6 +823,7 @@ export const parseThreadResumeResponse = (value: unknown): ResumeSnapshot => {
   }
   return {
     threadId: value.thread.id,
+    workspaceId: value.thread.workspaceId,
     ...(typeof value.thread.title === 'string'
       ? { title: value.thread.title }
       : {}),
@@ -837,7 +853,7 @@ export const parseTurnInterruptResponse = (
 };
 
 const parseConversationItem = (value: unknown): ConversationItem | null => {
-  if (!isRecord(value) || !isId(value.id) || typeof value.type !== 'string') {
+  if (!isRecord(value) || !isUuidV7(value.id) || typeof value.type !== 'string') {
     throw new Error('Invalid Item.');
   }
   if (isToolValidationRejectedItem(value)) {
@@ -1416,7 +1432,11 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
 const parseThreadAndTurn = (
   value: unknown,
 ): { threadId: string; turnId: string } => {
-  if (!isRecord(value) || !isId(value.threadId) || !isId(value.turnId)) {
+  if (
+    !isRecord(value) ||
+    !isUuidV7(value.threadId) ||
+    !isUuidV7(value.turnId)
+  ) {
     throw new Error('Invalid conversation lifecycle correlation.');
   }
   return { threadId: value.threadId, turnId: value.turnId };
@@ -1447,17 +1467,23 @@ export const parseConversationLifecycle = (
       if (
         !isRecord(params) ||
         !isRecord(params.thread) ||
-        !isId(params.thread.id)
+        !isUuidV7(params.thread.id) ||
+        !isId(params.thread.workspaceId)
       ) {
         throw new Error('Invalid thread/started notification.');
       }
       return {
         type: 'threadStarted',
-        params: { thread: { id: params.thread.id } },
+        params: {
+          thread: {
+            id: params.thread.id,
+            workspaceId: params.thread.workspaceId,
+          },
+        },
       };
     }
     case 'turn/started': {
-      if (!isRecord(params) || !isId(params.threadId)) {
+      if (!isRecord(params) || !isUuidV7(params.threadId)) {
         throw new Error('Invalid turn/started notification.');
       }
       const turn = parseTurn(params.turn);
@@ -1526,9 +1552,9 @@ export const parseConversationLifecycle = (
     case 'item/agentMessage/delta': {
       if (
         !isRecord(params) ||
-        !isId(params.threadId) ||
-        !isId(params.turnId) ||
-        !isId(params.itemId) ||
+        !isUuidV7(params.threadId) ||
+        !isUuidV7(params.turnId) ||
+        !isUuidV7(params.itemId) ||
         typeof params.delta !== 'string'
       ) {
         throw new Error('Invalid AgentMessage delta notification.');
@@ -1544,7 +1570,7 @@ export const parseConversationLifecycle = (
       };
     }
     case 'turn/completed': {
-      if (!isRecord(params) || !isId(params.threadId)) {
+      if (!isRecord(params) || !isUuidV7(params.threadId)) {
         throw new Error('Invalid turn/completed notification.');
       }
       const turn = parseTurn(params.turn);

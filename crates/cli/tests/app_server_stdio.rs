@@ -1,5 +1,6 @@
 use serde_json::Value;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -1525,11 +1526,20 @@ fn run_golden_with_options_and_environment(
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).expect("golden output JSON"))
         .collect::<Vec<_>>();
+    let mut expected_to_actual_ids = BTreeMap::new();
+    let mut actual_to_expected_ids = BTreeMap::new();
     let mut expected_index = 0usize;
     let mut actual = String::new();
     let input_lines = input.lines().collect::<Vec<_>>();
     for (input_index, input_line) in input_lines.iter().enumerate() {
-        let input_value = serde_json::from_str::<Value>(input_line);
+        let mut input_value = serde_json::from_str::<Value>(input_line);
+        let resolved_input_line = match &mut input_value {
+            Ok(resolved_input) => {
+                replace_mapped_ids(resolved_input, &expected_to_actual_ids);
+                serde_json::to_string(resolved_input).expect("resolved golden input serializes")
+            }
+            Err(_) => (*input_line).to_string(),
+        };
         let response_id = match &input_value {
             Ok(Value::Object(object))
                 if object.get("method").is_none()
@@ -1544,7 +1554,12 @@ fn run_golden_with_options_and_environment(
                 let line = read_golden_protocol_line(&mut stdout, "golden server request");
                 let server_message = serde_json::from_str::<Value>(line.trim_end())
                     .expect("golden server request JSON");
-                actual.push_str(&line);
+                actual.push_str(&canonicalize_golden_line(
+                    &line,
+                    &expected_values[expected_index],
+                    &mut expected_to_actual_ids,
+                    &mut actual_to_expected_ids,
+                ));
                 expected_index += 1;
                 if server_message.get("id") == Some(response_id)
                     && server_message.get("method").is_some()
@@ -1553,7 +1568,7 @@ fn run_golden_with_options_and_environment(
                 }
             }
         }
-        writeln!(stdin, "{input_line}").expect("write fixture input");
+        writeln!(stdin, "{resolved_input_line}").expect("write fixture input");
         stdin.flush().expect("flush fixture input");
         let expects_response = match input_value {
             Err(_) => true,
@@ -1564,7 +1579,12 @@ fn run_golden_with_options_and_environment(
             if input_index + 1 == input_lines.len() {
                 while expected_index < expected_values.len() {
                     let line = read_golden_protocol_line(&mut stdout, "golden terminal");
-                    actual.push_str(&line);
+                    actual.push_str(&canonicalize_golden_line(
+                        &line,
+                        &expected_values[expected_index],
+                        &mut expected_to_actual_ids,
+                        &mut actual_to_expected_ids,
+                    ));
                     expected_index += 1;
                 }
             }
@@ -1572,7 +1592,12 @@ fn run_golden_with_options_and_environment(
         }
         loop {
             let line = read_golden_protocol_line(&mut stdout, "golden response");
-            actual.push_str(&line);
+            actual.push_str(&canonicalize_golden_line(
+                &line,
+                &expected_values[expected_index],
+                &mut expected_to_actual_ids,
+                &mut actual_to_expected_ids,
+            ));
             expected_index += 1;
             if expected_index >= expected_values.len()
                 || expected_values[expected_index].get("id").is_some()
@@ -1586,7 +1611,15 @@ fn run_golden_with_options_and_environment(
     stdout
         .read_to_string(&mut trailing)
         .expect("drain protocol output");
-    actual.push_str(&trailing);
+    for line in trailing.lines() {
+        actual.push_str(&canonicalize_golden_line(
+            line,
+            &expected_values[expected_index],
+            &mut expected_to_actual_ids,
+            &mut actual_to_expected_ids,
+        ));
+        expected_index += 1;
+    }
     let output = child.wait_with_output().expect("wait for app-server");
 
     assert!(output.status.success(), "app-server failed: {output:?}");
@@ -1613,6 +1646,90 @@ fn run_golden_with_options_and_environment(
     let actual = normalize_trace(&actual);
     let expected = normalize_trace(&expected);
     assert_eq!(actual, expected);
+}
+
+fn canonicalize_golden_line(
+    line: &str,
+    expected: &Value,
+    expected_to_actual: &mut BTreeMap<String, String>,
+    actual_to_expected: &mut BTreeMap<String, String>,
+) -> String {
+    let mut actual =
+        serde_json::from_str::<Value>(line.trim_end()).expect("golden protocol line JSON");
+    learn_uuid_mappings(expected, &actual, expected_to_actual, actual_to_expected);
+    replace_mapped_ids(&mut actual, actual_to_expected);
+    format!(
+        "{}\n",
+        serde_json::to_string(&actual).expect("canonical golden line serializes")
+    )
+}
+
+fn learn_uuid_mappings(
+    expected: &Value,
+    actual: &Value,
+    expected_to_actual: &mut BTreeMap<String, String>,
+    actual_to_expected: &mut BTreeMap<String, String>,
+) {
+    match (expected, actual) {
+        (Value::String(expected), Value::String(actual))
+            if expected != actual
+                && is_canonical_uuid_v7(expected)
+                && is_canonical_uuid_v7(actual) =>
+        {
+            if let Some(mapped) = expected_to_actual.insert(expected.clone(), actual.clone()) {
+                assert_eq!(mapped, *actual, "golden UUID placeholder changed identity");
+            }
+            if let Some(mapped) = actual_to_expected.insert(actual.clone(), expected.clone()) {
+                assert_eq!(mapped, *expected, "generated UUID was reused");
+            }
+        }
+        (Value::Array(expected), Value::Array(actual)) => {
+            for (expected, actual) in expected.iter().zip(actual) {
+                learn_uuid_mappings(expected, actual, expected_to_actual, actual_to_expected);
+            }
+        }
+        (Value::Object(expected), Value::Object(actual)) => {
+            for (key, expected) in expected {
+                if let Some(actual) = actual.get(key) {
+                    learn_uuid_mappings(expected, actual, expected_to_actual, actual_to_expected);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replace_mapped_ids(value: &mut Value, replacements: &BTreeMap<String, String>) {
+    match value {
+        Value::String(value) => {
+            for (from, to) in replacements {
+                if value.contains(from) {
+                    *value = value.replace(from, to);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                replace_mapped_ids(value, replacements);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                replace_mapped_ids(value, replacements);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn is_canonical_uuid_v7(value: &str) -> bool {
+    value.len() == 36
+        && value.as_bytes().get(14) == Some(&b'7')
+        && matches!(value.as_bytes().get(19), Some(b'8' | b'9' | b'a' | b'b'))
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
 }
 
 struct MockProvider {
@@ -1974,11 +2091,31 @@ fn normalize_trace(output: &str) -> String {
         {
             *binding = Value::String("<workspace-binding>".to_string());
         }
+        scrub_workspace_bindings(&mut value);
         scrub_command_paths(&mut value);
         normalized.push_str(&serde_json::to_string(&value).expect("normalized JSON serializes"));
         normalized.push('\n');
     }
     normalized
+}
+
+fn scrub_workspace_bindings(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                scrub_workspace_bindings(value);
+            }
+        }
+        Value::Object(values) => {
+            if let Some(workspace_id) = values.get_mut("workspaceId") {
+                *workspace_id = Value::String("<workspace-binding>".to_string());
+            }
+            for value in values.values_mut() {
+                scrub_workspace_bindings(value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
 }
 
 fn scrub_command_paths(value: &mut Value) {

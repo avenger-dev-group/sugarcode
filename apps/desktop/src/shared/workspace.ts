@@ -185,8 +185,9 @@ const isSafeRelativePath = (
 
 const isThreadId = (value: unknown): value is string =>
   typeof value === 'string' &&
-  value.length <= 128 &&
-  /^thr_[A-Za-z0-9_-]+$/u.test(value);
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+    value,
+  );
 
 export const isWorkspaceStateSnapshot = (
   value: unknown,

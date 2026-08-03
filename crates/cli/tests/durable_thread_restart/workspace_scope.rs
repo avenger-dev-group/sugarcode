@@ -59,7 +59,7 @@ fn restart_keeps_threads_bound_to_their_scope_and_uses_the_new_process_scope() {
             "jsonrpc":"2.0",
             "id":"scope-a-turn",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Patch scope A"}]}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Patch scope A"}]}
         }),
         14,
     );
@@ -87,7 +87,7 @@ fn restart_keeps_threads_bound_to_their_scope_and_uses_the_new_process_scope() {
             "jsonrpc":"2.0",
             "id":"resume",
             "method":"thread/resume",
-            "params":{"threadId":"thr_0000000000000001"}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );

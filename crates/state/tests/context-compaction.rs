@@ -14,7 +14,7 @@ use sugarcode_state::validate_context_compaction;
 fn completed_turn(items: Vec<DurableItemSnapshot>) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
         model: None,
-        id: TurnId::new("turn_0000000000000001"),
+        id: TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
         status: DurableTurnStatus::Completed,
         items,
         context_compaction: None,
@@ -30,19 +30,19 @@ fn tool_history_becomes_a_deterministic_receipt_without_raw_output() {
     let raw_output = "private raw tool output that must not survive compaction";
     let turn = completed_turn(vec![
         DurableItemSnapshot::UserMessage {
-            id: ItemId::new("item_0000000000000001"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000001").expect("valid item UUIDv7"),
             content: vec![sugarcode_state::DurableUserContentPart::Text {
                 text: "Inspect src/lib.rs".to_string(),
             }],
         },
         DurableItemSnapshot::ToolCall {
-            id: ItemId::new("item_0000000000000002"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             call_id: "call_1".to_string(),
             name: "workspace/read".to_string(),
             arguments: serde_json::json!({"path": "src/lib.rs"}),
         },
         DurableItemSnapshot::FileChange {
-            id: ItemId::new("item_0000000000000003"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
             call_id: "call_1".to_string(),
             path: "src/lib.rs".to_string(),
             kind: "audit-only".to_string(),
@@ -55,7 +55,7 @@ fn tool_history_becomes_a_deterministic_receipt_without_raw_output() {
             final_newline: true,
         },
         DurableItemSnapshot::ToolResult {
-            id: ItemId::new("item_0000000000000004"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000004").expect("valid item UUIDv7"),
             call_id: "call_1".to_string(),
             name: "workspace/read".to_string(),
             result: DurableToolResult::Success {
@@ -64,7 +64,7 @@ fn tool_history_becomes_a_deterministic_receipt_without_raw_output() {
             },
         },
         DurableItemSnapshot::AgentMessage {
-            id: ItemId::new("item_0000000000000005"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000005").expect("valid item UUIDv7"),
             text: "Inspection complete.".to_string(),
         },
     ]);
@@ -92,7 +92,7 @@ fn mcp_history_keeps_canonical_arguments_and_result_receipt_but_drops_raw_result
     let raw_result = "private MCP result that must not survive compaction";
     let turn = completed_turn(vec![
         DurableItemSnapshot::McpToolCall {
-            id: ItemId::new("item_0000000000000001"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000001").expect("valid item UUIDv7"),
             call_id: "call_mcp".to_string(),
             name: "mcp__fixture__inspect".to_string(),
             arguments: arguments.clone(),
@@ -101,7 +101,7 @@ fn mcp_history_keeps_canonical_arguments_and_result_receipt_but_drops_raw_result
             inventory_sha256: "b".repeat(64),
         },
         DurableItemSnapshot::McpToolCallApprovalRequest {
-            id: ItemId::new("item_0000000000000002"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             approval_id: "approval/mcp".to_string(),
             call_id: "call_mcp".to_string(),
             name: "mcp__fixture__inspect".to_string(),
@@ -111,18 +111,18 @@ fn mcp_history_keeps_canonical_arguments_and_result_receipt_but_drops_raw_result
             inventory_sha256: "b".repeat(64),
         },
         DurableItemSnapshot::McpToolCallApprovalDecision {
-            id: ItemId::new("item_0000000000000003"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
             approval_id: "approval/mcp".to_string(),
             decision: "approved".to_string(),
         },
         DurableItemSnapshot::McpToolExecutionAttempt {
-            id: ItemId::new("item_0000000000000004"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000004").expect("valid item UUIDv7"),
             approval_id: "approval/mcp".to_string(),
             call_id: "call_mcp".to_string(),
             inventory_sha256: "b".repeat(64),
         },
         DurableItemSnapshot::McpToolResult {
-            id: ItemId::new("item_0000000000000005"),
+            id: ItemId::parse("00000000-0002-7000-8000-000000000005").expect("valid item UUIDv7"),
             call_id: "call_mcp".to_string(),
             name: "mcp__fixture__inspect".to_string(),
             result: DurableMcpToolResult::Completed {
@@ -153,7 +153,7 @@ fn mcp_history_keeps_canonical_arguments_and_result_receipt_but_drops_raw_result
 #[test]
 fn extractive_tail_truncation_is_utf8_safe_and_exactly_bounded() {
     let turn = completed_turn(vec![DurableItemSnapshot::AgentMessage {
-        id: ItemId::new("item_0000000000000001"),
+        id: ItemId::parse("00000000-0002-7000-8000-000000000001").expect("valid item UUIDv7"),
         text: "糖".repeat(MAX_CONTEXT_COMPACTION_MESSAGE_BYTES),
     }]);
     let compaction = build_context_compaction(std::slice::from_ref(&turn), 4_000_000, 30_000)

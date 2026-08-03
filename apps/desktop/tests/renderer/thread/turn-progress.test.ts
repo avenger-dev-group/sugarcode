@@ -9,7 +9,7 @@ import {
 
 test('quiet active turns become an explicit model wait without timing out', () => {
   const progress = toActiveTurnProgress(
-    'turn_0000000000000001',
+    '00000000-0001-7000-8000-000000000001',
     'metis-coder',
     'inProgress',
     MODEL_WAIT_NOTICE_SECONDS,

@@ -30,10 +30,12 @@ use tempfile::tempdir;
 fn completed_turn(sequence: u64) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
         model: None,
-        id: TurnId::new(format!("turn_{sequence:016}")),
+        id: TurnId::parse(format!("00000000-0001-7000-8000-{sequence:012}"))
+            .expect("valid turn UUIDv7"),
         status: DurableTurnStatus::Completed,
         items: vec![DurableItemSnapshot::AgentMessage {
-            id: ItemId::new(format!("item_{sequence:016}")),
+            id: ItemId::parse(format!("00000000-0002-7000-8000-{sequence:012}"))
+                .expect("valid item UUIDv7"),
             text: "SugarCode deterministic response.".to_string(),
         }],
         context_compaction: None,
@@ -47,17 +49,19 @@ fn completed_turn(sequence: u64) -> DurableTurnSnapshot {
 fn started_text_turn() -> DurableTurnSnapshot {
     DurableTurnSnapshot {
         model: None,
-        id: TurnId::new("turn_0000000000000001"),
+        id: TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
         status: DurableTurnStatus::InProgress,
         items: vec![
             DurableItemSnapshot::UserMessage {
-                id: ItemId::new("item_0000000000000001"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                    .expect("valid item UUIDv7"),
                 content: vec![sugarcode_state::DurableUserContentPart::Text {
                     text: "Hello".to_string(),
                 }],
             },
             DurableItemSnapshot::AgentMessage {
-                id: ItemId::new("item_0000000000000002"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000002")
+                    .expect("valid item UUIDv7"),
                 text: String::new(),
             },
         ],

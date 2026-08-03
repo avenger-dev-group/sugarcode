@@ -9,6 +9,7 @@ license = "MIT"
 rust-version = "1.96"
 
 [workspace.dependencies]
+uuid = { version = "1.24.0", features = ["v7"] }
 base64 = "0.22.1"
 cap-fs-ext = "=4.0.2"
 cap-std = "4.0.2"

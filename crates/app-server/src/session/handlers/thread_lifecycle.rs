@@ -27,7 +27,8 @@ where
                 None,
             )];
         }
-        let thread_id = ThreadId::new(params.thread_id.clone());
+        let thread_id = ThreadId::parse(params.thread_id.clone()).expect("validated thread ID");
+        let workspace_id = self.workspace_id().unwrap_or("unbound").to_owned();
         let descendants = match self.agent.list_descendants(&thread_id) {
             Ok(descendants) => descendants,
             Err(CoreError::StateUnavailable) => {
@@ -44,7 +45,10 @@ where
         };
         self.accepted_request_ids.insert(id.clone());
         let response = ThreadDescendantsListResponse {
-            data: descendants.into_iter().map(map_thread_snapshot).collect(),
+            data: descendants
+                .into_iter()
+                .map(|snapshot| map_thread_snapshot(snapshot, &workspace_id))
+                .collect(),
         };
         vec![JsonRpcMessage::Response(JsonRpcResponse {
             jsonrpc: JsonRpcVersion::V2,
@@ -117,6 +121,7 @@ where
         };
         let thread = PublicThread {
             id: thread_id.into_string(),
+            workspace_id: params.workspace_id.clone(),
             title: None,
             origin: None,
         };
@@ -180,7 +185,7 @@ where
             )];
         }
 
-        let thread_id = ThreadId::new(params.thread_id.clone());
+        let thread_id = ThreadId::parse(params.thread_id.clone()).expect("validated thread ID");
         let snapshot = match self.agent.resume_thread(&thread_id) {
             Ok(snapshot) => snapshot,
             Err(CoreError::ThreadNotFound(_)) => {
@@ -204,7 +209,7 @@ where
             }
         };
         self.accepted_request_ids.insert(id.clone());
-        let response = map_thread_snapshot(snapshot);
+        let response = map_thread_snapshot(snapshot, &params.workspace_id);
         vec![JsonRpcMessage::Response(JsonRpcResponse {
             jsonrpc: JsonRpcVersion::V2,
             id,
@@ -240,7 +245,7 @@ where
             )];
         }
 
-        let thread_id = ThreadId::new(params.thread_id.clone());
+        let thread_id = ThreadId::parse(params.thread_id.clone()).expect("validated thread ID");
         match self.agent.archive_thread(&thread_id) {
             Ok(()) => {
                 self.accepted_request_ids.insert(id.clone());
@@ -310,7 +315,7 @@ where
             )];
         }
 
-        let thread_id = ThreadId::new(params.thread_id.clone());
+        let thread_id = ThreadId::parse(params.thread_id.clone()).expect("validated thread ID");
         match self.agent.unarchive_thread(&thread_id) {
             Ok(()) => {
                 self.accepted_request_ids.insert(id.clone());
@@ -381,7 +386,7 @@ where
             )];
         }
 
-        let thread_id = ThreadId::new(params.thread_id.clone());
+        let thread_id = ThreadId::parse(params.thread_id.clone()).expect("validated thread ID");
         match self.agent.delete_thread(&thread_id) {
             Ok(()) => {
                 self.accepted_request_ids.insert(id.clone());
@@ -452,7 +457,8 @@ where
             )];
         }
 
-        let source_thread_id = ThreadId::new(params.thread_id.clone());
+        let source_thread_id =
+            ThreadId::parse(params.thread_id.clone()).expect("validated thread ID");
         let snapshot = match self.agent.fork_thread(&source_thread_id) {
             Ok(snapshot) => snapshot,
             Err(CoreError::ThreadNotFound(_)) => {
@@ -489,7 +495,8 @@ where
             }
         };
         self.accepted_request_ids.insert(id.clone());
-        let response = map_fork_snapshot(snapshot);
+        let workspace_id = self.workspace_id().unwrap_or("unbound").to_owned();
+        let response = map_fork_snapshot(snapshot, &workspace_id);
         let notification = ThreadStartedNotification {
             thread: response.thread.clone(),
         };

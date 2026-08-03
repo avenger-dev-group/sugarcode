@@ -28,7 +28,6 @@ use sugarcode_app_server_protocol::JsonRpcVersion;
 use sugarcode_app_server_protocol::WorkspaceOpenParams;
 use sugarcode_app_server_protocol::WorkspaceOpenResponse;
 use sugarcode_core::Core;
-use sugarcode_core::CoreIdAllocator;
 use sugarcode_core::CoreRuntime;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
@@ -89,7 +88,6 @@ pub(crate) struct WorkspaceRegistry {
     mcp_servers: Vec<String>,
     command_supervisor_executable: PathBuf,
     repository_store: RolloutRepositoryStore,
-    id_allocator: CoreIdAllocator,
     repository_diagnostics: Option<Vec<String>>,
     registered: HashMap<String, WorkspaceDescriptor>,
     contexts: HashMap<String, LoadedWorkspace>,
@@ -107,7 +105,6 @@ impl WorkspaceRegistry {
         let (runtime_tx, runtime_rx) = mpsc::channel(RUNTIME_INPUT_CAPACITY);
         let repository_store =
             RolloutRepositoryStore::open(config.home()).map_err(std::io::Error::other)?;
-        let id_allocator = CoreIdAllocator::new(repository_store.id_sequences());
         let repository_diagnostics = repository_store.diagnostics();
         Ok((
             Self {
@@ -117,7 +114,6 @@ impl WorkspaceRegistry {
                 mcp_servers,
                 command_supervisor_executable,
                 repository_store,
-                id_allocator,
                 repository_diagnostics: Some(repository_diagnostics),
                 registered: HashMap::new(),
                 contexts: HashMap::new(),
@@ -190,8 +186,10 @@ impl WorkspaceRegistry {
                         && !messages.iter().any(is_error_response)
                         && let Some(thread_id) = request_thread_id(object)
                     {
-                        self.thread_contexts
-                            .insert(ThreadId::new(thread_id.to_owned()), workspace_id.to_owned());
+                        self.thread_contexts.insert(
+                            ThreadId::parse(thread_id.to_owned()).expect("validated thread ID"),
+                            workspace_id.to_owned(),
+                        );
                     }
                     return messages;
                 }
@@ -219,7 +217,8 @@ impl WorkspaceRegistry {
                     return context.session.process_line(line);
                 }
                 if let Some(thread_id) = request_thread_id(object) {
-                    let thread_id = ThreadId::new(thread_id.to_owned());
+                    let thread_id =
+                        ThreadId::parse(thread_id.to_owned()).expect("validated thread ID");
                     let workspace_id =
                         self.thread_contexts.get(&thread_id).cloned().or_else(|| {
                             self.contexts.iter().find_map(|(workspace_id, context)| {
@@ -360,7 +359,6 @@ impl WorkspaceRegistry {
             command_supervisor_executable: self.command_supervisor_executable.clone(),
             repository: Some(AgentSurfaceRepository {
                 repository: Box::new(self.repository_store.workspace(Some(workspace_id))),
-                id_allocator: self.id_allocator.clone(),
                 diagnostics: self.repository_diagnostics.take().unwrap_or_default(),
             }),
         })

@@ -244,8 +244,8 @@ impl<'de> Deserialize<'de> for TurnStartParams {
         D: Deserializer<'de>,
     {
         let params = TurnStartParamsWire::deserialize(deserializer)?;
-        if params.thread_id.trim().is_empty() {
-            return Err(de::Error::custom("threadId must not be blank"));
+        if !crate::is_canonical_uuid_v7(&params.thread_id) {
+            return Err(de::Error::custom("threadId must be a canonical UUIDv7"));
         }
         if let Some(input) = params.input.as_ref() {
             validate_turn_input(input).map_err(de::Error::custom)?;
@@ -412,8 +412,12 @@ impl<'de> Deserialize<'de> for TurnInterruptParams {
         D: Deserializer<'de>,
     {
         let params = TurnInterruptParamsWire::deserialize(deserializer)?;
-        if params.thread_id.trim().is_empty() || params.turn_id.trim().is_empty() {
-            return Err(de::Error::custom("turn identifiers must not be blank"));
+        if !crate::is_canonical_uuid_v7(&params.thread_id)
+            || !crate::is_canonical_uuid_v7(&params.turn_id)
+        {
+            return Err(de::Error::custom(
+                "threadId and turnId must be canonical UUIDv7 values",
+            ));
         }
         Ok(Self {
             thread_id: params.thread_id,

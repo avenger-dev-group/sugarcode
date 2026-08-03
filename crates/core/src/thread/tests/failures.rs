@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn failed_thread_write_does_not_commit_memory_or_advance_ids() {
+fn failed_thread_write_does_not_commit_memory() {
     let mut core = Core::with_repository(Box::new(FailingRepository {
         fail_create: true,
         fail_append: false,
@@ -13,11 +13,10 @@ fn failed_thread_write_does_not_commit_memory_or_advance_ids() {
         Err(CoreError::StateUnavailable)
     );
     assert_eq!(core.thread_count(), 0);
-    assert_eq!(core.last_thread_sequence, 0);
 }
 
 #[test]
-fn failed_turn_write_does_not_commit_memory_or_advance_ids() {
+fn failed_turn_write_does_not_commit_memory() {
     let mut core = Core::with_repository(Box::new(FailingRepository {
         fail_create: false,
         fail_append: true,
@@ -30,8 +29,6 @@ fn failed_turn_write_does_not_commit_memory_or_advance_ids() {
         Err(CoreError::StateUnavailable)
     );
     assert_eq!(core.turn_count(&thread_id), 0);
-    assert_eq!(core.last_turn_sequence, 0);
-    assert_eq!(core.last_item_sequence, 0);
 }
 
 #[test]
@@ -54,7 +51,8 @@ fn failed_archive_write_does_not_hide_the_in_memory_thread() {
 
 #[test]
 fn failed_unarchive_write_does_not_restore_the_thread_in_memory() {
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut threads = BTreeMap::new();
     threads.insert(
         thread_id.clone(),
@@ -96,16 +94,18 @@ fn failed_delete_write_does_not_hide_the_in_memory_thread() {
 }
 
 #[test]
-fn failed_fork_write_does_not_materialize_or_advance_ids() {
-    let source_id = ThreadId::new("thr_0000000000000001");
+fn failed_fork_write_does_not_materialize() {
+    let source_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let source = DurableThreadSnapshot {
         id: source_id.clone(),
         turns: vec![DurableTurnSnapshot {
             model: None,
-            id: TurnId::new("turn_0000000000000001"),
+            id: TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
             status: DurableTurnStatus::Completed,
             items: vec![DurableItemSnapshot::AgentMessage {
-                id: ItemId::new("item_0000000000000001"),
+                id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                    .expect("valid item UUIDv7"),
                 text: DETERMINISTIC_AGENT_MESSAGE.to_string(),
             }],
             context_compaction: None,
@@ -122,11 +122,6 @@ fn failed_fork_write_does_not_materialize_or_advance_ids() {
     let mut core = Core::with_repository(Box::new(FailingRepository {
         fail_create: true,
         threads,
-        sequences: IdSequences {
-            thread: 1,
-            turn: 1,
-            item: 1,
-        },
         ..Default::default()
     }));
 
@@ -135,9 +130,6 @@ fn failed_fork_write_does_not_materialize_or_advance_ids() {
         Err(CoreError::StateUnavailable)
     );
     assert_eq!(core.thread_count(), 0);
-    assert_eq!(core.last_thread_sequence, 1);
-    assert_eq!(core.last_turn_sequence, 1);
-    assert_eq!(core.last_item_sequence, 1);
 }
 
 #[derive(Debug, Default)]
@@ -145,14 +137,9 @@ struct FailingRepository {
     fail_create: bool,
     fail_append: bool,
     threads: BTreeMap<ThreadId, DurableThreadSnapshot>,
-    sequences: IdSequences,
 }
 
 impl ThreadRepository for FailingRepository {
-    fn id_sequences(&self) -> IdSequences {
-        self.sequences
-    }
-
     fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
         if self.fail_create {
             return Err(RolloutError::Poisoned);

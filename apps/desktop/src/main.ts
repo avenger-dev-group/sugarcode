@@ -143,7 +143,7 @@ const startApplication = async (): Promise<void> => {
   });
   await workspaceController.restore();
   disposeWorkspaceConversationSubscription =
-    supervisor.conversation.subscribe(
+    supervisor.conversation.subscribeScoped(
       workspaceController.observeConversation,
     );
   terminalController = new TerminalController({

@@ -5,7 +5,6 @@ use super::DurableThreadPage;
 use super::DurableThreadSnapshot;
 use super::DurableTurnSnapshot;
 use super::DurableTurnStatus;
-use super::IdSequences;
 use super::MAX_ROLLOUT_FILE_BYTES;
 use super::MAX_ROLLOUT_FILES;
 use super::MAX_ROLLOUT_RECORD_BYTES;
@@ -24,7 +23,6 @@ use super::format::encode_turn_completed;
 use super::format::encode_turn_item_added;
 use super::format::encode_turn_item_completed;
 use super::format::encode_turn_started;
-use super::replay::parse_canonical_id;
 use super::replay::replay_all;
 use super::replay::sync_parent;
 use super::replay::unavailable;
@@ -61,7 +59,6 @@ pub struct RolloutRepository {
     _writer_lock: File,
     threads: BTreeMap<ThreadId, RolloutThreadState>,
     pending_turns: BTreeMap<ThreadId, DurableTurnSnapshot>,
-    sequences: IdSequences,
     diagnostics: Vec<RolloutDiagnostic>,
     total_bytes: u64,
     total_records: usize,
@@ -115,7 +112,6 @@ impl RolloutRepository {
             _writer_lock: writer_lock,
             threads: replay.threads,
             pending_turns: BTreeMap::new(),
-            sequences: replay.sequences,
             diagnostics: replay.diagnostics,
             total_bytes: replay.retained_bytes,
             total_records: replay.record_count,
@@ -193,12 +189,10 @@ impl RolloutRepository {
     }
 
     fn thread_path(&self, thread_id: &ThreadId) -> Result<PathBuf, RolloutError> {
-        parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
         Ok(self.root.join(format!("{}.jsonl", thread_id.as_str())))
     }
 
     fn fork_temp_path(&self, thread_id: &ThreadId) -> Result<PathBuf, RolloutError> {
-        parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
         Ok(self.root.join(format!(".{}.fork.tmp", thread_id.as_str())))
     }
 

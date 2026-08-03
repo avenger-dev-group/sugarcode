@@ -4,14 +4,14 @@
 {"jsonrpc":"2.0","id":"invalid","error":{"code":-32602,"message":"Invalid params"}}
 {"jsonrpc":"2.0","id":"unknown-source","error":{"code":-32602,"message":"Invalid params"}}
 {"jsonrpc":"2.0","id":"turn-boundary","error":{"code":-32602,"message":"Invalid params"}}
-{"jsonrpc":"2.0","id":"retry","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","id":"start","result":{"thread":{"id":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
+{"jsonrpc":"2.0","id":"retry","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"00000000-0000-7000-8000-000000000001"}}}
+{"jsonrpc":"2.0","id":"start","result":{"thread":{"id":"00000000-0000-7000-8000-000000000001","workspaceId":"unbound"}}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"00000000-0000-7000-8000-000000000001","workspaceId":"unbound"}}}
 {"jsonrpc":"2.0","id":"archive","result":{}}
-{"jsonrpc":"2.0","id":"retry","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_0000000000000001"}}}
+{"jsonrpc":"2.0","id":"retry","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"00000000-0000-7000-8000-000000000001"}}}
 {"jsonrpc":"2.0","id":"unarchive","result":{}}
-{"jsonrpc":"2.0","id":"retry","result":{"thread":{"id":"thr_0000000000000002"},"turns":[]}}
-{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000002"}}}
+{"jsonrpc":"2.0","id":"retry","result":{"thread":{"id":"00000000-0000-7000-8000-000000000002","workspaceId":"unbound"},"turns":[]}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"00000000-0000-7000-8000-000000000002","workspaceId":"unbound"}}}
 {"jsonrpc":"2.0","id":"retry","error":{"code":-32003,"message":"Duplicate request id"}}
 {"jsonrpc":"2.0","id":"delete","result":{}}
-{"jsonrpc":"2.0","id":"deleted","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_0000000000000001"}}}
+{"jsonrpc":"2.0","id":"deleted","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"00000000-0000-7000-8000-000000000001"}}}

@@ -86,14 +86,17 @@ export class ConversationRpcClient implements ConversationRpc {
 
   listActiveThreads = async (
     signal?: AbortSignal,
-  ): Promise<ThreadListResponse> =>
-    parseThreadListResponse(
+  ): Promise<ThreadListResponse> => {
+    const response = parseThreadListResponse(
       await this.client.requestReady(
         'thread/list',
         { workspaceId: this.workspaceId, limit: 50 },
         signal,
       ),
     );
+    this.assertThreadCollectionWorkspace(response.data);
+    return response;
+  };
 
   findLatestActiveThread = async (
     signal?: AbortSignal,
@@ -105,50 +108,62 @@ export class ConversationRpcClient implements ConversationRpc {
   searchThreads = async (
     query: string,
     signal?: AbortSignal,
-  ): Promise<ThreadSearchResponse> =>
-    parseThreadSearchResponse(
+  ): Promise<ThreadSearchResponse> => {
+    const response = parseThreadSearchResponse(
       await this.client.requestReady(
         'thread/search',
         { workspaceId: this.workspaceId, query, limit: 50 },
         signal,
       ),
     );
+    this.assertThreadCollectionWorkspace(response.data);
+    return response;
+  };
 
   resumeThread = async (
     threadId: string,
     signal?: AbortSignal,
-  ): Promise<ResumeSnapshot> =>
-    parseThreadResumeResponse(
+  ): Promise<ResumeSnapshot> => {
+    const response = parseThreadResumeResponse(
       await this.client.requestReady(
         'thread/resume',
         { threadId, workspaceId: this.workspaceId },
         signal,
       ),
     );
+    this.assertSnapshotWorkspace(response);
+    return response;
+  };
 
   listDescendants = async (
     threadId: string,
     signal?: AbortSignal,
-  ): Promise<readonly ResumeSnapshot[]> =>
-    parseThreadDescendantsListResponse(
+  ): Promise<readonly ResumeSnapshot[]> => {
+    const response = parseThreadDescendantsListResponse(
       await this.client.requestReady(
         'thread/descendants/list',
         { threadId },
         signal,
       ),
     );
+    response.forEach(this.assertSnapshotWorkspace);
+    return response;
+  };
 
   forkThread = async (
     threadId: string,
     signal?: AbortSignal,
-  ): Promise<ResumeSnapshot> =>
-    parseThreadForkResponse(
+  ): Promise<ResumeSnapshot> => {
+    const response = parseThreadForkResponse(
       await this.client.requestReady(
         'thread/fork',
         { threadId },
         signal,
       ),
     );
+    this.assertSnapshotWorkspace(response);
+    return response;
+  };
 
   archiveThread = async (
     threadId: string,
@@ -194,14 +209,35 @@ export class ConversationRpcClient implements ConversationRpc {
 
   startThread = async (
     signal?: AbortSignal,
-  ): Promise<ThreadStartResponse> =>
-    parseThreadStartResponse(
+  ): Promise<ThreadStartResponse> => {
+    const response = parseThreadStartResponse(
       await this.client.requestReady(
         'thread/start',
         { workspaceId: this.workspaceId },
         signal,
       ),
     );
+    if (response.thread.workspaceId !== this.workspaceId) {
+      throw new Error('thread/start crossed workspace ownership.');
+    }
+    return response;
+  };
+
+  private readonly assertSnapshotWorkspace = (
+    snapshot: ResumeSnapshot,
+  ): void => {
+    if (snapshot.workspaceId !== this.workspaceId) {
+      throw new Error('Thread snapshot crossed workspace ownership.');
+    }
+  };
+
+  private readonly assertThreadCollectionWorkspace = (
+    threads: readonly Readonly<{ workspaceId: string }>[],
+  ): void => {
+    if (threads.some((thread) => thread.workspaceId !== this.workspaceId)) {
+      throw new Error('Thread collection crossed workspace ownership.');
+    }
+  };
 
   importAsset = async (
     params: AssetImportParams,

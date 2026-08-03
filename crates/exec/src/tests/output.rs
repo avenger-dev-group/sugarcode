@@ -15,8 +15,9 @@ use sugarcode_protocol::TurnId;
 
 #[test]
 fn json_lines_contract_matches_the_committed_v1_golden() {
-    let thread_id = ThreadId::new("thr_0000000000000001");
-    let turn_id = TurnId::new("turn_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
     let request_id = CoreRequestId::new(2);
     let events = [
         CoreEvent {
@@ -37,7 +38,8 @@ fn json_lines_contract_matches_the_committed_v1_golden() {
             kind: CoreEventKind::AgentMessageDelta {
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone(),
-                item_id: ItemId::new("item_0000000000000002"),
+                item_id: ItemId::parse("00000000-0002-7000-8000-000000000002")
+                    .expect("valid item UUIDv7"),
                 delta: "Hello, 世界".to_string(),
             },
         },
@@ -104,13 +106,15 @@ fn exec_request_filter_hides_internal_collaboration_events() {
     let root = CoreEvent {
         request_id: root_request,
         kind: CoreEventKind::ThreadStarted {
-            thread_id: ThreadId::new("thr_0000000000000001"),
+            thread_id: ThreadId::parse("00000000-0000-7000-8000-000000000001")
+                .expect("valid thread UUIDv7"),
         },
     };
     let child = CoreEvent {
         request_id: CoreRequestId::new(1u64 << 63),
         kind: CoreEventKind::ThreadStarted {
-            thread_id: ThreadId::new("thr_0000000000000002"),
+            thread_id: ThreadId::parse("00000000-0000-7000-8000-000000000002")
+                .expect("valid thread UUIDv7"),
         },
     };
     assert!(belongs_to_exec_request(&root, root_request));

@@ -13,7 +13,7 @@ fn commits_a_complete_deterministic_agent_message_lifecycle() {
     assert_eq!(events.len(), 5);
     assert!(events.iter().all(|event| event.request_id == request_id));
     let turn_id = turn_id(&events);
-    assert_eq!(turn_id.as_str(), "turn_0000000000000001");
+    assert!(TurnId::parse(turn_id.as_str()).is_ok());
 
     let CoreEventKind::ItemStarted {
         thread_id: started_thread_id,
@@ -25,7 +25,7 @@ fn commits_a_complete_deterministic_agent_message_lifecycle() {
     };
     assert_eq!(started_thread_id, &thread_id);
     assert_eq!(started_turn_id, &turn_id);
-    assert_eq!(started_item.id.as_str(), "item_0000000000000001");
+    assert!(ItemId::parse(started_item.id.as_str()).is_ok());
     assert_eq!(
         started_item.kind,
         CoreItemKind::AgentMessage {
@@ -97,9 +97,15 @@ fn starts_consecutive_turns_after_completion_and_isolates_threads() {
         .start_turn(CoreRequestId::new(5), second_thread_id.clone())
         .expect("third turn starts");
 
-    assert_eq!(turn_id(&first).as_str(), "turn_0000000000000001");
-    assert_eq!(turn_id(&second).as_str(), "turn_0000000000000002");
-    assert_eq!(turn_id(&third).as_str(), "turn_0000000000000003");
+    let turn_ids = [turn_id(&first), turn_id(&second), turn_id(&third)];
+    assert!(
+        turn_ids
+            .iter()
+            .all(|turn_id| TurnId::parse(turn_id.as_str()).is_ok())
+    );
+    assert_ne!(turn_ids[0], turn_ids[1]);
+    assert_ne!(turn_ids[0], turn_ids[2]);
+    assert_ne!(turn_ids[1], turn_ids[2]);
     assert_eq!(core.turn_count(&first_thread_id), 2);
     assert_eq!(core.turn_count(&second_thread_id), 1);
 
@@ -111,14 +117,12 @@ fn starts_consecutive_turns_after_completion_and_isolates_threads() {
             item.id.as_str()
         })
         .to_vec();
-    assert_eq!(
-        item_ids,
-        vec![
-            "item_0000000000000001",
-            "item_0000000000000002",
-            "item_0000000000000003"
-        ]
+    assert!(
+        item_ids
+            .iter()
+            .all(|item_id| ItemId::parse(*item_id).is_ok())
     );
+    assert_eq!(item_ids.iter().collect::<BTreeSet<_>>().len(), 3);
 }
 
 #[test]
@@ -426,7 +430,7 @@ fn compaction_trigger_is_strictly_above_target_and_failure_is_atomic() {
             0,
         )
         .expect("exact target does not compact");
-    assert_eq!(exact.turn_id.as_str(), "turn_0000000000000002");
+    assert!(TurnId::parse(exact.turn_id.as_str()).is_ok());
     assert!(
         exact
             .history
@@ -465,7 +469,8 @@ fn compaction_trigger_is_strictly_above_target_and_failure_is_atomic() {
             0,
         )
         .expect("failed compaction did not reserve a turn");
-    assert_eq!(after_failure.turn_id.as_str(), "turn_0000000000000003");
+    assert!(TurnId::parse(after_failure.turn_id.as_str()).is_ok());
+    assert_ne!(after_failure.turn_id, exact.turn_id);
 }
 
 #[test]
@@ -520,14 +525,17 @@ fn consecutive_turns_are_allowed_after_each_durable_completion() {
     let second = core
         .start_turn(CoreRequestId::new(3), thread_id)
         .expect("next turn starts");
-    assert_eq!(turn_id(&first).as_str(), "turn_0000000000000001");
-    assert_eq!(turn_id(&second).as_str(), "turn_0000000000000002");
+    let first_turn_id = turn_id(&first);
+    let second_turn_id = turn_id(&second);
+    assert!(TurnId::parse(first_turn_id.as_str()).is_ok());
+    assert!(TurnId::parse(second_turn_id.as_str()).is_ok());
+    assert_ne!(first_turn_id, second_turn_id);
 }
 
 #[test]
 fn completed_turns_and_items_reject_additional_work() {
-    let turn_id = TurnId::new("turn_completed");
-    let item_id = ItemId::new("item_completed");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000098").expect("valid turn UUIDv7");
+    let item_id = ItemId::parse("00000000-0002-7000-8000-000000000098").expect("valid item UUIDv7");
     let mut item = Item::new_agent_message(item_id.clone());
     item.complete().expect("item completes");
     assert_eq!(
@@ -536,21 +544,26 @@ fn completed_turns_and_items_reject_additional_work() {
     );
 
     let mut turn = Turn::new(turn_id.clone(), CoreRequestId::new(1));
-    turn.add_item(Item::new_agent_message(ItemId::new("item_active")))
-        .expect("active item is stored");
+    turn.add_item(Item::new_agent_message(
+        ItemId::parse("00000000-0002-7000-8000-000000000097").expect("valid item UUIDv7"),
+    ))
+    .expect("active item is stored");
     turn.complete_active_item_and_turn()
         .expect("turn completes");
     assert_eq!(
-        turn.add_item(Item::new_agent_message(ItemId::new("item_late"))),
+        turn.add_item(Item::new_agent_message(
+            ItemId::parse("00000000-0002-7000-8000-000000000096").expect("valid item UUIDv7")
+        )),
         Err(CoreError::TurnNotInProgress(turn_id))
     );
     assert_eq!(item.state, ItemState::Completed);
 }
 
 #[test]
-fn missing_thread_does_not_advance_turn_or_item_sequences() {
+fn missing_thread_is_rejected_before_a_valid_turn_starts() {
     let mut core = Core::new();
-    let missing_thread_id = ThreadId::new("thr_missing");
+    let missing_thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000099").expect("valid thread UUIDv7");
 
     assert_eq!(
         core.start_turn(CoreRequestId::new(1), missing_thread_id.clone()),
@@ -561,34 +574,11 @@ fn missing_thread_does_not_advance_turn_or_item_sequences() {
     let events = core
         .start_turn(CoreRequestId::new(3), thread_id)
         .expect("turn starts");
-    assert_eq!(turn_id(&events).as_str(), "turn_0000000000000001");
+    assert!(TurnId::parse(turn_id(&events).as_str()).is_ok());
     let CoreEventKind::ItemStarted { item, .. } = &events[1].kind else {
         panic!("expected item started");
     };
-    assert_eq!(item.id.as_str(), "item_0000000000000001");
-}
-
-#[test]
-fn exhausted_turn_or_item_sequence_does_not_create_a_turn() {
-    let mut turn_exhausted = Core::new();
-    let thread_id = start_thread(&mut turn_exhausted, 1);
-    turn_exhausted.last_turn_sequence = u64::MAX;
-    assert_eq!(
-        turn_exhausted.start_turn(CoreRequestId::new(2), thread_id.clone()),
-        Err(CoreError::TurnIdExhausted)
-    );
-    assert_eq!(turn_exhausted.turn_count(&thread_id), 0);
-    assert_eq!(turn_exhausted.last_item_sequence, 0);
-
-    let mut item_exhausted = Core::new();
-    let thread_id = start_thread(&mut item_exhausted, 1);
-    item_exhausted.last_item_sequence = u64::MAX;
-    assert_eq!(
-        item_exhausted.start_turn(CoreRequestId::new(2), thread_id.clone()),
-        Err(CoreError::ItemIdExhausted)
-    );
-    assert_eq!(item_exhausted.turn_count(&thread_id), 0);
-    assert_eq!(item_exhausted.last_turn_sequence, 0);
+    assert!(ItemId::parse(item.id.as_str()).is_ok());
 }
 
 #[test]
@@ -602,15 +592,17 @@ fn resumes_a_persisted_completed_history() {
         .expect("resume loaded thread");
     assert_eq!(snapshot.id, thread_id);
     assert_eq!(snapshot.turns.len(), 1);
-    assert_eq!(snapshot.turns[0].id.as_str(), "turn_0000000000000001");
+    assert!(TurnId::parse(snapshot.turns[0].id.as_str()).is_ok());
 }
 
 #[test]
 fn lists_durable_threads_without_loading_history_into_core_memory() {
     let mut core = Core::new();
+    let mut created = Vec::new();
     for request_id in 1..=3 {
-        start_thread(&mut core, request_id);
+        created.push(start_thread(&mut core, request_id));
     }
+    created.sort_unstable_by(|left, right| right.cmp(left));
     let first = core.list_threads(None, 2).expect("first page");
     assert_eq!(
         first
@@ -618,7 +610,7 @@ fn lists_durable_threads_without_loading_history_into_core_memory() {
             .iter()
             .map(|thread| thread.id.as_str())
             .collect::<Vec<_>>(),
-        ["thr_0000000000000003", "thr_0000000000000002"]
+        [created[0].as_str(), created[1].as_str()]
     );
     let second = core
         .list_threads(first.next_cursor.as_ref(), 2)
@@ -629,6 +621,6 @@ fn lists_durable_threads_without_loading_history_into_core_memory() {
             .iter()
             .map(|thread| thread.id.as_str())
             .collect::<Vec<_>>(),
-        ["thr_0000000000000001"]
+        [created[2].as_str()]
     );
 }

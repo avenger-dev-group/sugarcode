@@ -84,17 +84,27 @@ impl App {
     #[cfg(test)]
     pub(crate) fn fixture() -> Self {
         Self {
-            threads: vec![ThreadId::new("thread-测试-0001")],
+            threads: vec![
+                ThreadId::parse("00000000-0000-7000-8000-000000000001")
+                    .expect("valid thread UUIDv7"),
+            ],
             selected_thread: 0,
-            current_thread: ThreadId::new("thread-测试-0001"),
+            current_thread: ThreadId::parse("00000000-0000-7000-8000-000000000001")
+                .expect("valid thread UUIDv7"),
             transcript: vec![
                 TranscriptEntry {
-                    id: Some(ItemId::new("item-1")),
+                    id: Some(
+                        ItemId::parse("00000000-0002-7000-8000-000000000001")
+                            .expect("valid item UUIDv7"),
+                    ),
                     label: "You".to_string(),
                     text: "你好，SugarCode".to_string(),
                 },
                 TranscriptEntry {
-                    id: Some(ItemId::new("item-2")),
+                    id: Some(
+                        ItemId::parse("00000000-0002-7000-8000-000000000002")
+                            .expect("valid item UUIDv7"),
+                    ),
                     label: "Agent".to_string(),
                     text: "Ready ✓".to_string(),
                 },

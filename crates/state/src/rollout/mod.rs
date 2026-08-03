@@ -2,7 +2,6 @@ mod format;
 mod replay;
 mod repository;
 
-pub(crate) use replay::parse_canonical_id;
 pub use repository::RolloutRepository;
 pub use repository::RolloutRepositoryStore;
 pub use repository::WorkspaceRolloutRepository;
@@ -21,13 +20,6 @@ pub const MAX_ROLLOUT_RECORD_BYTES: usize = 1024 * 1024;
 pub const MAX_ROLLOUT_RECORDS_PER_FILE: usize = 100_000;
 pub const MAX_TOTAL_REPLAY_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_TOTAL_REPLAY_RECORDS: usize = 1_000_000;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct IdSequences {
-    pub thread: u64,
-    pub turn: u64,
-    pub item: u64,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableThreadSnapshot {
@@ -1327,7 +1319,6 @@ fn valid_sha256(value: &str) -> bool {
 }
 
 pub trait ThreadRepository: fmt::Debug + Send {
-    fn id_sequences(&self) -> IdSequences;
     fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError>;
     fn create_thread_with_origin(
         &mut self,

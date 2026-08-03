@@ -6,6 +6,7 @@ pub(super) struct RunningServer {
     stdout: BufReader<ChildStdout>,
     provider: MockProvider,
     expects_sandbox_unavailable: bool,
+    ids: IdNormalizer,
 }
 
 impl RunningServer {
@@ -29,6 +30,7 @@ impl RunningServer {
             stdout,
             provider,
             expects_sandbox_unavailable: false,
+            ids: IdNormalizer::from_home(home),
         }
     }
 
@@ -57,6 +59,7 @@ impl RunningServer {
             stdout,
             provider,
             expects_sandbox_unavailable: cfg!(windows),
+            ids: IdNormalizer::from_home(home),
         }
     }
 
@@ -87,6 +90,7 @@ impl RunningServer {
             stdout,
             provider,
             expects_sandbox_unavailable: cfg!(windows),
+            ids: IdNormalizer::from_home(home),
         }
     }
 
@@ -120,6 +124,7 @@ impl RunningServer {
             stdout,
             provider,
             expects_sandbox_unavailable: cfg!(windows),
+            ids: IdNormalizer::from_home(home),
         }
     }
 
@@ -150,6 +155,7 @@ impl RunningServer {
             stdout,
             provider,
             expects_sandbox_unavailable: cfg!(windows),
+            ids: IdNormalizer::from_home(home),
         }
     }
 
@@ -173,10 +179,12 @@ impl RunningServer {
             stdout,
             provider,
             expects_sandbox_unavailable: false,
+            ids: IdNormalizer::from_home(home),
         }
     }
 
-    pub(super) fn send(&mut self, message: Value, output_lines: usize) -> Vec<Value> {
+    pub(super) fn send(&mut self, mut message: Value, output_lines: usize) -> Vec<Value> {
+        self.ids.resolve_request(&mut message);
         writeln!(self.stdin, "{message}").expect("write request");
         self.stdin.flush().expect("flush request");
         (0..output_lines)
@@ -187,7 +195,7 @@ impl RunningServer {
                     assert!(bytes > 0, "app-server closed before expected response");
                     let value = serde_json::from_str::<Value>(&line).expect("response JSON");
                     if !is_transient_notification(&value) {
-                        break value;
+                        break self.ids.normalize_response(value);
                     }
                 }
             })
@@ -254,6 +262,286 @@ impl RunningServer {
         assert!(status.success(), "app-server failed: {status:?}: {stderr}");
         stderr
     }
+}
+
+pub(super) fn rollout_path(home: &Path, ordinal: usize) -> std::path::PathBuf {
+    assert!(ordinal > 0, "rollout ordinal is one-based");
+    let mut paths = fs::read_dir(home.join("rollouts/v1"))
+        .expect("rollout directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .get(ordinal - 1)
+        .cloned()
+        .unwrap_or_else(|| panic!("missing rollout at ordinal {ordinal}"))
+}
+
+#[derive(Clone, Copy)]
+enum IdKind {
+    Thread,
+    Turn,
+    Item,
+}
+
+#[derive(Default)]
+struct IdNormalizer {
+    thread_actual_to_fixed: BTreeMap<String, String>,
+    thread_fixed_to_actual: BTreeMap<String, String>,
+    turn_actual_to_fixed: BTreeMap<String, String>,
+    turn_fixed_to_actual: BTreeMap<String, String>,
+    item_actual_to_fixed: BTreeMap<String, String>,
+    item_fixed_to_actual: BTreeMap<String, String>,
+}
+
+impl IdNormalizer {
+    fn from_home(home: &Path) -> Self {
+        let mut collected = CollectedIds::default();
+        let rollouts = home.join("rollouts/v1");
+        if let Ok(entries) = fs::read_dir(rollouts) {
+            for entry in entries.flatten() {
+                let Ok(contents) = fs::read_to_string(entry.path()) else {
+                    continue;
+                };
+                for line in contents.lines() {
+                    if let Ok(value) = serde_json::from_str::<Value>(line) {
+                        collect_structured_ids(&value, None, &mut collected);
+                    }
+                }
+            }
+        }
+        let mut normalizer = Self::default();
+        for id in collected.threads {
+            normalizer.learn(IdKind::Thread, &id);
+        }
+        for id in collected.turns {
+            normalizer.learn(IdKind::Turn, &id);
+        }
+        for id in collected.items {
+            normalizer.learn(IdKind::Item, &id);
+        }
+        normalizer
+    }
+
+    fn resolve_request(&self, value: &mut Value) {
+        replace_id_strings(value, &self.thread_fixed_to_actual);
+        replace_id_strings(value, &self.turn_fixed_to_actual);
+        replace_id_strings(value, &self.item_fixed_to_actual);
+    }
+
+    fn normalize_response(&mut self, mut value: Value) -> Value {
+        self.discover(&value, None);
+        replace_id_strings(&mut value, &self.thread_actual_to_fixed);
+        replace_id_strings(&mut value, &self.turn_actual_to_fixed);
+        replace_id_strings(&mut value, &self.item_actual_to_fixed);
+        remove_workspace_ids(&mut value);
+        value
+    }
+
+    fn discover(&mut self, value: &Value, context: Option<IdKind>) {
+        match value {
+            Value::Array(values) => {
+                for value in values {
+                    self.discover(value, context);
+                }
+            }
+            Value::Object(values) => {
+                if let Some(kind) = context
+                    && let Some(id) = values.get("id").and_then(Value::as_str)
+                {
+                    self.learn(kind, id);
+                } else if let Some(id) = values.get("id").and_then(Value::as_str) {
+                    let kind = if values.contains_key("workspaceId") {
+                        Some(IdKind::Thread)
+                    } else if values.contains_key("status") {
+                        Some(IdKind::Turn)
+                    } else if values.contains_key("type") {
+                        Some(IdKind::Item)
+                    } else {
+                        None
+                    };
+                    if let Some(kind) = kind {
+                        self.learn(kind, id);
+                    }
+                }
+                for (key, value) in values {
+                    match key.as_str() {
+                        "threadId" | "parentThreadId" => {
+                            if let Some(id) = value.as_str() {
+                                self.learn(IdKind::Thread, id);
+                            }
+                        }
+                        "turnId" | "parentTurnId" | "throughTurnId" => {
+                            if let Some(id) = value.as_str() {
+                                self.learn(IdKind::Turn, id);
+                            }
+                        }
+                        "itemId" => {
+                            if let Some(id) = value.as_str() {
+                                self.learn(IdKind::Item, id);
+                            }
+                        }
+                        "thread" => self.discover(value, Some(IdKind::Thread)),
+                        "turn" => self.discover(value, Some(IdKind::Turn)),
+                        "item" => self.discover(value, Some(IdKind::Item)),
+                        "turns" => self.discover(value, Some(IdKind::Turn)),
+                        "items" => self.discover(value, Some(IdKind::Item)),
+                        _ => self.discover(value, None),
+                    }
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+
+    fn learn(&mut self, kind: IdKind, actual: &str) {
+        if !is_uuid_v7(actual) {
+            return;
+        }
+        let (actual_to_fixed, fixed_to_actual, group) = match kind {
+            IdKind::Thread => (
+                &mut self.thread_actual_to_fixed,
+                &mut self.thread_fixed_to_actual,
+                0,
+            ),
+            IdKind::Turn => (
+                &mut self.turn_actual_to_fixed,
+                &mut self.turn_fixed_to_actual,
+                1,
+            ),
+            IdKind::Item => (
+                &mut self.item_actual_to_fixed,
+                &mut self.item_fixed_to_actual,
+                2,
+            ),
+        };
+        if actual_to_fixed.contains_key(actual) {
+            return;
+        }
+        let fixed = format!(
+            "00000000-{group:04}-7000-8000-{:012}",
+            actual_to_fixed.len() + 1
+        );
+        actual_to_fixed.insert(actual.to_string(), fixed.clone());
+        fixed_to_actual.insert(fixed, actual.to_string());
+    }
+}
+
+#[derive(Default)]
+struct CollectedIds {
+    threads: BTreeSet<String>,
+    turns: BTreeSet<String>,
+    items: BTreeSet<String>,
+}
+
+fn collect_structured_ids(value: &Value, context: Option<IdKind>, ids: &mut CollectedIds) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_structured_ids(value, context, ids);
+            }
+        }
+        Value::Object(values) => {
+            if let Some(kind) = context
+                && let Some(id) = values.get("id").and_then(Value::as_str)
+            {
+                collect_id(kind, id, ids);
+            }
+            for (key, value) in values {
+                match key.as_str() {
+                    "threadId" | "parentThreadId" => {
+                        if let Some(id) = value.as_str() {
+                            collect_id(IdKind::Thread, id, ids);
+                        }
+                    }
+                    "turnId" | "parentTurnId" | "throughTurnId" => {
+                        if let Some(id) = value.as_str() {
+                            collect_id(IdKind::Turn, id, ids);
+                        }
+                    }
+                    "itemId" => {
+                        if let Some(id) = value.as_str() {
+                            collect_id(IdKind::Item, id, ids);
+                        }
+                    }
+                    "thread" => collect_structured_ids(value, Some(IdKind::Thread), ids),
+                    "turn" => collect_structured_ids(value, Some(IdKind::Turn), ids),
+                    "item" => collect_structured_ids(value, Some(IdKind::Item), ids),
+                    "turns" => collect_structured_ids(value, Some(IdKind::Turn), ids),
+                    "items" => collect_structured_ids(value, Some(IdKind::Item), ids),
+                    _ => collect_structured_ids(value, None, ids),
+                }
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn collect_id(kind: IdKind, id: &str, ids: &mut CollectedIds) {
+    if !is_uuid_v7(id) {
+        return;
+    }
+    match kind {
+        IdKind::Thread => &mut ids.threads,
+        IdKind::Turn => &mut ids.turns,
+        IdKind::Item => &mut ids.items,
+    }
+    .insert(id.to_string());
+}
+
+fn replace_id_strings(value: &mut Value, replacements: &BTreeMap<String, String>) {
+    match value {
+        Value::String(value) => {
+            for (from, to) in replacements {
+                if value.contains(from) {
+                    *value = value.replace(from, to);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                replace_id_strings(value, replacements);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                replace_id_strings(value, replacements);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn remove_workspace_ids(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                remove_workspace_ids(value);
+            }
+        }
+        Value::Object(values) => {
+            values.remove("workspaceId");
+            for value in values.values_mut() {
+                remove_workspace_ids(value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn is_uuid_v7(value: &str) -> bool {
+    value.len() == 36
+        && value.as_bytes().get(14) == Some(&b'7')
+        && matches!(value.as_bytes().get(19), Some(b'8' | b'9' | b'a' | b'b'))
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
 }
 
 fn is_transient_notification(value: &Value) -> bool {
@@ -501,7 +789,7 @@ pub(super) fn assert_deleted_views(server: &mut RunningServer, request_prefix: &
     );
     assert_eq!(
         listed[0]["result"]["data"],
-        json!([{"id": "thr_0000000000000003", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000003", "title": "Hello"}])
     );
     let searched = server.send(
         json!({
@@ -514,7 +802,7 @@ pub(super) fn assert_deleted_views(server: &mut RunningServer, request_prefix: &
     );
     assert_eq!(
         searched[0]["result"]["data"],
-        json!([{"id": "thr_0000000000000003", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000003", "title": "Hello"}])
     );
 }
 
@@ -530,8 +818,8 @@ pub(super) fn assert_active_archive_views(server: &mut RunningServer, request_pr
     assert_eq!(
         listed[0]["result"]["data"],
         json!([
-            {"id": "thr_0000000000000003"},
-            {"id": "thr_0000000000000001", "title": "Hello"}
+            {"id": "00000000-0000-7000-8000-000000000003"},
+            {"id": "00000000-0000-7000-8000-000000000001", "title": "Hello"}
         ])
     );
     let searched = server.send(
@@ -545,21 +833,21 @@ pub(super) fn assert_active_archive_views(server: &mut RunningServer, request_pr
     );
     assert_eq!(
         searched[0]["result"]["data"],
-        json!([{"id": "thr_0000000000000001", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000001", "title": "Hello"}])
     );
     let resume_archived = server.send(
         json!({
             "jsonrpc": "2.0",
             "id": format!("{request_prefix}-resume-archived"),
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000002"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
         }),
         1,
     );
     assert_eq!(resume_archived[0]["error"]["code"], -32004);
     assert_eq!(
         resume_archived[0]["error"]["data"],
-        json!({"threadId": "thr_0000000000000002"})
+        json!({"threadId": "00000000-0000-7000-8000-000000000002"})
     );
 }
 

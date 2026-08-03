@@ -25,16 +25,18 @@ fn home(directory: &tempfile::TempDir) -> sugarcode_state::SugarCodeHome {
 }
 
 fn thread(sequence: u64) -> ThreadId {
-    ThreadId::new(format!("thr_{sequence:016}"))
+    ThreadId::parse(format!("00000000-0000-7000-8000-{sequence:012}")).expect("valid thread UUIDv7")
 }
 
 fn turn(sequence: u64, text: &str) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
         model: None,
-        id: TurnId::new(format!("turn_{sequence:016}")),
+        id: TurnId::parse(format!("00000000-0001-7000-8000-{sequence:012}"))
+            .expect("valid turn UUIDv7"),
         status: DurableTurnStatus::Completed,
         items: vec![DurableItemSnapshot::AgentMessage {
-            id: ItemId::new(format!("item_{sequence:016}")),
+            id: ItemId::parse(format!("00000000-0002-7000-8000-{sequence:012}"))
+                .expect("valid item UUIDv7"),
             text: text.to_string(),
         }],
         context_compaction: None,
@@ -60,17 +62,20 @@ fn seed(repository: &mut RolloutRepository) {
 fn started_turn(sequence: u64, input: &str) -> DurableTurnSnapshot {
     DurableTurnSnapshot {
         model: None,
-        id: TurnId::new(format!("turn_{sequence:016}")),
+        id: TurnId::parse(format!("00000000-0001-7000-8000-{sequence:012}"))
+            .expect("valid turn UUIDv7"),
         status: DurableTurnStatus::InProgress,
         items: vec![
             DurableItemSnapshot::UserMessage {
-                id: ItemId::new(format!("item_{:016}", sequence * 2 - 1)),
+                id: ItemId::parse(format!("00000000-0002-7000-8000-{:012}", sequence * 2 - 1))
+                    .expect("valid item UUIDv7"),
                 content: vec![sugarcode_state::DurableUserContentPart::Text {
                     text: input.to_string(),
                 }],
             },
             DurableItemSnapshot::AgentMessage {
-                id: ItemId::new(format!("item_{:016}", sequence * 2)),
+                id: ItemId::parse(format!("00000000-0002-7000-8000-{:012}", sequence * 2))
+                    .expect("valid item UUIDv7"),
                 text: String::new(),
             },
         ],
@@ -388,7 +393,7 @@ fn unarchived_threads_restore_search_with_exact_turn_record_sequences() {
         let sequence: i64 = connection
             .query_row(
                 "SELECT rollout_sequence FROM search_documents WHERE item_id = ?1",
-                ["item_0000000000000002"],
+                ["00000000-0002-7000-8000-000000000002"],
                 |row| row.get(0),
             )
             .expect("second turn sequence");
@@ -409,7 +414,7 @@ fn unarchived_threads_restore_search_with_exact_turn_record_sequences() {
     let sequence: i64 = connection
         .query_row(
             "SELECT rollout_sequence FROM search_documents WHERE item_id = ?1",
-            ["item_0000000000000002"],
+            ["00000000-0002-7000-8000-000000000002"],
             |row| row.get(0),
         )
         .expect("rebuilt second turn sequence");

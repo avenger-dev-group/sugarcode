@@ -87,7 +87,7 @@ fn rebuilds_search_across_processes_without_affecting_list_or_resume() {
                     "id": format!("turn-{sequence}"),
                     "method": "turn/start",
                     "params": {
-                        "threadId": format!("thr_{sequence:016}"),
+                        "threadId": format!("00000000-0000-7000-8000-{sequence:012}"),
                         "input": [{"type":"text","text":"Hello"}]
                     }
                 }),
@@ -126,8 +126,8 @@ fn rebuilds_search_across_processes_without_affecting_list_or_resume() {
     assert_eq!(
         searched[0]["result"]["data"],
         json!([
-            {"id": "thr_0000000000000002", "title": "Hello"},
-            {"id": "thr_0000000000000001", "title": "Hello"}
+            {"id": "00000000-0000-7000-8000-000000000002", "title": "Hello"},
+            {"id": "00000000-0000-7000-8000-000000000001", "title": "Hello"}
         ])
     );
     assert_eq!(searched[0]["result"]["nextCursor"], Value::Null);
@@ -152,7 +152,7 @@ fn rebuilds_search_across_processes_without_affecting_list_or_resume() {
             "jsonrpc": "2.0",
             "id": "resume",
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );

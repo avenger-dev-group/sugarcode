@@ -6,6 +6,7 @@ import type {
 
 import {
   type ResumeSnapshot,
+  isUuidV7,
   parseThreadResumeResponse,
 } from './protocol';
 import { isThreadTitle } from './thread-title';
@@ -32,13 +33,15 @@ const parseThreadCollection = (
   const data = value.data.map((thread) => {
     if (
       !isRecord(thread) ||
-      !isId(thread.id) ||
+      !isUuidV7(thread.id) ||
+      !isId(thread.workspaceId) ||
       (Object.hasOwn(thread, 'title') && !isThreadTitle(thread.title))
     ) {
       throw new Error(`Invalid Thread in ${method} response.`);
     }
     return {
       id: thread.id,
+      workspaceId: thread.workspaceId,
       ...(typeof thread.title === 'string' ? { title: thread.title } : {}),
     };
   });
@@ -46,7 +49,7 @@ const parseThreadCollection = (
     throw new Error(`Duplicate Thread in ${method} response.`);
   }
   const nextCursor = value.nextCursor;
-  if (nextCursor !== null && !isId(nextCursor)) {
+  if (nextCursor !== null && !isUuidV7(nextCursor)) {
     throw new Error(`Invalid ${method} response.`);
   }
   return { data, nextCursor: nextCursor as string | null };

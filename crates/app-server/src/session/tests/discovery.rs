@@ -3,11 +3,13 @@ use super::*;
 #[test]
 fn thread_list_is_descending_bounded_and_cursor_paginated() {
     let mut session = ready_session(Core::new());
+    let mut thread_ids = Vec::new();
     for id in ["start-1", "start-2", "start-3"] {
         let messages = session.process_line(&format!(
             r#"{{"jsonrpc":"2.0","id":"{id}","method":"thread/start","params":{{}}}}"#
         ));
         assert_eq!(messages.len(), 2);
+        thread_ids.push(response_thread_id(&messages).to_owned());
     }
 
     let first = session.process_line(
@@ -20,15 +22,19 @@ fn thread_list_is_descending_bounded_and_cursor_paginated() {
         first.result,
         json!({
             "data": [
-                {"id": "thr_0000000000000003"},
-                {"id": "thr_0000000000000002"}
+                {"id": thread_ids[2], "workspaceId": "unbound"},
+                {"id": thread_ids[1], "workspaceId": "unbound"}
             ],
-            "nextCursor": "thr_0000000000000002"
+            "nextCursor": thread_ids[1]
         })
     );
 
     let second = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"list-2","method":"thread/list","params":{"cursor":"thr_0000000000000002","limit":2}}"#,
+        &json!({
+            "jsonrpc": "2.0", "id": "list-2", "method": "thread/list",
+            "params": {"cursor": thread_ids[1], "limit": 2}
+        })
+        .to_string(),
     );
     let JsonRpcMessage::Response(second) = &second[0] else {
         panic!("expected second list response");
@@ -36,7 +42,7 @@ fn thread_list_is_descending_bounded_and_cursor_paginated() {
     assert_eq!(
         second.result,
         json!({
-            "data": [{"id": "thr_0000000000000001"}],
+            "data": [{"id": thread_ids[0], "workspaceId": "unbound"}],
             "nextCursor": null
         })
     );
@@ -48,7 +54,7 @@ fn thread_list_rejects_invalid_params_and_maps_state_failure() {
     for (index, params) in [
         r#"{"limit":0}"#,
         r#"{"limit":101}"#,
-        r#"{"cursor":"thr_missing"}"#,
+        r#"{"cursor":"thr_0000000000000099"}"#,
         r#"{"search":"later"}"#,
     ]
     .into_iter()
@@ -75,14 +81,22 @@ fn thread_list_rejects_invalid_params_and_maps_state_failure() {
 #[test]
 fn thread_search_returns_only_matching_threads_in_stable_id_order() {
     let mut session = ready_session(Core::new());
+    let mut thread_ids = Vec::new();
     for sequence in 1..=3 {
-        session.process_line(&format!(
+        let started = session.process_line(&format!(
             r#"{{"jsonrpc":"2.0","id":"start-{sequence}","method":"thread/start","params":{{}}}}"#
         ));
+        let thread_id = response_thread_id(&started).to_owned();
+        thread_ids.push(thread_id.clone());
         if sequence < 3 {
-            session.process_line(&format!(
-                r#"{{"jsonrpc":"2.0","id":"turn-{sequence}","method":"turn/start","params":{{"threadId":"thr_{sequence:016}","input":[{{"type":"text","text":"Hello"}}]}}}}"#
-            ));
+            session.process_line(
+                &json!({
+                    "jsonrpc": "2.0", "id": format!("turn-{sequence}"),
+                    "method": "turn/start",
+                    "params": {"threadId": thread_id, "input": [{"type":"text","text":"Hello"}]}
+                })
+                .to_string(),
+            );
         }
     }
 
@@ -95,13 +109,17 @@ fn thread_search_returns_only_matching_threads_in_stable_id_order() {
     assert_eq!(
         first.result,
         json!({
-            "data": [{"id": "thr_0000000000000002"}],
-            "nextCursor": "thr_0000000000000002"
+            "data": [{"id": thread_ids[1], "workspaceId": "unbound"}],
+            "nextCursor": thread_ids[1]
         })
     );
 
     let second = session.process_line(
-        r#"{"jsonrpc":"2.0","id":"search-2","method":"thread/search","params":{"query":"SugarCode response","cursor":"thr_0000000000000002","limit":1}}"#,
+        &json!({
+            "jsonrpc":"2.0", "id":"search-2", "method":"thread/search",
+            "params":{"query":"SugarCode response", "cursor":thread_ids[1], "limit":1}
+        })
+        .to_string(),
     );
     let JsonRpcMessage::Response(second) = &second[0] else {
         panic!("expected second search response");
@@ -109,7 +127,7 @@ fn thread_search_returns_only_matching_threads_in_stable_id_order() {
     assert_eq!(
         second.result,
         json!({
-            "data": [{"id": "thr_0000000000000001"}],
+            "data": [{"id": thread_ids[0], "workspaceId": "unbound"}],
             "nextCursor": null
         })
     );
@@ -124,7 +142,7 @@ fn thread_search_rejects_invalid_params_and_redacts_state_failures() {
         r#"{"query":"private\nquery"}"#,
         r#"{"query":"valid","limit":0}"#,
         r#"{"query":"valid","limit":101}"#,
-        r#"{"query":"valid","cursor":"thr_missing"}"#,
+        r#"{"query":"valid","cursor":"thr_0000000000000099"}"#,
         r#"{"query":"valid","score":true}"#,
     ]
     .into_iter()

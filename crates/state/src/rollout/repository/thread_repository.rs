@@ -8,7 +8,6 @@ impl RolloutRepository {
         origin: Option<&DurableThreadOrigin>,
     ) -> Result<(), RolloutError> {
         self.ensure_available()?;
-        let thread_sequence = parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
         if self.threads.contains_key(thread_id) {
             return Err(RolloutError::Collision { kind: "thread" });
         }
@@ -40,7 +39,6 @@ impl RolloutRepository {
                 turn_record_sequences: Vec::new(),
             },
         );
-        self.sequences.thread = self.sequences.thread.max(thread_sequence);
         if origin.is_none() {
             let _ = self.projection.record_thread_created(thread_id);
             let _ = self.search_projection.record_thread_created(thread_id);
@@ -50,10 +48,6 @@ impl RolloutRepository {
 }
 
 impl ThreadRepository for RolloutRepository {
-    fn id_sequences(&self) -> IdSequences {
-        self.sequences
-    }
-
     fn create_thread(&mut self, thread_id: &ThreadId) -> Result<(), RolloutError> {
         self.create_thread_record(thread_id, None)
     }
@@ -90,7 +84,6 @@ impl ThreadRepository for RolloutRepository {
                 kind: "invalidContextCompaction",
             });
         }
-        let thread_sequence = parse_canonical_id(snapshot.id.as_str(), "thr_", "thread")?;
         if self.threads.contains_key(&snapshot.id) {
             return Err(RolloutError::Collision { kind: "thread" });
         }
@@ -134,8 +127,6 @@ impl ThreadRepository for RolloutRepository {
             self.active_workspace_binding_id.as_deref(),
             snapshot.origin.as_ref(),
         )?);
-        let mut turn_sequence = self.sequences.turn;
-        let mut item_sequence = self.sequences.item;
         let mut snapshot_turn_ids = BTreeSet::new();
         let mut snapshot_item_ids = BTreeSet::new();
         let mut record_sequence = 1u64;
@@ -146,18 +137,14 @@ impl ThreadRepository for RolloutRepository {
                     kind: "completedTurnWithoutItems",
                 });
             }
-            let sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")?;
             if self.contains_turn_id(&turn.id) || !snapshot_turn_ids.insert(turn.id.clone()) {
                 return Err(RolloutError::Collision { kind: "turn" });
             }
-            turn_sequence = turn_sequence.max(sequence);
             for item in &turn.items {
-                let sequence = parse_canonical_id(item.id().as_str(), "item_", "item")?;
                 if self.contains_item_id(item.id()) || !snapshot_item_ids.insert(item.id().clone())
                 {
                     return Err(RolloutError::Collision { kind: "item" });
                 }
-                item_sequence = item_sequence.max(sequence);
             }
             let mut started = turn.clone();
             started.status = DurableTurnStatus::InProgress;
@@ -271,9 +258,6 @@ impl ThreadRepository for RolloutRepository {
             turn_record_sequences,
         };
         self.threads.insert(snapshot.id.clone(), state.clone());
-        self.sequences.thread = self.sequences.thread.max(thread_sequence);
-        self.sequences.turn = turn_sequence;
-        self.sequences.item = item_sequence;
         let _ = self.projection.record_thread_snapshot(&state);
         let _ = self.search_projection.record_thread_snapshot(&state);
         Ok(())
@@ -379,17 +363,13 @@ impl ThreadRepository for RolloutRepository {
                 kind: "turnStartedWhileInactive",
             });
         }
-        let turn_sequence = parse_canonical_id(turn.id.as_str(), "turn_", "turn")?;
         if self.contains_turn_id(&turn.id) {
             return Err(RolloutError::Collision { kind: "turn" });
         }
-        let mut item_sequence = self.sequences.item;
         for item in &turn.items {
-            let sequence = parse_canonical_id(item.id().as_str(), "item_", "item")?;
             if self.contains_item_id(item.id()) {
                 return Err(RolloutError::Collision { kind: "item" });
             }
-            item_sequence = item_sequence.max(sequence);
         }
         let record_sequence =
             thread
@@ -413,7 +393,6 @@ impl ThreadRepository for RolloutRepository {
         let mut pending = turn.clone();
         pending.items.clear();
         self.pending_turns.insert(thread_id.clone(), pending);
-        self.sequences.turn = self.sequences.turn.max(turn_sequence);
         let _ = self
             .projection
             .record_turn_completed(thread_id, record_sequence);
@@ -431,7 +410,6 @@ impl ThreadRepository for RolloutRepository {
             self.append_turn_item(thread_id, &turn.id, &started)?;
             self.complete_turn_item(thread_id, &turn.id, &item)?;
         }
-        debug_assert_eq!(self.sequences.item, item_sequence);
         Ok(())
     }
 
@@ -468,7 +446,6 @@ impl ThreadRepository for RolloutRepository {
                 kind: "invalidIncrementalItem",
             });
         }
-        let item_sequence = parse_canonical_id(item.id().as_str(), "item_", "item")?;
         if self.contains_item_id(item.id()) {
             return Err(RolloutError::Collision { kind: "item" });
         }
@@ -498,7 +475,6 @@ impl ThreadRepository for RolloutRepository {
         self.thread_mut(thread_id)
             .expect("validated thread exists")
             .last_record_sequence = record_sequence;
-        self.sequences.item = self.sequences.item.max(item_sequence);
         let _ = self
             .projection
             .record_turn_completed(thread_id, record_sequence);
@@ -780,7 +756,6 @@ impl ThreadRepository for RolloutRepository {
         thread_id: &ThreadId,
     ) -> Result<Option<DurableThreadSnapshot>, RolloutError> {
         self.ensure_available()?;
-        parse_canonical_id(thread_id.as_str(), "thr_", "thread")?;
         Ok(self.thread(thread_id).map(|thread| thread.snapshot.clone()))
     }
 

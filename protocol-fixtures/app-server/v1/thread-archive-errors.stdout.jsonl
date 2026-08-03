@@ -3,9 +3,9 @@
 {"jsonrpc":"2.0","id":"missing","error":{"code":-32602,"message":"Invalid params"}}
 {"jsonrpc":"2.0","id":"invalid","error":{"code":-32602,"message":"Invalid params"}}
 {"jsonrpc":"2.0","id":"unknown","error":{"code":-32602,"message":"Invalid params"}}
-{"jsonrpc":"2.0","id":"retry","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","id":"start","result":{"thread":{"id":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
+{"jsonrpc":"2.0","id":"retry","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"00000000-0000-7000-8000-000000000001"}}}
+{"jsonrpc":"2.0","id":"start","result":{"thread":{"id":"00000000-0000-7000-8000-000000000001","workspaceId":"unbound"}}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"00000000-0000-7000-8000-000000000001","workspaceId":"unbound"}}}
 {"jsonrpc":"2.0","id":"retry","result":{}}
 {"jsonrpc":"2.0","id":"again","result":{}}
 {"jsonrpc":"2.0","id":"again","error":{"code":-32003,"message":"Duplicate request id"}}

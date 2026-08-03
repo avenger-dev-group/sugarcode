@@ -118,8 +118,8 @@ fn request_ids_support_strings_and_integers() {
 fn mcp_approval_protocol_is_provider_neutral_strict_and_json_capable() {
     let params = sugarcode_app_server_protocol::McpToolCallApprovalParams {
         approval_id: "approval/mcp".to_string(),
-        thread_id: "thr_0000000000000001".to_string(),
-        turn_id: "turn_0000000000000001".to_string(),
+        thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+        turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
         call_id: "call_mcp".to_string(),
         name: "mcp__fixture__inspect".to_string(),
         arguments: json!({"array": [true, null, 7], "object": {"z": "value"}}),
@@ -186,7 +186,7 @@ fn mcp_approval_bidirectional_fixtures_match_public_types() {
 fn mcp_items_keep_call_approval_attempt_and_result_distinct() {
     let items = [
         Item::McpToolCall {
-            id: "item_0000000000000001".to_string(),
+            id: "00000000-0002-7000-8000-000000000001".to_string(),
             call_id: "call_mcp".to_string(),
             name: "mcp__fixture__inspect".to_string(),
             arguments: json!({"value": ["arbitrary", 2]}),
@@ -195,7 +195,7 @@ fn mcp_items_keep_call_approval_attempt_and_result_distinct() {
             inventory_sha256: "b".repeat(64),
         },
         Item::McpToolCallApprovalRequest {
-            id: "item_0000000000000002".to_string(),
+            id: "00000000-0002-7000-8000-000000000002".to_string(),
             approval_id: "approval/mcp".to_string(),
             call_id: "call_mcp".to_string(),
             name: "mcp__fixture__inspect".to_string(),
@@ -205,18 +205,18 @@ fn mcp_items_keep_call_approval_attempt_and_result_distinct() {
             inventory_sha256: "b".repeat(64),
         },
         Item::McpToolCallApprovalDecision {
-            id: "item_0000000000000003".to_string(),
+            id: "00000000-0002-7000-8000-000000000003".to_string(),
             approval_id: "approval/mcp".to_string(),
             decision: "approved".to_string(),
         },
         Item::McpToolExecutionAttempt {
-            id: "item_0000000000000004".to_string(),
+            id: "00000000-0002-7000-8000-000000000004".to_string(),
             approval_id: "approval/mcp".to_string(),
             call_id: "call_mcp".to_string(),
             inventory_sha256: "b".repeat(64),
         },
         Item::McpToolResult {
-            id: "item_0000000000000005".to_string(),
+            id: "00000000-0002-7000-8000-000000000005".to_string(),
             call_id: "call_mcp".to_string(),
             name: "mcp__fixture__inspect".to_string(),
             result: sugarcode_app_server_protocol::McpToolResult::Completed {
@@ -256,7 +256,7 @@ fn mcp_items_keep_call_approval_attempt_and_result_distinct() {
 #[test]
 fn file_change_item_serializes_a_bounded_update_review() {
     let item = Item::FileChange {
-        id: "item_0000000000000003".to_string(),
+        id: "00000000-0002-7000-8000-000000000003".to_string(),
         call_id: "call_patch".to_string(),
         path: "src/lib.rs".to_string(),
         kind: FileChangeKind::Update,
@@ -282,7 +282,7 @@ fn file_change_item_serializes_a_bounded_update_review() {
 #[test]
 fn context_compaction_item_exposes_receipts_without_summary_text() {
     let item = Item::ContextCompaction {
-        id: "item_0000000000000003".to_string(),
+        id: "00000000-0002-7000-8000-000000000003".to_string(),
         strategy: ContextCompactionStrategy::ModelGeneratedActiveTurnV1,
         ordinal: 1,
         pre_context_bytes: 3_200_000,
@@ -308,15 +308,17 @@ fn context_compaction_item_exposes_receipts_without_summary_text() {
 
 #[test]
 fn collaboration_items_and_descendant_origin_are_provider_neutral() {
-    let orchestration_id = "orch/thr_0000000000000001/turn_0000000000000001".to_string();
+    let orchestration_id =
+        "orch/00000000-0000-7000-8000-000000000001/00000000-0001-7000-8000-000000000001"
+            .to_string();
     let task_id = format!("{orchestration_id}/writer");
     let items = vec![
         Item::AgentTask {
-            id: "item_0000000000000010".to_string(),
+            id: "00000000-0002-7000-8000-000000000010".to_string(),
             orchestration_id: orchestration_id.clone(),
             task_id: task_id.clone(),
             client_task_key: "writer".to_string(),
-            child_thread_id: "thr_0000000000000002".to_string(),
+            child_thread_id: "00000000-0000-7000-8000-000000000002".to_string(),
             title: "Implement the slice".to_string(),
             role: AgentTaskRole::Worker,
             access: AgentTaskAccess::WorkspaceWrite,
@@ -324,13 +326,13 @@ fn collaboration_items_and_descendant_origin_are_provider_neutral() {
             task_markdown: "# Objective\nImplement.".to_string(),
         },
         Item::AgentTaskAmendment {
-            id: "item_0000000000000011".to_string(),
+            id: "00000000-0002-7000-8000-000000000011".to_string(),
             orchestration_id: orchestration_id.clone(),
             task_id: task_id.clone(),
             amendment_markdown: "Preserve the public boundary.".to_string(),
         },
         Item::AgentTaskResult {
-            id: "item_0000000000000012".to_string(),
+            id: "00000000-0002-7000-8000-000000000012".to_string(),
             orchestration_id: orchestration_id.clone(),
             task_id: task_id.clone(),
             status: AgentTaskStatus::Completed,
@@ -340,11 +342,12 @@ fn collaboration_items_and_descendant_origin_are_provider_neutral() {
     ];
     let descendant = ThreadResumeResponse {
         thread: Thread {
-            id: "thr_0000000000000002".to_string(),
+            id: "00000000-0000-7000-8000-000000000002".to_string(),
+            workspace_id: "workspace-test".to_string(),
             title: None,
             origin: Some(ThreadOrigin::Subagent {
-                parent_thread_id: "thr_0000000000000001".to_string(),
-                parent_turn_id: "turn_0000000000000001".to_string(),
+                parent_thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+                parent_turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
                 orchestration_id: orchestration_id.clone(),
                 task_id: task_id.clone(),
                 role: AgentTaskRole::Worker,
@@ -352,7 +355,7 @@ fn collaboration_items_and_descendant_origin_are_provider_neutral() {
         },
         turns: vec![TurnSnapshot {
             model: None,
-            id: "turn_0000000000000002".to_string(),
+            id: "00000000-0001-7000-8000-000000000002".to_string(),
             status: TurnSnapshotStatus::Completed,
             items: items.clone(),
             error: None,
@@ -378,11 +381,11 @@ fn collaboration_items_and_descendant_origin_are_provider_neutral() {
     );
     assert_eq!(
         serde_json::from_value::<ThreadDescendantsListParams>(json!({
-            "threadId": "thr_0000000000000001"
+            "threadId": "00000000-0000-7000-8000-000000000001"
         }))
         .expect("canonical descendant params")
         .thread_id,
-        "thr_0000000000000001"
+        "00000000-0000-7000-8000-000000000001"
     );
 }
 
@@ -417,7 +420,8 @@ fn descendant_list_bidirectional_fixtures_match_public_types() {
 #[test]
 fn thread_start_types_use_the_public_thread_dto() {
     let thread = Thread {
-        id: "thr_0000000000000001".to_string(),
+        id: "00000000-0000-7000-8000-000000000001".to_string(),
+        workspace_id: "workspace-test".to_string(),
         title: None,
         origin: None,
     };
@@ -429,7 +433,8 @@ fn thread_start_types_use_the_public_thread_dto() {
         .expect("response serializes"),
         json!({
             "thread": {
-                "id": "thr_0000000000000001"
+                "id": "00000000-0000-7000-8000-000000000001",
+                "workspaceId": "workspace-test"
             }
         })
     );
@@ -438,7 +443,8 @@ fn thread_start_types_use_the_public_thread_dto() {
             .expect("notification serializes"),
         json!({
             "thread": {
-                "id": "thr_0000000000000001"
+                "id": "00000000-0000-7000-8000-000000000001",
+                "workspaceId": "workspace-test"
             }
         })
     );
@@ -466,11 +472,11 @@ fn thread_start_params_require_a_workspace_id() {
 fn thread_archive_uses_a_canonical_thread_id_and_empty_response() {
     assert_eq!(
         serde_json::from_value::<ThreadArchiveParams>(json!({
-            "threadId": "thr_0000000000000001"
+            "threadId": "00000000-0000-7000-8000-000000000001"
         }))
         .expect("valid params"),
         ThreadArchiveParams {
-            thread_id: "thr_0000000000000001".to_string()
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string()
         }
     );
     assert_eq!(
@@ -480,10 +486,10 @@ fn thread_archive_uses_a_canonical_thread_id_and_empty_response() {
     for invalid in [
         json!({}),
         json!({"threadId": ""}),
-        json!({"threadId": "thr_missing"}),
-        json!({"threadId": "../thr_0000000000000001"}),
-        json!({"threadId": "thr_00000000000000001"}),
-        json!({"threadId": "thr_0000000000000001", "includeArchived": true}),
+        json!({"threadId": "00000000-0000-4000-8000-000000000099"}),
+        json!({"threadId": "../00000000-0000-7000-8000-000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-0000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "includeArchived": true}),
     ] {
         assert!(serde_json::from_value::<ThreadArchiveParams>(invalid).is_err());
     }
@@ -493,11 +499,11 @@ fn thread_archive_uses_a_canonical_thread_id_and_empty_response() {
 fn thread_unarchive_uses_its_own_canonical_params_and_empty_response() {
     assert_eq!(
         serde_json::from_value::<ThreadUnarchiveParams>(json!({
-            "threadId": "thr_0000000000000001"
+            "threadId": "00000000-0000-7000-8000-000000000001"
         }))
         .expect("valid params"),
         ThreadUnarchiveParams {
-            thread_id: "thr_0000000000000001".to_string()
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string()
         }
     );
     assert_eq!(
@@ -507,10 +513,10 @@ fn thread_unarchive_uses_its_own_canonical_params_and_empty_response() {
     for invalid in [
         json!({}),
         json!({"threadId": ""}),
-        json!({"threadId": "thr_missing"}),
-        json!({"threadId": "../thr_0000000000000001"}),
-        json!({"threadId": "thr_00000000000000001"}),
-        json!({"threadId": "thr_0000000000000001", "resume": true}),
+        json!({"threadId": "00000000-0000-4000-8000-000000000099"}),
+        json!({"threadId": "../00000000-0000-7000-8000-000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-0000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "resume": true}),
     ] {
         assert!(serde_json::from_value::<ThreadUnarchiveParams>(invalid).is_err());
     }
@@ -520,11 +526,11 @@ fn thread_unarchive_uses_its_own_canonical_params_and_empty_response() {
 fn thread_delete_uses_its_own_canonical_params_and_empty_response() {
     assert_eq!(
         serde_json::from_value::<ThreadDeleteParams>(json!({
-            "threadId": "thr_0000000000000001"
+            "threadId": "00000000-0000-7000-8000-000000000001"
         }))
         .expect("valid params"),
         ThreadDeleteParams {
-            thread_id: "thr_0000000000000001".to_string()
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string()
         }
     );
     assert_eq!(
@@ -534,10 +540,10 @@ fn thread_delete_uses_its_own_canonical_params_and_empty_response() {
     for invalid in [
         json!({}),
         json!({"threadId": ""}),
-        json!({"threadId": "thr_missing"}),
-        json!({"threadId": "../thr_0000000000000001"}),
-        json!({"threadId": "thr_00000000000000001"}),
-        json!({"threadId": "thr_0000000000000001", "purge": true}),
+        json!({"threadId": "00000000-0000-4000-8000-000000000099"}),
+        json!({"threadId": "../00000000-0000-7000-8000-000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-0000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "purge": true}),
     ] {
         assert!(serde_json::from_value::<ThreadDeleteParams>(invalid).is_err());
     }
@@ -547,25 +553,26 @@ fn thread_delete_uses_its_own_canonical_params_and_empty_response() {
 fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
     assert_eq!(
         serde_json::from_value::<ThreadForkParams>(json!({
-            "threadId": "thr_0000000000000001"
+            "threadId": "00000000-0000-7000-8000-000000000001"
         }))
         .expect("valid params"),
         ThreadForkParams {
-            thread_id: "thr_0000000000000001".to_string()
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string()
         }
     );
     let response = ThreadForkResponse {
         thread: Thread {
-            id: "thr_0000000000000002".to_string(),
+            id: "00000000-0000-7000-8000-000000000002".to_string(),
+            workspace_id: "workspace-test".to_string(),
             title: None,
             origin: None,
         },
         turns: vec![TurnSnapshot {
             model: None,
-            id: "turn_0000000000000002".to_string(),
+            id: "00000000-0001-7000-8000-000000000002".to_string(),
             status: TurnSnapshotStatus::Completed,
             items: vec![Item::AgentMessage {
-                id: "item_0000000000000002".to_string(),
+                id: "00000000-0002-7000-8000-000000000002".to_string(),
                 text: "SugarCode deterministic response.".to_string(),
             }],
             error: None,
@@ -575,13 +582,16 @@ fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
     assert_eq!(
         serde_json::to_value(response).expect("response serializes"),
         json!({
-            "thread": {"id": "thr_0000000000000002"},
+            "thread": {
+                "id": "00000000-0000-7000-8000-000000000002",
+                "workspaceId": "workspace-test"
+            },
             "turns": [{
-                "id": "turn_0000000000000002",
+                "id": "00000000-0001-7000-8000-000000000002",
                 "status": "completed",
                 "items": [{
                     "type": "agentMessage",
-                    "id": "item_0000000000000002",
+                    "id": "00000000-0002-7000-8000-000000000002",
                     "text": "SugarCode deterministic response."
                 }]
             }]
@@ -590,11 +600,11 @@ fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
     for invalid in [
         json!({}),
         json!({"threadId": ""}),
-        json!({"threadId": "thr_missing"}),
-        json!({"threadId": "../thr_0000000000000001"}),
-        json!({"threadId": "thr_00000000000000001"}),
-        json!({"threadId": "thr_0000000000000001", "turnId": "turn_1"}),
-        json!({"threadId": "thr_0000000000000001", "sourceThreadId": true}),
+        json!({"threadId": "00000000-0000-4000-8000-000000000099"}),
+        json!({"threadId": "../00000000-0000-7000-8000-000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-0000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "turnId": "turn_1"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "sourceThreadId": true}),
     ] {
         assert!(serde_json::from_value::<ThreadForkParams>(invalid).is_err());
     }
@@ -605,13 +615,13 @@ fn thread_list_params_are_bounded_and_canonical() {
     assert_eq!(
         serde_json::from_value::<ThreadListParams>(json!({
             "workspaceId": "wsp_fixture",
-            "cursor": "thr_0000000000000009",
+            "cursor": "00000000-0000-7000-8000-000000000009",
             "limit": 25
         }))
         .expect("valid page"),
         ThreadListParams {
             workspace_id: "wsp_fixture".to_string(),
-            cursor: Some("thr_0000000000000009".to_string()),
+            cursor: Some("00000000-0000-7000-8000-000000000009".to_string()),
             limit: Some(25),
         }
     );
@@ -620,8 +630,8 @@ fn thread_list_params_are_bounded_and_canonical() {
         json!([]),
         json!({"limit": 0}),
         json!({"limit": 101}),
-        json!({"cursor": "thr_missing"}),
-        json!({"cursor": "thr_0000000000000009", "search": "later"}),
+        json!({"workspaceId": "wsp_fixture", "cursor": "00000000-0000-4000-8000-000000000099"}),
+        json!({"cursor": "00000000-0000-7000-8000-000000000009", "search": "later"}),
     ] {
         assert!(serde_json::from_value::<ThreadListParams>(invalid).is_err());
     }
@@ -632,16 +642,21 @@ fn thread_list_response_contains_only_durable_identity_and_cursor() {
     assert_eq!(
         serde_json::to_value(ThreadListResponse {
             data: vec![Thread {
-                id: "thr_0000000000000010".to_string(),
+                id: "00000000-0000-7000-8000-000000000010".to_string(),
+                workspace_id: "workspace-test".to_string(),
                 title: Some("修复登录流程".to_string()),
                 origin: None,
             }],
-            next_cursor: Some("thr_0000000000000010".to_string()),
+            next_cursor: Some("00000000-0000-7000-8000-000000000010".to_string()),
         })
         .expect("response serializes"),
         json!({
-            "data": [{"id": "thr_0000000000000010", "title": "修复登录流程"}],
-            "nextCursor": "thr_0000000000000010"
+            "data": [{
+                "id": "00000000-0000-7000-8000-000000000010",
+                "workspaceId": "workspace-test",
+                "title": "修复登录流程"
+            }],
+            "nextCursor": "00000000-0000-7000-8000-000000000010"
         })
     );
 }
@@ -652,14 +667,14 @@ fn thread_search_params_are_bounded_trimmed_and_canonical() {
         serde_json::from_value::<ThreadSearchParams>(json!({
             "workspaceId": "wsp_fixture",
             "query": "  SugarCode release  ",
-            "cursor": "thr_0000000000000009",
+            "cursor": "00000000-0000-7000-8000-000000000009",
             "limit": 25
         }))
         .expect("valid search"),
         ThreadSearchParams {
             workspace_id: "wsp_fixture".to_string(),
             query: "SugarCode release".to_string(),
-            cursor: Some("thr_0000000000000009".to_string()),
+            cursor: Some("00000000-0000-7000-8000-000000000009".to_string()),
             limit: Some(25),
         }
     );
@@ -673,7 +688,7 @@ fn thread_search_params_are_bounded_trimmed_and_canonical() {
         json!({"query": (0..17).map(|_| "term").collect::<Vec<_>>().join(" ")}),
         json!({"query": "valid", "limit": 0}),
         json!({"query": "valid", "limit": 101}),
-        json!({"query": "valid", "cursor": "thr_missing"}),
+        json!({"workspaceId": "wsp_fixture", "query": "valid", "cursor": "00000000-0000-4000-8000-000000000099"}),
         json!({"query": "valid", "score": true}),
     ] {
         assert!(serde_json::from_value::<ThreadSearchParams>(invalid).is_err());
@@ -685,16 +700,21 @@ fn thread_search_response_exposes_only_thread_identity_and_cursor() {
     assert_eq!(
         serde_json::to_value(ThreadSearchResponse {
             data: vec![Thread {
-                id: "thr_0000000000000010".to_string(),
+                id: "00000000-0000-7000-8000-000000000010".to_string(),
+                workspace_id: "workspace-test".to_string(),
                 title: Some("修复登录流程".to_string()),
                 origin: None,
             }],
-            next_cursor: Some("thr_0000000000000010".to_string()),
+            next_cursor: Some("00000000-0000-7000-8000-000000000010".to_string()),
         })
         .expect("response serializes"),
         json!({
-            "data": [{"id": "thr_0000000000000010", "title": "修复登录流程"}],
-            "nextCursor": "thr_0000000000000010"
+            "data": [{
+                "id": "00000000-0000-7000-8000-000000000010",
+                "workspaceId": "workspace-test",
+                "title": "修复登录流程"
+            }],
+            "nextCursor": "00000000-0000-7000-8000-000000000010"
         })
     );
 }
@@ -717,7 +737,7 @@ fn turn_start_types_use_the_public_turn_dto() {
                 pdf_input: false,
             },
         }),
-        id: "turn_0000000000000001".to_string(),
+        id: "00000000-0001-7000-8000-000000000001".to_string(),
         status: TurnStatus::InProgress,
         error: None,
         usage: None,
@@ -728,7 +748,7 @@ fn turn_start_types_use_the_public_turn_dto() {
             .expect("response serializes"),
         json!({
             "turn": {
-                "id": "turn_0000000000000001",
+                "id": "00000000-0001-7000-8000-000000000001",
                 "model": {
                     "profileId": "model_primary",
                     "providerFamily": "openai",
@@ -750,14 +770,14 @@ fn turn_start_types_use_the_public_turn_dto() {
     );
     assert_eq!(
         serde_json::to_value(TurnStartedNotification {
-            thread_id: "thr_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn,
         })
         .expect("notification serializes"),
         json!({
-            "threadId": "thr_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
             "turn": {
-                "id": "turn_0000000000000001",
+                "id": "00000000-0001-7000-8000-000000000001",
                 "model": {
                     "profileId": "model_primary",
                     "providerFamily": "openai",
@@ -781,9 +801,9 @@ fn turn_start_types_use_the_public_turn_dto() {
 
 #[test]
 fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
-    let thread_id = "thr_0000000000000001".to_string();
-    let turn_id = "turn_0000000000000001".to_string();
-    let item_id = "item_0000000000000001".to_string();
+    let thread_id = "00000000-0000-7000-8000-000000000001".to_string();
+    let turn_id = "00000000-0001-7000-8000-000000000001".to_string();
+    let item_id = "00000000-0002-7000-8000-000000000001".to_string();
     let started_item = Item::AgentMessage {
         id: item_id.clone(),
         text: String::new(),
@@ -813,42 +833,42 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
     );
     assert_eq!(
         serde_json::to_value(AgentMessageDeltaNotification {
-            thread_id: "thr_0000000000000001".to_string(),
-            turn_id: "turn_0000000000000001".to_string(),
-            item_id: "item_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
+            item_id: "00000000-0002-7000-8000-000000000001".to_string(),
             delta: "SugarCode deterministic response.".to_string(),
         })
         .expect("agent message delta serializes"),
         json!({
-            "threadId": "thr_0000000000000001",
-            "turnId": "turn_0000000000000001",
-            "itemId": "item_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "turnId": "00000000-0001-7000-8000-000000000001",
+            "itemId": "00000000-0002-7000-8000-000000000001",
             "delta": "SugarCode deterministic response."
         })
     );
     assert_eq!(
         serde_json::to_value(ItemCompletedNotification {
-            thread_id: "thr_0000000000000001".to_string(),
-            turn_id: "turn_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             item: completed_item,
         })
         .expect("item/completed serializes"),
         json!({
-            "threadId": "thr_0000000000000001",
-            "turnId": "turn_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "turnId": "00000000-0001-7000-8000-000000000001",
             "item": {
                 "type": "agentMessage",
-                "id": "item_0000000000000001",
+                "id": "00000000-0002-7000-8000-000000000001",
                 "text": "SugarCode deterministic response."
             }
         })
     );
     assert_eq!(
         serde_json::to_value(TurnCompletedNotification {
-            thread_id: "thr_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn: Turn {
                 model: None,
-                id: "turn_0000000000000001".to_string(),
+                id: "00000000-0001-7000-8000-000000000001".to_string(),
                 status: TurnStatus::Completed,
                 error: None,
                 usage: None,
@@ -856,9 +876,9 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
         })
         .expect("turn/completed serializes"),
         json!({
-            "threadId": "thr_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
             "turn": {
-                "id": "turn_0000000000000001",
+                "id": "00000000-0001-7000-8000-000000000001",
                 "status": "completed"
             }
         })
@@ -876,8 +896,8 @@ fn provisional_agent_output_fixture_is_additive_and_provider_neutral() {
         serde_json::from_value::<AgentOutputDeltaNotification>(params)
             .expect("Agent output notification"),
         AgentOutputDeltaNotification {
-            thread_id: "thr_0000000000000001".to_string(),
-            turn_id: "turn_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             output: AgentOutputRef {
                 response_ordinal: 2,
                 output_index: 0,
@@ -898,8 +918,8 @@ fn discarded_agent_output_fixture_closes_a_provider_neutral_preview() {
         serde_json::from_value::<AgentOutputDiscardedNotification>(params)
             .expect("discarded Agent output notification"),
         AgentOutputDiscardedNotification {
-            thread_id: "thr_0000000000000001".to_string(),
-            turn_id: "turn_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             output: AgentOutputRef {
                 response_ordinal: 1,
                 output_index: 0,
@@ -911,24 +931,24 @@ fn discarded_agent_output_fixture_closes_a_provider_neutral_preview() {
 #[test]
 fn agent_commentary_item_lifecycle_preserves_process_text() {
     let item = Item::AgentCommentary {
-        id: "item_0000000000000002".to_string(),
+        id: "00000000-0002-7000-8000-000000000002".to_string(),
         text: "I will inspect the workspace first.".to_string(),
     };
 
     assert_eq!(
         serde_json::to_value(ItemStartedNotification {
-            thread_id: "thr_0000000000000001".to_string(),
-            turn_id: "turn_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             item: item.clone(),
             agent_output: None,
         })
         .expect("commentary item/started serializes"),
         json!({
-            "threadId": "thr_0000000000000001",
-            "turnId": "turn_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "turnId": "00000000-0001-7000-8000-000000000001",
             "item": {
                 "type": "agentCommentary",
-                "id": "item_0000000000000002",
+                "id": "00000000-0002-7000-8000-000000000002",
                 "text": "I will inspect the workspace first."
             }
         })
@@ -946,7 +966,7 @@ fn agent_commentary_item_lifecycle_preserves_process_text() {
 fn tool_items_use_provider_neutral_camel_case_public_fields() {
     assert_eq!(
         serde_json::to_value(Item::ToolCall {
-            id: "item_0000000000000002".to_string(),
+            id: "00000000-0002-7000-8000-000000000002".to_string(),
             call_id: "call_1".to_string(),
             name: "workspace/read".to_string(),
             arguments: json!({"path": "README.txt"}),
@@ -954,7 +974,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
         .expect("tool call serializes"),
         json!({
             "type": "toolCall",
-            "id": "item_0000000000000002",
+            "id": "00000000-0002-7000-8000-000000000002",
             "callId": "call_1",
             "name": "workspace/read",
             "arguments": {"path": "README.txt"}
@@ -962,7 +982,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
     );
     assert_eq!(
         serde_json::to_value(Item::ToolCall {
-            id: "item_0000000000000004".to_string(),
+            id: "00000000-0002-7000-8000-000000000004".to_string(),
             call_id: "call_2".to_string(),
             name: "workspace/search".to_string(),
             arguments: json!({"path": "src", "query": "needle"}),
@@ -970,7 +990,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
         .expect("search tool call serializes"),
         json!({
             "type": "toolCall",
-            "id": "item_0000000000000004",
+            "id": "00000000-0002-7000-8000-000000000004",
             "callId": "call_2",
             "name": "workspace/search",
             "arguments": {"path": "src", "query": "needle"}
@@ -978,7 +998,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
     );
     assert_eq!(
         serde_json::to_value(Item::ToolResult {
-            id: "item_0000000000000003".to_string(),
+            id: "00000000-0002-7000-8000-000000000003".to_string(),
             call_id: "call_1".to_string(),
             name: "workspace/read".to_string(),
             result: ToolResult::Success {
@@ -989,7 +1009,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
         .expect("tool result serializes"),
         json!({
             "type": "toolResult",
-            "id": "item_0000000000000003",
+            "id": "00000000-0002-7000-8000-000000000003",
             "callId": "call_1",
             "name": "workspace/read",
             "result": {
@@ -1014,7 +1034,7 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
 #[test]
 fn tool_validation_rejection_is_a_distinct_diagnostic_item() {
     let item = Item::ToolValidationRejected {
-        id: "item_0000000000000003".to_string(),
+        id: "00000000-0002-7000-8000-000000000003".to_string(),
         call_id: "call_edit".to_string(),
         name: "workspace/edit".to_string(),
         kind: "expectedMismatch".to_string(),
@@ -1031,7 +1051,7 @@ fn tool_validation_rejection_is_a_distinct_diagnostic_item() {
         serde_json::to_value(item).expect("validation item serializes"),
         json!({
             "type": "toolValidationRejected",
-            "id": "item_0000000000000003",
+            "id": "00000000-0002-7000-8000-000000000003",
             "callId": "call_edit",
             "name": "workspace/edit",
             "kind": "expectedMismatch",
@@ -1050,7 +1070,7 @@ fn tool_validation_rejection_is_a_distinct_diagnostic_item() {
 fn shell_approval_and_process_results_are_provider_neutral() {
     assert_eq!(
         serde_json::to_value(Item::CommandApprovalRequest {
-            id: "item_0000000000000003".to_string(),
+            id: "00000000-0002-7000-8000-000000000003".to_string(),
             approval_id: "approval/one".to_string(),
             call_id: "call_shell".to_string(),
             command: "/bin/echo".to_string(),
@@ -1066,7 +1086,7 @@ fn shell_approval_and_process_results_are_provider_neutral() {
         .expect("approval request serializes"),
         json!({
             "type": "commandApprovalRequest",
-            "id": "item_0000000000000003",
+            "id": "00000000-0002-7000-8000-000000000003",
             "approvalId": "approval/one",
             "callId": "call_shell",
             "command": "/bin/echo",
@@ -1082,7 +1102,7 @@ fn shell_approval_and_process_results_are_provider_neutral() {
     );
     assert_eq!(
         serde_json::to_value(Item::CommandApprovalDecision {
-            id: "item_0000000000000004".to_string(),
+            id: "00000000-0002-7000-8000-000000000004".to_string(),
             approval_id: "approval/one".to_string(),
             decision: "approved".to_string(),
             workspace_write_risk_acknowledgement: Some(
@@ -1092,7 +1112,7 @@ fn shell_approval_and_process_results_are_provider_neutral() {
         .expect("approval decision serializes"),
         json!({
             "type": "commandApprovalDecision",
-            "id": "item_0000000000000004",
+            "id": "00000000-0002-7000-8000-000000000004",
             "approvalId": "approval/one",
             "decision": "approved",
             "workspaceWriteRiskAcknowledgement": "nonTransactionalWorkspaceTreeV1"
@@ -1100,14 +1120,14 @@ fn shell_approval_and_process_results_are_provider_neutral() {
     );
     assert_eq!(
         serde_json::to_value(Item::CommandExecutionAttempt {
-            id: "item_0000000000000005".to_string(),
+            id: "00000000-0002-7000-8000-000000000005".to_string(),
             approval_id: "approval/one".to_string(),
             call_id: "call_shell".to_string(),
         })
         .expect("execution attempt serializes"),
         json!({
             "type": "commandExecutionAttempt",
-            "id": "item_0000000000000005",
+            "id": "00000000-0002-7000-8000-000000000005",
             "approvalId": "approval/one",
             "callId": "call_shell"
         })
@@ -1150,14 +1170,14 @@ fn shell_approval_and_process_results_are_provider_neutral() {
 fn turn_start_params_require_thread_id_and_accept_ordered_content_input() {
     assert_eq!(
         serde_json::from_value::<TurnStartParams>(json!({
-            "threadId": "thr_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
             "input": [{"type": "text", "text": "Hello"}],
             "modelProfileId": "model_primary"
         }))
         .expect("valid params"),
         TurnStartParams {
             model_profile_id: Some("model_primary".to_string()),
-            thread_id: "thr_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             input: Some(vec![sugarcode_app_server_protocol::TurnInputPart::Text {
                 text: "Hello".to_string(),
             }]),
@@ -1165,12 +1185,12 @@ fn turn_start_params_require_thread_id_and_accept_ordered_content_input() {
     );
     assert_eq!(
         serde_json::from_value::<TurnStartParams>(json!({
-            "threadId": "thr_0000000000000001"
+            "threadId": "00000000-0000-7000-8000-000000000001"
         }))
         .expect("optional input"),
         TurnStartParams {
             model_profile_id: None,
-            thread_id: "thr_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             input: None,
         }
     );
@@ -1183,9 +1203,9 @@ fn turn_start_params_require_thread_id_and_accept_ordered_content_input() {
         json!({"threadId": null}),
         json!({"threadId": ""}),
         json!({"threadId": "   "}),
-        json!({"threadId": "thr_0000000000000001", "input": []}),
-        json!({"threadId": "thr_0000000000000001", "modelProfileId": ""}),
-        json!({"threadId": "thr_0000000000000001", "modelProfileId": "bad id"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "input": []}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "modelProfileId": ""}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "modelProfileId": "bad id"}),
     ] {
         assert!(
             serde_json::from_value::<TurnStartParams>(invalid).is_err(),
@@ -1198,18 +1218,18 @@ fn turn_start_params_require_thread_id_and_accept_ordered_content_input() {
 fn turn_interrupt_is_strict_and_terminal_errors_are_provider_neutral() {
     assert_eq!(
         serde_json::from_value::<TurnInterruptParams>(json!({
-            "threadId": "thr_0000000000000001",
-            "turnId": "turn_0000000000000001"
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "turnId": "00000000-0001-7000-8000-000000000001"
         }))
         .expect("valid interrupt"),
         TurnInterruptParams {
-            thread_id: "thr_0000000000000001".to_string(),
-            turn_id: "turn_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
         }
     );
     assert!(
         serde_json::from_value::<TurnInterruptParams>(json!({
-            "threadId": "thr_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
             "turnId": " ",
         }))
         .is_err()
@@ -1221,7 +1241,7 @@ fn turn_interrupt_is_strict_and_terminal_errors_are_provider_neutral() {
     assert_eq!(
         serde_json::to_value(Turn {
             model: None,
-            id: "turn_0000000000000001".to_string(),
+            id: "00000000-0001-7000-8000-000000000001".to_string(),
             status: TurnStatus::Failed,
             error: Some(TurnError {
                 kind: TurnErrorKind::RateLimited,
@@ -1239,7 +1259,7 @@ fn turn_interrupt_is_strict_and_terminal_errors_are_provider_neutral() {
         })
         .expect("failed turn"),
         json!({
-            "id": "turn_0000000000000001",
+            "id": "00000000-0001-7000-8000-000000000001",
             "status": "failed",
             "error": {
                 "kind": "rateLimited",
@@ -1278,8 +1298,8 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
     };
     assert_eq!(
         serde_json::to_value(TokenUsageUpdatedNotification {
-            thread_id: "thr_0000000000000001".to_string(),
-            turn_id: "turn_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             usage: TokenUsage {
                 last_request: sample,
                 turn_total: sample,
@@ -1290,8 +1310,8 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
         })
         .expect("usage notification"),
         json!({
-            "threadId": "thr_0000000000000001",
-            "turnId": "turn_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "turnId": "00000000-0001-7000-8000-000000000001",
             "usage": {
                 "lastRequest": {
                     "inputTokens": 60_000,
@@ -1315,27 +1335,27 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
     );
     assert_eq!(
         serde_json::to_value(TurnWarningNotification {
-            thread_id: "thr_0000000000000001".to_string(),
-            turn_id: "turn_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             code: TurnWarningCode::ProviderManagedContinuationFallback,
         })
         .expect("warning notification"),
         json!({
-            "threadId": "thr_0000000000000001",
-            "turnId": "turn_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "turnId": "00000000-0001-7000-8000-000000000001",
             "code": "providerManagedContinuationFallback"
         })
     );
     assert_eq!(
         serde_json::to_value(TurnWarningNotification {
-            thread_id: "thr_0000000000000001".to_string(),
-            turn_id: "turn_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             code: TurnWarningCode::HistoricalContextDowngraded,
         })
         .expect("historical downgrade warning"),
         json!({
-            "threadId": "thr_0000000000000001",
-            "turnId": "turn_0000000000000001",
+            "threadId": "00000000-0000-7000-8000-000000000001",
+            "turnId": "00000000-0001-7000-8000-000000000001",
             "code": "historicalContextDowngraded"
         })
     );
@@ -1345,16 +1365,17 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
 fn thread_resume_returns_a_complete_snapshot() {
     let response = ThreadResumeResponse {
         thread: Thread {
-            id: "thr_0000000000000001".to_string(),
+            id: "00000000-0000-7000-8000-000000000001".to_string(),
+            workspace_id: "workspace-test".to_string(),
             title: None,
             origin: None,
         },
         turns: vec![TurnSnapshot {
             model: None,
-            id: "turn_0000000000000001".to_string(),
+            id: "00000000-0001-7000-8000-000000000001".to_string(),
             status: TurnSnapshotStatus::Completed,
             items: vec![Item::AgentMessage {
-                id: "item_0000000000000001".to_string(),
+                id: "00000000-0002-7000-8000-000000000001".to_string(),
                 text: "SugarCode deterministic response.".to_string(),
             }],
             error: None,
@@ -1364,13 +1385,16 @@ fn thread_resume_returns_a_complete_snapshot() {
     assert_eq!(
         serde_json::to_value(response).expect("response serializes"),
         json!({
-            "thread": {"id": "thr_0000000000000001"},
+            "thread": {
+                "id": "00000000-0000-7000-8000-000000000001",
+                "workspaceId": "workspace-test"
+            },
             "turns": [{
-                "id": "turn_0000000000000001",
+                "id": "00000000-0001-7000-8000-000000000001",
                 "status": "completed",
                 "items": [{
                     "type": "agentMessage",
-                    "id": "item_0000000000000001",
+                    "id": "00000000-0002-7000-8000-000000000001",
                     "text": "SugarCode deterministic response."
                 }]
             }]
@@ -1383,21 +1407,21 @@ fn thread_resume_requires_a_canonical_thread_id() {
     assert_eq!(
         serde_json::from_value::<ThreadResumeParams>(json!({
             "workspaceId": "wsp_fixture",
-            "threadId": "thr_0000000000000001"
+            "threadId": "00000000-0000-7000-8000-000000000001"
         }))
         .expect("valid params"),
         ThreadResumeParams {
-            thread_id: "thr_0000000000000001".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             workspace_id: "wsp_fixture".to_string(),
         }
     );
     for invalid in [
         json!({}),
         json!({"threadId": ""}),
-        json!({"threadId": "thr_missing"}),
-        json!({"threadId": "../thr_0000000000000001"}),
-        json!({"threadId": "thr_00000000000000001"}),
-        json!({"threadId": "thr_0000000000000001", "path": "/tmp"}),
+        json!({"workspaceId": "wsp_fixture", "threadId": "00000000-0000-4000-8000-000000000099"}),
+        json!({"threadId": "../00000000-0000-7000-8000-000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-0000000000001"}),
+        json!({"threadId": "00000000-0000-7000-8000-000000000001", "path": "/tmp"}),
     ] {
         assert!(serde_json::from_value::<ThreadResumeParams>(invalid).is_err());
     }

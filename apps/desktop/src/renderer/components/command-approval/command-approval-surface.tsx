@@ -19,6 +19,7 @@ import {
 } from '@/renderer/components/ui/alert-dialog';
 import { Button } from '@/renderer/components/ui/button';
 import { focusWorkspaceTask } from '@/renderer/services/workspace';
+import { isApprovalVisibleForThread } from '@/renderer/utils/approval-visibility';
 import {
   Select,
   SelectContent,
@@ -32,7 +33,6 @@ import type {
   CommandApprovalModeControlProps,
   CommandApprovalViewProps,
 } from './types';
-import { useStore } from './use-store';
 
 const MODE_COPY: Record<
   CommandApprovalMode,
@@ -110,6 +110,7 @@ const PermissionModeOptions = ({
 
 export const CommandApprovalView = ({
   store,
+  activeThreadId,
 }: CommandApprovalViewProps) => {
   const denyButtonRef = useRef<HTMLButtonElement>(null);
   const { request } = store;
@@ -128,7 +129,12 @@ export const CommandApprovalView = ({
 
   return (
     <>
-      <AlertDialog open={store.isOpen}>
+      <AlertDialog
+        open={isApprovalVisibleForThread(
+          request?.threadId,
+          activeThreadId,
+        )}
+      >
         {request ? (
           <AlertDialogContent
             onEscapeKeyDown={(event) => {
@@ -275,7 +281,3 @@ export const CommandApprovalModeControl = ({
     </Select>
   );
 };
-
-export const CommandApprovalSurface = () => (
-  <CommandApprovalView store={useStore()} />
-);

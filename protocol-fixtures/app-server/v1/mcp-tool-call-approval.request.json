@@ -4,8 +4,8 @@
   "method": "item/mcpToolCall/requestApproval",
   "params": {
     "approvalId": "approval/mcp",
-    "threadId": "thr_0000000000000001",
-    "turnId": "turn_0000000000000001",
+    "threadId": "00000000-0000-7000-8000-000000000001",
+    "turnId": "00000000-0001-7000-8000-000000000001",
     "callId": "call_mcp",
     "name": "mcp__fixture__inspect",
     "arguments": {

@@ -114,9 +114,25 @@ fn human_exec_keeps_results_on_stdout_and_diagnostics_on_stderr() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 human output");
-    assert!(stdout.starts_with("Thread: thr_"), "{stdout}");
+    let thread_id = stdout
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("Thread: "))
+        .and_then(|line| line.strip_suffix(" (new)"))
+        .expect("new thread header");
+    assert!(is_uuid_v7(thread_id), "{stdout}");
     assert!(stdout.contains("First answer."), "{stdout}");
     assert!(stdout.ends_with("Status: completed\n"), "{stdout}");
+}
+
+fn is_uuid_v7(value: &str) -> bool {
+    value.len() == 36
+        && value.as_bytes().get(14) == Some(&b'7')
+        && matches!(value.as_bytes().get(19), Some(b'8' | b'9' | b'a' | b'b'))
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte),
+        })
 }
 
 #[test]

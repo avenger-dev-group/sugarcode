@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { registerHooks } from 'node:module';
@@ -37,6 +37,9 @@ const { WorkspaceController } = await import(
   '../../../../src/main/app-server/workspace/controller.ts'
 );
 
+const PROJECT_THREAD_ID = '00000000-0000-7000-8000-000000000001';
+const CHAT_THREAD_ID = '00000000-0000-7000-8000-000000000002';
+
 test('cold startup restores navigation without selecting or reordering projects', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-workspace-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -55,13 +58,13 @@ test('cold startup restores navigation without selecting or reordering projects'
   await writeFile(
     sessionPath,
     `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 1,
       projects: [
         {
           id: 'project-alpha',
           path: projectPath,
           name: 'project-alpha',
-          threadIds: ['thr_project'],
+          threadIds: [PROJECT_THREAD_ID],
           lastOpenedAtMs: 1,
         },
         {
@@ -75,7 +78,7 @@ test('cold startup restores navigation without selecting or reordering projects'
       active: { kind: 'project', projectId: 'project-beta' },
       chats: [
         {
-          threadId: 'thr_chat',
+          threadId: CHAT_THREAD_ID,
           directory: chatDirectory,
           title: 'Saved chat',
         },
@@ -127,12 +130,12 @@ test('cold startup restores navigation without selecting or reordering projects'
     {
       id: 'project-alpha',
       name: 'project-alpha',
-      threadIds: ['thr_project'],
+      threadIds: [PROJECT_THREAD_ID],
       lastOpenedAtMs: 1,
     },
   ]);
-  assert.deepEqual(snapshot.chatThreadIds, ['thr_chat']);
-  assert.equal(snapshot.chatTitles?.thr_chat, 'Saved chat');
+  assert.deepEqual(snapshot.chatThreadIds, [CHAT_THREAD_ID]);
+  assert.equal(snapshot.chatTitles?.[CHAT_THREAD_ID], 'Saved chat');
 
   assert.equal((await controller.activateProject('project-alpha')).accepted, true);
   assert.deepEqual(
@@ -142,4 +145,8 @@ test('cold startup restores navigation without selecting or reordering projects'
 
   assert.equal((await controller.select()).accepted, true);
   assert.equal(controller.getSnapshot().projects?.[0]?.name, 'project-gamma');
+  const persisted = JSON.parse(await readFile(sessionPath, 'utf8')) as {
+    schemaVersion?: unknown;
+  };
+  assert.equal(persisted.schemaVersion, 1);
 });

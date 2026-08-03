@@ -8,8 +8,8 @@
 {"jsonrpc":"2.0","id":"bad-field","method":"turn/start","params":{"threadId":"thr_missing","input":[]}}
 {"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_missing","input":[{"type":"text","text":"Hello"}]}}
 {"jsonrpc":"2.0","id":"thread-1","method":"thread/start","params":{}}
-{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}
-{"jsonrpc":"2.0","id":"thread-1","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}
-{"jsonrpc":"2.0","id":"duplicate-turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}
-{"jsonrpc":"2.0","id":"duplicate-turn","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}
-{"jsonrpc":"2.0","id":"turn-next","method":"turn/start","params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"Hello"}]}}
+{"jsonrpc":"2.0","id":"retry","method":"turn/start","params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Hello"}]}}
+{"jsonrpc":"2.0","id":"thread-1","method":"turn/start","params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Hello"}]}}
+{"jsonrpc":"2.0","id":"duplicate-turn","method":"turn/start","params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Hello"}]}}
+{"jsonrpc":"2.0","id":"duplicate-turn","method":"turn/start","params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Hello"}]}}
+{"jsonrpc":"2.0","id":"turn-next","method":"turn/start","params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Hello"}]}}

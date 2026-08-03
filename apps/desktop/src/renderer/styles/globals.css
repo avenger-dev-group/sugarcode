@@ -23,6 +23,7 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-success: var(--success);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -50,6 +51,7 @@
   --primary: #1a1c1f;
   --user-message-foreground: var(--primary);
   --destructive: oklch(0.577 0.245 27.325);
+  --success: oklch(0.627 0.194 149.214);
 }
 
 .dark {
@@ -58,6 +60,7 @@
   --primary: #ffffff;
   --user-message-foreground: var(--background);
   --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.792 0.209 151.711);
 }
 
 :root,

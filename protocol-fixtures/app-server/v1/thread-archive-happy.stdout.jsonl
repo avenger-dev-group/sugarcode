@@ -1,10 +1,10 @@
 {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"commandApprovals":true,"commandWorkspaceWriteApprovals":true,"subagents":true,"workspaceBrowser":true,"workspaceGit":true},"platform":{"arch":"<arch>","family":"<family>","os":"<os>"},"protocolVersion":1,"serverInfo":{"name":"sugarcode","version":"1.0.0"}}}
-{"jsonrpc":"2.0","id":"start-1","result":{"thread":{"id":"thr_0000000000000001"}}}
-{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000001"}}}
+{"jsonrpc":"2.0","id":"start-1","result":{"thread":{"id":"00000000-0000-7000-8000-000000000001","workspaceId":"unbound"}}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"00000000-0000-7000-8000-000000000001","workspaceId":"unbound"}}}
 {"jsonrpc":"2.0","id":"archive-1","result":{}}
 {"jsonrpc":"2.0","id":"list","result":{"data":[],"nextCursor":null}}
 {"jsonrpc":"2.0","id":"search","result":{"data":[],"nextCursor":null}}
-{"jsonrpc":"2.0","id":"resume","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"thr_0000000000000001"}}}
+{"jsonrpc":"2.0","id":"resume","error":{"code":-32004,"message":"Thread not found","data":{"threadId":"00000000-0000-7000-8000-000000000001"}}}
 {"jsonrpc":"2.0","id":"archive-2","result":{}}
-{"jsonrpc":"2.0","id":"start-2","result":{"thread":{"id":"thr_0000000000000002"}}}
-{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"thr_0000000000000002"}}}
+{"jsonrpc":"2.0","id":"start-2","result":{"thread":{"id":"00000000-0000-7000-8000-000000000002","workspaceId":"unbound"}}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"00000000-0000-7000-8000-000000000002","workspaceId":"unbound"}}}

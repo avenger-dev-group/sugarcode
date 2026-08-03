@@ -4,10 +4,11 @@ use super::*;
 fn archives_with_one_v1_record_and_rebuilds_active_only_views() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let rollout = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
 
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
@@ -60,7 +61,7 @@ fn archives_with_one_v1_record_and_rebuilds_active_only_views() {
         fs::read_to_string(&rollout)
             .expect("read rollout")
             .ends_with(
-                "{\"schemaVersion\":1,\"sequence\":6,\"type\":\"threadArchived\",\"threadId\":\"thr_0000000000000001\"}\n"
+                "{\"schemaVersion\":1,\"sequence\":6,\"type\":\"threadArchived\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n"
             )
     );
     for database in ["thread-discovery.sqlite3", "thread-search.sqlite3"] {
@@ -95,10 +96,11 @@ fn archives_with_one_v1_record_and_rebuilds_active_only_views() {
 fn unarchives_in_rollout_v1_with_monotonic_sequences_and_rebuildable_views() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let rollout = directory
         .path()
-        .join("rollouts/v1/thr_0000000000000001.jsonl");
+        .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl");
 
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
@@ -216,8 +218,10 @@ fn unarchives_in_rollout_v1_with_monotonic_sequences_and_rebuildable_views() {
 fn deletes_active_or_archived_threads_with_terminal_v1_tombstones() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let active_id = ThreadId::new("thr_0000000000000001");
-    let archived_id = ThreadId::new("thr_0000000000000002");
+    let active_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let archived_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000002").expect("valid thread UUIDv7");
 
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
@@ -238,7 +242,7 @@ fn deletes_active_or_archived_threads_with_terminal_v1_tombstones() {
         let active_bytes = fs::read(
             directory
                 .path()
-                .join("rollouts/v1/thr_0000000000000001.jsonl"),
+                .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl"),
         )
         .expect("read active rollout");
         repository
@@ -248,7 +252,7 @@ fn deletes_active_or_archived_threads_with_terminal_v1_tombstones() {
             fs::read(
                 directory
                     .path()
-                    .join("rollouts/v1/thr_0000000000000001.jsonl")
+                    .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl")
             )
             .expect("read idempotent rollout"),
             active_bytes
@@ -301,22 +305,22 @@ fn deletes_active_or_archived_threads_with_terminal_v1_tombstones() {
         fs::read_to_string(
             directory
                 .path()
-                .join("rollouts/v1/thr_0000000000000001.jsonl")
+                .join("rollouts/v1/00000000-0000-7000-8000-000000000001.jsonl")
         )
         .expect("read rollout")
         .ends_with(
-            "{\"schemaVersion\":1,\"sequence\":6,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000001\"}\n"
+            "{\"schemaVersion\":1,\"sequence\":6,\"type\":\"threadDeleted\",\"threadId\":\"00000000-0000-7000-8000-000000000001\"}\n"
         )
     );
     assert!(
         fs::read_to_string(
             directory
                 .path()
-                .join("rollouts/v1/thr_0000000000000002.jsonl")
+                .join("rollouts/v1/00000000-0000-7000-8000-000000000002.jsonl")
         )
         .expect("read rollout")
         .ends_with(
-            "{\"schemaVersion\":1,\"sequence\":7,\"type\":\"threadDeleted\",\"threadId\":\"thr_0000000000000002\"}\n"
+            "{\"schemaVersion\":1,\"sequence\":7,\"type\":\"threadDeleted\",\"threadId\":\"00000000-0000-7000-8000-000000000002\"}\n"
         )
     );
 
@@ -339,7 +343,4 @@ fn deletes_active_or_archived_threads_with_terminal_v1_tombstones() {
             .data
             .is_empty()
     );
-    assert_eq!(repository.id_sequences().thread, 2);
-    assert_eq!(repository.id_sequences().turn, 2);
-    assert_eq!(repository.id_sequences().item, 2);
 }

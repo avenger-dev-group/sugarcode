@@ -5,7 +5,7 @@ import { isToolValidationRejectedItem } from '../../../../src/main/app-server/co
 
 const rejection = {
   type: 'toolValidationRejected',
-  id: 'item_0000000000001405',
+  id: '00000000-0002-7000-8000-000000001405',
   callId: 'chatcmpl-tool-bde02b193a056385',
   name: 'workspace/edit',
   kind: 'expectedMismatch',

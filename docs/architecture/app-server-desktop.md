@@ -25,10 +25,13 @@ all Thread discovery/lifecycle and workspace/Git requests carry that ID. A
 global control session handles initialize, workspace registration and global
 configuration, while lazily loaded workspace contexts own Core execution.
 
-The registry shares one rollout repository and one process-wide ID allocator,
-so Thread, Turn and Item IDs remain unique across workspaces. It also records
-Thread-to-workspace ownership and routes lifecycle events back to the correct
-Desktop projection. A context with no active Turn, pending approval or current
+The registry shares one rollout repository. Thread, Turn and Item IDs are
+canonical lowercase UUIDv7 values and require no shared numeric allocator.
+Every public `Thread` carries its required `workspaceId`; start, list, search,
+resume, fork, descendants and `thread/started` preserve that binding. Main uses
+the returned binding, rather than the foreground selection, to record ownership
+and route lifecycle events back to the correct Desktop projection. A context
+with no active Turn, pending approval or current
 foreground reference may unload after five idle minutes; its descriptor and
 durable state remain, and the next routed request reloads it. Reopening a
 canonical root is idempotent. The legacy single-workspace CLI mode internally
@@ -95,11 +98,14 @@ Electron Main owns:
 - Git, preview window and PTY/ConPTY terminal.
 
 Conversation state is one projection per Thread rather than one mutable global
-transcript. Background lifecycle updates stay in their owning projection,
-running and unread Thread sets are aggregated for navigation, and selecting a
-cached Thread never overwrites another active Turn. Stop and destructive Thread
-actions always target an explicit Thread ID; only the target Thread's active
-Turn blocks its fork/archive/delete action.
+transcript. Each Main-only projection freezes its owning `workspaceId` while the
+Renderer snapshot omits that internal field. Background lifecycle updates are
+accepted only for known Threads in their owning workspace and can never replace
+a blank foreground projection. Running and unread Thread sets are filtered to
+the foreground workspace for navigation, and selecting a cached Thread never
+overwrites another active Turn. Stop and destructive Thread actions always
+target an explicit Thread ID; only the target Thread's active Turn blocks its
+fork/archive/delete action.
 
 `conversation/controller.ts` is the stable conversation-controller facade.
 Its `conversation/controller/` implementation directory separates RPC and
@@ -143,15 +149,21 @@ Command and MCP approvals enter one Main-owned FIFO queue across every project
 and Thread. Only the head is presented, and its local countdown starts after the
 matching approval surface reports ready. Closing the UI or transport safely
 rejects pending and queued requests. The view model identifies the source
-project and conversation; “View task” asks Main to activate the owning project
-or isolated chat before selecting its Thread. Workspace-scoped automatic
+project and conversation. Renderer opens the modal only while its owning Thread
+is selected; a background request instead marks that Thread as requiring
+approval in the navigator, and selecting it reveals the existing modal. “View
+task” asks Main to activate the owning project or isolated chat before selecting
+its Thread. Workspace-scoped automatic
 approval is checked against the request's recorded workspace, not the currently
 visible project.
 
 Main persists a versioned multi-project session registry with canonical paths,
 opaque workspace bindings, per-project Thread IDs, isolated-chat directories,
-titles and recency. The schema-v2 reader migrates the prior single-project
-schema once and discards roots that no longer validate. Its stored active entry
+titles and recency. The schema number remains `1`, and that number directly
+names the current UUIDv7 shape; there is no compatibility reader or migration.
+Project and chat membership is mutually exclusive, and chat reconciliation is
+scoped to the active chat workspace so other chat directories remain intact.
+Its stored active entry
 does not opt a cold launch into foreground restoration. Switching projects does
 not restart the sidecar, and background Turns continue while the foreground
 selection changes. Project ordering is import-recency order: a newly imported

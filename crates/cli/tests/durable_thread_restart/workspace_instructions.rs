@@ -29,7 +29,7 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
             "id": "first-turn",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"first input"}]
             }
         }),
@@ -58,7 +58,7 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
             "jsonrpc": "2.0",
             "id": "resume",
             "method": "thread/resume",
-            "params": {"threadId": "thr_0000000000000001"}
+            "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -68,7 +68,7 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
             "id": "second-turn",
             "method": "turn/start",
             "params": {
-                "threadId": "thr_0000000000000001",
+                "threadId": "00000000-0000-7000-8000-000000000001",
                 "input": [{"type":"text","text":"second input"}]
             }
         }),
@@ -98,8 +98,7 @@ fn each_cli_process_snapshots_root_agents_and_keeps_it_out_of_public_protocol() 
     assert!(!public_json.contains("workspaceInstructions"));
     second.finish();
 
-    let rollout = fs::read_to_string(home.path().join("rollouts/v1/thr_0000000000000001.jsonl"))
-        .expect("rollout");
+    let rollout = fs::read_to_string(rollout_path(home.path(), 1)).expect("rollout");
     assert!(rollout.contains("\"workspaceInstructions\""));
     assert!(!rollout.contains(FIRST_INSTRUCTION));
     assert!(!rollout.contains(SECOND_INSTRUCTION));
@@ -140,7 +139,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
             "jsonrpc":"2.0",
             "id":"turn-one",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"apply scoped rules"}]}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"apply scoped rules"}]}
         }),
         8,
     );
@@ -182,7 +181,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
             "jsonrpc":"2.0",
             "id":"resume",
             "method":"thread/resume",
-            "params":{"threadId":"thr_0000000000000001"}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001"}
         }),
         1,
     );
@@ -191,7 +190,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
             "jsonrpc":"2.0",
             "id":"turn-two",
             "method":"turn/start",
-            "params":{"threadId":"thr_0000000000000001","input":[{"type":"text","text":"apply current rules"}]}
+            "params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"apply current rules"}]}
         }),
         8,
     );
@@ -210,8 +209,7 @@ fn scoped_agents_are_ordered_redacted_and_refreshed_only_by_a_new_process() {
     let rollout = fs::read_to_string(workspace.path().join("projects/active/AGENTS.md"))
         .expect("live leaf remains readable");
     assert_eq!(rollout, SECOND_LEAF_INSTRUCTION);
-    let rollout = fs::read_to_string(home.path().join("rollouts/v1/thr_0000000000000001.jsonl"))
-        .expect("rollout");
+    let rollout = fs::read_to_string(rollout_path(home.path(), 1)).expect("rollout");
     assert!(rollout.contains("\"source\":\"rootToActiveScopeAgentsMdV1\""));
     assert!(!rollout.contains(ROOT_INSTRUCTION));
     assert!(!rollout.contains(MIDDLE_INSTRUCTION));

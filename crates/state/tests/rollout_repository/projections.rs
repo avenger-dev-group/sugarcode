@@ -1,13 +1,16 @@
 use super::*;
 
 #[test]
-fn lists_threads_in_descending_numeric_order_with_stable_cursor_paging() {
+fn lists_threads_in_descending_uuid_order_with_stable_cursor_paging() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
     let mut repository = RolloutRepository::open(&home).expect("repository");
     for sequence in [1, 9, 10] {
         repository
-            .create_thread(&ThreadId::new(format!("thr_{sequence:016}")))
+            .create_thread(
+                &ThreadId::parse(format!("00000000-0000-7000-8000-{sequence:012}"))
+                    .expect("valid thread UUIDv7"),
+            )
             .expect("persist thread");
     }
 
@@ -18,11 +21,14 @@ fn lists_threads_in_descending_numeric_order_with_stable_cursor_paging() {
             .iter()
             .map(|thread| thread.id.as_str())
             .collect::<Vec<_>>(),
-        ["thr_0000000000000010", "thr_0000000000000009"]
+        [
+            "00000000-0000-7000-8000-000000000010",
+            "00000000-0000-7000-8000-000000000009"
+        ]
     );
     assert_eq!(
         first.next_cursor.as_ref().map(ThreadId::as_str),
-        Some("thr_0000000000000009")
+        Some("00000000-0000-7000-8000-000000000009")
     );
 
     let second = repository
@@ -34,7 +40,7 @@ fn lists_threads_in_descending_numeric_order_with_stable_cursor_paging() {
             .iter()
             .map(|thread| thread.id.as_str())
             .collect::<Vec<_>>(),
-        ["thr_0000000000000001"]
+        ["00000000-0000-7000-8000-000000000001"]
     );
     assert_eq!(second.next_cursor, None);
 }
@@ -43,8 +49,10 @@ fn lists_threads_in_descending_numeric_order_with_stable_cursor_paging() {
 fn rebuilt_discovery_and_search_hide_subagent_threads() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let root_id = ThreadId::new("thr_0000000000000001");
-    let child_id = ThreadId::new("thr_0000000000000002");
+    let root_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let child_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000002").expect("valid thread UUIDv7");
 
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
@@ -57,7 +65,8 @@ fn rebuilt_discovery_and_search_hide_subagent_threads() {
                 &child_id,
                 &DurableThreadOrigin {
                     parent_thread_id: root_id.clone(),
-                    parent_turn_id: TurnId::new("turn_0000000000000001"),
+                    parent_turn_id: TurnId::parse("00000000-0001-7000-8000-000000000001")
+                        .expect("valid turn UUIDv7"),
                     orchestration_id: "orch/root/turn/review".to_string(),
                     task_id: "orch/root/turn/review/child".to_string(),
                     role: "explorer".to_string(),
@@ -89,7 +98,10 @@ fn rebuilt_discovery_and_search_hide_subagent_threads() {
     );
     assert_eq!(
         repository
-            .list_descendants(&ThreadId::new("thr_0000000000000001"))
+            .list_descendants(
+                &ThreadId::parse("00000000-0000-7000-8000-000000000001")
+                    .expect("valid thread UUIDv7")
+            )
             .expect("child remains addressable")
             .into_iter()
             .map(|thread| thread.id)
@@ -102,7 +114,8 @@ fn rebuilt_discovery_and_search_hide_subagent_threads() {
 fn rebuilds_a_missing_projection_from_rollouts() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
         repository.create_thread(&thread_id).expect("thread");
@@ -129,7 +142,8 @@ fn rebuilds_a_missing_projection_from_rollouts() {
 fn rebuilds_an_invalid_header_without_exposing_database_contents() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
         repository.create_thread(&thread_id).expect("thread");
@@ -155,7 +169,8 @@ fn rebuilds_an_invalid_header_without_exposing_database_contents() {
 fn rebuilds_a_stale_projection_from_exact_rollout_watermarks() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
         repository.create_thread(&thread_id).expect("thread");
@@ -188,7 +203,10 @@ fn database_busy_is_reported_without_replacing_the_projection() {
     {
         let mut repository = RolloutRepository::open(&home).expect("repository");
         repository
-            .create_thread(&ThreadId::new("thr_0000000000000001"))
+            .create_thread(
+                &ThreadId::parse("00000000-0000-7000-8000-000000000001")
+                    .expect("valid thread UUIDv7"),
+            )
             .expect("thread");
     }
     let database = directory
@@ -222,7 +240,8 @@ fn projection_write_failure_does_not_erase_a_durable_rollout_commit() {
     blocker
         .execute_batch("BEGIN EXCLUSIVE")
         .expect("hold exclusive database lock");
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
 
     repository
         .create_thread(&thread_id)
@@ -252,7 +271,8 @@ fn projection_write_failure_does_not_erase_a_durable_rollout_commit() {
 fn archive_projection_failure_does_not_erase_the_durable_commit() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     let database = directory
@@ -306,7 +326,8 @@ fn archive_projection_failure_does_not_erase_the_durable_commit() {
 fn unarchive_projection_failure_does_not_erase_the_durable_commit() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     repository.archive_thread(&thread_id).expect("archive");
@@ -350,7 +371,8 @@ fn unarchive_projection_failure_does_not_erase_the_durable_commit() {
 fn delete_projection_failure_does_not_erase_the_durable_commit() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);
-    let thread_id = ThreadId::new("thr_0000000000000001");
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let mut repository = RolloutRepository::open(&home).expect("repository");
     repository.create_thread(&thread_id).expect("thread");
     let database = directory

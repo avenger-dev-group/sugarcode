@@ -1,4 +1,5 @@
 mod event;
+mod identifier;
 mod item;
 mod thread;
 mod turn;
@@ -18,6 +19,7 @@ pub use event::CoreToolSchemaError;
 pub use event::CoreTurnError;
 pub use event::CoreTurnErrorKind;
 pub use event::CoreWarningCode;
+pub use identifier::IdentifierParseError;
 pub use item::CoreCommandApprovalDecision;
 pub use item::CoreCommandNetworkPolicy;
 pub use item::CoreCommandSandboxPolicy;
@@ -39,3 +41,7 @@ pub use item::CoreUserContentPart;
 pub use item::ItemId;
 pub use thread::ThreadId;
 pub use turn::TurnId;
+
+#[cfg(test)]
+#[path = "tests/identifier.rs"]
+mod identifier_tests;
