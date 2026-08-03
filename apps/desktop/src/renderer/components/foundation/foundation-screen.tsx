@@ -32,8 +32,12 @@ export const FoundationScreen = () => {
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ThreadWorkbenchView
             store={threadStore}
+            navigatorOpen={foundation.navigatorOpen}
             navigatorResize={foundation.navigatorResize}
+            contextRailOpen={foundation.contextRailOpen}
             contextRailResize={foundation.contextRailResize}
+            onToggleNavigator={foundation.toggleNavigator}
+            onToggleContextRail={foundation.toggleContextRail}
             permissionControl={
               <CommandApprovalModeControl
                 store={commandApprovalStore}

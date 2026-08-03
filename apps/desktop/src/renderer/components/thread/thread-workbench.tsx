@@ -5,6 +5,9 @@ import {
   Image as ImageIcon,
   LoaderCircle,
   Paperclip,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Square,
   X,
 } from 'lucide-react';
@@ -309,8 +312,12 @@ const TranscriptTurn = memo(TranscriptTurnView);
 
 export const ThreadWorkbenchView = ({
   store,
+  navigatorOpen = true,
   navigatorResize,
+  contextRailOpen = true,
   contextRailResize,
+  onToggleNavigator,
+  onToggleContextRail,
   navigationFooter,
   contextRail,
   permissionControl,
@@ -338,13 +345,20 @@ export const ThreadWorkbenchView = ({
   return (
     <>
       <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-      <aside
-        className="hidden min-h-0 shrink-0 md:block"
-        style={{ width: navigatorResize?.width ?? 286 }}
-      >
-        <ThreadNavigator store={store} footer={navigationFooter} />
-      </aside>
-      {navigatorResize ? (
+      {navigatorOpen ? (
+        <aside
+          id="task-navigator"
+          className="hidden min-h-0 shrink-0 md:block"
+          style={{ width: navigatorResize?.width ?? 286 }}
+        >
+          <ThreadNavigator
+            store={store}
+            footer={navigationFooter}
+            onToggleNavigator={onToggleNavigator}
+          />
+        </aside>
+      ) : null}
+      {navigatorOpen && navigatorResize ? (
         <div
           className={`panel-resizer hidden md:block ${
             navigatorResize.dragging ? 'panel-resizer--active' : ''
@@ -361,18 +375,56 @@ export const ThreadWorkbenchView = ({
         />
       ) : null}
       <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="window-drag-region flex h-[52px] shrink-0 items-center border-b px-5">
+        <header
+          className={`window-drag-region relative flex h-[52px] shrink-0 items-center pr-5 ${
+            navigatorOpen ? 'pl-5' : 'pl-32'
+          }`}
+        >
+          {!navigatorOpen && onToggleNavigator ? (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              className="window-no-drag absolute left-[84px] top-1.5 hidden text-tertiary md:inline-flex"
+              onClick={onToggleNavigator}
+              aria-controls="task-navigator"
+              aria-expanded="false"
+              aria-label="展开左侧任务栏"
+              title="展开左侧任务栏"
+            >
+              <PanelLeftOpen aria-hidden="true" />
+            </Button>
+          ) : null}
           <div className="window-no-drag min-w-0 select-text">
             <p
-              className="truncate text-sm font-semibold tracking-[-0.015em]"
+              className="truncate text-sm font-normal tracking-[-0.015em]"
               title={conversationTitle}
             >
               {conversationTitle}
             </p>
-            <p className="truncate text-[11px] font-normal text-tertiary">
+            <p className="truncate text-xs font-normal text-tertiary">
               {conversationSubtitle}
             </p>
           </div>
+          {contextRail && onToggleContextRail ? (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              className="window-no-drag ml-auto hidden text-tertiary min-[1100px]:inline-flex"
+              onClick={onToggleContextRail}
+              aria-controls="workspace-tools"
+              aria-expanded={contextRailOpen}
+              aria-label={contextRailOpen ? '关闭右侧工具栏' : '展开右侧工具栏'}
+              title={contextRailOpen ? '关闭右侧工具栏' : '展开右侧工具栏'}
+            >
+              {contextRailOpen ? (
+                <PanelRightClose aria-hidden="true" />
+              ) : (
+                <PanelRightOpen aria-hidden="true" />
+              )}
+            </Button>
+          ) : null}
         </header>
         <ScrollArea
           data-layout="conversation-scroll"
@@ -659,7 +711,7 @@ export const ThreadWorkbenchView = ({
           </div>
         </div>
       </section>
-      {contextRail ? (
+      {contextRail && contextRailOpen ? (
         <>
           {contextRailResize ? (
             <div

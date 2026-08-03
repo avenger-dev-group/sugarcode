@@ -10,7 +10,9 @@ const CONTEXT_RAIL_WIDTH = { default: 760, min: 380, max: 1200 } as const;
 
 type StoredLayout = Readonly<{
   navigatorWidth: number;
+  navigatorOpen: boolean;
   contextRailWidth: number;
+  contextRailOpen: boolean;
 }>;
 
 const validWidth = (
@@ -24,6 +26,9 @@ const validWidth = (
     ? value
     : range.default;
 
+const validOpen = (value: unknown): boolean =>
+  typeof value === 'boolean' ? value : true;
+
 const loadLayout = (): StoredLayout => {
   try {
     const value: unknown = JSON.parse(
@@ -35,15 +40,19 @@ const loadLayout = (): StoredLayout => {
     const candidate = value as Partial<StoredLayout>;
     return {
       navigatorWidth: validWidth(candidate.navigatorWidth, NAVIGATOR_WIDTH),
+      navigatorOpen: validOpen(candidate.navigatorOpen),
       contextRailWidth: validWidth(
         candidate.contextRailWidth,
         CONTEXT_RAIL_WIDTH,
       ),
+      contextRailOpen: validOpen(candidate.contextRailOpen),
     };
   } catch {
     return {
       navigatorWidth: NAVIGATOR_WIDTH.default,
+      navigatorOpen: true,
       contextRailWidth: CONTEXT_RAIL_WIDTH.default,
+      contextRailOpen: true,
     };
   }
 };
@@ -72,6 +81,18 @@ export const useStore = (): FoundationStore => {
   const setContextRailWidth = (width: number): void => {
     setLayout((current) => ({ ...current, contextRailWidth: width }));
   };
+  const toggleNavigator = (): void => {
+    setLayout((current) => ({
+      ...current,
+      navigatorOpen: !current.navigatorOpen,
+    }));
+  };
+  const toggleContextRail = (): void => {
+    setLayout((current) => ({
+      ...current,
+      contextRailOpen: !current.contextRailOpen,
+    }));
+  };
   const navigatorResize = usePanelResize({
     width: layout.navigatorWidth,
     minWidth: NAVIGATOR_WIDTH.min,
@@ -94,9 +115,13 @@ export const useStore = (): FoundationStore => {
 
   return {
     isDark,
+    navigatorOpen: layout.navigatorOpen,
     navigatorResize,
+    contextRailOpen: layout.contextRailOpen,
     contextRailResize,
     themeLabel: isDark ? 'Use light theme' : 'Use dark theme',
+    toggleNavigator,
+    toggleContextRail,
     toggleTheme,
   };
 };

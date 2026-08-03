@@ -222,8 +222,12 @@ export type ThreadStore = Readonly<{
 
 export type ThreadWorkbenchViewProps = Readonly<{
   store: ThreadStore;
+  navigatorOpen?: boolean;
   navigatorResize?: PanelResizeHandle;
+  contextRailOpen?: boolean;
   contextRailResize?: PanelResizeHandle;
+  onToggleNavigator?: () => void;
+  onToggleContextRail?: () => void;
   navigationFooter?: ReactNode;
   contextRail?: ReactNode;
   permissionControl?: ReactNode;

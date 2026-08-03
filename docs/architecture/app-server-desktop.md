@@ -161,13 +161,18 @@ Renderer keeps unsent drafts, attachments and next-Turn model selection per
 Thread (plus a separate new-Thread slot). Changing the profile on a Thread with
 history requires confirmation and affects only the next Turn; the active Turn
 remains frozen. The workbench uses a resizable 240–380-pixel navigator (286
-default), a 52-pixel conversation header and a 380–1200-pixel inspector (760
-default). The inspector preserves a usable conversation column in desktop split
-view; responsive breakpoints omit side regions when the window cannot fit them
-rather than exposing persistent collapse controls in the conversation header.
-Each top-level column contributes a draggable title-bar surface, while
-interactive controls and selectable title text opt out of window dragging. Both
-light and dark themes use the mandated semantic tokens.
+default), a 52-pixel borderless conversation header and a 380–1200-pixel
+inspector (760 default). The navigator and inspector expose persistent collapse
+state. The navigator control remains aligned beside the macOS traffic lights in
+the active title-bar drag surface so it can restore a closed navigator without
+losing pointer input; the inspector control lives at the right edge of the
+conversation header. Their open state and widths are
+restored from the Renderer-owned layout preference. The inspector preserves a
+usable conversation column in desktop split view; responsive breakpoints still
+omit side regions when the window cannot fit them. Each top-level column
+contributes a draggable title-bar surface, while interactive controls and
+selectable title text opt out of window dragging. Both light and dark themes use
+the mandated semantic tokens.
 
 ## Composer and transcript
 

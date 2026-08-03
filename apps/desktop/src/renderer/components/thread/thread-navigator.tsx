@@ -5,6 +5,7 @@ import {
   FolderPlus,
   GitFork,
   LoaderCircle,
+  PanelLeftClose,
   Plus,
   RotateCcw,
   Trash2,
@@ -37,6 +38,7 @@ import type { ThreadStore } from './types';
 type ThreadNavigatorProps = Readonly<{
   store: ThreadStore;
   footer?: ReactNode;
+  onToggleNavigator?: () => void;
 }>;
 
 type ThreadLabelKind = 'project' | 'chat';
@@ -66,6 +68,7 @@ const activateNavigationItem = (
 export const ThreadNavigator = ({
   store,
   footer,
+  onToggleNavigator,
 }: ThreadNavigatorProps) => {
   const [deleteThreadId, setDeleteThreadId] = useState<string | null>(
     null,
@@ -256,7 +259,22 @@ export const ThreadNavigator = ({
         aria-label="Threads"
         className="flex h-full min-h-0 w-full flex-col bg-surface/55"
       >
-        <div className="window-drag-region shrink-0 px-3 pb-2 pt-10">
+        <div className="window-drag-region relative shrink-0 px-3 pb-2 pt-10">
+          {onToggleNavigator ? (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              className="window-no-drag absolute left-[84px] top-1.5 text-tertiary"
+              onClick={onToggleNavigator}
+              aria-controls="task-navigator"
+              aria-expanded="true"
+              aria-label="关闭左侧任务栏"
+              title="关闭左侧任务栏"
+            >
+              <PanelLeftClose aria-hidden="true" />
+            </Button>
+          ) : null}
           <div className="flex h-8 items-center gap-2 px-1">
             <img
               src={appIcon}
