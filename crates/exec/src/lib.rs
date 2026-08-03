@@ -156,6 +156,7 @@ where
         allow_command_workspace_write: request.allow_command_workspace_write,
         mcp_servers: request.mcp_servers,
         command_supervisor_executable,
+        repository: None,
     })
     .await
     {

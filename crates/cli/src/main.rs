@@ -179,6 +179,9 @@ struct AppServerArgs {
     /// Serve newline-delimited JSON-RPC over stdin/stdout.
     #[arg(long)]
     stdio: bool,
+    /// Keep one app-server process and register workspace contexts through workspace/open.
+    #[arg(long, hide = true, conflicts_with = "workspace")]
+    multi_workspace: bool,
     /// Explicit workspace root available to bounded model tools and root AGENTS.md instructions.
     #[arg(long, value_name = "DIR")]
     workspace: Option<PathBuf>,
@@ -503,6 +506,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
         Command::AppServer(args) => match (
             args.stdio,
             args.command,
+            args.multi_workspace,
             args.workspace,
             args.workspace_scope,
             args.unbound_threads,
@@ -513,6 +517,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
             (
                 true,
                 None,
+                multi_workspace,
                 workspace,
                 workspace_scope,
                 unbound_threads,
@@ -521,20 +526,22 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
                 mcp_server,
             ) => {
                 let effective_config = sugarcode_state::load_runtime_config(home)?;
-                sugarcode_app_server::run_stdio(
-                    effective_config,
+                sugarcode_app_server::run_stdio(sugarcode_app_server::StdioOptions {
+                    config: effective_config,
+                    multi_workspace,
                     workspace,
                     workspace_scope,
                     unbound_threads,
                     allow_workspace_write,
                     allow_command_workspace_write,
-                    mcp_server,
-                )
+                    mcp_servers: mcp_server,
+                })
                 .await?;
             }
             (
                 false,
                 Some(AppServerCommand::GenerateTs(args)),
+                false,
                 None,
                 None,
                 false,
@@ -547,6 +554,7 @@ async fn run(cli: Cli) -> Result<u8, Box<dyn std::error::Error>> {
             (
                 false,
                 Some(AppServerCommand::GenerateJsonSchema(args)),
+                false,
                 None,
                 None,
                 false,

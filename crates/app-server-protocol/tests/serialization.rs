@@ -445,8 +445,10 @@ fn thread_start_types_use_the_public_thread_dto() {
 }
 
 #[test]
-fn thread_start_params_accept_only_an_empty_object() {
-    assert!(serde_json::from_value::<ThreadStartParams>(json!({})).is_ok());
+fn thread_start_params_require_a_workspace_id() {
+    assert!(
+        serde_json::from_value::<ThreadStartParams>(json!({"workspaceId": "wsp_fixture"})).is_ok()
+    );
     for invalid in [
         json!(null),
         json!([]),
@@ -455,7 +457,7 @@ fn thread_start_params_accept_only_an_empty_object() {
     ] {
         assert!(
             serde_json::from_value::<ThreadStartParams>(invalid).is_err(),
-            "non-empty or non-object params must be rejected"
+            "missing, unknown, or non-object params must be rejected"
         );
     }
 }
@@ -601,16 +603,14 @@ fn thread_fork_uses_canonical_source_and_returns_a_complete_new_snapshot() {
 #[test]
 fn thread_list_params_are_bounded_and_canonical() {
     assert_eq!(
-        serde_json::from_value::<ThreadListParams>(json!({})).expect("defaults"),
-        ThreadListParams::default()
-    );
-    assert_eq!(
         serde_json::from_value::<ThreadListParams>(json!({
+            "workspaceId": "wsp_fixture",
             "cursor": "thr_0000000000000009",
             "limit": 25
         }))
         .expect("valid page"),
         ThreadListParams {
+            workspace_id: "wsp_fixture".to_string(),
             cursor: Some("thr_0000000000000009".to_string()),
             limit: Some(25),
         }
@@ -650,12 +650,14 @@ fn thread_list_response_contains_only_durable_identity_and_cursor() {
 fn thread_search_params_are_bounded_trimmed_and_canonical() {
     assert_eq!(
         serde_json::from_value::<ThreadSearchParams>(json!({
+            "workspaceId": "wsp_fixture",
             "query": "  SugarCode release  ",
             "cursor": "thr_0000000000000009",
             "limit": 25
         }))
         .expect("valid search"),
         ThreadSearchParams {
+            workspace_id: "wsp_fixture".to_string(),
             query: "SugarCode release".to_string(),
             cursor: Some("thr_0000000000000009".to_string()),
             limit: Some(25),
@@ -1380,11 +1382,13 @@ fn thread_resume_returns_a_complete_snapshot() {
 fn thread_resume_requires_a_canonical_thread_id() {
     assert_eq!(
         serde_json::from_value::<ThreadResumeParams>(json!({
+            "workspaceId": "wsp_fixture",
             "threadId": "thr_0000000000000001"
         }))
         .expect("valid params"),
         ThreadResumeParams {
-            thread_id: "thr_0000000000000001".to_string()
+            thread_id: "thr_0000000000000001".to_string(),
+            workspace_id: "wsp_fixture".to_string(),
         }
     );
     for invalid in [

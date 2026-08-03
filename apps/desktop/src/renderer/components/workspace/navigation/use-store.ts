@@ -3,6 +3,7 @@ import { useStore as useZustandStore } from 'zustand';
 
 import {
   activateWorkspaceChat,
+  activateWorkspaceProject,
   resumeWorkspaceProject,
   selectWorkspace,
 } from '@/renderer/services/workspace';
@@ -54,6 +55,11 @@ export const useStore = (): WorkspaceNavigationStore => {
       runSelection(selectWorkspace, '无法打开所选项目。'),
     resumeProject: () =>
       runSelection(resumeWorkspaceProject, '无法返回当前项目。'),
+    activateProject: (projectId: string) =>
+      runSelection(
+        () => activateWorkspaceProject(projectId),
+        '无法打开所选项目。',
+      ),
     activateChat: (threadId?: string) =>
       runSelection(
         () => activateWorkspaceChat(threadId),

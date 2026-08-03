@@ -1,5 +1,0 @@
-data: {"responseId":"gemini_fixture","candidates":[{"content":{"role":"model","parts":[{"text":"fixture"}]}}]}
-
-data: {"responseId":"gemini_fixture","candidates":[{"content":{"role":"model","parts":[{"text":"fixture answer"}]}}]}
-
-: fixture terminator

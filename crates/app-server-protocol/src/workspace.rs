@@ -5,6 +5,31 @@ use serde::Serialize;
 use serde::de;
 use ts_rs::TS;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum WorkspaceType {
+    Project,
+    IsolatedChat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct WorkspaceOpenParams {
+    pub root: String,
+    pub workspace_type: WorkspaceType,
+    pub allow_workspace_write: bool,
+    pub allow_command_workspace_write: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct WorkspaceOpenResponse {
+    pub workspace_id: String,
+}
+
 pub const MAX_WORKSPACE_BROWSER_PATH_BYTES: usize = 1024;
 pub const MAX_WORKSPACE_BROWSER_PATH_COMPONENTS: usize = 64;
 
@@ -12,6 +37,7 @@ pub const MAX_WORKSPACE_BROWSER_PATH_COMPONENTS: usize = 64;
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct WorkspaceListParams {
+    pub workspace_id: String,
     #[schemars(length(max = 1024))]
     pub path: String,
 }
@@ -23,7 +49,10 @@ impl<'de> Deserialize<'de> for WorkspaceListParams {
     {
         let wire = WorkspacePathWire::deserialize(deserializer)?;
         validate_browser_path(&wire.path).map_err(de::Error::custom)?;
-        Ok(Self { path: wire.path })
+        Ok(Self {
+            workspace_id: wire.workspace_id,
+            path: wire.path,
+        })
     }
 }
 
@@ -31,6 +60,7 @@ impl<'de> Deserialize<'de> for WorkspaceListParams {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct WorkspaceInspectParams {
+    pub workspace_id: String,
     #[schemars(length(min = 1, max = 1024))]
     pub path: String,
 }
@@ -45,13 +75,17 @@ impl<'de> Deserialize<'de> for WorkspaceInspectParams {
         if wire.path.is_empty() {
             return Err(de::Error::custom("path must name a file"));
         }
-        Ok(Self { path: wire.path })
+        Ok(Self {
+            workspace_id: wire.workspace_id,
+            path: wire.path,
+        })
     }
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct WorkspacePathWire {
+    workspace_id: String,
     path: String,
 }
 
@@ -160,22 +194,30 @@ mod tests {
 
     #[test]
     fn list_accepts_root_and_rejects_unknown_fields() {
-        let params: WorkspaceListParams = serde_json::from_str(r#"{"path":""}"#).expect("root");
+        let params: WorkspaceListParams =
+            serde_json::from_str(r#"{"workspaceId":"wsp_test","path":""}"#).expect("root");
         assert_eq!(params.path, "");
         assert!(
-            serde_json::from_str::<WorkspaceListParams>(r#"{"path":"","absolutePath":"/private"}"#)
-                .is_err()
+            serde_json::from_str::<WorkspaceListParams>(
+                r#"{"workspaceId":"wsp_test","path":"","absolutePath":"/private"}"#
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn inspect_requires_a_safe_relative_file_path() {
-        assert!(serde_json::from_str::<WorkspaceInspectParams>(r#"{"path":"src/lib.rs"}"#).is_ok());
+        assert!(
+            serde_json::from_str::<WorkspaceInspectParams>(
+                r#"{"workspaceId":"wsp_test","path":"src/lib.rs"}"#
+            )
+            .is_ok()
+        );
         for value in [
-            r#"{"path":""}"#,
-            r#"{"path":"/etc/passwd"}"#,
-            r#"{"path":"../secret"}"#,
-            r#"{"path":"src//lib.rs"}"#,
+            r#"{"workspaceId":"wsp_test","path":""}"#,
+            r#"{"workspaceId":"wsp_test","path":"/etc/passwd"}"#,
+            r#"{"workspaceId":"wsp_test","path":"../secret"}"#,
+            r#"{"workspaceId":"wsp_test","path":"src//lib.rs"}"#,
         ] {
             assert!(serde_json::from_str::<WorkspaceInspectParams>(value).is_err());
         }

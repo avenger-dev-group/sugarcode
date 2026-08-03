@@ -3,12 +3,14 @@ use crate::workspace_capability::WorkspaceTool;
 use std::fmt;
 #[cfg(unix)]
 use std::fs::File;
+use std::sync::Arc;
 
 pub struct CommandWorkspaceRoot {
     #[cfg(unix)]
     directory: File,
     #[cfg(unix)]
     identity: CommandWorkspaceRootIdentity,
+    write_gate: Arc<crate::workspace_capability::WorkspaceWriteGate>,
 }
 
 impl fmt::Debug for CommandWorkspaceRoot {
@@ -40,14 +42,17 @@ impl CommandWorkspaceRoot {
         Ok(Self {
             directory,
             identity,
+            write_gate: Arc::clone(&workspace.write_gate),
         })
     }
 
     #[cfg(not(unix))]
     pub(crate) fn from_workspace(
-        _workspace: &WorkspaceTool,
+        workspace: &WorkspaceTool,
     ) -> Result<Self, WorkspaceReadErrorKind> {
-        Ok(Self {})
+        Ok(Self {
+            write_gate: Arc::clone(&workspace.write_gate),
+        })
     }
 
     #[cfg(unix)]
@@ -58,6 +63,11 @@ impl CommandWorkspaceRoot {
     #[cfg(unix)]
     pub(crate) fn identity(&self) -> CommandWorkspaceRootIdentity {
         self.identity
+    }
+
+    pub(crate) async fn acquire_write(&self) -> crate::workspace_capability::WorkspaceWritePermit {
+        crate::workspace_capability::WorkspaceWriteGate::acquire_async(Arc::clone(&self.write_gate))
+            .await
     }
 }
 

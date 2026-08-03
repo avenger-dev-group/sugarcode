@@ -5,10 +5,14 @@
   "properties": {
     "threadId": {
       "type": "string"
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "required": [
-    "threadId"
+    "threadId",
+    "workspaceId"
   ]
 }

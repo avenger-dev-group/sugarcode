@@ -762,6 +762,34 @@ async fn legacy_think_tags_are_removed_from_the_authoritative_answer() {
 }
 
 #[tokio::test]
+async fn multibyte_text_without_legacy_think_tags_completes_without_panicking() {
+    let body = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"让我先查看当前项目。\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (endpoint, server) = response_server(body.as_bytes().to_vec(), Vec::new()).await;
+    let events = provider(endpoint)
+        .stream(request())
+        .await
+        .expect("stream starts")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("mock server");
+    assert!(matches!(
+        events.first(),
+        Some(Ok(ModelEvent::OutputTextDelta { delta, .. }))
+            if delta == "让我先查看当前项目。"
+    ));
+    let Some(Ok(ModelEvent::ResponseCompleted(response))) = events.last() else {
+        panic!("multibyte response must complete: {events:?}");
+    };
+    let ModelOutputItemKind::AssistantText { text, .. } = &response.output[0].kind else {
+        panic!("assistant output");
+    };
+    assert_eq!(text, "让我先查看当前项目。");
+}
+
+#[tokio::test]
 async fn oversized_tool_arguments_are_a_non_retryable_output_limit() {
     let arguments = "x".repeat(32 * 1024 + 1);
     let chunk = serde_json::json!({

@@ -13,7 +13,6 @@ pub enum ModelStrictToolsMode {
 pub(crate) enum ToolSchemaDialect {
     OpenAi,
     Anthropic,
-    Gemini,
 }
 
 pub(crate) fn strict_for_tool(
@@ -75,15 +74,6 @@ fn validate_object_schema(
             "{path}.additionalProperties must be false for strict tools"
         ));
     }
-    if matches!(dialect, ToolSchemaDialect::Gemini)
-        && object
-            .get("additionalProperties")
-            .is_some_and(|value| value != false)
-    {
-        return Err(format!(
-            "{path}.additionalProperties is unsupported by Gemini"
-        ));
-    }
     let required = object
         .get("required")
         .and_then(Value::as_array)
@@ -125,7 +115,7 @@ fn validate_object_schema(
 
 fn reject_unsupported_keywords(
     object: &Map<String, Value>,
-    dialect: ToolSchemaDialect,
+    _dialect: ToolSchemaDialect,
     path: &str,
 ) -> Result<(), String> {
     const COMMON_UNSUPPORTED: &[&str] = &[
@@ -146,13 +136,6 @@ fn reject_unsupported_keywords(
     for keyword in COMMON_UNSUPPORTED {
         if object.contains_key(*keyword) {
             return Err(format!("{path}.{keyword} is unsupported"));
-        }
-    }
-    if matches!(dialect, ToolSchemaDialect::Gemini) {
-        for keyword in ["const", "contains", "prefixItems", "propertyNames"] {
-            if object.contains_key(keyword) {
-                return Err(format!("{path}.{keyword} is unsupported by Gemini"));
-            }
         }
     }
     Ok(())

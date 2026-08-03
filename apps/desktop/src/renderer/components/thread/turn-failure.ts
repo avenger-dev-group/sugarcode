@@ -54,8 +54,7 @@ export const toTurnFailureViewModel = (
   wireApi?:
     | 'openaiResponses'
     | 'openaiChatCompletions'
-    | 'anthropicMessages'
-    | 'geminiGenerateContent',
+    | 'anthropicMessages',
 ): TurnFailureViewModel => ({
   kind: error.kind,
   summary: error.protocol

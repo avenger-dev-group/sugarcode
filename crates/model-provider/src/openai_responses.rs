@@ -25,52 +25,29 @@ use crate::ProviderContextEnvelope;
 use crate::ProviderWireApi;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use eventsource_stream::EventStreamError;
-use eventsource_stream::Eventsource;
 use futures_util::FutureExt;
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::AUTHORIZATION;
-use reqwest::header::CONTENT_TYPE;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
-use reqwest::header::RETRY_AFTER;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use url::Url;
 use zeroize::Zeroizing;
 
-mod requests;
-mod streaming;
+pub(crate) mod requests;
+pub(crate) mod streaming;
 
-use requests::anthropic_request;
-use requests::gemini_request;
 use requests::openai_provider_managed_request;
 use requests::openai_request;
-use streaming::AnthropicStreamState;
-use streaming::GeminiStreamState;
 use streaming::OpenAiStreamState;
 
 const MODEL_STREAM_CAPACITY: usize = 16;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const MODEL_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-const MAX_SSE_EVENT_BYTES: usize = crate::MAX_PROVIDER_RESPONSE_BYTES;
 const MAX_SEMANTIC_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_ERROR_BYTES: usize = 16 * 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeProtocol {
-    OpenAiResponses,
-    AnthropicMessages,
-    GeminiGenerateContent,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenAiContinuationMode {
@@ -78,90 +55,32 @@ pub enum OpenAiContinuationMode {
     ProviderManaged,
 }
 
-pub struct NativeModelProvider {
+pub struct OpenAiResponsesProvider {
     client: reqwest::Client,
     base_url: Url,
     token: Option<Zeroizing<String>>,
-    protocol: NativeProtocol,
     strict_tools: ModelStrictToolsMode,
     parallel_tools: bool,
     max_output_tokens: u32,
     openai_continuation_mode: OpenAiContinuationMode,
 }
 
-impl NativeModelProvider {
-    pub fn openai_responses(
+impl OpenAiResponsesProvider {
+    pub fn new(
         base_url: Url,
         token: Option<Zeroizing<String>>,
         strict_tools: ModelStrictToolsMode,
         parallel_tools: bool,
         max_output_tokens: u32,
     ) -> Result<Self, ModelError> {
-        Self::new(
-            base_url,
-            token,
-            NativeProtocol::OpenAiResponses,
-            strict_tools,
-            parallel_tools,
-            max_output_tokens,
-        )
-    }
-
-    pub fn anthropic_messages(
-        base_url: Url,
-        token: Option<Zeroizing<String>>,
-        strict_tools: ModelStrictToolsMode,
-        parallel_tools: bool,
-        max_output_tokens: u32,
-    ) -> Result<Self, ModelError> {
-        Self::new(
-            base_url,
-            token,
-            NativeProtocol::AnthropicMessages,
-            strict_tools,
-            parallel_tools,
-            max_output_tokens,
-        )
-    }
-
-    pub fn gemini_generate_content(
-        base_url: Url,
-        token: Option<Zeroizing<String>>,
-        strict_tools: ModelStrictToolsMode,
-        parallel_tools: bool,
-        max_output_tokens: u32,
-    ) -> Result<Self, ModelError> {
-        Self::new(
-            base_url,
-            token,
-            NativeProtocol::GeminiGenerateContent,
-            strict_tools,
-            parallel_tools,
-            max_output_tokens,
-        )
-    }
-
-    fn new(
-        base_url: Url,
-        token: Option<Zeroizing<String>>,
-        protocol: NativeProtocol,
-        strict_tools: ModelStrictToolsMode,
-        parallel_tools: bool,
-        max_output_tokens: u32,
-    ) -> Result<Self, ModelError> {
-        if !valid_base_url(&base_url) {
+        if !crate::transport::valid_base_url(&base_url) {
             return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
         }
-        let client = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| ModelError::new(ModelErrorKind::Transport, true))?;
+        let client = crate::transport::client()?;
         Ok(Self {
             client,
             base_url,
             token: token.filter(|token| !token.is_empty()),
-            protocol,
             strict_tools,
             parallel_tools,
             max_output_tokens,
@@ -170,18 +89,15 @@ impl NativeModelProvider {
     }
 
     pub fn with_openai_continuation_mode(mut self, mode: OpenAiContinuationMode) -> Self {
-        if self.protocol == NativeProtocol::OpenAiResponses {
-            self.openai_continuation_mode = mode;
-        }
+        self.openai_continuation_mode = mode;
         self
     }
 }
 
-impl fmt::Debug for NativeModelProvider {
+impl fmt::Debug for OpenAiResponsesProvider {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("NativeModelProvider")
-            .field("protocol", &self.protocol)
+            .debug_struct("OpenAiResponsesProvider")
             .field("base_url", &"<redacted>")
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("strict_tools", &self.strict_tools)
@@ -192,76 +108,42 @@ impl fmt::Debug for NativeModelProvider {
     }
 }
 
-impl ModelProvider for NativeModelProvider {
+impl ModelProvider for OpenAiResponsesProvider {
     fn stream(&self, request: ModelRequest) -> BoxModelFuture<'_> {
         async move {
             let normalized = crate::tool_names::normalize_request(request);
             let request = &normalized.request;
-            let (endpoint, body, local_fallback) = match self.protocol {
-                NativeProtocol::OpenAiResponses => {
-                    let endpoint = append_path(&self.base_url, "responses")?;
-                    let local = openai_request(
+            let endpoint = crate::transport::append_path(&self.base_url, "responses")?;
+            let local = openai_request(
+                request,
+                self.strict_tools,
+                self.parallel_tools,
+                self.max_output_tokens,
+            )?;
+            let (body, local_fallback) =
+                if self.openai_continuation_mode == OpenAiContinuationMode::ProviderManaged {
+                    let managed = openai_provider_managed_request(
                         request,
                         self.strict_tools,
                         self.parallel_tools,
                         self.max_output_tokens,
                     )?;
-                    if self.openai_continuation_mode == OpenAiContinuationMode::ProviderManaged {
-                        let managed = openai_provider_managed_request(
-                            request,
-                            self.strict_tools,
-                            self.parallel_tools,
-                            self.max_output_tokens,
-                        )?;
-                        let fallback = managed
-                            .get("previous_response_id")
-                            .is_some()
-                            .then_some(local);
-                        (endpoint, managed, fallback)
-                    } else {
-                        (endpoint, local, None)
-                    }
-                }
-                NativeProtocol::AnthropicMessages => (
-                    append_path(&self.base_url, "messages")?,
-                    anthropic_request(request, self.strict_tools, self.max_output_tokens)?,
-                    None,
-                ),
-                NativeProtocol::GeminiGenerateContent => (
-                    gemini_stream_endpoint(&self.base_url, &request.model)?,
-                    gemini_request(request, self.strict_tools, self.max_output_tokens)?,
-                    None,
-                ),
-            };
+                    let fallback = managed
+                        .get("previous_response_id")
+                        .is_some()
+                        .then_some(local);
+                    (managed, fallback)
+                } else {
+                    (local, None)
+                };
             let mut builder = self.client.post(endpoint.clone()).json(&body);
-            match self.protocol {
-                NativeProtocol::OpenAiResponses => {
-                    if let Some(token) = &self.token {
-                        builder = builder.header(AUTHORIZATION, bearer_header(token)?);
-                    }
-                }
-                NativeProtocol::AnthropicMessages => {
-                    if let Some(token) = &self.token {
-                        builder = builder.header(
-                            HeaderName::from_static("x-api-key"),
-                            sensitive_header(token)?,
-                        );
-                    }
-                    builder = builder.header(
-                        HeaderName::from_static("anthropic-version"),
-                        HeaderValue::from_static("2023-06-01"),
-                    );
-                }
-                NativeProtocol::GeminiGenerateContent => {
-                    if let Some(token) = &self.token {
-                        builder = builder.header(
-                            HeaderName::from_static("x-goog-api-key"),
-                            sensitive_header(token)?,
-                        );
-                    }
-                }
+            if let Some(token) = &self.token {
+                builder = builder.header(AUTHORIZATION, bearer_header(token)?);
             }
-            let mut response = builder.send().await.map_err(map_reqwest_error)?;
+            let mut response = builder
+                .send()
+                .await
+                .map_err(crate::transport::map_reqwest_error)?;
             let mut used_local_fallback = false;
             if !response.status().is_success()
                 && matches!(
@@ -276,45 +158,21 @@ impl ModelProvider for NativeModelProvider {
                 if let Some(token) = &self.token {
                     fallback = fallback.header(AUTHORIZATION, bearer_header(token)?);
                 }
-                response = fallback.send().await.map_err(map_reqwest_error)?;
+                response = fallback
+                    .send()
+                    .await
+                    .map_err(crate::transport::map_reqwest_error)?;
                 used_local_fallback = true;
             }
-            let status = response.status();
-            if !status.is_success() {
-                let provider_request_id = provider_request_id(response.headers());
-                let retry_after = header_text(response.headers(), RETRY_AFTER.as_str());
-                let bytes = response.bytes().await.map_err(map_reqwest_error)?;
-                let provider_code = provider_error_code(&bytes);
-                return Err(
-                    map_error(status, &bytes[..bytes.len().min(MAX_ERROR_BYTES)])
-                        .with_provider_metadata(
-                            status.as_u16(),
-                            provider_code.as_deref(),
-                            provider_request_id.as_deref(),
-                            retry_after.as_deref(),
-                        ),
-                );
+            if !response.status().is_success() {
+                return Err(crate::transport::provider_error(response).await);
             }
-            let is_event_stream = response
-                .headers()
-                .get(CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| {
-                    value
-                        .split(';')
-                        .next()
-                        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
-                });
-            if !is_event_stream {
-                return Err(ModelError::new(ModelErrorKind::Protocol, false));
-            }
+            crate::transport::require_event_stream(&response)?;
             let (_, tool_names) = normalized.into_parts();
             let (sender, receiver) = mpsc::channel(MODEL_STREAM_CAPACITY);
-            tokio::spawn(process_native_stream(
+            tokio::spawn(process_openai_stream(
                 response,
                 sender,
-                self.protocol,
-                self.parallel_tools,
                 tool_names,
                 used_local_fallback,
             ));
@@ -324,11 +182,9 @@ impl ModelProvider for NativeModelProvider {
     }
 }
 
-async fn process_native_stream(
+async fn process_openai_stream(
     response: reqwest::Response,
     sender: mpsc::Sender<Result<ModelEvent, ModelError>>,
-    protocol: NativeProtocol,
-    parallel_tools: bool,
     tool_names: BTreeMap<String, String>,
     used_local_fallback: bool,
 ) {
@@ -342,75 +198,20 @@ async fn process_native_stream(
     {
         return;
     }
-    let mut event_bytes = 0usize;
-    let mut suffix = [0u8; 4];
-    let bounded_bytes = response.bytes_stream().map(move |chunk| {
-        let chunk = chunk.map_err(io::Error::other)?;
-        for byte in chunk.iter().copied() {
-            event_bytes = event_bytes.saturating_add(1);
-            suffix.rotate_left(1);
-            suffix[3] = byte;
-            if suffix[2..] == *b"\n\n" || suffix[2..] == *b"\r\r" || suffix == *b"\r\n\r\n" {
-                event_bytes = 0;
-            } else if event_bytes > MAX_SSE_EVENT_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "SSE event exceeds the size limit",
-                ));
-            }
-        }
-        Ok(chunk)
-    });
-    let mut stream = bounded_bytes.eventsource();
-    let mut state = NativeStreamState::new(protocol, parallel_tools);
+    let mut records = crate::transport::sse_records(response);
+    let mut state = OpenAiStreamState::default();
     loop {
-        let next = tokio::select! {
+        let event = tokio::select! {
             _ = sender.closed() => return,
-            next = tokio::time::timeout(MODEL_STREAM_IDLE_TIMEOUT, stream.next()) => next,
+            next = records.recv() => next,
         };
-        let next = match next {
-            Ok(next) => next,
-            Err(_) => {
-                send_stream_error(&sender, ModelError::new(ModelErrorKind::Timeout, true)).await;
-                return;
-            }
-        };
-        let event = match next {
+        let event = match event {
             None => {
-                if protocol == NativeProtocol::GeminiGenerateContent {
-                    match state.finish(&tool_names) {
-                        Ok(response) => {
-                            let _ = sender
-                                .send(Ok(ModelEvent::ResponseCompleted(response)))
-                                .await;
-                        }
-                        Err(error) => send_stream_error(&sender, error).await,
-                    }
-                } else {
-                    send_stream_error(&sender, ModelError::new(ModelErrorKind::Disconnected, true))
-                        .await;
-                }
+                send_stream_error(&sender, ModelError::new(ModelErrorKind::Disconnected, true))
+                    .await;
                 return;
             }
             Some(Err(error)) => {
-                let error = match error {
-                    EventStreamError::Transport(error)
-                        if error.kind() != io::ErrorKind::InvalidData =>
-                    {
-                        ModelError::new(ModelErrorKind::Disconnected, true)
-                    }
-                    EventStreamError::Transport(error)
-                        if error.kind() == io::ErrorKind::InvalidData =>
-                    {
-                        ModelError::new(ModelErrorKind::ProviderResponseTooLarge, false)
-                    }
-                    EventStreamError::Utf8(_) | EventStreamError::Parser(_) => {
-                        ModelError::new(ModelErrorKind::Protocol, false)
-                    }
-                    EventStreamError::Transport(_) => {
-                        ModelError::new(ModelErrorKind::Disconnected, true)
-                    }
-                };
                 send_stream_error(&sender, error).await;
                 return;
             }
@@ -418,14 +219,8 @@ async fn process_native_stream(
         };
         if event.data.is_empty() || event.data == "[DONE]" {
             if event.data == "[DONE]" {
-                match state.finish(&tool_names) {
-                    Ok(response) => {
-                        let _ = sender
-                            .send(Ok(ModelEvent::ResponseCompleted(response)))
-                            .await;
-                    }
-                    Err(error) => send_stream_error(&sender, error).await,
-                }
+                send_stream_error(&sender, ModelError::new(ModelErrorKind::Disconnected, true))
+                    .await;
                 return;
             }
             continue;
@@ -459,105 +254,6 @@ async fn process_native_stream(
 enum StreamProgress {
     Continue,
     Complete(Box<ModelResponse>),
-}
-
-enum NativeStreamState {
-    OpenAi(OpenAiStreamState),
-    Anthropic(AnthropicStreamState),
-    Gemini(GeminiStreamState),
-}
-
-impl NativeStreamState {
-    fn new(protocol: NativeProtocol, parallel_tools: bool) -> Self {
-        match protocol {
-            NativeProtocol::OpenAiResponses => Self::OpenAi(OpenAiStreamState::default()),
-            NativeProtocol::AnthropicMessages => Self::Anthropic(AnthropicStreamState::default()),
-            NativeProtocol::GeminiGenerateContent => {
-                Self::Gemini(GeminiStreamState::new(parallel_tools))
-            }
-        }
-    }
-
-    async fn consume(
-        &mut self,
-        event_name: &str,
-        value: Value,
-        sender: &mpsc::Sender<Result<ModelEvent, ModelError>>,
-        tool_names: &BTreeMap<String, String>,
-    ) -> Result<StreamProgress, ModelError> {
-        match self {
-            Self::OpenAi(state) => state.consume(event_name, value, sender, tool_names).await,
-            Self::Anthropic(state) => {
-                state.consume(event_name, value, sender).await?;
-                if event_name == "message_stop" {
-                    Ok(StreamProgress::Complete(Box::new(
-                        state.response(tool_names)?,
-                    )))
-                } else {
-                    Ok(StreamProgress::Continue)
-                }
-            }
-            Self::Gemini(state) => {
-                state.consume(value, sender, tool_names).await?;
-                Ok(StreamProgress::Continue)
-            }
-        }
-    }
-
-    fn finish(
-        &mut self,
-        tool_names: &BTreeMap<String, String>,
-    ) -> Result<ModelResponse, ModelError> {
-        match self {
-            Self::OpenAi(_) => Err(ModelError::new(ModelErrorKind::Disconnected, true)),
-            Self::Anthropic(state) => state.response(tool_names),
-            Self::Gemini(state) => state.response(),
-        }
-    }
-}
-
-fn complete_response(
-    output: Vec<ModelOutputItem>,
-    usage: Option<ModelUsage>,
-) -> Result<ModelResponse, ModelError> {
-    if output.is_empty() {
-        Err(ModelError::new(ModelErrorKind::Incomplete, false))
-    } else {
-        let continuation = if output
-            .iter()
-            .any(|item| matches!(item.kind, ModelOutputItemKind::ToolCall(_)))
-        {
-            ModelContinuation::ToolCalls
-        } else {
-            ModelContinuation::Complete
-        };
-        Ok(normalize_response_output(ModelResponse {
-            output,
-            usage,
-            terminal: ModelTerminalMetadata::completed(continuation),
-            provider_context: None,
-        }))
-    }
-}
-
-fn usage_from_parts(
-    input_tokens: Option<u64>,
-    cached_input_tokens: Option<u64>,
-    output_tokens: Option<u64>,
-    reasoning_output_tokens: Option<u64>,
-) -> Option<ModelUsage> {
-    if input_tokens.is_none() && output_tokens.is_none() {
-        return None;
-    }
-    Some(ModelUsage {
-        input_tokens,
-        cached_input_tokens,
-        output_tokens,
-        reasoning_output_tokens,
-        total_tokens: input_tokens
-            .zip(output_tokens)
-            .and_then(|(input, output)| input.checked_add(output)),
-    })
 }
 
 fn map_response_tool_names(
@@ -859,47 +555,6 @@ fn u32_field(value: &Value, field: &str) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
-fn valid_base_url(url: &Url) -> bool {
-    matches!(url.scheme(), "http" | "https")
-        && url.host_str().is_some()
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-}
-
-pub fn append_path(base_url: &Url, suffix: &str) -> Result<Url, ModelError> {
-    let mut url = base_url.clone();
-    let base = url.path().trim_end_matches('/');
-    url.set_path(&format!("{base}/{}", suffix.trim_start_matches('/')));
-    Ok(url)
-}
-
-fn gemini_stream_endpoint(base_url: &Url, model: &str) -> Result<Url, ModelError> {
-    let mut url = append_path(
-        base_url,
-        &format!(
-            "models/{}:streamGenerateContent",
-            percent_encode_path_segment(model)
-        ),
-    )?;
-    url.set_query(Some("alt=sse"));
-    Ok(url)
-}
-
-fn percent_encode_path_segment(value: &str) -> String {
-    value
-        .bytes()
-        .flat_map(|byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
-                vec![char::from(byte)]
-            } else {
-                format!("%{byte:02X}").chars().collect()
-            }
-        })
-        .collect()
-}
-
 fn bearer_header(token: &Zeroizing<String>) -> Result<HeaderValue, ModelError> {
     let value = Zeroizing::new(format!("Bearer {}", token.as_str()));
     sensitive_header(&value)
@@ -910,42 +565,6 @@ fn sensitive_header(token: &str) -> Result<HeaderValue, ModelError> {
         .map_err(|_| ModelError::new(ModelErrorKind::Authentication, false))?;
     value.set_sensitive(true);
     Ok(value)
-}
-
-fn map_reqwest_error(error: reqwest::Error) -> ModelError {
-    if error.is_timeout() {
-        ModelError::new(ModelErrorKind::Timeout, true)
-    } else {
-        ModelError::new(ModelErrorKind::Transport, true)
-    }
-}
-
-fn map_error(status: StatusCode, body: &[u8]) -> ModelError {
-    let text = String::from_utf8_lossy(body).to_ascii_lowercase();
-    if matches!(
-        status,
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY | StatusCode::PAYLOAD_TOO_LARGE
-    ) && [
-        "context_length_exceeded",
-        "maximum context length",
-        "context window",
-        "too many tokens",
-        "input token count",
-    ]
-    .iter()
-    .any(|marker| text.contains(marker))
-    {
-        return ModelError::new(ModelErrorKind::ContextLengthExceeded, false);
-    }
-    match status.as_u16() {
-        401 | 403 => ModelError::new(ModelErrorKind::Authentication, false),
-        408 => ModelError::new(ModelErrorKind::Timeout, true),
-        413 => ModelError::new(ModelErrorKind::ProviderRequestTooLarge, false),
-        429 => ModelError::new(ModelErrorKind::RateLimited, true),
-        400..=499 => ModelError::new(ModelErrorKind::InvalidRequest, false),
-        500..=599 => ModelError::new(ModelErrorKind::Server, true),
-        _ => ModelError::new(ModelErrorKind::Server, false),
-    }
 }
 
 fn protocol_error() -> ModelError {
@@ -968,27 +587,6 @@ fn protocol_error_for_json(
     )
 }
 
-fn provider_request_id(headers: &HeaderMap) -> Option<String> {
-    ["x-request-id", "request-id", "x-goog-request-id"]
-        .into_iter()
-        .find_map(|name| header_text(headers, name))
-}
-
-fn header_text(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned)
-}
-
-fn provider_error_code(body: &[u8]) -> Option<String> {
-    let value: Value = serde_json::from_slice(body).ok()?;
-    ["/error/code", "/error/type", "/error/status", "/type"]
-        .into_iter()
-        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-}
-
 #[cfg(test)]
-#[path = "native/tests/mod.rs"]
+#[path = "openai_responses/tests/mod.rs"]
 mod tests;

@@ -108,9 +108,11 @@ import {
   WORKSPACE_CLEAR_CHANNEL,
   WORKSPACE_LIST_CHANNEL,
   WORKSPACE_PROJECT_RESUME_CHANNEL,
+  WORKSPACE_PROJECT_ACTIVATE_CHANNEL,
   WORKSPACE_SELECT_CHANNEL,
   WORKSPACE_STATE_CHANGED_CHANNEL,
   WORKSPACE_STATE_GET_CHANNEL,
+  WORKSPACE_TASK_FOCUS_CHANNEL,
   type WorkspaceChatRequest,
   type WorkspaceInspectRequest,
   type WorkspaceInspectResult,
@@ -561,9 +563,10 @@ export const createDesktopApi = (
     return result;
   },
   stopConversationTurn:
-    async (): Promise<ConversationActionResult> => {
+    async (threadId: string): Promise<ConversationActionResult> => {
       const result: unknown = await ipcRenderer.invoke(
         CONVERSATION_STOP_CHANNEL,
+        threadId,
       );
       if (!isConversationActionResult(result)) {
         throw new Error('Main returned an invalid conversation stop result.');
@@ -836,6 +839,30 @@ export const createDesktopApi = (
       }
       return result;
     },
+  activateWorkspaceProject: async (
+    projectId: string,
+  ): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_PROJECT_ACTIVATE_CHANNEL,
+      projectId,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid project activation result.');
+    }
+    return result;
+  },
+  focusWorkspaceTask: async (
+    threadId: string,
+  ): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_TASK_FOCUS_CHANNEL,
+      threadId,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid task focus result.');
+    }
+    return result;
+  },
   activateWorkspaceChat: async (
     request: WorkspaceChatRequest,
   ): Promise<WorkspaceSelectResult> => {

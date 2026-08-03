@@ -59,13 +59,26 @@ where
         id: RequestId,
         params: Option<Value>,
     ) -> Vec<JsonRpcMessage> {
-        if let Some(params) = params
-            && serde_json::from_value::<ThreadStartParams>(params).is_err()
+        let params = match self
+            .workspace_scoped_params(params)
+            .ok_or(())
+            .and_then(|value| serde_json::from_value::<ThreadStartParams>(value).map_err(|_| ()))
         {
+            Ok(params) => params,
+            Err(()) => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
+        };
+        if !self.accepts_workspace_id(&params.workspace_id) {
             return vec![error(
                 Some(id),
-                ERROR_INVALID_PARAMS,
-                "Invalid params",
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
                 None,
             )];
         }
@@ -135,7 +148,8 @@ where
         id: RequestId,
         params: Option<Value>,
     ) -> Vec<JsonRpcMessage> {
-        let params = match params
+        let params = match self
+            .workspace_scoped_params(params)
             .ok_or(())
             .and_then(|value| serde_json::from_value::<ThreadResumeParams>(value).map_err(|_| ()))
         {
@@ -149,6 +163,14 @@ where
                 )];
             }
         };
+        if !self.accepts_workspace_id(&params.workspace_id) {
+            return vec![error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            )];
+        }
         if self.accepted_request_ids.contains(&id) {
             return vec![error(
                 Some(id),

@@ -13,10 +13,14 @@
       },
       "maxItems": 100,
       "minItems": 1
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "required": [
+    "workspaceId",
     "expectedRevision",
     "paths"
   ]

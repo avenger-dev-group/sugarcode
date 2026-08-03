@@ -23,10 +23,14 @@
       "type": "string",
       "maxLength": 256,
       "minLength": 1
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "required": [
+    "workspaceId",
     "query"
   ]
 }

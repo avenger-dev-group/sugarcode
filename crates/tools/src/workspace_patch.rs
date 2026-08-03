@@ -455,6 +455,7 @@ impl WorkspaceTool {
         prepared: WorkspacePatchPrepared,
         cancellation: &CancellationToken,
     ) -> WorkspacePatchCommitOutcome {
+        let _write_permit = self.acquire_write_async().await;
         if cancellation.is_cancelled() {
             return commit_error(WorkspacePatchErrorKind::Cancelled);
         }

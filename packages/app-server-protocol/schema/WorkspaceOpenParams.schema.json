@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceOpenParams",
+  "type": "object",
+  "properties": {
+    "allowCommandWorkspaceWrite": {
+      "type": "boolean"
+    },
+    "allowWorkspaceWrite": {
+      "type": "boolean"
+    },
+    "root": {
+      "type": "string"
+    },
+    "workspaceType": {
+      "$ref": "#/$defs/WorkspaceType"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "root",
+    "workspaceType",
+    "allowWorkspaceWrite",
+    "allowCommandWorkspaceWrite"
+  ],
+  "$defs": {
+    "WorkspaceType": {
+      "type": "string",
+      "enum": [
+        "project",
+        "isolatedChat"
+      ]
+    }
+  }
+}

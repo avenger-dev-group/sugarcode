@@ -672,13 +672,11 @@ const parseModelSelection = (
     ![
       'openai',
       'anthropic',
-      'gemini',
     ].includes(value.providerFamily as string) ||
     ![
       'openaiResponses',
       'openaiChatCompletions',
       'anthropicMessages',
-      'geminiGenerateContent',
     ].includes(value.wireApi as string) ||
     typeof value.modelId !== 'string' ||
     typeof value.displayName !== 'string' ||

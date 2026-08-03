@@ -1,6 +1,5 @@
 import {
   Archive,
-  ChevronDown,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -37,7 +36,6 @@ import type { ThreadStore } from './types';
 
 type ThreadNavigatorProps = Readonly<{
   store: ThreadStore;
-  id?: string;
   footer?: ReactNode;
 }>;
 
@@ -67,10 +65,8 @@ const activateNavigationItem = (
 
 export const ThreadNavigator = ({
   store,
-  id,
   footer,
 }: ThreadNavigatorProps) => {
-  const [projectExpanded, setProjectExpanded] = useState<boolean>(true);
   const [deleteThreadId, setDeleteThreadId] = useState<string | null>(
     null,
   );
@@ -83,10 +79,11 @@ export const ThreadNavigator = ({
     Boolean(store.navigator.pendingMutation);
   const selectionDisabled =
     navigationDisabled ||
+    workspace.busy;
+  const selectedTurnActive =
     store.thread.phase === 'starting' ||
     store.thread.phase === 'inProgress' ||
-    store.thread.phase === 'stopping' ||
-    workspace.busy;
+    store.thread.phase === 'stopping';
   const projectActive =
     workspace.state.status === 'ready' &&
     workspace.state.kind === 'project';
@@ -102,6 +99,19 @@ export const ThreadNavigator = ({
   const chatThreadIds =
     workspace.state.chatThreadIds ??
     (chatActive ? store.navigator.threadIds : []);
+  const projects =
+    workspace.state.projects && workspace.state.projects.length > 0
+      ? workspace.state.projects
+      : projectName
+        ? [
+            {
+              id: workspace.state.activeProjectId ?? 'legacy-project',
+              name: projectName,
+              threadIds: projectThreadIds,
+              lastOpenedAtMs: 0,
+            },
+          ]
+        : [];
 
   const handleListKeyDown = (
     event: KeyboardEvent<HTMLDivElement>,
@@ -135,11 +145,15 @@ export const ThreadNavigator = ({
     }
   };
 
-  const startProjectTask = async (): Promise<void> => {
-    const activated = projectActive
+  const startProjectTask = async (projectId?: string): Promise<void> => {
+    const activated =
+      projectActive &&
+      (!projectId || workspace.state.activeProjectId === projectId)
       ? true
-      : projectName
-        ? await workspace.resumeProject()
+      : projectId
+        ? await workspace.activateProject(projectId)
+        : projectName
+          ? await workspace.resumeProject()
         : await workspace.chooseProject();
     if (activated) {
       await store.startNewThread();
@@ -158,8 +172,14 @@ export const ThreadNavigator = ({
     }
   };
 
-  const selectProjectThread = async (threadId: string): Promise<void> => {
-    if (!projectActive && !(await workspace.resumeProject())) {
+  const selectProjectThread = async (
+    projectId: string,
+    threadId: string,
+  ): Promise<void> => {
+    if (
+      (!projectActive || workspace.state.activeProjectId !== projectId) &&
+      !(await workspace.activateProject(projectId))
+    ) {
       return;
     }
     await store.selectThread(threadId);
@@ -185,13 +205,22 @@ export const ThreadNavigator = ({
           <ThreadButton
             key={threadId}
             threadId={threadId}
-            title={store.navigator.threadTitles[threadId]}
+            title={
+              store.navigator.threadTitles[threadId] ??
+              workspace.state.chatTitles?.[threadId]
+            }
             current={threadId === displayedThreadId}
             pending={
               active &&
               threadId === store.navigator.pendingThreadId
             }
+            running={store.navigator.runningThreadIds.includes(threadId)}
+            unread={store.navigator.unreadThreadIds.includes(threadId)}
             disabled={selectionDisabled}
+            mutationDisabled={
+              selectionDisabled ||
+              (threadId === displayedThreadId && selectedTurnActive)
+            }
             labelKind={kind}
             actionsEnabled={active}
             onSelect={onSelect}
@@ -215,21 +244,10 @@ export const ThreadNavigator = ({
   return (
     <>
       <nav
-        id={id}
         aria-label="Threads"
         className="flex h-full min-h-0 w-full flex-col bg-surface/55"
-        onKeyDown={(event) => {
-          if (id && event.key === 'Escape') {
-            store.setNavigatorOpen(false);
-            document
-              .querySelector<HTMLButtonElement>(
-                '[aria-controls="thread-navigator"]',
-              )
-              ?.focus();
-          }
-        }}
       >
-        <div className="shrink-0 px-3 pb-2 pt-10">
+        <div className="window-drag-region shrink-0 px-3 pb-2 pt-10">
           <div className="flex h-8 items-center gap-2 px-1">
             <img
               src={appIcon}
@@ -266,7 +284,7 @@ export const ThreadNavigator = ({
               <SectionHeading
                 id="project-section-title"
                 label="项目"
-                count={projectThreadIds.length}
+                count={projects.length}
                 actionLabel="打开项目"
                 disabled={workspace.busy}
                 onAction={() => void workspace.chooseProject()}
@@ -281,100 +299,75 @@ export const ThreadNavigator = ({
                 )}
               </SectionHeading>
 
-              {projectName ? (
-                <>
-                  <div
-                    data-project-row
-                    className="group flex items-center rounded-lg"
-                  >
-                    <Button
-                      type="button"
-                      size="icon-xs"
-                      variant="ghost"
-                      className="ml-1 shrink-0 bg-transparent text-tertiary hover:bg-transparent aria-expanded:bg-transparent dark:hover:bg-transparent"
-                      aria-label={
-                        projectExpanded
-                          ? `收起 ${projectName} 会话`
-                          : `展开 ${projectName} 会话`
-                      }
-                      aria-controls="project-thread-list"
-                      aria-expanded={projectExpanded}
-                      onClick={() =>
-                        setProjectExpanded((current) => !current)
-                      }
-                    >
-                      <ChevronDown
-                        className={`transition-transform ${
-                          projectExpanded ? '' : '-rotate-90'
-                        }`}
-                        aria-hidden="true"
-                      />
-                    </Button>
-                    <span
-                      role="button"
-                      tabIndex={workspace.busy ? -1 : 0}
-                      aria-disabled={workspace.busy}
-                      className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      onClick={() => {
-                        if (workspace.busy) {
-                          return;
-                        }
-                        if (!projectActive) {
-                          void workspace.resumeProject();
-                        } else {
-                          setProjectExpanded((current) => !current);
-                        }
-                      }}
-                      onKeyDown={(event) =>
-                        activateNavigationItem(
-                          event,
-                          workspace.busy,
-                          () => {
-                            if (!projectActive) {
-                              void workspace.resumeProject();
-                            } else {
-                              setProjectExpanded(
-                                (current) => !current,
-                              );
+              {projects.length > 0 ? (
+                <div className="space-y-1">
+                  {projects.map((project) => {
+                    const active =
+                      projectActive &&
+                      workspace.state.activeProjectId === project.id;
+                    return (
+                      <div key={project.id}>
+                        <div
+                          data-project-row
+                          className={`group flex items-center rounded-lg ${
+                            active ? 'bg-surface/70' : ''
+                          }`}
+                        >
+                          <span
+                            role="link"
+                            tabIndex={workspace.busy ? -1 : 0}
+                            aria-current={active ? 'page' : undefined}
+                            aria-disabled={workspace.busy}
+                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default aria-disabled:opacity-50"
+                            onClick={() => {
+                              if (!workspace.busy) {
+                                void workspace.activateProject(project.id);
+                              }
+                            }}
+                            onKeyDown={(event) =>
+                              activateNavigationItem(
+                                event,
+                                workspace.busy,
+                                () => {
+                                  void workspace.activateProject(project.id);
+                                },
+                              )
                             }
-                          },
-                        )
-                      }
-                    >
-                      <Folder
-                        className="size-4 shrink-0 text-secondary"
-                        aria-hidden="true"
-                      />
-                      <span className="min-w-0 flex-1 truncate text-sm">
-                        {projectName}
-                      </span>
-                    </span>
-                    <Button
-                      type="button"
-                      size="icon-xs"
-                      variant="ghost"
-                      className="mr-1 opacity-60 group-hover:opacity-100"
-                      disabled={selectionDisabled}
-                      onClick={() => void startProjectTask()}
-                      aria-label={`在 ${projectName} 中新建任务`}
-                      title={`在 ${projectName} 中新建任务`}
-                    >
-                      <Plus aria-hidden="true" />
-                    </Button>
-                  </div>
-                  {projectExpanded
-                    ? (
-                        <div id="project-thread-list">
+                          >
+                            <Folder
+                              className="size-4 shrink-0 text-secondary"
+                              aria-hidden="true"
+                            />
+                            <span className="min-w-0 flex-1 truncate text-sm">
+                              {project.name}
+                            </span>
+                          </span>
+                          <Button
+                            type="button"
+                            size="icon-xs"
+                            variant="ghost"
+                            className="mr-1 opacity-60 group-hover:opacity-100"
+                            disabled={selectionDisabled}
+                            onClick={() => void startProjectTask(project.id)}
+                            aria-label={`在 ${project.name} 中新建任务`}
+                            title={`在 ${project.name} 中新建任务`}
+                          >
+                            <Plus aria-hidden="true" />
+                          </Button>
+                        </div>
+                        <div>
                           {renderThreadList(
-                            projectThreadIds,
+                            project.threadIds,
                             'project',
-                            projectActive,
-                            selectProjectThread,
+                            active,
+                            (threadId) =>
+                              selectProjectThread(project.id, threadId),
                           )}
                         </div>
-                      )
-                    : null}
-                </>
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
                 <button
                   type="button"
@@ -558,7 +551,10 @@ type ThreadButtonProps = Readonly<{
   title?: string;
   current: boolean;
   pending: boolean;
+  running: boolean;
+  unread: boolean;
   disabled: boolean;
+  mutationDisabled: boolean;
   labelKind: ThreadLabelKind;
   actionsEnabled: boolean;
   pendingMutation: ThreadStore['navigator']['pendingMutation'];
@@ -573,7 +569,10 @@ const ThreadButton = ({
   title,
   current,
   pending,
+  running,
+  unread,
   disabled,
+  mutationDisabled,
   labelKind,
   actionsEnabled,
   pendingMutation,
@@ -608,13 +607,24 @@ const ThreadButton = ({
           void onSelect(threadId);
         })
       }
-      className={`flex h-9 min-w-0 flex-1 cursor-default items-center px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      className={`flex h-9 min-w-0 flex-1 cursor-pointer items-center px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default ${
         actionsEnabled ? 'rounded-l-lg' : 'rounded-lg'
       }`}
     >
       <span className="min-w-0 flex-1 truncate text-sm font-normal">
         {title ?? `${labelKind === 'chat' ? '聊天' : '任务'} ${threadId.slice(-4)}`}
       </span>
+      {running ? (
+        <LoaderCircle
+          className="ml-2 size-3.5 shrink-0 animate-spin text-process"
+          aria-label="后台运行中"
+        />
+      ) : unread ? (
+        <span
+          className="ml-2 size-2 shrink-0 rounded-full bg-primary"
+          aria-label="有未读更新"
+        />
+      ) : null}
     </span>
     {actionsEnabled ? (
       <div
@@ -627,7 +637,7 @@ const ThreadButton = ({
             pendingMutation?.kind === 'fork' &&
             pendingMutation.threadId === threadId
           }
-          disabled={disabled}
+          disabled={mutationDisabled}
           onClick={() => void onFork(threadId)}
         >
           <GitFork aria-hidden="true" />
@@ -638,7 +648,7 @@ const ThreadButton = ({
             pendingMutation?.kind === 'archive' &&
             pendingMutation.threadId === threadId
           }
-          disabled={disabled}
+          disabled={mutationDisabled}
           onClick={() => void onArchive(threadId)}
         >
           <Archive aria-hidden="true" />
@@ -649,7 +659,7 @@ const ThreadButton = ({
             pendingMutation?.kind === 'delete' &&
             pendingMutation.threadId === threadId
           }
-          disabled={disabled}
+          disabled={mutationDisabled}
           destructive
           onClick={() => onRequestDelete(threadId)}
         >

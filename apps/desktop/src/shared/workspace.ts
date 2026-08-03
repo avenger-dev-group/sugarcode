@@ -2,6 +2,8 @@ export const WORKSPACE_STATE_GET_CHANNEL = 'workspace-state:get';
 export const WORKSPACE_STATE_CHANGED_CHANNEL = 'workspace-state:changed';
 export const WORKSPACE_SELECT_CHANNEL = 'workspace:select';
 export const WORKSPACE_PROJECT_RESUME_CHANNEL = 'workspace:project-resume';
+export const WORKSPACE_PROJECT_ACTIVATE_CHANNEL = 'workspace:project-activate';
+export const WORKSPACE_TASK_FOCUS_CHANNEL = 'workspace:task-focus';
 export const WORKSPACE_CHAT_ACTIVATE_CHANNEL = 'workspace:chat-activate';
 export const WORKSPACE_CLEAR_CHANNEL = 'workspace:clear';
 export const WORKSPACE_LIST_CHANNEL = 'workspace:list';
@@ -15,6 +17,13 @@ export type WorkspaceStatus =
 
 export type WorkspaceKind = 'project' | 'chat';
 
+export type WorkspaceProjectSummary = Readonly<{
+  id: string;
+  name: string;
+  threadIds: readonly string[];
+  lastOpenedAtMs: number;
+}>;
+
 export type WorkspaceStateSnapshot = Readonly<{
   revision: number;
   generation: number;
@@ -23,7 +32,10 @@ export type WorkspaceStateSnapshot = Readonly<{
   name?: string;
   projectName?: string;
   projectThreadIds?: readonly string[];
+  projects?: readonly WorkspaceProjectSummary[];
+  activeProjectId?: string;
   chatThreadIds?: readonly string[];
+  chatTitles?: Readonly<Record<string, string>>;
   error?: string;
 }>;
 
@@ -123,6 +135,10 @@ export type WorkspaceApi = Readonly<{
   ) => () => void;
   selectWorkspace: () => Promise<WorkspaceSelectResult>;
   resumeWorkspaceProject: () => Promise<WorkspaceSelectResult>;
+  activateWorkspaceProject: (
+    projectId: string,
+  ) => Promise<WorkspaceSelectResult>;
+  focusWorkspaceTask: (threadId: string) => Promise<WorkspaceSelectResult>;
   activateWorkspaceChat: (
     request: WorkspaceChatRequest,
   ) => Promise<WorkspaceSelectResult>;
@@ -184,7 +200,10 @@ export const isWorkspaceStateSnapshot = (
     'name',
     'projectName',
     'projectThreadIds',
+    'projects',
+    'activeProjectId',
     'chatThreadIds',
+    'chatTitles',
     'error',
   ]) &&
   Number.isSafeInteger(value.revision) &&
@@ -205,10 +224,45 @@ export const isWorkspaceStateSnapshot = (
     (Array.isArray(value.projectThreadIds) &&
       value.projectThreadIds.length <= 1_000 &&
       value.projectThreadIds.every(isThreadId))) &&
+  (value.projects === undefined ||
+    (Array.isArray(value.projects) &&
+      value.projects.length <= 100 &&
+      value.projects.every(
+        (project) =>
+          isRecord(project) &&
+          hasOnlyKeys(project, [
+            'id',
+            'name',
+            'threadIds',
+            'lastOpenedAtMs',
+          ]) &&
+          typeof project.id === 'string' &&
+          project.id.length > 0 &&
+          project.id.length <= 128 &&
+          typeof project.name === 'string' &&
+          project.name.length > 0 &&
+          Array.isArray(project.threadIds) &&
+          project.threadIds.length <= 1_000 &&
+          project.threadIds.every(isThreadId) &&
+          Number.isSafeInteger(project.lastOpenedAtMs) &&
+          (project.lastOpenedAtMs as number) >= 0,
+      ))) &&
+  (value.activeProjectId === undefined ||
+    (typeof value.activeProjectId === 'string' &&
+      value.activeProjectId.length > 0 &&
+      value.activeProjectId.length <= 128)) &&
   (value.chatThreadIds === undefined ||
     (Array.isArray(value.chatThreadIds) &&
       value.chatThreadIds.length <= 1_000 &&
       value.chatThreadIds.every(isThreadId))) &&
+  (value.chatTitles === undefined ||
+    (isRecord(value.chatTitles) &&
+      Object.entries(value.chatTitles).every(
+        ([threadId, title]) =>
+          isThreadId(threadId) &&
+          typeof title === 'string' &&
+          title.length > 0,
+      ))) &&
   (value.error === undefined || typeof value.error === 'string');
 
 export const isWorkspaceChatRequest = (

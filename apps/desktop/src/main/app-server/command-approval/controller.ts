@@ -39,6 +39,13 @@ type CommandApprovalControllerOptions = Readonly<{
   onProtocolFailure: () => void;
   onWriteFailure: () => void;
   onSurfaceFailure: () => void;
+  onSurfaceReady?: () => void;
+  getQueueCount?: () => number;
+  describeSource?: (threadId: string) => Readonly<{
+    projectTitle: string;
+    conversationTitle: string;
+  }>;
+  getWorkspaceScope?: (threadId: string) => string | null;
 }>;
 
 type ActiveApproval = {
@@ -92,6 +99,12 @@ export class CommandApprovalController {
 
   getSnapshot = (): CommandApprovalStateSnapshot => this.snapshot;
 
+  queueChanged = (): void => {
+    if (this.active && this.snapshot.status === 'pending') {
+      this.transition('pending', this.toViewModel(this.active));
+    }
+  };
+
   subscribe = (listener: CommandApprovalStateListener): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -99,8 +112,11 @@ export class CommandApprovalController {
 
   markSurfaceReady = (): CommandApprovalStateSnapshot => {
     this.surfaceReady = true;
+    this.options.onSurfaceReady?.();
     return this.snapshot;
   };
+
+  isSurfaceReady = (): boolean => this.surfaceReady;
 
   handleServerRequest = (
     request: Extract<ServerMessage, { kind: 'request' }>,
@@ -317,6 +333,7 @@ export class CommandApprovalController {
     const evaluation = evaluateAutomaticCommandApproval(
       this.modeScope,
       threadId,
+      this.options.getWorkspaceScope?.(threadId) ?? null,
     );
     if (evaluation.scope !== this.modeScope) {
       this.modeScope = evaluation.scope;
@@ -329,7 +346,11 @@ export class CommandApprovalController {
     mode: CommandApprovalMode,
     threadId: string | null,
   ): void => {
-    this.modeScope = createCommandApprovalModeScope(mode, threadId);
+    this.modeScope = createCommandApprovalModeScope(
+      mode,
+      threadId,
+      threadId ? (this.options.getWorkspaceScope?.(threadId) ?? null) : null,
+    );
   };
 
   private denyThenFail = async (
@@ -346,15 +367,25 @@ export class CommandApprovalController {
 
   private toViewModel = (
     active: ActiveApproval,
-  ): CommandApprovalViewModel => ({
-    presentationId: active.presentationId,
-    description: active.params.description,
-    ...(active.params.sourceAgent
-      ? { sourceAgent: { ...active.params.sourceAgent } }
-      : {}),
-    localExpiresAtMs: active.localExpiresAtMs,
-    actionState: active.actionState,
-  });
+  ): CommandApprovalViewModel => {
+    const source = this.options.describeSource?.(active.params.threadId) ?? {
+      projectTitle: 'SugarCode',
+      conversationTitle: active.params.threadId,
+    };
+    return {
+      presentationId: active.presentationId,
+      description: active.params.description,
+      threadId: active.params.threadId,
+      turnId: active.params.turnId,
+      queueCount: this.options.getQueueCount?.() ?? 1,
+      ...source,
+      ...(active.params.sourceAgent
+        ? { sourceAgent: { ...active.params.sourceAgent } }
+        : {}),
+      localExpiresAtMs: active.localExpiresAtMs,
+      actionState: active.actionState,
+    };
+  };
 
   private statusForDecision = (
     decision: string,

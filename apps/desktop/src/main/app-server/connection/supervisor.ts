@@ -10,6 +10,7 @@ import type {
   WorkspaceGitMutationParams,
   WorkspaceGitMutationResponse,
   WorkspaceGitStatusResponse,
+  WorkspaceOpenResponse,
 } from '@sugarcode/app-server-protocol';
 import {
   PROTOCOL_VERSION,
@@ -20,6 +21,7 @@ import {
   type ChildProcessWithoutNullStreams,
   type SpawnOptionsWithoutStdio,
 } from 'node:child_process';
+import { basename } from 'node:path';
 
 import type {
   ConnectionDiagnostic,
@@ -50,6 +52,7 @@ import {
 import {
   parseWorkspaceInspectResponse,
   parseWorkspaceListResponse,
+  type ServerMessage,
 } from '../transport/server-message';
 import { CommandApprovalController } from '../command-approval/controller';
 import { ConversationController } from '../conversation/controller';
@@ -175,6 +178,23 @@ export class ConnectionSupervisor {
   private preferredInitialThreadId: string | undefined;
   private lastProtocolRecoveryAt = 0;
   private protocolRecoveryPromise: Promise<void> | null = null;
+  private readonly approvalQueue: Array<
+    Readonly<{
+      kind: 'command' | 'mcp';
+      request: Extract<ServerMessage, { kind: 'request' }>;
+    }>
+  > = [];
+  private approvalInFlight: 'command' | 'mcp' | null = null;
+  private readonly threadWorkspaceIds = new Map<string, string>();
+  private readonly workspaceTitles = new Map<string, string>();
+  private readonly threadTitles = new Map<string, string>();
+  private readonly registeredWorkspaces = new Map<
+    string,
+    Readonly<{
+      path: string;
+      runtimeKind: WorkspaceRuntimeKind;
+    }>
+  >();
 
   constructor(options: ConnectionSupervisorOptions) {
     this.options = {
@@ -197,6 +217,11 @@ export class ConnectionSupervisor {
       onWriteFailure: () => this.failAndTerminate('write-failed'),
       onSurfaceFailure: () =>
         this.failAndTerminate('approval-ui-unavailable'),
+      onSurfaceReady: () => this.presentNextApproval(),
+      getQueueCount: () => 1 + this.approvalQueue.length,
+      describeSource: this.describeApprovalSource,
+      getWorkspaceScope: (threadId) =>
+        this.threadWorkspaceIds.get(threadId) ?? null,
     });
     this.conversation = new ConversationController({
       getRpc: () => this.conversationRpc,
@@ -222,6 +247,9 @@ export class ConnectionSupervisor {
       onWriteFailure: () => this.failAndTerminate('write-failed'),
       onSurfaceFailure: () =>
         this.failAndTerminate('approval-ui-unavailable'),
+      onSurfaceReady: () => this.presentNextApproval(),
+      getQueueCount: () => 1 + this.approvalQueue.length,
+      describeSource: this.describeApprovalSource,
     });
     let commandApprovalTaskId: string | null = null;
     let mcpApprovalTaskId: string | null = null;
@@ -240,6 +268,7 @@ export class ConnectionSupervisor {
           ? (snapshot.request?.sourceAgent?.taskId ?? null)
           : null;
       updateAgentApprovalTasks();
+      this.advanceApprovalQueue('command', snapshot.status);
     });
     this.mcpApprovals.subscribe((snapshot) => {
       mcpApprovalTaskId =
@@ -247,12 +276,15 @@ export class ConnectionSupervisor {
           ? (snapshot.request?.sourceAgent?.taskId ?? null)
           : null;
       updateAgentApprovalTasks();
+      this.advanceApprovalQueue('mcp', snapshot.status);
     });
   }
 
   getSnapshot = (): ConnectionStateSnapshot => this.snapshot;
 
   getResolvedCli = (): ResolvedCli | null => this.resolvedCli;
+
+  getWorkspaceBindingId = (): string | null => this.workspaceBindingId;
 
   getCliEnvironment = (): NodeJS.ProcessEnv =>
     createCliEnvironment(this.options.environment);
@@ -272,55 +304,84 @@ export class ConnectionSupervisor {
     return true;
   };
 
-  getWorkspaceSwitchBlock = (): ModelConfigRestartBlock | null =>
-    this.getModelConfigRestartBlock();
+  getWorkspaceSwitchBlock = (): ModelConfigRestartBlock | null => {
+    if (
+      this.modelConfigTransaction ||
+      this.workspaceTransaction ||
+      this.gitTransaction ||
+      this.restarting ||
+      this.snapshot.status === 'connecting'
+    ) {
+      return 'reconnectPending';
+    }
+    if (!this.resolvedCli || !this.client || this.shuttingDown) {
+      return 'unavailable';
+    }
+    const conversation = this.conversation.getSnapshot();
+    if (conversation.phase === 'starting') {
+      return 'turnActive';
+    }
+    if (
+      conversation.navigator.pendingThreadId ||
+      conversation.navigator.search.status === 'loading'
+    ) {
+      return 'navigationPending';
+    }
+    return null;
+  };
 
   switchWorkspace = async (
     workspacePath: string | null,
     runtimeKind: WorkspaceRuntimeKind = 'project',
     preferredThreadId?: string,
   ): Promise<boolean> => {
-    const target = getCliTarget(this.options.platform, this.options.arch);
     const lease = this.beginWorkspaceTransaction();
     if (
       typeof lease === 'string' ||
-      !target ||
       !this.resolvedCli ||
+      !this.client ||
       this.shuttingDown
     ) {
       return false;
     }
     const previousPath = this.workspacePath;
     const previousRuntimeKind = this.workspaceRuntimeKind;
-    const previousThreadId = this.conversation.getSnapshot().threadId ?? undefined;
-    this.commandApprovals.resetScope();
+    const previousWorkspaceId = this.workspaceBindingId;
+    const previousThreadId = this.conversation.getSnapshot().threadId;
     try {
-      if (!(await this.closeForRestart())) {
-        return false;
-      }
       this.workspacePath = workspacePath;
       this.workspaceRuntimeKind = runtimeKind;
-      this.workspaceBindingId = null;
-      this.mcpSession.initialize(this.mcpSession.getSnapshot().servers);
-      this.transition('connecting');
-      const connected = await this.connect(
-        [],
-        preferredThreadId,
-        target.expectedPlatform,
-      );
-      if (connected) {
-        return true;
+      const workspaceId = await this.openConfiguredWorkspace();
+      if (!workspaceId) {
+        throw new Error('Workspace is unavailable.');
       }
+      this.workspaceBindingId = workspaceId;
+      this.conversationRpc = new ConversationRpcClient(
+        this.client,
+        workspaceId,
+      );
+      if (!(await this.conversation.switchWorkspace(preferredThreadId))) {
+        throw new Error('Workspace projection could not be restored.');
+      }
+      this.rememberCurrentWorkspaceThreads();
+      return true;
+    } catch {
       this.workspacePath = previousPath;
       this.workspaceRuntimeKind = previousRuntimeKind;
-      if (!this.shuttingDown) {
-        await this.closeForRestart();
-        this.transition('connecting');
-        await this.connect(
-          [],
-          previousThreadId,
-          target.expectedPlatform,
+      const workspaceId = await this.openConfiguredWorkspace().catch(
+        (): null => null,
+      );
+      if (workspaceId && this.client) {
+        this.workspaceBindingId = workspaceId;
+        this.conversationRpc = new ConversationRpcClient(
+          this.client,
+          workspaceId,
         );
+        if (workspaceId === previousWorkspaceId) {
+          await this.conversation.switchWorkspace(
+            previousThreadId ?? undefined,
+          );
+        }
       }
       return false;
     } finally {
@@ -332,7 +393,10 @@ export class ConnectionSupervisor {
     if (!this.client || !this.workspaceBindingId) {
       throw new ConnectionClosedError('Workspace browser is unavailable.');
     }
-    const result = await this.client.requestReady('workspace/list', { path });
+    const result = await this.client.requestReady('workspace/list', {
+      workspaceId: this.workspaceBindingId,
+      path,
+    });
     return parseWorkspaceListResponse(result, path);
   };
 
@@ -343,6 +407,7 @@ export class ConnectionSupervisor {
       throw new ConnectionClosedError('Workspace inspector is unavailable.');
     }
     const result = await this.client.requestReady('workspace/inspect', {
+      workspaceId: this.workspaceBindingId,
       path,
     });
     return parseWorkspaceInspectResponse(result, path);
@@ -353,18 +418,23 @@ export class ConnectionSupervisor {
       throw new ConnectionClosedError('Workspace Git is unavailable.');
     }
     return parseWorkspaceGitStatusResponse(
-      await this.client.requestReady('workspace/git/status', {}),
+      await this.client.requestReady('workspace/git/status', {
+        workspaceId: this.workspaceBindingId,
+      }),
     );
   };
 
   gitDiff = async (
-    params: WorkspaceGitDiffParams,
+    params: Omit<WorkspaceGitDiffParams, 'workspaceId'>,
   ): Promise<WorkspaceGitDiffResponse> => {
     if (!this.client || !this.workspaceBindingId) {
       throw new ConnectionClosedError('Workspace Git is unavailable.');
     }
     return parseWorkspaceGitDiffResponse(
-      await this.client.requestReady('workspace/git/diff', params),
+      await this.client.requestReady('workspace/git/diff', {
+        ...params,
+        workspaceId: this.workspaceBindingId,
+      }),
       params.expectedRevision,
       params.path,
       params.source,
@@ -372,37 +442,46 @@ export class ConnectionSupervisor {
   };
 
   gitStage = async (
-    params: WorkspaceGitMutationParams,
+    params: Omit<WorkspaceGitMutationParams, 'workspaceId'>,
   ): Promise<WorkspaceGitMutationResponse> => {
     if (!this.client || !this.workspaceBindingId) {
       throw new ConnectionClosedError('Workspace Git is unavailable.');
     }
     return parseWorkspaceGitMutationResponse(
-      await this.client.requestReady('workspace/git/stage', params),
+      await this.client.requestReady('workspace/git/stage', {
+        ...params,
+        workspaceId: this.workspaceBindingId,
+      }),
       params.paths,
     );
   };
 
   gitUnstage = async (
-    params: WorkspaceGitMutationParams,
+    params: Omit<WorkspaceGitMutationParams, 'workspaceId'>,
   ): Promise<WorkspaceGitMutationResponse> => {
     if (!this.client || !this.workspaceBindingId) {
       throw new ConnectionClosedError('Workspace Git is unavailable.');
     }
     return parseWorkspaceGitMutationResponse(
-      await this.client.requestReady('workspace/git/unstage', params),
+      await this.client.requestReady('workspace/git/unstage', {
+        ...params,
+        workspaceId: this.workspaceBindingId,
+      }),
       params.paths,
     );
   };
 
   gitCommit = async (
-    params: WorkspaceGitCommitParams,
+    params: Omit<WorkspaceGitCommitParams, 'workspaceId'>,
   ): Promise<WorkspaceGitCommitResponse> => {
     if (!this.client || !this.workspaceBindingId) {
       throw new ConnectionClosedError('Workspace Git is unavailable.');
     }
     return parseWorkspaceGitCommitResponse(
-      await this.client.requestReady('workspace/git/commit', params),
+      await this.client.requestReady('workspace/git/commit', {
+        ...params,
+        workspaceId: this.workspaceBindingId,
+      }),
     );
   };
 
@@ -497,6 +576,7 @@ export class ConnectionSupervisor {
     }
     this.shuttingDown = true;
     this.connectionGeneration += 1;
+    this.rejectQueuedApprovals();
     this.commandApprovals.shutdown();
     this.mcpApprovals.shutdown();
     this.conversation.transportClosed();
@@ -510,6 +590,25 @@ export class ConnectionSupervisor {
       this.child.kill();
     }
     this.transition('closed');
+  };
+
+  approvalSurfacesUnavailable = (): void => {
+    this.commandApprovals.surfaceUnavailable();
+    this.mcpApprovals.surfaceUnavailable();
+    this.rejectQueuedApprovals();
+  };
+
+  private rejectQueuedApprovals = (): void => {
+    const queued = this.approvalQueue.splice(0);
+    const client = this.client;
+    if (!client) {
+      return;
+    }
+    for (const entry of queued) {
+      void client.respond(entry.request.id, { decision: 'denied' }).catch(
+        (): undefined => undefined,
+      );
+    }
   };
 
   getDiagnosticTailForTesting = (): string => this.stderr.toString();
@@ -586,20 +685,14 @@ export class ConnectionSupervisor {
         [
           'app-server',
           '--stdio',
-          ...(this.workspacePath
-            ? ['--workspace', this.workspacePath]
-            : []),
-          ...(this.workspacePath ? ['--allow-workspace-write'] : []),
-          ...(this.workspacePath && this.workspaceRuntimeKind === 'chat'
-            ? ['--unbound-threads']
-            : []),
+          '--multi-workspace',
           ...mcpServerIds.flatMap((serverId) => [
             '--mcp-server',
             serverId,
           ]),
         ],
         {
-          cwd: this.workspacePath ?? cli.workingDirectory,
+          cwd: cli.workingDirectory,
           detached: false,
           env: createCliEnvironment(this.options.environment),
           shell: false,
@@ -623,11 +716,11 @@ export class ConnectionSupervisor {
           return;
         }
         if (request.method === 'item/commandExecution/requestApproval') {
-          this.commandApprovals.handleServerRequest(request);
+          this.enqueueApprovalRequest('command', request);
           return;
         }
         if (request.method === 'item/mcpToolCall/requestApproval') {
-          this.mcpApprovals.handleServerRequest(request);
+          this.enqueueApprovalRequest('mcp', request);
           return;
         }
         {
@@ -638,6 +731,8 @@ export class ConnectionSupervisor {
         if (generation !== this.connectionGeneration) {
           return;
         }
+        this.removeResolvedQueuedApproval(notification);
+        this.rememberStartedThread(notification);
         this.commandApprovals.handleNotification(notification);
         this.mcpApprovals.handleNotification(notification);
         this.conversation.handleNotification(notification);
@@ -659,8 +754,6 @@ export class ConnectionSupervisor {
         }
       },
     });
-    this.conversationRpc = new ConversationRpcClient(this.client);
-
     const initializeParams: InitializeParams = {
       protocolVersion: PROTOCOL_VERSION,
       clientInfo: {
@@ -688,7 +781,6 @@ export class ConnectionSupervisor {
         response,
         expectedPlatform,
         mcpServerIds.length > 0,
-        this.workspacePath !== null,
       );
       if (mismatch) {
         this.failAndTerminate(mismatch);
@@ -699,7 +791,11 @@ export class ConnectionSupervisor {
         return false;
       }
       if (!this.shuttingDown && this.snapshot.status === 'connecting') {
-        this.workspaceBindingId = response.workspace?.id ?? null;
+        await this.reopenBackgroundWorkspaces();
+        this.workspaceBindingId = await this.openConfiguredWorkspace();
+        this.conversationRpc = this.workspaceBindingId
+          ? new ConversationRpcClient(this.client, this.workspaceBindingId)
+          : null;
         const restored = restoreConversation
           ? await this.conversation.restoreForConnection(preferredThreadId)
           : true;
@@ -711,6 +807,7 @@ export class ConnectionSupervisor {
         }
         if (restored) {
           this.conversation.connectionReady();
+          this.rememberCurrentWorkspaceThreads();
         }
         this.transition('ready');
         return true;
@@ -746,7 +843,6 @@ export class ConnectionSupervisor {
     response: InitializeResponse,
     expectedPlatform: ExpectedCliPlatform,
     expectsMcp: boolean,
-    expectsWorkspace: boolean,
   ): ConnectionDiagnosticCode | null => {
     if (response.protocolVersion !== PROTOCOL_VERSION) {
       return 'protocol-version-mismatch';
@@ -770,16 +866,266 @@ export class ConnectionSupervisor {
       return 'protocol-invalid';
     }
     if (
-      (response.capabilities.workspaceBrowser === true) !== expectsWorkspace ||
-      (response.capabilities.workspaceGit === true) !== expectsWorkspace ||
-      (response.workspace !== undefined) !== expectsWorkspace ||
-      (response.workspace !== undefined &&
-        !/^[0-9a-f]{64}$/.test(response.workspace.id))
+      response.capabilities.workspaceBrowser !== true ||
+      response.capabilities.workspaceGit !== true ||
+      response.workspace !== undefined
     ) {
       return 'protocol-invalid';
     }
     return null;
   };
+
+  private enqueueApprovalRequest = (
+    kind: 'command' | 'mcp',
+    request: Extract<ServerMessage, { kind: 'request' }>,
+  ): void => {
+    this.approvalQueue.push({ kind, request });
+    if (this.approvalInFlight === 'command') {
+      this.commandApprovals.queueChanged();
+    } else if (this.approvalInFlight === 'mcp') {
+      this.mcpApprovals.queueChanged();
+    }
+    this.presentNextApproval();
+  };
+
+  private removeResolvedQueuedApproval = (
+    notification: Extract<ServerMessage, { kind: 'notification' }>,
+  ): void => {
+    if (
+      notification.method !== 'item/completed' &&
+      notification.method !== 'turn/completed'
+    ) {
+      return;
+    }
+    const params = notification.params;
+    if (typeof params !== 'object' || params === null) {
+      return;
+    }
+    const record = params as Record<string, unknown>;
+    const item =
+      typeof record.item === 'object' && record.item !== null
+        ? (record.item as Record<string, unknown>)
+        : null;
+    const approvalId =
+      typeof item?.approvalId === 'string' ? item.approvalId : null;
+    const threadId =
+      typeof record.threadId === 'string' ? record.threadId : null;
+    const turnId = typeof record.turnId === 'string' ? record.turnId : null;
+    const before = this.approvalQueue.length;
+    for (let index = this.approvalQueue.length - 1; index >= 0; index -= 1) {
+      const queued = this.approvalQueue[index];
+      const queuedParams = queued?.request.params;
+      if (typeof queuedParams !== 'object' || queuedParams === null) {
+        continue;
+      }
+      const request = queuedParams as Record<string, unknown>;
+      const sameApproval =
+        approvalId !== null && request.approvalId === approvalId;
+      const sameCompletedTurn =
+        notification.method === 'turn/completed' &&
+        threadId !== null &&
+        turnId !== null &&
+        request.threadId === threadId &&
+        request.turnId === turnId;
+      if (sameApproval || sameCompletedTurn) {
+        this.approvalQueue.splice(index, 1);
+      }
+    }
+    if (this.approvalQueue.length !== before) {
+      if (this.approvalInFlight === 'command') {
+        this.commandApprovals.queueChanged();
+      } else if (this.approvalInFlight === 'mcp') {
+        this.mcpApprovals.queueChanged();
+      }
+    }
+  };
+
+  private describeApprovalSource = (
+    threadId: string,
+  ): Readonly<{
+    projectTitle: string;
+    conversationTitle: string;
+  }> => {
+    const navigator = this.conversation.getSnapshot().navigator;
+    const workspaceId = this.threadWorkspaceIds.get(threadId);
+    return {
+      projectTitle:
+        (workspaceId ? this.workspaceTitles.get(workspaceId) : undefined) ??
+        (this.workspacePath ? basename(this.workspacePath) : 'SugarCode'),
+      conversationTitle:
+        this.threadTitles.get(threadId) ??
+        navigator.activeThreadTitles[threadId] ??
+        navigator.search.threadTitles[threadId] ??
+        threadId,
+    };
+  };
+
+  private rememberCurrentWorkspaceThreads = (): void => {
+    if (!this.workspaceBindingId) {
+      return;
+    }
+    const snapshot = this.conversation.getSnapshot();
+    for (const threadId of snapshot.navigator.activeThreadIds) {
+      this.threadWorkspaceIds.set(threadId, this.workspaceBindingId);
+      const title = snapshot.navigator.activeThreadTitles[threadId];
+      if (title) {
+        this.threadTitles.set(threadId, title);
+      }
+    }
+    if (snapshot.threadId) {
+      this.threadWorkspaceIds.set(snapshot.threadId, this.workspaceBindingId);
+    }
+  };
+
+  private rememberStartedThread = (
+    notification: Extract<ServerMessage, { kind: 'notification' }>,
+  ): void => {
+    if (
+      notification.method !== 'thread/started' ||
+      !this.workspaceBindingId ||
+      typeof notification.params !== 'object' ||
+      notification.params === null
+    ) {
+      return;
+    }
+    const thread = (notification.params as Record<string, unknown>).thread;
+    if (typeof thread !== 'object' || thread === null) {
+      return;
+    }
+    const threadId = (thread as Record<string, unknown>).id;
+    if (typeof threadId === 'string') {
+      this.threadWorkspaceIds.set(threadId, this.workspaceBindingId);
+      const title = (thread as Record<string, unknown>).title;
+      if (typeof title === 'string' && title.length > 0) {
+        this.threadTitles.set(threadId, title);
+      }
+    }
+  };
+
+  private presentNextApproval = (): void => {
+    if (this.approvalInFlight || this.approvalQueue.length === 0) {
+      return;
+    }
+    const next = this.approvalQueue[0];
+    if (!next) {
+      return;
+    }
+    const ready =
+      next.kind === 'command'
+        ? this.commandApprovals.isSurfaceReady()
+        : this.mcpApprovals.isSurfaceReady();
+    if (!ready) {
+      return;
+    }
+    this.approvalQueue.shift();
+    this.approvalInFlight = next.kind;
+    if (next.kind === 'command') {
+      this.commandApprovals.handleServerRequest(next.request);
+      if (this.commandApprovals.getSnapshot().status !== 'pending') {
+        this.approvalInFlight = null;
+        queueMicrotask(this.presentNextApproval);
+      }
+    } else {
+      this.mcpApprovals.handleServerRequest(next.request);
+      if (this.mcpApprovals.getSnapshot().status !== 'pending') {
+        this.approvalInFlight = null;
+        queueMicrotask(this.presentNextApproval);
+      }
+    }
+  };
+
+  private advanceApprovalQueue = (
+    kind: 'command' | 'mcp',
+    status: string,
+  ): void => {
+    if (
+      this.approvalInFlight === kind &&
+      status !== 'pending' &&
+      status !== 'idle'
+    ) {
+      this.approvalInFlight = null;
+      queueMicrotask(this.presentNextApproval);
+    }
+  };
+
+  private openConfiguredWorkspace = async (): Promise<string | null> => {
+    if (!this.client || !this.workspacePath) {
+      return null;
+    }
+    const workspaceId = await this.openWorkspaceBinding(
+      this.workspacePath,
+      this.workspaceRuntimeKind,
+    );
+    this.registeredWorkspaces.set(
+      this.workspaceRegistrationKey(
+        this.workspacePath,
+        this.workspaceRuntimeKind,
+      ),
+      {
+        path: this.workspacePath,
+        runtimeKind: this.workspaceRuntimeKind,
+      },
+    );
+    return workspaceId;
+  };
+
+  private reopenBackgroundWorkspaces = async (): Promise<void> => {
+    if (!this.client) {
+      return;
+    }
+    const currentKey = this.workspacePath
+      ? this.workspaceRegistrationKey(
+          this.workspacePath,
+          this.workspaceRuntimeKind,
+        )
+      : null;
+    for (const [key, registration] of this.registeredWorkspaces) {
+      if (key === currentKey) {
+        continue;
+      }
+      try {
+        await this.openWorkspaceBinding(
+          registration.path,
+          registration.runtimeKind,
+        );
+      } catch {
+        this.registeredWorkspaces.delete(key);
+      }
+    }
+  };
+
+  private openWorkspaceBinding = async (
+    workspacePath: string,
+    runtimeKind: WorkspaceRuntimeKind,
+  ): Promise<string> => {
+    if (!this.client) {
+      throw new ConnectionClosedError();
+    }
+    const value = await this.client.requestReady('workspace/open', {
+      root: workspacePath,
+      workspaceType:
+        runtimeKind === 'chat' ? 'isolatedChat' : 'project',
+      allowWorkspaceWrite: true,
+      allowCommandWorkspaceWrite: false,
+    });
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('workspaceId' in value) ||
+      typeof value.workspaceId !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(value.workspaceId)
+    ) {
+      throw new Error('Invalid workspace/open response.');
+    }
+    const workspaceId = (value as WorkspaceOpenResponse).workspaceId;
+    this.workspaceTitles.set(workspaceId, basename(workspacePath));
+    return workspaceId;
+  };
+
+  private workspaceRegistrationKey = (
+    workspacePath: string,
+    runtimeKind: WorkspaceRuntimeKind,
+  ): string => `${runtimeKind}\u0000${workspacePath}`;
 
   private attachChild = (
     child: ChildProcessWithoutNullStreams,
@@ -826,6 +1172,8 @@ export class ConnectionSupervisor {
     this.client?.close();
     this.commandApprovals.transportClosed();
     this.mcpApprovals.transportClosed();
+    this.approvalQueue.splice(0);
+    this.approvalInFlight = null;
     if (this.restarting) {
       this.conversation.connectionRestarting();
     } else {
@@ -927,7 +1275,8 @@ export class ConnectionSupervisor {
     if (
       conversation.phase === 'starting' ||
       conversation.phase === 'inProgress' ||
-      conversation.phase === 'stopping'
+      conversation.phase === 'stopping' ||
+      (conversation.navigator.runningThreadIds?.length ?? 0) > 0
     ) {
       return 'turnActive';
     }
@@ -939,7 +1288,9 @@ export class ConnectionSupervisor {
     }
     if (
       this.commandApprovals.getSnapshot().status === 'pending' ||
-      this.mcpApprovals.getSnapshot().status === 'pending'
+      this.mcpApprovals.getSnapshot().status === 'pending' ||
+      this.approvalInFlight !== null ||
+      this.approvalQueue.length > 0
     ) {
       return 'approvalPending';
     }

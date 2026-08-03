@@ -35,6 +35,7 @@ use crate::SugarCodeHome;
 use crate::thread_discovery::ThreadDiscoveryProjection;
 use crate::thread_search::ThreadSearchProjection;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -44,7 +45,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use sugarcode_protocol::ThreadId;
 
+mod shared;
 mod thread_repository;
+
+pub use shared::RolloutRepositoryStore;
+pub use shared::WorkspaceRolloutRepository;
 
 const ROLLOUTS_DIRECTORY: &str = "rollouts";
 const ROLLOUT_LAYOUT_DIRECTORY: &str = "v1";
@@ -100,14 +105,11 @@ impl RolloutRepository {
                 return Err(unavailable(&lock_path, error));
             }
         }
-        let mut replay = replay_all(&root)?;
+        let replay = replay_all(&root)?;
         let projection =
             ThreadDiscoveryProjection::open(home, &replay.threads, replay.record_count)?;
         let search_projection =
             ThreadSearchProjection::open(home, &replay.threads, replay.record_count);
-        replay.threads.retain(|_, thread| {
-            thread.workspace_binding_id.as_deref() == active_workspace_binding_id
-        });
         Ok(Self {
             root,
             _writer_lock: writer_lock,
@@ -145,6 +147,49 @@ impl RolloutRepository {
         } else {
             Ok(())
         }
+    }
+
+    fn binding_matches(&self, thread: &RolloutThreadState) -> bool {
+        thread.workspace_binding_id.as_deref() == self.active_workspace_binding_id.as_deref()
+    }
+
+    fn thread(&self, thread_id: &ThreadId) -> Option<&RolloutThreadState> {
+        self.threads
+            .get(thread_id)
+            .filter(|thread| self.binding_matches(thread))
+    }
+
+    fn thread_mut(&mut self, thread_id: &ThreadId) -> Option<&mut RolloutThreadState> {
+        let binding = self.active_workspace_binding_id.as_deref();
+        self.threads
+            .get_mut(thread_id)
+            .filter(|thread| thread.workspace_binding_id.as_deref() == binding)
+    }
+
+    fn contains_turn_id(&self, turn_id: &sugarcode_protocol::TurnId) -> bool {
+        self.threads
+            .values()
+            .any(|thread| thread.snapshot.turns.iter().any(|turn| &turn.id == turn_id))
+            || self.pending_turns.values().any(|turn| &turn.id == turn_id)
+    }
+
+    fn contains_item_id(&self, item_id: &sugarcode_protocol::ItemId) -> bool {
+        self.threads.values().any(|thread| {
+            thread
+                .snapshot
+                .turns
+                .iter()
+                .flat_map(|turn| &turn.items)
+                .any(|item| item.id() == item_id)
+        }) || self
+            .pending_turns
+            .values()
+            .flat_map(|turn| &turn.items)
+            .any(|item| item.id() == item_id)
+    }
+
+    fn set_active_workspace_binding(&mut self, binding_id: Option<&str>) {
+        self.active_workspace_binding_id = binding_id.map(str::to_owned);
     }
 
     fn thread_path(&self, thread_id: &ThreadId) -> Result<PathBuf, RolloutError> {

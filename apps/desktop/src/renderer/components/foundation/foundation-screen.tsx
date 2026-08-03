@@ -28,24 +28,12 @@ export const FoundationScreen = () => {
         foundation.isDark ? 'dark' : ''
       }`}
     >
-      <div className="window-drag-region" aria-hidden="true" />
-      <OrchestrationStoreProvider
-        onTaskSelected={() => {
-          foundation.setContextRailOpen(true);
-          foundation.setContextRailVisible(true);
-        }}
-      >
+      <OrchestrationStoreProvider>
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ThreadWorkbenchView
             store={threadStore}
             navigatorResize={foundation.navigatorResize}
             contextRailResize={foundation.contextRailResize}
-            navigatorVisible={foundation.navigatorVisible}
-            setNavigatorVisible={foundation.setNavigatorVisible}
-            contextRailOpen={foundation.contextRailOpen}
-            setContextRailOpen={foundation.setContextRailOpen}
-            contextRailVisible={foundation.contextRailVisible}
-            setContextRailVisible={foundation.setContextRailVisible}
             permissionControl={
               <CommandApprovalModeControl
                 store={commandApprovalStore}
@@ -61,14 +49,7 @@ export const FoundationScreen = () => {
                 toggleTheme={foundation.toggleTheme}
               />
             }
-            contextRail={
-              <ContextRail
-                onClose={() => {
-                  foundation.setContextRailOpen(false);
-                  foundation.setContextRailVisible(false);
-                }}
-              />
-            }
+            contextRail={<ContextRail />}
           />
         </main>
       </OrchestrationStoreProvider>

@@ -53,5 +53,4 @@ fn model_switch_prompt_is_provider_neutral_and_forbids_private_replay() {
     );
     assert!(!instruction.content.contains("OpenAI"));
     assert!(!instruction.content.contains("Anthropic"));
-    assert!(!instruction.content.contains("Gemini"));
 }

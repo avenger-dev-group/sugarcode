@@ -21,6 +21,16 @@ export const resumeWorkspaceProject =
   (): Promise<WorkspaceSelectResult> =>
     window.sugarcode.resumeWorkspaceProject();
 
+export const activateWorkspaceProject = (
+  projectId: string,
+): Promise<WorkspaceSelectResult> =>
+  window.sugarcode.activateWorkspaceProject(projectId);
+
+export const focusWorkspaceTask = (
+  threadId: string,
+): Promise<WorkspaceSelectResult> =>
+  window.sugarcode.focusWorkspaceTask(threadId);
+
 export const activateWorkspaceChat = (
   threadId?: string,
 ): Promise<WorkspaceSelectResult> =>

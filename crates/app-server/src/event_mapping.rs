@@ -834,14 +834,12 @@ pub(crate) fn map_model_selection(
         provider_family: match model.provider_family.as_str() {
             "openai" => PublicModelProviderFamily::Openai,
             "anthropic" => PublicModelProviderFamily::Anthropic,
-            "gemini" => PublicModelProviderFamily::Gemini,
             _ => unreachable!("rollout model provider family must be validated"),
         },
         wire_api: match model.wire_api.as_str() {
             "openaiResponses" => PublicModelWireApi::OpenaiResponses,
             "openaiChatCompletions" => PublicModelWireApi::OpenaiChatCompletions,
             "anthropicMessages" => PublicModelWireApi::AnthropicMessages,
-            "geminiGenerateContent" => PublicModelWireApi::GeminiGenerateContent,
             _ => unreachable!("rollout model wire API must be validated"),
         },
         model_id: model.model_id,

@@ -2,5 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ThreadStartParams",
   "type": "object",
-  "additionalProperties": false
+  "properties": {
+    "workspaceId": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "workspaceId"
+  ]
 }

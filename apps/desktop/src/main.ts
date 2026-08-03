@@ -94,22 +94,19 @@ const createWindow = (): void => {
     'did-start-navigation',
     (_event, _url, _isInPlace, isMainFrame) => {
       if (isMainFrame) {
-        supervisor?.commandApprovals.surfaceUnavailable();
-        supervisor?.mcpApprovals.surfaceUnavailable();
+        supervisor?.approvalSurfacesUnavailable();
         previewController?.shutdown();
         terminalController?.rendererUnavailable();
       }
     },
   );
   window.webContents.on('render-process-gone', () => {
-    supervisor?.commandApprovals.surfaceUnavailable();
-    supervisor?.mcpApprovals.surfaceUnavailable();
+    supervisor?.approvalSurfacesUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
   });
   window.once('closed', () => {
-    supervisor?.commandApprovals.surfaceUnavailable();
-    supervisor?.mcpApprovals.surfaceUnavailable();
+    supervisor?.approvalSurfacesUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
     if (mainWindow === window) {

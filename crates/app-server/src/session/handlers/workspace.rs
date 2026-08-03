@@ -9,9 +9,12 @@ where
         id: RequestId,
         params: Option<Value>,
     ) -> JsonRpcMessage {
-        let params = match params.ok_or(()).and_then(|value| {
-            serde_json::from_value::<PublicWorkspaceListParams>(value).map_err(|_| ())
-        }) {
+        let params = match self
+            .workspace_scoped_params(params)
+            .ok_or(())
+            .and_then(|value| {
+                serde_json::from_value::<PublicWorkspaceListParams>(value).map_err(|_| ())
+            }) {
             Ok(params) => params,
             Err(()) => return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None),
         };
@@ -23,6 +26,14 @@ where
                 None,
             );
         };
+        if workspace.binding_id() != params.workspace_id {
+            return error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            );
+        }
         let tool_path = if params.path.is_empty() {
             ".".to_string()
         } else {
@@ -72,9 +83,12 @@ where
         id: RequestId,
         params: Option<Value>,
     ) -> JsonRpcMessage {
-        let params = match params.ok_or(()).and_then(|value| {
-            serde_json::from_value::<WorkspaceInspectParams>(value).map_err(|_| ())
-        }) {
+        let params = match self
+            .workspace_scoped_params(params)
+            .ok_or(())
+            .and_then(|value| {
+                serde_json::from_value::<WorkspaceInspectParams>(value).map_err(|_| ())
+            }) {
             Ok(params) => params,
             Err(()) => return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None),
         };
@@ -86,6 +100,14 @@ where
                 None,
             );
         };
+        if workspace.binding_id() != params.workspace_id {
+            return error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            );
+        }
         let result = match workspace.inspect_now(&WorkspaceInspectArguments {
             path: params.path.clone(),
         }) {

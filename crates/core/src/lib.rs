@@ -28,6 +28,7 @@ pub use sugarcode_protocol::CoreUserContentPart;
 pub use thread::Core;
 pub use thread::CoreApi;
 pub use thread::CoreError;
+pub use thread::CoreIdAllocator;
 pub use thread::MAX_USER_MESSAGE_BYTES;
 pub use thread::PreparedMessage;
 pub use thread::PreparedMessageRole;

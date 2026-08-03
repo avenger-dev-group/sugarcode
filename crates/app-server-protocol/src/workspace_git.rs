@@ -14,7 +14,9 @@ const MAX_IDENTITY_BYTES: usize = 256;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
-pub struct WorkspaceGitStatusParams {}
+pub struct WorkspaceGitStatusParams {
+    pub workspace_id: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -120,6 +122,7 @@ pub enum WorkspaceGitDiffSource {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct WorkspaceGitDiffParams {
+    pub workspace_id: String,
     pub expected_revision: String,
     #[schemars(length(min = 1, max = 1024))]
     pub path: String,
@@ -134,6 +137,7 @@ impl<'de> Deserialize<'de> for WorkspaceGitDiffParams {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields, rename_all = "camelCase")]
         struct Wire {
+            workspace_id: String,
             expected_revision: String,
             path: String,
             source: WorkspaceGitDiffSource,
@@ -142,6 +146,7 @@ impl<'de> Deserialize<'de> for WorkspaceGitDiffParams {
         validate_revision(&wire.expected_revision).map_err(de::Error::custom)?;
         validate_path(&wire.path).map_err(de::Error::custom)?;
         Ok(Self {
+            workspace_id: wire.workspace_id,
             expected_revision: wire.expected_revision,
             path: wire.path,
             source: wire.source,
@@ -174,6 +179,7 @@ pub enum WorkspaceGitDiffResponse {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct WorkspaceGitMutationParams {
+    pub workspace_id: String,
     pub expected_revision: String,
     #[schemars(length(min = 1, max = 100))]
     pub paths: Vec<String>,
@@ -187,6 +193,7 @@ impl<'de> Deserialize<'de> for WorkspaceGitMutationParams {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields, rename_all = "camelCase")]
         struct Wire {
+            workspace_id: String,
             expected_revision: String,
             paths: Vec<String>,
         }
@@ -206,6 +213,7 @@ impl<'de> Deserialize<'de> for WorkspaceGitMutationParams {
             validate_path(path).map_err(de::Error::custom)?;
         }
         Ok(Self {
+            workspace_id: wire.workspace_id,
             expected_revision: wire.expected_revision,
             paths: wire.paths,
         })
@@ -233,6 +241,7 @@ pub enum WorkspaceGitMutationResponse {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct WorkspaceGitCommitParams {
+    pub workspace_id: String,
     pub expected_revision: String,
     pub message: String,
     pub author_name: String,
@@ -247,6 +256,7 @@ impl<'de> Deserialize<'de> for WorkspaceGitCommitParams {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields, rename_all = "camelCase")]
         struct Wire {
+            workspace_id: String,
             expected_revision: String,
             message: String,
             author_name: String,
@@ -262,6 +272,7 @@ impl<'de> Deserialize<'de> for WorkspaceGitCommitParams {
             return Err(de::Error::custom("invalid Git commit identity or message"));
         }
         Ok(Self {
+            workspace_id: wire.workspace_id,
             expected_revision: wire.expected_revision,
             message: wire.message,
             author_name: wire.author_name,
@@ -328,6 +339,7 @@ mod tests {
         let revision = "a".repeat(64);
         assert!(
             serde_json::from_value::<WorkspaceGitMutationParams>(serde_json::json!({
+                "workspaceId": "wsp_test",
                 "expectedRevision": revision,
                 "paths": ["src/lib.rs"]
             }))
@@ -335,6 +347,7 @@ mod tests {
         );
         assert!(
             serde_json::from_value::<WorkspaceGitMutationParams>(serde_json::json!({
+                "workspaceId": "wsp_test",
                 "expectedRevision": "bad",
                 "paths": ["../secret"]
             }))

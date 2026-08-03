@@ -13,6 +13,7 @@ import {
 } from '@/renderer/components/ui/alert-dialog';
 import { Button } from '@/renderer/components/ui/button';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
+import { focusWorkspaceTask } from '@/renderer/services/workspace';
 
 import { useStore } from './use-store';
 
@@ -71,6 +72,26 @@ const McpApprovalSurfaceContent = () => {
             }}
           >
             <div className="space-y-5 px-5 py-5 sm:px-6">
+              <section className="flex items-center justify-between gap-3 rounded-lg border bg-surface px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium text-foreground">
+                    {request.projectTitle} / {request.conversationTitle}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-tertiary">
+                    {request.queueCount > 1
+                      ? `${request.queueCount} items in the global approval queue`
+                      : 'Current item in the global approval queue'}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void focusWorkspaceTask(request.threadId)}
+                >
+                  View task
+                </Button>
+              </section>
               <section aria-labelledby="mcp-call-name">
                 <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-tertiary">
                   {request.serverId}

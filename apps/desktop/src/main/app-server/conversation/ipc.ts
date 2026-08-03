@@ -48,11 +48,11 @@ export const registerConversationIpc = (
     },
   );
 
-  ipcMain.handle(CONVERSATION_STOP_CHANNEL, async (event) => {
+  ipcMain.handle(CONVERSATION_STOP_CHANNEL, async (event, threadId: unknown) => {
     if (!isTrustedIpcSender(event, options)) {
       throw new Error('Conversation stop came from an untrusted frame.');
     }
-    return options.controller.stopTurn();
+    return options.controller.stopTurn(threadId);
   });
 
   ipcMain.handle(

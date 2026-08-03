@@ -958,6 +958,8 @@ export const toThreadNavigatorViewModel = (
     status: snapshot.navigator.status,
     threadIds,
     threadTitles: snapshot.navigator.activeThreadTitles,
+    runningThreadIds: snapshot.navigator.runningThreadIds ?? [],
+    unreadThreadIds: snapshot.navigator.unreadThreadIds ?? [],
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
     pendingMutation: snapshot.navigator.pendingMutation ?? null,
@@ -1116,7 +1118,6 @@ export const useStore = (): ThreadStore => {
     useState<ConversationStateSnapshot>(INITIAL_SNAPSHOT);
   const [draft, setDraft] = useState<string>('');
   const [attachments, setAttachments] = useState<DraftAttachmentViewModel[]>([]);
-  const [navigatorOpen, setNavigatorOpen] = useState<boolean>(false);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [activeQuietSeconds, setActiveQuietSeconds] = useState<number>(0);
@@ -1128,6 +1129,19 @@ export const useStore = (): ThreadStore => {
     useState<Awaited<ReturnType<typeof getModelConfig>> | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] =
     useState<string>('');
+  const [pendingModelProfileId, setPendingModelProfileId] =
+    useState<string | null>(null);
+  const drafts = useRef(
+    new Map<
+      string,
+      Readonly<{
+        draft: string;
+        attachments: DraftAttachmentViewModel[];
+      }>
+    >(),
+  );
+  const draftKey = useRef<string>('new');
+  const modelSelections = useRef(new Map<string, string>());
   const revision = useRef<number>(-1);
   const previousThread = useRef<ThreadViewModel | undefined>(undefined);
 
@@ -1183,6 +1197,19 @@ export const useStore = (): ThreadStore => {
   }, []);
 
   useEffect(() => {
+    const nextKey = snapshot.threadId ?? 'new';
+    if (draftKey.current === nextKey) {
+      return;
+    }
+    drafts.current.set(draftKey.current, { draft, attachments });
+    const saved = drafts.current.get(nextKey);
+    draftKey.current = nextKey;
+    setDraft(saved?.draft ?? '');
+    setAttachments(saved ? [...saved.attachments] : []);
+    setPendingModelProfileId(null);
+  }, [snapshot.threadId]);
+
+  useEffect(() => {
     const catalog = modelInspection?.config;
     if (!catalog) {
       setSelectedModelProfileId('');
@@ -1191,8 +1218,38 @@ export const useStore = (): ThreadStore => {
     const sticky = [...snapshot.turns]
       .reverse()
       .find((turn) => turn.model)?.model?.profileId;
-    setSelectedModelProfileId(sticky ?? catalog.defaultProfileId);
-  }, [modelInspection, snapshot.threadId, snapshot.turns]);
+    const key = snapshot.threadId ?? 'new';
+    const selected =
+      modelSelections.current.get(key) ?? sticky ?? catalog.defaultProfileId;
+    modelSelections.current.set(key, selected);
+    setSelectedModelProfileId(selected);
+  }, [modelInspection, snapshot.threadId]);
+
+  const selectModelProfile = (profileId: string): void => {
+    if (profileId === selectedModelProfileId) {
+      return;
+    }
+    if (snapshot.turns.length > 0) {
+      setPendingModelProfileId(profileId);
+      return;
+    }
+    modelSelections.current.set(snapshot.threadId ?? 'new', profileId);
+    setSelectedModelProfileId(profileId);
+  };
+
+  const confirmModelSwitch = (): void => {
+    if (!pendingModelProfileId) {
+      return;
+    }
+    modelSelections.current.set(
+      snapshot.threadId ?? 'new',
+      pendingModelProfileId,
+    );
+    setSelectedModelProfileId(pendingModelProfileId);
+    setPendingModelProfileId(null);
+  };
+
+  const cancelModelSwitch = (): void => setPendingModelProfileId(null);
 
   const bytes = inputBytes(draft);
   const attachmentBytes = attachments.reduce(
@@ -1315,7 +1372,7 @@ export const useStore = (): ThreadStore => {
     }
     setActionError(null);
     try {
-      const result = await stopConversationTurn();
+      const result = await stopConversationTurn(snapshot.threadId as string);
       if (!result.accepted) {
         setActionError('The active Turn could not be stopped safely.');
       }
@@ -1328,11 +1385,9 @@ export const useStore = (): ThreadStore => {
     setActionError(null);
     try {
       const result = await selectConversationThread(threadId);
-      if (result.accepted) {
-        setNavigatorOpen(false);
-      } else if (result.reason === 'turnActive') {
+      if (!result.accepted && result.reason === 'turnActive') {
         setActionError('Stop the active Turn before switching Threads.');
-      } else {
+      } else if (!result.accepted) {
         setActionError('That durable Thread could not be selected.');
       }
     } catch {
@@ -1345,10 +1400,10 @@ export const useStore = (): ThreadStore => {
     try {
       const result = await startNewConversationThread();
       if (result.accepted) {
-        setNavigatorOpen(false);
         const defaultProfileId =
           modelInspection?.config?.defaultProfileId;
         if (defaultProfileId) {
+          modelSelections.current.set('new', defaultProfileId);
           setSelectedModelProfileId(defaultProfileId);
         }
         return;
@@ -1503,6 +1558,33 @@ export const useStore = (): ThreadStore => {
     }
     return available;
   }, [modelInspection, selectedModelProfileId]);
+  const modelSwitchConfirmation = useMemo(() => {
+    const catalog = modelInspection?.config;
+    if (!catalog || !pendingModelProfileId) {
+      return null;
+    }
+    const profileDetails = (profileId: string) => {
+      const profile = catalog.profiles.find(
+        (candidate) => candidate.id === profileId,
+      );
+      const connection = catalog.connections.find(
+        (candidate) => candidate.id === profile?.connectionId,
+      );
+      return {
+        name: profile?.displayName ?? profileId,
+        wireApi: connection?.wireApi ?? 'unavailable',
+      };
+    };
+    const source = profileDetails(selectedModelProfileId);
+    const target = profileDetails(pendingModelProfileId);
+    return {
+      sourceName: source.name,
+      sourceWireApi: source.wireApi,
+      targetName: target.name,
+      targetWireApi: target.wireApi,
+      protocolChanges: source.wireApi !== target.wireApi,
+    };
+  }, [modelInspection, pendingModelProfileId, selectedModelProfileId]);
   const activeTurnProgress = activeTurnView
     ? toActiveTurnProgress(
         activeTurnView.id,
@@ -1515,7 +1597,6 @@ export const useStore = (): ThreadStore => {
   return {
     thread,
     navigator,
-    navigatorOpen,
     draft,
     attachments,
     inputBytes: bytes,
@@ -1534,11 +1615,13 @@ export const useStore = (): ThreadStore => {
       snapshot.phase === 'inProgress' ||
       snapshot.phase === 'stopping' ||
       isSending,
+    modelSwitchConfirmation,
     setDraft,
     addAttachments,
     removeAttachment,
-    setNavigatorOpen,
-    setSelectedModelProfileId,
+    setSelectedModelProfileId: selectModelProfile,
+    confirmModelSwitch,
+    cancelModelSwitch,
     startNewThread,
     selectThread,
     forkThread,

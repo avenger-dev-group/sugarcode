@@ -999,7 +999,8 @@ fn split_legacy_think(content: &str) -> Option<(String, String)> {
     let trimmed = content.trim_start_matches([' ', '\t', '\r', '\n']);
     const OPEN: &str = "<think>";
     const CLOSE: &str = "</think>";
-    if trimmed.len() < OPEN.len() || !trimmed[..OPEN.len()].eq_ignore_ascii_case(OPEN) {
+    let prefix = trimmed.get(..OPEN.len())?;
+    if !prefix.eq_ignore_ascii_case(OPEN) {
         return None;
     }
     let body = &trimmed[OPEN.len()..];

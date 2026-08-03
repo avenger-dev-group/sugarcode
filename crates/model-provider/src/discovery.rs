@@ -16,7 +16,6 @@ const MAX_DISCOVERY_BYTES: usize = 2 * 1024 * 1024;
 pub enum ModelDiscoveryProtocol {
     OpenAi,
     Anthropic,
-    Gemini,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,12 +51,6 @@ pub async fn discover_models(
                 HeaderName::from_static("anthropic-version"),
                 HeaderValue::from_static("2023-06-01"),
             );
-        }
-        ModelDiscoveryProtocol::Gemini => {
-            if let Some(token) = token.as_ref() {
-                request =
-                    request.header(HeaderName::from_static("x-goog-api-key"), sensitive(token)?);
-            }
         }
     }
     let response = tokio::time::timeout(DISCOVERY_TIMEOUT, request.send())
@@ -156,8 +149,8 @@ mod tests {
         let models = parse_discovered_models(&serde_json::json!({
             "models": [
                 {
-                    "name": "models/gemini-large",
-                    "displayName": "Gemini Large",
+                    "name": "models/anthropic-large",
+                    "displayName": "Anthropic Large",
                     "inputTokenLimit": 200000
                 },
                 {
@@ -165,7 +158,7 @@ mod tests {
                     "context_window": 1024
                 },
                 {
-                    "id": "gemini-large",
+                    "id": "anthropic-large",
                     "contextWindow": 128000
                 }
             ]
@@ -175,8 +168,8 @@ mod tests {
             models,
             vec![
                 DiscoveredModel {
-                    model_id: "gemini-large".to_owned(),
-                    display_name: "Gemini Large".to_owned(),
+                    model_id: "anthropic-large".to_owned(),
+                    display_name: "Anthropic Large".to_owned(),
                     context_window_tokens: Some(200_000),
                 },
                 DiscoveredModel {

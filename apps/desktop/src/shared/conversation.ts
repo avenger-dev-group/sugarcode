@@ -420,12 +420,11 @@ export type ConversationTokenUsage = Readonly<{
 
 export type ConversationModelSelection = Readonly<{
   profileId: string;
-  providerFamily: 'openai' | 'anthropic' | 'gemini';
+  providerFamily: 'openai' | 'anthropic';
   wireApi:
     | 'openaiResponses'
     | 'openaiChatCompletions'
-    | 'anthropicMessages'
-    | 'geminiGenerateContent';
+    | 'anthropicMessages';
   modelId: string;
   displayName: string;
   contextWindowTokens: number;
@@ -485,6 +484,8 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
   activeThreadIds: readonly string[];
   activeThreadTitles: Readonly<Record<string, string>>;
   activeTruncated: boolean;
+  runningThreadIds?: readonly string[];
+  unreadThreadIds?: readonly string[];
   search: Readonly<{
     query: string;
     status: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
@@ -537,7 +538,7 @@ export type ConversationApi = Readonly<{
   sendConversationMessage: (
     request: ConversationSendRequest,
   ) => Promise<ConversationActionResult>;
-  stopConversationTurn: () => Promise<ConversationActionResult>;
+  stopConversationTurn: (threadId: string) => Promise<ConversationActionResult>;
   searchConversationThreads: (
     query: string,
   ) => Promise<ConversationActionResult>;
@@ -1296,13 +1297,11 @@ const isTurn = (value: unknown): value is ConversationTurn => {
         ![
           'openai',
           'anthropic',
-          'gemini',
         ].includes(value.model.providerFamily as string) ||
         ![
           'openaiResponses',
           'openaiChatCompletions',
           'anthropicMessages',
-          'geminiGenerateContent',
         ].includes(value.model.wireApi as string) ||
         typeof value.model.modelId !== 'string' ||
         typeof value.model.displayName !== 'string' ||
@@ -1487,6 +1486,12 @@ const isThreadNavigator = (
     new Set(value.activeThreadIds).size !== value.activeThreadIds.length ||
     !isThreadTitleMap(value.activeThreadTitles, value.activeThreadIds) ||
     typeof value.activeTruncated !== 'boolean' ||
+    (Object.hasOwn(value, 'runningThreadIds') &&
+      (!Array.isArray(value.runningThreadIds) ||
+        !value.runningThreadIds.every(isId))) ||
+    (Object.hasOwn(value, 'unreadThreadIds') &&
+      (!Array.isArray(value.unreadThreadIds) ||
+        !value.unreadThreadIds.every(isId))) ||
     !isRecord(value.search) ||
     typeof value.search.query !== 'string' ||
     new TextEncoder().encode(value.search.query).byteLength >

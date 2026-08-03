@@ -18,6 +18,7 @@ import {
   AlertDialogTitle,
 } from '@/renderer/components/ui/alert-dialog';
 import { Button } from '@/renderer/components/ui/button';
+import { focusWorkspaceTask } from '@/renderer/services/workspace';
 import {
   Select,
   SelectContent,
@@ -161,6 +162,26 @@ export const CommandApprovalView = ({
             </div>
 
             <div className="px-5 py-6 sm:px-6">
+              <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border bg-surface px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-medium text-foreground">
+                    {request.projectTitle} / {request.conversationTitle}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-tertiary">
+                    {request.queueCount > 1
+                      ? `全局审批队列中共 ${request.queueCount} 项`
+                      : '全局审批队列中的当前项目'}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void focusWorkspaceTask(request.threadId)}
+                >
+                  查看任务
+                </Button>
+              </div>
               <p className="rounded-lg border bg-surface px-3 py-2.5 font-mono text-xs font-normal leading-normal text-foreground">
                 {request.description}
               </p>

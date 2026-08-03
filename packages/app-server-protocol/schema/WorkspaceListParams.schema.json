@@ -6,10 +6,14 @@
     "path": {
       "type": "string",
       "maxLength": 1024
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "required": [
+    "workspaceId",
     "path"
   ]
 }

@@ -1,4 +1,6 @@
 use crate::Session;
+use crate::workspace_registry::RuntimeInput;
+use crate::workspace_registry::WorkspaceRegistry;
 use std::io;
 use sugarcode_agent_runtime::PendingCommandApproval;
 use sugarcode_agent_runtime::PendingMcpToolApproval;
@@ -288,6 +290,46 @@ where
     writer.write_all(&encoded).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await
+}
+
+pub(crate) async fn serve_workspace_registry<R, W>(
+    reader: R,
+    mut writer: W,
+    mut registry: WorkspaceRegistry,
+    mut runtime_inputs: mpsc::Receiver<RuntimeInput>,
+) -> io::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut lines = reader.lines();
+    let mut idle_check = tokio::time::interval(std::time::Duration::from_secs(30));
+    idle_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            line = lines.next_line() => {
+                let Some(line) = line? else {
+                    registry.shutdown().await;
+                    writer.flush().await?;
+                    return Ok(());
+                };
+                for message in registry.process_line(&line).await {
+                    write_message(&mut writer, &message).await?;
+                }
+            }
+            input = runtime_inputs.recv() => {
+                let Some(input) = input else {
+                    registry.shutdown().await;
+                    writer.flush().await?;
+                    return Ok(());
+                };
+                for message in registry.process_runtime_input(input) {
+                    write_message(&mut writer, &message).await?;
+                }
+            }
+            _ = idle_check.tick() => registry.unload_idle().await,
+        }
+    }
 }
 
 #[cfg(test)]

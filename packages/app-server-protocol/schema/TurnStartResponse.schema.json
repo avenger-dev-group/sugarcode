@@ -61,8 +61,7 @@
       "type": "string",
       "enum": [
         "openai",
-        "anthropic",
-        "gemini"
+        "anthropic"
       ]
     },
     "ModelSelectionCapabilities": {
@@ -134,8 +133,7 @@
       "enum": [
         "openaiResponses",
         "openaiChatCompletions",
-        "anthropicMessages",
-        "geminiGenerateContent"
+        "anthropicMessages"
       ]
     },
     "ProviderErrorMetadata": {

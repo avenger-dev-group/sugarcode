@@ -13,10 +13,14 @@
     },
     "source": {
       "$ref": "#/$defs/WorkspaceGitDiffSource"
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "required": [
+    "workspaceId",
     "expectedRevision",
     "path",
     "source"

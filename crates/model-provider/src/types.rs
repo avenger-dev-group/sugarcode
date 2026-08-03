@@ -363,7 +363,6 @@ pub enum ProviderWireApi {
     OpenAiResponses,
     OpenAiChatCompletions,
     AnthropicMessages,
-    GeminiGenerateContent,
 }
 
 #[derive(Clone, PartialEq, Eq)]

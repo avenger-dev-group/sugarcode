@@ -42,6 +42,13 @@ import type { ServerMessage } from '../../transport/server-message';
 
 const MAX_BUFFERED_LIFECYCLE = 64;
 
+type ConversationProjection = {
+  phase: ConversationStateSnapshot['phase'];
+  activeTurnId: string | null;
+  turns: MutableTurn[];
+  notice: ConversationStateSnapshot['notice'];
+};
+
 type ConversationControllerOptions = Readonly<{
   getRpc: () => ConversationRpc | null;
   onProtocolFailure: () => void;
@@ -71,6 +78,9 @@ export class ConversationController extends ConversationLifecycleController {
   private searchGeneration = 0;
   private selectionGeneration = 0;
   private readonly navigator: MutableThreadNavigator = createThreadNavigator();
+  private readonly projections = new Map<string, ConversationProjection>();
+  private readonly unreadThreadIds = new Set<string>();
+  private publishSuspended = false;
 
   constructor(options: ConversationControllerOptions) {
     super();
@@ -88,7 +98,11 @@ export class ConversationController extends ConversationLifecycleController {
 
   setAgentApprovalTasks = (waitingTaskIds: ReadonlySet<string>): void => {
     let changed = false;
-    for (const turn of this.turns) {
+    const turnCollections = new Set<MutableTurn[]>([
+      this.turns,
+      ...[...this.projections.values()].map((projection) => projection.turns),
+    ]);
+    for (const turn of [...turnCollections].flat()) {
       const orchestration = turn.orchestration;
       if (!orchestration) {
         continue;
@@ -113,6 +127,70 @@ export class ConversationController extends ConversationLifecycleController {
 
   loadThreadIndex = async (): Promise<boolean> => {
     return this.restoreForConnection();
+  };
+
+  switchWorkspace = async (
+    preferredThreadId?: string,
+  ): Promise<boolean> => {
+    const rpc = this.getRpc();
+    if (!rpc || this.phase === 'starting') {
+      return false;
+    }
+    this.saveSelectedProjection();
+    this.selectionAbortController?.abort();
+    this.searchAbortController?.abort();
+    const abortController = new AbortController();
+    this.actionAbortController = abortController;
+    this.clearSelectedConversation();
+    this.phase = 'unavailable';
+    this.navigator.status = 'loading';
+    this.navigator.pendingThreadId = undefined;
+    this.navigator.pendingMutation = undefined;
+    resetThreadSearch(this.navigator);
+    this.publish();
+    try {
+      const listed = await this.listActiveThreads(rpc, abortController.signal);
+      this.applyActiveThreadList(listed);
+      if (preferredThreadId) {
+        if (!listed.data.some((thread) => thread.id === preferredThreadId)) {
+          throw new Error('Preferred Thread is not bound to this workspace.');
+        }
+        const cached = this.projections.get(preferredThreadId);
+        if (cached) {
+          this.restoreProjection(preferredThreadId, cached);
+        } else {
+          const snapshot = await rpc.resumeThread(
+            preferredThreadId,
+            abortController.signal,
+          );
+          const recovered = recoverConversation(preferredThreadId, snapshot);
+          this.replaceRecoveredConversation(recovered);
+          this.phase = 'ready';
+        }
+        this.unreadThreadIds.delete(preferredThreadId);
+      } else {
+        this.phase = 'idle';
+      }
+      this.notice = undefined;
+      this.publish();
+      return true;
+    } catch (error) {
+      if (error instanceof ConnectionClosedError || isAbortError(error)) {
+        this.transportClosed();
+      } else {
+        this.navigator.status = 'error';
+        this.navigator.selectionNotice =
+          error instanceof RpcResponseError
+            ? 'This workspace could not be restored safely.'
+            : 'This workspace contains an unsupported Thread lifecycle.';
+        this.publish();
+      }
+      return false;
+    } finally {
+      if (this.actionAbortController === abortController) {
+        this.actionAbortController = null;
+      }
+    }
   };
 
   restoreForConnection = async (
@@ -347,18 +425,22 @@ export class ConversationController extends ConversationLifecycleController {
     ) {
       return rejected('unavailable');
     }
-    if (
-      this.phase === 'starting' ||
-      this.phase === 'inProgress' ||
-      this.phase === 'stopping'
-    ) {
-      return rejected('turnActive');
-    }
     const rpc = this.getRpc();
     if (!rpc || this.phase === 'unavailable') {
       return rejected('unavailable');
     }
     if (threadId === this.threadId && !this.navigator.pendingThreadId) {
+      this.unreadThreadIds.delete(threadId);
+      return accepted();
+    }
+
+    const cached = this.projections.get(threadId);
+    if (cached) {
+      this.saveSelectedProjection();
+      this.restoreProjection(threadId, cached);
+      this.unreadThreadIds.delete(threadId);
+      this.navigator.pendingThreadId = undefined;
+      this.publish();
       return accepted();
     }
 
@@ -447,9 +529,6 @@ export class ConversationController extends ConversationLifecycleController {
   startNewThread = (): ConversationActionResult => {
     if (
       this.getActionBlocked() ||
-      this.phase === 'starting' ||
-      this.phase === 'inProgress' ||
-      this.phase === 'stopping' ||
       this.navigator.pendingThreadId ||
       this.navigator.pendingMutation ||
       this.navigator.search.status === 'loading'
@@ -465,6 +544,7 @@ export class ConversationController extends ConversationLifecycleController {
     this.navigator.selectionNotice = undefined;
     this.navigator.archivedUndoThreadId = undefined;
     resetThreadSearch(this.navigator);
+    this.saveSelectedProjection();
     this.clearSelectedThread();
     this.publish();
     return accepted();
@@ -713,10 +793,19 @@ export class ConversationController extends ConversationLifecycleController {
     }
   };
 
-  stopTurn = async (): Promise<ConversationActionResult> => {
-    if (this.phase !== 'inProgress' || !this.threadId || !this.activeTurnId) {
+  stopTurn = async (threadId: unknown): Promise<ConversationActionResult> => {
+    if (typeof threadId !== 'string') {
+      return rejected('unknownThread');
+    }
+    const selected = threadId === this.threadId;
+    const projection = selected ? null : this.projections.get(threadId);
+    const activeTurnId = selected
+      ? this.activeTurnId
+      : projection?.activeTurnId ?? null;
+    const phase = selected ? this.phase : projection?.phase;
+    if (phase !== 'inProgress' || !activeTurnId) {
       return rejected(
-        this.phase === 'unavailable' ? 'unavailable' : 'noActiveTurn',
+        phase === 'unavailable' ? 'unavailable' : 'noActiveTurn',
       );
     }
     const rpc = this.getRpc();
@@ -724,11 +813,15 @@ export class ConversationController extends ConversationLifecycleController {
       return rejected('unavailable');
     }
 
-    const turnId = this.activeTurnId;
-    this.phase = 'stopping';
+    const turnId = activeTurnId;
+    if (selected) {
+      this.phase = 'stopping';
+    } else if (projection) {
+      projection.phase = 'stopping';
+    }
     this.publish();
     try {
-      await rpc.interruptTurn(this.threadId, turnId);
+      await rpc.interruptTurn(threadId, turnId);
       return accepted();
     } catch (error) {
       if (error instanceof ConnectionClosedError || isAbortError(error)) {
@@ -740,8 +833,10 @@ export class ConversationController extends ConversationLifecycleController {
           kind: 'requestFailed',
           summary: 'The local Agent could not stop this Turn safely.',
         };
-        if (this.activeTurnId === turnId) {
+        if (selected && this.activeTurnId === turnId) {
           this.phase = 'inProgress';
+        } else if (projection?.activeTurnId === turnId) {
+          projection.phase = 'inProgress';
         }
         this.publish();
       }
@@ -756,6 +851,40 @@ export class ConversationController extends ConversationLifecycleController {
     try {
       lifecycle = parseConversationLifecycle(message);
       if (!lifecycle) {
+        return;
+      }
+      const targetThreadId =
+        lifecycle.type === 'threadStarted'
+          ? lifecycle.params.thread.id
+          : lifecycle.params.threadId;
+      const belongsToPendingNewThread =
+        this.threadId === null && this.phase === 'starting';
+      if (!belongsToPendingNewThread && targetThreadId !== this.threadId) {
+        const target = this.projections.get(targetThreadId);
+        if (!target) {
+          throw new Error('Lifecycle referenced an unknown background Thread.');
+        }
+        const selectedThreadId = this.threadId;
+        this.saveSelectedProjection();
+        this.restoreProjection(targetThreadId, target);
+        this.publishSuspended = true;
+        try {
+          this.applyLifecycle(lifecycle);
+          this.saveSelectedProjection();
+        } finally {
+          this.publishSuspended = false;
+          const selected = this.projections.get(selectedThreadId);
+          if (selected) {
+            this.restoreProjection(selectedThreadId, selected);
+          }
+        }
+        if (
+          lifecycle.type === 'turnCompleted' &&
+          lifecycle.params.turn.status !== 'inProgress'
+        ) {
+          this.unreadThreadIds.add(targetThreadId);
+        }
+        this.publish();
         return;
       }
       if (this.shouldBuffer(lifecycle)) {
@@ -815,11 +944,12 @@ export class ConversationController extends ConversationLifecycleController {
     ) {
       return 'unknownThread';
     }
-    if (
-      this.phase === 'starting' ||
-      this.phase === 'inProgress' ||
-      this.phase === 'stopping'
-    ) {
+    const exactThreadId = threadId as string;
+    const targetActive =
+      this.threadId === exactThreadId
+        ? this.activeTurnId !== null
+        : this.projections.get(exactThreadId)?.activeTurnId != null;
+    if (targetActive) {
       return 'turnActive';
     }
     if (
@@ -926,6 +1056,29 @@ export class ConversationController extends ConversationLifecycleController {
     this.notice = undefined;
   };
 
+  private saveSelectedProjection = (): void => {
+    if (!this.threadId) {
+      return;
+    }
+    this.projections.set(this.threadId, {
+      phase: this.phase,
+      activeTurnId: this.activeTurnId,
+      turns: this.turns,
+      notice: this.notice,
+    });
+  };
+
+  private restoreProjection = (
+    threadId: string,
+    projection: ConversationProjection,
+  ): void => {
+    this.threadId = threadId;
+    this.phase = projection.phase;
+    this.activeTurnId = projection.activeTurnId;
+    this.turns = projection.turns;
+    this.notice = projection.notice;
+  };
+
   private handleThreadMutationFailure = (
     error: unknown,
     committed: boolean,
@@ -947,13 +1100,16 @@ export class ConversationController extends ConversationLifecycleController {
   private replaceRecoveredConversation = (
     recovered: RecoveredConversation,
   ): void => {
+    if (this.threadId !== recovered.threadId) {
+      this.saveSelectedProjection();
+    }
     this.threadId = recovered.threadId;
     this.activeTurnId = null;
     this.turns = createMutableTurns(recovered);
   };
 
-  private createSnapshot = (): ConversationStateSnapshot =>
-    createConversationSnapshot({
+  private createSnapshot = (): ConversationStateSnapshot => {
+    const snapshot = createConversationSnapshot({
       revision: this.revision,
       phase: this.phase,
       threadId: this.threadId,
@@ -962,8 +1118,24 @@ export class ConversationController extends ConversationLifecycleController {
       navigator: this.navigator,
       notice: this.notice,
     });
+    const runningThreadIds = [...this.projections.entries()]
+      .filter(([, projection]) => projection.activeTurnId !== null)
+      .map(([threadId]) => threadId);
+    return {
+      ...snapshot,
+      navigator: {
+        ...snapshot.navigator,
+        runningThreadIds,
+        unreadThreadIds: [...this.unreadThreadIds],
+      },
+    };
+  };
 
   protected publish = (): void => {
+    if (this.publishSuspended) {
+      return;
+    }
+    this.saveSelectedProjection();
     this.revision += 1;
     const snapshot = this.createSnapshot();
     for (const listener of this.listeners) {

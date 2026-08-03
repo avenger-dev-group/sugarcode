@@ -115,6 +115,9 @@ use crate::WorkspaceInspectParams;
 use crate::WorkspaceInspectResponse;
 use crate::WorkspaceListParams;
 use crate::WorkspaceListResponse;
+use crate::WorkspaceOpenParams;
+use crate::WorkspaceOpenResponse;
+use crate::WorkspaceType;
 use schemars::schema_for;
 use std::fs;
 use std::io;
@@ -224,6 +227,9 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         TurnCompletedNotification::decl(),
         TurnInterruptParams::decl(),
         TurnInterruptResponse::decl(),
+        WorkspaceType::decl(),
+        WorkspaceOpenParams::decl(),
+        WorkspaceOpenResponse::decl(),
         WorkspaceEntryKind::decl(),
         WorkspaceEntry::decl(),
         WorkspaceListParams::decl(),
@@ -296,6 +302,14 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("AssetImportResponse.schema.json"),
         &schema_for!(AssetImportResponse),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceOpenParams.schema.json"),
+        &schema_for!(WorkspaceOpenParams),
+    )?;
+    write_schema(
+        out_dir.join("WorkspaceOpenResponse.schema.json"),
+        &schema_for!(WorkspaceOpenResponse),
     )?;
     write_schema(
         out_dir.join("WorkspaceListParams.schema.json"),

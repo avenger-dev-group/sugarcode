@@ -71,8 +71,7 @@ export type TurnModelViewModel = Readonly<{
   wireApi:
     | 'openaiResponses'
     | 'openaiChatCompletions'
-    | 'anthropicMessages'
-    | 'geminiGenerateContent';
+    | 'anthropicMessages';
 }>;
 
 export type ActiveTurnProgressViewModel = Readonly<{
@@ -160,6 +159,8 @@ export type ThreadNavigatorViewModel = Readonly<{
   status: 'loading' | 'ready' | 'error' | 'unavailable';
   threadIds: readonly string[];
   threadTitles: Readonly<Record<string, string>>;
+  runningThreadIds: readonly string[];
+  unreadThreadIds: readonly string[];
   selectedThreadId: string | null;
   pendingThreadId: string | null;
   pendingMutation: Readonly<{
@@ -176,7 +177,6 @@ export type ThreadNavigatorViewModel = Readonly<{
 export type ThreadStore = Readonly<{
   thread: ThreadViewModel;
   navigator: ThreadNavigatorViewModel;
-  navigatorOpen: boolean;
   draft: string;
   attachments: readonly DraftAttachmentViewModel[];
   inputBytes: number;
@@ -195,11 +195,19 @@ export type ThreadStore = Readonly<{
   }>[];
   selectedModelProfileId: string;
   modelSelectionDisabled: boolean;
+  modelSwitchConfirmation: Readonly<{
+    sourceName: string;
+    sourceWireApi: string;
+    targetName: string;
+    targetWireApi: string;
+    protocolChanges: boolean;
+  }> | null;
   setDraft: (value: string) => void;
   addAttachments: (files: readonly File[]) => Promise<void>;
   removeAttachment: (id: string) => void;
-  setNavigatorOpen: (open: boolean) => void;
   setSelectedModelProfileId: (profileId: string) => void;
+  confirmModelSwitch: () => void;
+  cancelModelSwitch: () => void;
   startNewThread: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
   forkThread: (threadId: string) => Promise<void>;
@@ -216,12 +224,6 @@ export type ThreadWorkbenchViewProps = Readonly<{
   contextRailResize?: PanelResizeHandle;
   navigationFooter?: ReactNode;
   contextRail?: ReactNode;
-  contextRailOpen?: boolean;
-  setContextRailOpen?: (open: boolean) => void;
-  navigatorVisible?: boolean;
-  setNavigatorVisible?: (visible: boolean) => void;
-  contextRailVisible?: boolean;
-  setContextRailVisible?: (visible: boolean) => void;
   permissionControl?: ReactNode;
 }>;
 

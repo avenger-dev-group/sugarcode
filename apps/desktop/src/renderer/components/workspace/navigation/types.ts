@@ -6,5 +6,6 @@ export type WorkspaceNavigationStore = Readonly<{
   error: string | null;
   chooseProject: () => Promise<boolean>;
   resumeProject: () => Promise<boolean>;
+  activateProject: (projectId: string) => Promise<boolean>;
   activateChat: (threadId?: string) => Promise<boolean>;
 }>;

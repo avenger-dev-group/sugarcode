@@ -1,6 +1,7 @@
 mod event_mapping;
 mod session;
 mod stdio;
+mod workspace_registry;
 
 pub use session::Session;
 pub use session::SessionState;
@@ -14,16 +15,39 @@ use sugarcode_agent_runtime::AgentSurfaceRuntime;
 use sugarcode_agent_runtime::ThreadWorkspaceBinding;
 use sugarcode_state::EffectiveConfig;
 
-pub async fn run_stdio(
-    config: EffectiveConfig,
-    workspace: Option<std::path::PathBuf>,
-    workspace_scope: Option<String>,
-    unbound_threads: bool,
-    allow_workspace_write: bool,
-    allow_command_workspace_write: bool,
-    mcp_servers: Vec<String>,
-) -> io::Result<()> {
+pub struct StdioOptions {
+    pub config: EffectiveConfig,
+    pub multi_workspace: bool,
+    pub workspace: Option<std::path::PathBuf>,
+    pub workspace_scope: Option<String>,
+    pub unbound_threads: bool,
+    pub allow_workspace_write: bool,
+    pub allow_command_workspace_write: bool,
+    pub mcp_servers: Vec<String>,
+}
+
+pub async fn run_stdio(options: StdioOptions) -> io::Result<()> {
+    let StdioOptions {
+        config,
+        multi_workspace,
+        workspace,
+        workspace_scope,
+        unbound_threads,
+        allow_workspace_write,
+        allow_command_workspace_write,
+        mcp_servers,
+    } = options;
     let command_supervisor_executable = std::env::current_exe()?;
+    if multi_workspace {
+        let (registry, runtime_inputs) = workspace_registry::WorkspaceRegistry::new(
+            config,
+            mcp_servers,
+            command_supervisor_executable,
+        )?;
+        let input = tokio::io::BufReader::new(tokio::io::stdin());
+        let output = tokio::io::BufWriter::new(tokio::io::stdout());
+        return stdio::serve_workspace_registry(input, output, registry, runtime_inputs).await;
+    }
     let runtime = AgentSurfaceRuntime::launch(AgentSurfaceLaunchOptions {
         config,
         workspace,
@@ -37,6 +61,7 @@ pub async fn run_stdio(
         allow_command_workspace_write,
         mcp_servers,
         command_supervisor_executable,
+        repository: None,
     })
     .await?;
     let parts = runtime.into_parts();

@@ -3,9 +3,6 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::de;
-use serde::de::MapAccess;
-use serde::de::Visitor;
-use std::fmt;
 use ts_rs::TS;
 
 use crate::Item;
@@ -60,38 +57,11 @@ pub struct ThreadDescendantsListParams {
     pub thread_id: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
-pub struct ThreadStartParams {}
-
-impl<'de> Deserialize<'de> for ThreadStartParams {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_map(ThreadStartParamsVisitor)
-    }
-}
-
-struct ThreadStartParamsVisitor;
-
-impl<'de> Visitor<'de> for ThreadStartParamsVisitor {
-    type Value = ThreadStartParams;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an empty object")
-    }
-
-    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-    where
-        M: MapAccess<'de>,
-    {
-        if let Some(field) = map.next_key::<String>()? {
-            return Err(de::Error::unknown_field(&field, &[]));
-        }
-        Ok(ThreadStartParams {})
-    }
+pub struct ThreadStartParams {
+    pub workspace_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
@@ -236,6 +206,7 @@ struct ThreadForkParamsWire {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ThreadListParams {
+    pub workspace_id: String,
     #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
     #[ts(optional = nullable)]
     pub cursor: Option<String>,
@@ -264,6 +235,7 @@ impl<'de> Deserialize<'de> for ThreadListParams {
             return Err(de::Error::custom("limit must be between 1 and 100"));
         }
         Ok(Self {
+            workspace_id: params.workspace_id,
             cursor: params.cursor,
             limit: params.limit,
         })
@@ -273,6 +245,7 @@ impl<'de> Deserialize<'de> for ThreadListParams {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ThreadListParamsWire {
+    workspace_id: String,
     cursor: Option<String>,
     limit: Option<u32>,
 }
@@ -289,6 +262,7 @@ pub struct ThreadListResponse {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ThreadSearchParams {
+    pub workspace_id: String,
     #[schemars(length(min = 1, max = 256))]
     pub query: String,
     #[schemars(regex(pattern = "^thr_(?:[0-9]{16}|[1-9][0-9]{16,19})$"))]
@@ -324,6 +298,7 @@ impl<'de> Deserialize<'de> for ThreadSearchParams {
             return Err(de::Error::custom("limit must be between 1 and 100"));
         }
         Ok(Self {
+            workspace_id: params.workspace_id,
             query: params.query.trim().to_string(),
             cursor: params.cursor,
             limit: params.limit,
@@ -334,6 +309,7 @@ impl<'de> Deserialize<'de> for ThreadSearchParams {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ThreadSearchParamsWire {
+    workspace_id: String,
     query: String,
     cursor: Option<String>,
     limit: Option<u32>,
@@ -359,6 +335,7 @@ pub struct ThreadStartedNotification {
 #[ts(rename_all = "camelCase")]
 pub struct ThreadResumeParams {
     pub thread_id: String,
+    pub workspace_id: String,
 }
 
 impl<'de> Deserialize<'de> for ThreadResumeParams {
@@ -372,6 +349,7 @@ impl<'de> Deserialize<'de> for ThreadResumeParams {
         }
         Ok(Self {
             thread_id: params.thread_id,
+            workspace_id: params.workspace_id,
         })
     }
 }
@@ -380,6 +358,7 @@ impl<'de> Deserialize<'de> for ThreadResumeParams {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ThreadResumeParamsWire {
     thread_id: String,
+    workspace_id: String,
 }
 
 fn is_canonical_thread_id(value: &str) -> bool {

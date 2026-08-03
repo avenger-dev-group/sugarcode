@@ -239,6 +239,7 @@ impl WorkspaceTool {
         &self,
         arguments: &GitMutationArguments,
     ) -> Result<GitMutationReceipt, GitErrorKind> {
+        let _write_permit = self.acquire_write();
         let repository = self.open_git_repository()?;
         let status = self.verify_mutation(&repository, arguments)?;
         let mut index = repository.index().map_err(map_git_error)?;
@@ -286,6 +287,7 @@ impl WorkspaceTool {
         &self,
         arguments: &GitMutationArguments,
     ) -> Result<GitMutationReceipt, GitErrorKind> {
+        let _write_permit = self.acquire_write();
         let repository = self.open_git_repository()?;
         let status = self.verify_mutation(&repository, arguments)?;
         if status.head.is_none() {
@@ -309,6 +311,7 @@ impl WorkspaceTool {
         &self,
         arguments: &GitCommitArguments,
     ) -> Result<GitCommitReceipt, GitErrorKind> {
+        let _write_permit = self.acquire_write();
         validate_commit_arguments(arguments)?;
         let repository = self.open_git_repository()?;
         let status = self.collect_git_status(&repository)?;

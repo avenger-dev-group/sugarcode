@@ -1,17 +1,11 @@
-import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import { AgentDetail } from '@/renderer/components/orchestration/agent-detail';
 import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
-import { Button } from '@/renderer/components/ui/button';
 import { GitWorkbench } from '@/renderer/components/workspace/git/git-workbench';
 import { PreviewWorkbench } from '@/renderer/components/workspace/preview/preview-workbench';
 import { TerminalWorkbench } from '@/renderer/components/workspace/terminal/terminal-workbench';
 import { WorkspaceWorkbench } from '@/renderer/components/workspace/workbench/workspace-workbench';
-
-type ContextRailProps = Readonly<{
-  onClose: () => void;
-}>;
 
 const RailAction = ({
   label,
@@ -28,15 +22,15 @@ const RailAction = ({
   </div>
 );
 
-export const ContextRail = ({ onClose }: ContextRailProps) => {
+export const ContextRail = () => {
   const { activeTab, selectedTask, setActiveTab } =
     useOrchestrationStore();
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-11 shrink-0 items-center border-b px-3">
+      <div className="window-drag-region flex h-11 shrink-0 items-center border-b px-3">
         <div
-          className="flex h-8 items-center rounded-lg bg-surface p-0.5"
+          className="window-no-drag flex h-8 items-center rounded-lg bg-surface p-0.5"
           role="tablist"
           aria-label="Context rail"
         >
@@ -57,16 +51,6 @@ export const ContextRail = ({ onClose }: ContextRailProps) => {
             </button>
           ))}
         </div>
-        <Button
-          type="button"
-          size="icon"
-          variant="ghost"
-          className="ml-auto xl:hidden"
-          onClick={onClose}
-          aria-label="Close context rail"
-        >
-          <X aria-hidden="true" />
-        </Button>
       </div>
 
       {activeTab === 'workspace' ? (

@@ -108,6 +108,11 @@ export type McpApprovalActionState =
 
 export type McpApprovalViewModel = Readonly<{
   presentationId: string;
+  threadId: string;
+  turnId: string;
+  queueCount: number;
+  projectTitle: string;
+  conversationTitle: string;
   serverId: string;
   name: string;
   argumentsJson: string;
@@ -434,6 +439,11 @@ export const isMcpApprovalStateSnapshot = (
       request,
       [
         'presentationId',
+        'threadId',
+        'turnId',
+        'queueCount',
+        'projectTitle',
+        'conversationTitle',
         'serverId',
         'name',
         'argumentsJson',
@@ -447,6 +457,14 @@ export const isMcpApprovalStateSnapshot = (
     ) &&
     typeof request.presentationId === 'string' &&
     request.presentationId.length > 0 &&
+    isId(request.threadId) &&
+    isId(request.turnId) &&
+    Number.isSafeInteger(request.queueCount) &&
+    (request.queueCount as number) >= 1 &&
+    typeof request.projectTitle === 'string' &&
+    request.projectTitle.length > 0 &&
+    typeof request.conversationTitle === 'string' &&
+    request.conversationTitle.length > 0 &&
     isId(request.serverId) &&
     typeof request.name === 'string' &&
     request.name.startsWith(`mcp__${request.serverId}__`) &&

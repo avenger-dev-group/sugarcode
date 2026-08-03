@@ -76,8 +76,8 @@ where
                 command_approvals: true,
                 command_workspace_write_approvals: true,
                 mcp_tool_call_approvals: self.mcp_capability.as_ref().map(|_| true),
-                workspace_browser: self.workspace.as_ref().map(|_| true),
-                workspace_git: self.workspace.as_ref().map(|_| true),
+                workspace_browser: Some(true),
+                workspace_git: Some(true),
                 subagents: Some(true),
             },
             workspace: self.workspace.as_ref().map(|workspace| WorkspaceBinding {

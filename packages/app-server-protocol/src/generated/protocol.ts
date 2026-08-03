@@ -128,21 +128,21 @@ export type ThreadUnarchiveParams = { threadId: string, };
 
 export type ThreadUnarchiveResponse = Record<string, never>;
 
-export type ThreadListParams = { cursor?: string | null, limit?: number | null, };
+export type ThreadListParams = { workspaceId: string, cursor?: string | null, limit?: number | null, };
 
 export type ThreadListResponse = { data: Array<Thread>, nextCursor: string | null, };
 
-export type ThreadSearchParams = { query: string, cursor?: string | null, limit?: number | null, };
+export type ThreadSearchParams = { workspaceId: string, query: string, cursor?: string | null, limit?: number | null, };
 
 export type ThreadSearchResponse = { data: Array<Thread>, nextCursor: string | null, };
 
-export type ThreadStartParams = Record<string, never>;
+export type ThreadStartParams = { workspaceId: string, };
 
 export type ThreadStartResponse = { thread: Thread, };
 
 export type ThreadStartedNotification = { thread: Thread, };
 
-export type ThreadResumeParams = { threadId: string, };
+export type ThreadResumeParams = { threadId: string, workspaceId: string, };
 
 export type TurnSnapshotStatus = "inProgress" | "completed" | "failed" | "interrupted";
 
@@ -150,9 +150,9 @@ export type TurnSnapshot = { id: string, status: TurnSnapshotStatus, items: Arra
 
 export type ThreadResumeResponse = { thread: Thread, turns: Array<TurnSnapshot>, };
 
-export type ModelProviderFamily = "openai" | "anthropic" | "gemini";
+export type ModelProviderFamily = "openai" | "anthropic";
 
-export type ModelWireApi = "openaiResponses" | "openaiChatCompletions" | "anthropicMessages" | "geminiGenerateContent";
+export type ModelWireApi = "openaiResponses" | "openaiChatCompletions" | "anthropicMessages";
 
 export type ModelSelectionCapabilities = { toolCalls: boolean, strictTools: boolean, parallelTools: boolean, imageInput: boolean, pdfInput: boolean, };
 
@@ -202,17 +202,23 @@ export type TurnInterruptParams = { threadId: string, turnId: string, };
 
 export type TurnInterruptResponse = Record<string, never>;
 
+export type WorkspaceType = "project" | "isolatedChat";
+
+export type WorkspaceOpenParams = { root: string, workspaceType: WorkspaceType, allowWorkspaceWrite: boolean, allowCommandWorkspaceWrite: boolean, };
+
+export type WorkspaceOpenResponse = { workspaceId: string, };
+
 export type WorkspaceEntryKind = "file" | "directory" | "link" | "other";
 
 export type WorkspaceEntry = { name: string, path: string, kind: WorkspaceEntryKind, };
 
-export type WorkspaceListParams = { path: string, };
+export type WorkspaceListParams = { workspaceId: string, path: string, };
 
 export type WorkspaceListResponse = { path: string, entries: Array<WorkspaceEntry>, };
 
 export type WorkspaceInspectErrorKind = "invalidPath" | "notFound" | "accessDenied" | "pathNotAllowed" | "notRegularFile" | "oversized" | "binary" | "invalidEncoding" | "longLine" | "changed" | "unavailable";
 
-export type WorkspaceInspectParams = { path: string, };
+export type WorkspaceInspectParams = { workspaceId: string, path: string, };
 
 export type WorkspaceInspectResponse = { "status": "complete", path: string, content: string, bytes: number, lines: number, hasUtf8Bom: boolean, } | { "status": "truncated", path: string, content: string, bytes: number, returnedBytes: number, lines: number, hasUtf8Bom: boolean, } | { "status": "error", path: string, kind: WorkspaceInspectErrorKind, };
 
@@ -224,21 +230,21 @@ export type WorkspaceGitErrorKind = "notRepository" | "unsupportedRepository" | 
 
 export type WorkspaceGitStatusEntry = { path: string, index?: WorkspaceGitChangeKind, worktree?: WorkspaceGitChangeKind, stageable: boolean, };
 
-export type WorkspaceGitStatusParams = Record<string, never>;
+export type WorkspaceGitStatusParams = { workspaceId: string, };
 
 export type WorkspaceGitStatusResponse = { "status": "ready", revision: string, branch?: string, head?: string, repositoryState: WorkspaceGitRepositoryState, mutationAllowed: boolean, entries: Array<WorkspaceGitStatusEntry>, stagedCount: number, unstagedCount: number, unsupportedPaths: number, } | { "status": "error", kind: WorkspaceGitErrorKind, };
 
 export type WorkspaceGitDiffSource = "worktree" | "index";
 
-export type WorkspaceGitDiffParams = { expectedRevision: string, path: string, source: WorkspaceGitDiffSource, };
+export type WorkspaceGitDiffParams = { workspaceId: string, expectedRevision: string, path: string, source: WorkspaceGitDiffSource, };
 
 export type WorkspaceGitDiffResponse = { "status": "ready", revision: string, path: string, source: WorkspaceGitDiffSource, content: string, additions: number, deletions: number, } | { "status": "error", kind: WorkspaceGitErrorKind, };
 
-export type WorkspaceGitMutationParams = { expectedRevision: string, paths: Array<string>, };
+export type WorkspaceGitMutationParams = { workspaceId: string, expectedRevision: string, paths: Array<string>, };
 
 export type WorkspaceGitMutationResponse = { "status": "applied", revision: string, paths: Array<string>, } | { "status": "error", kind: WorkspaceGitErrorKind, };
 
-export type WorkspaceGitCommitParams = { expectedRevision: string, message: string, authorName: string, authorEmail: string, };
+export type WorkspaceGitCommitParams = { workspaceId: string, expectedRevision: string, message: string, authorName: string, authorEmail: string, };
 
 export type WorkspaceGitCommitResponse = { "status": "committed", revision: string, oldHead: string, newHead: string, } | { "status": "error", kind: WorkspaceGitErrorKind, };
 

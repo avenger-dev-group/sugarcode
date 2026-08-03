@@ -36,17 +36,26 @@ test('thread mode cannot cross into another thread', () => {
   assert.deepEqual(other.scope, createCommandApprovalModeScope('ask'));
 });
 
-test('workspace mode applies to every thread until the owner resets it', () => {
-  const scoped = createCommandApprovalModeScope('workspace');
+test('workspace mode follows the request workspace rather than the selected project', () => {
+  const scoped = createCommandApprovalModeScope(
+    'workspace',
+    'thread-a',
+    'workspace-a',
+  );
 
   assert.equal(
-    evaluateAutomaticCommandApproval(scoped, 'thread-a')
+    evaluateAutomaticCommandApproval(scoped, 'thread-a', 'workspace-a')
       .approveAutomatically,
     true,
   );
   assert.equal(
-    evaluateAutomaticCommandApproval(scoped, 'thread-b')
+    evaluateAutomaticCommandApproval(scoped, 'thread-b', 'workspace-a')
       .approveAutomatically,
     true,
+  );
+  assert.equal(
+    evaluateAutomaticCommandApproval(scoped, 'thread-c', 'workspace-b')
+      .approveAutomatically,
+    false,
   );
 });

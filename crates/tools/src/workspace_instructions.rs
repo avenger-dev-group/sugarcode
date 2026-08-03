@@ -212,6 +212,7 @@ impl WorkspaceTool {
                     self.binding_id(),
                     scope,
                 ),
+                write_gate: std::sync::Arc::clone(&self.write_gate),
             },
             snapshot,
         ))
@@ -327,6 +328,7 @@ impl WorkspaceTool {
                     self.binding_id(),
                     scope,
                 ),
+                write_gate: std::sync::Arc::clone(&self.write_gate),
             }
         };
         Ok((scope, instructions, skills))

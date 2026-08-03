@@ -21,8 +21,8 @@ export const sendConversationMessage = (
   desktopApi().sendConversationMessage(request);
 
 export const stopConversationTurn =
-  (): Promise<ConversationActionResult> =>
-    desktopApi().stopConversationTurn();
+  (threadId: string): Promise<ConversationActionResult> =>
+    desktopApi().stopConversationTurn(threadId);
 
 export const searchConversationThreads = (
   query: string,

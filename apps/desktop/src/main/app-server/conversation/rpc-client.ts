@@ -79,7 +79,10 @@ export type ConversationRpc = Readonly<{
 }>;
 
 export class ConversationRpcClient implements ConversationRpc {
-  constructor(private readonly client: JsonlClient) {}
+  constructor(
+    private readonly client: JsonlClient,
+    private readonly workspaceId: string,
+  ) {}
 
   listActiveThreads = async (
     signal?: AbortSignal,
@@ -87,7 +90,7 @@ export class ConversationRpcClient implements ConversationRpc {
     parseThreadListResponse(
       await this.client.requestReady(
         'thread/list',
-        { limit: 50 },
+        { workspaceId: this.workspaceId, limit: 50 },
         signal,
       ),
     );
@@ -106,7 +109,7 @@ export class ConversationRpcClient implements ConversationRpc {
     parseThreadSearchResponse(
       await this.client.requestReady(
         'thread/search',
-        { query, limit: 50 },
+        { workspaceId: this.workspaceId, query, limit: 50 },
         signal,
       ),
     );
@@ -118,7 +121,7 @@ export class ConversationRpcClient implements ConversationRpc {
     parseThreadResumeResponse(
       await this.client.requestReady(
         'thread/resume',
-        { threadId },
+        { threadId, workspaceId: this.workspaceId },
         signal,
       ),
     );
@@ -193,7 +196,11 @@ export class ConversationRpcClient implements ConversationRpc {
     signal?: AbortSignal,
   ): Promise<ThreadStartResponse> =>
     parseThreadStartResponse(
-      await this.client.requestReady('thread/start', {}, signal),
+      await this.client.requestReady(
+        'thread/start',
+        { workspaceId: this.workspaceId },
+        signal,
+      ),
     );
 
   importAsset = async (

@@ -32,6 +32,12 @@ type McpApprovalControllerOptions = Readonly<{
   onProtocolFailure: () => void;
   onWriteFailure: () => void;
   onSurfaceFailure: () => void;
+  onSurfaceReady?: () => void;
+  getQueueCount?: () => number;
+  describeSource?: (threadId: string) => Readonly<{
+    projectTitle: string;
+    conversationTitle: string;
+  }>;
 }>;
 
 type ActiveApproval = {
@@ -77,6 +83,12 @@ export class McpApprovalController {
 
   getSnapshot = (): McpApprovalStateSnapshot => this.snapshot;
 
+  queueChanged = (): void => {
+    if (this.active && this.snapshot.status === 'pending') {
+      this.transition('pending', this.toViewModel(this.active));
+    }
+  };
+
   subscribe = (
     listener: (snapshot: McpApprovalStateSnapshot) => void,
   ): (() => void) => {
@@ -86,6 +98,7 @@ export class McpApprovalController {
 
   markSurfaceReady = (): McpApprovalStateSnapshot => {
     this.surfaceReady = true;
+    this.options.onSurfaceReady?.();
     return this.snapshot;
   };
 
@@ -250,20 +263,31 @@ export class McpApprovalController {
 
   private toViewModel = (
     active: ActiveApproval,
-  ): McpApprovalViewModel => ({
-    presentationId: active.presentationId,
-    serverId: active.parsed.serverId,
-    name: active.parsed.params.name,
-    argumentsJson: active.parsed.argumentsJson,
-    argumentsBytes: active.parsed.argumentsBytes,
-    argumentsSha256: active.parsed.params.argumentsSha256,
-    inventorySha256: active.parsed.params.inventorySha256,
-    ...(active.parsed.params.sourceAgent
-      ? { sourceAgent: { ...active.parsed.params.sourceAgent } }
-      : {}),
-    localExpiresAtMs: active.localExpiresAtMs,
-    actionState: active.actionState,
-  });
+  ): McpApprovalViewModel => {
+    const source =
+      this.options.describeSource?.(active.parsed.params.threadId) ?? {
+        projectTitle: 'SugarCode',
+        conversationTitle: active.parsed.params.threadId,
+      };
+    return {
+      presentationId: active.presentationId,
+      threadId: active.parsed.params.threadId,
+      turnId: active.parsed.params.turnId,
+      queueCount: this.options.getQueueCount?.() ?? 1,
+      ...source,
+      serverId: active.parsed.serverId,
+      name: active.parsed.params.name,
+      argumentsJson: active.parsed.argumentsJson,
+      argumentsBytes: active.parsed.argumentsBytes,
+      argumentsSha256: active.parsed.params.argumentsSha256,
+      inventorySha256: active.parsed.params.inventorySha256,
+      ...(active.parsed.params.sourceAgent
+        ? { sourceAgent: { ...active.parsed.params.sourceAgent } }
+        : {}),
+      localExpiresAtMs: active.localExpiresAtMs,
+      actionState: active.actionState,
+    };
+  };
 
   private statusForDecision = (
     decision: string,

@@ -9,20 +9,28 @@ where
         id: RequestId,
         params: Option<Value>,
     ) -> Vec<JsonRpcMessage> {
-        let params = match params {
-            Some(value) => match serde_json::from_value::<ThreadListParams>(value) {
-                Ok(params) => params,
-                Err(_) => {
-                    return vec![error(
-                        Some(id),
-                        ERROR_INVALID_PARAMS,
-                        "Invalid params",
-                        None,
-                    )];
-                }
-            },
-            None => ThreadListParams::default(),
+        let params = match self
+            .workspace_scoped_params(params)
+            .and_then(|value| serde_json::from_value::<ThreadListParams>(value).ok())
+        {
+            Some(params) => params,
+            None => {
+                return vec![error(
+                    Some(id),
+                    ERROR_INVALID_PARAMS,
+                    "Invalid params",
+                    None,
+                )];
+            }
         };
+        if !self.accepts_workspace_id(&params.workspace_id) {
+            return vec![error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            )];
+        }
         if self.accepted_request_ids.contains(&id) {
             return vec![error(
                 Some(id),
@@ -48,6 +56,14 @@ where
                 return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];
             }
         };
+        if !self.accepts_workspace_id(&params.workspace_id) {
+            return vec![error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            )];
+        }
         self.accepted_request_ids.insert(id.clone());
         let response = ThreadListResponse {
             data: page
@@ -73,7 +89,8 @@ where
         id: RequestId,
         params: Option<Value>,
     ) -> Vec<JsonRpcMessage> {
-        let params = match params
+        let params = match self
+            .workspace_scoped_params(params)
             .ok_or(())
             .and_then(|value| serde_json::from_value::<ThreadSearchParams>(value).map_err(|_| ()))
         {
@@ -87,6 +104,14 @@ where
                 )];
             }
         };
+        if !self.accepts_workspace_id(&params.workspace_id) {
+            return vec![error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            )];
+        }
         if self.accepted_request_ids.contains(&id) {
             return vec![error(
                 Some(id),

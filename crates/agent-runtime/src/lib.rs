@@ -16,17 +16,19 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use sugarcode_core::Core;
+use sugarcode_core::CoreIdAllocator;
 use sugarcode_core::CoreRuntime;
 use sugarcode_core::McpToolCapability;
 use sugarcode_core::ModelCapabilities;
 use sugarcode_core::ModelResolver;
 use sugarcode_core::ResolvedModel;
+use sugarcode_model_provider::AnthropicMessagesProvider;
 use sugarcode_model_provider::ModelError;
 use sugarcode_model_provider::ModelErrorKind;
 use sugarcode_model_provider::ModelStrictToolsMode;
-use sugarcode_model_provider::NativeModelProvider;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
 use sugarcode_model_provider::OpenAiContinuationMode;
+use sugarcode_model_provider::OpenAiResponsesProvider;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_state::ContentStore;
 use sugarcode_state::EffectiveConfig;
@@ -35,6 +37,7 @@ use sugarcode_state::ModelContinuationMode;
 use sugarcode_state::ModelWireApi;
 use sugarcode_state::RolloutRepository;
 use sugarcode_state::SugarCodeHome;
+use sugarcode_state::ThreadRepository;
 use sugarcode_tools::WorkspaceTool;
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
@@ -57,6 +60,24 @@ pub struct AgentSurfaceLaunchOptions {
     pub allow_command_workspace_write: bool,
     pub mcp_servers: Vec<String>,
     pub command_supervisor_executable: PathBuf,
+    pub repository: Option<AgentSurfaceRepository>,
+}
+
+pub struct AgentSurfaceRepository {
+    pub repository: Box<dyn ThreadRepository>,
+    pub id_allocator: CoreIdAllocator,
+    pub diagnostics: Vec<String>,
+}
+
+impl std::fmt::Debug for AgentSurfaceRepository {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentSurfaceRepository")
+            .field("repository", &self.repository)
+            .field("id_allocator", &self.id_allocator)
+            .field("diagnostic_count", &self.diagnostics.len())
+            .finish()
+    }
 }
 
 pub struct AgentSurfaceRuntime {
@@ -146,7 +167,7 @@ impl ModelResolver for LocalModelResolver {
                 )?)
             }
             ModelWireApi::OpenAiResponses => Arc::new(
-                NativeModelProvider::openai_responses(
+                OpenAiResponsesProvider::new(
                     connection.base_url().clone(),
                     token,
                     strict_tools_mode,
@@ -162,22 +183,12 @@ impl ModelResolver for LocalModelResolver {
                     },
                 ),
             ),
-            ModelWireApi::AnthropicMessages => Arc::new(NativeModelProvider::anthropic_messages(
+            ModelWireApi::AnthropicMessages => Arc::new(AnthropicMessagesProvider::new(
                 connection.base_url().clone(),
                 token,
                 strict_tools_mode,
-                parallel_tools,
                 capabilities.output_reserve_tokens,
             )?),
-            ModelWireApi::GeminiGenerateContent => {
-                Arc::new(NativeModelProvider::gemini_generate_content(
-                    connection.base_url().clone(),
-                    token,
-                    strict_tools_mode,
-                    parallel_tools,
-                    capabilities.output_reserve_tokens,
-                )?)
-            }
         };
         Ok(ResolvedModel {
             provider,
@@ -323,31 +334,46 @@ impl AgentSurfaceRuntime {
             }
             ThreadWorkspaceBinding::Unbound => None,
         };
-        let repository = RolloutRepository::open_with_workspace_binding(
-            options.config.home(),
-            active_workspace_binding,
-        )
-        .map_err(io::Error::other)?;
+        let (repository, id_allocator, mut diagnostics) = match options.repository {
+            Some(repository) => (
+                repository.repository,
+                repository.id_allocator,
+                repository.diagnostics,
+            ),
+            None => {
+                let repository = RolloutRepository::open_with_workspace_binding(
+                    options.config.home(),
+                    active_workspace_binding,
+                )
+                .map_err(io::Error::other)?;
+                let diagnostics = repository
+                    .diagnostics()
+                    .iter()
+                    .map(ToString::to_string)
+                    .chain(
+                        repository
+                            .projection_diagnostics()
+                            .iter()
+                            .map(ToString::to_string),
+                    )
+                    .chain(
+                        repository
+                            .search_projection_diagnostics()
+                            .iter()
+                            .map(ToString::to_string),
+                    )
+                    .collect();
+                let id_allocator = CoreIdAllocator::new(repository.id_sequences());
+                (
+                    Box::new(repository) as Box<dyn ThreadRepository>,
+                    id_allocator,
+                    diagnostics,
+                )
+            }
+        };
         let content_store =
             Arc::new(ContentStore::open(options.config.home()).map_err(io::Error::other)?);
-        let mut diagnostics = repository
-            .diagnostics()
-            .iter()
-            .map(ToString::to_string)
-            .chain(
-                repository
-                    .projection_diagnostics()
-                    .iter()
-                    .map(ToString::to_string),
-            )
-            .chain(
-                repository
-                    .search_projection_diagnostics()
-                    .iter()
-                    .map(ToString::to_string),
-            )
-            .collect::<Vec<_>>();
-        let core = Core::with_repository(Box::new(repository));
+        let core = Core::with_repository_and_id_allocator(repository, id_allocator);
         let (approval_requester, command_approvals) = ChannelCommandApprovalRequester::channel(4);
         let (mcp_approval_requester, mcp_approvals) = ChannelMcpToolApprovalRequester::channel(1);
         let (runtime, events) = CoreRuntime::new_with_model_resolver(

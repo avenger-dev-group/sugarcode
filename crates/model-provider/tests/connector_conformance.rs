@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use sugarcode_model_provider::AnthropicMessagesProvider;
 use sugarcode_model_provider::ModelContinuation;
 use sugarcode_model_provider::ModelEvent;
 use sugarcode_model_provider::ModelFinishReason;
@@ -9,8 +10,8 @@ use sugarcode_model_provider::ModelOutputItemKind;
 use sugarcode_model_provider::ModelProvider;
 use sugarcode_model_provider::ModelRequest;
 use sugarcode_model_provider::ModelStrictToolsMode;
-use sugarcode_model_provider::NativeModelProvider;
 use sugarcode_model_provider::OpenAiChatCompletionsProvider;
+use sugarcode_model_provider::OpenAiResponsesProvider;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -22,7 +23,6 @@ use zeroize::Zeroizing;
 const RESPONSES_TEXT: &str = include_str!("fixtures/conformance/openai-responses-text.sse");
 const CHAT_TEXT: &str = include_str!("fixtures/conformance/openai-chat-text.sse");
 const ANTHROPIC_TEXT: &str = include_str!("fixtures/conformance/anthropic-text.sse");
-const GEMINI_TEXT: &str = include_str!("fixtures/conformance/gemini-text.sse");
 
 #[derive(Debug, PartialEq, Eq)]
 struct CanonicalTextResult {
@@ -42,10 +42,10 @@ struct CapturedRequest {
 }
 
 #[tokio::test]
-async fn text_streams_across_all_four_wires_share_one_canonical_result() {
+async fn text_streams_across_all_three_wires_share_one_canonical_result() {
     let (responses_url, responses_capture, responses_server) =
         response_server(RESPONSES_TEXT).await;
-    let responses = NativeModelProvider::openai_responses(
+    let responses = OpenAiResponsesProvider::new(
         responses_url,
         Some(Zeroizing::new("fixture-token".to_owned())),
         ModelStrictToolsMode::Disabled,
@@ -69,30 +69,16 @@ async fn text_streams_across_all_four_wires_share_one_canonical_result() {
 
     let (anthropic_url, anthropic_capture, anthropic_server) =
         response_server(ANTHROPIC_TEXT).await;
-    let anthropic = NativeModelProvider::anthropic_messages(
+    let anthropic = AnthropicMessagesProvider::new(
         anthropic_url,
         Some(Zeroizing::new("fixture-token".to_owned())),
         ModelStrictToolsMode::Disabled,
-        false,
         1024,
     )
     .expect("Anthropic provider");
     let anthropic_result = collect_text(&anthropic).await;
     let anthropic_request = anthropic_capture.await.expect("Anthropic request");
     anthropic_server.await.expect("Anthropic server");
-
-    let (gemini_url, gemini_capture, gemini_server) = response_server(GEMINI_TEXT).await;
-    let gemini = NativeModelProvider::gemini_generate_content(
-        gemini_url,
-        Some(Zeroizing::new("fixture-token".to_owned())),
-        ModelStrictToolsMode::Disabled,
-        false,
-        1024,
-    )
-    .expect("Gemini provider");
-    let gemini_result = collect_text(&gemini).await;
-    let gemini_request = gemini_capture.await.expect("Gemini request");
-    gemini_server.await.expect("Gemini server");
 
     let expected = CanonicalTextResult {
         preview: "fixture answer".to_owned(),
@@ -105,7 +91,6 @@ async fn text_streams_across_all_four_wires_share_one_canonical_result() {
     assert_eq!(responses_result, expected);
     assert_eq!(chat_result, expected);
     assert_eq!(anthropic_result, expected);
-    assert_eq!(gemini_result, expected);
 
     assert_request(
         &responses_request,
@@ -132,13 +117,6 @@ async fn text_streams_across_all_four_wires_share_one_canonical_result() {
     );
     assert_eq!(anthropic_request.body["stream"], true);
     assert!(anthropic_request.headers.contains_key("anthropic-version"));
-
-    assert_request(
-        &gemini_request,
-        "/v1/models/fixture-model:streamGenerateContent?alt=sse",
-        "x-goog-api-key",
-        &["parallel_tool_calls", "stream_options"],
-    );
 }
 
 async fn collect_text(provider: &dyn ModelProvider) -> CanonicalTextResult {

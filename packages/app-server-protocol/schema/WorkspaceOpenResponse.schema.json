@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkspaceOpenResponse",
+  "type": "object",
+  "properties": {
+    "workspaceId": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "workspaceId"
+  ]
+}

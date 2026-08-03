@@ -4,13 +4,12 @@ export const MODEL_CONFIG_DELETE_API_KEY_CHANNEL =
   'model-config:delete-api-key';
 export const MODEL_CONFIG_DISCOVER_CHANNEL = 'model-config:discover';
 
-export type ModelProviderFamily = 'openai' | 'anthropic' | 'gemini';
+export type ModelProviderFamily = 'openai' | 'anthropic';
 
 export type ModelWireApi =
   | 'openaiResponses'
   | 'openaiChatCompletions'
-  | 'anthropicMessages'
-  | 'geminiGenerateContent';
+  | 'anthropicMessages';
 
 export type ModelCapabilityMode = 'auto' | 'enabled' | 'disabled';
 export type ModelContinuationMode = 'localReplay' | 'providerManaged';
@@ -135,14 +134,12 @@ const isDisplayName = (value: unknown): value is string =>
 const PROVIDER_FAMILIES: readonly ModelProviderFamily[] = [
   'openai',
   'anthropic',
-  'gemini',
 ];
 
 const WIRE_APIS: readonly ModelWireApi[] = [
   'openaiResponses',
   'openaiChatCompletions',
   'anthropicMessages',
-  'geminiGenerateContent',
 ];
 
 const CAPABILITY_MODES: readonly ModelCapabilityMode[] = [
@@ -254,8 +251,6 @@ export const isModelConfigValue = (
         ].includes(connection.wireApi);
       case 'anthropic':
         return connection.wireApi === 'anthropicMessages';
-      case 'gemini':
-        return connection.wireApi === 'geminiGenerateContent';
     }
   });
   const capabilitiesMatch = profiles.every((profile) => {

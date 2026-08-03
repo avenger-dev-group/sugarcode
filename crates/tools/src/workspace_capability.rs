@@ -10,6 +10,9 @@ use std::fs::File;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex;
 
 pub const MAX_WORKSPACE_RELATIVE_PATH_BYTES: usize = 1024;
 pub const MAX_WORKSPACE_PATH_COMPONENTS: usize = 64;
@@ -33,6 +36,16 @@ pub struct WorkspaceTool {
     pub(crate) root: Dir,
     pub(crate) root_reopen: WorkspaceRootReopen,
     pub(crate) binding_id: String,
+    pub(crate) write_gate: Arc<WorkspaceWriteGate>,
+}
+
+pub(crate) struct WorkspaceWriteGate {
+    held: Mutex<bool>,
+    available: Condvar,
+}
+
+pub(crate) struct WorkspaceWritePermit {
+    gate: Arc<WorkspaceWriteGate>,
 }
 
 pub(crate) enum WorkspaceRootReopen {
@@ -61,6 +74,10 @@ impl WorkspaceTool {
             root,
             root_reopen: WorkspaceRootReopen::AmbientPath(root_path),
             binding_id,
+            write_gate: Arc::new(WorkspaceWriteGate {
+                held: Mutex::new(false),
+                available: Condvar::new(),
+            }),
         })
     }
 
@@ -73,6 +90,7 @@ impl WorkspaceTool {
                     .map_err(|error| map_io_error(&error))?,
                 root_reopen: self.root_reopen.try_clone()?,
                 binding_id: self.binding_id.clone(),
+                write_gate: Arc::clone(&self.write_gate),
             });
         }
         let components = validate_relative_path(scope)?;
@@ -95,6 +113,7 @@ impl WorkspaceTool {
                 name: name.clone(),
             },
             binding_id: derived_workspace_binding_id(&self.binding_id, scope),
+            write_gate: Arc::clone(&self.write_gate),
         })
     }
 
@@ -114,6 +133,50 @@ impl WorkspaceTool {
 
     pub(crate) fn root_reopen_anchor(&self) -> Result<WorkspaceRootReopen, WorkspaceReadErrorKind> {
         self.root_reopen.try_clone()
+    }
+
+    pub(crate) fn acquire_write(&self) -> WorkspaceWritePermit {
+        WorkspaceWriteGate::acquire(Arc::clone(&self.write_gate))
+    }
+
+    pub(crate) async fn acquire_write_async(&self) -> WorkspaceWritePermit {
+        WorkspaceWriteGate::acquire_async(Arc::clone(&self.write_gate)).await
+    }
+}
+
+impl WorkspaceWriteGate {
+    fn acquire(gate: Arc<Self>) -> WorkspaceWritePermit {
+        let mut held = gate
+            .held
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *held {
+            held = gate
+                .available
+                .wait(held)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *held = true;
+        drop(held);
+        WorkspaceWritePermit { gate }
+    }
+
+    pub(crate) async fn acquire_async(gate: Arc<Self>) -> WorkspaceWritePermit {
+        tokio::task::spawn_blocking(move || Self::acquire(gate))
+            .await
+            .expect("workspace write gate task must complete")
+    }
+}
+
+impl Drop for WorkspaceWritePermit {
+    fn drop(&mut self) {
+        let mut held = self
+            .gate
+            .held
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *held = false;
+        self.gate.available.notify_one();
     }
 }
 
@@ -625,3 +688,7 @@ fn map_root_open_error(root: &Path, error_value: &std::io::Error) -> WorkspaceRe
         map_io_error(error_value)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/workspace_capability.rs"]
+mod tests;

@@ -37,12 +37,6 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     baseUrl: 'https://api.anthropic.com/v1',
     wireApi: 'anthropicMessages',
   },
-  {
-    providerFamily: 'gemini',
-    label: 'Gemini',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    wireApi: 'geminiGenerateContent',
-  },
 ];
 
 const INITIAL_CONNECTION: ModelConnectionValue = {

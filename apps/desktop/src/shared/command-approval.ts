@@ -25,6 +25,11 @@ export type CommandApprovalActionState =
 export type CommandApprovalViewModel = Readonly<{
   presentationId: string;
   description: string;
+  threadId: string;
+  turnId: string;
+  queueCount: number;
+  projectTitle: string;
+  conversationTitle: string;
   sourceAgent?: Readonly<{
     taskId: string;
     role: 'explorer' | 'worker' | 'auditor';
@@ -115,6 +120,11 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
     [
       'presentationId',
       'description',
+      'threadId',
+      'turnId',
+      'queueCount',
+      'projectTitle',
+      'conversationTitle',
       'localExpiresAtMs',
       'actionState',
     ],
@@ -124,6 +134,16 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
   value.presentationId.length > 0 &&
   typeof value.description === 'string' &&
   value.description.length > 0 &&
+  typeof value.threadId === 'string' &&
+  value.threadId.length > 0 &&
+  typeof value.turnId === 'string' &&
+  value.turnId.length > 0 &&
+  Number.isSafeInteger(value.queueCount) &&
+  (value.queueCount as number) >= 1 &&
+  typeof value.projectTitle === 'string' &&
+  value.projectTitle.length > 0 &&
+  typeof value.conversationTitle === 'string' &&
+  value.conversationTitle.length > 0 &&
   typeof value.localExpiresAtMs === 'number' &&
   Number.isSafeInteger(value.localExpiresAtMs) &&
   value.localExpiresAtMs >= 0 &&

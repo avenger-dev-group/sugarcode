@@ -18,9 +18,11 @@ where
         id: RequestId,
         params: Option<Value>,
     ) -> JsonRpcMessage {
-        if parse_params::<WorkspaceGitStatusParams>(params).is_err() {
-            return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None);
-        }
+        let params =
+            match parse_params::<WorkspaceGitStatusParams>(self.workspace_scoped_params(params)) {
+                Ok(params) => params,
+                Err(()) => return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None),
+            };
         let Some(workspace) = self.workspace.as_ref() else {
             return error(
                 Some(id),
@@ -29,6 +31,14 @@ where
                 None,
             );
         };
+        if workspace.binding_id() != params.workspace_id {
+            return error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            );
+        }
         let result = match workspace.git_status() {
             Ok(status) => WorkspaceGitStatusResponse::Ready {
                 revision: status.revision,
@@ -62,10 +72,11 @@ where
         id: RequestId,
         params: Option<Value>,
     ) -> JsonRpcMessage {
-        let params = match parse_params::<WorkspaceGitDiffParams>(params) {
-            Ok(params) => params,
-            Err(()) => return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None),
-        };
+        let params =
+            match parse_params::<WorkspaceGitDiffParams>(self.workspace_scoped_params(params)) {
+                Ok(params) => params,
+                Err(()) => return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None),
+            };
         let Some(workspace) = self.workspace.as_ref() else {
             return error(
                 Some(id),
@@ -74,6 +85,14 @@ where
                 None,
             );
         };
+        if workspace.binding_id() != params.workspace_id {
+            return error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            );
+        }
         let result = match workspace.git_diff(&GitDiffArguments {
             expected_revision: params.expected_revision,
             path: params.path,
@@ -122,7 +141,9 @@ where
         params: Option<Value>,
         stage: bool,
     ) -> JsonRpcMessage {
-        let params = match parse_params::<WorkspaceGitMutationParams>(params) {
+        let params = match parse_params::<WorkspaceGitMutationParams>(
+            self.workspace_scoped_params(params),
+        ) {
             Ok(params) => params,
             Err(()) => return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None),
         };
@@ -134,6 +155,14 @@ where
                 None,
             );
         };
+        if workspace.binding_id() != params.workspace_id {
+            return error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            );
+        }
         let arguments = GitMutationArguments {
             expected_revision: params.expected_revision,
             paths: params.paths,
@@ -160,10 +189,11 @@ where
         id: RequestId,
         params: Option<Value>,
     ) -> JsonRpcMessage {
-        let params = match parse_params::<WorkspaceGitCommitParams>(params) {
-            Ok(params) => params,
-            Err(()) => return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None),
-        };
+        let params =
+            match parse_params::<WorkspaceGitCommitParams>(self.workspace_scoped_params(params)) {
+                Ok(params) => params,
+                Err(()) => return error(Some(id), ERROR_INVALID_PARAMS, "Invalid params", None),
+            };
         let Some(workspace) = self.workspace.as_ref() else {
             return error(
                 Some(id),
@@ -172,6 +202,14 @@ where
                 None,
             );
         };
+        if workspace.binding_id() != params.workspace_id {
+            return error(
+                Some(id),
+                ERROR_WORKSPACE_UNAVAILABLE,
+                "Workspace unavailable",
+                None,
+            );
+        }
         let result = match workspace.git_commit(&GitCommitArguments {
             expected_revision: params.expected_revision,
             message: params.message,

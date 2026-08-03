@@ -159,9 +159,6 @@ pub async fn discover_model_config(
         ModelWireApi::AnthropicMessages => {
             sugarcode_model_provider::ModelDiscoveryProtocol::Anthropic
         }
-        ModelWireApi::GeminiGenerateContent => {
-            sugarcode_model_provider::ModelDiscoveryProtocol::Gemini
-        }
     };
     let models = sugarcode_model_provider::discover_models(
         connection.base_url(),
@@ -516,7 +513,6 @@ fn parse_provider_family(value: &str) -> Result<ModelProviderFamily, ModelConfig
     match value {
         "openai" => Ok(ModelProviderFamily::OpenAi),
         "anthropic" => Ok(ModelProviderFamily::Anthropic),
-        "gemini" => Ok(ModelProviderFamily::Gemini),
         _ => Err(ModelConfigCommandError::InvalidConfiguration),
     }
 }
@@ -526,7 +522,6 @@ fn parse_wire_api(value: &str) -> Result<ModelWireApi, ModelConfigCommandError> 
         "openaiResponses" => Ok(ModelWireApi::OpenAiResponses),
         "openaiChatCompletions" => Ok(ModelWireApi::OpenAiChatCompletions),
         "anthropicMessages" => Ok(ModelWireApi::AnthropicMessages),
-        "geminiGenerateContent" => Ok(ModelWireApi::GeminiGenerateContent),
         _ => Err(ModelConfigCommandError::InvalidConfiguration),
     }
 }

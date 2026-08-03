@@ -18,7 +18,13 @@
       "format": "uint32",
       "maximum": 100,
       "minimum": 1
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "required": [
+    "workspaceId"
+  ]
 }

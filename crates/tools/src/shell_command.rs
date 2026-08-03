@@ -338,6 +338,13 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
                 #[cfg(unix)]
                 workspace_root_identity: workspace_root.identity(),
             };
+            let _write_permit = if sandbox_policy
+                == sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1
+            {
+                Some(workspace_root.acquire_write().await)
+            } else {
+                None
+            };
             run_native(executable, request, workspace_root, cancellation).await
         })
     }

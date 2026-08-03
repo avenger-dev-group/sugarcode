@@ -2,6 +2,7 @@ use super::*;
 use crate::ModelAssetRef;
 use crate::ModelToolDefinition;
 use crate::ModelToolResult;
+use crate::anthropic_messages::requests::anthropic_request;
 
 fn tool_names() -> BTreeMap<String, String> {
     BTreeMap::from([("workspace_read".to_owned(), "workspace/read".to_owned())])
@@ -67,7 +68,7 @@ fn asset(media_type: &str, original_name: &str, bytes: &[u8]) -> ModelAssetRef {
 }
 
 #[test]
-fn native_wire_apis_encode_image_and_pdf_parts() {
+fn retained_wire_apis_encode_image_and_pdf_parts() {
     let request = continuation_request(vec![ModelMessage {
         role: ModelRole::User,
         content: vec![
@@ -92,17 +93,6 @@ fn native_wire_apis_encode_image_and_pdf_parts() {
     assert_eq!(
         anthropic["messages"][0]["content"][2]["source"]["data"],
         "cGRm"
-    );
-
-    let gemini =
-        gemini_request(&request, ModelStrictToolsMode::Auto, 1024).expect("Gemini request");
-    assert_eq!(
-        gemini["contents"][0]["parts"][1]["inlineData"]["mimeType"],
-        "image/png"
-    );
-    assert_eq!(
-        gemini["contents"][0]["parts"][2]["inlineData"]["mimeType"],
-        "application/pdf"
     );
 }
 
@@ -188,122 +178,6 @@ fn provider_managed_responses_uses_previous_response_id_and_only_sends_tail() {
     assert_eq!(body["input"][0]["type"], "function_call_output");
     assert!(!body.to_string().contains("opaque"));
     assert!(!body.to_string().contains("original task"));
-}
-
-#[test]
-fn anthropic_replays_thinking_signatures_and_block_order() {
-    let raw_blocks = json!([
-        {
-            "type": "thinking",
-            "thinking": "private chain",
-            "signature": "opaque-signature"
-        },
-        {"type": "redacted_thinking", "data": "opaque-redacted"},
-        {
-            "type": "tool_use",
-            "id": "call_1",
-            "name": "workspace_read",
-            "input": {"path": "README.md"}
-        }
-    ]);
-    let request = continuation_request(vec![
-        continuation_message(ProviderWireApi::AnthropicMessages, raw_blocks.clone()),
-        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
-            "call_1".to_owned(),
-            "contents".to_owned(),
-        )]),
-    ]);
-
-    let body = anthropic_request(&request, ModelStrictToolsMode::Auto, 1024).expect("request");
-    assert_eq!(body["messages"][0]["role"], "assistant");
-    assert_eq!(body["messages"][0]["content"], raw_blocks);
-    assert_eq!(body["messages"][1]["content"][0]["tool_use_id"], "call_1");
-}
-
-#[test]
-fn anthropic_coalesces_portable_tool_batches_and_consecutive_roles() {
-    let request = continuation_request(vec![
-        ModelMessage::user_text("inspect".to_owned()),
-        ModelMessage::assistant_text(ModelTextPhase::Commentary, "checking".to_owned()),
-        ModelMessage::tool_calls(vec![ModelToolCall {
-            id: "call_1".to_owned(),
-            name: "workspace_read".to_owned(),
-            arguments: json!({"path": "a.md"}),
-        }]),
-        ModelMessage::tool_calls(vec![ModelToolCall {
-            id: "call_2".to_owned(),
-            name: "workspace_read".to_owned(),
-            arguments: json!({"path": "b.md"}),
-        }]),
-        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
-            "call_1".to_owned(),
-            "a".to_owned(),
-        )]),
-        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
-            "call_2".to_owned(),
-            "b".to_owned(),
-        )]),
-        ModelMessage::assistant_text(ModelTextPhase::Final, "done".to_owned()),
-        ModelMessage::user_text("retry".to_owned()),
-        ModelMessage::user_text("continue".to_owned()),
-    ]);
-
-    let body = anthropic_request(&request, ModelStrictToolsMode::Auto, 1024).expect("request");
-    let messages = body["messages"].as_array().expect("messages");
-    assert_eq!(messages.len(), 5);
-    assert_eq!(messages[1]["role"], "assistant");
-    assert_eq!(
-        messages[1]["content"]
-            .as_array()
-            .expect("assistant content")
-            .iter()
-            .map(|block| block["type"].as_str().expect("block type"))
-            .collect::<Vec<_>>(),
-        ["text", "tool_use", "tool_use"]
-    );
-    assert_eq!(messages[2]["role"], "user");
-    assert_eq!(
-        messages[2]["content"]
-            .as_array()
-            .expect("tool result content")
-            .iter()
-            .map(|block| block["tool_use_id"].as_str().expect("tool use id"))
-            .collect::<Vec<_>>(),
-        ["call_1", "call_2"]
-    );
-    assert_eq!(messages[4]["role"], "user");
-    assert_eq!(messages[4]["content"].as_array().map(Vec::len), Some(2));
-}
-
-#[test]
-fn gemini_replays_thought_signatures_and_groups_parallel_function_responses() {
-    let raw_content = json!({
-        "role": "model",
-        "parts": [
-            {"text": "private thought", "thought": true, "thoughtSignature": "sig-1"},
-            {"functionCall": {"id": "call_1", "name": "workspace_read", "args": {"path": "a.md"}}},
-            {"functionCall": {"id": "call_2", "name": "workspace_read", "args": {"path": "b.md"}}}
-        ]
-    });
-    let request = continuation_request(vec![
-        continuation_message(ProviderWireApi::GeminiGenerateContent, raw_content.clone()),
-        ModelMessage::tool_results(vec![
-            ModelToolResult::from_serialized("call_1".to_owned(), "a".to_owned()),
-            ModelToolResult::from_serialized("call_2".to_owned(), "b".to_owned()),
-        ]),
-    ]);
-
-    let body = gemini_request(&request, ModelStrictToolsMode::Auto, 1024).expect("request");
-    assert_eq!(body["contents"][0], raw_content);
-    assert_eq!(body["contents"][1]["role"], "user");
-    let responses = body["contents"][1]["parts"]
-        .as_array()
-        .expect("parallel responses");
-    assert_eq!(responses.len(), 2);
-    assert_eq!(responses[0]["functionResponse"]["id"], "call_1");
-    assert_eq!(responses[0]["functionResponse"]["name"], "workspace_read");
-    assert_eq!(responses[1]["functionResponse"]["id"], "call_2");
-    assert_eq!(responses[1]["functionResponse"]["name"], "workspace_read");
 }
 
 #[test]
@@ -1003,225 +877,8 @@ fn openai_completed_response_keeps_exact_replay_only_for_opaque_reasoning() {
     assert!(portable.provider_context.is_none());
 }
 
-#[tokio::test]
-async fn anthropic_sse_assembles_text_tool_arguments_and_usage() {
-    let (sender, mut receiver) = mpsc::channel(8);
-    let mut state = AnthropicStreamState::default();
-    state
-        .consume(
-            "message_start",
-            json!({"message": {"usage": {"input_tokens": 10}}}),
-            &sender,
-        )
-        .await
-        .expect("message start");
-    state
-        .consume(
-            "content_block_start",
-            json!({"index": 0, "content_block": {"type": "text", "text": ""}}),
-            &sender,
-        )
-        .await
-        .expect("text start");
-    state
-        .consume(
-            "content_block_delta",
-            json!({"index": 0, "delta": {"type": "text_delta", "text": "Checking."}}),
-            &sender,
-        )
-        .await
-        .expect("text delta");
-    state
-        .consume(
-            "content_block_start",
-            json!({"index": 1, "content_block": {
-                "type": "tool_use",
-                "id": "call_1",
-                "name": "workspace_read",
-                "input": {}
-            }}),
-            &sender,
-        )
-        .await
-        .expect("tool start");
-    state
-        .consume(
-            "content_block_delta",
-            json!({"index": 1, "delta": {
-                "type": "input_json_delta",
-                "partial_json": "{\"path\":\"README.md\"}"
-            }}),
-            &sender,
-        )
-        .await
-        .expect("tool delta");
-    state
-        .consume(
-            "message_delta",
-            json!({"usage": {"output_tokens": 7}}),
-            &sender,
-        )
-        .await
-        .expect("usage");
-    assert!(matches!(
-        receiver.recv().await,
-        Some(Ok(ModelEvent::OutputTextDelta { delta, .. })) if delta == "Checking."
-    ));
-    let response = state.response(&tool_names()).expect("response");
-    assert!(matches!(
-        &response.output[0].kind,
-        ModelOutputItemKind::AssistantText {
-            phase: ModelTextPhase::Commentary,
-            text,
-        } if text == "Checking."
-    ));
-    assert!(matches!(
-        &response.output[1].kind,
-        ModelOutputItemKind::ToolCall(call)
-            if call.name == "workspace/read"
-                && call.arguments == json!({"path": "README.md"})
-    ));
-    assert_eq!(
-        response.usage.and_then(|usage| usage.total_tokens),
-        Some(17)
-    );
-}
-
-#[tokio::test]
-async fn gemini_sse_accumulates_chunks_and_emits_deltas() {
-    let (sender, mut receiver) = mpsc::channel(8);
-    let mut state = GeminiStreamState::default();
-    state
-        .consume(
-            json!({"candidates": [{"content": {"parts": [{"text": "Hello "}]}}]}),
-            &sender,
-            &tool_names(),
-        )
-        .await
-        .expect("first chunk");
-    state
-        .consume(
-            json!({
-                "candidates": [{"content": {"parts": [{
-                    "functionCall": {
-                        "id": "call_1",
-                        "name": "workspace_read",
-                        "args": {"path": "README.md"}
-                    }
-                }]}}],
-                "usageMetadata": {
-                    "promptTokenCount": 8,
-                    "candidatesTokenCount": 4,
-                    "totalTokenCount": 12
-                }
-            }),
-            &sender,
-            &tool_names(),
-        )
-        .await
-        .expect("second chunk");
-    assert!(matches!(
-        receiver.recv().await,
-        Some(Ok(ModelEvent::OutputTextDelta { delta, .. })) if delta == "Hello "
-    ));
-    let response = state.response().expect("response");
-    assert!(matches!(
-        &response.output[0].kind,
-        ModelOutputItemKind::AssistantText {
-            phase: ModelTextPhase::Commentary,
-            text,
-        } if text == "Hello "
-    ));
-    assert!(matches!(
-        &response.output[1].kind,
-        ModelOutputItemKind::ToolCall(call) if call.name == "workspace/read"
-    ));
-    assert_eq!(
-        response.usage.and_then(|usage| usage.total_tokens),
-        Some(12)
-    );
-}
-
-#[tokio::test]
-async fn gemini_multiple_tool_calls_are_normalized_when_parallel_is_disabled() {
-    let (sender, _receiver) = mpsc::channel(8);
-    let mut state = GeminiStreamState::new(false);
-    state
-        .consume(
-            json!({
-                "candidates": [{"content": {"parts": [
-                    {"functionCall": {
-                        "id": "call_1",
-                        "name": "workspace_read",
-                        "args": {"path": "README.md"}
-                    }},
-                    {"functionCall": {
-                        "id": "call_2",
-                        "name": "workspace_read",
-                        "args": {"path": "Cargo.toml"}
-                    }}
-                ]}}]
-            }),
-            &sender,
-            &tool_names(),
-        )
-        .await
-        .expect("tool batch");
-
-    let response = state.response().expect("normalized response");
-    assert_eq!(
-        response
-            .output
-            .iter()
-            .filter(|item| matches!(item.kind, ModelOutputItemKind::ToolCall(_)))
-            .count(),
-        2
-    );
-}
-
-#[tokio::test]
-async fn gemini_sse_merges_incremental_text_chunks_into_one_final_item() {
-    let (sender, mut receiver) = mpsc::channel(8);
-    let mut state = GeminiStreamState::default();
-    state
-        .consume(
-            json!({"candidates": [{"content": {"parts": [{"text": "fixture"}]}}]}),
-            &sender,
-            &tool_names(),
-        )
-        .await
-        .expect("first chunk");
-    state
-        .consume(
-            json!({"candidates": [{"content": {"parts": [{"text": " answer"}]}}]}),
-            &sender,
-            &tool_names(),
-        )
-        .await
-        .expect("second chunk");
-
-    assert!(matches!(
-        receiver.recv().await,
-        Some(Ok(ModelEvent::OutputTextDelta { delta, .. })) if delta == "fixture"
-    ));
-    assert!(matches!(
-        receiver.recv().await,
-        Some(Ok(ModelEvent::OutputTextDelta { delta, .. })) if delta == " answer"
-    ));
-    let response = state.response().expect("response");
-    assert_eq!(response.output.len(), 1);
-    assert!(matches!(
-        &response.output[0].kind,
-        ModelOutputItemKind::AssistantText {
-            phase: ModelTextPhase::Final,
-            text,
-        } if text == "fixture answer"
-    ));
-    assert_eq!(response.terminal.finish_reason, ModelFinishReason::Stop);
-}
-
 #[test]
-fn native_requests_enable_streaming_and_gemini_uses_sse_endpoint() {
+fn retained_requests_enable_streaming() {
     let request = ModelRequest {
         model: "model/id".to_owned(),
         instructions: Vec::new(),
@@ -1235,14 +892,5 @@ fn native_requests_enable_streaming_and_gemini_uses_sse_endpoint() {
     assert_eq!(
         anthropic_request(&request, ModelStrictToolsMode::Auto, 4096).expect("Anthropic request")["stream"],
         true
-    );
-    assert_eq!(
-        gemini_stream_endpoint(
-            &Url::parse("https://generativelanguage.googleapis.com/v1beta").expect("base URL"),
-            &request.model,
-        )
-        .expect("stream URL")
-        .as_str(),
-        "https://generativelanguage.googleapis.com/v1beta/models/model%2Fid:streamGenerateContent?alt=sse"
     );
 }

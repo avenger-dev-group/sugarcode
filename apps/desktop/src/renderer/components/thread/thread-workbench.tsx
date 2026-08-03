@@ -4,8 +4,7 @@ import {
   FileText,
   Image as ImageIcon,
   LoaderCircle,
-  PanelLeft,
-  PanelRight,
+  MessageSquare,
   Paperclip,
   Square,
   X,
@@ -20,6 +19,16 @@ import { WorkspaceReadActivity } from '@/renderer/components/agent/workspace-rea
 import { WorkspaceListActivity } from '@/renderer/components/agent/workspace-list-activity';
 import { WorkspaceSearchActivity } from '@/renderer/components/agent/workspace-search-activity';
 import { Button } from '@/renderer/components/ui/button';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/renderer/components/ui/alert-dialog';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import {
   Select,
@@ -32,6 +41,7 @@ import { Textarea } from '@/renderer/components/ui/textarea';
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline';
 import { OrchestrationActivity } from '@/renderer/components/orchestration/orchestration-activity';
+import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
 
 import type {
   CompactToolActivity,
@@ -275,50 +285,13 @@ const TranscriptTurnView = ({ turn, progress, onStop }: TranscriptTurnProps) => 
         </div>
       ) : null}
       {turn.failure ? (
-        <div
-          className="ml-10 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3"
+        <p
+          className="flex items-center gap-3 px-4 text-center text-sm font-normal leading-normal text-tertiary before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border"
           role="alert"
-          aria-label="Turn failure details"
+          aria-label="Turn failed"
         >
-          <p className="text-sm font-medium text-destructive">
-            {turn.failure.summary}
-          </p>
-          <p className="mt-1 text-sm font-normal leading-normal text-secondary">
-            {turn.failure.guidance}
-          </p>
-          <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 font-mono text-[10px] text-tertiary">
-            {turn.model ? (
-              <>
-                <span className="uppercase tracking-[0.14em]">Model</span>
-                <span className="min-w-0 break-all tracking-[0.08em]">
-                  {turn.model.displayName} · {turn.model.wireApi}
-                </span>
-                <span aria-hidden="true">·</span>
-              </>
-            ) : null}
-            <span className="uppercase tracking-[0.14em]">Failure kind</span>
-            <span
-              aria-label={`Exact Turn failure kind ${turn.failure.kind}`}
-              className="min-w-0 break-all tracking-[0.08em]"
-            >
-              {turn.failure.kind}
-            </span>
-            {turn.failure.protocol ? (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="uppercase tracking-[0.14em]">
-                  Protocol {turn.failure.protocol.code} · {turn.failure.protocol.fingerprint}
-                </span>
-              </>
-            ) : null}
-            <span aria-hidden="true">·</span>
-            <span className="uppercase tracking-[0.14em]">
-              {turn.failure.retryable
-                ? 'Retryable failure'
-                : 'Not automatically retryable'}
-            </span>
-          </div>
-        </div>
+          {turn.failure.summary}
+        </p>
       ) : turn.terminalLabel ? (
         <p
           className={`pl-10 font-mono text-[10px] uppercase tracking-[0.14em] ${
@@ -341,12 +314,6 @@ export const ThreadWorkbenchView = ({
   contextRailResize,
   navigationFooter,
   contextRail,
-  contextRailOpen = false,
-  setContextRailOpen,
-  navigatorVisible = true,
-  setNavigatorVisible,
-  contextRailVisible = true,
-  setContextRailVisible,
   permissionControl,
 }: ThreadWorkbenchViewProps) => {
   const {
@@ -360,20 +327,38 @@ export const ThreadWorkbenchView = ({
     endPointerScroll,
   } = useTranscriptFollow(store.thread);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const workspace = useWorkspaceNavigationStore();
+  const conversationTitle = store.thread.threadIdentity
+    ? store.navigator.threadTitles[store.thread.threadIdentity] ?? '新对话'
+    : '新对话';
+  const conversationSubtitle =
+    workspace.state.kind === 'chat'
+      ? '独立 Chat'
+      : workspace.state.name ?? workspace.state.projectName ?? '项目对话';
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+    <>
+      <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+      <nav
+        aria-label="Activity"
+        className="window-drag-region flex w-11 shrink-0 flex-col items-center gap-1 border-r bg-surface/35 pt-10"
+      >
+        <span
+          className="grid size-7 place-items-center rounded-md bg-secondary text-secondary-foreground"
+          aria-label="当前区域：对话"
+          aria-current="page"
+          title="对话"
+        >
+          <MessageSquare className="size-3.5" aria-hidden="true" />
+        </span>
+      </nav>
       <aside
-        className={
-          navigatorVisible
-            ? 'hidden min-h-0 shrink-0 md:block'
-            : 'hidden'
-        }
-        style={{ width: navigatorResize?.width ?? 248 }}
+        className="hidden min-h-0 shrink-0 md:block"
+        style={{ width: navigatorResize?.width ?? 286 }}
       >
         <ThreadNavigator store={store} footer={navigationFooter} />
       </aside>
-      {navigatorResize && navigatorVisible ? (
+      {navigatorResize ? (
         <div
           className={`panel-resizer hidden md:block ${
             navigatorResize.dragging ? 'panel-resizer--active' : ''
@@ -389,84 +374,20 @@ export const ThreadWorkbenchView = ({
           onKeyDown={navigatorResize.onKeyDown}
         />
       ) : null}
-      {store.navigatorOpen ? (
-        <div className="absolute inset-x-0 top-0 z-20 h-[45vh] min-h-56 border-b shadow-xl md:hidden">
-          <ThreadNavigator
-            id="thread-navigator"
-            store={store}
-            footer={navigationFooter}
-          />
-        </div>
-      ) : null}
       <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        <Button
-          type="button"
-          size="icon"
-          variant="outline"
-          className="absolute left-3 top-3 z-10 bg-background/90 shadow-sm md:hidden"
-          aria-label={
-            store.navigatorOpen
-              ? 'Hide Thread navigator'
-              : 'Show Thread navigator'
-          }
-          aria-controls="thread-navigator"
-          aria-expanded={store.navigatorOpen}
-          onClick={() => store.setNavigatorOpen(!store.navigatorOpen)}
-        >
-          <PanelLeft aria-hidden="true" />
-        </Button>
-        <Button
-          type="button"
-          size="icon"
-          variant="outline"
-          className="absolute left-3 top-3 z-10 hidden bg-background/90 shadow-sm md:inline-flex"
-          aria-label={
-            navigatorVisible
-              ? 'Collapse Thread navigator'
-              : 'Expand Thread navigator'
-          }
-          aria-pressed={navigatorVisible}
-          onClick={() => setNavigatorVisible?.(!navigatorVisible)}
-        >
-          <PanelLeft aria-hidden="true" />
-        </Button>
-        {contextRail ? (
-          <>
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              className="absolute right-3 top-3 z-10 bg-background/90 shadow-sm xl:hidden"
-              aria-label={
-                contextRailOpen
-                  ? 'Hide workspace tools'
-                  : 'Show workspace tools'
-              }
-              aria-controls="workspace-tools"
-              aria-expanded={contextRailOpen}
-              onClick={() => setContextRailOpen?.(!contextRailOpen)}
+        <header className="window-drag-region flex h-[52px] shrink-0 items-center border-b px-5">
+          <div className="min-w-0">
+            <p
+              className="truncate text-sm font-semibold tracking-[-0.015em]"
+              title={conversationTitle}
             >
-              <PanelRight aria-hidden="true" />
-            </Button>
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              className="absolute right-3 top-3 z-10 hidden bg-background/90 shadow-sm xl:inline-flex"
-              aria-label={
-                contextRailVisible
-                  ? 'Collapse workspace tools'
-                  : 'Expand workspace tools'
-              }
-              aria-pressed={contextRailVisible}
-              onClick={() =>
-                setContextRailVisible?.(!contextRailVisible)
-              }
-            >
-              <PanelRight aria-hidden="true" />
-            </Button>
-          </>
-        ) : null}
+              {conversationTitle}
+            </p>
+            <p className="truncate text-[11px] font-normal text-tertiary">
+              {conversationSubtitle}
+            </p>
+          </div>
+        </header>
         <ScrollArea
           data-layout="conversation-scroll"
           className="relative min-h-0 min-w-0 flex-1"
@@ -484,7 +405,7 @@ export const ThreadWorkbenchView = ({
         >
           <div
             ref={transcriptContent}
-            className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-8 pt-16 sm:px-10 md:pt-10"
+            className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-8 pt-8 sm:px-10"
           >
             {store.thread.isEmpty ? (
               <div className="my-auto py-16 text-center">
@@ -663,7 +584,7 @@ export const ThreadWorkbenchView = ({
                       <Paperclip className="size-4" aria-hidden="true" />
                     </Button>
                     <Select
-                      value={store.selectedModelProfileId || undefined}
+                      value={store.selectedModelProfileId}
                       onValueChange={store.setSelectedModelProfileId}
                       disabled={
                         store.modelSelectionDisabled ||
@@ -754,9 +675,9 @@ export const ThreadWorkbenchView = ({
       </section>
       {contextRail ? (
         <>
-          {contextRailResize && contextRailVisible ? (
+          {contextRailResize ? (
             <div
-              className={`panel-resizer hidden xl:block ${
+              className={`panel-resizer hidden min-[1100px]:block ${
                 contextRailResize.dragging ? 'panel-resizer--active' : ''
               }`}
               role="separator"
@@ -772,23 +693,68 @@ export const ThreadWorkbenchView = ({
           ) : null}
           <aside
             id="workspace-tools"
-            className={`fixed inset-y-0 right-0 z-30 min-h-0 max-w-[92vw] overflow-hidden border-l bg-background shadow-[-18px_0_50px_var(--shadow-soft)] transition-transform duration-150 motion-reduce:transition-none xl:static xl:z-auto xl:visible xl:shrink-0 xl:translate-x-0 xl:border-l-0 xl:shadow-none ${
-              contextRailOpen
-                ? 'visible translate-x-0'
-                : 'invisible translate-x-full'
-            } ${
-              contextRailVisible
-                ? 'xl:visible xl:block xl:translate-x-0'
-                : 'xl:hidden'
-            }`}
-            style={{ width: contextRailResize?.width ?? 352 }}
+            className="hidden min-h-0 shrink-0 overflow-hidden bg-background min-[1100px]:block min-[1100px]:[max-width:min(60vw,calc(100vw-44px-240px-480px))]"
+            style={{
+              width: contextRailResize?.width ?? 760,
+            }}
             aria-label="Workspace tools"
           >
             {contextRail}
           </aside>
         </>
       ) : null}
-    </div>
+      </div>
+      <AlertDialog
+        open={store.modelSwitchConfirmation !== null}
+        onOpenChange={(open) => {
+          if (!open) store.cancelModelSwitch();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>切换下一轮使用的模型？</AlertDialogTitle>
+            <AlertDialogDescription>
+              此对话已有持久化 Turn。切换只影响下一轮，不会改写已经完成或正在运行的内容。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {store.modelSwitchConfirmation ? (
+            <div className="grid gap-2 rounded-xl border bg-surface/50 p-3 text-sm">
+              <div className="grid grid-cols-[4rem_1fr] gap-2">
+                <span className="text-tertiary">来源</span>
+                <span className="min-w-0 break-words">
+                  {store.modelSwitchConfirmation.sourceName} ·{' '}
+                  <span className="font-mono text-xs text-secondary">
+                    {store.modelSwitchConfirmation.sourceWireApi}
+                  </span>
+                </span>
+              </div>
+              <div className="grid grid-cols-[4rem_1fr] gap-2">
+                <span className="text-tertiary">目标</span>
+                <span className="min-w-0 break-words">
+                  {store.modelSwitchConfirmation.targetName} ·{' '}
+                  <span className="font-mono text-xs text-secondary">
+                    {store.modelSwitchConfirmation.targetWireApi}
+                  </span>
+                </span>
+              </div>
+              {store.modelSwitchConfirmation.protocolChanges ? (
+                <p className="mt-1 text-xs leading-5 text-secondary">
+                  Wire API 将发生变化；SugarCode 会把可移植历史转换到目标协议。
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={store.cancelModelSwitch}>
+              取消
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={store.confirmModelSwitch}>
+              确认切换
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 };
 

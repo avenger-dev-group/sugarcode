@@ -73,8 +73,6 @@ fn selection_for_profile(profile_id: &str) -> (&'static str, &'static str) {
         ("openai", "openaiChatCompletions")
     } else if profile_id.starts_with("anthropic_") {
         ("anthropic", "anthropicMessages")
-    } else if profile_id.starts_with("gemini_") {
-        ("gemini", "geminiGenerateContent")
     } else {
         ("openai", "openaiResponses")
     }
@@ -85,8 +83,6 @@ fn provider_wire_for_model(model: &str) -> ProviderWireApi {
         ProviderWireApi::OpenAiChatCompletions
     } else if model.contains("anthropic_") {
         ProviderWireApi::AnthropicMessages
-    } else if model.contains("gemini_") {
-        ProviderWireApi::GeminiGenerateContent
     } else {
         ProviderWireApi::OpenAiResponses
     }
@@ -250,12 +246,7 @@ async fn switching_models_and_wires_injects_one_portable_transition_instruction(
 
 #[tokio::test]
 async fn every_wire_pair_switches_through_portable_history_only() {
-    let profiles = [
-        "responses_matrix",
-        "chat_matrix",
-        "anthropic_matrix",
-        "gemini_matrix",
-    ];
+    let profiles = ["responses_matrix", "chat_matrix", "anthropic_matrix"];
 
     for source in profiles {
         for target in profiles {

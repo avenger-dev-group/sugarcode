@@ -24,10 +24,8 @@ const OrchestrationContext = createContext<OrchestrationStore | null>(null);
 
 export const OrchestrationStoreProvider = ({
   children,
-  onTaskSelected,
 }: Readonly<{
   children: ReactNode;
-  onTaskSelected: () => void;
 }>) => {
   const [activeTab, setActiveTab] = useState<ContextRailTab>('workspace');
   const [selectedTask, setSelectedTask] =
@@ -37,9 +35,8 @@ export const OrchestrationStoreProvider = ({
     (task: AgentTaskViewModel) => {
       setSelectedTask(task);
       setActiveTab('agent');
-      onTaskSelected();
     },
-    [onTaskSelected],
+    [],
   );
 
   const refreshTask = useCallback((task: AgentTaskViewModel) => {

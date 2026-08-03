@@ -49,6 +49,7 @@ pub async fn run(request: TuiRequest) -> io::Result<()> {
         allow_command_workspace_write: request.allow_command_workspace_write,
         mcp_servers: request.mcp_servers,
         command_supervisor_executable: std::env::current_exe()?,
+        repository: None,
     })
     .await?;
     let AgentSurfaceRuntimeParts {

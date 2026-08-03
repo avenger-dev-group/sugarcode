@@ -238,6 +238,42 @@ where
         self.state
     }
 
+    pub(crate) fn workspace_id(&self) -> Option<&str> {
+        self.workspace
+            .as_ref()
+            .map(|workspace| workspace.binding_id())
+    }
+
+    pub(crate) fn contains_thread_id(&self, thread_id: &ThreadId) -> bool {
+        self.agent.contains_thread(thread_id)
+    }
+
+    pub(crate) fn has_pending_approvals(&self) -> bool {
+        !self.pending_approvals.is_empty()
+    }
+
+    pub(in crate::session) fn workspace_scoped_params(
+        &self,
+        params: Option<Value>,
+    ) -> Option<Value> {
+        let mut params = match params {
+            Some(Value::Object(params)) => params,
+            None => serde_json::Map::new(),
+            Some(_) => return None,
+        };
+        params
+            .entry("workspaceId")
+            .or_insert_with(|| Value::String(self.workspace_id().unwrap_or("unbound").to_owned()));
+        Some(Value::Object(params))
+    }
+
+    pub(in crate::session) fn accepts_workspace_id(&self, workspace_id: &str) -> bool {
+        self.workspace_id()
+            .map_or(workspace_id == "unbound", |expected| {
+                expected == workspace_id
+            })
+    }
+
     pub fn process_line(&mut self, line: &str) -> Vec<JsonRpcMessage> {
         let value = match serde_json::from_str::<Value>(line) {
             Ok(value) => value,
@@ -831,7 +867,7 @@ where
     })
 }
 
-fn parse_request_id(value: Option<&Value>) -> Option<RequestId> {
+pub(crate) fn parse_request_id(value: Option<&Value>) -> Option<RequestId> {
     match value? {
         Value::String(value) => Some(RequestId::String(value.clone())),
         Value::Number(value) => value.as_i64().map(RequestId::Integer),
@@ -847,7 +883,12 @@ fn params_are_empty(value: Option<&Value>) -> bool {
     }
 }
 
-fn error(id: Option<RequestId>, code: i32, message: &str, data: Option<Value>) -> JsonRpcMessage {
+pub(crate) fn error(
+    id: Option<RequestId>,
+    code: i32,
+    message: &str,
+    data: Option<Value>,
+) -> JsonRpcMessage {
     JsonRpcMessage::Error(JsonRpcError {
         jsonrpc: JsonRpcVersion::V2,
         id,

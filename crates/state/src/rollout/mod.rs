@@ -4,6 +4,8 @@ mod repository;
 
 pub(crate) use replay::parse_canonical_id;
 pub use repository::RolloutRepository;
+pub use repository::RolloutRepositoryStore;
+pub use repository::WorkspaceRolloutRepository;
 
 use std::error::Error;
 use std::fmt;

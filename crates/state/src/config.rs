@@ -36,7 +36,6 @@ pub const MAX_MCP_ARGV_BYTES: usize = 32 * 1024;
 pub enum ModelProviderFamily {
     OpenAi,
     Anthropic,
-    Gemini,
 }
 
 impl ModelProviderFamily {
@@ -44,7 +43,6 @@ impl ModelProviderFamily {
         match self {
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
-            Self::Gemini => "gemini",
         }
     }
 }
@@ -54,7 +52,6 @@ pub enum ModelWireApi {
     OpenAiResponses,
     OpenAiChatCompletions,
     AnthropicMessages,
-    GeminiGenerateContent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +75,6 @@ impl ModelWireApi {
             Self::OpenAiResponses => "openaiResponses",
             Self::OpenAiChatCompletions => "openaiChatCompletions",
             Self::AnthropicMessages => "anthropicMessages",
-            Self::GeminiGenerateContent => "geminiGenerateContent",
         }
     }
 }
@@ -1221,7 +1217,6 @@ fn parse_model_connection(
     let provider_family = match required_model_string(table, "provider_family", contents, path)? {
         "openai" => ModelProviderFamily::OpenAi,
         "anthropic" => ModelProviderFamily::Anthropic,
-        "gemini" => ModelProviderFamily::Gemini,
         _ => {
             return Err(invalid_model_field(
                 path,
@@ -1403,7 +1398,6 @@ fn parse_wire_api(value: &str) -> Result<ModelWireApi, &'static str> {
         "openaiResponses" => Ok(ModelWireApi::OpenAiResponses),
         "openaiChatCompletions" => Ok(ModelWireApi::OpenAiChatCompletions),
         "anthropicMessages" => Ok(ModelWireApi::AnthropicMessages),
-        "geminiGenerateContent" => Ok(ModelWireApi::GeminiGenerateContent),
         _ => Err("unsupportedWireApi"),
     }
 }
@@ -1840,8 +1834,7 @@ fn validate_wire_api(
             ModelProviderFamily::OpenAi,
             ModelWireApi::OpenAiResponses | ModelWireApi::OpenAiChatCompletions,
         )
-        | (ModelProviderFamily::Anthropic, ModelWireApi::AnthropicMessages)
-        | (ModelProviderFamily::Gemini, ModelWireApi::GeminiGenerateContent) => Ok(()),
+        | (ModelProviderFamily::Anthropic, ModelWireApi::AnthropicMessages) => Ok(()),
         _ => Err("wireApiProviderMismatch"),
     }
 }

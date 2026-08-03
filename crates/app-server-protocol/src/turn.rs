@@ -117,7 +117,6 @@ pub struct ToolSchemaError {
 pub enum ModelProviderFamily {
     Openai,
     Anthropic,
-    Gemini,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
@@ -127,7 +126,6 @@ pub enum ModelWireApi {
     OpenaiResponses,
     OpenaiChatCompletions,
     AnthropicMessages,
-    GeminiGenerateContent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

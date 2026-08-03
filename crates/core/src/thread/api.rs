@@ -14,10 +14,7 @@ impl Core {
         request_id: CoreRequestId,
         origin: Option<DurableThreadOrigin>,
     ) -> Result<CoreEvent, CoreError> {
-        let sequence = self
-            .last_thread_sequence
-            .checked_add(1)
-            .ok_or(CoreError::ThreadIdExhausted)?;
+        let sequence = self.reserve_ids(1, 0, 0)?.thread;
         let thread_id = ThreadId::new(format!("thr_{sequence:016}"));
         let thread = Thread {
             id: thread_id.clone(),
@@ -198,16 +195,23 @@ impl CoreApi for Core {
             return Err(CoreError::ThreadNotFound(thread_id.clone()));
         }
 
-        let thread_sequence = self
-            .last_thread_sequence
-            .checked_add(1)
-            .ok_or(CoreError::ThreadIdExhausted)?;
-        let mut turn_sequence = self.last_turn_sequence;
-        let mut item_sequence = self.last_item_sequence;
         let completed_turns = source
             .turns
             .iter()
-            .filter(|turn| turn.status == DurableTurnStatus::Completed);
+            .filter(|turn| turn.status == DurableTurnStatus::Completed)
+            .collect::<Vec<_>>();
+        let turn_count =
+            u64::try_from(completed_turns.len()).map_err(|_| CoreError::TurnIdExhausted)?;
+        let item_count = completed_turns.iter().try_fold(0u64, |count, turn| {
+            u64::try_from(turn.items.len())
+                .ok()
+                .and_then(|items| count.checked_add(items))
+                .ok_or(CoreError::ItemIdExhausted)
+        })?;
+        let reserved = self.reserve_ids(1, turn_count, item_count)?;
+        let thread_sequence = reserved.thread;
+        let mut turn_sequence = reserved.turn - turn_count;
+        let mut item_sequence = reserved.item - item_count;
         let mut turns = Vec::new();
         let mut remapped_turn_ids = BTreeMap::new();
         for source_turn in completed_turns {
@@ -594,14 +598,9 @@ impl CoreApi for Core {
             });
         }
 
-        let turn_sequence = self
-            .last_turn_sequence
-            .checked_add(1)
-            .ok_or(CoreError::TurnIdExhausted)?;
-        let item_sequence = self
-            .last_item_sequence
-            .checked_add(1)
-            .ok_or(CoreError::ItemIdExhausted)?;
+        let reserved = self.reserve_ids(0, 1, 1)?;
+        let turn_sequence = reserved.turn;
+        let item_sequence = reserved.item;
         let turn_id = TurnId::new(format!("turn_{turn_sequence:016}"));
         let item_id = ItemId::new(format!("item_{item_sequence:016}"));
 

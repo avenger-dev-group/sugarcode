@@ -14,10 +14,14 @@
     },
     "message": {
       "type": "string"
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "required": [
+    "workspaceId",
     "expectedRevision",
     "message",
     "authorName",

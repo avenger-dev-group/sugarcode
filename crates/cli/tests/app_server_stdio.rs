@@ -169,6 +169,107 @@ fn initialization_failures_match_golden_trace() {
 }
 
 #[test]
+fn multi_workspace_app_server_opens_and_routes_independent_contexts() {
+    let sugarcode_home = tempfile::tempdir().expect("isolated SugarCode home");
+    let workspace_a = tempfile::tempdir().expect("workspace A");
+    let workspace_b = tempfile::tempdir().expect("workspace B");
+    fs::write(workspace_a.path().join("only-a.txt"), "a").expect("workspace A fixture");
+    fs::write(workspace_b.path().join("only-b.txt"), "b").expect("workspace B fixture");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
+        .args(["app-server", "--stdio", "--multi-workspace"])
+        .env("SUGARCODE_HOME", sugarcode_home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn multi-workspace app-server");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "initialize",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientInfo": {"name": "multi-workspace-test", "version": "1.0.0"}
+            }
+        }),
+    );
+    let initialized = read_json(&mut stdout);
+    assert_eq!(
+        initialized["result"]["capabilities"]["workspaceBrowser"],
+        true
+    );
+    assert!(initialized["result"].get("workspace").is_none());
+    send_json(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "method": "initialized"}),
+    );
+
+    let open = |stdin: &mut std::process::ChildStdin,
+                stdout: &mut BufReader<std::process::ChildStdout>,
+                id: &str,
+                root: &std::path::Path|
+     -> String {
+        send_json(
+            stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "workspace/open",
+                "params": {
+                    "root": root,
+                    "workspaceType": "project",
+                    "allowWorkspaceWrite": false,
+                    "allowCommandWorkspaceWrite": false
+                }
+            }),
+        );
+        read_json(stdout)["result"]["workspaceId"]
+            .as_str()
+            .expect("workspace ID")
+            .to_owned()
+    };
+    let workspace_id_a = open(&mut stdin, &mut stdout, "open-a", workspace_a.path());
+    let workspace_id_b = open(&mut stdin, &mut stdout, "open-b", workspace_b.path());
+    assert_ne!(workspace_id_a, workspace_id_b);
+    assert!(!workspace_id_a.contains(workspace_a.path().to_string_lossy().as_ref()));
+
+    for (suffix, workspace_id) in [("a", &workspace_id_a), ("b", &workspace_id_b)] {
+        send_json(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0",
+                "id": format!("thread-{suffix}"),
+                "method": "thread/start",
+                "params": {"workspaceId": workspace_id}
+            }),
+        );
+        let response = read_json(&mut stdout);
+        assert_eq!(response["id"], format!("thread-{suffix}"));
+        assert_eq!(read_json(&mut stdout)["method"], "thread/started");
+    }
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "list-a",
+            "method": "workspace/list",
+            "params": {"workspaceId": workspace_id_a, "path": ""}
+        }),
+    );
+    let listed = read_json(&mut stdout);
+    assert_eq!(listed["result"]["entries"][0]["name"], "only-a.txt");
+    assert!(!listed.to_string().contains("only-b.txt"));
+
+    drop(stdin);
+    assert!(child.wait().expect("wait app-server").success());
+}
+
+#[test]
 fn thread_start_happy_path_matches_golden_trace() {
     assert_golden("thread-start-happy");
 }
