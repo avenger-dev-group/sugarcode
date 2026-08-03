@@ -2,13 +2,12 @@
 
 ## Contract
 
-SugarCode exposes three provider families and four wire APIs:
+SugarCode exposes two provider families and three wire APIs:
 
 | Provider family | Wire API |
 | --- | --- |
 | `openai` | `openaiResponses` or `openaiChatCompletions` |
 | `anthropic` | `anthropicMessages` |
-| `gemini` | `geminiGenerateContent` |
 
 LiteLLM, MetaLLM and other gateways use the compatible family and wire API
 with a custom Base URL. They have no provider enum, SDK or Runtime branch.
@@ -55,7 +54,6 @@ Discovery is read-only and routes by wire API:
 
 - OpenAI Responses and Chat use the compatible Models endpoint;
 - Anthropic uses its native Models endpoint and authentication;
-- Gemini uses its native Models endpoint and authentication.
 
 Discovery candidates never mutate configuration. Failure leaves manual model
 ID entry available. Context metadata is only a suggestion; only a saved profile
@@ -72,8 +70,8 @@ wire ceiling
   ∩ current Runtime capability
 ```
 
-All four wire APIs have a hard representation ceiling for tools and images. PDF
-is representable by OpenAI Responses, Anthropic Messages and Gemini native;
+All three wire APIs have a hard representation ceiling for tools and images. PDF
+is representable by OpenAI Responses and Anthropic Messages;
 Chat Completions rejects an explicitly enabled PDF before provider I/O. A hard
 ceiling says only that the protocol can represent a feature; it is not evidence
 that a particular compatible gateway implements it.

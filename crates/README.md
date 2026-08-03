@@ -43,8 +43,8 @@ external filters, signing, credential helpers, remotes or network operations.
 `app-server-protocol` remains the source of truth for those provider-neutral
 DTOs and their generated TypeScript/JSON Schema.
 
-`model-provider` owns four wire adapters grouped into three provider families:
-OpenAI Responses, OpenAI Chat Completions, Anthropic Messages and Gemini native
+`model-provider` owns three wire adapters grouped into two provider families:
+OpenAI Responses, OpenAI Chat Completions and Anthropic Messages
 `generateContent`. Core selects only by wire API. Provider continuations,
 signatures and reasoning envelopes never enter the public Desktop protocol.
 

@@ -16,6 +16,13 @@ configuration resolution, tools, provider construction and shutdown.
 App-server, exec and TUI are presentation/transport surfaces, not alternate
 state machines.
 
+Desktop's multi-workspace app-server keeps one global control session and
+creates one lazy runtime context per registered canonical root. Those contexts
+share the same rollout repository and process-wide Core ID allocator but retain
+separate workspace capabilities, instruction scopes and active-Turn ownership.
+Thread-to-workspace routing is restored from durable descriptors when an idle
+context is reloaded; a context unload never deletes rollout or search state.
+
 An accepted Turn has no wall-clock execution deadline. It remains active until
 the model reaches a terminal result, the user interrupts it, the consumer
 closes, shutdown begins or a typed provider/transport/durable-state failure is
@@ -42,6 +49,10 @@ Config `schema_version`, rollout `schemaVersion`, app-server
 `protocolVersion` and Desktop `contractVersion` all remain `1`. Current v1
 shapes are intentionally incompatible with earlier development data. There is
 no dual reader or migration and repository code never deletes `~/.sugarcode`.
+
+Desktop's local window/session registry is a separate presentation record. Its
+schema version is `2` and has a one-time reader for the former single-project
+schema; it is not a rollout, app-server or model contract migration.
 
 Restart converts unfinished Turns and unfinished compaction checkpoints to
 Interrupted. It never retries an external call, reapplies a file change or

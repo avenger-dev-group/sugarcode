@@ -48,7 +48,7 @@ pnpm desktop:make
 ```
 
 Optional live-provider smoke accepts one or more saved profile IDs. Run it
-separately for OpenAI, Anthropic, Gemini and a compatible gateway before a
+separately for OpenAI, Anthropic and a compatible gateway before a
 release:
 
 ```bash

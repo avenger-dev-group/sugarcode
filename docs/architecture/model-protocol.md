@@ -7,15 +7,16 @@ Core exchanges ordered `ModelMessage` content parts, tool definitions,
 provider-neutral events and terminal metadata. App-server, rollout, exec and
 Desktop never expose provider SDK types.
 
-The supported wires are OpenAI Responses, OpenAI Chat Completions, Anthropic
-Messages and Gemini native `generateContent`. Adapter selection is made from
-the frozen `wireApi`, not the UI provider family.
+The supported wires are OpenAI Responses, OpenAI Chat Completions and Anthropic
+Messages. Adapter selection is made from the frozen `wireApi`, not the UI
+provider family. The three top-level providers are
+`OpenAiResponsesProvider`, `OpenAiChatCompletionsProvider` and
+`AnthropicMessagesProvider`; there is no generic native-protocol dispatcher.
 
-The native multi-wire adapter keeps `native.rs` as its transport façade.
-Provider request serialization is isolated in `native/requests.rs`, streaming
-state assembly in `native/streaming.rs`, and module-owned unit coverage under
-`native/tests/`. Flat Chat Completions tests remain under `src/tests/` and are
-linked explicitly from their production module.
+Each provider owns its endpoint, authentication, request/history conversion,
+tool representation, stream assembly and wire-specific error classification.
+`transport.rs` owns the shared HTTP client policy, SSE framing and idle bound,
+response-size enforcement and bounded provider-error extraction.
 
 ## Ordered content
 
@@ -72,8 +73,6 @@ Wire-specific continuation rules are:
   block order, keeping commentary plus parallel `tool_use` blocks in one
   assistant message and their `tool_result` blocks in the immediately following
   user message for strict compatible gateways;
-- Gemini preserves thought signatures and puts parallel function responses in
-  one user content.
 
 Unknown output items, terminal states, finish reasons and safety states are
 errors. They are never silently discarded.
@@ -163,12 +162,6 @@ model, wire and request as a non-streaming Chat completion. The JSON completion
 passes through the same output, reasoning, tool-call, usage and size
 normalization; this delivery fallback is not a wire or model fallback.
 
-Gemini streamed text chunks are normalized into one contiguous canonical text
-item. Both ordinary incremental chunks and compatible gateways that repeat the
-full text-so-far produce only the unseen suffix as provisional output, and a
-clean SSE EOF after bounded semantic output is valid terminal evidence when the
-last chunk omits `finishReason`.
-
 Protocol failures carry an optional provider-neutral diagnostic. Its stage is
 one of `streamEvent`, `responseAssembly`, `outputNormalization` or
 `runtimeClassification`; its stable code is `wireMismatch`,
@@ -202,15 +195,15 @@ tool calls but reject a full response snapshot on the continuation request.
 
 ## Native mapping
 
-| Input | Responses | Chat Completions | Anthropic | Gemini |
-| --- | --- | --- | --- | --- |
-| Image | `input_image` | image content | image block | `inlineData` |
-| PDF | `input_file` | rejected before request | document block | `inlineData` |
-| Text document | normalized text | normalized text | normalized text | normalized text |
+| Input | Responses | Chat Completions | Anthropic |
+| --- | --- | --- | --- |
+| Image | `input_image` | image content | image block |
+| PDF | `input_file` | rejected before request | document block |
+| Text document | normalized text | normalized text | normalized text |
 
-Provider authentication is wire-specific: bearer for OpenAI wires, `x-api-key`
-plus Anthropic version for Messages, and `x-goog-api-key` for Gemini. Custom
-Base URLs use the same selected wire behavior.
+Provider authentication is wire-specific: bearer for OpenAI wires and
+`x-api-key` plus Anthropic version for Messages. Custom Base URLs use the same
+selected wire behavior.
 
 ## Tools
 
@@ -231,8 +224,7 @@ Parallel tool calls are validated as a complete batch before any member
 executes. Runtime scheduling, rather than the model capability flag, owns actual
 concurrency: all-read-only batches may execute concurrently, while approval,
 write and other non-parallel tools pass through the sequential execution path.
-Durable calls and results remain in model order. Gemini function responses from
-one batch are serialized together.
+Durable calls and results remain in model order.
 
 Tool definitions, validation and dispatch use provider-neutral SugarCode names.
 An unknown name, incompatible arguments or a handler-level user error is an

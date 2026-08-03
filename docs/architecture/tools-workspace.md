@@ -77,6 +77,13 @@ Core owns one fair read/write permit shared by root and child Agents. Readers
 may coexist; a writer holds the exclusive permit. This coordinates SugarCode
 activity only and does not claim isolation from the user or another process.
 
+In multi-workspace app-server mode, every scope derived from the same canonical
+root also shares one workspace write gate. Structured edit/apply-diff commits,
+Git stage/unstage/commit and workspace-write shell execution acquire that gate
+for their commit or process lifetime. Different canonical roots use independent
+gates and may write concurrently. Read-only operations remain concurrent, and
+the gate still makes no claim about external processes or user edits.
+
 `shell/exec` is a separate authority. It requires an absolute executable,
 bounded argv, fixed workspace-relative cwd, a filtered host command
 environment, no shell string, an app-server approval decision and platform

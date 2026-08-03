@@ -5,7 +5,7 @@
 Desktop Main starts the bundled matching executable as:
 
 ```text
-sugarcode app-server --stdio
+sugarcode app-server --stdio --multi-workspace
 ```
 
 Transport is bidirectional JSONL. Stdout is protocol-only; stderr is bounded
@@ -15,6 +15,29 @@ platform and capabilities before ready-state methods are admitted.
 Rust definitions in `crates/app-server-protocol` are the source of truth.
 Generated TypeScript, JSON Schema and affected fixtures change together. Public
 types are provider-neutral and protocol version remains 1.
+
+## Multi-workspace routing
+
+One Desktop session owns one persistent app-server process. After initialize,
+Main registers every canonical project or isolated-chat root with
+`workspace/open`. The response returns an opaque deterministic `workspaceId`;
+all Thread discovery/lifecycle and workspace/Git requests carry that ID. A
+global control session handles initialize, workspace registration and global
+configuration, while lazily loaded workspace contexts own Core execution.
+
+The registry shares one rollout repository and one process-wide ID allocator,
+so Thread, Turn and Item IDs remain unique across workspaces. It also records
+Thread-to-workspace ownership and routes lifecycle events back to the correct
+Desktop projection. A context with no active Turn, pending approval or current
+foreground reference may unload after five idle minutes; its descriptor and
+durable state remain, and the next routed request reloads it. Reopening a
+canonical root is idempotent. The legacy single-workspace CLI mode internally
+injects its binding and retains the same public protocol.
+
+Desktop remembers every opened root in Main and replays background
+`workspace/open` registrations before reopening the foreground root after a
+sidecar or model/MCP restart. Renderer receives project summaries and opaque
+Desktop project IDs, never absolute paths.
 
 ## Public v1 lifecycle
 
@@ -68,6 +91,13 @@ Electron Main owns:
 - command-approval policy and its current Thread/workspace scope;
 - Git, preview window and PTY/ConPTY terminal.
 
+Conversation state is one projection per Thread rather than one mutable global
+transcript. Background lifecycle updates stay in their owning projection,
+running and unread Thread sets are aggregated for navigation, and selecting a
+cached Thread never overwrites another active Turn. Stop and destructive Thread
+actions always target an explicit Thread ID; only the target Thread's active
+Turn blocks its fork/archive/delete action.
+
 `conversation/controller.ts` is the stable conversation-controller facade.
 Its `conversation/controller/` implementation directory separates RPC and
 Thread action coordination (`conversation-controller.ts`), snapshot/recovery
@@ -105,6 +135,34 @@ changes. Automatic approval only answers the existing app-server request; it
 does not relax the read-only/no-network command sandbox or authorize shell
 workspace writes. Normal terminal approval states close without a persistent
 completion toast.
+
+Command and MCP approvals enter one Main-owned FIFO queue across every project
+and Thread. Only the head is presented, and its local countdown starts after the
+matching approval surface reports ready. Closing the UI or transport safely
+rejects pending and queued requests. The view model identifies the source
+project and conversation; “View task” asks Main to activate the owning project
+or isolated chat before selecting its Thread. Workspace-scoped automatic
+approval is checked against the request's recorded workspace, not the currently
+visible project.
+
+Main persists a versioned multi-project session registry with canonical paths,
+opaque workspace bindings, per-project Thread IDs, isolated-chat directories,
+titles and recency. The schema-v2 reader migrates the prior single-project
+schema once and discards roots that no longer validate. Switching projects does
+not restart the sidecar, and background Turns continue while the foreground
+selection changes.
+
+Renderer keeps unsent drafts, attachments and next-Turn model selection per
+Thread (plus a separate new-Thread slot). Changing the profile on a Thread with
+history requires confirmation and affects only the next Turn; the active Turn
+remains frozen. The workbench uses a 44-pixel activity rail, a resizable
+240–380-pixel navigator (286 default), a 52-pixel conversation header and a
+380–1200-pixel inspector (760 default). The inspector preserves a usable
+conversation column in desktop split view; responsive breakpoints omit side
+regions when the window cannot fit them rather than exposing persistent
+collapse controls in the conversation header. Each top-level column contributes
+a draggable title-bar surface, while its interactive descendants opt out of
+window dragging. Both light and dark themes use the mandated semantic tokens.
 
 ## Composer and transcript
 
@@ -148,19 +206,21 @@ elapsed quiet time and provides a transcript-local stop action. This clock is
 presentation-only, resets on every lifecycle update and never interrupts or
 times out the provider request. If the transport becomes unavailable while a
 Turn is active, the indicator becomes state-uncertain instead of continuing to
-claim that the Agent is processing. Failure cards identify the frozen model and
-wire API; a provider protocol failure directs the user to review endpoint wire
-compatibility or switch profiles rather than suggesting a blind retry.
-When a public Turn error includes a protocol diagnostic, the card presents its
-specific stable reason and a 12-character shape fingerprint for support
-correlation instead of the generic wire message. It never renders provider
+claim that the Agent is processing. A failed Turn renders one subdued, centered
+summary in the transcript; recovery guidance, model and wire details, and
+protocol metadata remain outside the primary conversation surface. When a
+public Turn error includes a protocol diagnostic, the summary uses its specific
+stable reason instead of the generic wire message. It never renders provider
 response content or tool arguments. `historicalContextDowngraded` is a
 non-blocking Turn notice explaining that unsupported historical media was
 represented as bounded text metadata; it is not displayed as a model failure.
 
-Thread rows reserve a non-shrinking action column inside the navigator boundary;
-titles truncate within the remaining column and cannot push fork, archive or
-delete actions outside the visible/clickable area. The composer exposes the
+Project and Thread navigation labels use focusable link semantics rather than
+button styling; only discrete actions such as creating, forking, archiving or
+deleting use buttons. Thread rows reserve a non-shrinking action column inside
+the navigator boundary; titles truncate within the remaining column and cannot
+push fork, archive or delete actions outside the visible/clickable area. The
+composer exposes the
 latest single-request input against the selected model's effective context
 window, then shows cumulative Turn usage and request count as secondary data.
 The cumulative value is explicitly allowed to exceed the window. Missing
@@ -182,8 +242,8 @@ The model settings page exposes `continuationMode` only for OpenAI Responses.
 `localReplay` is the privacy-first default (`store:false`) and uses more local
 bandwidth; `providerManaged` opts into `store:true + previous_response_id` and
 may reduce replay bandwidth at the cost of provider-side retention and endpoint
-compatibility. Chat Completions, Anthropic and Gemini always use local native
-history replay.
+compatibility. Chat Completions and Anthropic always use local native history
+replay.
 
 ## Desktop validation and CI
 
