@@ -316,14 +316,7 @@ export const ThreadNavigator = ({
                 disabled={workspace.busy}
                 onAction={() => void workspace.chooseProject()}
               >
-                {workspace.busy ? (
-                  <LoaderCircle
-                    className="animate-spin"
-                    aria-hidden="true"
-                  />
-                ) : (
-                  <FolderPlus aria-hidden="true" />
-                )}
+                <FolderPlus aria-hidden="true" />
               </SectionHeading>
 
               {projects.length > 0 ? (
@@ -347,7 +340,7 @@ export const ThreadNavigator = ({
                             data-thread-item
                             aria-expanded={expanded}
                             aria-disabled={workspace.busy}
-                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default aria-disabled:opacity-50"
+                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default"
                             onClick={() => {
                               if (!workspace.busy) {
                                 store.toggleProjectExpanded(project.id);
@@ -382,7 +375,7 @@ export const ThreadNavigator = ({
                             type="button"
                             size="icon-xs"
                             variant="ghost"
-                            className="mr-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                            className="mr-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 disabled:opacity-0 group-hover:disabled:opacity-100 group-focus-within:disabled:opacity-100"
                             disabled={
                               workspace.busy || (active && navigationDisabled)
                             }
@@ -409,7 +402,7 @@ export const ThreadNavigator = ({
               ) : (
                 <button
                   type="button"
-                  className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-secondary transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-secondary transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   disabled={workspace.busy}
                   onClick={() => void workspace.chooseProject()}
                 >
@@ -570,7 +563,7 @@ const SectionHeading = ({
       type="button"
       size="icon-xs"
       variant="ghost"
-      className="ml-1"
+      className="ml-1 disabled:opacity-100"
       disabled={disabled}
       onClick={onAction}
       aria-label={actionLabel}

@@ -228,8 +228,12 @@ represented as bounded text metadata; it is not displayed as a model failure.
 Project folders are collapsed by default and use focusable disclosure semantics
 rather than selection styling. Clicking a folder only expands or collapses its
 Thread list; its hover-revealed add action activates that project and creates a
-new Thread directly. An expanded empty project shows one subdued “没有会话”
-label. Thread labels use link semantics, and only discrete actions such as
+new Thread directly. Transient workspace activation gates competing navigation
+actions without replacing section icons, fading navigation content or shifting
+the navigator layout; fast project and chat creation therefore remain visually
+stable instead of flashing a global loading treatment. An expanded empty
+project shows one subdued “没有会话” label. Thread labels use link semantics, and
+only discrete actions such as
 creating, forking, archiving or deleting use buttons. The active project folder
 remains visually neutral; only the selected conversation row receives a
 selection background. Thread rows reserve a non-shrinking action column inside
