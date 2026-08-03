@@ -102,6 +102,7 @@ const sameIds = (
   left.every((value, index) => value === right[index]);
 
 export class WorkspaceController {
+  private readonly options: WorkspaceControllerOptions;
   private readonly listeners = new Set<Listener>();
   private readonly chatDirectories = new Map<string, string>();
   private readonly chatTitles = new Map<string, string>();
@@ -123,7 +124,8 @@ export class WorkspaceController {
     chatThreadIds: [],
   };
 
-  constructor(private readonly options: WorkspaceControllerOptions) {
+  constructor(options: WorkspaceControllerOptions) {
+    this.options = options;
     this.options.supervisor.subscribe((connection) => {
       if (!this.workspacePath) {
         return;
@@ -191,61 +193,7 @@ export class WorkspaceController {
         this.chatDirectories.set(chat.threadId, directory);
       }
     }
-
-    if (stored.active.kind === 'project') {
-      const project = this.projects.get(stored.active.projectId);
-      if (!project) {
-        this.publish(
-          'failed',
-          'The saved project is missing or no longer allowed.',
-        );
-        return;
-      }
-      this.activeProjectId = project.id;
-      this.projectPath = project.path;
-      this.projectThreadIds = project.threadIds;
-      this.workspacePath = this.projectPath;
-      this.workspaceKind = 'project';
-      this.generation = 1;
-      this.options.supervisor.configureInitialWorkspace(this.projectPath);
-      this.publish('selecting');
-      await this.persist().catch((): undefined => undefined);
-      return;
-    }
-
-    const chatDirectory = await this.validateChatDirectory(
-      stored.active.directory,
-    );
-    if (!chatDirectory) {
-      this.publish(
-        'failed',
-        'The saved chat folder is missing or no longer allowed.',
-      );
-      return;
-    }
-    this.workspacePath = chatDirectory;
-    this.workspaceKind = 'chat';
-    this.activeChatThreadId = stored.active.threadId ?? null;
-    if (
-      this.activeChatThreadId &&
-      !this.chatThreadIds.includes(this.activeChatThreadId)
-    ) {
-      this.chatThreadIds = [
-        this.activeChatThreadId,
-        ...this.chatThreadIds,
-      ];
-    }
-    if (this.activeChatThreadId) {
-      this.chatDirectories.set(this.activeChatThreadId, chatDirectory);
-    }
-    this.generation = 1;
-    this.options.supervisor.configureInitialWorkspace(
-      chatDirectory,
-      this.activeChatThreadId ?? undefined,
-      'chat',
-    );
-    this.publish('selecting');
-    await this.persist().catch((): undefined => undefined);
+    this.publish('unselected');
   };
 
   select = async (): Promise<WorkspaceSelectResult> => {
@@ -603,7 +551,7 @@ export class WorkspaceController {
       path: selected,
       name: path.basename(selected),
       threadIds: this.projectThreadIds,
-      lastOpenedAtMs: Date.now(),
+      lastOpenedAtMs: existing?.lastOpenedAtMs ?? Date.now(),
       ...(this.options.supervisor.getWorkspaceBindingId()
         ? { workspaceId: this.options.supervisor.getWorkspaceBindingId() as string }
         : {}),

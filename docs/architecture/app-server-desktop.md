@@ -34,10 +34,13 @@ durable state remain, and the next routed request reloads it. Reopening a
 canonical root is idempotent. The legacy single-workspace CLI mode internally
 injects its binding and retains the same public protocol.
 
-Desktop remembers every opened root in Main and replays background
-`workspace/open` registrations before reopening the foreground root after a
-sidecar or model/MCP restart. Renderer receives project summaries and opaque
-Desktop project IDs, never absolute paths.
+Desktop remembers every opened root in Main. A cold Desktop launch restores the
+project and chat navigation registry without selecting a project, chat or
+Thread; the conversation column starts on the neutral SugarCode page. After an
+explicit user selection, a sidecar or model/MCP restart replays background
+`workspace/open` registrations before reopening that in-session foreground
+root. Renderer receives project summaries and opaque Desktop project IDs, never
+absolute paths.
 
 ## Public v1 lifecycle
 
@@ -148,21 +151,23 @@ visible project.
 Main persists a versioned multi-project session registry with canonical paths,
 opaque workspace bindings, per-project Thread IDs, isolated-chat directories,
 titles and recency. The schema-v2 reader migrates the prior single-project
-schema once and discards roots that no longer validate. Switching projects does
+schema once and discards roots that no longer validate. Its stored active entry
+does not opt a cold launch into foreground restoration. Switching projects does
 not restart the sidecar, and background Turns continue while the foreground
-selection changes.
+selection changes. Project ordering is import-recency order: a newly imported
+project enters at the top, while later activation never changes its position.
 
 Renderer keeps unsent drafts, attachments and next-Turn model selection per
 Thread (plus a separate new-Thread slot). Changing the profile on a Thread with
 history requires confirmation and affects only the next Turn; the active Turn
-remains frozen. The workbench uses a 44-pixel activity rail, a resizable
-240–380-pixel navigator (286 default), a 52-pixel conversation header and a
-380–1200-pixel inspector (760 default). The inspector preserves a usable
-conversation column in desktop split view; responsive breakpoints omit side
-regions when the window cannot fit them rather than exposing persistent
-collapse controls in the conversation header. Each top-level column contributes
-a draggable title-bar surface, while its interactive descendants opt out of
-window dragging. Both light and dark themes use the mandated semantic tokens.
+remains frozen. The workbench uses a resizable 240–380-pixel navigator (286
+default), a 52-pixel conversation header and a 380–1200-pixel inspector (760
+default). The inspector preserves a usable conversation column in desktop split
+view; responsive breakpoints omit side regions when the window cannot fit them
+rather than exposing persistent collapse controls in the conversation header.
+Each top-level column contributes a draggable title-bar surface, while
+interactive controls and selectable title text opt out of window dragging. Both
+light and dark themes use the mandated semantic tokens.
 
 ## Composer and transcript
 
@@ -215,13 +220,19 @@ response content or tool arguments. `historicalContextDowngraded` is a
 non-blocking Turn notice explaining that unsupported historical media was
 represented as bounded text metadata; it is not displayed as a model failure.
 
-Project and Thread navigation labels use focusable link semantics rather than
-button styling; only discrete actions such as creating, forking, archiving or
-deleting use buttons. Thread rows reserve a non-shrinking action column inside
+Project folders are collapsed by default and use focusable disclosure semantics
+rather than selection styling. Clicking a folder only expands or collapses its
+Thread list; its hover-revealed add action activates that project and creates a
+new Thread directly. An expanded empty project shows one subdued “没有会话”
+label. Thread labels use link semantics, and only discrete actions such as
+creating, forking, archiving or deleting use buttons. The active project folder
+remains visually neutral; only the selected conversation row receives a
+selection background. Thread rows reserve a non-shrinking action column inside
 the navigator boundary; titles truncate within the remaining column and cannot
-push fork, archive or delete actions outside the visible/clickable area. The
-composer exposes the
-latest single-request input against the selected model's effective context
+push fork, archive or delete actions outside the visible/clickable area.
+Destructive conversation confirmation uses a basic human-facing warning and
+never displays the internal Thread ID. The composer exposes the latest
+single-request input against the selected model's effective context
 window, then shows cumulative Turn usage and request count as secondary data.
 The cumulative value is explicitly allowed to exceed the window. Missing
 provider usage is prefixed as estimated. Compaction activity explains the

@@ -177,6 +177,7 @@ export type ThreadNavigatorViewModel = Readonly<{
 export type ThreadStore = Readonly<{
   thread: ThreadViewModel;
   navigator: ThreadNavigatorViewModel;
+  expandedProjectIds: readonly string[];
   draft: string;
   attachments: readonly DraftAttachmentViewModel[];
   inputBytes: number;
@@ -205,6 +206,7 @@ export type ThreadStore = Readonly<{
   setDraft: (value: string) => void;
   addAttachments: (files: readonly File[]) => Promise<void>;
   removeAttachment: (id: string) => void;
+  toggleProjectExpanded: (projectId: string) => void;
   setSelectedModelProfileId: (profileId: string) => void;
   confirmModelSwitch: () => void;
   cancelModelSwitch: () => void;

@@ -1118,6 +1118,8 @@ export const useStore = (): ThreadStore => {
     useState<ConversationStateSnapshot>(INITIAL_SNAPSHOT);
   const [draft, setDraft] = useState<string>('');
   const [attachments, setAttachments] = useState<DraftAttachmentViewModel[]>([]);
+  const [expandedProjectIds, setExpandedProjectIds] =
+    useState<readonly string[]>([]);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [activeQuietSeconds, setActiveQuietSeconds] = useState<number>(0);
@@ -1250,6 +1252,14 @@ export const useStore = (): ThreadStore => {
   };
 
   const cancelModelSwitch = (): void => setPendingModelProfileId(null);
+
+  const toggleProjectExpanded = (projectId: string): void => {
+    setExpandedProjectIds((current) =>
+      current.includes(projectId)
+        ? current.filter((candidate) => candidate !== projectId)
+        : [...current, projectId],
+    );
+  };
 
   const bytes = inputBytes(draft);
   const attachmentBytes = attachments.reduce(
@@ -1597,6 +1607,7 @@ export const useStore = (): ThreadStore => {
   return {
     thread,
     navigator,
+    expandedProjectIds,
     draft,
     attachments,
     inputBytes: bytes,
@@ -1619,6 +1630,7 @@ export const useStore = (): ThreadStore => {
     setDraft,
     addAttachments,
     removeAttachment,
+    toggleProjectExpanded,
     setSelectedModelProfileId: selectModelProfile,
     confirmModelSwitch,
     cancelModelSwitch,

@@ -77,9 +77,6 @@ export const ThreadNavigator = ({
     store.navigator.status === 'unavailable' ||
     store.navigator.status === 'loading' ||
     Boolean(store.navigator.pendingMutation);
-  const selectionDisabled =
-    navigationDisabled ||
-    workspace.busy;
   const selectedTurnActive =
     store.thread.phase === 'starting' ||
     store.thread.phase === 'inProgress' ||
@@ -156,6 +153,12 @@ export const ThreadNavigator = ({
           ? await workspace.resumeProject()
         : await workspace.chooseProject();
     if (activated) {
+      if (
+        projectId &&
+        !store.expandedProjectIds.includes(projectId)
+      ) {
+        store.toggleProjectExpanded(projectId);
+      }
       await store.startNewThread();
     }
   };
@@ -199,8 +202,9 @@ export const ThreadNavigator = ({
       ? store.navigator.pendingThreadId ??
         store.navigator.selectedThreadId
       : null;
+    const itemDisabled = workspace.busy || (active && navigationDisabled);
     return (
-      <div className="space-y-0.5 pb-1 pl-5 pt-0.5">
+      <div className="space-y-0.5 pb-1 pl-6 pt-1">
         {threadIds.map((threadId) => (
           <ThreadButton
             key={threadId}
@@ -216,9 +220,10 @@ export const ThreadNavigator = ({
             }
             running={store.navigator.runningThreadIds.includes(threadId)}
             unread={store.navigator.unreadThreadIds.includes(threadId)}
-            disabled={selectionDisabled}
+            disabled={itemDisabled}
             mutationDisabled={
-              selectionDisabled ||
+              navigationDisabled ||
+              workspace.busy ||
               (threadId === displayedThreadId && selectedTurnActive)
             }
             labelKind={kind}
@@ -231,11 +236,15 @@ export const ThreadNavigator = ({
           />
         ))}
         {threadIds.length === 0 ? (
-          <p className="px-2 py-2 text-xs leading-5 text-secondary">
-            {kind === 'chat'
-              ? '点击栏目右侧的 + 新建聊天。'
-              : '点击项目右侧的 + 新建任务。'}
-          </p>
+          kind === 'project' ? (
+            <p className="px-2 py-1.5 text-sm font-normal leading-normal text-tertiary">
+              没有会话
+            </p>
+          ) : (
+            <p className="px-2 py-2 text-xs leading-5 text-secondary">
+              点击栏目右侧的 + 新建聊天。
+            </p>
+          )
         ) : null}
       </div>
     );
@@ -305,23 +314,25 @@ export const ThreadNavigator = ({
                     const active =
                       projectActive &&
                       workspace.state.activeProjectId === project.id;
+                    const expanded = store.expandedProjectIds.includes(
+                      project.id,
+                    );
                     return (
                       <div key={project.id}>
                         <div
                           data-project-row
-                          className={`group flex items-center rounded-lg ${
-                            active ? 'bg-surface/70' : ''
-                          }`}
+                          className="group flex items-center rounded-lg"
                         >
                           <span
-                            role="link"
+                            role="button"
                             tabIndex={workspace.busy ? -1 : 0}
-                            aria-current={active ? 'page' : undefined}
+                            data-thread-item
+                            aria-expanded={expanded}
                             aria-disabled={workspace.busy}
                             className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default aria-disabled:opacity-50"
                             onClick={() => {
                               if (!workspace.busy) {
-                                void workspace.activateProject(project.id);
+                                store.toggleProjectExpanded(project.id);
                               }
                             }}
                             onKeyDown={(event) =>
@@ -329,15 +340,22 @@ export const ThreadNavigator = ({
                                 event,
                                 workspace.busy,
                                 () => {
-                                  void workspace.activateProject(project.id);
+                                  store.toggleProjectExpanded(project.id);
                                 },
                               )
                             }
                           >
-                            <Folder
-                              className="size-4 shrink-0 text-secondary"
-                              aria-hidden="true"
-                            />
+                            {expanded ? (
+                              <FolderOpen
+                                className="size-4 shrink-0 text-secondary"
+                                aria-hidden="true"
+                              />
+                            ) : (
+                              <Folder
+                                className="size-4 shrink-0 text-secondary"
+                                aria-hidden="true"
+                              />
+                            )}
                             <span className="min-w-0 flex-1 truncate text-sm">
                               {project.name}
                             </span>
@@ -346,8 +364,10 @@ export const ThreadNavigator = ({
                             type="button"
                             size="icon-xs"
                             variant="ghost"
-                            className="mr-1 opacity-60 group-hover:opacity-100"
-                            disabled={selectionDisabled}
+                            className="mr-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                            disabled={
+                              workspace.busy || (active && navigationDisabled)
+                            }
                             onClick={() => void startProjectTask(project.id)}
                             aria-label={`在 ${project.name} 中新建任务`}
                             title={`在 ${project.name} 中新建任务`}
@@ -355,15 +375,15 @@ export const ThreadNavigator = ({
                             <Plus aria-hidden="true" />
                           </Button>
                         </div>
-                        <div>
-                          {renderThreadList(
-                            project.threadIds,
-                            'project',
-                            active,
-                            (threadId) =>
-                              selectProjectThread(project.id, threadId),
-                          )}
-                        </div>
+                        {expanded
+                          ? renderThreadList(
+                              project.threadIds,
+                              'project',
+                              active,
+                              (threadId) =>
+                                selectProjectThread(project.id, threadId),
+                            )
+                          : null}
                       </div>
                     );
                   })}
@@ -391,7 +411,7 @@ export const ThreadNavigator = ({
                 label="聊天"
                 count={chatThreadIds.length}
                 actionLabel="新建聊天"
-                disabled={selectionDisabled}
+                disabled={workspace.busy || (chatActive && navigationDisabled)}
                 onAction={() => void startChat()}
               >
                 <Plus aria-hidden="true" />
@@ -469,14 +489,11 @@ export const ThreadNavigator = ({
           }}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle>永久删除这个对话？</AlertDialogTitle>
+            <AlertDialogTitle>删除这个对话？</AlertDialogTitle>
             <AlertDialogDescription>
-              删除后无法恢复。如需暂时隐藏，请改用归档。
+              删除后无法恢复，确定要继续吗？
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <p className="mt-4 break-all rounded-md border bg-surface/60 p-3 font-mono text-[10px] leading-4 text-secondary">
-            {deleteThreadId}
-          </p>
           <AlertDialogFooter className="mt-5">
             <AlertDialogCancel asChild>
               <Button
@@ -497,7 +514,7 @@ export const ThreadNavigator = ({
                   }
                 }}
               >
-                永久删除
+                删除
               </Button>
             </AlertDialogAction>
           </AlertDialogFooter>

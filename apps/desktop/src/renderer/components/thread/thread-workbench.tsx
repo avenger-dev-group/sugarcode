@@ -4,7 +4,6 @@ import {
   FileText,
   Image as ImageIcon,
   LoaderCircle,
-  MessageSquare,
   Paperclip,
   Square,
   X,
@@ -339,19 +338,6 @@ export const ThreadWorkbenchView = ({
   return (
     <>
       <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-      <nav
-        aria-label="Activity"
-        className="window-drag-region flex w-11 shrink-0 flex-col items-center gap-1 border-r bg-surface/35 pt-10"
-      >
-        <span
-          className="grid size-7 place-items-center rounded-md bg-secondary text-secondary-foreground"
-          aria-label="当前区域：对话"
-          aria-current="page"
-          title="对话"
-        >
-          <MessageSquare className="size-3.5" aria-hidden="true" />
-        </span>
-      </nav>
       <aside
         className="hidden min-h-0 shrink-0 md:block"
         style={{ width: navigatorResize?.width ?? 286 }}
@@ -376,7 +362,7 @@ export const ThreadWorkbenchView = ({
       ) : null}
       <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="window-drag-region flex h-[52px] shrink-0 items-center border-b px-5">
-          <div className="min-w-0">
+          <div className="window-no-drag min-w-0 select-text">
             <p
               className="truncate text-sm font-semibold tracking-[-0.015em]"
               title={conversationTitle}
@@ -693,7 +679,7 @@ export const ThreadWorkbenchView = ({
           ) : null}
           <aside
             id="workspace-tools"
-            className="hidden min-h-0 shrink-0 overflow-hidden bg-background min-[1100px]:block min-[1100px]:[max-width:min(60vw,calc(100vw-44px-240px-480px))]"
+            className="hidden min-h-0 shrink-0 overflow-hidden bg-background min-[1100px]:block min-[1100px]:[max-width:min(60vw,calc(100vw_-_720px))]"
             style={{
               width: contextRailResize?.width ?? 760,
             }}
