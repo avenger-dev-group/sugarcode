@@ -1,5 +1,8 @@
 import {
   Archive,
+  CircleAlert,
+  CircleCheck,
+  CircleStop,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -34,7 +37,8 @@ import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/w
 
 import appIcon from '../../../../assets/icon.png';
 
-import type { ThreadStore } from './types';
+import { toThreadNavigationStatus } from './navigation-status';
+import type { ThreadNavigationStatus, ThreadStore } from './types';
 
 type ThreadNavigatorProps = Readonly<{
   store: ThreadStore;
@@ -220,13 +224,16 @@ export const ThreadNavigator = ({
               workspace.state.chatTitles?.[threadId]
             }
             current={threadId === displayedThreadId}
-            pending={
-              active &&
-              threadId === store.navigator.pendingThreadId
-            }
-            running={store.navigator.runningThreadIds.includes(threadId)}
-            unread={store.navigator.unreadThreadIds.includes(threadId)}
-            approvalRequired={approvalThreadIds.includes(threadId)}
+            status={toThreadNavigationStatus({
+              approvalRequired: approvalThreadIds.includes(threadId),
+              pending:
+                active && threadId === store.navigator.pendingThreadId,
+              reloadRequired:
+                store.navigator.reloadRequiredThreadIds.includes(threadId),
+              running: store.navigator.runningThreadIds.includes(threadId),
+              terminalStatus:
+                store.navigator.unreadThreadStatuses[threadId],
+            })}
             disabled={itemDisabled}
             mutationDisabled={
               navigationDisabled ||
@@ -582,10 +589,7 @@ type ThreadButtonProps = Readonly<{
   threadId: string;
   title?: string;
   current: boolean;
-  pending: boolean;
-  running: boolean;
-  unread: boolean;
-  approvalRequired: boolean;
+  status: ThreadNavigationStatus;
   disabled: boolean;
   mutationDisabled: boolean;
   labelKind: ThreadLabelKind;
@@ -601,10 +605,7 @@ const ThreadButton = ({
   threadId,
   title,
   current,
-  pending,
-  running,
-  unread,
-  approvalRequired,
+  status,
   disabled,
   mutationDisabled,
   labelKind,
@@ -628,7 +629,7 @@ const ThreadButton = ({
       tabIndex={disabled ? -1 : 0}
       data-thread-item
       aria-current={current ? 'page' : undefined}
-      aria-busy={pending}
+      aria-busy={status === 'opening' || status === 'running'}
       aria-label={`${current ? 'Current ' : ''}${title ?? `Thread ${threadId}`}`}
       aria-disabled={disabled}
       onClick={() => {
@@ -692,28 +693,90 @@ const ThreadButton = ({
     ) : (
       <span />
     )}
-    {approvalRequired ? (
-      <span
-        className="mr-2 inline-flex h-5 shrink-0 self-center items-center gap-1 rounded-full border bg-background px-1.5 text-[11px] font-medium text-secondary"
-        role="status"
-      >
-        <ShieldQuestion className="size-3" aria-hidden="true" />
-        需要审批
-      </span>
-    ) : pending || running ? (
-      <LoaderCircle
-        className="mr-2 size-3.5 shrink-0 self-center animate-spin text-process"
-        aria-label={pending ? '正在打开会话' : '后台运行中'}
-      />
-    ) : unread ? (
-      <span
-        className="mr-2 size-2.5 shrink-0 self-center rounded-full bg-success"
-        aria-label="任务已完成，有未读更新"
-        role="status"
-      />
-    ) : null}
+    <ThreadStatusIndicator status={status} />
   </div>
 );
+
+const ThreadStatusIndicator = ({
+  status,
+}: Readonly<{ status: ThreadNavigationStatus }>) => {
+  switch (status) {
+    case 'approvalRequired':
+      return (
+        <span
+          className="mr-2 inline-flex h-5 shrink-0 self-center items-center gap-1 rounded-full border bg-background px-1.5 text-[11px] font-medium text-secondary"
+          role="status"
+          title="需要授权"
+        >
+          <ShieldQuestion className="size-3" aria-hidden="true" />
+          需授权
+        </span>
+      );
+    case 'opening':
+    case 'running': {
+      const label = status === 'opening' ? '正在打开会话' : '后台运行中';
+      return (
+        <span
+          className="mr-2 inline-flex size-5 shrink-0 self-center items-center justify-center text-process"
+          role="status"
+          aria-label={label}
+          title={label}
+        >
+          <LoaderCircle
+            className="size-3.5 animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+        </span>
+      );
+    }
+    case 'completed':
+      return (
+        <span
+          className="mr-2 inline-flex size-5 shrink-0 self-center items-center justify-center text-success"
+          role="status"
+          aria-label="后台任务已完成，有未读更新"
+          title="已完成 · 有未读更新"
+        >
+          <CircleCheck className="size-4" aria-hidden="true" />
+        </span>
+      );
+    case 'failed':
+      return (
+        <span
+          className="mr-2 inline-flex size-5 shrink-0 self-center items-center justify-center text-destructive"
+          role="status"
+          aria-label="后台任务执行失败，有未读更新"
+          title="执行失败 · 有未读更新"
+        >
+          <CircleAlert className="size-4" aria-hidden="true" />
+        </span>
+      );
+    case 'reloadRequired':
+      return (
+        <span
+          className="mr-2 inline-flex size-5 shrink-0 self-center items-center justify-center text-destructive"
+          role="status"
+          aria-label="会话需要重新加载"
+          title="会话需要重新加载"
+        >
+          <CircleAlert className="size-4" aria-hidden="true" />
+        </span>
+      );
+    case 'interrupted':
+      return (
+        <span
+          className="mr-2 inline-flex size-5 shrink-0 self-center items-center justify-center text-tertiary"
+          role="status"
+          aria-label="后台任务已停止，有未读更新"
+          title="已停止 · 有未读更新"
+        >
+          <CircleStop className="size-4" aria-hidden="true" />
+        </span>
+      );
+    case 'idle':
+      return null;
+  }
+};
 
 type ThreadActionButtonProps = Readonly<{
   label: string;

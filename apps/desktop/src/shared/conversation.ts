@@ -25,6 +25,11 @@ export type ConversationPhase =
 export type ConversationTurnStatus =
   'inProgress' | 'completed' | 'failed' | 'interrupted';
 
+export type ConversationTerminalTurnStatus = Exclude<
+  ConversationTurnStatus,
+  'inProgress'
+>;
+
 export type ConversationMessageStatus = 'inProgress' | 'completed';
 
 export type ConversationMessage = Readonly<{
@@ -485,7 +490,10 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
   activeThreadTitles: Readonly<Record<string, string>>;
   activeTruncated: boolean;
   runningThreadIds?: readonly string[];
-  unreadThreadIds?: readonly string[];
+  unreadThreadStatuses?: Readonly<
+    Record<string, ConversationTerminalTurnStatus>
+  >;
+  reloadRequiredThreadIds?: readonly string[];
   search: Readonly<{
     query: string;
     status: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
@@ -582,6 +590,12 @@ const TURN_STATUSES = new Set<ConversationTurnStatus>([
   'interrupted',
 ]);
 
+const TERMINAL_TURN_STATUSES = new Set<ConversationTerminalTurnStatus>([
+  'completed',
+  'failed',
+  'interrupted',
+]);
+
 const MESSAGE_STATUSES = new Set<ConversationMessageStatus>([
   'inProgress',
   'completed',
@@ -651,6 +665,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isId = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
+
+const isThreadId = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+    value,
+  );
 
 export const isValidSha256 = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value);
@@ -1489,9 +1509,20 @@ const isThreadNavigator = (
     (Object.hasOwn(value, 'runningThreadIds') &&
       (!Array.isArray(value.runningThreadIds) ||
         !value.runningThreadIds.every(isId))) ||
-    (Object.hasOwn(value, 'unreadThreadIds') &&
-      (!Array.isArray(value.unreadThreadIds) ||
-        !value.unreadThreadIds.every(isId))) ||
+    (Object.hasOwn(value, 'unreadThreadStatuses') &&
+      (!isRecord(value.unreadThreadStatuses) ||
+        !Object.entries(value.unreadThreadStatuses).every(
+          ([threadId, status]) =>
+            isId(threadId) &&
+            TERMINAL_TURN_STATUSES.has(
+              status as ConversationTerminalTurnStatus,
+            ),
+        ))) ||
+    (Object.hasOwn(value, 'reloadRequiredThreadIds') &&
+      (!Array.isArray(value.reloadRequiredThreadIds) ||
+        !value.reloadRequiredThreadIds.every(isThreadId) ||
+        new Set(value.reloadRequiredThreadIds).size !==
+          value.reloadRequiredThreadIds.length)) ||
     !isRecord(value.search) ||
     typeof value.search.query !== 'string' ||
     new TextEncoder().encode(value.search.query).byteLength >

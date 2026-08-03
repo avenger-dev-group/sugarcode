@@ -6,6 +6,7 @@ use sugarcode_app_server_protocol::AgentOutputRef;
 use sugarcode_app_server_protocol::AgentTaskAccess;
 use sugarcode_app_server_protocol::AgentTaskRole;
 use sugarcode_app_server_protocol::AgentTaskStatus;
+use sugarcode_app_server_protocol::CommandApprovalParams;
 use sugarcode_app_server_protocol::CommandNetworkPolicy;
 use sugarcode_app_server_protocol::CommandSandboxPolicy;
 use sugarcode_app_server_protocol::CommandWorkspaceWritePolicy;
@@ -22,6 +23,7 @@ use sugarcode_app_server_protocol::JsonRpcError;
 use sugarcode_app_server_protocol::JsonRpcErrorObject;
 use sugarcode_app_server_protocol::JsonRpcMessage;
 use sugarcode_app_server_protocol::JsonRpcVersion;
+use sugarcode_app_server_protocol::McpToolCallApprovalParams;
 use sugarcode_app_server_protocol::ModelProtocolCode;
 use sugarcode_app_server_protocol::ModelProtocolDiagnostic;
 use sugarcode_app_server_protocol::ModelProtocolStage;
@@ -115,9 +117,125 @@ fn request_ids_support_strings_and_integers() {
 }
 
 #[test]
+fn routed_lifecycle_and_approval_payloads_require_workspace_id() {
+    let thread_id = "00000000-0000-7000-8000-000000000001";
+    let turn_id = "00000000-0001-7000-8000-000000000001";
+    let item_id = "00000000-0002-7000-8000-000000000001";
+    let turn = json!({"id": turn_id, "status": "inProgress"});
+    let item = json!({"type": "agentMessage", "id": item_id, "text": ""});
+    let usage = json!({
+        "lastRequest": {},
+        "turnTotal": {},
+        "requestCount": 1,
+        "contextWindowTokens": 4096,
+        "source": "estimated"
+    });
+
+    macro_rules! missing_workspace_fails {
+        ($type:ty, $value:expr) => {
+            assert!(
+                serde_json::from_value::<$type>($value).is_err(),
+                concat!(stringify!($type), " accepted a missing workspaceId")
+            );
+        };
+    }
+
+    missing_workspace_fails!(
+        TurnStartedNotification,
+        json!({"threadId": thread_id, "turn": turn})
+    );
+    missing_workspace_fails!(
+        ItemStartedNotification,
+        json!({"threadId": thread_id, "turnId": turn_id, "item": item})
+    );
+    missing_workspace_fails!(
+        AgentOutputDeltaNotification,
+        json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "output": {"responseOrdinal": 1, "outputIndex": 0},
+            "delta": "partial"
+        })
+    );
+    missing_workspace_fails!(
+        AgentOutputDiscardedNotification,
+        json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "output": {"responseOrdinal": 1, "outputIndex": 0}
+        })
+    );
+    missing_workspace_fails!(
+        AgentMessageDeltaNotification,
+        json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "itemId": item_id,
+            "delta": "partial"
+        })
+    );
+    missing_workspace_fails!(
+        ItemCompletedNotification,
+        json!({"threadId": thread_id, "turnId": turn_id, "item": item})
+    );
+    missing_workspace_fails!(
+        TokenUsageUpdatedNotification,
+        json!({"threadId": thread_id, "turnId": turn_id, "usage": usage})
+    );
+    missing_workspace_fails!(
+        TurnWarningNotification,
+        json!({
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "code": "providerManagedContinuationFallback"
+        })
+    );
+    missing_workspace_fails!(
+        TurnCompletedNotification,
+        json!({
+            "threadId": thread_id,
+            "turn": {"id": turn_id, "status": "completed"}
+        })
+    );
+    missing_workspace_fails!(
+        CommandApprovalParams,
+        json!({
+            "approvalId": "approval/test",
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "callId": "call_test",
+            "description": "Run a command",
+            "command": "pwd",
+            "arguments": [],
+            "cwd": ".",
+            "approvalScope": "command",
+            "environmentPolicy": "hostInheritedV1",
+            "sandboxed": true,
+            "sandboxPolicy": "filesystemReadOnlyV1",
+            "networkPolicy": "networkDeniedV1"
+        })
+    );
+    missing_workspace_fails!(
+        McpToolCallApprovalParams,
+        json!({
+            "approvalId": "approval/mcp",
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "callId": "call_mcp",
+            "name": "server/tool",
+            "arguments": {},
+            "argumentsBytes": 2,
+            "argumentsSha256": "0".repeat(64),
+            "inventorySha256": "1".repeat(64)
+        })
+    );
+}
+
+#[test]
 fn mcp_approval_protocol_is_provider_neutral_strict_and_json_capable() {
     let params = sugarcode_app_server_protocol::McpToolCallApprovalParams {
         approval_id: "approval/mcp".to_string(),
+        workspace_id: "workspace-test".to_string(),
         thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
         turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
         call_id: "call_mcp".to_string(),
@@ -770,11 +888,13 @@ fn turn_start_types_use_the_public_turn_dto() {
     );
     assert_eq!(
         serde_json::to_value(TurnStartedNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn,
         })
         .expect("notification serializes"),
         json!({
+            "workspaceId": "workspace-test",
             "threadId": "00000000-0000-7000-8000-000000000001",
             "turn": {
                 "id": "00000000-0001-7000-8000-000000000001",
@@ -815,6 +935,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
 
     assert_eq!(
         serde_json::to_value(ItemStartedNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: thread_id.clone(),
             turn_id: turn_id.clone(),
             item: started_item,
@@ -822,6 +943,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
         })
         .expect("item/started serializes"),
         json!({
+            "workspaceId": "workspace-test",
             "threadId": thread_id,
             "turnId": turn_id,
             "item": {
@@ -833,6 +955,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
     );
     assert_eq!(
         serde_json::to_value(AgentMessageDeltaNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             item_id: "00000000-0002-7000-8000-000000000001".to_string(),
@@ -840,6 +963,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
         })
         .expect("agent message delta serializes"),
         json!({
+            "workspaceId": "workspace-test",
             "threadId": "00000000-0000-7000-8000-000000000001",
             "turnId": "00000000-0001-7000-8000-000000000001",
             "itemId": "00000000-0002-7000-8000-000000000001",
@@ -848,12 +972,14 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
     );
     assert_eq!(
         serde_json::to_value(ItemCompletedNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             item: completed_item,
         })
         .expect("item/completed serializes"),
         json!({
+            "workspaceId": "workspace-test",
             "threadId": "00000000-0000-7000-8000-000000000001",
             "turnId": "00000000-0001-7000-8000-000000000001",
             "item": {
@@ -865,6 +991,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
     );
     assert_eq!(
         serde_json::to_value(TurnCompletedNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn: Turn {
                 model: None,
@@ -876,6 +1003,7 @@ fn agent_message_item_lifecycle_types_preserve_correlation_and_text() {
         })
         .expect("turn/completed serializes"),
         json!({
+            "workspaceId": "workspace-test",
             "threadId": "00000000-0000-7000-8000-000000000001",
             "turn": {
                 "id": "00000000-0001-7000-8000-000000000001",
@@ -896,6 +1024,7 @@ fn provisional_agent_output_fixture_is_additive_and_provider_neutral() {
         serde_json::from_value::<AgentOutputDeltaNotification>(params)
             .expect("Agent output notification"),
         AgentOutputDeltaNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             output: AgentOutputRef {
@@ -918,6 +1047,7 @@ fn discarded_agent_output_fixture_closes_a_provider_neutral_preview() {
         serde_json::from_value::<AgentOutputDiscardedNotification>(params)
             .expect("discarded Agent output notification"),
         AgentOutputDiscardedNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             output: AgentOutputRef {
@@ -937,6 +1067,7 @@ fn agent_commentary_item_lifecycle_preserves_process_text() {
 
     assert_eq!(
         serde_json::to_value(ItemStartedNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             item: item.clone(),
@@ -944,6 +1075,7 @@ fn agent_commentary_item_lifecycle_preserves_process_text() {
         })
         .expect("commentary item/started serializes"),
         json!({
+            "workspaceId": "workspace-test",
             "threadId": "00000000-0000-7000-8000-000000000001",
             "turnId": "00000000-0001-7000-8000-000000000001",
             "item": {
@@ -1298,6 +1430,7 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
     };
     assert_eq!(
         serde_json::to_value(TokenUsageUpdatedNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             usage: TokenUsage {
@@ -1310,6 +1443,7 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
         })
         .expect("usage notification"),
         json!({
+            "workspaceId": "workspace-test",
             "threadId": "00000000-0000-7000-8000-000000000001",
             "turnId": "00000000-0001-7000-8000-000000000001",
             "usage": {
@@ -1335,12 +1469,14 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
     );
     assert_eq!(
         serde_json::to_value(TurnWarningNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             code: TurnWarningCode::ProviderManagedContinuationFallback,
         })
         .expect("warning notification"),
         json!({
+            "workspaceId": "workspace-test",
             "threadId": "00000000-0000-7000-8000-000000000001",
             "turnId": "00000000-0001-7000-8000-000000000001",
             "code": "providerManagedContinuationFallback"
@@ -1348,12 +1484,14 @@ fn token_usage_and_continuation_fallback_warning_are_provider_neutral() {
     );
     assert_eq!(
         serde_json::to_value(TurnWarningNotification {
+            workspace_id: "workspace-test".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
             turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
             code: TurnWarningCode::HistoricalContextDowngraded,
         })
         .expect("historical downgrade warning"),
         json!({
+            "workspaceId": "workspace-test",
             "threadId": "00000000-0000-7000-8000-000000000001",
             "turnId": "00000000-0001-7000-8000-000000000001",
             "code": "historicalContextDowngraded"

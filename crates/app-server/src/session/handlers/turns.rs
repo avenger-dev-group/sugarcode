@@ -88,7 +88,12 @@ where
 
         match outcome {
             TurnStartOutcome::Immediate(events) => {
-                let mapped = match map_turn_lifecycle(events, core_request_id, &thread_id) {
+                let mapped = match map_turn_lifecycle(
+                    events,
+                    core_request_id,
+                    &thread_id,
+                    self.workspace_id().unwrap_or("unbound"),
+                ) {
                     Ok(mapped) => mapped,
                     Err(_) => {
                         return vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)];

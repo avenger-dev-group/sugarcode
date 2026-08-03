@@ -25,6 +25,16 @@ allocator or replay-time maximum-ID scan exists.
 Thread-to-workspace routing is restored from durable descriptors when an idle
 context is reloaded; a context unload never deletes rollout or search state.
 
+Desktop has a separate process-local Thread Runtime Registry. Each entry freezes
+the Thread's Workspace binding and owns the live phase, active Turn, Turn/Item
+projection, notice, attachment previews and bounded `turn/start` lifecycle
+buffer. The visible transcript is only a foreground projection of one Registry
+entry; selecting another Workspace or an empty chat changes that pointer and
+does not transfer or stop background execution. Before `thread/start` returns,
+one pending start transaction buffers the matching `thread/started` lifecycle;
+after binding, only acceptance or rejection of `turn/start` is a navigation
+barrier. Turn completion is not a barrier.
+
 An accepted Turn has no wall-clock execution deadline. It remains active until
 the model reaches a terminal result, the user interrupts it, the consumer
 closes, shutdown begins or a typed provider/transport/durable-state failure is
@@ -69,6 +79,17 @@ Their Thread cursor is the canonical UUIDv7 string ordered by SQLite binary
 collation descending. Search documents use a SQLite-generated integer
 `document_id` only as the FTS rowid; the UUIDv7 Item ID stays a unique value and
 is never converted into an integer.
+
+The stdio JSONL stream preserves in-process message order, and every live
+lifecycle or approval route contains its authoritative Workspace binding. No
+additional public event sequence exists. Rollout `sequence` is durable append
+order inside one Thread only and must never be treated as a live transport
+sequence. After disconnect, Desktop rebuilds a selected or quarantined Thread
+through durable `thread/resume` rather than attempting to splice missed live
+events into an in-memory projection. A background Runtime that was active when
+the transport ended is marked reload-required and loses its speculative running
+projection; selecting it after reconnect resumes the durable interrupted or
+completed state.
 
 ## Model history
 
@@ -222,6 +243,14 @@ records decode without migration. The shape hash is computed from JSON keys and
 types only; raw provider values, response bodies, reasoning, tool arguments,
 credentials and local paths are excluded. Public app-server mapping preserves
 the same provider-neutral diagnostic and never exposes an SDK type.
+
+A Desktop projection error with a valid, unchanged Workspace/Thread route is
+contained to that Thread. Desktop discards the untrusted in-memory Runtime,
+clears its speculative running/unread state, safely denies its outstanding
+approvals and requires an explicit `thread/resume` on the next selection. It
+does not interrupt another Turn or restart app-server. Framing, JSON-RPC,
+unknown-route, Workspace-binding, approval, handshake and version failures stay
+outside this containment boundary and trigger the global sidecar recovery path.
 
 Model-limit failures are also distinct: `contextWindowExceeded` is limited to
 one request that cannot fit after recovery, `providerRequestTooLarge` is an HTTP

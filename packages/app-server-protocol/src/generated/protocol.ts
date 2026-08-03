@@ -60,13 +60,13 @@ export type CommandWorkspaceWriteRisk = "nonTransactionalWorkspaceTreeV1";
 
 export type ApprovalSourceAgent = { taskId: string, role: AgentTaskRole, };
 
-export type CommandApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, description: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy: CommandSandboxPolicy, sourceAgent?: ApprovalSourceAgent, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy: CommandNetworkPolicy, };
+export type CommandApprovalParams = { approvalId: string, workspaceId: string, threadId: string, turnId: string, callId: string, description: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy: CommandSandboxPolicy, sourceAgent?: ApprovalSourceAgent, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy: CommandNetworkPolicy, };
 
 export type CommandApprovalResponse = { decision: CommandApprovalResponseDecision, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, };
 
 export type McpToolCallApprovalResponseDecision = "approved" | "denied";
 
-export type McpToolCallApprovalParams = { approvalId: string, threadId: string, turnId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, sourceAgent?: ApprovalSourceAgent, };
+export type McpToolCallApprovalParams = { approvalId: string, workspaceId: string, threadId: string, turnId: string, callId: string, name: string, arguments: JsonValue, argumentsBytes: bigint, argumentsSha256: string, inventorySha256: string, sourceAgent?: ApprovalSourceAgent, };
 
 export type McpToolCallApprovalResponse = { decision: McpToolCallApprovalResponseDecision, };
 
@@ -94,15 +94,15 @@ export type Item = { "type": "userMessage", id: string, content: Array<TurnInput
 
 export type AgentOutputRef = { responseOrdinal: bigint, outputIndex: number, };
 
-export type ItemStartedNotification = { threadId: string, turnId: string, item: Item, agentOutput?: AgentOutputRef, };
+export type ItemStartedNotification = { workspaceId: string, threadId: string, turnId: string, item: Item, agentOutput?: AgentOutputRef, };
 
-export type AgentOutputDeltaNotification = { threadId: string, turnId: string, output: AgentOutputRef, delta: string, };
+export type AgentOutputDeltaNotification = { workspaceId: string, threadId: string, turnId: string, output: AgentOutputRef, delta: string, };
 
-export type AgentOutputDiscardedNotification = { threadId: string, turnId: string, output: AgentOutputRef, };
+export type AgentOutputDiscardedNotification = { workspaceId: string, threadId: string, turnId: string, output: AgentOutputRef, };
 
-export type AgentMessageDeltaNotification = { threadId: string, turnId: string, itemId: string, delta: string, };
+export type AgentMessageDeltaNotification = { workspaceId: string, threadId: string, turnId: string, itemId: string, delta: string, };
 
-export type ItemCompletedNotification = { threadId: string, turnId: string, item: Item, };
+export type ItemCompletedNotification = { workspaceId: string, threadId: string, turnId: string, item: Item, };
 
 export type Thread = { id: string, workspaceId: string, title?: string, origin?: ThreadOrigin, };
 
@@ -182,11 +182,11 @@ export type TokenUsageSample = { inputTokens: bigint | null, cachedInputTokens: 
 
 export type TokenUsage = { lastRequest: TokenUsageSample, turnTotal: TokenUsageSample, requestCount: bigint, contextWindowTokens: number, source: TokenUsageSource, };
 
-export type TokenUsageUpdatedNotification = { threadId: string, turnId: string, usage: TokenUsage, };
+export type TokenUsageUpdatedNotification = { workspaceId: string, threadId: string, turnId: string, usage: TokenUsage, };
 
 export type TurnWarningCode = "providerManagedContinuationFallback" | "historicalContextDowngraded";
 
-export type TurnWarningNotification = { threadId: string, turnId: string, code: TurnWarningCode, };
+export type TurnWarningNotification = { workspaceId: string, threadId: string, turnId: string, code: TurnWarningCode, };
 
 export type TurnInputPart = { "type": "text", text: string, } | { "type": "image", asset: AssetDescriptor, } | { "type": "document", asset: AssetDescriptor, };
 
@@ -194,9 +194,9 @@ export type TurnStartParams = { threadId: string, input?: Array<TurnInputPart>, 
 
 export type TurnStartResponse = { turn: Turn, };
 
-export type TurnStartedNotification = { threadId: string, turn: Turn, };
+export type TurnStartedNotification = { workspaceId: string, threadId: string, turn: Turn, };
 
-export type TurnCompletedNotification = { threadId: string, turn: Turn, };
+export type TurnCompletedNotification = { workspaceId: string, threadId: string, turn: Turn, };
 
 export type TurnInterruptParams = { threadId: string, turnId: string, };
 

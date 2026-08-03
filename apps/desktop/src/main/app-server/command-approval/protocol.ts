@@ -34,6 +34,9 @@ const isBoundedIdentifier = (value: unknown): value is string =>
   Buffer.byteLength(value) <= 1024 &&
   !Array.from(value).some((character) => /\p{Cc}/u.test(character));
 
+const isWorkspaceId = (value: unknown): value is string =>
+  typeof value === 'string' && /^(?:unbound|[0-9a-f]{64})$/u.test(value);
+
 const isBoundedCommandText = (
   value: unknown,
   maxBytes: number,
@@ -70,6 +73,7 @@ export const parseCommandApprovalRequest = (
       value,
       [
         'approvalId',
+        'workspaceId',
         'threadId',
         'turnId',
         'callId',
@@ -88,6 +92,7 @@ export const parseCommandApprovalRequest = (
     typeof id !== 'string' ||
     !isBoundedIdentifier(value.approvalId) ||
     id !== value.approvalId ||
+    !isWorkspaceId(value.workspaceId) ||
     !isBoundedIdentifier(value.threadId) ||
     !isBoundedIdentifier(value.turnId) ||
     !isBoundedIdentifier(value.callId) ||
@@ -151,6 +156,7 @@ export const parseCommandApprovalRequest = (
 
   return {
     approvalId: value.approvalId,
+    workspaceId: value.workspaceId,
     threadId: value.threadId,
     turnId: value.turnId,
     callId: value.callId,
@@ -177,6 +183,7 @@ export const parseCommandApprovalRequest = (
 };
 
 export type CommandApprovalCompletion = Readonly<{
+  workspaceId: string;
   threadId: string;
   turnId: string;
   approvalId: string;
@@ -200,7 +207,13 @@ export const parseCommandApprovalCompletion = (
   if (
     message.method !== 'item/completed' ||
     !isRecord(message.params) ||
-    !hasOnlyKeys(message.params, ['threadId', 'turnId', 'item']) ||
+    !hasOnlyKeys(message.params, [
+      'workspaceId',
+      'threadId',
+      'turnId',
+      'item',
+    ]) ||
+    !isWorkspaceId(message.params.workspaceId) ||
     !isBoundedIdentifier(message.params.threadId) ||
     !isBoundedIdentifier(message.params.turnId) ||
     !isRecord(message.params.item) ||
@@ -227,6 +240,7 @@ export const parseCommandApprovalCompletion = (
     { type: 'commandApprovalDecision' }
   >;
   return {
+    workspaceId: params.workspaceId,
     threadId: params.threadId,
     turnId: params.turnId,
     approvalId: item.approvalId,

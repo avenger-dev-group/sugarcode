@@ -39,11 +39,15 @@
     },
     "turnId": {
       "type": "string"
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "additionalProperties": false,
   "required": [
     "approvalId",
+    "workspaceId",
     "threadId",
     "turnId",
     "callId",

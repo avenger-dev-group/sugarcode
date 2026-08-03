@@ -14,9 +14,13 @@
     },
     "turnId": {
       "type": "string"
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "required": [
+    "workspaceId",
     "threadId",
     "turnId",
     "output",

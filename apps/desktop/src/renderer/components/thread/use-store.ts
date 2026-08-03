@@ -959,7 +959,9 @@ export const toThreadNavigatorViewModel = (
     threadIds,
     threadTitles: snapshot.navigator.activeThreadTitles,
     runningThreadIds: snapshot.navigator.runningThreadIds ?? [],
-    unreadThreadIds: snapshot.navigator.unreadThreadIds ?? [],
+    unreadThreadStatuses: snapshot.navigator.unreadThreadStatuses ?? {},
+    reloadRequiredThreadIds:
+      snapshot.navigator.reloadRequiredThreadIds ?? [],
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
     pendingMutation: snapshot.navigator.pendingMutation ?? null,

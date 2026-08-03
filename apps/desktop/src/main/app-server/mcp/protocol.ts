@@ -31,6 +31,9 @@ const isIdentifier = (value: unknown): value is string =>
   Buffer.byteLength(value) <= 1_024 &&
   !Array.from(value).some((character) => /\p{Cc}/u.test(character));
 
+const isWorkspaceId = (value: unknown): value is string =>
+  typeof value === 'string' && /^(?:unbound|[0-9a-f]{64})$/u.test(value);
+
 const isSha256 = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value);
 
@@ -108,6 +111,7 @@ export const parseMcpApprovalRequest = (
       value,
       [
         'approvalId',
+        'workspaceId',
         'threadId',
         'turnId',
         'callId',
@@ -121,6 +125,7 @@ export const parseMcpApprovalRequest = (
     ) ||
     value.approvalId !== id ||
     !isIdentifier(value.approvalId) ||
+    !isWorkspaceId(value.workspaceId) ||
     !isIdentifier(value.threadId) ||
     !isIdentifier(value.turnId) ||
     !isIdentifier(value.callId) ||
@@ -169,6 +174,7 @@ export const parseMcpApprovalRequest = (
   return {
     params: {
       approvalId: value.approvalId,
+      workspaceId: value.workspaceId,
       threadId: value.threadId,
       turnId: value.turnId,
       callId: value.callId,
@@ -188,6 +194,7 @@ export const parseMcpApprovalRequest = (
 };
 
 export type McpApprovalCompletion = Readonly<{
+  workspaceId: string;
   threadId: string;
   turnId: string;
   approvalId: string;
@@ -208,7 +215,13 @@ export const parseMcpApprovalCompletion = (
   if (
     message.method !== 'item/completed' ||
     !isRecord(message.params) ||
-    !hasOnlyKeys(message.params, ['threadId', 'turnId', 'item']) ||
+    !hasOnlyKeys(message.params, [
+      'workspaceId',
+      'threadId',
+      'turnId',
+      'item',
+    ]) ||
+    !isWorkspaceId(message.params.workspaceId) ||
     !isIdentifier(message.params.threadId) ||
     !isIdentifier(message.params.turnId) ||
     !isRecord(message.params.item) ||
@@ -226,6 +239,7 @@ export const parseMcpApprovalCompletion = (
     return null;
   }
   return {
+    workspaceId: message.params.workspaceId,
     threadId: message.params.threadId,
     turnId: message.params.turnId,
     approvalId: message.params.item.approvalId,

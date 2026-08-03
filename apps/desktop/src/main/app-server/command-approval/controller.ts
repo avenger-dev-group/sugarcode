@@ -41,11 +41,11 @@ type CommandApprovalControllerOptions = Readonly<{
   onSurfaceFailure: () => void;
   onSurfaceReady?: () => void;
   getQueueCount?: () => number;
-  describeSource?: (threadId: string) => Readonly<{
+  describeSource?: (threadId: string, workspaceId: string) => Readonly<{
     projectTitle: string;
     conversationTitle: string;
   }>;
-  getWorkspaceScope?: (threadId: string) => string | null;
+  getThreadWorkspaceId: (threadId: string) => string | null;
 }>;
 
 type ActiveApproval = {
@@ -137,6 +137,12 @@ export class CommandApprovalController {
       void this.denyThenFail(request.id, this.options.onProtocolFailure);
       return;
     }
+    if (
+      this.options.getThreadWorkspaceId(params.threadId) !== params.workspaceId
+    ) {
+      void this.denyThenFail(request.id, this.options.onProtocolFailure);
+      return;
+    }
     if (params.workspaceWritePolicy === 'commandWorkspaceWriteV1') {
       void this.writeDecision(request.id, 'denied');
       return;
@@ -145,7 +151,7 @@ export class CommandApprovalController {
       void this.denyThenFail(request.id, this.options.onProtocolFailure);
       return;
     }
-    if (this.shouldApproveAutomatically(params.threadId)) {
+    if (this.shouldApproveAutomatically(params.threadId, params.workspaceId)) {
       void this.approveAutomatically(request.id);
       return;
     }
@@ -190,6 +196,10 @@ export class CommandApprovalController {
       completion.threadId !== this.active.params.threadId ||
       completion.turnId !== this.active.params.turnId
     ) {
+      return;
+    }
+    if (completion.workspaceId !== this.active.params.workspaceId) {
+      this.options.onProtocolFailure();
       return;
     }
     if (
@@ -259,6 +269,12 @@ export class CommandApprovalController {
     }
   };
 
+  rejectThread = (threadId: string): void => {
+    if (this.active?.params.threadId === threadId) {
+      void this.respond(this.active.presentationId, 'denied', true);
+    }
+  };
+
   shutdown = (): void => {
     if (this.closed) {
       return;
@@ -301,7 +317,11 @@ export class CommandApprovalController {
     try {
       await this.options.writeDecision(active.requestId, decision);
       if (decision === 'approved') {
-        this.applyMode(requestedMode, active.params.threadId);
+        this.applyMode(
+          requestedMode,
+          active.params.threadId,
+          active.params.workspaceId,
+        );
       }
       return actionResult('accepted');
     } catch {
@@ -329,11 +349,14 @@ export class CommandApprovalController {
     }
   };
 
-  private shouldApproveAutomatically = (threadId: string): boolean => {
+  private shouldApproveAutomatically = (
+    threadId: string,
+    workspaceId: string,
+  ): boolean => {
     const evaluation = evaluateAutomaticCommandApproval(
       this.modeScope,
       threadId,
-      this.options.getWorkspaceScope?.(threadId) ?? null,
+      workspaceId,
     );
     if (evaluation.scope !== this.modeScope) {
       this.modeScope = evaluation.scope;
@@ -345,11 +368,13 @@ export class CommandApprovalController {
   private applyMode = (
     mode: CommandApprovalMode,
     threadId: string | null,
+    workspaceId: string | null = null,
   ): void => {
     this.modeScope = createCommandApprovalModeScope(
       mode,
       threadId,
-      threadId ? (this.options.getWorkspaceScope?.(threadId) ?? null) : null,
+      workspaceId ??
+        (threadId ? this.options.getThreadWorkspaceId(threadId) : null),
     );
   };
 
@@ -368,7 +393,10 @@ export class CommandApprovalController {
   private toViewModel = (
     active: ActiveApproval,
   ): CommandApprovalViewModel => {
-    const source = this.options.describeSource?.(active.params.threadId) ?? {
+    const source = this.options.describeSource?.(
+      active.params.threadId,
+      active.params.workspaceId,
+    ) ?? {
       projectTitle: 'SugarCode',
       conversationTitle: active.params.threadId,
     };

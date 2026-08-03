@@ -66,6 +66,7 @@ type SupervisorInternals = {
   }> | null;
   client: object | null;
   workspaceTransaction: boolean;
+  openConfiguredWorkspace: () => Promise<string | null>;
   beginWorkspaceTransaction: () =>
     | WorkspaceTransactionLease
     | string;
@@ -103,5 +104,52 @@ test('workspace switching remains available while another Thread is running', ()
     ...idleSnapshot,
     phase: 'starting',
   });
-  assert.equal(internals.beginWorkspaceTransaction(), 'turnActive');
+  assert.equal(supervisor.getWorkspaceSwitchBlock(), null);
+  const startingLease = internals.beginWorkspaceTransaction();
+  if (typeof startingLease === 'string') {
+    assert.fail(`starting Turn blocked workspace switch: ${startingLease}`);
+  }
+  startingLease.release();
+});
+
+test('workspace switching serializes behind an accepted Turn start', async () => {
+  const supervisor = new ConnectionSupervisor({
+    desktopAppPath: '/test/desktop',
+    clientVersion: '1.0.0',
+  });
+  const internals = supervisor as unknown as SupervisorInternals;
+  internals.resolvedCli = {
+    executablePath: '/test/sugarcode',
+    workingDirectory: '/test',
+  };
+  internals.client = {};
+
+  const events: string[] = [];
+  let settleTurnStart = (): void => undefined;
+  const turnStartSettlement = new Promise<void>((resolve) => {
+    settleTurnStart = resolve;
+  });
+  supervisor.conversation.waitForTurnStartSettlement = async () => {
+    events.push('wait');
+    await turnStartSettlement;
+    events.push('settled');
+  };
+  internals.openConfiguredWorkspace = async () => {
+    events.push('open');
+    return 'workspace-admin';
+  };
+  supervisor.conversation.switchWorkspace = async () => {
+    events.push('switch');
+    return true;
+  };
+
+  const switching = supervisor.switchWorkspace('/test/admin');
+  await Promise.resolve();
+  assert.deepEqual(events, ['wait']);
+  assert.equal(internals.workspaceTransaction, true);
+
+  settleTurnStart();
+  assert.equal(await switching, true);
+  assert.deepEqual(events, ['wait', 'settled', 'open', 'switch']);
+  assert.equal(internals.workspaceTransaction, false);
 });

@@ -34,10 +34,11 @@ type McpApprovalControllerOptions = Readonly<{
   onSurfaceFailure: () => void;
   onSurfaceReady?: () => void;
   getQueueCount?: () => number;
-  describeSource?: (threadId: string) => Readonly<{
+  describeSource?: (threadId: string, workspaceId: string) => Readonly<{
     projectTitle: string;
     conversationTitle: string;
   }>;
+  getThreadWorkspaceId: (threadId: string) => string | null;
 }>;
 
 type ActiveApproval = {
@@ -123,6 +124,13 @@ export class McpApprovalController {
       void this.denyThenFail(request.id);
       return;
     }
+    if (
+      this.options.getThreadWorkspaceId(parsed.params.threadId) !==
+      parsed.params.workspaceId
+    ) {
+      void this.denyThenFail(request.id);
+      return;
+    }
     if (!this.surfaceReady || this.active) {
       void this.writeDecision(request.id, 'denied');
       return;
@@ -164,6 +172,10 @@ export class McpApprovalController {
     ) {
       return;
     }
+    if (completion.workspaceId !== this.active.parsed.params.workspaceId) {
+      this.options.onProtocolFailure();
+      return;
+    }
     const status = this.statusForDecision(completion.decision);
     if (!status) {
       this.options.onProtocolFailure();
@@ -195,6 +207,12 @@ export class McpApprovalController {
   transportClosed = (): void => {
     if (this.active) {
       this.finish('cancelled');
+    }
+  };
+
+  rejectThread = (threadId: string): void => {
+    if (this.active?.parsed.params.threadId === threadId) {
+      void this.respond(this.active.presentationId, 'denied', true);
     }
   };
 
@@ -265,7 +283,10 @@ export class McpApprovalController {
     active: ActiveApproval,
   ): McpApprovalViewModel => {
     const source =
-      this.options.describeSource?.(active.parsed.params.threadId) ?? {
+      this.options.describeSource?.(
+        active.parsed.params.threadId,
+        active.parsed.params.workspaceId,
+      ) ?? {
         projectTitle: 'SugarCode',
         conversationTitle: active.parsed.params.threadId,
       };

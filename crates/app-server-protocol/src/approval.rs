@@ -44,6 +44,7 @@ pub enum CommandWorkspaceWriteRisk {
 #[ts(rename_all = "camelCase")]
 pub struct CommandApprovalParams {
     pub approval_id: String,
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn_id: String,
     pub call_id: String,

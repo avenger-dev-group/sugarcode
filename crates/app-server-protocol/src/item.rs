@@ -453,6 +453,7 @@ pub enum ProcessOutcome {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ItemStartedNotification {
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn_id: String,
     pub item: Item,
@@ -473,6 +474,7 @@ pub struct AgentOutputRef {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct AgentOutputDeltaNotification {
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn_id: String,
     pub output: AgentOutputRef,
@@ -483,6 +485,7 @@ pub struct AgentOutputDeltaNotification {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct AgentOutputDiscardedNotification {
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn_id: String,
     pub output: AgentOutputRef,
@@ -492,6 +495,7 @@ pub struct AgentOutputDiscardedNotification {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct AgentMessageDeltaNotification {
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
@@ -502,6 +506,7 @@ pub struct AgentMessageDeltaNotification {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ItemCompletedNotification {
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn_id: String,
     pub item: Item,

@@ -329,6 +329,7 @@ export type ConversationLifecycle =
   | Readonly<{
       type: 'agentOutputDelta';
       params: Readonly<{
+        workspaceId: string;
         threadId: string;
         turnId: string;
         output: AgentOutputRef;
@@ -338,6 +339,7 @@ export type ConversationLifecycle =
   | Readonly<{
       type: 'agentOutputDiscarded';
       params: Readonly<{
+        workspaceId: string;
         threadId: string;
         turnId: string;
         output: AgentOutputRef;
@@ -356,6 +358,7 @@ export type ConversationLifecycle =
   | Readonly<{
       type: 'tokenUsageUpdated';
       params: Readonly<{
+        workspaceId: string;
         threadId: string;
         turnId: string;
         usage: TokenUsageValue;
@@ -364,6 +367,7 @@ export type ConversationLifecycle =
   | Readonly<{
       type: 'warning';
       params: Readonly<{
+        workspaceId: string;
         threadId: string;
         turnId: string;
         code:
@@ -377,6 +381,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isId = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
+
+const WORKSPACE_ID_PATTERN = /^(?:unbound|[0-9a-f]{64})$/u;
+
+export const isWorkspaceId = (value: unknown): value is string =>
+  typeof value === 'string' && WORKSPACE_ID_PATTERN.test(value);
 
 const UUID_V7_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -1431,15 +1440,70 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
 
 const parseThreadAndTurn = (
   value: unknown,
-): { threadId: string; turnId: string } => {
+): { workspaceId: string; threadId: string; turnId: string } => {
   if (
     !isRecord(value) ||
+    !isWorkspaceId(value.workspaceId) ||
     !isUuidV7(value.threadId) ||
     !isUuidV7(value.turnId)
   ) {
     throw new Error('Invalid conversation lifecycle correlation.');
   }
-  return { threadId: value.threadId, turnId: value.turnId };
+  return {
+    workspaceId: value.workspaceId,
+    threadId: value.threadId,
+    turnId: value.turnId,
+  };
+};
+
+export type ConversationLifecycleRoute = Readonly<{
+  workspaceId: string;
+  threadId: string;
+}>;
+
+const CONVERSATION_LIFECYCLE_METHODS = new Set([
+  'thread/started',
+  'turn/started',
+  'item/started',
+  'turn/agentOutput/delta',
+  'turn/agentOutput/discarded',
+  'item/agentMessage/delta',
+  'item/completed',
+  'thread/tokenUsage/updated',
+  'turn/warning',
+  'turn/completed',
+]);
+
+export const parseConversationLifecycleRoute = (
+  message: Extract<ServerMessage, { kind: 'notification' }>,
+): ConversationLifecycleRoute | null => {
+  if (!CONVERSATION_LIFECYCLE_METHODS.has(message.method)) {
+    return null;
+  }
+  if (!isRecord(message.params)) {
+    throw new Error('Invalid conversation lifecycle route.');
+  }
+  if (message.method === 'thread/started') {
+    const thread = message.params.thread;
+    if (
+      !isRecord(thread) ||
+      !isUuidV7(thread.id) ||
+      !isWorkspaceId(thread.workspaceId)
+    ) {
+      throw new Error('Invalid thread/started route.');
+    }
+    return { workspaceId: thread.workspaceId, threadId: thread.id };
+  }
+  if (
+    !isWorkspaceId(message.params.workspaceId) ||
+    !isUuidV7(message.params.threadId)
+  ) {
+    throw new Error('Invalid conversation lifecycle route.');
+  }
+  return {
+    workspaceId: message.params.workspaceId,
+    threadId: message.params.threadId,
+  };
 };
 
 const parseAgentOutputRef = (value: unknown): AgentOutputRef => {
@@ -1468,7 +1532,7 @@ export const parseConversationLifecycle = (
         !isRecord(params) ||
         !isRecord(params.thread) ||
         !isUuidV7(params.thread.id) ||
-        !isId(params.thread.workspaceId)
+        !isWorkspaceId(params.thread.workspaceId)
       ) {
         throw new Error('Invalid thread/started notification.');
       }
@@ -1483,7 +1547,11 @@ export const parseConversationLifecycle = (
       };
     }
     case 'turn/started': {
-      if (!isRecord(params) || !isUuidV7(params.threadId)) {
+      if (
+        !isRecord(params) ||
+        !isWorkspaceId(params.workspaceId) ||
+        !isUuidV7(params.threadId)
+      ) {
         throw new Error('Invalid turn/started notification.');
       }
       const turn = parseTurn(params.turn);
@@ -1492,17 +1560,23 @@ export const parseConversationLifecycle = (
       }
       return {
         type: 'turnStarted',
-        params: { threadId: params.threadId, turn },
+        params: {
+          workspaceId: params.workspaceId,
+          threadId: params.threadId,
+          turn,
+        },
       };
     }
     case 'item/started':
     case 'item/completed': {
       const correlation = parseThreadAndTurn(params);
-      const item = parseConversationItem(
-        (params as Record<string, unknown>).item,
-      );
-      if (!item) {
+      const rawItem = (params as Record<string, unknown>).item;
+      if (isToolValidationRejectedItem(rawItem)) {
         return null;
+      }
+      const item = parseConversationItem(rawItem);
+      if (!item) {
+        throw new Error('Unsupported conversation lifecycle Item.');
       }
       return {
         type:
@@ -1552,6 +1626,7 @@ export const parseConversationLifecycle = (
     case 'item/agentMessage/delta': {
       if (
         !isRecord(params) ||
+        !isWorkspaceId(params.workspaceId) ||
         !isUuidV7(params.threadId) ||
         !isUuidV7(params.turnId) ||
         !isUuidV7(params.itemId) ||
@@ -1562,6 +1637,7 @@ export const parseConversationLifecycle = (
       return {
         type: 'agentDelta',
         params: {
+          workspaceId: params.workspaceId,
           threadId: params.threadId,
           turnId: params.turnId,
           itemId: params.itemId,
@@ -1570,7 +1646,11 @@ export const parseConversationLifecycle = (
       };
     }
     case 'turn/completed': {
-      if (!isRecord(params) || !isUuidV7(params.threadId)) {
+      if (
+        !isRecord(params) ||
+        !isWorkspaceId(params.workspaceId) ||
+        !isUuidV7(params.threadId)
+      ) {
         throw new Error('Invalid turn/completed notification.');
       }
       const turn = parseTurn(params.turn);
@@ -1579,7 +1659,11 @@ export const parseConversationLifecycle = (
       }
       return {
         type: 'turnCompleted',
-        params: { threadId: params.threadId, turn },
+        params: {
+          workspaceId: params.workspaceId,
+          threadId: params.threadId,
+          turn,
+        },
       };
     }
     case 'thread/tokenUsage/updated': {

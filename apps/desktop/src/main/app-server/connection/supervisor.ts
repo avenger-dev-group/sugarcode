@@ -186,7 +186,6 @@ export class ConnectionSupervisor {
     }>
   > = [];
   private approvalInFlight: 'command' | 'mcp' | null = null;
-  private readonly threadWorkspaceIds = new Map<string, string>();
   private readonly workspaceTitles = new Map<string, string>();
   private readonly threadTitles = new Map<string, string>();
   private readonly registeredWorkspaces = new Map<
@@ -221,18 +220,19 @@ export class ConnectionSupervisor {
       onSurfaceReady: () => this.presentNextApproval(),
       getQueueCount: () => 1 + this.approvalQueue.length,
       describeSource: this.describeApprovalSource,
-      getWorkspaceScope: (threadId) =>
-        this.threadWorkspaceIds.get(threadId) ?? null,
+      getThreadWorkspaceId: (threadId) =>
+        this.conversation.getThreadWorkspaceId(threadId),
     });
     this.conversation = new ConversationController({
       getRpc: () => this.conversationRpc,
       onProtocolFailure: () => this.failAndTerminate('protocol-invalid'),
+      onThreadProjectionFailure: this.rejectThreadApprovals,
       getActionBlocked: () =>
         this.modelConfigTransaction ||
         this.workspaceTransaction ||
         this.gitTransaction,
     });
-    this.conversation.subscribeScoped(this.rememberScopedThreads);
+    this.conversation.subscribeScoped(this.rememberThreadTitles);
     this.mcpSession = new McpSessionController({
       getRestartBlock: this.getMcpRestartBlock,
       restart: this.restartWithMcp,
@@ -252,6 +252,8 @@ export class ConnectionSupervisor {
       onSurfaceReady: () => this.presentNextApproval(),
       getQueueCount: () => 1 + this.approvalQueue.length,
       describeSource: this.describeApprovalSource,
+      getThreadWorkspaceId: (threadId) =>
+        this.conversation.getThreadWorkspaceId(threadId),
     });
     let commandApprovalTaskId: string | null = null;
     let mcpApprovalTaskId: string | null = null;
@@ -320,9 +322,6 @@ export class ConnectionSupervisor {
       return 'unavailable';
     }
     const conversation = this.conversation.getSnapshot();
-    if (conversation.phase === 'starting') {
-      return 'turnActive';
-    }
     if (
       conversation.navigator.pendingThreadId ||
       conversation.navigator.search.status === 'loading'
@@ -351,6 +350,10 @@ export class ConnectionSupervisor {
     const previousWorkspaceId = this.workspaceBindingId;
     const previousThreadId = this.conversation.getSnapshot().threadId;
     try {
+      await this.conversation.waitForTurnStartSettlement();
+      if (!this.resolvedCli || !this.client || this.shuttingDown) {
+        return false;
+      }
       this.workspacePath = workspacePath;
       this.workspaceRuntimeKind = runtimeKind;
       const workspaceId = await this.openConfiguredWorkspace();
@@ -742,10 +745,7 @@ export class ConnectionSupervisor {
         this.rememberStartedThread(notification);
         this.commandApprovals.handleNotification(notification);
         this.mcpApprovals.handleNotification(notification);
-        this.conversation.handleNotification(
-          notification,
-          this.notificationWorkspaceId(notification) ?? '',
-        );
+        this.conversation.handleNotification(notification);
       },
       onFatalError: () => {
         if (generation === this.connectionGeneration) {
@@ -954,12 +954,12 @@ export class ConnectionSupervisor {
 
   private describeApprovalSource = (
     threadId: string,
+    workspaceId: string,
   ): Readonly<{
     projectTitle: string;
     conversationTitle: string;
   }> => {
     const navigator = this.conversation.getSnapshot().navigator;
-    const workspaceId = this.threadWorkspaceIds.get(threadId);
     return {
       projectTitle:
         (workspaceId ? this.workspaceTitles.get(workspaceId) : undefined) ??
@@ -972,19 +972,17 @@ export class ConnectionSupervisor {
     };
   };
 
-  private rememberScopedThreads = (
-    workspaceId: string,
+  private rememberThreadTitles = (
+    _workspaceId: string,
     snapshot: ConversationStateSnapshot,
   ): void => {
-    for (const threadId of snapshot.navigator.activeThreadIds) {
-      this.threadWorkspaceIds.set(threadId, workspaceId);
-      const title = snapshot.navigator.activeThreadTitles[threadId];
-      if (title) {
-        this.threadTitles.set(threadId, title);
+    if (snapshot.navigator.status === 'ready') {
+      for (const threadId of snapshot.navigator.activeThreadIds) {
+        const title = snapshot.navigator.activeThreadTitles[threadId];
+        if (title) {
+          this.threadTitles.set(threadId, title);
+        }
       }
-    }
-    if (snapshot.threadId) {
-      this.threadWorkspaceIds.set(snapshot.threadId, workspaceId);
     }
   };
 
@@ -1003,9 +1001,7 @@ export class ConnectionSupervisor {
       return;
     }
     const threadId = (thread as Record<string, unknown>).id;
-    const workspaceId = (thread as Record<string, unknown>).workspaceId;
-    if (typeof threadId === 'string' && typeof workspaceId === 'string') {
-      this.threadWorkspaceIds.set(threadId, workspaceId);
+    if (typeof threadId === 'string') {
       const title = (thread as Record<string, unknown>).title;
       if (typeof title === 'string' && title.length > 0) {
         this.threadTitles.set(threadId, title);
@@ -1013,25 +1009,28 @@ export class ConnectionSupervisor {
     }
   };
 
-  private notificationWorkspaceId = (
-    notification: Extract<ServerMessage, { kind: 'notification' }>,
-  ): string | null => {
-    if (typeof notification.params !== 'object' || notification.params === null) {
-      return null;
-    }
-    const params = notification.params as Record<string, unknown>;
-    if (notification.method === 'thread/started') {
-      const thread = params.thread;
-      if (typeof thread !== 'object' || thread === null) {
-        return null;
+  private rejectThreadApprovals = (threadId: string): void => {
+    this.commandApprovals.rejectThread(threadId);
+    this.mcpApprovals.rejectThread(threadId);
+    for (let index = this.approvalQueue.length - 1; index >= 0; index -= 1) {
+      const queued = this.approvalQueue[index];
+      const params = queued?.request.params;
+      if (
+        typeof params !== 'object' ||
+        params === null ||
+        (params as Record<string, unknown>).threadId !== threadId
+      ) {
+        continue;
       }
-      const workspaceId = (thread as Record<string, unknown>).workspaceId;
-      return typeof workspaceId === 'string' ? workspaceId : null;
+      this.approvalQueue.splice(index, 1);
+      if (this.client) {
+        void this.client
+          .respond(queued.request.id, { decision: 'denied' })
+          .catch(() => this.failAndTerminate('write-failed'));
+      }
     }
-    const threadId = params.threadId;
-    return typeof threadId === 'string'
-      ? (this.threadWorkspaceIds.get(threadId) ?? null)
-      : null;
+    this.commandApprovals.queueChanged();
+    this.mcpApprovals.queueChanged();
   };
 
   private presentNextApproval = (): void => {

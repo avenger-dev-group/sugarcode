@@ -172,8 +172,10 @@ fn initialization_failures_match_golden_trace() {
 #[test]
 fn multi_workspace_app_server_opens_and_routes_independent_contexts() {
     let sugarcode_home = tempfile::tempdir().expect("isolated SugarCode home");
+    let provider = BlockingMockProvider::start(sugarcode_home.path());
     let workspace_a = tempfile::tempdir().expect("workspace A");
     let workspace_b = tempfile::tempdir().expect("workspace B");
+    let workspace_chat = tempfile::tempdir().expect("chat workspace");
     fs::write(workspace_a.path().join("only-a.txt"), "a").expect("workspace A fixture");
     fs::write(workspace_b.path().join("only-b.txt"), "b").expect("workspace B fixture");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sugarcode"))
@@ -212,7 +214,8 @@ fn multi_workspace_app_server_opens_and_routes_independent_contexts() {
     let open = |stdin: &mut std::process::ChildStdin,
                 stdout: &mut BufReader<std::process::ChildStdout>,
                 id: &str,
-                root: &std::path::Path|
+                root: &std::path::Path,
+                workspace_type: &str|
      -> String {
         send_json(
             stdin,
@@ -222,7 +225,7 @@ fn multi_workspace_app_server_opens_and_routes_independent_contexts() {
                 "method": "workspace/open",
                 "params": {
                     "root": root,
-                    "workspaceType": "project",
+                    "workspaceType": workspace_type,
                     "allowWorkspaceWrite": false,
                     "allowCommandWorkspaceWrite": false
                 }
@@ -233,11 +236,24 @@ fn multi_workspace_app_server_opens_and_routes_independent_contexts() {
             .expect("workspace ID")
             .to_owned()
     };
-    let workspace_id_a = open(&mut stdin, &mut stdout, "open-a", workspace_a.path());
-    let workspace_id_b = open(&mut stdin, &mut stdout, "open-b", workspace_b.path());
+    let workspace_id_a = open(
+        &mut stdin,
+        &mut stdout,
+        "open-a",
+        workspace_a.path(),
+        "project",
+    );
+    let workspace_id_b = open(
+        &mut stdin,
+        &mut stdout,
+        "open-b",
+        workspace_b.path(),
+        "project",
+    );
     assert_ne!(workspace_id_a, workspace_id_b);
     assert!(!workspace_id_a.contains(workspace_a.path().to_string_lossy().as_ref()));
 
+    let mut thread_ids = Vec::new();
     for (suffix, workspace_id) in [("a", &workspace_id_a), ("b", &workspace_id_b)] {
         send_json(
             &mut stdin,
@@ -250,7 +266,18 @@ fn multi_workspace_app_server_opens_and_routes_independent_contexts() {
         );
         let response = read_json(&mut stdout);
         assert_eq!(response["id"], format!("thread-{suffix}"));
-        assert_eq!(read_json(&mut stdout)["method"], "thread/started");
+        thread_ids.push(
+            response["result"]["thread"]["id"]
+                .as_str()
+                .expect("thread ID")
+                .to_owned(),
+        );
+        let started = read_json(&mut stdout);
+        assert_eq!(started["method"], "thread/started");
+        assert_eq!(
+            started["params"]["thread"]["workspaceId"],
+            workspace_id.as_str()
+        );
     }
 
     send_json(
@@ -266,7 +293,80 @@ fn multi_workspace_app_server_opens_and_routes_independent_contexts() {
     assert_eq!(listed["result"]["entries"][0]["name"], "only-a.txt");
     assert!(!listed.to_string().contains("only-b.txt"));
 
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn-a",
+            "method": "turn/start",
+            "params": {
+                "threadId": thread_ids[0],
+                "input": [{"type":"text","text":"Keep workspace A busy"}]
+            }
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "turn-a");
+    for expected_method in [
+        "turn/started",
+        "item/started",
+        "item/completed",
+        "turn/agentOutput/delta",
+    ] {
+        let notification = read_json(&mut stdout);
+        assert_eq!(notification["method"], expected_method);
+        assert_eq!(notification["params"]["workspaceId"], workspace_id_a);
+        assert_eq!(notification["params"]["threadId"], thread_ids[0]);
+    }
+    provider.wait_until_delta_sent();
+
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "turn-b",
+            "method": "turn/start",
+            "params": {
+                "threadId": thread_ids[1],
+                "input": [{"type":"text","text":"Keep workspace B busy"}]
+            }
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "turn-b");
+    for expected_method in ["turn/started", "item/started", "item/completed"] {
+        let notification = read_json(&mut stdout);
+        assert_eq!(notification["method"], expected_method);
+        assert_eq!(notification["params"]["workspaceId"], workspace_id_b);
+        assert_eq!(notification["params"]["threadId"], thread_ids[1]);
+    }
+
+    let workspace_id_chat = open(
+        &mut stdin,
+        &mut stdout,
+        "open-chat",
+        workspace_chat.path(),
+        "isolatedChat",
+    );
+    assert_ne!(workspace_id_chat, workspace_id_a);
+    assert_ne!(workspace_id_chat, workspace_id_b);
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "thread-chat",
+            "method": "thread/start",
+            "params": {"workspaceId": workspace_id_chat}
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["id"], "thread-chat");
+    let chat_started = read_json(&mut stdout);
+    assert_eq!(chat_started["method"], "thread/started");
+    assert_eq!(
+        chat_started["params"]["thread"]["workspaceId"],
+        workspace_id_chat
+    );
+
     drop(stdin);
+    provider.wait_until_connection_closed();
     assert!(child.wait().expect("wait app-server").success());
 }
 

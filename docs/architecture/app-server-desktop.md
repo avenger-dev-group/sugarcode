@@ -29,8 +29,10 @@ The registry shares one rollout repository. Thread, Turn and Item IDs are
 canonical lowercase UUIDv7 values and require no shared numeric allocator.
 Every public `Thread` carries its required `workspaceId`; start, list, search,
 resume, fork, descendants and `thread/started` preserve that binding. Main uses
-the returned binding, rather than the foreground selection, to record ownership
-and route lifecycle events back to the correct Desktop projection. A context
+the returned binding, rather than the foreground selection, to record ownership.
+Every other real-time Turn/Item lifecycle notification and both approval request
+types carry a required top-level `workspaceId`, so Main routes an event from the
+message alone and never infers ownership from Renderer navigation state. A context
 with no active Turn, pending approval or current
 foreground reference may unload after five idle minutes; its descriptor and
 durable state remain, and the next routed request reloads it. Reopening a
@@ -73,8 +75,14 @@ are normal typed Turn failures and never enter this connection-recovery path.
 Likewise, a structurally valid `thread/resume` response whose Item lifecycle
 cannot be projected is isolated to that Thread: Desktop clears the unsafe
 selection, keeps the sidecar and other Threads available, and presents a
-selection notice. Connection restart is reserved for framing, handshake or
-cross-process contract failures, not one historical conversation.
+selection notice. The same boundary applies to a live event with a valid
+`workspaceId + threadId` route whose payload or Turn/Item ordering cannot be
+projected. Main drops that Thread's in-memory Runtime, rejects its waiting
+approvals, clears speculative running/unread state and marks it reload-required.
+Later events for the quarantined Thread are ignored until an explicit selection
+forces `thread/resume`; no timer retries it. JSONL framing, JSON-RPC envelope,
+unknown notification, unrecognized Thread, Workspace binding change, approval,
+handshake and version errors remain global connection-recovery failures.
 
 `Turn` and `TurnSnapshot` may expose provider-neutral token usage. During an
 active Turn, `thread/tokenUsage/updated` carries `lastRequest`, cumulative
@@ -97,12 +105,20 @@ Electron Main owns:
 - command-approval policy and its current Thread/workspace scope;
 - Git, preview window and PTY/ConPTY terminal.
 
-Conversation state is one projection per Thread rather than one mutable global
-transcript. Each Main-only projection freezes its owning `workspaceId` while the
-Renderer snapshot omits that internal field. Background lifecycle updates are
-accepted only for known Threads in their owning workspace and can never replace
-a blank foreground projection. Running and unread Thread sets are filtered to
-the foreground workspace for navigation, and selecting a cached Thread never
+Conversation state is one `ThreadRuntime` per Thread rather than one mutable
+global transcript. The Registry owns each Thread's immutable `workspaceId`,
+phase, active Turn, Turn/Item projection, notice, attachment previews,
+start-acceptance state and bounded startup lifecycle buffer. The controller owns
+only the foreground `{ workspaceId, threadId | null }` selection, navigation and
+short-lived UI transactions. Background lifecycle is applied directly to the
+target Runtime; Main never saves the foreground, temporarily swaps Workspace
+identity, restores a background projection and swaps back. Background updates
+are accepted only for known Threads in their owning workspace and can never
+replace a blank foreground projection. Navigation projects running Thread IDs and
+unread terminal statuses globally across every registered project and isolated
+chat, while the transcript remains scoped to the foreground workspace.
+Successful, failed and interrupted background Turns retain distinct unread
+states until their Thread is selected. Selecting a cached Thread never
 overwrites another active Turn. Stop and destructive Thread actions always
 target an explicit Thread ID; only the target Thread's active Turn blocks its
 fork/archive/delete action.
@@ -110,7 +126,8 @@ fork/archive/delete action.
 `conversation/controller.ts` is the stable conversation-controller facade.
 Its `conversation/controller/` implementation directory separates RPC and
 Thread action coordination (`conversation-controller.ts`), snapshot/recovery
-projection (`projection.ts`), Turn lifecycle routing
+projection (`projection.ts`), the per-Thread Runtime Registry entry
+(`thread-runtime.ts`), Turn lifecycle routing
 (`lifecycle-controller.ts`), mutable state and correlation guards
 (`mutable-state.ts` and `item-lifecycle-base.ts`), and the started/completed
 Item reducers with their semantic comparisons (`item-started.ts`,
@@ -153,7 +170,12 @@ project and conversation. Renderer opens the modal only while its owning Thread
 is selected; a background request instead marks that Thread as requiring
 approval in the navigator, and selecting it reveals the existing modal. “View
 task” asks Main to activate the owning project or isolated chat before selecting
-its Thread. Workspace-scoped automatic
+its Thread. Navigation state priority is actionable approval, opening,
+reload-required, running, then unread terminal status. A reload-required row
+uses the existing alert semantics and remains clickable because selection is the
+explicit durable reload action. Requests behind the actionable FIFO head
+remain running until they become the head, so the navigator never claims that a
+non-actionable queued request can already be approved. Workspace-scoped automatic
 approval is checked against the request's recorded workspace, not the currently
 visible project.
 
@@ -166,7 +188,21 @@ scoped to the active chat workspace so other chat directories remain intact.
 Its stored active entry
 does not opt a cold launch into foreground restoration. Switching projects does
 not restart the sidecar, and background Turns continue while the foreground
-selection changes. Project ordering is import-recency order: a newly imported
+selection changes. When a user requests another project or a new isolated chat
+while the current `turn/start` request is still settling, Main serializes the
+workspace switch only until that request is accepted or rejected. It never waits
+for `turn/completed`. Before a new Thread ID exists, one pending start transaction
+holds the Workspace binding and early lifecycle; the `thread/start` response and
+matching `thread/started` bind the Runtime, and early `turn/started` events remain
+buffered until the `turn/start` response is accepted. This keeps the newly
+started Turn in its owning projection and then opens the requested foreground
+workspace. A workspace-loading snapshot
+clears the previous workspace's Thread index, and Main never learns Thread
+ownership from any Renderer snapshot; ready snapshots contribute display titles
+only. Transient navigation state therefore cannot rebind a background Thread to
+the new foreground workspace.
+Project ordering is
+import-recency order: a newly imported
 project enters at the top, while later activation never changes its position.
 
 Renderer keeps unsent drafts, attachments and next-Turn model selection per

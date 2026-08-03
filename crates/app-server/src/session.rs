@@ -303,7 +303,7 @@ where
             }
             _ => None,
         };
-        let notification = map_core_event(event)?;
+        let notification = map_core_event(event, self.workspace_id().unwrap_or("unbound"))?;
         let mut messages = vec![notification];
         if let Some(key) = interrupted
             && let Some(id) = self.pending_interrupts.remove(&key)
@@ -354,6 +354,7 @@ where
         let source_agent = approval_source_agent(&mut self.agent, &pending.request.thread_id);
         let params = CommandApprovalParams {
             approval_id: pending.request.approval_id,
+            workspace_id: self.workspace_id().unwrap_or("unbound").to_owned(),
             thread_id: pending.request.thread_id.into_string(),
             turn_id: pending.request.turn_id.into_string(),
             call_id: pending.request.call_id,
@@ -415,6 +416,7 @@ where
         let source_agent = approval_source_agent(&mut self.agent, &pending.request.thread_id);
         let params = McpToolCallApprovalParams {
             approval_id: pending.request.approval_id,
+            workspace_id: self.workspace_id().unwrap_or("unbound").to_owned(),
             thread_id: pending.request.thread_id.into_string(),
             turn_id: pending.request.turn_id.into_string(),
             call_id: pending.request.call_id,

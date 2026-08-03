@@ -7,6 +7,7 @@ import type {
   ConversationActionResult,
   ConversationStateListener,
   ConversationStateSnapshot,
+  ConversationTerminalTurnStatus,
   ConversationThreadNavigatorSnapshot,
 } from '@/shared/conversation';
 import {
@@ -16,7 +17,9 @@ import {
 
 import {
   type ConversationLifecycle,
+  type ConversationLifecycleRoute,
   parseConversationLifecycle,
+  parseConversationLifecycleRoute,
 } from '../protocol';
 import { ConversationLifecycleController } from './lifecycle-controller';
 import type { MutableTurn } from './mutable-state';
@@ -39,15 +42,17 @@ import {
   RpcResponseError,
 } from '../../transport/jsonl-client';
 import type { ServerMessage } from '../../transport/server-message';
+import {
+  ThreadRuntime,
+  type ThreadRuntimeState,
+} from './thread-runtime';
 
 const MAX_BUFFERED_LIFECYCLE = 64;
 
-type ConversationProjection = {
-  workspaceId: string;
-  phase: ConversationStateSnapshot['phase'];
-  activeTurnId: string | null;
-  turns: MutableTurn[];
-  notice: ConversationStateSnapshot['notice'];
+type PendingThreadStart = {
+  readonly workspaceId: string;
+  candidateThreadId: string | null;
+  lifecycleBuffer: ConversationLifecycle[];
 };
 
 export type ScopedConversationStateListener = (
@@ -58,6 +63,7 @@ export type ScopedConversationStateListener = (
 type ConversationControllerOptions = Readonly<{
   getRpc: () => ConversationRpc | null;
   onProtocolFailure: () => void;
+  onThreadProjectionFailure?: (threadId: string) => void;
   getActionBlocked?: () => boolean;
 }>;
 
@@ -73,27 +79,32 @@ const rejected = (
 export class ConversationController extends ConversationLifecycleController {
   private readonly getRpc: ConversationControllerOptions['getRpc'];
   private readonly onProtocolFailure: ConversationControllerOptions['onProtocolFailure'];
+  private readonly onThreadProjectionFailure: (threadId: string) => void;
   private readonly getActionBlocked: () => boolean;
   private readonly listeners = new Set<ConversationStateListener>();
   private readonly scopedListeners = new Set<ScopedConversationStateListener>();
   private workspaceId: string | null = null;
   private revision = 0;
-  private bufferedLifecycle: ConversationLifecycle[] = [];
-  private awaitingTurnResponse = false;
+  private pendingThreadStart: PendingThreadStart | null = null;
   private searchAbortController: AbortController | null = null;
   private selectionAbortController: AbortController | null = null;
   private mutationAbortController: AbortController | null = null;
   private searchGeneration = 0;
   private selectionGeneration = 0;
   private readonly navigator: MutableThreadNavigator = createThreadNavigator();
-  private readonly projections = new Map<string, ConversationProjection>();
-  private readonly unreadThreadIds = new Set<string>();
-  private publishSuspended = false;
+  private readonly projections = new Map<string, ThreadRuntime>();
+  private readonly reloadRequiredThreadIds = new Set<string>();
+  private readonly unreadThreadStatuses = new Map<
+    string,
+    ConversationTerminalTurnStatus
+  >();
 
   constructor(options: ConversationControllerOptions) {
     super();
     this.getRpc = options.getRpc;
     this.onProtocolFailure = options.onProtocolFailure;
+    this.onThreadProjectionFailure =
+      options.onThreadProjectionFailure ?? (() => undefined);
     this.getActionBlocked = options.getActionBlocked ?? (() => false);
   }
 
@@ -109,11 +120,44 @@ export class ConversationController extends ConversationLifecycleController {
     return () => this.scopedListeners.delete(listener);
   };
 
+  getThreadWorkspaceId = (threadId: string): string | null => {
+    if (threadId === this.threadId) {
+      return this.workspaceId;
+    }
+    return this.projections.get(threadId)?.workspaceId ?? null;
+  };
+
+  waitForTurnStartSettlement = async (): Promise<void> => {
+    if (this.phase !== 'starting') {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      let unsubscribe = (): void => undefined;
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        unsubscribe();
+        resolve();
+      };
+      unsubscribe = this.subscribe((snapshot) => {
+        if (snapshot.phase !== 'starting') {
+          finish();
+        }
+      });
+      if (this.phase !== 'starting') {
+        finish();
+      }
+    });
+  };
+
   setAgentApprovalTasks = (waitingTaskIds: ReadonlySet<string>): void => {
     let changed = false;
     const turnCollections = new Set<MutableTurn[]>([
       this.turns,
-      ...[...this.projections.values()].map((projection) => projection.turns),
+      ...[...this.projections.values()].map((runtime) => runtime.getTurns()),
     ]);
     for (const turn of [...turnCollections].flat()) {
       const orchestration = turn.orchestration;
@@ -155,6 +199,9 @@ export class ConversationController extends ConversationLifecycleController {
     this.clearSelectedConversation();
     this.phase = 'unavailable';
     this.navigator.status = 'loading';
+    this.navigator.activeThreadIds = [];
+    this.navigator.activeThreadTitles = {};
+    this.navigator.activeTruncated = false;
     this.navigator.pendingThreadId = undefined;
     this.navigator.pendingMutation = undefined;
     resetThreadSearch(this.navigator);
@@ -166,7 +213,9 @@ export class ConversationController extends ConversationLifecycleController {
         if (!listed.data.some((thread) => thread.id === preferredThreadId)) {
           throw new Error('Preferred Thread is not bound to this workspace.');
         }
-        const cached = this.projections.get(preferredThreadId);
+        const cached = this.reloadRequiredThreadIds.has(preferredThreadId)
+          ? undefined
+          : this.projections.get(preferredThreadId);
         if (cached?.workspaceId === workspaceId) {
           this.restoreProjection(preferredThreadId, cached);
         } else {
@@ -178,7 +227,8 @@ export class ConversationController extends ConversationLifecycleController {
           this.replaceRecoveredConversation(recovered);
           this.phase = 'ready';
         }
-        this.unreadThreadIds.delete(preferredThreadId);
+        this.reloadRequiredThreadIds.delete(preferredThreadId);
+        this.unreadThreadStatuses.delete(preferredThreadId);
       } else {
         this.phase = 'idle';
       }
@@ -194,6 +244,9 @@ export class ConversationController extends ConversationLifecycleController {
           error instanceof RpcResponseError
             ? 'This workspace could not be restored safely.'
             : 'This workspace contains an unsupported Thread lifecycle.';
+        if (preferredThreadId && !(error instanceof RpcResponseError)) {
+          this.reloadRequiredThreadIds.add(preferredThreadId);
+        }
         this.publish();
       }
       return false;
@@ -249,6 +302,7 @@ export class ConversationController extends ConversationLifecycleController {
       );
       const recovered = recoverConversation(preferredThreadId, snapshot);
       this.replaceRecoveredConversation(recovered);
+      this.reloadRequiredThreadIds.delete(preferredThreadId);
       return true;
     } catch (error) {
       if (error instanceof ConnectionClosedError || isAbortError(error)) {
@@ -260,6 +314,9 @@ export class ConversationController extends ConversationLifecycleController {
         error instanceof RpcResponseError
           ? 'The selected Thread could not be loaded. Other Threads remain available.'
           : 'The selected Thread contains an unsupported lifecycle. Other Threads remain available.';
+      if (preferredThreadId && !(error instanceof RpcResponseError)) {
+        this.reloadRequiredThreadIds.add(preferredThreadId);
+      }
       this.publish();
       return true;
     } finally {
@@ -305,8 +362,17 @@ export class ConversationController extends ConversationLifecycleController {
     this.navigator.pendingMutation = undefined;
     this.navigator.archivedUndoThreadId = undefined;
     this.navigator.mutationNotice = undefined;
-    this.awaitingTurnResponse = false;
-    this.bufferedLifecycle = [];
+    this.pendingThreadStart = null;
+    for (const runtime of this.projections.values()) {
+      runtime.resetTurnStart();
+    }
+    for (const [threadId, runtime] of this.projections) {
+      if (threadId !== this.threadId && runtime.getActiveTurnId() !== null) {
+        this.projections.delete(threadId);
+        this.reloadRequiredThreadIds.add(threadId);
+        this.unreadThreadStatuses.delete(threadId);
+      }
+    }
     const clearedAgentOutput = this.clearPendingAgentOutputs();
     const alreadyUnavailable = this.phase === 'unavailable';
     this.phase = 'unavailable';
@@ -443,15 +509,16 @@ export class ConversationController extends ConversationLifecycleController {
       return rejected('unavailable');
     }
     if (threadId === this.threadId && !this.navigator.pendingThreadId) {
-      this.unreadThreadIds.delete(threadId);
+      this.unreadThreadStatuses.delete(threadId);
       return accepted();
     }
 
-    const cached = this.projections.get(threadId);
+    const reloadRequired = this.reloadRequiredThreadIds.has(threadId);
+    const cached = reloadRequired ? undefined : this.projections.get(threadId);
     if (cached) {
       this.saveSelectedProjection();
       this.restoreProjection(threadId, cached);
-      this.unreadThreadIds.delete(threadId);
+      this.unreadThreadStatuses.delete(threadId);
       this.navigator.pendingThreadId = undefined;
       this.publish();
       return accepted();
@@ -472,6 +539,8 @@ export class ConversationController extends ConversationLifecycleController {
       }
       this.replaceRecoveredConversation(recovered);
       this.phase = 'ready';
+      this.reloadRequiredThreadIds.delete(threadId);
+      this.unreadThreadStatuses.delete(threadId);
       this.navigator.pendingThreadId = undefined;
       this.notice = undefined;
       this.publish();
@@ -489,6 +558,9 @@ export class ConversationController extends ConversationLifecycleController {
         error instanceof RpcResponseError
           ? 'That Thread could not be restored safely.'
           : 'That Thread contains an unsupported lifecycle. The local Agent is still available.';
+      if (reloadRequired || !(error instanceof RpcResponseError)) {
+        this.reloadRequiredThreadIds.add(threadId);
+      }
       this.publish();
       return rejected('unavailable');
     } finally {
@@ -704,7 +776,13 @@ export class ConversationController extends ConversationLifecycleController {
 
     this.phase = 'starting';
     this.notice = undefined;
-    this.bufferedLifecycle = [];
+    this.pendingThreadStart = this.threadId
+      ? null
+      : {
+          workspaceId: this.workspaceId ?? 'unbound',
+          candidateThreadId: null,
+          lifecycleBuffer: [],
+        };
     this.actionAbortController = new AbortController();
     this.publish();
     const importedPreviewIds: string[] = [];
@@ -714,9 +792,13 @@ export class ConversationController extends ConversationLifecycleController {
         const response = await rpc.startThread(
           this.actionAbortController.signal,
         );
+        if (response.thread.workspaceId !== this.workspaceId) {
+          throw new Error('thread/start crossed Workspace ownership.');
+        }
         this.threadId = response.thread.id;
         recordActiveThread(this.navigator, response.thread.id);
-        this.drainBufferedThreadLifecycle();
+        this.saveSelectedProjection();
+        this.drainPendingThreadLifecycle(response.thread.id);
       }
 
       if (!this.navigator.activeThreadTitles[this.threadId]) {
@@ -729,7 +811,6 @@ export class ConversationController extends ConversationLifecycleController {
         }
       }
 
-      this.awaitingTurnResponse = true;
       const turnInput: TurnInputPart[] = [];
       if (input.input.length > 0) {
         turnInput.push({ type: 'text', text: input.input });
@@ -758,6 +839,11 @@ export class ConversationController extends ConversationLifecycleController {
             : { type: 'document', asset: imported.asset },
         );
       }
+      const runtime = this.projections.get(this.threadId);
+      if (!runtime) {
+        throw new Error('Thread Runtime is unavailable before turn/start.');
+      }
+      runtime.beginTurnStart();
       const response = await rpc.startTurn(
         this.threadId,
         turnInput,
@@ -775,16 +861,23 @@ export class ConversationController extends ConversationLifecycleController {
       this.turns.push(turn);
       this.activeTurnId = turn.id;
       this.phase = 'inProgress';
-      this.awaitingTurnResponse = false;
       this.publish();
-      this.drainBufferedLifecycle();
+      const buffered = runtime.acceptTurnStart();
+      for (const lifecycle of buffered) {
+        this.applySelectedLifecycle(lifecycle);
+      }
+      if (buffered.length > 0) {
+        this.publish();
+      }
       return accepted();
     } catch (error) {
       for (const assetId of importedPreviewIds) {
         this.attachmentPreviews.delete(assetId);
       }
-      this.awaitingTurnResponse = false;
-      this.bufferedLifecycle = [];
+      this.pendingThreadStart = null;
+      if (this.threadId) {
+        this.projections.get(this.threadId)?.failTurnStart();
+      }
       this.actionAbortController = null;
       if (error instanceof ConnectionClosedError || isAbortError(error)) {
         this.transportClosed();
@@ -814,8 +907,8 @@ export class ConversationController extends ConversationLifecycleController {
     const projection = selected ? null : this.projections.get(threadId);
     const activeTurnId = selected
       ? this.activeTurnId
-      : projection?.activeTurnId ?? null;
-    const phase = selected ? this.phase : projection?.phase;
+      : projection?.getActiveTurnId() ?? null;
+    const phase = selected ? this.phase : projection?.getPhase();
     if (phase !== 'inProgress' || !activeTurnId) {
       return rejected(
         phase === 'unavailable' ? 'unavailable' : 'noActiveTurn',
@@ -830,7 +923,7 @@ export class ConversationController extends ConversationLifecycleController {
     if (selected) {
       this.phase = 'stopping';
     } else if (projection) {
-      projection.phase = 'stopping';
+      projection.setPhase('stopping');
     }
     this.publish();
     try {
@@ -848,8 +941,8 @@ export class ConversationController extends ConversationLifecycleController {
         };
         if (selected && this.activeTurnId === turnId) {
           this.phase = 'inProgress';
-        } else if (projection?.activeTurnId === turnId) {
-          projection.phase = 'inProgress';
+        } else if (projection?.getActiveTurnId() === turnId) {
+          projection.setPhase('inProgress');
         }
         this.publish();
       }
@@ -859,105 +952,142 @@ export class ConversationController extends ConversationLifecycleController {
 
   handleNotification = (
     message: Extract<ServerMessage, { kind: 'notification' }>,
-    workspaceId: string,
   ): void => {
+    let route;
+    try {
+      route = parseConversationLifecycleRoute(message);
+    } catch {
+      this.onProtocolFailure();
+      return;
+    }
+    if (!route) {
+      this.onProtocolFailure();
+      return;
+    }
+    if (this.reloadRequiredThreadIds.has(route.threadId)) {
+      return;
+    }
+
+    const belongsToPendingNewThread =
+      this.pendingThreadStart !== null &&
+      route.workspaceId === this.pendingThreadStart.workspaceId &&
+      this.threadId === null &&
+      this.phase === 'starting' &&
+      !this.projections.has(route.threadId);
+    const target = this.projections.get(route.threadId);
+    if (
+      (route.threadId === this.threadId &&
+        route.workspaceId !== this.workspaceId) ||
+      (target && target.workspaceId !== route.workspaceId) ||
+      (!belongsToPendingNewThread &&
+        route.threadId !== this.threadId &&
+        !target)
+    ) {
+      this.onProtocolFailure();
+      return;
+    }
+
     let lifecycle: ConversationLifecycle | null;
     try {
       lifecycle = parseConversationLifecycle(message);
       if (!lifecycle) {
         return;
       }
-      const targetThreadId =
-        lifecycle.type === 'threadStarted'
-          ? lifecycle.params.thread.id
-          : lifecycle.params.threadId;
-      if (
-        lifecycle.type === 'threadStarted' &&
-        lifecycle.params.thread.workspaceId !== workspaceId
-      ) {
-        throw new Error('Thread lifecycle workspace binding changed in transit.');
+      if (belongsToPendingNewThread) {
+        this.bufferPendingThreadLifecycle(route, lifecycle);
+        return;
       }
-      const belongsToPendingNewThread =
-        workspaceId === this.workspaceId &&
-        this.threadId === null &&
-        this.phase === 'starting';
-      if (targetThreadId === this.threadId && workspaceId !== this.workspaceId) {
-        throw new Error('Selected Thread received another workspace lifecycle.');
-      }
-      if (!belongsToPendingNewThread && targetThreadId !== this.threadId) {
-        const target = this.projections.get(targetThreadId);
-        if (!target || target.workspaceId !== workspaceId) {
-          throw new Error('Lifecycle referenced an unknown background Thread.');
-        }
-        const selectedThreadId = this.threadId;
-        const selectedProjection = this.captureSelectedProjection();
-        const selectedWorkspaceId = this.workspaceId;
+      if (route.threadId === this.threadId) {
         this.saveSelectedProjection();
-        this.workspaceId = workspaceId;
-        this.restoreProjection(targetThreadId, target);
-        this.publishSuspended = true;
-        try {
-          this.applyLifecycle(lifecycle);
-          this.saveSelectedProjection();
-        } finally {
-          this.publishSuspended = false;
-          this.workspaceId = selectedWorkspaceId;
-          this.restoreProjection(selectedThreadId, selectedProjection);
+        const selectedRuntime = this.projections.get(route.threadId);
+        if (!selectedRuntime) {
+          throw new Error('Selected Thread runtime is unavailable.');
         }
         if (
-          lifecycle.type === 'turnCompleted' &&
-          lifecycle.params.turn.status !== 'inProgress'
+          selectedRuntime.isTurnStartPending() &&
+          lifecycle.type !== 'threadStarted'
         ) {
-          this.unreadThreadIds.add(targetThreadId);
+          selectedRuntime.bufferLifecycle(lifecycle);
+          return;
         }
+        selectedRuntime.acceptLifecycle(lifecycle);
+        this.restoreProjection(route.threadId, selectedRuntime);
         this.publish();
         return;
       }
-      if (this.shouldBuffer(lifecycle)) {
-        this.bufferLifecycle(lifecycle);
+      if (target?.isTurnStartPending() && lifecycle.type !== 'threadStarted') {
+        target.bufferLifecycle(lifecycle);
         return;
       }
-      this.applyLifecycle(lifecycle);
+      target?.acceptLifecycle(lifecycle);
+      if (
+        lifecycle.type === 'turnCompleted' &&
+        lifecycle.params.turn.status !== 'inProgress'
+      ) {
+        this.unreadThreadStatuses.set(
+          route.threadId,
+          lifecycle.params.turn.status,
+        );
+      }
+      this.publish();
     } catch {
-      this.onProtocolFailure();
-    }
-  };
-
-  private shouldBuffer = (lifecycle: ConversationLifecycle): boolean => {
-    if (this.phase !== 'starting') {
-      return false;
-    }
-    if (lifecycle.type === 'threadStarted') {
-      return !this.threadId;
-    }
-    return this.awaitingTurnResponse;
-  };
-
-  private bufferLifecycle = (lifecycle: ConversationLifecycle): void => {
-    if (this.bufferedLifecycle.length >= MAX_BUFFERED_LIFECYCLE) {
-      throw new Error('Conversation lifecycle buffer exceeded its limit.');
-    }
-    this.bufferedLifecycle.push(lifecycle);
-  };
-
-  private drainBufferedThreadLifecycle = (): void => {
-    const remaining: ConversationLifecycle[] = [];
-    for (const lifecycle of this.bufferedLifecycle) {
-      if (lifecycle.type === 'threadStarted') {
-        this.applyLifecycle(lifecycle);
+      if (belongsToPendingNewThread) {
+        this.onProtocolFailure();
       } else {
-        remaining.push(lifecycle);
+        this.quarantineThread(route.threadId, route.workspaceId);
       }
     }
-    this.bufferedLifecycle = remaining;
   };
 
-  private drainBufferedLifecycle = (): void => {
-    const buffered = this.bufferedLifecycle;
-    this.bufferedLifecycle = [];
-    for (const lifecycle of buffered) {
-      this.applyLifecycle(lifecycle);
+  private bufferPendingThreadLifecycle = (
+    route: ConversationLifecycleRoute,
+    lifecycle: ConversationLifecycle,
+  ): void => {
+    const pending = this.pendingThreadStart;
+    if (
+      !pending ||
+      pending.workspaceId !== route.workspaceId ||
+      (pending.candidateThreadId !== null &&
+        pending.candidateThreadId !== route.threadId) ||
+      pending.lifecycleBuffer.length >= MAX_BUFFERED_LIFECYCLE
+    ) {
+      throw new Error('Pending Thread start lifecycle is inconsistent.');
     }
+    pending.candidateThreadId = route.threadId;
+    pending.lifecycleBuffer.push(lifecycle);
+  };
+
+  private drainPendingThreadLifecycle = (threadId: string): void => {
+    const pending = this.pendingThreadStart;
+    this.pendingThreadStart = null;
+    if (!pending) {
+      return;
+    }
+    if (
+      pending.workspaceId !== this.workspaceId ||
+      (pending.candidateThreadId !== null &&
+        pending.candidateThreadId !== threadId)
+    ) {
+      throw new Error('thread/start response did not match buffered lifecycle.');
+    }
+    for (const lifecycle of pending.lifecycleBuffer) {
+      this.applySelectedLifecycle(lifecycle);
+    }
+  };
+
+  private applySelectedLifecycle = (
+    lifecycle: ConversationLifecycle,
+  ): void => {
+    if (!this.threadId) {
+      throw new Error('Selected Thread runtime is unavailable.');
+    }
+    this.saveSelectedProjection();
+    const runtime = this.projections.get(this.threadId);
+    if (!runtime) {
+      throw new Error('Selected Thread runtime is unavailable.');
+    }
+    runtime.acceptLifecycle(lifecycle);
+    this.restoreProjection(this.threadId, runtime);
   };
 
   private getThreadMutationBlock = (
@@ -974,7 +1104,7 @@ export class ConversationController extends ConversationLifecycleController {
     const targetActive =
       this.threadId === exactThreadId
         ? this.activeTurnId !== null
-        : this.projections.get(exactThreadId)?.activeTurnId != null;
+        : this.projections.get(exactThreadId)?.getActiveTurnId() != null;
     if (targetActive) {
       return 'turnActive';
     }
@@ -1092,21 +1222,30 @@ export class ConversationController extends ConversationLifecycleController {
     if (!this.threadId) {
       return;
     }
-    this.projections.set(this.threadId, this.captureSelectedProjection());
+    const state = this.captureSelectedProjection();
+    const runtime = this.projections.get(this.threadId);
+    if (runtime) {
+      runtime.replaceProjection(state);
+      return;
+    }
+    this.projections.set(this.threadId, new ThreadRuntime(state));
   };
 
-  private captureSelectedProjection = (): ConversationProjection => ({
+  private captureSelectedProjection = (): ThreadRuntimeState => ({
     workspaceId: this.workspaceId ?? 'unbound',
+    threadId: this.threadId as string,
     phase: this.phase,
     activeTurnId: this.activeTurnId,
     turns: this.turns,
     notice: this.notice,
+    attachmentPreviews: new Map(this.attachmentPreviews),
   });
 
   private restoreProjection = (
     threadId: string | null,
-    projection: ConversationProjection,
+    runtime: ThreadRuntime,
   ): void => {
+    const projection = runtime.capture();
     if (this.workspaceId !== projection.workspaceId) {
       throw new Error('Conversation projection belongs to another workspace.');
     }
@@ -1115,6 +1254,32 @@ export class ConversationController extends ConversationLifecycleController {
     this.activeTurnId = projection.activeTurnId;
     this.turns = projection.turns;
     this.notice = projection.notice;
+    this.attachmentPreviews.clear();
+    for (const [assetId, preview] of projection.attachmentPreviews) {
+      this.attachmentPreviews.set(assetId, preview);
+    }
+  };
+
+  private quarantineThread = (
+    threadId: string,
+    workspaceId: string,
+  ): void => {
+    const runtime = this.projections.get(threadId);
+    if (runtime && runtime.workspaceId !== workspaceId) {
+      this.onProtocolFailure();
+      return;
+    }
+    this.projections.delete(threadId);
+    this.reloadRequiredThreadIds.add(threadId);
+    this.unreadThreadStatuses.delete(threadId);
+    this.onThreadProjectionFailure(threadId);
+    if (this.threadId === threadId) {
+      this.clearSelectedConversation();
+      this.phase = 'idle';
+    }
+    this.navigator.selectionNotice =
+      'This Thread could not be updated safely. Select it to reload from saved history. Other Threads remain available.';
+    this.publish();
   };
 
   private handleThreadMutationFailure = (
@@ -1157,29 +1322,22 @@ export class ConversationController extends ConversationLifecycleController {
       notice: this.notice,
     });
     const runningThreadIds = [...this.projections.entries()]
-      .filter(
-        ([, projection]) =>
-          projection.workspaceId === this.workspaceId &&
-          projection.activeTurnId !== null,
-      )
+      .filter(([, runtime]) => runtime.getActiveTurnId() !== null)
       .map(([threadId]) => threadId);
     return {
       ...snapshot,
       navigator: {
         ...snapshot.navigator,
         runningThreadIds,
-        unreadThreadIds: [...this.unreadThreadIds].filter(
-          (threadId) =>
-            this.projections.get(threadId)?.workspaceId === this.workspaceId,
+        unreadThreadStatuses: Object.fromEntries(
+          this.unreadThreadStatuses,
         ),
+        reloadRequiredThreadIds: [...this.reloadRequiredThreadIds],
       },
     };
   };
 
   protected publish = (): void => {
-    if (this.publishSuspended) {
-      return;
-    }
     this.saveSelectedProjection();
     this.revision += 1;
     const snapshot = this.createSnapshot();

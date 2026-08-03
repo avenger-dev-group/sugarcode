@@ -8,9 +8,13 @@
     },
     "turn": {
       "$ref": "#/$defs/Turn"
+    },
+    "workspaceId": {
+      "type": "string"
     }
   },
   "required": [
+    "workspaceId",
     "threadId",
     "turn"
   ],

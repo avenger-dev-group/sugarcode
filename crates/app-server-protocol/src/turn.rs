@@ -203,6 +203,7 @@ pub struct TokenUsage {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct TokenUsageUpdatedNotification {
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn_id: String,
     pub usage: TokenUsage,
@@ -220,6 +221,7 @@ pub enum TurnWarningCode {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct TurnWarningNotification {
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn_id: String,
     pub code: TurnWarningCode,
@@ -386,6 +388,7 @@ pub struct TurnStartResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct TurnStartedNotification {
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn: Turn,
 }
@@ -394,6 +397,7 @@ pub struct TurnStartedNotification {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct TurnCompletedNotification {
+    pub workspace_id: String,
     pub thread_id: String,
     pub turn: Turn,
 }

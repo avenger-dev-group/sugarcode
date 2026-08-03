@@ -10,6 +10,7 @@ import type {
 import type {
   ConversationAttachment,
   ConversationPhase,
+  ConversationTerminalTurnStatus,
   ConversationTurnError,
   ConversationTurnStatus,
 } from '@/shared/conversation';
@@ -160,7 +161,10 @@ export type ThreadNavigatorViewModel = Readonly<{
   threadIds: readonly string[];
   threadTitles: Readonly<Record<string, string>>;
   runningThreadIds: readonly string[];
-  unreadThreadIds: readonly string[];
+  unreadThreadStatuses: Readonly<
+    Record<string, ConversationTerminalTurnStatus>
+  >;
+  reloadRequiredThreadIds: readonly string[];
   selectedThreadId: string | null;
   pendingThreadId: string | null;
   pendingMutation: Readonly<{
@@ -173,6 +177,16 @@ export type ThreadNavigatorViewModel = Readonly<{
   selectionNotice?: string;
   mutationNotice?: string;
 }>;
+
+export type ThreadNavigationStatus =
+  | 'idle'
+  | 'opening'
+  | 'running'
+  | 'reloadRequired'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'approvalRequired';
 
 export type ThreadStore = Readonly<{
   thread: ThreadViewModel;

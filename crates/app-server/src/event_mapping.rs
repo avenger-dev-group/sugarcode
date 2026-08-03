@@ -78,6 +78,7 @@ pub(crate) fn map_turn_lifecycle(
     events: Vec<CoreEvent>,
     expected_request_id: CoreRequestId,
     expected_thread_id: &ThreadId,
+    workspace_id: &str,
 ) -> Result<MappedTurnLifecycle, EventMappingError> {
     let [
         turn_started,
@@ -191,6 +192,7 @@ pub(crate) fn map_turn_lifecycle(
         notification(
             "turn/started",
             to_value(TurnStartedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: public_thread_id.clone(),
                 turn: turn.clone(),
             })
@@ -199,6 +201,7 @@ pub(crate) fn map_turn_lifecycle(
         notification(
             "item/started",
             to_value(ItemStartedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: public_thread_id.clone(),
                 turn_id: public_turn_id.clone(),
                 item: started_public_item,
@@ -209,6 +212,7 @@ pub(crate) fn map_turn_lifecycle(
         notification(
             "item/agentMessage/delta",
             to_value(AgentMessageDeltaNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: public_thread_id.clone(),
                 turn_id: public_turn_id.clone(),
                 item_id: public_item_id,
@@ -219,6 +223,7 @@ pub(crate) fn map_turn_lifecycle(
         notification(
             "item/completed",
             to_value(ItemCompletedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: public_thread_id.clone(),
                 turn_id: public_turn_id.clone(),
                 item: completed_public_item,
@@ -228,6 +233,7 @@ pub(crate) fn map_turn_lifecycle(
         notification(
             "turn/completed",
             to_value(TurnCompletedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: public_thread_id,
                 turn: PublicTurn {
                     id: public_turn_id,
@@ -595,11 +601,15 @@ fn map_snapshot_parts(
     )
 }
 
-pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMappingError> {
+pub(crate) fn map_core_event(
+    event: CoreEvent,
+    workspace_id: &str,
+) -> Result<JsonRpcMessage, EventMappingError> {
     let notification = match event.kind {
         CoreEventKind::TurnStarted { thread_id, turn_id } => notification(
             "turn/started",
             to_value(TurnStartedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: thread_id.into_string(),
                 turn: PublicTurn {
                     id: turn_id.into_string(),
@@ -618,6 +628,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         } => notification(
             "item/started",
             to_value(ItemStartedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 item: map_core_item(item),
@@ -633,6 +644,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         } => notification(
             "turn/agentOutput/delta",
             to_value(AgentOutputDeltaNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 output: AgentOutputRef {
@@ -651,6 +663,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         } => notification(
             "item/started",
             to_value(ItemStartedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 item: map_core_item(item),
@@ -668,6 +681,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         } => notification(
             "turn/agentOutput/discarded",
             to_value(AgentOutputDiscardedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 output: AgentOutputRef {
@@ -685,6 +699,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         } => notification(
             "item/agentMessage/delta",
             to_value(AgentMessageDeltaNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 item_id: item_id.into_string(),
@@ -699,6 +714,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         } => notification(
             "item/completed",
             to_value(ItemCompletedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 item: map_core_item(item),
@@ -712,6 +728,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         } => notification(
             "thread/tokenUsage/updated",
             to_value(TokenUsageUpdatedNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 usage: map_core_usage(usage),
@@ -725,6 +742,7 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         } => notification(
             "turn/warning",
             to_value(TurnWarningNotification {
+                workspace_id: workspace_id.to_owned(),
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 code: match code {
@@ -738,9 +756,13 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
             })
             .map_err(|_| EventMappingError)?,
         ),
-        CoreEventKind::TurnCompleted { thread_id, turn_id } => {
-            terminal_notification(thread_id, turn_id, TurnStatus::Completed, None)?
-        }
+        CoreEventKind::TurnCompleted { thread_id, turn_id } => terminal_notification(
+            thread_id,
+            turn_id,
+            workspace_id,
+            TurnStatus::Completed,
+            None,
+        )?,
         CoreEventKind::TurnFailed {
             thread_id,
             turn_id,
@@ -748,12 +770,17 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
         } => terminal_notification(
             thread_id,
             turn_id,
+            workspace_id,
             TurnStatus::Failed,
             Some(map_core_error(error)),
         )?,
-        CoreEventKind::TurnInterrupted { thread_id, turn_id } => {
-            terminal_notification(thread_id, turn_id, TurnStatus::Interrupted, None)?
-        }
+        CoreEventKind::TurnInterrupted { thread_id, turn_id } => terminal_notification(
+            thread_id,
+            turn_id,
+            workspace_id,
+            TurnStatus::Interrupted,
+            None,
+        )?,
         CoreEventKind::ThreadStarted { .. } | CoreEventKind::RuntimeFailed => {
             return Err(EventMappingError);
         }
@@ -764,12 +791,14 @@ pub(crate) fn map_core_event(event: CoreEvent) -> Result<JsonRpcMessage, EventMa
 fn terminal_notification(
     thread_id: ThreadId,
     turn_id: sugarcode_protocol::TurnId,
+    workspace_id: &str,
     status: TurnStatus,
     error: Option<TurnError>,
 ) -> Result<JsonRpcMessage, EventMappingError> {
     Ok(notification(
         "turn/completed",
         to_value(TurnCompletedNotification {
+            workspace_id: workspace_id.to_owned(),
             thread_id: thread_id.into_string(),
             turn: PublicTurn {
                 id: turn_id.into_string(),

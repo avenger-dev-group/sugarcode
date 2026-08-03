@@ -9,6 +9,7 @@ test('host-inherited command environment policy is accepted', () => {
     approvalId,
     {
       approvalId,
+      workspaceId: 'a'.repeat(64),
       threadId: 'thread',
       turnId: 'turn',
       callId: 'call',
