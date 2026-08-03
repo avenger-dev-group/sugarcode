@@ -1,25 +1,11 @@
 import { ChevronDown, LoaderCircle } from 'lucide-react';
 
 import type { ProcessActivityGroupProps } from './types';
-import { shouldAutoExpandActivityGroup } from './activity-disclosure';
+import {
+  processActivityLabel,
+  shouldAutoExpandActivityGroup,
+} from './activity-disclosure';
 import { useActivityDisclosureStore } from './use-store';
-
-const processLabel = (
-  status: ProcessActivityGroupProps['status'],
-  requiresAttention: boolean,
-): string => {
-  if (requiresAttention) {
-    return 'Action required';
-  }
-  switch (status) {
-    case 'inProgress':
-      return 'Working';
-    case 'interrupted':
-      return 'Process stopped';
-    case 'completed':
-      return 'Processed';
-  }
-};
 
 export const ProcessActivityGroup = ({
   groupId,
@@ -31,7 +17,7 @@ export const ProcessActivityGroup = ({
     groupId,
     shouldAutoExpandActivityGroup(status, requiresAttention),
   );
-  const label = processLabel(status, requiresAttention);
+  const label = processActivityLabel(status, requiresAttention);
   const active = status === 'inProgress' && !requiresAttention;
 
   return (

@@ -48,6 +48,24 @@ Catalog updates are revision-guarded atomic replacements. Exactly one
 `preserve`, `set` or `delete` credential action accompanies each connection.
 An empty key field preserves the stored key; deletion is explicit.
 
+Desktop presents this catalog as a flat list of model configurations. Each
+entry selects a profile and edits the connection referenced by that profile;
+new Desktop entries create one connection/profile pair, while catalogs created
+through the CLI may still share one connection across several profiles. The
+default profile remains an explicit catalog choice.
+
+The everyday Desktop form does not expose the five raw capability modes.
+New entries use the compatibility baseline for tools, strictness, parallelism,
+images and PDFs. Vision is the one user-facing capability switch and maps to an
+explicitly enabled image declaration; turning it off returns image input to
+`auto`. Existing capability declarations remain intact unless that Vision
+switch is changed; selecting Compatible Chat also returns an explicitly enabled
+PDF declaration to `auto` because that wire cannot represent PDF input.
+Advanced capability values remain available through the versioned CLI
+configuration contract. Automatic context compaction is shown as
+Runtime-managed because its trigger is derived from the saved context window
+and Runtime reserves rather than stored as another profile setting.
+
 ## Discovery
 
 Discovery is read-only and routes by wire API:

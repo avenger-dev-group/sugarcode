@@ -236,6 +236,8 @@ export type ThreadWorkbenchViewProps = Readonly<{
 
 export type TranscriptTurnProps = Readonly<{
   turn: TurnViewModel;
+  turnNumber: number;
+  boundary: 'none' | 'divider' | 'precedingTerminal';
   progress?: ActiveTurnProgressViewModel;
   onStop: () => void;
 }>;

@@ -244,16 +244,7 @@ export const SettingsDialog = ({
               />
             ) : null}
             {store.section === 'model' ? (
-              <>
-                <SettingsPageHeader
-                  icon={Cpu}
-                  title="Model"
-                  description="Configure the single OpenAI-compatible model connection used by the packaged local Agent."
-                />
-                <div className="px-6 py-6">
-                  <ModelConfigSettingsPanel active={store.open} />
-                </div>
-              </>
+              <ModelConfigSettingsPanel active={store.open} />
             ) : null}
             {store.section === 'skills' ? <SkillsSettings /> : null}
             {store.section === 'mcp' ? (

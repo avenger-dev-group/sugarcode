@@ -236,6 +236,12 @@ stable reason instead of the generic wire message. It never renders provider
 response content or tool arguments. `historicalContextDowngraded` is a
 non-blocking Turn notice explaining that unsupported historical media was
 represented as bounded text metadata; it is not displayed as a model failure.
+Every Turn after the first begins beyond a full-width semantic divider, so a
+new user message cannot be visually grouped with the preceding Turn's tool or
+terminal state. Interrupted and failed terminal lines serve as that boundary;
+normal completion still has no completion label and receives a dedicated
+divider instead. The Turn section also exposes its conversation ordinal to
+assistive technology.
 
 Project folders are collapsed by default and use focusable disclosure semantics
 rather than selection styling. Clicking a folder only expands or collapses its

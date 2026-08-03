@@ -56,6 +56,7 @@ import { ProcessActivityGroup } from './process-activity-group';
 import { ThreadNavigator } from './thread-navigator';
 import { isCompactToolActivity } from './tool-activity';
 import { ToolActivityGroup } from './tool-activity-group';
+import { toTranscriptTurnBoundary } from './turn-boundary';
 import { useStore, useTranscriptFollow } from './use-store';
 
 const TranscriptMessage = ({
@@ -190,13 +191,26 @@ const TurnActivityTimeline = ({
   );
 };
 
-const TranscriptTurnView = ({ turn, progress, onStop }: TranscriptTurnProps) => (
+const TranscriptTurnView = ({
+  turn,
+  turnNumber,
+  boundary,
+  progress,
+  onStop,
+}: TranscriptTurnProps) => (
   <section
-    className={
+    aria-label={`第 ${turnNumber} 轮对话`}
+    className={`${
       turn.status === 'inProgress'
         ? ''
         : '[contain-intrinsic-size:auto_240px] [content-visibility:auto]'
-    }
+    } ${
+      boundary === 'divider'
+        ? 'mt-8 border-t pt-8'
+        : boundary === 'precedingTerminal'
+          ? 'mt-8'
+          : ''
+    }`}
   >
     <div className="space-y-7">
       {turn.messages
@@ -296,7 +310,7 @@ const TranscriptTurnView = ({ turn, progress, onStop }: TranscriptTurnProps) => 
         </p>
       ) : turn.terminalLabel ? (
         <p
-          className={`pl-10 font-mono text-[10px] uppercase tracking-[0.14em] ${
+          className={`flex items-center gap-3 text-center text-xs font-normal leading-normal before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border ${
             turn.isError ? 'text-destructive' : 'text-tertiary'
           }`}
           role={turn.isError ? 'alert' : 'status'}
@@ -465,11 +479,19 @@ export const ThreadWorkbenchView = ({
                 </p>
               </div>
             ) : (
-              <div className="space-y-10">
-                {store.thread.turns.map((turn) => (
+              <div>
+                {store.thread.turns.map((turn, index) => (
                   <TranscriptTurn
                     key={turn.id}
                     turn={turn}
+                    turnNumber={index + 1}
+                    boundary={toTranscriptTurnBoundary(
+                      index,
+                      Boolean(
+                        store.thread.turns[index - 1]?.failure ||
+                          store.thread.turns[index - 1]?.terminalLabel,
+                      ),
+                    )}
                     progress={
                       store.activeTurnProgress?.turnId === turn.id
                         ? store.activeTurnProgress

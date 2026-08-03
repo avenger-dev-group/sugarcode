@@ -1,18 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
-  type DiscoveredModel,
   type ModelConfigActionResult,
   type ModelConfigInspection,
   type ModelConfigValue,
   type ModelConnectionValue,
   type ModelProfileValue,
-  type ModelProviderFamily,
   type ModelWireApi,
 } from '@/shared/model-config';
 import {
   deleteModelApiKey,
-  discoverModels,
   getModelConfig,
   saveModelConfig,
 } from '@/renderer/services/model-config';
@@ -27,9 +24,15 @@ import type {
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   {
     providerFamily: 'openai',
-    label: 'OpenAI',
+    label: 'OpenAI-compatible',
     baseUrl: 'https://api.openai.com/v1',
     wireApi: 'openaiChatCompletions',
+  },
+  {
+    providerFamily: 'openai',
+    label: 'OpenAI Responses',
+    baseUrl: 'https://api.openai.com/v1',
+    wireApi: 'openaiResponses',
   },
   {
     providerFamily: 'anthropic',
@@ -42,7 +45,7 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
 const INITIAL_CONNECTION: ModelConnectionValue = {
   id: 'conn_openai',
   providerFamily: 'openai',
-  displayName: 'OpenAI',
+  displayName: 'OpenAI-compatible',
   baseUrl: 'https://api.openai.com/v1',
   enabled: true,
   wireApi: 'openaiChatCompletions',
@@ -52,7 +55,7 @@ const INITIAL_CONNECTION: ModelConnectionValue = {
 const INITIAL_PROFILE: ModelProfileValue = {
   id: 'model_primary',
   connectionId: INITIAL_CONNECTION.id,
-  displayName: 'Primary coding model',
+  displayName: 'Work model',
   modelId: '',
   toolCalls: 'auto',
   strictTools: 'auto',
@@ -69,18 +72,18 @@ const EMPTY_CONFIG: ModelConfigValue = {
 
 const noticeFor = (result: ModelConfigActionResult): string => {
   if (result.state === 'saved') {
-    return 'Saved. New Turns will use the updated model catalog.';
+    return 'Saved. New turns will use the updated model configuration.';
   }
   if (result.reason === 'reconnectPending') {
     return 'Another local configuration or workspace change is in progress.';
   }
   if (result.reason === 'stale') {
-    return 'Configuration changed elsewhere. Reload before saving.';
+    return 'Configuration changed elsewhere. Reopen Settings before saving.';
   }
   if (result.reason === 'invalid') {
-    return 'The model catalog was rejected by SugarCode validation.';
+    return 'Check the required fields before saving this configuration.';
   }
-  return 'The model catalog action could not be completed.';
+  return 'The model configuration could not be saved.';
 };
 
 const uniqueId = (prefix: string, existing: readonly string[]): string => {
@@ -93,13 +96,10 @@ const uniqueId = (prefix: string, existing: readonly string[]): string => {
   return `${prefix}_${existing.length + 2}`;
 };
 
-const presetFor = (
-  providerFamily: ModelProviderFamily,
-): ProviderPreset =>
+const presetForWire = (wireApi: ModelWireApi): ProviderPreset =>
   PROVIDER_PRESETS.find(
-    (preset) => preset.providerFamily === providerFamily,
-  ) ??
-  PROVIDER_PRESETS[0];
+    (preset) => preset.wireApi === wireApi,
+  ) ?? PROVIDER_PRESETS[0];
 
 export const useStore = ({
   active = true,
@@ -107,18 +107,14 @@ export const useStore = ({
   const [phase, setPhase] = useState<Phase>('idle');
   const [inspection, setInspection] =
     useState<ModelConfigInspection | null>(null);
-  const [config, setConfig] =
-    useState<ModelConfigValue>(EMPTY_CONFIG);
-  const [selectedConnectionId, setSelectedConnectionId] =
-    useState<string>(INITIAL_CONNECTION.id);
+  const [config, setConfig] = useState<ModelConfigValue>(EMPTY_CONFIG);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>(
+    INITIAL_PROFILE.id,
+  );
   const [notice, setNotice] = useState<string | null>(null);
   const [credentialValue, setCredentialValue] = useState<string>('');
   const [deleteCredentialOpen, setDeleteCredentialOpen] =
     useState<boolean>(false);
-  const [discoveredModels, setDiscoveredModels] = useState<
-    DiscoveredModel[]
-  >([]);
-  const [discovering, setDiscovering] = useState<boolean>(false);
   const [contextInputs, setContextInputs] = useState<
     Record<string, string>
   >({ [INITIAL_PROFILE.id]: '' });
@@ -139,9 +135,7 @@ export const useStore = ({
         const nextConfig = next.config ?? EMPTY_CONFIG;
         setInspection(next);
         setConfig(nextConfig);
-        setSelectedConnectionId(
-          nextConfig.connections[0]?.id ?? INITIAL_CONNECTION.id,
-        );
+        setSelectedProfileId(nextConfig.defaultProfileId);
         setContextInputs(
           Object.fromEntries(
             nextConfig.profiles.map((profile) => [
@@ -154,7 +148,7 @@ export const useStore = ({
       })
       .catch(() => {
         if (current) {
-          setNotice('The saved model catalog is unavailable.');
+          setNotice('The saved model configuration is unavailable.');
           setPhase('idle');
         }
       });
@@ -163,17 +157,14 @@ export const useStore = ({
     };
   }, [active]);
 
+  const selectedProfile =
+    config.profiles.find((profile) => profile.id === selectedProfileId) ??
+    config.profiles[0] ??
+    INITIAL_PROFILE;
   const selectedConnection =
     config.connections.find(
-      (connection) => connection.id === selectedConnectionId,
+      (connection) => connection.id === selectedProfile.connectionId,
     ) ?? config.connections[0] ?? INITIAL_CONNECTION;
-  const connectionProfiles = useMemo(
-    () =>
-      config.profiles.filter(
-        (profile) => profile.connectionId === selectedConnection.id,
-      ),
-    [config.profiles, selectedConnection.id],
-  );
 
   const updateConfig = (
     updater: (current: ModelConfigValue) => ModelConfigValue,
@@ -192,158 +183,116 @@ export const useStore = ({
     }));
   };
 
-  const updateProfile = (
-    id: string,
+  const updateSelectedProfile = (
     patch: Partial<ModelProfileValue>,
   ): void => {
     updateConfig((current) => ({
       ...current,
       profiles: current.profiles.map((profile) =>
-        profile.id === id ? { ...profile, ...patch } : profile,
+        profile.id === selectedProfile.id
+          ? { ...profile, ...patch }
+          : profile,
       ),
     }));
   };
 
-  const setContextInput = (id: string, value: string): void => {
-    setContextInputs((current) => ({ ...current, [id]: value }));
+  const setContextInput = (value: string): void => {
+    setContextInputs((current) => ({
+      ...current,
+      [selectedProfile.id]: value,
+    }));
   };
 
-  const addConnection = (): void => {
+  const addConfiguration = (): void => {
     if (config.connections.length >= 16) {
       setNotice('A model catalog can contain at most 16 connections.');
       return;
     }
-    const id = uniqueId(
+    if (config.profiles.length >= 128) {
+      setNotice('A model catalog can contain at most 128 profiles.');
+      return;
+    }
+    const connectionId = uniqueId(
       'conn',
       config.connections.map((connection) => connection.id),
     );
+    const profileId = uniqueId(
+      'model',
+      config.profiles.map((profile) => profile.id),
+    );
     const connection: ModelConnectionValue = {
-      id,
-      providerFamily: 'openai',
-      displayName: 'New connection',
-      baseUrl: 'http://127.0.0.1:8000/v1',
-      enabled: true,
-      wireApi: 'openaiChatCompletions',
-      continuationMode: 'localReplay',
+      ...INITIAL_CONNECTION,
+      id: connectionId,
+      displayName: 'OpenAI-compatible',
+    };
+    const profile: ModelProfileValue = {
+      ...INITIAL_PROFILE,
+      id: profileId,
+      connectionId,
+      displayName: 'New configuration',
     };
     updateConfig((current) => ({
       ...current,
       connections: [...current.connections, connection],
-    }));
-    setSelectedConnectionId(id);
-    setCredentialValue('');
-    setDiscoveredModels([]);
-  };
-
-  const deleteConnection = (): void => {
-    if (connectionProfiles.length > 0) {
-      setNotice('Delete this connection’s model profiles first.');
-      return;
-    }
-    if (config.connections.length === 1) {
-      setNotice('At least one connection is required.');
-      return;
-    }
-    const connections = config.connections.filter(
-      (connection) => connection.id !== selectedConnection.id,
-    );
-    updateConfig((current) => ({ ...current, connections }));
-    setSelectedConnectionId(connections[0]?.id ?? '');
-    setCredentialValue('');
-    setDiscoveredModels([]);
-  };
-
-  const addProfile = (): void => {
-    if (config.profiles.length >= 128) {
-      setNotice('A model catalog can contain at most 128 profiles.');
-      return;
-    }
-    const id = uniqueId(
-      'model',
-      config.profiles.map((profile) => profile.id),
-    );
-    const profile: ModelProfileValue = {
-      id,
-      connectionId: selectedConnection.id,
-      displayName: 'New model',
-      modelId: '',
-      toolCalls: 'auto',
-      strictTools: 'auto',
-      parallelTools: 'auto',
-      imageInput: 'auto',
-      pdfInput: 'auto',
-    };
-    updateConfig((current) => ({
-      ...current,
-      profiles: [...current.profiles, profile],
-      defaultProfileId:
-        current.profiles.length === 0 ? id : current.defaultProfileId,
-    }));
-    setContextInput(id, '');
-  };
-
-  const addDiscoveredModel = (model: DiscoveredModel): void => {
-    if (config.profiles.length >= 128) {
-      setNotice('A model catalog can contain at most 128 profiles.');
-      return;
-    }
-    if (
-      config.profiles.some(
-        (profile) =>
-          profile.connectionId === selectedConnection.id &&
-          profile.modelId === model.modelId,
-      )
-    ) {
-      setNotice('That model is already in this connection.');
-      return;
-    }
-    const id = uniqueId(
-      'model',
-      config.profiles.map((profile) => profile.id),
-    );
-    const profile: ModelProfileValue = {
-      id,
-      connectionId: selectedConnection.id,
-      displayName: model.displayName,
-      modelId: model.modelId,
-      ...(model.contextWindowTokens
-        ? { contextWindowTokens: model.contextWindowTokens }
-        : {}),
-      toolCalls: 'auto',
-      strictTools: 'auto',
-      parallelTools: 'auto',
-      imageInput: 'auto',
-      pdfInput: 'auto',
-    };
-    updateConfig((current) => ({
-      ...current,
       profiles: [...current.profiles, profile],
     }));
-    setContextInput(
-      id,
-      model.contextWindowTokens?.toString() ?? '',
-    );
+    setContextInputs((current) => ({ ...current, [profileId]: '' }));
+    setSelectedProfileId(profileId);
+    setCredentialValue('');
+    setNotice(null);
   };
 
-  const deleteProfile = (id: string): void => {
-    if (config.defaultProfileId === id) {
-      setNotice('Choose another default model before deleting this profile.');
-      return;
-    }
+  const deleteConfiguration = (): void => {
     if (config.profiles.length === 1) {
-      setNotice('At least one model profile is required.');
+      setNotice('At least one model configuration is required.');
       return;
     }
+    const nextProfile =
+      config.profiles.find((profile) => profile.id !== selectedProfile.id) ??
+      config.profiles[0];
+    const connectionIsShared = config.profiles.some(
+      (profile) =>
+        profile.id !== selectedProfile.id &&
+        profile.connectionId === selectedConnection.id,
+    );
     updateConfig((current) => ({
       ...current,
-      profiles: current.profiles.filter((profile) => profile.id !== id),
+      defaultProfileId:
+        current.defaultProfileId === selectedProfile.id
+          ? nextProfile.id
+          : current.defaultProfileId,
+      profiles: current.profiles.filter(
+        (profile) => profile.id !== selectedProfile.id,
+      ),
+      connections: connectionIsShared
+        ? current.connections
+        : current.connections.filter(
+            (connection) => connection.id !== selectedConnection.id,
+          ),
     }));
+    setSelectedProfileId(nextProfile.id);
+    setCredentialValue('');
+    setNotice('Configuration removed from this draft. Save to apply.');
   };
 
   const applyResult = (result: ModelConfigActionResult): void => {
     if (result.inspection) {
+      const nextConfig = result.inspection.config ?? EMPTY_CONFIG;
       setInspection(result.inspection);
-      setConfig(result.inspection.config ?? EMPTY_CONFIG);
+      setConfig(nextConfig);
+      setSelectedProfileId((current) =>
+        nextConfig.profiles.some((profile) => profile.id === current)
+          ? current
+          : nextConfig.defaultProfileId,
+      );
+      setContextInputs(
+        Object.fromEntries(
+          nextConfig.profiles.map((profile) => [
+            profile.id,
+            profile.contextWindowTokens?.toString() ?? '',
+          ]),
+        ),
+      );
     }
     setCredentialValue('');
     setNotice(noticeFor(result));
@@ -352,6 +301,16 @@ export const useStore = ({
 
   const save = (): void => {
     if (!inspection || phase !== 'idle') {
+      return;
+    }
+    if (
+      config.profiles.some(
+        (profile) =>
+          profile.displayName.trim().length === 0 ||
+          profile.modelId.trim().length === 0,
+      )
+    ) {
+      setNotice('Configuration name and model ID are required.');
       return;
     }
     const invalidContext = config.profiles.find((profile) => {
@@ -405,7 +364,7 @@ export const useStore = ({
     })
       .then(applyResult)
       .catch(() => {
-        setNotice('The model catalog could not be saved.');
+        setNotice('The model configuration could not be saved.');
         setPhase('idle');
       });
   };
@@ -428,107 +387,66 @@ export const useStore = ({
       });
   };
 
-  const canDiscover =
-    storeConnectionSaved(inspection, selectedConnection.id) &&
-    phase === 'idle';
-
-  const refreshModels = (): void => {
-    if (!canDiscover) {
-      setNotice('Save this connection before refreshing models.');
-      return;
-    }
-    setDiscovering(true);
-    setNotice(null);
-    void discoverModels(selectedConnection.id)
-      .then((result) => {
-        setDiscoveredModels([...result.models]);
-        setNotice(
-          result.models.length === 0
-            ? 'The provider returned no model candidates.'
-            : `Found ${result.models.length.toLocaleString()} model candidates.`,
-        );
-      })
-      .catch(() => {
-        setNotice(
-          'Model discovery failed. You can still enter a model ID manually.',
-        );
-      })
-      .finally(() => setDiscovering(false));
-  };
-
-  const changeProvider = (
-    providerFamily: ModelProviderFamily,
-  ): void => {
-    const preset = presetFor(providerFamily);
-    updateConnection({
-      providerFamily,
-      displayName: preset.label,
-      baseUrl: preset.baseUrl,
-      wireApi: preset.wireApi,
-      continuationMode: 'localReplay',
-    });
-  };
-
   return {
     phase,
     busy: phase !== 'idle',
     inspection,
     config,
+    selectedProfile,
+    selectedProfileId,
     selectedConnection,
-    selectedConnectionId,
-    connectionProfiles,
     notice,
     deleteCredentialOpen,
     contextInputs,
     credentialValue,
-    discoveredModels,
-    discovering,
-    canDiscover,
-    setSelectedConnectionId: (id) => {
-      setSelectedConnectionId(id);
+    setSelectedProfileId: (id) => {
+      setSelectedProfileId(id);
       setCredentialValue('');
-      setDiscoveredModels([]);
+      setNotice(null);
     },
     setDeleteCredentialOpen,
     setCredentialValue,
-    setDefaultProfileId: (id) =>
+    setDefaultProfile: () =>
       updateConfig((current) => ({
         ...current,
-        defaultProfileId: id,
+        defaultProfileId: selectedProfile.id,
       })),
-    updateConnection: (patch) => {
-      if (patch.providerFamily) {
-        changeProvider(patch.providerFamily);
-      } else {
-        updateConnection(patch);
+    setProviderWire: (wireApi) => {
+      const preset = presetForWire(wireApi);
+      updateConfig((current) => ({
+        ...current,
+        connections: current.connections.map((connection) =>
+          connection.id === selectedConnection.id
+            ? {
+                ...connection,
+                providerFamily: preset.providerFamily,
+                displayName: preset.label,
+                baseUrl: preset.baseUrl,
+                wireApi: preset.wireApi,
+                continuationMode: 'localReplay',
+              }
+            : connection,
+        ),
+        profiles: current.profiles.map((profile) =>
+          profile.connectionId === selectedConnection.id &&
+          preset.wireApi === 'openaiChatCompletions' &&
+          profile.pdfInput === 'enabled'
+            ? { ...profile, pdfInput: 'auto' }
+            : profile,
+        ),
+      }));
+      if (preset.wireApi === 'openaiChatCompletions') {
+        setNotice(
+          'Compatible Chat selected. PDF input uses the safe compatibility default.',
+        );
       }
     },
-    updateProfile,
+    updateConnection,
+    updateSelectedProfile,
     setContextInput,
-    addConnection,
-    deleteConnection,
-    addProfile,
-    deleteProfile,
+    addConfiguration,
+    deleteConfiguration,
     save,
     deleteCredential,
-    refreshModels,
-    addDiscoveredModel,
   };
-};
-
-const storeConnectionSaved = (
-  inspection: ModelConfigInspection | null,
-  connectionId: string,
-): boolean =>
-  inspection?.config?.connections.some(
-    (connection) => connection.id === connectionId,
-  ) ?? false;
-
-export const wireApiOptions = (
-  providerFamily: ModelProviderFamily,
-): readonly ModelWireApi[] => {
-  if (providerFamily === 'openai') {
-    return ['openaiChatCompletions', 'openaiResponses'];
-  }
-  return [presetFor(providerFamily).wireApi];
 };
