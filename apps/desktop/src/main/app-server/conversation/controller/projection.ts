@@ -23,9 +23,10 @@ import type {
 export const createMutableTurns = (
   recovered: RecoveredConversation,
 ): MutableTurn[] =>
-recovered.turns.map((turn) => ({
+  recovered.turns.map((turn) => ({
       id: turn.id,
       status: turn.status,
+      ...(turn.model ? { model: { ...turn.model } } : {}),
       messages: turn.messages.map(({ id, role, text, status }) => ({
         id,
         role,

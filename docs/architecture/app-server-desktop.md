@@ -208,7 +208,11 @@ project enters at the top, while later activation never changes its position.
 Renderer keeps unsent drafts, attachments and next-Turn model selection per
 Thread (plus a separate new-Thread slot). Changing the profile on a Thread with
 history requires confirmation and affects only the next Turn; the active Turn
-remains frozen. The workbench uses a resizable 240–380-pixel navigator (286
+remains frozen. A restored Thread's durable Turn model snapshot survives the
+Main recovery projection, and Renderer recomputes the selected profile whenever
+that history changes; an absent local override therefore resolves to the most
+recent durable profile rather than the catalog default. The workbench uses a
+resizable 240–380-pixel navigator (286
 default), a 52-pixel borderless conversation header and a 380–1200-pixel
 inspector (760 default). The navigator and inspector expose persistent collapse
 state. The navigator control remains aligned beside the macOS traffic lights in

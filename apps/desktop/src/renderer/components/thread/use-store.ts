@@ -74,6 +74,10 @@ import {
   latestTurnUsage,
 } from './context-budget';
 import {
+  latestDurableModelProfileId,
+  resolveModelProfileId,
+} from './model-selection';
+import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
 } from './transcript-follow';
@@ -1219,15 +1223,15 @@ export const useStore = (): ThreadStore => {
       setSelectedModelProfileId('');
       return;
     }
-    const sticky = [...snapshot.turns]
-      .reverse()
-      .find((turn) => turn.model)?.model?.profileId;
     const key = snapshot.threadId ?? 'new';
-    const selected =
-      modelSelections.current.get(key) ?? sticky ?? catalog.defaultProfileId;
-    modelSelections.current.set(key, selected);
-    setSelectedModelProfileId(selected);
-  }, [modelInspection, snapshot.threadId]);
+    setSelectedModelProfileId(
+      resolveModelProfileId(
+        modelSelections.current.get(key),
+        latestDurableModelProfileId(snapshot.turns),
+        catalog.defaultProfileId,
+      ),
+    );
+  }, [modelInspection, snapshot.threadId, snapshot.turns]);
 
   const selectModelProfile = (profileId: string): void => {
     if (profileId === selectedModelProfileId) {
