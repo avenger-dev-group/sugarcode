@@ -256,7 +256,7 @@ type MutableTurn = {
   workspaceList?: MutableWorkspaceListActivity;
   workspaceSearch?: MutableWorkspaceSearchActivity;
   fileChange?: MutableFileChangeActivity;
-  pendingCommandCall?: MutableCommandCall;
+  pendingCommandCalls?: MutableCommandCall[];
   commandApproval?: MutableCommandApprovalActivity;
   pendingMcpCall?: MutableMcpCall;
   mcpActivities?: MutableMcpActivity[];
@@ -392,17 +392,14 @@ export class ConversationController {
       if (error instanceof ConnectionClosedError || isAbortError(error)) {
         throw error;
       }
-      if (error instanceof RpcResponseError) {
-        this.navigator.status = 'error';
-        this.notice = {
-          kind: 'requestFailed',
-          summary: 'The durable conversation could not be restored safely.',
-        };
-        this.publish();
-        return false;
-      }
-      this.onProtocolFailure();
-      return false;
+      this.clearSelectedConversation();
+      this.navigator.status = 'ready';
+      this.navigator.selectionNotice =
+        error instanceof RpcResponseError
+          ? 'The selected Thread could not be loaded. Other Threads remain available.'
+          : 'The selected Thread contains an unsupported lifecycle. Other Threads remain available.';
+      this.publish();
+      return true;
     } finally {
       if (this.actionAbortController === abortController) {
         this.actionAbortController = null;
@@ -622,13 +619,11 @@ export class ConversationController {
         this.transportClosed();
         return rejected('unavailable');
       }
-      if (error instanceof RpcResponseError) {
-        this.navigator.selectionNotice =
-          'That Thread could not be restored safely.';
-        this.publish();
-        return rejected('unavailable');
-      }
-      this.onProtocolFailure();
+      this.navigator.selectionNotice =
+        error instanceof RpcResponseError
+          ? 'That Thread could not be restored safely.'
+          : 'That Thread contains an unsupported lifecycle. The local Agent is still available.';
+      this.publish();
       return rejected('unavailable');
     } finally {
       if (this.selectionAbortController === abortController) {
@@ -1452,18 +1447,28 @@ export class ConversationController {
             receipt: { ...lifecycle.params.item.receipt },
           };
         } else if (lifecycle.params.item.type === 'commandCall') {
-          if (turn.pendingCommandCall || turn.pendingMcpCall) {
-            throw new Error('Duplicate command approval activity.');
+          const item = lifecycle.params.item;
+          const pendingCalls = (turn.pendingCommandCalls ??= []);
+          if (
+            pendingCalls.some(
+              (call) =>
+                call.id === item.id || call.callId === item.callId,
+            )
+          ) {
+            throw new Error('Duplicate command call lifecycle.');
           }
-          turn.pendingCommandCall = {
-            id: lifecycle.params.item.id,
-            callId: lifecycle.params.item.callId,
-            command: lifecycle.params.item.command,
-            arguments: [...lifecycle.params.item.arguments],
+          pendingCalls.push({
+            id: item.id,
+            callId: item.callId,
+            command: item.command,
+            arguments: [...item.arguments],
             status: 'inProgress',
-          };
+          });
         } else if (lifecycle.params.item.type === 'commandApprovalRequest') {
-          const call = turn.pendingCommandCall;
+          const item = lifecycle.params.item;
+          const call = turn.pendingCommandCalls?.find(
+            (candidate) => candidate.callId === item.callId,
+          );
           if (
             !call ||
             call.status !== 'completed' ||
@@ -1486,12 +1491,14 @@ export class ConversationController {
           };
           turn.commandApproval = activity;
           turn.activities.push({ type: 'commandApproval', activity });
-          turn.pendingCommandCall = undefined;
+          turn.pendingCommandCalls = turn.pendingCommandCalls?.filter(
+            (candidate) => candidate.callId !== call.callId,
+          );
         } else if (lifecycle.params.item.type === 'commandApprovalDecision') {
-          const activity = turn.commandApproval;
-          if (!activity) {
-            return;
-          }
+          const activity = this.requireCommandApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
           if (
             activity.requestStatus !== 'completed' ||
             activity.approvalId !== lifecycle.params.item.approvalId ||
@@ -1505,8 +1512,16 @@ export class ConversationController {
             value: lifecycle.params.item.decision,
           };
         } else if (lifecycle.params.item.type === 'commandExecutionAttempt') {
-          if (!turn.commandApproval) {
-            const ignoredCall = turn.pendingCommandCall;
+          const item = lifecycle.params.item;
+          if (
+            !this.findCommandApprovalByCall(
+              turn,
+              item.callId,
+            )
+          ) {
+            const ignoredCall = turn.pendingCommandCalls?.find(
+              (candidate) => candidate.callId === item.callId,
+            );
             if (
               ignoredCall?.status === 'completed' &&
               ignoredCall.callId === lifecycle.params.item.callId
@@ -1532,9 +1547,15 @@ export class ConversationController {
             status: 'inProgress',
           };
         } else {
-          const activity = turn.commandApproval;
+          const item = lifecycle.params.item;
+          const activity = this.findCommandApprovalByCall(
+            turn,
+            item.callId,
+          );
           if (!activity) {
-            const ignoredCall = turn.pendingCommandCall;
+            const ignoredCall = turn.pendingCommandCalls?.find(
+              (candidate) => candidate.callId === item.callId,
+            );
             if (
               ignoredCall?.status === 'completed' &&
               ignoredCall.callId === lifecycle.params.item.callId
@@ -1973,7 +1994,10 @@ export class ConversationController {
           // Collaboration records are append-only and become visible on
           // item/started. Completion carries the same immutable payload.
         } else if (lifecycle.params.item.type === 'commandCall') {
-          const call = turn.pendingCommandCall;
+          const item = lifecycle.params.item;
+          const call = turn.pendingCommandCalls?.find(
+            (candidate) => candidate.callId === item.callId,
+          );
           if (
             !call ||
             call.id !== lifecycle.params.item.id ||
@@ -2007,10 +2031,10 @@ export class ConversationController {
           }
           activity.requestStatus = 'completed';
         } else if (lifecycle.params.item.type === 'commandApprovalDecision') {
-          const activity = turn.commandApproval;
-          if (!activity) {
-            return;
-          }
+          const activity = this.requireCommandApproval(
+            turn,
+            lifecycle.params.item.approvalId,
+          );
           const decision = activity.decision;
           if (
             activity.approvalId !== lifecycle.params.item.approvalId ||
@@ -2025,8 +2049,16 @@ export class ConversationController {
           }
           decision.status = 'completed';
         } else if (lifecycle.params.item.type === 'commandExecutionAttempt') {
-          if (!turn.commandApproval) {
-            const ignoredCall = turn.pendingCommandCall;
+          const item = lifecycle.params.item;
+          if (
+            !this.findCommandApprovalByCall(
+              turn,
+              item.callId,
+            )
+          ) {
+            const ignoredCall = turn.pendingCommandCalls?.find(
+              (candidate) => candidate.callId === item.callId,
+            );
             if (
               ignoredCall?.status === 'completed' &&
               ignoredCall.callId === lifecycle.params.item.callId
@@ -2051,9 +2083,15 @@ export class ConversationController {
           }
           executionAttempt.status = 'completed';
         } else {
-          const activity = turn.commandApproval;
+          const item = lifecycle.params.item;
+          const activity = this.findCommandApprovalByCall(
+            turn,
+            item.callId,
+          );
           if (!activity) {
-            const ignoredCall = turn.pendingCommandCall;
+            const ignoredCall = turn.pendingCommandCalls?.find(
+              (candidate) => candidate.callId === item.callId,
+            );
             if (
               ignoredCall?.status === 'completed' &&
               ignoredCall.callId === lifecycle.params.item.callId
@@ -2177,19 +2215,24 @@ export class ConversationController {
           );
         }
         if (
-          turn.commandApproval &&
-          (turn.commandApproval.requestStatus !== 'completed' ||
-            (lifecycle.params.turn.status !== 'interrupted' &&
-              turn.commandApproval.decision?.status !== 'completed') ||
-            (turn.commandApproval.decision &&
-              turn.commandApproval.decision.status !== 'completed') ||
-            (turn.commandApproval.executionAttempt &&
-              turn.commandApproval.executionAttempt.status !== 'completed') ||
-            (turn.commandApproval.executionResult &&
-              turn.commandApproval.executionResult.status !== 'completed') ||
-            (lifecycle.params.turn.status !== 'interrupted' &&
-              turn.commandApproval.executionAttempt &&
-              turn.commandApproval.executionResult?.status !== 'completed'))
+          (lifecycle.params.turn.status !== 'interrupted' &&
+            (turn.pendingCommandCalls?.length ?? 0) > 0) ||
+          turn.activities.some(
+            (entry) =>
+              entry.type === 'commandApproval' &&
+              (entry.activity.requestStatus !== 'completed' ||
+                (lifecycle.params.turn.status !== 'interrupted' &&
+                  entry.activity.decision?.status !== 'completed') ||
+                (entry.activity.decision &&
+                  entry.activity.decision.status !== 'completed') ||
+                (entry.activity.executionAttempt &&
+                  entry.activity.executionAttempt.status !== 'completed') ||
+                (entry.activity.executionResult &&
+                  entry.activity.executionResult.status !== 'completed') ||
+                (lifecycle.params.turn.status !== 'interrupted' &&
+                  entry.activity.executionAttempt &&
+                  entry.activity.executionResult?.status !== 'completed')),
+          )
         ) {
           throw new Error(
             'Turn completed before command approval activity completed.',
@@ -2352,14 +2395,35 @@ export class ConversationController {
     turn: MutableTurn,
     approvalId: string,
   ): MutableCommandApprovalActivity => {
-    if (
-      !turn.commandApproval ||
-      turn.commandApproval.approvalId !== approvalId
-    ) {
+    const activity = turn.activities.find(
+      (
+        entry,
+      ): entry is Extract<
+        MutableConversationActivity,
+        { type: 'commandApproval' }
+      > =>
+        entry.type === 'commandApproval' &&
+        entry.activity.approvalId === approvalId,
+    )?.activity;
+    if (!activity) {
       throw new Error('Command approval lifecycle referenced another request.');
     }
-    return turn.commandApproval;
+    return activity;
   };
+
+  private findCommandApprovalByCall = (
+    turn: MutableTurn,
+    callId: string,
+  ): MutableCommandApprovalActivity | undefined =>
+    turn.activities.find(
+      (
+        entry,
+      ): entry is Extract<
+        MutableConversationActivity,
+        { type: 'commandApproval' }
+      > =>
+        entry.type === 'commandApproval' && entry.activity.callId === callId,
+    )?.activity;
 
   private requireMcpActivityByApproval = (
     turn: MutableTurn,
@@ -2450,6 +2514,15 @@ export class ConversationController {
           (entry.activity.id === itemId ||
             entry.activity.result?.id === itemId),
       ) ||
+      turn.activities.some(
+        (entry) =>
+          entry.type === 'commandApproval' &&
+          (entry.activity.callItemId === itemId ||
+            entry.activity.id === itemId ||
+            entry.activity.decision?.id === itemId ||
+            entry.activity.executionAttempt?.id === itemId ||
+            entry.activity.executionResult?.id === itemId),
+      ) ||
       turn.contextCompactions?.some((activity) => activity.id === itemId) ||
       turn.workspaceRead?.id === itemId ||
       turn.workspaceRead?.result?.id === itemId ||
@@ -2460,7 +2533,7 @@ export class ConversationController {
       turn.fileChange?.id === itemId ||
       turn.fileChange?.change?.id === itemId ||
       turn.fileChange?.result?.id === itemId ||
-      turn.pendingCommandCall?.id === itemId ||
+      turn.pendingCommandCalls?.some((call) => call.id === itemId) ||
       turn.commandApproval?.callItemId === itemId ||
       turn.commandApproval?.id === itemId ||
       turn.commandApproval?.decision?.id === itemId ||

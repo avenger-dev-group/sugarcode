@@ -521,7 +521,6 @@ pub(super) struct GeminiStreamState {
     semantic_bytes: usize,
     finish_reason: Option<String>,
     provider_request_id: Option<String>,
-    parallel_tools: bool,
 }
 
 impl Default for GeminiStreamState {
@@ -531,7 +530,7 @@ impl Default for GeminiStreamState {
 }
 
 impl GeminiStreamState {
-    pub(super) fn new(parallel_tools: bool) -> Self {
+    pub(super) fn new(_parallel_tools: bool) -> Self {
         Self {
             output: Vec::new(),
             raw_parts: Vec::new(),
@@ -539,7 +538,6 @@ impl GeminiStreamState {
             semantic_bytes: 0,
             finish_reason: None,
             provider_request_id: None,
-            parallel_tools,
         }
     }
 
@@ -679,9 +677,6 @@ impl GeminiStreamState {
             .iter()
             .filter(|item| matches!(item.kind, ModelOutputItemKind::ToolCall(_)))
             .count();
-        if tool_call_count > 1 && !self.parallel_tools {
-            return Err(ModelError::new(ModelErrorKind::Protocol, false));
-        }
         let mut response = complete_response(self.output.clone(), self.usage)?;
         response.terminal = ModelTerminalMetadata {
             finish_reason: match self.finish_reason.as_deref() {

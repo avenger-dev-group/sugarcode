@@ -178,6 +178,15 @@ transport/protocol errors, tool errors, Desktop protocol errors and
 durable-state failures remain distinct; each model failure terminates only its
 Turn and does not terminate the app-server process or another Thread.
 
+Model capability flags constrain outbound requests but do not constrain what a
+compatible gateway may return. A provider-emitted multi-call batch is therefore
+durable input even when parallel calls were not requested. Core validates the
+batch and schedules only safe read-only members concurrently; approvals,
+writes and other non-parallel tools remain sequential. An interrupted Turn may
+end after several command calls were declared but before all received approval
+or execution Items. Recovery preserves the completed lifecycle prefix, drops
+unmatched calls from portable future context and never re-executes them.
+
 Shell execution errors are model-visible structured results. In particular,
 `commandNotFound` identifies the active `hostInheritedV1` policy and directs
 the Agent to inspect project configuration and try safe installed alternatives

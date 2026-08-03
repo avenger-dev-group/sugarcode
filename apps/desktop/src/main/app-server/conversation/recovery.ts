@@ -48,14 +48,15 @@ export const recoverConversation = (
     let workspaceList: ConversationWorkspaceListActivity | undefined;
     let workspaceSearch: ConversationWorkspaceSearchActivity | undefined;
     let fileChange: ConversationFileChangeActivity | undefined;
-    let commandCall:
-      | Readonly<{
-          id: string;
-          callId: string;
-          command: string;
-          arguments: readonly string[];
-        }>
-      | undefined;
+    const commandCalls = new Map<
+      string,
+      Readonly<{
+        id: string;
+        callId: string;
+        command: string;
+        arguments: readonly string[];
+      }>
+    >();
     let commandApproval: ConversationCommandApprovalActivity | undefined;
     let mcpCall:
       | Readonly<{
@@ -596,29 +597,23 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'commandCall') {
-        if (
-          commandCall ||
-          (commandApproval &&
-            !commandApproval.executionResult &&
-            commandApproval.decision?.value === 'approved')
-        ) {
+        if (commandCalls.has(item.callId)) {
           throw new Error(
-            'thread/resume returned overlapping command approval activity.',
+            'thread/resume returned a duplicate command call.',
           );
         }
-        commandApproval = undefined;
-        commandCall = {
+        commandCalls.set(item.callId, {
           id: item.id,
           callId: item.callId,
           command: item.command,
           arguments: [...item.arguments],
-        };
+        });
         continue;
       }
       if (item.type === 'commandApprovalRequest') {
+        const commandCall = commandCalls.get(item.callId);
         if (
           !commandCall ||
-          commandApproval ||
           commandCall.callId !== item.callId ||
           commandCall.command !== item.command ||
           JSON.stringify(commandCall.arguments) !==
@@ -641,7 +636,7 @@ export const recoverConversation = (
           type: 'commandApproval',
           activity: commandApproval,
         });
-        commandCall = undefined;
+        commandCalls.delete(item.callId);
         continue;
       }
       if (item.type === 'commandApprovalDecision') {
@@ -676,7 +671,7 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'commandExecutionAttempt') {
-        if (!commandApproval && commandCall?.callId === item.callId) {
+        if (!commandApproval && commandCalls.has(item.callId)) {
           continue;
         }
         if (
@@ -710,7 +705,7 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'commandExecutionResult') {
-        if (!commandApproval && commandCall?.callId === item.callId) {
+        if (!commandApproval && commandCalls.has(item.callId)) {
           continue;
         }
         if (
@@ -811,6 +806,11 @@ export const recoverConversation = (
     ) {
       throw new Error(
         'thread/resume returned terminal command execution attempt without a result.',
+      );
+    }
+    if (turn.status !== 'interrupted' && commandCalls.size > 0) {
+      throw new Error(
+        'thread/resume returned a terminal command call without durable closure.',
       );
     }
     if (

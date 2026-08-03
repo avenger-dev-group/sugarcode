@@ -107,6 +107,15 @@ fn native_wire_apis_encode_image_and_pdf_parts() {
 }
 
 #[test]
+fn openai_responses_explicitly_requests_sequential_tool_calls() {
+    let request = request_with_strict_and_loose_tools();
+    let body = openai_request(&request, ModelStrictToolsMode::Auto, false, 1024)
+        .expect("Responses request");
+
+    assert_eq!(body["parallel_tool_calls"], false);
+}
+
+#[test]
 fn strict_auto_is_resolved_per_tool_and_enabled_rejects_before_io() {
     let request = request_with_strict_and_loose_tools();
     let openai = openai_request(&request, ModelStrictToolsMode::Auto, true, 1024)
@@ -1130,6 +1139,43 @@ async fn gemini_sse_accumulates_chunks_and_emits_deltas() {
     assert_eq!(
         response.usage.and_then(|usage| usage.total_tokens),
         Some(12)
+    );
+}
+
+#[tokio::test]
+async fn gemini_multiple_tool_calls_are_normalized_when_parallel_is_disabled() {
+    let (sender, _receiver) = mpsc::channel(8);
+    let mut state = GeminiStreamState::new(false);
+    state
+        .consume(
+            json!({
+                "candidates": [{"content": {"parts": [
+                    {"functionCall": {
+                        "id": "call_1",
+                        "name": "workspace_read",
+                        "args": {"path": "README.md"}
+                    }},
+                    {"functionCall": {
+                        "id": "call_2",
+                        "name": "workspace_read",
+                        "args": {"path": "Cargo.toml"}
+                    }}
+                ]}}]
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("tool batch");
+
+    let response = state.response().expect("normalized response");
+    assert_eq!(
+        response
+            .output
+            .iter()
+            .filter(|item| matches!(item.kind, ModelOutputItemKind::ToolCall(_)))
+            .count(),
+        2
     );
 }
 

@@ -27,7 +27,10 @@ synchronized on Unix, where directory handles support that durability boundary.
 ToolCall contains call ID, SugarCode tool name and JSON arguments. Validation
 failure is its own `toolValidationRejected` Item. `FileChange`, approvals,
 execution attempts and results remain independent durable Items. Unknown fields
-or broken lifecycle correlation fail closed.
+or broken lifecycle correlation fail closed. A model response may declare
+multiple command calls before the runtime begins their sequential approval and
+execution. Main retains those declarations by call ID; one pending call cannot
+overwrite or invalidate another.
 
 Provider errors expose only retryability plus optional HTTP status, provider
 code, request ID and retry-after. A consumer disconnect interrupts the Turn.
@@ -38,6 +41,11 @@ and restores the selected Thread. Another protocol-invalid event inside the
 60-second recovery window pauses the connection instead of starting a restart
 loop. Provider 4xx, protocol output, incomplete response and context failures
 are normal typed Turn failures and never enter this connection-recovery path.
+Likewise, a structurally valid `thread/resume` response whose Item lifecycle
+cannot be projected is isolated to that Thread: Desktop clears the unsafe
+selection, keeps the sidecar and other Threads available, and presents a
+selection notice. Connection restart is reserved for framing, handshake or
+cross-process contract failures, not one historical conversation.
 
 `Turn` and `TurnSnapshot` may expose provider-neutral token usage. During an
 active Turn, `thread/tokenUsage/updated` carries `lastRequest`, cumulative
@@ -98,9 +106,11 @@ public descriptor. Import occurs before Turn submission and partial import
 failure does not start a Turn.
 
 The transcript correlates every activity by call ID, including parallel or
-repeated read tools. File changes remain individually reviewable. Public
-validation Items keep the connection alive and need no empty-path ToolCall
-special case.
+repeated read tools and multiple declared command calls awaiting sequential
+approval. Interrupted recovery may retain unmatched command declarations as
+non-executed history; it never replays or fabricates their side effects. File
+changes remain individually reviewable. Public validation Items keep the
+connection alive and need no empty-path ToolCall special case.
 
 Provisional Agent text is rendered through the same incremental Markdown
 projection as completed Agent messages. Because the provider-neutral delta does

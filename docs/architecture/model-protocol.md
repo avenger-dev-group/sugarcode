@@ -219,10 +219,29 @@ request fails before network I/O when forced strict mode cannot represent a
 schema. Provider-safe tool names are request-local aliases; history and public
 state keep SugarCode names.
 
+The profile's effective capabilities control request construction; they are not
+trusted as constraints on provider output. OpenAI Responses explicitly sends
+`parallel_tool_calls` whenever tools are present, including `false` for the
+sequential baseline. Compatible Chat keeps omitting the optional flag for broad
+gateway compatibility. If any provider still returns multiple calls while the
+profile says sequential, the adapter normalizes the complete batch instead of
+classifying it as a wire failure.
+
 Parallel tool calls are validated as a complete batch before any member
-executes. All-read-only batches may execute concurrently, but durable calls and
-results remain in model order. Gemini function responses from one batch are
-serialized together.
+executes. Runtime scheduling, rather than the model capability flag, owns actual
+concurrency: all-read-only batches may execute concurrently, while approval,
+write and other non-parallel tools pass through the sequential execution path.
+Durable calls and results remain in model order. Gemini function responses from
+one batch are serialized together.
+
+Tool definitions, validation and dispatch use provider-neutral SugarCode names.
+An unknown name, incompatible arguments or a handler-level user error is an
+untrusted model outcome. Core records bounded `toolValidationRejected` or tool
+result feedback and allows a bounded correction round; it does not terminate
+the app-server process. Only an internal runtime invariant that prevents safe
+Turn closure is process-fatal. This distinction mirrors the provider adapters:
+they may normalize unambiguous syntax and naming differences, but never invent
+a tool, change its authority or execute malformed arguments.
 
 Structured final output is intentionally absent until a production consumer
 requires it. Audio, video, image generation, hosted file upload and file search

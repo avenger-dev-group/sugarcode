@@ -55,8 +55,8 @@ pub(super) fn openai_request(
         "stream": true,
         "include": ["reasoning.encrypted_content"],
     });
-    if parallel_tools && !request.tools.is_empty() {
-        body["parallel_tool_calls"] = Value::Bool(true);
+    if !request.tools.is_empty() {
+        body["parallel_tool_calls"] = Value::Bool(parallel_tools);
     }
     Ok(body)
 }
