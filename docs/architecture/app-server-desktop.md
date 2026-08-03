@@ -68,6 +68,15 @@ Electron Main owns:
 - command-approval policy and its current Thread/workspace scope;
 - Git, preview window and PTY/ConPTY terminal.
 
+`conversation/controller.ts` is the stable conversation-controller facade.
+Its `conversation/controller/` implementation directory separates RPC and
+Thread action coordination (`conversation-controller.ts`), snapshot/recovery
+projection (`projection.ts`), Turn lifecycle routing
+(`lifecycle-controller.ts`), mutable state and correlation guards
+(`mutable-state.ts` and `item-lifecycle-base.ts`), and the started/completed
+Item reducers with their semantic comparisons (`item-started.ts`,
+`item-completed.ts`, and `lifecycle-comparison.ts`).
+
 Main passes its host process environment to the trusted local sidecar so the
 Agent command runtime sees the same installed toolchain locations as Desktop.
 This is distinct from exposing environment values to Renderer or model tools:
