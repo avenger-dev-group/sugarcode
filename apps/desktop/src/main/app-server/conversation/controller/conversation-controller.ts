@@ -7,7 +7,6 @@ import type {
   ConversationActionResult,
   ConversationStateListener,
   ConversationStateSnapshot,
-  ConversationTerminalTurnStatus,
   ConversationThreadNavigatorSnapshot,
 } from '@/shared/conversation';
 import {
@@ -18,6 +17,7 @@ import {
 import {
   type ConversationLifecycle,
   type ConversationLifecycleRoute,
+  type ResumeSnapshot,
   parseConversationLifecycle,
   parseConversationLifecycleRoute,
 } from '../protocol';
@@ -33,7 +33,6 @@ import {
   createThreadNavigator,
   isKnownThread,
   type MutableThreadNavigator,
-  recordActiveThread,
   resetThreadSearch,
 } from '../thread-navigator';
 import {
@@ -45,6 +44,10 @@ import {
   ThreadRuntime,
   type ThreadRuntimeState,
 } from './thread-runtime';
+import {
+  ThreadRegistryProtocolError,
+  type ThreadRegistry,
+} from '../../thread-registry';
 
 const MAX_BUFFERED_LIFECYCLE = 64;
 
@@ -54,12 +57,8 @@ type PendingThreadStart = {
   lifecycleBuffer: ConversationLifecycle[];
 };
 
-export type ScopedConversationStateListener = (
-  workspaceId: string,
-  snapshot: ConversationStateSnapshot,
-) => void;
-
 type ConversationControllerOptions = Readonly<{
+  threadRegistry: ThreadRegistry;
   getRpc: () => ConversationRpc | null;
   onProtocolFailure: () => void;
   onThreadProjectionFailure?: (threadId: string) => void;
@@ -77,11 +76,11 @@ const rejected = (
 
 export class ConversationController extends ConversationLifecycleController {
   private readonly getRpc: ConversationControllerOptions['getRpc'];
+  private readonly threadRegistry: ThreadRegistry;
   private readonly onProtocolFailure: ConversationControllerOptions['onProtocolFailure'];
   private readonly onThreadProjectionFailure: (threadId: string) => void;
   private readonly getActionBlocked: () => boolean;
   private readonly listeners = new Set<ConversationStateListener>();
-  private readonly scopedListeners = new Set<ScopedConversationStateListener>();
   private workspaceId: string | null = null;
   private revision = 0;
   private pendingThreadStart: PendingThreadStart | null = null;
@@ -91,15 +90,10 @@ export class ConversationController extends ConversationLifecycleController {
   private searchGeneration = 0;
   private selectionGeneration = 0;
   private readonly navigator: MutableThreadNavigator = createThreadNavigator();
-  private readonly projections = new Map<string, ThreadRuntime>();
-  private readonly reloadRequiredThreadIds = new Set<string>();
-  private readonly unreadThreadStatuses = new Map<
-    string,
-    ConversationTerminalTurnStatus
-  >();
 
   constructor(options: ConversationControllerOptions) {
     super();
+    this.threadRegistry = options.threadRegistry;
     this.getRpc = options.getRpc;
     this.onProtocolFailure = options.onProtocolFailure;
     this.onThreadProjectionFailure =
@@ -112,18 +106,6 @@ export class ConversationController extends ConversationLifecycleController {
   subscribe = (listener: ConversationStateListener): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
-  };
-
-  subscribeScoped = (listener: ScopedConversationStateListener): (() => void) => {
-    this.scopedListeners.add(listener);
-    return () => this.scopedListeners.delete(listener);
-  };
-
-  getThreadWorkspaceId = (threadId: string): string | null => {
-    if (threadId === this.threadId) {
-      return this.workspaceId;
-    }
-    return this.projections.get(threadId)?.workspaceId ?? null;
   };
 
   waitForTurnStartSettlement = async (): Promise<void> => {
@@ -156,7 +138,7 @@ export class ConversationController extends ConversationLifecycleController {
     let changed = false;
     const turnCollections = new Set<MutableTurn[]>([
       this.turns,
-      ...[...this.projections.values()].map((runtime) => runtime.getTurns()),
+      ...this.threadRegistry.runtimes().map((runtime) => runtime.getTurns()),
     ]);
     for (const turn of [...turnCollections].flat()) {
       const orchestration = turn.orchestration;
@@ -198,8 +180,6 @@ export class ConversationController extends ConversationLifecycleController {
     this.clearSelectedConversation();
     this.phase = 'unavailable';
     this.navigator.status = 'loading';
-    this.navigator.activeThreadIds = [];
-    this.navigator.activeThreadTitles = {};
     this.navigator.activeTruncated = false;
     this.navigator.pendingThreadId = undefined;
     this.navigator.pendingMutation = undefined;
@@ -212,9 +192,9 @@ export class ConversationController extends ConversationLifecycleController {
         if (!listed.data.some((thread) => thread.id === preferredThreadId)) {
           throw new Error('Preferred Thread is not bound to this workspace.');
         }
-        const cached = this.reloadRequiredThreadIds.has(preferredThreadId)
+        const cached = this.threadRegistry.isReloadRequired(preferredThreadId)
           ? undefined
-          : this.projections.get(preferredThreadId);
+          : this.threadRegistry.getRuntime(preferredThreadId) ?? undefined;
         if (cached?.workspaceId === workspaceId) {
           this.restoreProjection(preferredThreadId, cached);
         } else {
@@ -223,11 +203,11 @@ export class ConversationController extends ConversationLifecycleController {
             abortController.signal,
           );
           const recovered = recoverConversation(preferredThreadId, snapshot);
-          this.replaceRecoveredConversation(recovered);
+          this.replaceRecoveredConversation(recovered, snapshot);
           this.phase = 'ready';
         }
-        this.reloadRequiredThreadIds.delete(preferredThreadId);
-        this.unreadThreadStatuses.delete(preferredThreadId);
+        this.threadRegistry.clearReloadRequired(preferredThreadId);
+        this.threadRegistry.clearUnread(preferredThreadId);
       } else {
         this.phase = 'idle';
       }
@@ -235,6 +215,10 @@ export class ConversationController extends ConversationLifecycleController {
       this.publish();
       return true;
     } catch (error) {
+      if (error instanceof ThreadRegistryProtocolError) {
+        this.onProtocolFailure();
+        return false;
+      }
       if (error instanceof ConnectionClosedError || isAbortError(error)) {
         this.transportClosed();
       } else {
@@ -244,7 +228,7 @@ export class ConversationController extends ConversationLifecycleController {
             ? 'This workspace could not be restored safely.'
             : 'This workspace contains an unsupported Thread lifecycle.';
         if (preferredThreadId && !(error instanceof RpcResponseError)) {
-          this.reloadRequiredThreadIds.add(preferredThreadId);
+          this.threadRegistry.markReloadRequired(preferredThreadId);
         }
         this.publish();
       }
@@ -275,18 +259,16 @@ export class ConversationController extends ConversationLifecycleController {
       const fallbackThreadId = listed
         ? null
         : await rpc.findLatestActiveThread(abortController.signal);
-      this.navigator.activeThreadIds = listed
-        ? listed.data.map((thread) => thread.id)
-        : fallbackThreadId
-          ? [fallbackThreadId]
-          : [];
-      this.navigator.activeThreadTitles = listed
-        ? Object.fromEntries(
-            listed.data.flatMap((thread) =>
-              thread.title ? [[thread.id, thread.title]] : [],
-            ),
-          )
-        : {};
+      if (listed) {
+        this.threadRegistry.replaceWorkspaceIndex(workspaceId, listed.data);
+      } else {
+        this.threadRegistry.replaceWorkspaceIndex(
+          workspaceId,
+          fallbackThreadId
+            ? [{ id: fallbackThreadId, workspaceId }]
+            : [],
+        );
+      }
       this.navigator.activeTruncated = listed
         ? listed.nextCursor !== null
         : false;
@@ -300,10 +282,14 @@ export class ConversationController extends ConversationLifecycleController {
         abortController.signal,
       );
       const recovered = recoverConversation(preferredThreadId, snapshot);
-      this.replaceRecoveredConversation(recovered);
-      this.reloadRequiredThreadIds.delete(preferredThreadId);
+      this.replaceRecoveredConversation(recovered, snapshot);
+      this.threadRegistry.clearReloadRequired(preferredThreadId);
       return true;
     } catch (error) {
+      if (error instanceof ThreadRegistryProtocolError) {
+        this.onProtocolFailure();
+        return false;
+      }
       if (error instanceof ConnectionClosedError || isAbortError(error)) {
         throw error;
       }
@@ -314,7 +300,7 @@ export class ConversationController extends ConversationLifecycleController {
           ? 'The selected Thread could not be loaded. Other Threads remain available.'
           : 'The selected Thread contains an unsupported lifecycle. Other Threads remain available.';
       if (preferredThreadId && !(error instanceof RpcResponseError)) {
-        this.reloadRequiredThreadIds.add(preferredThreadId);
+        this.threadRegistry.markReloadRequired(preferredThreadId);
       }
       this.publish();
       return true;
@@ -362,14 +348,14 @@ export class ConversationController extends ConversationLifecycleController {
     this.navigator.archivedUndoThreadId = undefined;
     this.navigator.mutationNotice = undefined;
     this.pendingThreadStart = null;
-    for (const runtime of this.projections.values()) {
+    for (const runtime of this.threadRegistry.runtimes()) {
       runtime.resetTurnStart();
     }
-    for (const [threadId, runtime] of this.projections) {
+    for (const [threadId, runtime] of this.threadRegistry.runtimeEntries()) {
       if (threadId !== this.threadId && runtime.getActiveTurnId() !== null) {
-        this.projections.delete(threadId);
-        this.reloadRequiredThreadIds.add(threadId);
-        this.unreadThreadStatuses.delete(threadId);
+        this.threadRegistry.deleteRuntime(threadId);
+        this.threadRegistry.markReloadRequired(threadId);
+        this.threadRegistry.clearUnread(threadId);
       }
     }
     const clearedAgentOutput = this.clearPendingAgentOutputs();
@@ -442,6 +428,7 @@ export class ConversationController extends ConversationLifecycleController {
       if (generation !== this.searchGeneration) {
         return accepted();
       }
+      response.data.forEach(this.threadRegistry.registerDiscoveredThread);
       const threadIds = response.data.map((thread) => thread.id);
       this.navigator.search = {
         query: normalized,
@@ -490,7 +477,12 @@ export class ConversationController extends ConversationLifecycleController {
   ): Promise<ConversationActionResult> => {
     if (
       typeof threadId !== 'string' ||
-      !isKnownThread(this.navigator, this.threadId, threadId)
+      !isKnownThread(
+        this.navigator,
+        this.threadId,
+        threadId,
+        this.getForegroundThreadView().threadIds,
+      )
     ) {
       return rejected('unknownThread');
     }
@@ -508,8 +500,8 @@ export class ConversationController extends ConversationLifecycleController {
       return rejected('unavailable');
     }
     if (threadId === this.threadId && !this.navigator.pendingThreadId) {
-      this.unreadThreadStatuses.delete(threadId);
-      if (!this.navigator.activeThreadTitles[threadId]) {
+      this.threadRegistry.clearUnread(threadId);
+      if (!this.threadRegistry.getTitle(threadId)) {
         void rpc
           .generateThreadTitle?.(threadId)
           .catch((): undefined => undefined);
@@ -517,15 +509,17 @@ export class ConversationController extends ConversationLifecycleController {
       return accepted();
     }
 
-    const reloadRequired = this.reloadRequiredThreadIds.has(threadId);
-    const cached = reloadRequired ? undefined : this.projections.get(threadId);
+    const reloadRequired = this.threadRegistry.isReloadRequired(threadId);
+    const cached = reloadRequired
+      ? undefined
+      : this.threadRegistry.getRuntime(threadId) ?? undefined;
     if (cached) {
       this.saveSelectedProjection();
       this.restoreProjection(threadId, cached);
-      this.unreadThreadStatuses.delete(threadId);
+      this.threadRegistry.clearUnread(threadId);
       this.navigator.pendingThreadId = undefined;
       this.publish();
-      if (!this.navigator.activeThreadTitles[threadId]) {
+      if (!this.threadRegistry.getTitle(threadId)) {
         void rpc
           .generateThreadTitle?.(threadId)
           .catch((): undefined => undefined);
@@ -546,14 +540,14 @@ export class ConversationController extends ConversationLifecycleController {
       if (generation !== this.selectionGeneration) {
         return accepted();
       }
-      this.replaceRecoveredConversation(recovered);
+      this.replaceRecoveredConversation(recovered, snapshot);
       this.phase = 'ready';
-      this.reloadRequiredThreadIds.delete(threadId);
-      this.unreadThreadStatuses.delete(threadId);
+      this.threadRegistry.clearReloadRequired(threadId);
+      this.threadRegistry.clearUnread(threadId);
       this.navigator.pendingThreadId = undefined;
       this.notice = undefined;
       this.publish();
-      if (!this.navigator.activeThreadTitles[threadId]) {
+      if (!this.threadRegistry.getTitle(threadId)) {
         void rpc
           .generateThreadTitle?.(threadId)
           .catch((): undefined => undefined);
@@ -564,6 +558,10 @@ export class ConversationController extends ConversationLifecycleController {
         return accepted();
       }
       this.navigator.pendingThreadId = undefined;
+      if (error instanceof ThreadRegistryProtocolError) {
+        this.onProtocolFailure();
+        return rejected('unavailable');
+      }
       if (error instanceof ConnectionClosedError) {
         this.transportClosed();
         return rejected('unavailable');
@@ -573,7 +571,7 @@ export class ConversationController extends ConversationLifecycleController {
           ? 'That Thread could not be restored safely.'
           : 'That Thread contains an unsupported lifecycle. The local Agent is still available.';
       if (reloadRequired || !(error instanceof RpcResponseError)) {
-        this.reloadRequiredThreadIds.add(threadId);
+        this.threadRegistry.markReloadRequired(threadId);
       }
       this.publish();
       return rejected('unavailable');
@@ -604,16 +602,25 @@ export class ConversationController extends ConversationLifecycleController {
       );
       if (
         snapshot.threadId === threadId ||
-        isKnownThread(this.navigator, this.threadId, snapshot.threadId)
+        isKnownThread(
+          this.navigator,
+          this.threadId,
+          snapshot.threadId,
+          this.getForegroundThreadView().threadIds,
+        )
       ) {
         throw new Error(
           'thread/fork did not return a new durable Thread identity.',
         );
       }
       const recovered = recoverConversation(snapshot.threadId, snapshot);
-      this.replaceRecoveredConversation(recovered);
+      this.threadRegistry.registerActiveThread({
+        id: snapshot.threadId,
+        workspaceId: snapshot.workspaceId,
+        ...(snapshot.title ? { title: snapshot.title } : {}),
+      });
+      this.replaceRecoveredConversation(recovered, snapshot);
       this.phase = 'ready';
-      recordActiveThread(this.navigator, recovered.threadId, snapshot.title);
       resetThreadSearch(this.navigator);
       this.navigator.archivedUndoThreadId = undefined;
       this.navigator.mutationNotice = `Forked and selected Thread ${recovered.threadId}.`;
@@ -718,9 +725,8 @@ export class ConversationController extends ConversationLifecycleController {
       const snapshot = await rpc.resumeThread(threadId, abortController.signal);
       const recovered = recoverConversation(threadId, snapshot);
       this.applyActiveThreadList(listed);
-      this.replaceRecoveredConversation(recovered);
+      this.replaceRecoveredConversation(recovered, snapshot);
       this.phase = 'ready';
-      recordActiveThread(this.navigator, threadId, snapshot.title);
       this.navigator.mutationNotice = `Restored and selected Thread ${threadId}.`;
       return accepted();
     } catch (error) {
@@ -758,6 +764,7 @@ export class ConversationController extends ConversationLifecycleController {
         exactThreadId,
         removedCurrent,
       );
+      this.threadRegistry.removeThread(exactThreadId);
       this.navigator.mutationNotice = `Deleted Thread ${exactThreadId}.`;
       return accepted();
     } catch (error) {
@@ -810,7 +817,7 @@ export class ConversationController extends ConversationLifecycleController {
           throw new Error('thread/start crossed Workspace ownership.');
         }
         this.threadId = response.thread.id;
-        recordActiveThread(this.navigator, response.thread.id);
+        this.threadRegistry.registerActiveThread(response.thread);
         this.saveSelectedProjection();
         this.drainPendingThreadLifecycle(response.thread.id);
       }
@@ -843,7 +850,7 @@ export class ConversationController extends ConversationLifecycleController {
             : { type: 'document', asset: imported.asset },
         );
       }
-      const runtime = this.projections.get(this.threadId);
+      const runtime = this.threadRegistry.getRuntime(this.threadId);
       if (!runtime) {
         throw new Error('Thread Runtime is unavailable before turn/start.');
       }
@@ -873,7 +880,7 @@ export class ConversationController extends ConversationLifecycleController {
       if (buffered.length > 0) {
         this.publish();
       }
-      if (!this.navigator.activeThreadTitles[this.threadId]) {
+      if (!this.threadRegistry.getTitle(this.threadId)) {
         void rpc
           .generateThreadTitle?.(this.threadId)
           .catch((): undefined => undefined);
@@ -885,7 +892,7 @@ export class ConversationController extends ConversationLifecycleController {
       }
       this.pendingThreadStart = null;
       if (this.threadId) {
-        this.projections.get(this.threadId)?.failTurnStart();
+        this.threadRegistry.getRuntime(this.threadId)?.failTurnStart();
       }
       this.actionAbortController = null;
       if (error instanceof ConnectionClosedError || isAbortError(error)) {
@@ -913,7 +920,9 @@ export class ConversationController extends ConversationLifecycleController {
       return rejected('unknownThread');
     }
     const selected = threadId === this.threadId;
-    const projection = selected ? null : this.projections.get(threadId);
+    const projection = selected
+      ? null
+      : this.threadRegistry.getRuntime(threadId);
     const activeTurnId = selected
       ? this.activeTurnId
       : projection?.getActiveTurnId() ?? null;
@@ -973,7 +982,7 @@ export class ConversationController extends ConversationLifecycleController {
       this.onProtocolFailure();
       return;
     }
-    if (this.reloadRequiredThreadIds.has(route.threadId)) {
+    if (this.threadRegistry.isReloadRequired(route.threadId)) {
       return;
     }
 
@@ -982,8 +991,8 @@ export class ConversationController extends ConversationLifecycleController {
       route.workspaceId === this.pendingThreadStart.workspaceId &&
       this.threadId === null &&
       this.phase === 'starting' &&
-      !this.projections.has(route.threadId);
-    const target = this.projections.get(route.threadId);
+      !this.threadRegistry.getRuntime(route.threadId);
+    const target = this.threadRegistry.getRuntime(route.threadId);
     if (
       (route.threadId === this.threadId &&
         route.workspaceId !== this.workspaceId) ||
@@ -1003,8 +1012,12 @@ export class ConversationController extends ConversationLifecycleController {
         return;
       }
       if (lifecycle.type === 'threadTitleUpdated') {
-        recordActiveThread(
-          this.navigator,
+        if (belongsToPendingNewThread) {
+          this.bufferPendingThreadLifecycle(route, lifecycle);
+          return;
+        }
+        this.threadRegistry.updateTitle(
+          route.workspaceId,
           lifecycle.params.threadId,
           lifecycle.params.title,
         );
@@ -1017,7 +1030,7 @@ export class ConversationController extends ConversationLifecycleController {
       }
       if (route.threadId === this.threadId) {
         this.saveSelectedProjection();
-        const selectedRuntime = this.projections.get(route.threadId);
+        const selectedRuntime = this.threadRegistry.getRuntime(route.threadId);
         if (!selectedRuntime) {
           throw new Error('Selected Thread runtime is unavailable.');
         }
@@ -1042,7 +1055,7 @@ export class ConversationController extends ConversationLifecycleController {
         lifecycle.type === 'turnCompleted' &&
         lifecycle.params.turn.status !== 'inProgress'
       ) {
-        this.unreadThreadStatuses.set(
+        this.threadRegistry.markUnread(
           route.threadId,
           lifecycle.params.turn.status,
         );
@@ -1089,7 +1102,15 @@ export class ConversationController extends ConversationLifecycleController {
       throw new Error('thread/start response did not match buffered lifecycle.');
     }
     for (const lifecycle of pending.lifecycleBuffer) {
-      this.applySelectedLifecycle(lifecycle);
+      if (lifecycle.type === 'threadTitleUpdated') {
+        this.threadRegistry.updateTitle(
+          pending.workspaceId,
+          threadId,
+          lifecycle.params.title,
+        );
+      } else {
+        this.applySelectedLifecycle(lifecycle);
+      }
     }
   };
 
@@ -1100,7 +1121,7 @@ export class ConversationController extends ConversationLifecycleController {
       throw new Error('Selected Thread runtime is unavailable.');
     }
     this.saveSelectedProjection();
-    const runtime = this.projections.get(this.threadId);
+    const runtime = this.threadRegistry.getRuntime(this.threadId);
     if (!runtime) {
       throw new Error('Selected Thread runtime is unavailable.');
     }
@@ -1114,7 +1135,13 @@ export class ConversationController extends ConversationLifecycleController {
   ): Exclude<ConversationActionResult['reason'], 'accepted'> | null => {
     if (
       typeof threadId !== 'string' ||
-      (!archivedUndo && !isKnownThread(this.navigator, this.threadId, threadId))
+      (!archivedUndo &&
+        !isKnownThread(
+          this.navigator,
+          this.threadId,
+          threadId,
+          this.getForegroundThreadView().threadIds,
+        ))
     ) {
       return 'unknownThread';
     }
@@ -1122,7 +1149,8 @@ export class ConversationController extends ConversationLifecycleController {
     const targetActive =
       this.threadId === exactThreadId
         ? this.activeTurnId !== null
-        : this.projections.get(exactThreadId)?.getActiveTurnId() != null;
+        : this.threadRegistry.getRuntime(exactThreadId)?.getActiveTurnId() !=
+          null;
     if (targetActive) {
       return 'turnActive';
     }
@@ -1178,12 +1206,7 @@ export class ConversationController extends ConversationLifecycleController {
     ) {
       throw new Error('Thread index crossed workspace ownership.');
     }
-    this.navigator.activeThreadIds = listed.data.map((thread) => thread.id);
-    this.navigator.activeThreadTitles = Object.fromEntries(
-      listed.data.flatMap((thread) =>
-        thread.title ? [[thread.id, thread.title]] : [],
-      ),
-    );
+    this.threadRegistry.replaceWorkspaceIndex(this.workspaceId, listed.data);
     this.navigator.activeTruncated = listed.nextCursor !== null;
     this.navigator.status = 'ready';
     this.navigator.selectionNotice = undefined;
@@ -1219,7 +1242,7 @@ export class ConversationController extends ConversationLifecycleController {
     }
     const snapshot = await rpc.resumeThread(fallbackThreadId, signal);
     const recovered = recoverConversation(fallbackThreadId, snapshot);
-    this.replaceRecoveredConversation(recovered);
+    this.replaceRecoveredConversation(recovered, snapshot);
     this.phase = 'ready';
     this.notice = undefined;
   };
@@ -1241,12 +1264,12 @@ export class ConversationController extends ConversationLifecycleController {
       return;
     }
     const state = this.captureSelectedProjection();
-    const runtime = this.projections.get(this.threadId);
+    const runtime = this.threadRegistry.getRuntime(this.threadId);
     if (runtime) {
       runtime.replaceProjection(state);
       return;
     }
-    this.projections.set(this.threadId, new ThreadRuntime(state));
+    this.threadRegistry.setRuntime(this.threadId, new ThreadRuntime(state));
   };
 
   private captureSelectedProjection = (): ThreadRuntimeState => ({
@@ -1282,14 +1305,14 @@ export class ConversationController extends ConversationLifecycleController {
     threadId: string,
     workspaceId: string,
   ): void => {
-    const runtime = this.projections.get(threadId);
+    const runtime = this.threadRegistry.getRuntime(threadId);
     if (runtime && runtime.workspaceId !== workspaceId) {
       this.onProtocolFailure();
       return;
     }
-    this.projections.delete(threadId);
-    this.reloadRequiredThreadIds.add(threadId);
-    this.unreadThreadStatuses.delete(threadId);
+    this.threadRegistry.deleteRuntime(threadId);
+    this.threadRegistry.markReloadRequired(threadId);
+    this.threadRegistry.clearUnread(threadId);
     this.onThreadProjectionFailure(threadId);
     if (this.threadId === threadId) {
       this.clearSelectedConversation();
@@ -1320,7 +1343,13 @@ export class ConversationController extends ConversationLifecycleController {
 
   private replaceRecoveredConversation = (
     recovered: RecoveredConversation,
+    snapshot: ResumeSnapshot,
   ): void => {
+    this.threadRegistry.registerDiscoveredThread({
+      id: snapshot.threadId,
+      workspaceId: snapshot.workspaceId,
+      ...(snapshot.title ? { title: snapshot.title } : {}),
+    });
     if (this.threadId !== recovered.threadId) {
       this.saveSelectedProjection();
     }
@@ -1330,6 +1359,7 @@ export class ConversationController extends ConversationLifecycleController {
   };
 
   private createSnapshot = (): ConversationStateSnapshot => {
+    const active = this.getForegroundThreadView();
     const snapshot = createConversationSnapshot({
       revision: this.revision,
       phase: this.phase,
@@ -1337,23 +1367,28 @@ export class ConversationController extends ConversationLifecycleController {
       activeTurnId: this.activeTurnId,
       turns: this.turns,
       navigator: this.navigator,
+      activeThreadIds:
+        this.navigator.status === 'loading' ? [] : active.threadIds,
+      activeThreadTitles:
+        this.navigator.status === 'loading' ? {} : active.threadTitles,
       notice: this.notice,
     });
-    const runningThreadIds = [...this.projections.entries()]
-      .filter(([, runtime]) => runtime.getActiveTurnId() !== null)
-      .map(([threadId]) => threadId);
     return {
       ...snapshot,
       navigator: {
         ...snapshot.navigator,
-        runningThreadIds,
-        unreadThreadStatuses: Object.fromEntries(
-          this.unreadThreadStatuses,
-        ),
-        reloadRequiredThreadIds: [...this.reloadRequiredThreadIds],
+        runningThreadIds: this.threadRegistry.getRunningThreadIds(),
+        unreadThreadStatuses: this.threadRegistry.getUnreadStatuses(),
+        reloadRequiredThreadIds:
+          this.threadRegistry.getReloadRequiredThreadIds(),
       },
     };
   };
+
+  private getForegroundThreadView = () =>
+    this.workspaceId
+      ? this.threadRegistry.getWorkspaceView(this.workspaceId)
+      : { threadIds: [], threadTitles: {} };
 
   protected publish = (): void => {
     this.saveSelectedProjection();
@@ -1361,11 +1396,6 @@ export class ConversationController extends ConversationLifecycleController {
     const snapshot = this.createSnapshot();
     for (const listener of this.listeners) {
       listener(snapshot);
-    }
-    if (this.workspaceId) {
-      for (const listener of this.scopedListeners) {
-        listener(this.workspaceId, snapshot);
-      }
     }
   };
 }

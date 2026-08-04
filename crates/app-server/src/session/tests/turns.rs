@@ -290,7 +290,7 @@ fn durable_state_failures_use_the_stable_public_error_without_details() {
         r#"{"jsonrpc":"2.0","id":"start","method":"thread/start","params":{}}"#,
         r#"{"jsonrpc":"2.0","id":"archive","method":"thread/archive","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}"#,
         r#"{"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}"#,
-        r#"{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}"#,
+        r#"{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"workspaceId":"unbound","threadId":"00000000-0000-7000-8000-000000000001"}}"#,
         r#"{"jsonrpc":"2.0","id":"fork","method":"thread/fork","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}"#,
         r#"{"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}"#,
         r#"{"jsonrpc":"2.0","id":"turn","method":"turn/start","params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Hello"}]}}"#,
@@ -382,7 +382,7 @@ fn an_uncertain_fork_attempt_consumes_its_request_id() {
 #[test]
 fn an_uncertain_delete_attempt_consumes_its_request_id() {
     let mut session = ready_session(StateUnavailableCore);
-    let request = r#"{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}"#;
+    let request = r#"{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"workspaceId":"unbound","threadId":"00000000-0000-7000-8000-000000000001"}}"#;
 
     let first = session.process_line(request);
     let JsonRpcMessage::Error(error) = &first[0] else {

@@ -183,6 +183,8 @@ pub struct ThreadUnarchiveResponse {}
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct ThreadDeleteParams {
+    #[schemars(regex(pattern = "^(unbound|[0-9a-f]{64})$"))]
+    pub workspace_id: String,
     #[schemars(regex(
         pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     ))]
@@ -195,10 +197,16 @@ impl<'de> Deserialize<'de> for ThreadDeleteParams {
         D: Deserializer<'de>,
     {
         let params = ThreadDeleteParamsWire::deserialize(deserializer)?;
+        if !is_valid_workspace_id(&params.workspace_id) {
+            return Err(de::Error::custom(
+                "workspaceId must be unbound or a canonical Workspace ID",
+            ));
+        }
         if !is_canonical_thread_id(&params.thread_id) {
             return Err(de::Error::custom("threadId must be a canonical Thread ID"));
         }
         Ok(Self {
+            workspace_id: params.workspace_id,
             thread_id: params.thread_id,
         })
     }
@@ -207,6 +215,7 @@ impl<'de> Deserialize<'de> for ThreadDeleteParams {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct ThreadDeleteParamsWire {
+    workspace_id: String,
     thread_id: String,
 }
 
@@ -411,6 +420,14 @@ struct ThreadResumeParamsWire {
 
 fn is_canonical_thread_id(value: &str) -> bool {
     crate::is_canonical_uuid_v7(value)
+}
+
+fn is_valid_workspace_id(value: &str) -> bool {
+    value == "unbound"
+        || (value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
 }
 
 fn deserialize_thread_id<'de, D>(deserializer: D) -> Result<String, D::Error>

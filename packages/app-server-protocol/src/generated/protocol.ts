@@ -112,7 +112,7 @@ export type ThreadArchiveParams = { threadId: string, };
 
 export type ThreadArchiveResponse = Record<string, never>;
 
-export type ThreadDeleteParams = { threadId: string, };
+export type ThreadDeleteParams = { workspaceId: string, threadId: string, };
 
 export type ThreadDeleteResponse = Record<string, never>;
 

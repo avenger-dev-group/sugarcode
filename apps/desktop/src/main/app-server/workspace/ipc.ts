@@ -14,6 +14,7 @@ import {
   WORKSPACE_STATE_CHANGED_CHANNEL,
   WORKSPACE_STATE_GET_CHANNEL,
   WORKSPACE_TASK_FOCUS_CHANNEL,
+  WORKSPACE_TASK_DELETE_CHANNEL,
 } from '@/shared/workspace';
 
 import type { WorkspaceController } from './controller';
@@ -81,6 +82,20 @@ export const registerWorkspaceIpc = (
     },
   );
   ipcMain.handle(
+    WORKSPACE_TASK_DELETE_CHANNEL,
+    (event, threadId: unknown) => {
+      if (
+        !trusted(event) ||
+        typeof threadId !== 'string' ||
+        threadId.length === 0 ||
+        threadId.length > 128
+      ) {
+        return { accepted: false, reason: 'invalid' };
+      }
+      return options.controller.deleteTask(threadId);
+    },
+  );
+  ipcMain.handle(
     WORKSPACE_CHAT_ACTIVATE_CHANNEL,
     (event, request: unknown) => {
       if (!trusted(event) || !isWorkspaceChatRequest(request)) {
@@ -121,6 +136,7 @@ export const registerWorkspaceIpc = (
     ipcMain.removeHandler(WORKSPACE_PROJECT_RESUME_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_PROJECT_ACTIVATE_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_TASK_FOCUS_CHANNEL);
+    ipcMain.removeHandler(WORKSPACE_TASK_DELETE_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_CHAT_ACTIVATE_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_CLEAR_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_LIST_CHANNEL);

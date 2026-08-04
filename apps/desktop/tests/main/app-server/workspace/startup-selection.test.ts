@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { registerHooks } from 'node:module';
@@ -35,6 +42,9 @@ registerHooks({
 
 const { WorkspaceController } = await import(
   '../../../../src/main/app-server/workspace/controller.ts'
+);
+const { ThreadRegistry } = await import(
+  '../../../../src/main/app-server/thread-registry.ts'
 );
 
 const PROJECT_THREAD_ID = '00000000-0000-7000-8000-000000000001';
@@ -92,6 +102,7 @@ test('cold startup restores navigation without selecting or reordering projects'
   );
 
   let configuredWorkspace = false;
+  let bindingId: string | null = null;
   const supervisor = {
     subscribe: (): (() => void) => () => undefined,
     configureInitialWorkspace: (): boolean => {
@@ -99,10 +110,16 @@ test('cold startup restores navigation without selecting or reordering projects'
       return true;
     },
     getWorkspaceSwitchBlock: (): null => null,
-    switchWorkspace: async (): Promise<boolean> => true,
-    getWorkspaceBindingId: (): null => null,
+    switchWorkspace: async (workspacePath: string): Promise<boolean> => {
+      bindingId = path.basename(workspacePath) === 'project-alpha'
+        ? 'a'.repeat(64)
+        : 'c'.repeat(64);
+      return true;
+    },
+    getWorkspaceBindingId: (): string | null => bindingId,
   } as unknown as ConnectionSupervisor;
   const controller = new WorkspaceController({
+    threadRegistry: new ThreadRegistry(),
     supervisor,
     dialog: {
       showOpenDialog: async () => ({
@@ -155,6 +172,24 @@ test('cold startup restores navigation without selecting or reordering projects'
   assert.equal(controller.getSnapshot().projects?.[0]?.name, 'project-gamma');
   const persisted = JSON.parse(await readFile(sessionPath, 'utf8')) as {
     schemaVersion?: unknown;
+    projects?: readonly {
+      id: string;
+      threadIds: readonly string[];
+      threadTitles: Readonly<Record<string, string>>;
+      workspaceId?: string;
+    }[];
   };
   assert.equal(persisted.schemaVersion, 1);
+  assert.deepEqual(
+    persisted.projects?.find((project) => project.id === 'project-alpha'),
+    {
+      id: 'project-alpha',
+      path: await realpath(projectPath),
+      name: 'project-alpha',
+      threadIds: [PROJECT_THREAD_ID],
+      threadTitles: { [PROJECT_THREAD_ID]: 'Saved project task' },
+      lastOpenedAtMs: 1,
+      workspaceId: 'a'.repeat(64),
+    },
+  );
 });

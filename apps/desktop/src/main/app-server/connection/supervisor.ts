@@ -31,8 +31,6 @@ import type {
   ConnectionStatus,
 } from '@/shared/connection';
 import type { McpConfiguredServer } from '@/shared/mcp';
-import type { ConversationStateSnapshot } from '@/shared/conversation';
-
 import {
   CliResolutionError,
   createCliEnvironment,
@@ -61,9 +59,11 @@ import {
   ConversationRpcClient,
   type ConversationRpc,
 } from '../conversation/rpc-client';
+import { parseThreadEmptyResponse } from '../conversation/thread-protocol';
 import { McpApprovalController } from '../mcp/approval-controller';
 import { discoverMcpServers } from '../mcp/config-discovery';
 import { McpSessionController } from '../mcp/session-controller';
+import { ThreadRegistry } from '../thread-registry';
 import {
   parseWorkspaceGitCommitResponse,
   parseWorkspaceGitDiffResponse,
@@ -78,6 +78,7 @@ type SpawnProcess = (
 ) => ChildProcessWithoutNullStreams;
 
 type ConnectionSupervisorOptions = Readonly<{
+  threadRegistry: ThreadRegistry;
   desktopAppPath: string;
   isPackaged?: boolean;
   resourcesPath?: string;
@@ -135,6 +136,7 @@ const createDiagnostic = (
 });
 
 const PROTOCOL_RECOVERY_WINDOW_MS = 60_000;
+const ERROR_THREAD_NOT_FOUND = -32_004;
 
 export class ConnectionSupervisor {
   readonly commandApprovals: CommandApprovalController;
@@ -187,7 +189,6 @@ export class ConnectionSupervisor {
   > = [];
   private approvalInFlight: 'command' | 'mcp' | null = null;
   private readonly workspaceTitles = new Map<string, string>();
-  private readonly threadTitles = new Map<string, string>();
   private readonly registeredWorkspaces = new Map<
     string,
     Readonly<{
@@ -221,9 +222,10 @@ export class ConnectionSupervisor {
       getQueueCount: () => 1 + this.approvalQueue.length,
       describeSource: this.describeApprovalSource,
       getThreadWorkspaceId: (threadId) =>
-        this.conversation.getThreadWorkspaceId(threadId),
+        this.options.threadRegistry.getWorkspaceId(threadId),
     });
     this.conversation = new ConversationController({
+      threadRegistry: options.threadRegistry,
       getRpc: () => this.conversationRpc,
       onProtocolFailure: () => this.failAndTerminate('protocol-invalid'),
       onThreadProjectionFailure: this.rejectThreadApprovals,
@@ -232,7 +234,6 @@ export class ConnectionSupervisor {
         this.workspaceTransaction ||
         this.gitTransaction,
     });
-    this.conversation.subscribeScoped(this.rememberThreadTitles);
     this.mcpSession = new McpSessionController({
       getRestartBlock: this.getMcpRestartBlock,
       restart: this.restartWithMcp,
@@ -253,7 +254,7 @@ export class ConnectionSupervisor {
       getQueueCount: () => 1 + this.approvalQueue.length,
       describeSource: this.describeApprovalSource,
       getThreadWorkspaceId: (threadId) =>
-        this.conversation.getThreadWorkspaceId(threadId),
+        this.options.threadRegistry.getWorkspaceId(threadId),
     });
     let commandApprovalTaskId: string | null = null;
     let mcpApprovalTaskId: string | null = null;
@@ -396,6 +397,33 @@ export class ConnectionSupervisor {
       return false;
     } finally {
       lease.release();
+    }
+  };
+
+  deleteThread = async (
+    workspaceId: string,
+    threadId: string,
+  ): Promise<'deleted' | 'missing'> => {
+    if (!this.client) {
+      throw new ConnectionClosedError('Thread deletion is unavailable.');
+    }
+    try {
+      parseThreadEmptyResponse(
+        await this.client.requestReady('thread/delete', {
+          workspaceId,
+          threadId,
+        }),
+        'thread/delete',
+      );
+      return 'deleted';
+    } catch (error) {
+      if (
+        error instanceof RpcResponseError &&
+        error.code === ERROR_THREAD_NOT_FOUND
+      ) {
+        return 'missing';
+      }
+      throw error;
     }
   };
 
@@ -742,7 +770,6 @@ export class ConnectionSupervisor {
           return;
         }
         this.removeResolvedQueuedApproval(notification);
-        this.rememberStartedThread(notification);
         this.commandApprovals.handleNotification(notification);
         this.mcpApprovals.handleNotification(notification);
         this.conversation.handleNotification(notification);
@@ -965,48 +992,10 @@ export class ConnectionSupervisor {
         (workspaceId ? this.workspaceTitles.get(workspaceId) : undefined) ??
         (this.workspacePath ? basename(this.workspacePath) : 'SugarCode'),
       conversationTitle:
-        this.threadTitles.get(threadId) ??
-        navigator.activeThreadTitles[threadId] ??
+        this.options.threadRegistry.getTitle(threadId) ??
         navigator.search.threadTitles[threadId] ??
         '未命名会话',
     };
-  };
-
-  private rememberThreadTitles = (
-    _workspaceId: string,
-    snapshot: ConversationStateSnapshot,
-  ): void => {
-    if (snapshot.navigator.status === 'ready') {
-      for (const threadId of snapshot.navigator.activeThreadIds) {
-        const title = snapshot.navigator.activeThreadTitles[threadId];
-        if (title) {
-          this.threadTitles.set(threadId, title);
-        }
-      }
-    }
-  };
-
-  private rememberStartedThread = (
-    notification: Extract<ServerMessage, { kind: 'notification' }>,
-  ): void => {
-    if (
-      notification.method !== 'thread/started' ||
-      typeof notification.params !== 'object' ||
-      notification.params === null
-    ) {
-      return;
-    }
-    const thread = (notification.params as Record<string, unknown>).thread;
-    if (typeof thread !== 'object' || thread === null) {
-      return;
-    }
-    const threadId = (thread as Record<string, unknown>).id;
-    if (typeof threadId === 'string') {
-      const title = (thread as Record<string, unknown>).title;
-      if (typeof title === 'string' && title.length > 0) {
-        this.threadTitles.set(threadId, title);
-      }
-    }
   };
 
   private rejectThreadApprovals = (threadId: string): void => {

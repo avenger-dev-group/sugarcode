@@ -49,6 +49,11 @@ type ThreadNavigatorProps = Readonly<{
 
 type ThreadLabelKind = 'project' | 'chat';
 
+type DeleteRequest = Readonly<{
+  threadId: string;
+  source: 'conversation' | 'failedChat';
+}>;
+
 const focusThreadAt = (
   container: HTMLElement,
   index: number,
@@ -77,7 +82,7 @@ export const ThreadNavigator = ({
   onToggleNavigator,
   approvalThreadIds = [],
 }: ThreadNavigatorProps) => {
-  const [deleteThreadId, setDeleteThreadId] = useState<string | null>(
+  const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(
     null,
   );
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -244,10 +249,24 @@ export const ThreadNavigator = ({
               (threadId === displayedThreadId && selectedTurnActive)
             }
             actionsEnabled={active}
+            failedDeleteEnabled={
+              kind === 'chat' &&
+              workspace.failedChatThreadId === threadId
+            }
+            failedDeleteDisabled={workspace.busy}
             onSelect={onSelect}
             onFork={store.forkThread}
             onArchive={store.archiveThread}
-            onRequestDelete={setDeleteThreadId}
+            onRequestDelete={(requestedThreadId) =>
+              setDeleteRequest({
+                threadId: requestedThreadId,
+                source:
+                  kind === 'chat' &&
+                  workspace.failedChatThreadId === requestedThreadId
+                    ? 'failedChat'
+                    : 'conversation',
+              })
+            }
             pendingMutation={store.navigator.pendingMutation}
           />
         ))}
@@ -500,10 +519,10 @@ export const ThreadNavigator = ({
       </nav>
 
       <AlertDialog
-        open={deleteThreadId !== null}
+        open={deleteRequest !== null}
         onOpenChange={(open) => {
           if (!open) {
-            setDeleteThreadId(null);
+            setDeleteRequest(null);
           }
         }}
       >
@@ -535,8 +554,10 @@ export const ThreadNavigator = ({
                 type="button"
                 variant="destructive"
                 onClick={() => {
-                  if (deleteThreadId) {
-                    void store.deleteThread(deleteThreadId);
+                  if (deleteRequest?.source === 'failedChat') {
+                    void workspace.deleteFailedChat(deleteRequest.threadId);
+                  } else if (deleteRequest) {
+                    void store.deleteThread(deleteRequest.threadId);
                   }
                 }}
               >
@@ -599,6 +620,8 @@ type ThreadButtonProps = Readonly<{
   disabled: boolean;
   mutationDisabled: boolean;
   actionsEnabled: boolean;
+  failedDeleteEnabled: boolean;
+  failedDeleteDisabled: boolean;
   pendingMutation: ThreadStore['navigator']['pendingMutation'];
   onSelect: (threadId: string) => Promise<void>;
   onFork: (threadId: string) => Promise<void>;
@@ -614,6 +637,8 @@ const ThreadButton = ({
   disabled,
   mutationDisabled,
   actionsEnabled,
+  failedDeleteEnabled,
+  failedDeleteDisabled,
   pendingMutation,
   onSelect,
   onFork,
@@ -647,7 +672,7 @@ const ThreadButton = ({
         })
       }
       className={`flex h-9 min-w-0 flex-1 cursor-pointer items-center px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default ${
-        actionsEnabled ? 'rounded-l-lg' : 'rounded-lg'
+        actionsEnabled || failedDeleteEnabled ? 'rounded-l-lg' : 'rounded-lg'
       }`}
     >
       <span
@@ -656,40 +681,50 @@ const ThreadButton = ({
         {title ?? (status === 'running' ? '新会话' : '未命名会话')}
       </span>
     </span>
-    {actionsEnabled ? (
+    {actionsEnabled || failedDeleteEnabled ? (
       <div
         data-thread-actions
-        className="flex min-w-fit shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100"
+        className={`flex min-w-fit shrink-0 items-center pr-1 transition-opacity ${
+          failedDeleteEnabled
+            ? 'opacity-100'
+            : 'opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100'
+        }`}
       >
-        <ThreadActionButton
-          label={`创建会话分支：${title ?? '未命名会话'}`}
-          active={
-            pendingMutation?.kind === 'fork' &&
-            pendingMutation.threadId === threadId
-          }
-          disabled={mutationDisabled}
-          onClick={() => void onFork(threadId)}
-        >
-          <GitFork aria-hidden="true" />
-        </ThreadActionButton>
-        <ThreadActionButton
-          label={`归档会话：${title ?? '未命名会话'}`}
-          active={
-            pendingMutation?.kind === 'archive' &&
-            pendingMutation.threadId === threadId
-          }
-          disabled={mutationDisabled}
-          onClick={() => void onArchive(threadId)}
-        >
-          <Archive aria-hidden="true" />
-        </ThreadActionButton>
+        {actionsEnabled ? (
+          <>
+            <ThreadActionButton
+              label={`创建会话分支：${title ?? '未命名会话'}`}
+              active={
+                pendingMutation?.kind === 'fork' &&
+                pendingMutation.threadId === threadId
+              }
+              disabled={mutationDisabled}
+              onClick={() => void onFork(threadId)}
+            >
+              <GitFork aria-hidden="true" />
+            </ThreadActionButton>
+            <ThreadActionButton
+              label={`归档会话：${title ?? '未命名会话'}`}
+              active={
+                pendingMutation?.kind === 'archive' &&
+                pendingMutation.threadId === threadId
+              }
+              disabled={mutationDisabled}
+              onClick={() => void onArchive(threadId)}
+            >
+              <Archive aria-hidden="true" />
+            </ThreadActionButton>
+          </>
+        ) : null}
         <ThreadActionButton
           label={`删除会话：${title ?? '未命名会话'}`}
           active={
             pendingMutation?.kind === 'delete' &&
             pendingMutation.threadId === threadId
           }
-          disabled={mutationDisabled}
+          disabled={
+            failedDeleteEnabled ? failedDeleteDisabled : mutationDisabled
+          }
           destructive
           onClick={() => onRequestDelete(threadId)}
         >

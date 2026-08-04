@@ -204,7 +204,7 @@ export class ConversationRpcClient implements ConversationRpc {
     parseThreadEmptyResponse(
       await this.client.requestReady(
         'thread/delete',
-        { threadId },
+        { workspaceId: this.workspaceId, threadId },
         signal,
       ),
       'thread/delete',

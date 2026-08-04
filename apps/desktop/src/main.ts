@@ -13,6 +13,7 @@ import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
 import { McpConfigController } from '@/main/app-server/mcp/config-controller';
 import { ModelConfigController } from '@/main/app-server/model-config/controller';
 import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
+import { ThreadRegistry } from '@/main/app-server/thread-registry';
 import { WorkspaceController } from '@/main/app-server/workspace/controller';
 import { registerWorkspaceIpc } from '@/main/app-server/workspace/ipc';
 import { PreviewController } from '@/main/preview/controller';
@@ -28,7 +29,6 @@ let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
 let disposeWorkspaceIpc: (() => void) | null = null;
-let disposeWorkspaceConversationSubscription: (() => void) | null = null;
 let disposeGitIpc: (() => void) | null = null;
 let previewController: PreviewController | null = null;
 let disposePreviewIpc: (() => void) | null = null;
@@ -124,13 +124,16 @@ const createWindow = (): void => {
 
 const startApplication = async (): Promise<void> => {
   await app.whenReady();
+  const threadRegistry = new ThreadRegistry();
   supervisor = new ConnectionSupervisor({
+    threadRegistry,
     desktopAppPath: app.getAppPath(),
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     clientVersion: app.getVersion(),
   });
   const workspaceController = new WorkspaceController({
+    threadRegistry,
     supervisor,
     dialog,
     getMainWindow: () => mainWindow,
@@ -142,10 +145,6 @@ const startApplication = async (): Promise<void> => {
     },
   });
   await workspaceController.restore();
-  disposeWorkspaceConversationSubscription =
-    supervisor.conversation.subscribeScoped(
-      workspaceController.observeConversation,
-    );
   terminalController = new TerminalController({
     dialog,
     getMainWindow: () => mainWindow,
@@ -281,8 +280,6 @@ if (started) {
     disposeModelConfigIpc = null;
     disposeWorkspaceIpc?.();
     disposeWorkspaceIpc = null;
-    disposeWorkspaceConversationSubscription?.();
-    disposeWorkspaceConversationSubscription = null;
     disposeGitIpc?.();
     disposeGitIpc = null;
     disposePreviewIpc?.();

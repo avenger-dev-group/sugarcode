@@ -4,6 +4,7 @@ import { useStore as useZustandStore } from 'zustand';
 import {
   activateWorkspaceChat,
   activateWorkspaceProject,
+  deleteWorkspaceTask,
   resumeWorkspaceProject,
   selectWorkspace,
 } from '@/renderer/services/workspace';
@@ -22,6 +23,9 @@ export const useStore = (): WorkspaceNavigationStore => {
   );
   const [pending, setPending] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [failedChatThreadId, setFailedChatThreadId] = useState<string | null>(
+    null,
+  );
 
   const runSelection = async (
     action: () => ReturnType<typeof selectWorkspace>,
@@ -51,6 +55,7 @@ export const useStore = (): WorkspaceNavigationStore => {
     state,
     busy: pending || state.status === 'selecting',
     error: error ?? projectionError,
+    failedChatThreadId,
     chooseProject: () =>
       runSelection(selectWorkspace, '无法打开所选项目。'),
     resumeProject: () =>
@@ -60,10 +65,23 @@ export const useStore = (): WorkspaceNavigationStore => {
         () => activateWorkspaceProject(projectId),
         '无法打开所选项目。',
       ),
-    activateChat: (threadId?: string) =>
-      runSelection(
+    activateChat: async (threadId?: string) => {
+      const accepted = await runSelection(
         () => activateWorkspaceChat(threadId),
         '无法打开聊天。',
-      ),
+      );
+      setFailedChatThreadId(accepted ? null : threadId ?? null);
+      return accepted;
+    },
+    deleteFailedChat: async (threadId: string) => {
+      const accepted = await runSelection(
+        () => deleteWorkspaceTask(threadId),
+        '无法永久删除异常聊天。',
+      );
+      if (accepted && failedChatThreadId === threadId) {
+        setFailedChatThreadId(null);
+      }
+      return accepted;
+    },
   };
 };

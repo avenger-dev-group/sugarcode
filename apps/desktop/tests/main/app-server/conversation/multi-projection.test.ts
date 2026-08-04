@@ -34,9 +34,27 @@ registerHooks({
   },
 });
 
-const { ConversationController } = await import(
+const { ConversationController: ImportedConversationController } = await import(
   '../../../../src/main/app-server/conversation/controller/conversation-controller.ts'
 );
+const { ThreadRegistry } = await import(
+  '../../../../src/main/app-server/thread-registry.ts'
+);
+
+class ConversationController extends ImportedConversationController {
+  readonly registry: InstanceType<typeof ThreadRegistry>;
+
+  constructor(
+    options: Omit<
+      ConstructorParameters<typeof ImportedConversationController>[0],
+      'threadRegistry'
+    >,
+  ) {
+    const registry = new ThreadRegistry();
+    super({ ...options, threadRegistry: registry });
+    this.registry = registry;
+  }
+}
 
 const THREAD_A = '00000000-0000-7000-8000-000000000001';
 const THREAD_B = '00000000-0000-7000-8000-000000000002';
@@ -230,16 +248,6 @@ test('workspace loading never publishes the previous Thread index under the new 
     getRpc: () => rpc,
     onProtocolFailure: () => assert.fail('unexpected protocol failure'),
   });
-  const bindings = new Map<string, string>();
-  controller.subscribeScoped((workspaceId, snapshot) => {
-    if (snapshot.navigator.status !== 'ready') {
-      return;
-    }
-    for (const threadId of snapshot.navigator.activeThreadIds) {
-      bindings.set(threadId, workspaceId);
-    }
-  });
-
   assert.equal(
     await controller.restoreForConnection(WORKSPACE_WEB, THREAD_WEB),
     true,
@@ -249,14 +257,14 @@ test('workspace loading never publishes the previous Thread index under the new 
     (await controller.startTurn({ input: 'Review web' })).accepted,
     true,
   );
-  assert.equal(bindings.get(THREAD_WEB), WORKSPACE_WEB);
+  assert.equal(controller.registry.getWorkspaceId(THREAD_WEB), WORKSPACE_WEB);
 
   const switching = controller.switchWorkspace(WORKSPACE_ADMIN);
   await Promise.resolve();
   const loading = controller.getSnapshot();
   assert.equal(loading.navigator.status, 'loading');
   assert.deepEqual(loading.navigator.activeThreadIds, []);
-  assert.equal(bindings.get(THREAD_WEB), WORKSPACE_WEB);
+  assert.equal(controller.registry.getWorkspaceId(THREAD_WEB), WORKSPACE_WEB);
 
   controller.handleNotification({
     kind: 'notification',
@@ -448,6 +456,160 @@ test('background lifecycle cannot replace a blank foreground workspace', async (
     afterBackgroundCompletion.navigator.unreadThreadStatuses,
     { [THREAD_WEB]: 'completed' },
   );
+});
+
+test('a background Thread title cannot join the foreground workspace index', async () => {
+  let activeWorkspaceId = WORKSPACE_WEB;
+  const rpc: ConversationRpc = {
+    findLatestActiveThread: async () => null,
+    listActiveThreads: async () => ({
+      data:
+        activeWorkspaceId === WORKSPACE_WEB
+          ? [{ id: THREAD_WEB, workspaceId: WORKSPACE_WEB }]
+          : [],
+      nextCursor: null,
+    }),
+    resumeThread: async (threadId) => ({
+      threadId,
+      workspaceId: WORKSPACE_WEB,
+      turns: [],
+    }),
+    startThread: async () => ({
+      thread: { id: THREAD_WEB, workspaceId: WORKSPACE_WEB },
+    }),
+    importAsset: async () => {
+      throw new Error('not used');
+    },
+    startTurn: async () => ({
+      turn: { id: TURN_WEB, status: 'inProgress' },
+    }),
+    interruptTurn: async () => ({}),
+  };
+  const controller = new ConversationController({
+    getRpc: () => rpc,
+    onProtocolFailure: () => assert.fail('unexpected protocol failure'),
+  });
+  assert.equal(
+    await controller.restoreForConnection(WORKSPACE_WEB, THREAD_WEB),
+    true,
+  );
+  controller.connectionReady();
+  assert.equal(
+    (await controller.startTurn({ input: 'Run web' })).accepted,
+    true,
+  );
+
+  activeWorkspaceId = WORKSPACE_ADMIN;
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ADMIN), true);
+  assert.equal(controller.startNewThread().accepted, true);
+
+  controller.handleNotification({
+    kind: 'notification',
+    method: 'thread/title/updated',
+    params: {
+      workspaceId: WORKSPACE_WEB,
+      threadId: THREAD_WEB,
+      title: '确认当前项目',
+    },
+  });
+
+  const admin = controller.getSnapshot();
+  assert.equal(admin.phase, 'idle');
+  assert.equal(admin.threadId, undefined);
+  assert.deepEqual(admin.navigator.activeThreadIds, []);
+  assert.deepEqual(admin.navigator.activeThreadTitles, {});
+  assert.deepEqual(admin.navigator.runningThreadIds, [THREAD_WEB]);
+  assert.equal(controller.registry.getWorkspaceId(THREAD_WEB), WORKSPACE_WEB);
+  assert.equal(controller.registry.getTitle(THREAD_WEB), '确认当前项目');
+});
+
+test('search, fork, archive, unarchive and delete keep Registry membership coherent', async () => {
+  let activeThreadIds = [THREAD_A];
+  const rpc: ConversationRpc = {
+    findLatestActiveThread: async () => activeThreadIds[0] ?? null,
+    listActiveThreads: async () => ({
+      data: activeThreadIds.map((threadId) => ({
+        id: threadId,
+        workspaceId: WORKSPACE_A,
+        title: threadId === THREAD_NEW ? 'Forked task' : 'Original task',
+      })),
+      nextCursor: null,
+    }),
+    searchThreads: async () => ({
+      data: [
+        { id: THREAD_B, workspaceId: WORKSPACE_A, title: 'Archived result' },
+      ],
+      nextCursor: null,
+    }),
+    resumeThread: async (threadId) => ({
+      threadId,
+      workspaceId: WORKSPACE_A,
+      title: threadId === THREAD_NEW ? 'Forked task' : 'Original task',
+      turns: [],
+    }),
+    forkThread: async () => {
+      activeThreadIds = [THREAD_NEW, ...activeThreadIds];
+      return {
+        threadId: THREAD_NEW,
+        workspaceId: WORKSPACE_A,
+        title: 'Forked task',
+        turns: [],
+      };
+    },
+    archiveThread: async (threadId) => {
+      activeThreadIds = activeThreadIds.filter((candidate) => candidate !== threadId);
+    },
+    unarchiveThread: async (threadId) => {
+      activeThreadIds = [threadId, ...activeThreadIds];
+    },
+    deleteThread: async (threadId) => {
+      activeThreadIds = activeThreadIds.filter((candidate) => candidate !== threadId);
+    },
+    startThread: async () => ({
+      thread: { id: THREAD_A, workspaceId: WORKSPACE_A },
+    }),
+    importAsset: async () => {
+      throw new Error('not used');
+    },
+    startTurn: async () => ({
+      turn: { id: TURN_A, status: 'inProgress' },
+    }),
+    interruptTurn: async () => ({}),
+  };
+  const controller = new ConversationController({
+    getRpc: () => rpc,
+    onProtocolFailure: () => assert.fail('unexpected protocol failure'),
+  });
+
+  assert.equal(await controller.restoreForConnection(WORKSPACE_A, THREAD_A), true);
+  controller.connectionReady();
+  assert.equal((await controller.searchThreads('archived')).accepted, true);
+  assert.equal(controller.registry.getWorkspaceId(THREAD_B), WORKSPACE_A);
+  assert.equal(controller.registry.isActive(THREAD_B), false);
+
+  assert.equal((await controller.forkThread(THREAD_A)).accepted, true);
+  assert.deepEqual(controller.registry.getWorkspaceView(WORKSPACE_A).threadIds, [
+    THREAD_NEW,
+    THREAD_A,
+  ]);
+  assert.equal(controller.registry.getTitle(THREAD_NEW), 'Forked task');
+
+  assert.equal((await controller.archiveThread(THREAD_NEW)).accepted, true);
+  assert.deepEqual(controller.registry.getWorkspaceView(WORKSPACE_A).threadIds, [
+    THREAD_A,
+  ]);
+
+  assert.equal((await controller.unarchiveThread(THREAD_NEW)).accepted, true);
+  assert.deepEqual(controller.registry.getWorkspaceView(WORKSPACE_A).threadIds, [
+    THREAD_NEW,
+    THREAD_A,
+  ]);
+
+  assert.equal((await controller.deleteThread(THREAD_NEW)).accepted, true);
+  assert.deepEqual(controller.registry.getWorkspaceView(WORKSPACE_A).threadIds, [
+    THREAD_A,
+  ]);
+  assert.equal(controller.registry.getWorkspaceId(THREAD_NEW), null);
 });
 
 test('rapid web admin and blank chat sends keep three workspace projections isolated', async () => {

@@ -69,10 +69,10 @@ test('a restored Thread keeps its durable model through the Desktop projection',
     threadId: recovered.threadId,
     activeTurnId: null,
     turns,
+    activeThreadIds: [recovered.threadId],
+    activeThreadTitles: {},
     navigator: {
       status: 'ready',
-      activeThreadIds: [recovered.threadId],
-      activeThreadTitles: {},
       activeTruncated: false,
       search: {
         query: '',

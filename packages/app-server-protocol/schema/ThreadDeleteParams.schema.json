@@ -6,10 +6,15 @@
     "threadId": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "workspaceId": {
+      "type": "string",
+      "pattern": "^(unbound|[0-9a-f]{64})$"
     }
   },
   "additionalProperties": false,
   "required": [
+    "workspaceId",
     "threadId"
   ]
 }

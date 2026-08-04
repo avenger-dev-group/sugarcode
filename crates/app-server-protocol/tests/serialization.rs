@@ -663,10 +663,12 @@ fn thread_unarchive_uses_its_own_canonical_params_and_empty_response() {
 fn thread_delete_uses_its_own_canonical_params_and_empty_response() {
     assert_eq!(
         serde_json::from_value::<ThreadDeleteParams>(json!({
+            "workspaceId": "unbound",
             "threadId": "00000000-0000-7000-8000-000000000001"
         }))
         .expect("valid params"),
         ThreadDeleteParams {
+            workspace_id: "unbound".to_string(),
             thread_id: "00000000-0000-7000-8000-000000000001".to_string()
         }
     );
@@ -676,11 +678,13 @@ fn thread_delete_uses_its_own_canonical_params_and_empty_response() {
     );
     for invalid in [
         json!({}),
-        json!({"threadId": ""}),
-        json!({"threadId": "00000000-0000-4000-8000-000000000099"}),
-        json!({"threadId": "../00000000-0000-7000-8000-000000000001"}),
-        json!({"threadId": "00000000-0000-7000-8000-0000000000001"}),
-        json!({"threadId": "00000000-0000-7000-8000-000000000001", "purge": true}),
+        json!({"workspaceId": "", "threadId": "00000000-0000-7000-8000-000000000001"}),
+        json!({"workspaceId": "A".repeat(64), "threadId": "00000000-0000-7000-8000-000000000001"}),
+        json!({"workspaceId": "unbound", "threadId": ""}),
+        json!({"workspaceId": "unbound", "threadId": "00000000-0000-4000-8000-000000000099"}),
+        json!({"workspaceId": "unbound", "threadId": "../00000000-0000-7000-8000-000000000001"}),
+        json!({"workspaceId": "unbound", "threadId": "00000000-0000-7000-8000-0000000000001"}),
+        json!({"workspaceId": "unbound", "threadId": "00000000-0000-7000-8000-000000000001", "purge": true}),
     ] {
         assert!(serde_json::from_value::<ThreadDeleteParams>(invalid).is_err());
     }

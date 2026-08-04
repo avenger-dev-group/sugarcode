@@ -164,6 +164,8 @@ type ConversationSnapshotSource = Readonly<{
   activeTurnId: string | null;
   turns: readonly MutableTurn[];
   navigator: MutableThreadNavigator;
+  activeThreadIds: readonly string[];
+  activeThreadTitles: Readonly<Record<string, string>>;
   notice: ConversationStateSnapshot['notice'];
 }>;
 
@@ -342,7 +344,11 @@ export const createConversationSnapshot = (
           }
         : {}),
     })),
-    navigator: snapshotThreadNavigator(state.navigator),
+    navigator: snapshotThreadNavigator(
+      state.navigator,
+      state.activeThreadIds,
+      state.activeThreadTitles,
+    ),
     ...(state.notice ? { notice: { ...state.notice } } : {}),
   });
 

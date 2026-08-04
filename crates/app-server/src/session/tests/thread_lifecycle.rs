@@ -340,7 +340,7 @@ fn thread_delete_is_terminal_for_active_and_archived_threads() {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": "thread/delete",
-                "params": {"threadId": thread_id}
+                "params": {"workspaceId": "unbound", "threadId": thread_id}
             })
             .to_string(),
         );
@@ -381,8 +381,8 @@ fn thread_delete_is_terminal_for_active_and_archived_threads() {
 fn thread_delete_validates_before_consuming_its_request_id() {
     let mut session = ready_session(Core::new());
     for params in [
-        json!({"threadId": "00000000-0000-7000-8000-000000000099"}),
-        json!({"threadId": "00000000-0000-7000-8000-000000000001", "force": true}),
+        json!({"workspaceId": "unbound", "threadId": "00000000-0000-7000-8000-000000000099"}),
+        json!({"workspaceId": "unbound", "threadId": "00000000-0000-7000-8000-000000000001", "force": true}),
     ] {
         let messages = session.process_line(
             &json!({
@@ -401,9 +401,9 @@ fn thread_delete_validates_before_consuming_its_request_id() {
         );
     }
     let thread_id = start_test_thread(&mut session, "thread-1");
-    let success = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"threadId":thread_id}}).to_string());
+    let success = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"workspaceId":"unbound","threadId":thread_id}}).to_string());
     assert!(matches!(success[0], JsonRpcMessage::Response(_)));
-    let duplicate = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"threadId":thread_id}}).to_string());
+    let duplicate = session.process_line(&json!({"jsonrpc":"2.0","id":"retry","method":"thread/delete","params":{"workspaceId":"unbound","threadId":thread_id}}).to_string());
     let JsonRpcMessage::Error(error) = &duplicate[0] else {
         panic!("expected duplicate error");
     };

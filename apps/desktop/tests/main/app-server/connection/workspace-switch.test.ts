@@ -53,9 +53,26 @@ registerHooks({
   },
 });
 
-const { ConnectionSupervisor } = await import(
+const { ConnectionSupervisor: ImportedConnectionSupervisor } = await import(
   '../../../../src/main/app-server/connection/supervisor.ts'
 );
+const { ThreadRegistry } = await import(
+  '../../../../src/main/app-server/thread-registry.ts'
+);
+const { RpcResponseError } = await import(
+  '../../../../src/main/app-server/transport/jsonl-client.ts'
+);
+
+class ConnectionSupervisor extends ImportedConnectionSupervisor {
+  constructor(
+    options: Omit<
+      ConstructorParameters<typeof ImportedConnectionSupervisor>[0],
+      'threadRegistry'
+    >,
+  ) {
+    super({ ...options, threadRegistry: new ThreadRegistry() });
+  }
+}
 
 type WorkspaceTransactionLease = Readonly<{ release: () => void }>;
 
@@ -64,13 +81,65 @@ type SupervisorInternals = {
     executablePath: string;
     workingDirectory: string;
   }> | null;
-  client: object | null;
+  client:
+    | Readonly<{
+        requestReady: (
+          method: string,
+          params: unknown,
+        ) => Promise<unknown>;
+      }>
+    | object
+    | null;
   workspaceTransaction: boolean;
   openConfiguredWorkspace: () => Promise<string | null>;
   beginWorkspaceTransaction: () =>
     | WorkspaceTransactionLease
     | string;
 };
+
+test('permanent Thread deletion is workspace-bound and idempotent when already absent', async () => {
+  const supervisor = new ConnectionSupervisor({
+    desktopAppPath: '/test/desktop',
+    clientVersion: '1.0.0',
+  });
+  const internals = supervisor as unknown as SupervisorInternals;
+  const requests: Array<Readonly<{ method: string; params: unknown }>> = [];
+  internals.client = {
+    requestReady: async (method: string, params: unknown) => {
+      requests.push({ method, params });
+      throw new RpcResponseError(-32_004, 'Thread not found.');
+    },
+  };
+
+  assert.equal(
+    await supervisor.deleteThread('workspace-chat', 'thread-stale'),
+    'missing',
+  );
+
+  assert.deepEqual(requests, [
+    {
+      method: 'thread/delete',
+      params: {
+        workspaceId: 'workspace-chat',
+        threadId: 'thread-stale',
+      },
+    },
+  ]);
+
+  const deletionFailure = new RpcResponseError(
+    -32_603,
+    'Deletion failed.',
+  );
+  internals.client = {
+    requestReady: async () => {
+      throw deletionFailure;
+    },
+  };
+  await assert.rejects(
+    supervisor.deleteThread('workspace-chat', 'thread-stale'),
+    deletionFailure,
+  );
+});
 
 test('workspace switching remains available while another Thread is running', () => {
   const supervisor = new ConnectionSupervisor({

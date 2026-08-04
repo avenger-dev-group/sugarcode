@@ -364,6 +364,23 @@ fn multi_workspace_app_server_opens_and_routes_independent_contexts() {
         chat_started["params"]["thread"]["workspaceId"],
         workspace_id_chat
     );
+    let chat_thread_id = chat_started["params"]["thread"]["id"]
+        .as_str()
+        .expect("chat Thread ID")
+        .to_owned();
+    send_json(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": "delete-chat",
+            "method": "thread/delete",
+            "params": {
+                "workspaceId": workspace_id_chat,
+                "threadId": chat_thread_id
+            }
+        }),
+    );
+    assert_eq!(read_json(&mut stdout)["result"], json!({}));
 
     drop(stdin);
     provider.wait_until_connection_closed();

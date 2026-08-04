@@ -12,5 +12,5 @@
 {"jsonrpc":"2.0","id":"unarchive","method":"thread/unarchive","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
 {"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
 {"jsonrpc":"2.0","id":"retry","method":"thread/fork","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
-{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
+{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"workspaceId":"unbound","threadId":"00000000-0000-7000-8000-000000000001"}}
 {"jsonrpc":"2.0","id":"deleted","method":"thread/fork","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}

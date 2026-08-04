@@ -106,28 +106,39 @@ Electron Main owns:
 - Git, preview window and PTY/ConPTY terminal.
 
 Conversation state is one `ThreadRuntime` per Thread rather than one mutable
-global transcript. The Registry owns each Thread's immutable `workspaceId`,
-phase, active Turn, Turn/Item projection, notice, attachment previews,
-start-acceptance state and bounded startup lifecycle buffer. The controller owns
-only the foreground `{ workspaceId, threadId | null }` selection, navigation and
-short-lived UI transactions. Background lifecycle is applied directly to the
-target Runtime; Main never saves the foreground, temporarily swaps Workspace
-identity, restores a background projection and swaps back. Background updates
-are accepted only for known Threads in their owning workspace and can never
-replace a blank foreground projection. Navigation projects running Thread IDs and
-unread terminal statuses globally across every registered project and isolated
-chat, while the transcript remains scoped to the foreground workspace.
+global transcript. One Main-process `ThreadRegistry` is injected into the
+connection, conversation and workspace controllers. Each entry owns the
+Thread's protocol-confirmed immutable `workspaceId`, title, active membership,
+Runtime, unread status and reload-required status. The conversation controller
+owns only the foreground `{ workspaceId, threadId | null }` selection,
+navigation and short-lived UI transactions. Background lifecycle is applied
+directly to the target Runtime; Main never saves the foreground, temporarily
+swaps Workspace identity, restores a background projection and swaps back.
+Background updates are accepted only for known Threads in their owning
+workspace and can never replace a blank foreground projection. Navigation
+projects running Thread IDs and unread terminal statuses globally across every
+registered project and isolated chat, while the transcript remains scoped to
+the foreground workspace. `thread/title/updated` changes only its bound
+Registry entry, so a background title cannot create foreground membership.
 Successful, failed and interrupted background Turns retain distinct unread
 states until their Thread is selected. Selecting a cached Thread never
 overwrites another active Turn. Stop and destructive Thread actions always
 target an explicit Thread ID; only the target Thread's active Turn blocks its
 fork/archive/delete action.
+If an isolated-chat Thread cannot be activated, Renderer keeps its permanent
+delete action visible. Main sends the same workspace-bound `thread/delete`
+lifecycle request without requiring foreground activation; the explicit
+Workspace ID lets Main load the owning context even when the Thread was never
+restored into runtime memory. Normal deletion uses that single binding. Only an
+unresolved legacy session-cache entry may probe other known Workspace bindings
+until app-server deletes the Thread or confirms it is absent from all of them.
+Main removes the Registry entry only after that durable check completes.
 
 `conversation/controller.ts` is the stable conversation-controller facade.
 Its `conversation/controller/` implementation directory separates RPC and
 Thread action coordination (`conversation-controller.ts`), snapshot/recovery
-projection (`projection.ts`), the per-Thread Runtime Registry entry
-(`thread-runtime.ts`), Turn lifecycle routing
+projection (`projection.ts`), the shared ownership and Runtime index
+(`thread-registry.ts`), per-Thread runtime state (`thread-runtime.ts`), Turn lifecycle routing
 (`lifecycle-controller.ts`), mutable state and correlation guards
 (`mutable-state.ts` and `item-lifecycle-base.ts`), and the started/completed
 Item reducers with their semantic comparisons (`item-started.ts`,
@@ -183,15 +194,16 @@ non-actionable queued request can already be approved. Workspace-scoped automati
 approval is checked against the request's recorded workspace, not the currently
 visible project.
 
-Main persists a versioned multi-project session registry with canonical paths,
-opaque workspace bindings, per-project Thread IDs and title maps, isolated-chat
-directories, titles and recency. Per-project title maps keep every expanded
-project stable across foreground switches and cold launches instead of making
-titles depend on the active conversation projection. The schema number remains
-`1` and its current shape requires per-project title maps; the earlier v1 shape
-has no compatibility reader or migration.
-Project and chat membership is mutually exclusive, and chat reconciliation is
-scoped to the active chat workspace so other chat directories remain intact.
+Main persists a versioned multi-project session with canonical paths, opaque
+workspace bindings, per-project Thread IDs and title maps, isolated-chat
+directories, titles and recency. The schema remains `1`; those Thread arrays and
+title maps are serialized views of `ThreadRegistry`, not parallel runtime facts.
+On cold start they are imported as `sessionCache`. Records without a Workspace
+ID remain keyed by their project or chat owner until that owner is opened.
+`thread/list` then atomically replaces only that Workspace's active index:
+protocol data corrects stale cached ownership and removes cached records absent
+from the authoritative list. Project and chat membership is therefore mutually
+exclusive without scanning or editing other project arrays.
 Its stored active entry
 does not opt a cold launch into foreground restoration. Switching projects does
 not restart the sidecar, and background Turns continue while the foreground
@@ -203,11 +215,10 @@ holds the Workspace binding and early lifecycle; the `thread/start` response and
 matching `thread/started` bind the Runtime, and early `turn/started` events remain
 buffered until the `turn/start` response is accepted. This keeps the newly
 started Turn in its owning projection and then opens the requested foreground
-workspace. A workspace-loading snapshot
-clears the previous workspace's Thread index, and Main never learns Thread
-ownership from any Renderer snapshot; ready snapshots contribute display titles
-only. Transient navigation state therefore cannot rebind a background Thread to
-the new foreground workspace.
+workspace. A workspace-loading snapshot publishes an empty foreground index
+until the destination list arrives. Main never learns Thread ownership or titles
+from a Renderer snapshot. Transient navigation state therefore cannot rebind a
+background Thread to the new foreground workspace.
 Project ordering is
 import-recency order: a newly imported
 project enters at the top, while later activation never changes its position.

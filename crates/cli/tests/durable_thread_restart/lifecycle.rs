@@ -329,7 +329,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": "delete-active",
                 "method": "thread/delete",
-                "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
+                "params": {"workspaceId": "unbound", "threadId": "00000000-0000-7000-8000-000000000001"}
             }),
             1,
         )[0]["result"],
@@ -353,7 +353,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": "delete-archived",
                 "method": "thread/delete",
-                "params": {"threadId": "00000000-0000-7000-8000-000000000002"}
+                "params": {"workspaceId": "unbound", "threadId": "00000000-0000-7000-8000-000000000002"}
             }),
             1,
         )[0]["result"],
@@ -365,7 +365,7 @@ fn deletes_across_two_processes_and_rebuilds_both_projections_from_rollouts() {
                 "jsonrpc": "2.0",
                 "id": "delete-again",
                 "method": "thread/delete",
-                "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
+                "params": {"workspaceId": "unbound", "threadId": "00000000-0000-7000-8000-000000000001"}
             }),
             1,
         )[0]["result"],

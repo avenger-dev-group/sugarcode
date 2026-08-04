@@ -31,6 +31,11 @@ export const focusWorkspaceTask = (
 ): Promise<WorkspaceSelectResult> =>
   window.sugarcode.focusWorkspaceTask(threadId);
 
+export const deleteWorkspaceTask = (
+  threadId: string,
+): Promise<WorkspaceSelectResult> =>
+  window.sugarcode.deleteWorkspaceTask(threadId);
+
 export const activateWorkspaceChat = (
   threadId?: string,
 ): Promise<WorkspaceSelectResult> =>

@@ -113,6 +113,7 @@ import {
   WORKSPACE_STATE_CHANGED_CHANNEL,
   WORKSPACE_STATE_GET_CHANNEL,
   WORKSPACE_TASK_FOCUS_CHANNEL,
+  WORKSPACE_TASK_DELETE_CHANNEL,
   type WorkspaceChatRequest,
   type WorkspaceInspectRequest,
   type WorkspaceInspectResult,
@@ -860,6 +861,18 @@ export const createDesktopApi = (
     );
     if (!isWorkspaceSelectResult(result)) {
       throw new Error('Main returned an invalid task focus result.');
+    }
+    return result;
+  },
+  deleteWorkspaceTask: async (
+    threadId: string,
+  ): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_TASK_DELETE_CHANNEL,
+      threadId,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid task deletion result.');
     }
     return result;
   },

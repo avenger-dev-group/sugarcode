@@ -2,8 +2,8 @@
 {"jsonrpc":"2.0","method":"initialized"}
 {"jsonrpc":"2.0","id":"thread-1","method":"thread/start"}
 {"jsonrpc":"2.0","id":"turn-1","method":"turn/start","params":{"threadId":"00000000-0000-7000-8000-000000000001","input":[{"type":"text","text":"Hello"}]}}
-{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
-{"jsonrpc":"2.0","id":"delete-again","method":"thread/delete","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
+{"jsonrpc":"2.0","id":"delete","method":"thread/delete","params":{"workspaceId":"unbound","threadId":"00000000-0000-7000-8000-000000000001"}}
+{"jsonrpc":"2.0","id":"delete-again","method":"thread/delete","params":{"workspaceId":"unbound","threadId":"00000000-0000-7000-8000-000000000001"}}
 {"jsonrpc":"2.0","id":"list","method":"thread/list"}
 {"jsonrpc":"2.0","id":"search","method":"thread/search","params":{"query":"SugarCode"}}
 {"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}

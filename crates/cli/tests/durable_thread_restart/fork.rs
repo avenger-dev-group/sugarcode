@@ -121,7 +121,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
                 "jsonrpc": "2.0",
                 "id": "delete-source",
                 "method": "thread/delete",
-                "params": {"threadId": "00000000-0000-7000-8000-000000000001"}
+                "params": {"workspaceId": "unbound", "threadId": "00000000-0000-7000-8000-000000000001"}
             }),
             1,
         )[0]["result"],

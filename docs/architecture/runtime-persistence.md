@@ -25,15 +25,17 @@ allocator or replay-time maximum-ID scan exists.
 Thread-to-workspace routing is restored from durable descriptors when an idle
 context is reloaded; a context unload never deletes rollout or search state.
 
-Desktop has a separate process-local Thread Runtime Registry. Each entry freezes
-the Thread's Workspace binding and owns the live phase, active Turn, Turn/Item
-projection, notice, attachment previews and bounded `turn/start` lifecycle
-buffer. The visible transcript is only a foreground projection of one Registry
-entry; selecting another Workspace or an empty chat changes that pointer and
-does not transfer or stop background execution. Before `thread/start` returns,
-one pending start transaction buffers the matching `thread/started` lifecycle;
-after binding, only acceptance or rejection of `turn/start` is a navigation
-barrier. Turn completion is not a barrier.
+Desktop has one process-local `ThreadRegistry`. Every Thread has one record with
+its binding source, immutable protocol-confirmed Workspace ID, owner, title,
+active membership, Runtime, unread status and reload-required status. The
+Runtime owns live phase, active Turn, Turn/Item projection, notice, attachment
+previews and the bounded `turn/start` lifecycle buffer. The visible transcript
+is only a foreground projection of one Registry entry; selecting another
+Workspace or an empty chat changes that pointer and does not transfer or stop
+background execution. Before `thread/start` returns, one pending start
+transaction retains the request Workspace and buffers the matching early
+lifecycle. After binding, only acceptance or rejection of `turn/start` is a
+navigation barrier. Turn completion is not a barrier.
 
 An accepted Turn has no wall-clock execution deadline. It remains active until
 the model reaches a terminal result, the user interrupts it, the consumer
@@ -62,10 +64,24 @@ Config `schema_version`, rollout `schemaVersion`, app-server
 shapes are intentionally incompatible with earlier development data. There is
 no dual reader or migration and repository code never deletes `~/.sugarcode`.
 
-Desktop's local window/session registry is a separate presentation record. Its
-schema version remains `1`, and only the current generated-title shape is
-readable. There is no dual reader or migration for the earlier v1 shape; a
-later normal save replaces stale session data with the current v1 record.
+Desktop's local window/session registry is a separate presentation cache. Its
+schema version remains `1`; existing project Thread arrays/title maps and chat
+records hydrate `ThreadRegistry` as non-authoritative `sessionCache` entries.
+Missing Workspace IDs remain bound to an owner key until that project or chat is
+opened. A protocol result may correct a cached binding once; a later change to a
+protocol-confirmed binding is a protocol failure. `thread/list` atomically
+replaces one Workspace index without disturbing other Workspaces, and the next
+normal save derives the same v1 disk shape from Registry views. Background title
+notifications update only their Registry entry without promoting the Thread
+into the foreground Workspace index.
+Permanent deletion of an unavailable isolated chat remains durable-first: Main
+issues workspace-bound `thread/delete` by canonical Workspace and Thread IDs,
+using the one protocol-confirmed Registry binding during normal operation and
+trying other known bindings only for an unresolved legacy cache entry. It then
+removes the Registry record and atomically saves the derived Desktop session. A
+Thread absent from every legacy candidate Workspace is treated as a completed
+permanent deletion; if no Workspace deletes it and any app-server attempt fails,
+the local entry remains intact.
 
 Restart converts unfinished Turns and unfinished compaction checkpoints to
 Interrupted. It never retries an external call, reapplies a file change or

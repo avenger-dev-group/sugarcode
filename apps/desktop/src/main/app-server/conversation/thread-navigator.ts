@@ -4,8 +4,6 @@ import type {
 
 export type MutableThreadNavigator = {
   status: ConversationThreadNavigatorSnapshot['status'];
-  activeThreadIds: string[];
-  activeThreadTitles: Record<string, string>;
   activeTruncated: boolean;
   search: {
     query: string;
@@ -27,8 +25,6 @@ export type MutableThreadNavigator = {
 
 export const createThreadNavigator = (): MutableThreadNavigator => ({
   status: 'loading',
-  activeThreadIds: [],
-  activeThreadTitles: {},
   activeTruncated: false,
   search: {
     query: '',
@@ -41,10 +37,12 @@ export const createThreadNavigator = (): MutableThreadNavigator => ({
 
 export const snapshotThreadNavigator = (
   navigator: MutableThreadNavigator,
+  activeThreadIds: readonly string[],
+  activeThreadTitles: Readonly<Record<string, string>>,
 ): ConversationThreadNavigatorSnapshot => ({
   status: navigator.status,
-  activeThreadIds: [...navigator.activeThreadIds],
-  activeThreadTitles: { ...navigator.activeThreadTitles },
+  activeThreadIds: [...activeThreadIds],
+  activeThreadTitles: { ...activeThreadTitles },
   activeTruncated: navigator.activeTruncated,
   search: {
     query: navigator.search.query,
@@ -77,30 +75,11 @@ export const isKnownThread = (
   navigator: MutableThreadNavigator,
   currentThreadId: string | null,
   threadId: string,
+  activeThreadIds: readonly string[],
 ): boolean =>
   currentThreadId === threadId ||
-  navigator.activeThreadIds.includes(threadId) ||
+  activeThreadIds.includes(threadId) ||
   navigator.search.threadIds.includes(threadId);
-
-export const recordActiveThread = (
-  navigator: MutableThreadNavigator,
-  threadId: string,
-  title?: string,
-): void => {
-  navigator.activeThreadIds = [
-    threadId,
-    ...navigator.activeThreadIds.filter((id) => id !== threadId),
-  ].slice(0, 50);
-  if (title) {
-    navigator.activeThreadTitles[threadId] = title;
-  }
-  navigator.activeThreadTitles = Object.fromEntries(
-    navigator.activeThreadIds.flatMap((id) => {
-      const activeTitle = navigator.activeThreadTitles[id];
-      return activeTitle ? [[id, activeTitle]] : [];
-    }),
-  );
-};
 
 export const resetThreadSearch = (
   navigator: MutableThreadNavigator,

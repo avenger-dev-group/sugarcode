@@ -8,7 +8,6 @@ import type {
   WorkspaceSelectResult,
   WorkspaceStateSnapshot,
 } from '@/shared/workspace';
-import type { ConversationStateSnapshot } from '@/shared/conversation';
 import type { BrowserWindow, Dialog, OpenDialogOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
 import {
@@ -23,10 +22,12 @@ import {
 import path from 'node:path';
 
 import type { ConnectionSupervisor } from '../connection/supervisor';
+import { ThreadRegistry } from '../thread-registry';
 
 type DialogBoundary = Pick<Dialog, 'showOpenDialog' | 'showMessageBox'>;
 
 type WorkspaceControllerOptions = Readonly<{
+  threadRegistry: ThreadRegistry;
   supervisor: ConnectionSupervisor;
   dialog: DialogBoundary;
   getMainWindow: () => BrowserWindow | null;
@@ -75,42 +76,42 @@ type StoredSession = Readonly<{
   chats: readonly StoredChat[];
 }>;
 
+type ProjectRecord = Readonly<
+  Pick<StoredProject, 'id' | 'path' | 'name' | 'lastOpenedAtMs'>
+>;
+
+type ChatOwnerRecord = Readonly<{
+  ownerKey: string;
+  directory?: string;
+}>;
+
+const projectOwnerKey = (projectId: string): string =>
+  `project:${projectId}`;
+
+const chatOwnerKey = (directory: string): string => `chat:${directory}`;
+
+const legacyChatOwnerKey = (threadId: string): string =>
+  `chat-cache:${threadId}`;
+
 const isThreadId = (value: unknown): value is string =>
   typeof value === 'string' &&
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
     value,
   );
 
-const sameIds = (
-  left: readonly string[],
-  right: readonly string[],
-): boolean =>
-  left.length === right.length &&
-  left.every((value, index) => value === right[index]);
-
-const sameTitles = (
-  left: Readonly<Record<string, string>>,
-  right: Readonly<Record<string, string>>,
-): boolean =>
-  Object.keys(left).length === Object.keys(right).length &&
-  Object.entries(left).every(([threadId, title]) => right[threadId] === title);
-
 export class WorkspaceController {
   private readonly options: WorkspaceControllerOptions;
   private readonly listeners = new Set<Listener>();
-  private readonly chatDirectories = new Map<string, string>();
-  private readonly chatTitles = new Map<string, string>();
-  private readonly chatWorkspaceIds = new Map<string, string>();
+  private readonly chatOwners = new Map<string, ChatOwnerRecord>();
+  private persistedActive: StoredSession['active'] | null = null;
   private revision = 0;
   private generation = 0;
   private projectPath: string | null = null;
   private activeProjectId: string | null = null;
-  private readonly projects = new Map<string, StoredProject>();
+  private readonly projects = new Map<string, ProjectRecord>();
   private workspacePath: string | null = null;
   private workspaceKind: WorkspaceKind | null = null;
   private activeChatThreadId: string | null = null;
-  private chatThreadIds: readonly string[] = [];
-  private projectThreadIds: readonly string[] = [];
   private snapshot: WorkspaceStateSnapshot = {
     revision: 0,
     generation: 0,
@@ -120,6 +121,7 @@ export class WorkspaceController {
 
   constructor(options: WorkspaceControllerOptions) {
     this.options = options;
+    this.options.threadRegistry.subscribe(this.handleRegistryChange);
     this.options.supervisor.subscribe((connection) => {
       if (!this.workspacePath) {
         return;
@@ -162,37 +164,65 @@ export class WorkspaceController {
     if (!stored) {
       return;
     }
+    this.persistedActive = stored.active;
     for (const project of stored.projects) {
       const canonicalPath = await validateDirectory(project.path);
       if (!canonicalPath) {
         continue;
       }
       this.projects.set(project.id, {
-        ...project,
+        id: project.id,
         path: canonicalPath,
         name: path.basename(canonicalPath),
-        threadTitles: Object.fromEntries(
-          Object.entries(project.threadTitles).filter(([threadId]) =>
-            project.threadIds.includes(threadId),
-          ),
-        ),
+        lastOpenedAtMs: project.lastOpenedAtMs,
       });
+      const ownerKey = projectOwnerKey(project.id);
+      if (project.workspaceId) {
+        this.options.threadRegistry.registerWorkspaceOwner(
+          project.workspaceId,
+          ownerKey,
+          'sessionCache',
+        );
+      }
+      this.options.threadRegistry.hydrateSessionCache(
+        project.threadIds.map((threadId) => ({
+          threadId,
+          ownerKey,
+          ...(project.workspaceId
+            ? { workspaceId: project.workspaceId }
+            : {}),
+          ...(project.threadTitles[threadId]
+            ? { title: project.threadTitles[threadId] }
+            : {}),
+        })),
+      );
     }
-    this.chatThreadIds = stored.chats.map((chat) => chat.threadId);
     for (const chat of stored.chats) {
-      if (chat.title && chat.title !== chat.threadId) {
-        this.chatTitles.set(chat.threadId, chat.title);
-      }
+      const directory = chat.directory
+        ? await this.validateChatDirectory(chat.directory)
+        : null;
+      const ownerKey = directory
+        ? chatOwnerKey(directory)
+        : legacyChatOwnerKey(chat.threadId);
+      this.chatOwners.set(ownerKey, {
+        ownerKey,
+        ...(directory ? { directory } : {}),
+      });
       if (chat.workspaceId) {
-        this.chatWorkspaceIds.set(chat.threadId, chat.workspaceId);
+        this.options.threadRegistry.registerWorkspaceOwner(
+          chat.workspaceId,
+          ownerKey,
+          'sessionCache',
+        );
       }
-      if (!chat.directory) {
-        continue;
-      }
-      const directory = await this.validateChatDirectory(chat.directory);
-      if (directory) {
-        this.chatDirectories.set(chat.threadId, directory);
-      }
+      this.options.threadRegistry.hydrateSessionCache([
+        {
+          threadId: chat.threadId,
+          ownerKey,
+          ...(chat.workspaceId ? { workspaceId: chat.workspaceId } : {}),
+          ...(chat.title ? { title: chat.title } : {}),
+        },
+      ]);
     }
     this.publish('unselected');
   };
@@ -277,10 +307,13 @@ export class WorkspaceController {
   };
 
   focusTask = async (threadId: string): Promise<WorkspaceSelectResult> => {
-    const project = [...this.projects.values()].find((candidate) =>
-      candidate.threadIds.includes(threadId),
-    );
-    if (project) {
+    const ownerKey = this.options.threadRegistry.getOwnerKey(threadId);
+    const project = ownerKey
+      ? [...this.projects.values()].find(
+          (candidate) => projectOwnerKey(candidate.id) === ownerKey,
+        )
+      : undefined;
+    if (project !== undefined) {
       const activated = await this.activateProject(project.id);
       if (!activated.accepted) {
         return activated;
@@ -295,10 +328,111 @@ export class WorkspaceController {
             reason: selected.reason === 'turnActive' ? 'busy' : 'failed',
           };
     }
-    if (this.chatThreadIds.includes(threadId)) {
+    if (ownerKey && this.chatOwners.has(ownerKey)) {
       return this.activateChat({ threadId });
     }
     return { accepted: false, reason: 'invalid' };
+  };
+
+  deleteTask = async (threadId: string): Promise<WorkspaceSelectResult> => {
+    if (!isThreadId(threadId)) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    const ownerKey = this.options.threadRegistry.getOwnerKey(threadId);
+    const projectOwner = ownerKey
+      ? [...this.projects.values()].find(
+          (project) => projectOwnerKey(project.id) === ownerKey,
+        )
+      : undefined;
+    const chatOwned = ownerKey ? this.chatOwners.has(ownerKey) : false;
+    if (!projectOwner && !chatOwned) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    if (
+      this.options.supervisor.conversation
+        .getSnapshot()
+        .navigator.runningThreadIds?.includes(threadId)
+    ) {
+      return { accepted: false, reason: 'busy' };
+    }
+
+    const boundWorkspaceId = this.options.threadRegistry.getWorkspaceId(threadId);
+    const workspaceIds = [boundWorkspaceId];
+    if (
+      this.options.threadRegistry.getBindingSource(threadId) === 'sessionCache'
+    ) {
+      workspaceIds.push(
+        ...[...this.projects.values()].map((project) =>
+          this.options.threadRegistry.getWorkspaceIdForOwner(
+            projectOwnerKey(project.id),
+          ),
+        ),
+      );
+    }
+    const resolvedWorkspaceIds = workspaceIds.filter(
+      (workspaceId): workspaceId is string => Boolean(workspaceId),
+    );
+    const candidates = [...new Set(resolvedWorkspaceIds)];
+    if (candidates.length === 0) {
+      return { accepted: false, reason: 'failed' };
+    }
+
+    let deletionFailed = false;
+    let deleted = false;
+    for (const workspaceId of candidates) {
+      try {
+        if (
+          (await this.options.supervisor.deleteThread(
+            workspaceId,
+            threadId,
+          )) === 'deleted'
+        ) {
+          deleted = true;
+          break;
+        }
+      } catch {
+        deletionFailed = true;
+      }
+    }
+    if (!deleted && deletionFailed) {
+      return { accepted: false, reason: 'failed' };
+    }
+
+    if (chatOwned) {
+      if (this.activeChatThreadId === threadId) {
+        this.activeChatThreadId = null;
+      }
+      if (
+        this.persistedActive?.kind === 'chat' &&
+        this.persistedActive.threadId === threadId
+      ) {
+        this.persistedActive = {
+          kind: 'chat',
+          directory: this.persistedActive.directory,
+        };
+      }
+    }
+
+    this.options.threadRegistry.removeThread(threadId);
+    if (
+      chatOwned &&
+      ownerKey &&
+      this.options.threadRegistry.getOwnerView(ownerKey).threadIds.length === 0
+    ) {
+      this.chatOwners.delete(ownerKey);
+    }
+
+    try {
+      await this.persist();
+    } catch {
+      this.publish(
+        this.workspacePath ? 'failed' : 'unselected',
+        'The Thread was deleted, but its navigation record could not be saved.',
+      );
+      return { accepted: false, reason: 'failed' };
+    }
+    this.publish(this.workspacePath ? 'ready' : 'unselected');
+    return { accepted: true };
   };
 
   activateChat = async (
@@ -317,9 +451,13 @@ export class WorkspaceController {
       return { accepted: true };
     }
 
-    let directory = threadId
-      ? this.chatDirectories.get(threadId) ?? null
+    const existingOwnerKey = threadId
+      ? this.options.threadRegistry.getOwnerKey(threadId)
       : null;
+    const existingOwner = existingOwnerKey
+      ? this.chatOwners.get(existingOwnerKey)
+      : undefined;
+    let directory = existingOwner?.directory ?? null;
     if (directory) {
       directory = await this.validateChatDirectory(directory);
     }
@@ -357,14 +495,28 @@ export class WorkspaceController {
       );
       return { accepted: false, reason: 'failed' };
     }
-    this.generation += 1;
-    if (threadId) {
-      this.chatDirectories.set(threadId, directory);
-      this.chatThreadIds = [
-        threadId,
-        ...this.chatThreadIds.filter((id) => id !== threadId),
-      ];
+    const workspaceId = this.options.supervisor.getWorkspaceBindingId();
+    if (!workspaceId) {
+      this.workspacePath = previousPath;
+      this.workspaceKind = previousKind;
+      this.activeChatThreadId = previousThreadId;
+      this.publish(
+        previousPath ? 'ready' : 'failed',
+        'The chat runtime did not return a Workspace binding.',
+      );
+      return { accepted: false, reason: 'failed' };
     }
+    const ownerKey = chatOwnerKey(directory);
+    this.chatOwners.set(ownerKey, { ownerKey, directory });
+    this.options.threadRegistry.registerWorkspaceOwner(
+      workspaceId,
+      ownerKey,
+      'protocol',
+    );
+    if (existingOwnerKey && existingOwnerKey !== ownerKey) {
+      this.chatOwners.delete(existingOwnerKey);
+    }
+    this.generation += 1;
     try {
       await this.persist();
     } catch {
@@ -380,144 +532,6 @@ export class WorkspaceController {
 
   clear = (): Promise<WorkspaceSelectResult> =>
     this.activateChat({});
-
-  observeConversation = (
-    workspaceId: string,
-    conversation: ConversationStateSnapshot,
-  ): void => {
-    if (workspaceId !== this.options.supervisor.getWorkspaceBindingId()) {
-      return;
-    }
-    if (
-      conversation.phase === 'unavailable' ||
-      conversation.navigator.status !== 'ready'
-    ) {
-      return;
-    }
-    const nextIds = conversation.navigator.activeThreadIds;
-    if (this.workspaceKind === 'project') {
-      let membershipChanged = false;
-      for (const threadId of nextIds) {
-        const chatIndex = this.chatThreadIds.indexOf(threadId);
-        if (chatIndex >= 0) {
-          this.chatThreadIds = this.chatThreadIds.filter(
-            (candidate) => candidate !== threadId,
-          );
-          this.chatDirectories.delete(threadId);
-          this.chatTitles.delete(threadId);
-          this.chatWorkspaceIds.delete(threadId);
-          membershipChanged = true;
-        }
-      }
-      for (const [projectId, project] of this.projects) {
-        if (projectId === this.activeProjectId) {
-          continue;
-        }
-        const filtered = project.threadIds.filter(
-          (threadId) => !nextIds.includes(threadId),
-        );
-        if (!sameIds(project.threadIds, filtered)) {
-          this.projects.set(projectId, {
-            ...project,
-            threadIds: filtered,
-            threadTitles: Object.fromEntries(
-              Object.entries(project.threadTitles).filter(([threadId]) =>
-                filtered.includes(threadId),
-              ),
-            ),
-          });
-          membershipChanged = true;
-        }
-      }
-      const nextTitles = Object.fromEntries(
-        nextIds.flatMap((threadId) => {
-          const title = conversation.navigator.activeThreadTitles[threadId];
-          return title ? [[threadId, title]] : [];
-        }),
-      );
-      const activeTitles = this.activeProjectId
-        ? this.projects.get(this.activeProjectId)?.threadTitles ?? {}
-        : {};
-      if (
-        !sameIds(this.projectThreadIds, nextIds) ||
-        !sameTitles(activeTitles, nextTitles) ||
-        membershipChanged
-      ) {
-        this.projectThreadIds = [...nextIds];
-        this.refreshActiveProjectRecord(nextTitles);
-        if (this.snapshot.status === 'ready') {
-          void this.persist().catch((): undefined => undefined);
-        }
-        this.publish(this.snapshot.status);
-      }
-      return;
-    }
-    if (this.workspaceKind !== 'chat') {
-      return;
-    }
-
-    const otherChatIds = this.chatThreadIds.filter(
-      (threadId) => this.chatWorkspaceIds.get(threadId) !== workspaceId,
-    );
-    const nextChatIds = [
-      ...nextIds,
-      ...otherChatIds.filter((threadId) => !nextIds.includes(threadId)),
-    ];
-    let changed = !sameIds(this.chatThreadIds, nextChatIds);
-    this.chatThreadIds = nextChatIds;
-    for (const threadId of nextIds) {
-      this.chatWorkspaceIds.set(threadId, workspaceId);
-      const title = conversation.navigator.activeThreadTitles[threadId];
-      if (title && this.chatTitles.get(threadId) !== title) {
-        this.chatTitles.set(threadId, title);
-        changed = true;
-      }
-    }
-    if (nextIds.length > 0) {
-      this.projectThreadIds = this.projectThreadIds.filter(
-        (threadId) => !nextIds.includes(threadId),
-      );
-      for (const [projectId, project] of this.projects) {
-        const filtered = project.threadIds.filter(
-          (threadId) => !nextIds.includes(threadId),
-        );
-        if (!sameIds(project.threadIds, filtered)) {
-          this.projects.set(projectId, {
-            ...project,
-            threadIds: filtered,
-            threadTitles: Object.fromEntries(
-              Object.entries(project.threadTitles).filter(([threadId]) =>
-                filtered.includes(threadId),
-              ),
-            ),
-          });
-          changed = true;
-        }
-      }
-    }
-    if (
-      conversation.threadId &&
-      this.workspacePath &&
-      this.activeChatThreadId !== conversation.threadId
-    ) {
-      this.activeChatThreadId = conversation.threadId;
-      this.chatDirectories.set(conversation.threadId, this.workspacePath);
-      this.chatWorkspaceIds.set(conversation.threadId, workspaceId);
-      if (!this.chatThreadIds.includes(conversation.threadId)) {
-        this.chatThreadIds = [
-          conversation.threadId,
-          ...this.chatThreadIds,
-        ];
-      }
-      changed = true;
-    }
-    if (changed) {
-      if (this.snapshot.status === 'ready') {
-        void this.persist().catch((): undefined => undefined);
-      }
-      this.publish(this.snapshot.status);
-    }
-  };
 
   list = async (
     request: WorkspaceListRequest,
@@ -596,7 +610,6 @@ export class WorkspaceController {
     const previousThreadId = this.activeChatThreadId;
     const previousProjectPath = this.projectPath;
     const previousProjectId = this.activeProjectId;
-    const previousProjectThreadIds = this.projectThreadIds;
     const existing = requestedProjectId
       ? this.projects.get(requestedProjectId)
       : [...this.projects.values()].find(
@@ -609,7 +622,6 @@ export class WorkspaceController {
     this.activeChatThreadId = null;
     this.projectPath = selected;
     this.activeProjectId = projectId;
-    this.projectThreadIds = existing?.threadIds ?? [];
     this.publish('selecting');
     if (
       !(await this.options.supervisor.switchWorkspace(selected, 'project'))
@@ -619,23 +631,35 @@ export class WorkspaceController {
       this.activeChatThreadId = previousThreadId;
       this.projectPath = previousProjectPath;
       this.activeProjectId = previousProjectId;
-      this.projectThreadIds = previousProjectThreadIds;
       this.publish(
         previousPath ? 'ready' : 'failed',
         'The local runtime could not bind the selected project.',
       );
       return { accepted: false, reason: 'failed' };
     }
+    const workspaceId = this.options.supervisor.getWorkspaceBindingId();
+    if (!workspaceId) {
+      this.workspacePath = previousPath;
+      this.workspaceKind = previousKind;
+      this.activeChatThreadId = previousThreadId;
+      this.projectPath = previousProjectPath;
+      this.activeProjectId = previousProjectId;
+      this.publish(
+        previousPath ? 'ready' : 'failed',
+        'The local runtime did not return a Workspace binding.',
+      );
+      return { accepted: false, reason: 'failed' };
+    }
+    this.options.threadRegistry.registerWorkspaceOwner(
+      workspaceId,
+      projectOwnerKey(projectId),
+      'protocol',
+    );
     this.projects.set(projectId, {
       id: projectId,
       path: selected,
       name: path.basename(selected),
-      threadIds: this.projectThreadIds,
-      threadTitles: existing?.threadTitles ?? {},
       lastOpenedAtMs: existing?.lastOpenedAtMs ?? Date.now(),
-      ...(this.options.supervisor.getWorkspaceBindingId()
-        ? { workspaceId: this.options.supervisor.getWorkspaceBindingId() as string }
-        : {}),
     });
     this.generation += 1;
     try {
@@ -651,9 +675,7 @@ export class WorkspaceController {
     return { accepted: true };
   };
 
-  private refreshActiveProjectRecord = (
-    threadTitles?: Readonly<Record<string, string>>,
-  ): void => {
+  private refreshActiveProjectRecord = (): void => {
     if (
       this.workspaceKind !== 'project' ||
       !this.activeProjectId ||
@@ -666,14 +688,7 @@ export class WorkspaceController {
       id: this.activeProjectId,
       path: this.projectPath,
       name: path.basename(this.projectPath),
-      threadIds: this.projectThreadIds,
-      threadTitles: threadTitles ?? current?.threadTitles ?? {},
       lastOpenedAtMs: current?.lastOpenedAtMs ?? Date.now(),
-      ...(this.options.supervisor.getWorkspaceBindingId()
-        ? { workspaceId: this.options.supervisor.getWorkspaceBindingId() as string }
-        : current?.workspaceId
-          ? { workspaceId: current.workspaceId }
-          : {}),
     });
   };
 
@@ -740,10 +755,52 @@ export class WorkspaceController {
       : null;
   };
 
+  private handleRegistryChange = (): void => {
+    if (this.workspaceKind === 'chat') {
+      const threadId = this.options.supervisor.conversation.getSnapshot().threadId;
+      const workspaceId = this.options.supervisor.getWorkspaceBindingId();
+      if (
+        threadId &&
+        workspaceId &&
+        this.options.threadRegistry.getWorkspaceId(threadId) === workspaceId
+      ) {
+        this.activeChatThreadId = threadId;
+      }
+    }
+    if (this.snapshot.status === 'ready') {
+      void this.persist().catch((): undefined => undefined);
+    }
+    this.publish(this.snapshot.status);
+  };
+
+  private getChatThreads = (): readonly Readonly<{
+    threadId: string;
+    owner: ChatOwnerRecord;
+  }>[] => {
+    const seen = new Set<string>();
+    return [...this.chatOwners.values()].flatMap((owner) =>
+      this.options.threadRegistry
+        .getOwnerView(owner.ownerKey)
+        .threadIds.flatMap((threadId) => {
+          if (seen.has(threadId)) {
+            return [];
+          }
+          seen.add(threadId);
+          return [{ threadId, owner }];
+        }),
+    );
+  };
+
   private publish = (
     status: WorkspaceStateSnapshot['status'],
     error?: string,
   ): void => {
+    const activeProjectView = this.activeProjectId
+      ? this.options.threadRegistry.getOwnerView(
+          projectOwnerKey(this.activeProjectId),
+        )
+      : { threadIds: [], threadTitles: {} };
+    const chatThreads = this.getChatThreads();
     this.revision += 1;
     this.snapshot = {
       revision: this.revision,
@@ -761,21 +818,27 @@ export class WorkspaceController {
       ...(this.projectPath
         ? { projectName: path.basename(this.projectPath) }
         : {}),
-      projectThreadIds: this.projectThreadIds,
+      projectThreadIds: activeProjectView.threadIds,
       projects: [...this.projects.values()]
         .sort((left, right) => right.lastOpenedAtMs - left.lastOpenedAtMs)
         .map((project) => ({
+          ...this.options.threadRegistry.getOwnerView(
+            projectOwnerKey(project.id),
+          ),
           id: project.id,
           name: project.name,
-          threadIds: project.threadIds,
-          threadTitles: project.threadTitles,
           lastOpenedAtMs: project.lastOpenedAtMs,
         })),
       ...(this.activeProjectId
         ? { activeProjectId: this.activeProjectId }
         : {}),
-      chatThreadIds: this.chatThreadIds,
-      chatTitles: Object.fromEntries(this.chatTitles),
+      chatThreadIds: chatThreads.map(({ threadId }) => threadId),
+      chatTitles: Object.fromEntries(
+        chatThreads.flatMap(({ threadId }) => {
+          const title = this.options.threadRegistry.getTitle(threadId);
+          return title ? [[threadId, title]] : [];
+        }),
+      ),
       ...(error ? { error } : {}),
     };
     for (const listener of this.listeners) {
@@ -804,7 +867,22 @@ export class WorkspaceController {
   };
 
   private persist = async (): Promise<void> => {
-    if (!this.workspacePath || !this.workspaceKind) {
+    const active: StoredSession['active'] | null =
+      this.workspaceKind === 'project' && this.activeProjectId
+        ? {
+            kind: 'project',
+            projectId: this.activeProjectId,
+          }
+        : this.workspaceKind === 'chat' && this.workspacePath
+          ? {
+              kind: 'chat',
+              directory: this.workspacePath,
+              ...(this.activeChatThreadId
+                ? { threadId: this.activeChatThreadId }
+                : {}),
+            }
+          : this.persistedActive;
+    if (!active) {
       return;
     }
     await mkdir(path.dirname(this.options.sessionPath), {
@@ -813,37 +891,32 @@ export class WorkspaceController {
     });
     const temporary = `${this.options.sessionPath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
     const handle = await open(temporary, 'wx', 0o600);
-    const chatIds = new Set([
-      ...this.chatThreadIds,
-      ...this.chatDirectories.keys(),
-    ]);
+    const chatThreads = this.getChatThreads();
     const stored: StoredSession = {
       schemaVersion: 1,
-      projects: [...this.projects.values()],
-      active:
-        this.workspaceKind === 'project'
-          ? {
-              kind: 'project',
-              projectId: this.activeProjectId as string,
-            }
-          : {
-              kind: 'chat',
-              directory: this.workspacePath,
-              ...(this.activeChatThreadId
-                ? { threadId: this.activeChatThreadId }
-                : {}),
-            },
-      chats: [...chatIds].map((threadId) => {
-        const title = this.chatTitles.get(threadId);
+      projects: [...this.projects.values()].map((project) => {
+        const view = this.options.threadRegistry.getOwnerView(
+          projectOwnerKey(project.id),
+        );
+        const workspaceId = this.options.threadRegistry.getWorkspaceIdForOwner(
+          projectOwnerKey(project.id),
+        );
+        return {
+          ...project,
+          threadIds: view.threadIds,
+          threadTitles: view.threadTitles,
+          ...(workspaceId ? { workspaceId } : {}),
+        };
+      }),
+      active,
+      chats: chatThreads.map(({ threadId, owner }) => {
+        const title = this.options.threadRegistry.getTitle(threadId);
+        const workspaceId = this.options.threadRegistry.getWorkspaceId(threadId);
         return {
           threadId,
           ...(title ? { title } : {}),
-          ...(this.chatWorkspaceIds.get(threadId)
-            ? { workspaceId: this.chatWorkspaceIds.get(threadId) }
-            : {}),
-          ...(this.chatDirectories.get(threadId)
-            ? { directory: this.chatDirectories.get(threadId) }
-            : {}),
+          ...(workspaceId ? { workspaceId } : {}),
+          ...(owner.directory ? { directory: owner.directory } : {}),
         };
       }),
     };
@@ -855,6 +928,7 @@ export class WorkspaceController {
       await handle.sync();
       await handle.close();
       await rename(temporary, this.options.sessionPath);
+      this.persistedActive = active;
     } catch (error) {
       await handle.close().catch((): undefined => undefined);
       await unlink(temporary).catch((): undefined => undefined);
