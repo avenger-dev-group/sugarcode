@@ -277,6 +277,14 @@ transient task selection so Agent detail can never leak across conversations.
 Only the inspector's collapse state and width are persisted; transient Agent-tab
 state is Renderer-owned session presentation.
 
+The orchestration surface presents a read-only execution console rather than a
+workflow editor. Its header summarizes completed, active or failed delegated
+tasks, while each graph card exposes role, status, full title, access scope,
+dependency count and result duration. A selected card has a persistent visual
+inspection state matching the transient Agent tab. Subdued grid points and one
+grouped viewport control keep the dependency graph legible without competing
+with the conversation or implying that nodes can be edited.
+
 ## Composer and transcript
 
 The composer supports file selection, drag-and-drop and pasted images.

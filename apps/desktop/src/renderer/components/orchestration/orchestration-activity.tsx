@@ -1,5 +1,7 @@
 import { graphlib, layout as dagreLayout } from '@dagrejs/dagre';
 import {
+  Background,
+  BackgroundVariant,
   BaseEdge,
   Handle,
   Panel,
@@ -16,9 +18,13 @@ import {
   Binoculars,
   Check,
   Circle,
+  Clock3,
   FilePenLine,
   Focus,
+  GitBranch,
+  LockKeyhole,
   Minus,
+  Network,
   Plus,
   ShieldCheck,
   Sparkles,
@@ -27,19 +33,21 @@ import {
 import { useEffect, useMemo, useRef, type RefObject } from 'react';
 
 import { Button } from '@/renderer/components/ui/button';
+import { cn } from '@/renderer/utils/class-name';
 
 import type {
   AgentTaskRole,
   AgentTaskViewModel,
   OrchestrationActivityViewModel,
 } from './types';
+import { formatAgentTaskDuration } from './presentation';
 import { useOrchestrationStore } from './use-store';
 
-const ROOT_NODE_WIDTH = 168;
-const ROOT_NODE_HEIGHT = 66;
-const AGENT_NODE_WIDTH = 184;
-const AGENT_NODE_TITLE_WIDTH = 158;
-const AGENT_NODE_CHROME_HEIGHT = 52;
+const ROOT_NODE_WIDTH = 188;
+const ROOT_NODE_HEIGHT = 72;
+const AGENT_NODE_WIDTH = 220;
+const AGENT_NODE_TITLE_WIDTH = 196;
+const AGENT_NODE_CHROME_HEIGHT = 76;
 const AGENT_NODE_TITLE_LINE_HEIGHT = 16;
 const ROOT_NODE_ID = 'main-agent';
 
@@ -118,6 +126,16 @@ const STATUS_LABELS: Record<AgentTaskViewModel['status'], string> = {
   cancelled: 'Cancelled',
 };
 
+const STATUS_TONES: Record<AgentTaskViewModel['status'], string> = {
+  queued: 'border-border bg-surface text-tertiary',
+  running: 'border-primary/25 bg-surface text-primary',
+  waitingApproval: 'border-primary/25 bg-surface text-process',
+  completed: 'border-border bg-surface text-secondary',
+  failed: 'border-destructive/30 bg-destructive/10 text-destructive',
+  interrupted: 'border-border bg-surface text-secondary',
+  cancelled: 'border-border bg-surface text-tertiary',
+};
+
 const ROLE_LABELS: Record<AgentTaskRole, string> = {
   explorer: 'Explorer',
   worker: 'Worker',
@@ -155,18 +173,23 @@ const StatusIcon = ({
 
 const OrchestrationNodeView = ({
   data,
+  selected,
 }: NodeProps<OrchestrationNode>) => {
   if (data.kind === 'root') {
     return (
-      <div className="flex h-[66px] w-[168px] items-center gap-3 rounded-xl border border-primary/20 bg-background px-3 shadow-[0_10px_30px_var(--shadow-soft)]">
-        <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+      <div className="relative flex h-[72px] w-[188px] items-center gap-3 overflow-hidden rounded-[14px] border border-primary/25 bg-background px-3.5 shadow-[0_12px_32px_var(--shadow-soft)]">
+        <span
+          className="absolute inset-x-0 top-0 h-px bg-primary/35"
+          aria-hidden="true"
+        />
+        <span className="flex size-9 items-center justify-center rounded-[10px] bg-primary text-primary-foreground shadow-sm">
           <Sparkles className="size-4" aria-hidden="true" />
         </span>
-        <div>
+        <div className="min-w-0">
           <p className="font-mono text-[9px] uppercase tracking-[0.15em] text-tertiary">
             Orchestrator
           </p>
-          <p className="mt-0.5 text-[13px] font-medium">Main Agent</p>
+          <p className="mt-1 text-[13px] font-medium">Main Agent</p>
         </div>
         <Handle
           type="source"
@@ -179,36 +202,73 @@ const OrchestrationNodeView = ({
 
   const { task } = data;
   const height = agentNodeHeight(task.title);
+  const dependencyLabel =
+    task.dependsOn.length === 0
+      ? 'Root'
+      : `${task.dependsOn.length} ${
+          task.dependsOn.length === 1 ? 'dep' : 'deps'
+        }`;
   return (
     <button
       type="button"
       onClick={() => data.onSelect(task)}
-      className="nodrag pointer-events-auto relative flex w-[184px] cursor-pointer flex-col rounded-xl border bg-background px-3 py-2.5 text-left shadow-[0_10px_28px_var(--shadow-soft)] transition-[border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-primary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transform-none motion-reduce:transition-none"
+      className={cn(
+        'nodrag pointer-events-auto relative flex w-[220px] cursor-pointer flex-col overflow-hidden rounded-[14px] border bg-background text-left shadow-[0_10px_28px_var(--shadow-soft)] transition-[border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-primary/35 hover:shadow-[0_14px_34px_var(--shadow-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transform-none motion-reduce:transition-none',
+        selected &&
+          'border-primary/55 ring-2 ring-primary/10 shadow-[0_16px_38px_var(--shadow-soft)]',
+      )}
       style={{ height }}
       aria-label={`${ROLE_LABELS[task.role]} ${task.title}, ${STATUS_LABELS[task.status]}`}
+      aria-pressed={selected}
       title={task.title}
       data-agent-status={task.status}
+      data-agent-selected={selected}
     >
       <Handle
         type="target"
         position={Position.Top}
         className="!size-1.5 !border-0 !bg-primary/40"
       />
-      <div className="flex w-full min-w-0 items-center gap-2">
-        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-surface [&>svg]:size-3.5">
+      <div className="flex h-10 w-full min-w-0 items-center gap-2 px-3">
+        <span className="flex size-6 shrink-0 items-center justify-center rounded-md border bg-surface [&>svg]:size-3.5">
           <RoleIcon role={task.role} />
         </span>
         <span className="truncate font-mono text-[9px] uppercase tracking-[0.14em] text-tertiary">
           {ROLE_LABELS[task.role]}
         </span>
-        <span className="ml-auto flex shrink-0 items-center gap-1 text-[9px] text-secondary [&>svg]:size-2.5">
+        <span
+          className={cn(
+            'ml-auto flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] [&>svg]:size-2.5',
+            STATUS_TONES[task.status],
+          )}
+        >
           <StatusIcon status={task.status} />
           {STATUS_LABELS[task.status]}
         </span>
       </div>
-      <span className="mt-2 w-full break-words text-[12px] font-medium leading-4">
-        {task.title}
-      </span>
+      <div className="w-full px-3 pt-2">
+        <span className="block w-full break-words text-[12px] font-medium leading-4 text-primary">
+          {task.title}
+        </span>
+      </div>
+      <div className="mt-auto flex h-7 w-full items-center gap-2 border-t px-3 font-mono text-[8px] uppercase tracking-[0.08em] text-tertiary">
+        <span className="flex min-w-0 items-center gap-1">
+          <LockKeyhole className="size-2.5 shrink-0" aria-hidden="true" />
+          <span className="truncate">
+            {task.access === 'readOnly' ? 'Read only' : 'Workspace write'}
+          </span>
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          <GitBranch className="size-2.5" aria-hidden="true" />
+          {dependencyLabel}
+        </span>
+        {task.result ? (
+          <span className="flex shrink-0 items-center gap-1">
+            <Clock3 className="size-2.5" aria-hidden="true" />
+            {formatAgentTaskDuration(task.result.durationMs)}
+          </span>
+        ) : null}
+      </div>
       <Handle
         type="source"
         position={Position.Bottom}
@@ -255,6 +315,7 @@ const edgeTypes = { orchestrationEdge: OrchestrationEdgeView };
 const layoutGraph = (
   activity: OrchestrationActivityViewModel,
   onSelect: (task: AgentTaskViewModel) => void,
+  selectedTaskId: string | undefined,
 ): Readonly<{
   nodes: OrchestrationNode[];
   edges: OrchestrationEdge[];
@@ -263,10 +324,10 @@ const layoutGraph = (
   graph.setDefaultEdgeLabel(() => ({}));
   graph.setGraph({
     rankdir: 'TB',
-    ranksep: 44,
-    nodesep: 28,
-    marginx: 16,
-    marginy: 16,
+    ranksep: 50,
+    nodesep: 32,
+    marginx: 24,
+    marginy: 18,
   });
   graph.setNode(ROOT_NODE_ID, {
     width: ROOT_NODE_WIDTH,
@@ -324,6 +385,7 @@ const layoutGraph = (
         selectable: false,
         draggable: false,
         focusable: true,
+        selected: task.taskId === selectedTaskId,
         ariaLabel: `${ROLE_LABELS[task.role]} ${task.title}`,
       };
     }),
@@ -357,12 +419,15 @@ const layoutGraph = (
 const GraphControls = () => {
   const flow = useReactFlow<OrchestrationNode, OrchestrationEdge>();
   return (
-    <Panel position="top-right" className="!m-2 flex gap-1">
+    <Panel
+      position="top-left"
+      className="!m-3 flex items-center gap-0.5 rounded-[10px] border bg-background/90 p-1 shadow-sm backdrop-blur"
+    >
       <Button
         type="button"
         size="icon"
-        variant="outline"
-        className="size-7 bg-background/90"
+        variant="ghost"
+        className="size-6"
         onClick={() => void flow.zoomIn({ duration: 120 })}
         aria-label="Zoom orchestration in"
       >
@@ -371,18 +436,19 @@ const GraphControls = () => {
       <Button
         type="button"
         size="icon"
-        variant="outline"
-        className="size-7 bg-background/90"
+        variant="ghost"
+        className="size-6"
         onClick={() => void flow.zoomOut({ duration: 120 })}
         aria-label="Zoom orchestration out"
       >
         <Minus className="size-3.5" aria-hidden="true" />
       </Button>
+      <span className="mx-0.5 h-3.5 w-px bg-border" aria-hidden="true" />
       <Button
         type="button"
         size="icon"
-        variant="outline"
-        className="size-7 bg-background/90"
+        variant="ghost"
+        className="size-6"
         onClick={() => void flow.fitView({ padding: 0.2, duration: 160 })}
         aria-label="Fit orchestration to view"
       >
@@ -407,14 +473,19 @@ const GraphAutoFit = ({
       return;
     }
 
+    const clipElement = element.closest<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
     let frame: number | undefined;
     let followUpFrame: number | undefined;
+    let fitRequest = 0;
     let wasVisible = false;
     const reducedMotion = window.matchMedia(
       '(prefers-reduced-motion: reduce)',
     ).matches;
 
     const scheduleFit = (animate: boolean) => {
+      const request = ++fitRequest;
       if (frame !== undefined) {
         window.cancelAnimationFrame(frame);
       }
@@ -428,9 +499,42 @@ const GraphAutoFit = ({
             wasVisible = false;
             return;
           }
+          const duration = animate && !reducedMotion ? 160 : 0;
           void flow.fitView({
             padding: 0.2,
-            duration: animate && !reducedMotion ? 160 : 0,
+            duration: 0,
+          }).then(() => {
+            if (request !== fitRequest) {
+              return;
+            }
+            if (!clipElement) {
+              return;
+            }
+            const containerRect = element.getBoundingClientRect();
+            const clipRect = clipElement.getBoundingClientRect();
+            const visibleLeft = Math.max(
+              containerRect.left,
+              clipRect.left,
+            );
+            const visibleRight = Math.min(
+              containerRect.right,
+              clipRect.right,
+            );
+            if (visibleRight <= visibleLeft) {
+              return;
+            }
+            const visibleCenter =
+              (visibleLeft + visibleRight) / 2;
+            const containerCenter =
+              (containerRect.left + containerRect.right) / 2;
+            const viewport = flow.getViewport();
+            void flow.setViewport(
+              {
+                ...viewport,
+                x: viewport.x + visibleCenter - containerCenter,
+              },
+              { duration },
+            );
           });
           wasVisible = true;
         });
@@ -447,9 +551,13 @@ const GraphAutoFit = ({
     });
 
     observer.observe(element);
+    if (clipElement && clipElement !== element) {
+      observer.observe(clipElement);
+    }
     scheduleFit(false);
 
     return () => {
+      fitRequest += 1;
       observer.disconnect();
       if (frame !== undefined) {
         window.cancelAnimationFrame(frame);
@@ -469,8 +577,8 @@ export const OrchestrationActivity = ({
   const { selectTask, selectedTask, refreshTask } =
     useOrchestrationStore();
   const graph = useMemo(
-    () => layoutGraph(activity, selectTask),
-    [activity, selectTask],
+    () => layoutGraph(activity, selectTask, selectedTask?.taskId),
+    [activity, selectTask, selectedTask?.taskId],
   );
   const graphContainer = useRef<HTMLDivElement>(null);
   const layoutKey = useMemo(
@@ -483,6 +591,22 @@ export const OrchestrationActivity = ({
         .join('|'),
     [activity.tasks],
   );
+  const completedTasks = activity.tasks.filter(
+    (task) => task.status === 'completed',
+  ).length;
+  const failedTasks = activity.tasks.filter(
+    (task) => task.status === 'failed',
+  ).length;
+  const activeTasks = activity.tasks.filter(
+    (task) =>
+      task.status === 'running' || task.status === 'waitingApproval',
+  ).length;
+  const summaryLabel =
+    failedTasks > 0
+      ? `${failedTasks} failed`
+      : activeTasks > 0
+        ? `${activeTasks} active`
+        : `${completedTasks} / ${activity.tasks.length} completed`;
 
   useEffect(() => {
     const current = activity.tasks.find(
@@ -495,26 +619,42 @@ export const OrchestrationActivity = ({
 
   return (
     <section
-      className="overflow-hidden rounded-2xl border bg-background/80 shadow-[0_16px_50px_var(--shadow-soft)]"
+      className="overflow-hidden rounded-2xl border bg-background shadow-[0_16px_50px_var(--shadow-soft)]"
       aria-label="Agent orchestration"
     >
-      <header className="flex items-center gap-3 border-b px-4 py-3">
-        <span className="flex size-7 items-center justify-center rounded-lg bg-surface">
-          <Sparkles className="size-3.5" aria-hidden="true" />
-        </span>
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-tertiary">
-            Live orchestration
-          </p>
-          <p className="mt-0.5 text-[13px] font-medium">
-            {activity.tasks.length} delegated Agent
-            {activity.tasks.length === 1 ? '' : 's'}
-          </p>
+      <header className="flex min-h-16 flex-wrap items-center gap-x-3 gap-y-2 border-b bg-surface/25 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-[10px] border bg-background shadow-sm">
+            <Network className="size-3.5" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-[13px] font-medium">Live orchestration</p>
+            <p className="mt-0.5 truncate font-mono text-[9px] uppercase tracking-[0.12em] text-tertiary">
+              {activity.tasks.length} delegated Agent
+              {activity.tasks.length === 1 ? '' : 's'} · Dependency map
+            </p>
+          </div>
         </div>
+        <span
+          className={cn(
+            'flex shrink-0 items-center gap-1.5 rounded-full border bg-background px-2.5 py-1 text-[10px] text-secondary shadow-sm',
+            failedTasks > 0 && 'border-destructive/30 text-destructive',
+          )}
+          aria-live="polite"
+        >
+          {failedTasks > 0 ? (
+            <TriangleAlert className="size-3" aria-hidden="true" />
+          ) : activeTasks > 0 ? (
+            <Sparkles className="size-3" aria-hidden="true" />
+          ) : (
+            <Check className="size-3 text-success" aria-hidden="true" />
+          )}
+          {summaryLabel}
+        </span>
       </header>
       <div
         ref={graphContainer}
-        className="h-[25rem] min-h-80 bg-surface/30"
+        className="relative h-[25rem] min-h-80 bg-surface/15"
       >
         <ReactFlow<OrchestrationNode, OrchestrationEdge>
           nodes={graph.nodes}
@@ -531,6 +671,13 @@ export const OrchestrationActivity = ({
           proOptions={{ hideAttribution: true }}
           colorMode="system"
         >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={18}
+            size={0.8}
+            color="var(--border)"
+            className="opacity-55"
+          />
           <GraphAutoFit
             container={graphContainer}
             layoutKey={layoutKey}

@@ -13,6 +13,7 @@ import type {
   AgentTaskRole,
   AgentTaskViewModel,
 } from './types';
+import { formatAgentTaskDuration } from './presentation';
 
 const ROLE_LABELS: Record<AgentTaskRole, string> = {
   explorer: 'Explorer',
@@ -39,18 +40,6 @@ const RoleIcon = ({ role }: Readonly<{ role: AgentTaskRole }>) => {
     case 'auditor':
       return <ShieldCheck aria-hidden="true" />;
   }
-};
-
-const formatDuration = (durationMs: number): string => {
-  if (durationMs < 1_000) {
-    return `${durationMs} ms`;
-  }
-  if (durationMs < 60_000) {
-    return `${(durationMs / 1_000).toFixed(1)} s`;
-  }
-  const minutes = Math.floor(durationMs / 60_000);
-  const seconds = Math.round((durationMs % 60_000) / 1_000);
-  return `${minutes}m ${seconds}s`;
 };
 
 const DetailSection = ({
@@ -111,7 +100,7 @@ export const AgentDetail = ({
           {task.result ? (
             <span className="inline-flex items-center gap-1 text-tertiary">
               <Clock3 className="size-3" aria-hidden="true" />
-              {formatDuration(task.result.durationMs)}
+              {formatAgentTaskDuration(task.result.durationMs)}
             </span>
           ) : null}
         </div>
