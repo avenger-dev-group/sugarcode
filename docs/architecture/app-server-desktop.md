@@ -63,6 +63,15 @@ multiple command calls before the runtime begins their sequential approval and
 execution. Main retains those declarations by call ID; one pending call cannot
 overwrite or invalidate another.
 
+Collaboration coordination calls (`dispatch`, `amend`, `wait` and `interrupt`)
+remain public lifecycle Items but are hidden from the ordinary tool transcript.
+Desktop validates their exact ToolCall and ToolResult envelopes during live
+projection, while durable resume retains unsupported historical tool records as
+non-rendered `other` Items. Agent presentation comes from the public task,
+amendment and result Items. Unknown collaboration names and malformed live
+coordination payloads still fail closed; hidden coordination is never a generic
+escape hatch for unsupported lifecycle data.
+
 Provider errors expose only retryability plus optional HTTP status, provider
 code, request ID and retry-after. A consumer disconnect interrupts the Turn.
 An app-server/Desktop contract mismatch transitions the connection to a
@@ -248,6 +257,25 @@ omit side regions when the window cannot fit them. Each top-level column
 contributes a draggable title-bar surface, while interactive controls and
 selectable title text opt out of window dragging. Both light and dark themes use
 the mandated semantic tokens.
+
+The inspector's workspace tab is permanent. Its Agent tab is transient and is
+absent until the user selects an orchestration card. Selecting a card activates
+that Agent tab and opens a collapsed inspector; closing the tab clears the
+selected task and returns to the workspace tab, while selecting another card
+opens it again. Task-card buttons explicitly retain pointer hit testing inside
+the otherwise non-selectable, non-draggable orchestration canvas. Each card
+derives its height from the measured display width of its complete title, and
+the DAG layout consumes that same per-card height so short titles stay compact
+while longer titles cannot overlap edges or adjacent ranks. The canvas refits
+the graph when a collapsed activity becomes visible, when its graph layout
+changes or when the available conversation width changes; once the viewport is
+stable, manual pan and zoom remain untouched. Agent detail owns a dedicated
+keyboard-focusable vertical scroll area, so
+the frozen prompt, revisions, dependencies and final result remain reachable
+without moving the conversation transcript. Thread changes also clear the
+transient task selection so Agent detail can never leak across conversations.
+Only the inspector's collapse state and width are persisted; transient Agent-tab
+state is Renderer-owned session presentation.
 
 ## Composer and transcript
 

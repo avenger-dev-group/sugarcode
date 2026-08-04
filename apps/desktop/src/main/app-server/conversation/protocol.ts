@@ -16,6 +16,7 @@ import type {
 import path from 'node:path';
 
 import type { ServerMessage } from '../transport/server-message';
+import { isHiddenCollaborationItem } from './collaboration-protocol';
 import {
   parseWorkspacePatchItem,
   type WorkspacePatchItem,
@@ -1600,6 +1601,9 @@ export const parseConversationLifecycle = (
       }
       const item = parseConversationItem(rawItem);
       if (!item) {
+        if (isHiddenCollaborationItem(rawItem)) {
+          return null;
+        }
         throw new Error('Unsupported conversation lifecycle Item.');
       }
       return {

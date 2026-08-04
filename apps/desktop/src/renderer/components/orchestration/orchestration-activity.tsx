@@ -24,7 +24,7 @@ import {
   Sparkles,
   TriangleAlert,
 } from 'lucide-react';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef, type RefObject } from 'react';
 
 import { Button } from '@/renderer/components/ui/button';
 
@@ -35,9 +35,61 @@ import type {
 } from './types';
 import { useOrchestrationStore } from './use-store';
 
-const NODE_WIDTH = 184;
-const NODE_HEIGHT = 78;
+const ROOT_NODE_WIDTH = 168;
+const ROOT_NODE_HEIGHT = 66;
+const AGENT_NODE_WIDTH = 184;
+const AGENT_NODE_TITLE_WIDTH = 158;
+const AGENT_NODE_CHROME_HEIGHT = 52;
+const AGENT_NODE_TITLE_LINE_HEIGHT = 16;
 const ROOT_NODE_ID = 'main-agent';
+
+let titleMeasurementContext: CanvasRenderingContext2D | null | undefined;
+
+const getTitleMeasurementContext = (): CanvasRenderingContext2D | null => {
+  if (titleMeasurementContext !== undefined) {
+    return titleMeasurementContext;
+  }
+  titleMeasurementContext = document
+    .createElement('canvas')
+    .getContext('2d');
+  if (titleMeasurementContext) {
+    titleMeasurementContext.font =
+      '500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  }
+  return titleMeasurementContext;
+};
+
+const titleLineCount = (title: string): number => {
+  const graphemes = Array.from(title);
+  const context = getTitleMeasurementContext();
+  if (!context) {
+    return Math.max(1, Math.ceil(graphemes.length / 18));
+  }
+  let lines = 1;
+  let line = '';
+  for (const grapheme of graphemes) {
+    if (grapheme === '\n') {
+      lines += 1;
+      line = '';
+      continue;
+    }
+    const candidate = `${line}${grapheme}`;
+    if (
+      line.length > 0 &&
+      context.measureText(candidate).width > AGENT_NODE_TITLE_WIDTH
+    ) {
+      lines += 1;
+      line = grapheme.trimStart();
+    } else {
+      line = candidate;
+    }
+  }
+  return lines;
+};
+
+const agentNodeHeight = (title: string): number =>
+  AGENT_NODE_CHROME_HEIGHT +
+  titleLineCount(title) * AGENT_NODE_TITLE_LINE_HEIGHT;
 
 type AgentNodeData = {
   kind: 'agent';
@@ -126,12 +178,15 @@ const OrchestrationNodeView = ({
   }
 
   const { task } = data;
+  const height = agentNodeHeight(task.title);
   return (
     <button
       type="button"
       onClick={() => data.onSelect(task)}
-      className="nodrag relative flex h-[78px] w-[184px] flex-col rounded-xl border bg-background px-3 py-2.5 text-left shadow-[0_10px_28px_var(--shadow-soft)] transition-[border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-primary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transform-none motion-reduce:transition-none"
+      className="nodrag pointer-events-auto relative flex w-[184px] cursor-pointer flex-col rounded-xl border bg-background px-3 py-2.5 text-left shadow-[0_10px_28px_var(--shadow-soft)] transition-[border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-primary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transform-none motion-reduce:transition-none"
+      style={{ height }}
       aria-label={`${ROLE_LABELS[task.role]} ${task.title}, ${STATUS_LABELS[task.status]}`}
+      title={task.title}
       data-agent-status={task.status}
     >
       <Handle
@@ -151,7 +206,7 @@ const OrchestrationNodeView = ({
           {STATUS_LABELS[task.status]}
         </span>
       </div>
-      <span className="mt-2 line-clamp-2 w-full text-[12px] font-medium leading-4">
+      <span className="mt-2 w-full break-words text-[12px] font-medium leading-4">
         {task.title}
       </span>
       <Handle
@@ -214,17 +269,20 @@ const layoutGraph = (
     marginy: 16,
   });
   graph.setNode(ROOT_NODE_ID, {
-    width: NODE_WIDTH,
-    height: 66,
+    width: ROOT_NODE_WIDTH,
+    height: ROOT_NODE_HEIGHT,
   });
 
   const taskByKey = new Map(
     activity.tasks.map((task) => [task.clientTaskKey, task]),
   );
+  const taskHeights = new Map(
+    activity.tasks.map((task) => [task.taskId, agentNodeHeight(task.title)]),
+  );
   for (const task of activity.tasks) {
     graph.setNode(task.taskId, {
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
+      width: AGENT_NODE_WIDTH,
+      height: taskHeights.get(task.taskId),
     });
     if (task.dependsOn.length === 0) {
       graph.setEdge(ROOT_NODE_ID, task.taskId);
@@ -245,8 +303,8 @@ const layoutGraph = (
       type: 'orchestrationNode',
       data: { kind: 'root' },
       position: {
-        x: graph.node(ROOT_NODE_ID).x - NODE_WIDTH / 2,
-        y: graph.node(ROOT_NODE_ID).y - 33,
+        x: graph.node(ROOT_NODE_ID).x - ROOT_NODE_WIDTH / 2,
+        y: graph.node(ROOT_NODE_ID).y - ROOT_NODE_HEIGHT / 2,
       },
       selectable: false,
       draggable: false,
@@ -254,13 +312,14 @@ const layoutGraph = (
     },
     ...activity.tasks.map((task): OrchestrationNode => {
       const position = graph.node(task.taskId);
+      const height = taskHeights.get(task.taskId) ?? AGENT_NODE_CHROME_HEIGHT;
       return {
         id: task.taskId,
         type: 'orchestrationNode',
         data: { kind: 'agent', task, onSelect },
         position: {
-          x: position.x - NODE_WIDTH / 2,
-          y: position.y - NODE_HEIGHT / 2,
+          x: position.x - AGENT_NODE_WIDTH / 2,
+          y: position.y - height / 2,
         },
         selectable: false,
         draggable: false,
@@ -333,6 +392,77 @@ const GraphControls = () => {
   );
 };
 
+const GraphAutoFit = ({
+  container,
+  layoutKey,
+}: Readonly<{
+  container: RefObject<HTMLDivElement | null>;
+  layoutKey: string;
+}>): null => {
+  const flow = useReactFlow<OrchestrationNode, OrchestrationEdge>();
+
+  useEffect(() => {
+    const element = container.current;
+    if (!element) {
+      return;
+    }
+
+    let frame: number | undefined;
+    let followUpFrame: number | undefined;
+    let wasVisible = false;
+    const reducedMotion = window.matchMedia(
+      '(prefers-reduced-motion: reduce)',
+    ).matches;
+
+    const scheduleFit = (animate: boolean) => {
+      if (frame !== undefined) {
+        window.cancelAnimationFrame(frame);
+      }
+      if (followUpFrame !== undefined) {
+        window.cancelAnimationFrame(followUpFrame);
+      }
+      frame = window.requestAnimationFrame(() => {
+        followUpFrame = window.requestAnimationFrame(() => {
+          const { width, height } = element.getBoundingClientRect();
+          if (width <= 0 || height <= 0) {
+            wasVisible = false;
+            return;
+          }
+          void flow.fitView({
+            padding: 0.2,
+            duration: animate && !reducedMotion ? 160 : 0,
+          });
+          wasVisible = true;
+        });
+      });
+    };
+
+    const observer = new ResizeObserver(() => {
+      const { width, height } = element.getBoundingClientRect();
+      if (width <= 0 || height <= 0) {
+        wasVisible = false;
+        return;
+      }
+      scheduleFit(!wasVisible);
+    });
+
+    observer.observe(element);
+    scheduleFit(false);
+
+    return () => {
+      observer.disconnect();
+      if (frame !== undefined) {
+        window.cancelAnimationFrame(frame);
+      }
+      if (followUpFrame !== undefined) {
+        window.cancelAnimationFrame(followUpFrame);
+      }
+    };
+  }, [container, flow, layoutKey]);
+
+  return null;
+};
+
 export const OrchestrationActivity = ({
   activity,
 }: Readonly<{ activity: OrchestrationActivityViewModel }>) => {
@@ -341,6 +471,17 @@ export const OrchestrationActivity = ({
   const graph = useMemo(
     () => layoutGraph(activity, selectTask),
     [activity, selectTask],
+  );
+  const graphContainer = useRef<HTMLDivElement>(null);
+  const layoutKey = useMemo(
+    () =>
+      activity.tasks
+        .map(
+          (task) =>
+            `${task.taskId}:${task.title}:${task.dependsOn.join(',')}`,
+        )
+        .join('|'),
+    [activity.tasks],
   );
 
   useEffect(() => {
@@ -371,14 +512,15 @@ export const OrchestrationActivity = ({
           </p>
         </div>
       </header>
-      <div className="h-[22rem] min-h-72 bg-surface/30">
+      <div
+        ref={graphContainer}
+        className="h-[25rem] min-h-80 bg-surface/30"
+      >
         <ReactFlow<OrchestrationNode, OrchestrationEdge>
           nodes={graph.nodes}
           edges={graph.edges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
           minZoom={0.45}
           maxZoom={1.6}
           nodesDraggable={false}
@@ -389,6 +531,10 @@ export const OrchestrationActivity = ({
           proOptions={{ hideAttribution: true }}
           colorMode="system"
         >
+          <GraphAutoFit
+            container={graphContainer}
+            layoutKey={layoutKey}
+          />
           <GraphControls />
         </ReactFlow>
       </div>

@@ -20,6 +20,7 @@ export type FoundationStore = {
   navigatorResize: PanelResizeHandle;
   contextRailOpen: boolean;
   contextRailResize: PanelResizeHandle;
+  openContextRail: () => void;
   themeLabel: string;
   toggleNavigator: () => void;
   toggleContextRail: () => void;

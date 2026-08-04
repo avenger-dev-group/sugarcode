@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
+import { X } from 'lucide-react';
 
 import { AgentDetail } from '@/renderer/components/orchestration/agent-detail';
 import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
+import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { GitWorkbench } from '@/renderer/components/workspace/git/git-workbench';
 import { PreviewWorkbench } from '@/renderer/components/workspace/preview/preview-workbench';
 import { TerminalWorkbench } from '@/renderer/components/workspace/terminal/terminal-workbench';
@@ -23,8 +25,9 @@ const RailAction = ({
 );
 
 export const ContextRail = () => {
-  const { activeTab, selectedTask, setActiveTab } =
+  const { activeTab, closeAgentTab, selectedTask, setActiveTab } =
     useOrchestrationStore();
+  const workspaceActive = activeTab === 'workspace' || !selectedTask;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -34,26 +37,51 @@ export const ContextRail = () => {
           role="tablist"
           aria-label="Context rail"
         >
-          {(['workspace', 'agent'] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab}
-              className={`h-7 rounded-md px-3 text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                activeTab === tab
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspaceActive}
+            className={`h-7 rounded-md px-3 text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              workspaceActive
+                ? 'bg-background text-foreground shadow-sm'
+                : 'text-secondary hover:text-foreground'
+            }`}
+            onClick={() => setActiveTab('workspace')}
+          >
+            文件
+          </button>
+          {selectedTask ? (
+            <div
+              className={`flex h-7 items-center rounded-md transition-colors ${
+                activeTab === 'agent'
                   ? 'bg-background text-foreground shadow-sm'
                   : 'text-secondary hover:text-foreground'
               }`}
-              onClick={() => setActiveTab(tab)}
             >
-              {tab === 'workspace' ? '文件' : 'Agent'}
-            </button>
-          ))}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'agent'}
+                className="h-7 rounded-l-md pl-3 pr-1.5 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => setActiveTab('agent')}
+              >
+                Agent
+              </button>
+              <button
+                type="button"
+                aria-label="关闭 Agent 标签页"
+                title={`关闭 Agent 标签页：${selectedTask.title}`}
+                className="mr-1 flex size-5 items-center justify-center rounded text-tertiary transition-colors hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={closeAgentTab}
+              >
+                <X className="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
 
-      {activeTab === 'workspace' ? (
+      {workspaceActive ? (
         <>
           <div className="min-h-0 flex-1">
             <WorkspaceWorkbench />
@@ -73,7 +101,15 @@ export const ContextRail = () => {
           </section>
         </>
       ) : (
-        <AgentDetail task={selectedTask} />
+        <ScrollArea
+          className="min-h-0 flex-1"
+          viewportProps={{
+            'aria-label': `Agent details: ${selectedTask.title}`,
+            tabIndex: 0,
+          }}
+        >
+          <AgentDetail task={selectedTask} />
+        </ScrollArea>
       )}
     </div>
   );

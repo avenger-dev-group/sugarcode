@@ -39,7 +39,10 @@ export const FoundationScreen = () => {
         foundation.isDark ? 'dark' : ''
       }`}
     >
-      <OrchestrationStoreProvider>
+      <OrchestrationStoreProvider
+        scopeKey={activeThreadId}
+        onRequestOpen={foundation.openContextRail}
+      >
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <ThreadWorkbenchView
             store={threadStore}

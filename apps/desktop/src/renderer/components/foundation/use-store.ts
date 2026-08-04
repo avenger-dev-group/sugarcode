@@ -93,6 +93,13 @@ export const useStore = (): FoundationStore => {
       contextRailOpen: !current.contextRailOpen,
     }));
   };
+  const openContextRail = (): void => {
+    setLayout((current) =>
+      current.contextRailOpen
+        ? current
+        : { ...current, contextRailOpen: true },
+    );
+  };
   const navigatorResize = usePanelResize({
     width: layout.navigatorWidth,
     minWidth: NAVIGATOR_WIDTH.min,
@@ -119,6 +126,7 @@ export const useStore = (): FoundationStore => {
     navigatorResize,
     contextRailOpen: layout.contextRailOpen,
     contextRailResize,
+    openContextRail,
     themeLabel: isDark ? 'Use light theme' : 'Use dark theme',
     toggleNavigator,
     toggleContextRail,

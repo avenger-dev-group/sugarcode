@@ -3,6 +3,7 @@ import {
   createElement,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -15,6 +16,7 @@ type ContextRailTab = 'workspace' | 'agent';
 type OrchestrationStore = Readonly<{
   activeTab: ContextRailTab;
   selectedTask: AgentTaskViewModel | null;
+  closeAgentTab: () => void;
   selectTask: (task: AgentTaskViewModel) => void;
   refreshTask: (task: AgentTaskViewModel) => void;
   setActiveTab: (tab: ContextRailTab) => void;
@@ -24,8 +26,12 @@ const OrchestrationContext = createContext<OrchestrationStore | null>(null);
 
 export const OrchestrationStoreProvider = ({
   children,
+  onRequestOpen,
+  scopeKey,
 }: Readonly<{
   children: ReactNode;
+  onRequestOpen: () => void;
+  scopeKey: string | null;
 }>) => {
   const [activeTab, setActiveTab] = useState<ContextRailTab>('workspace');
   const [selectedTask, setSelectedTask] =
@@ -35,9 +41,20 @@ export const OrchestrationStoreProvider = ({
     (task: AgentTaskViewModel) => {
       setSelectedTask(task);
       setActiveTab('agent');
+      onRequestOpen();
     },
-    [],
+    [onRequestOpen],
   );
+
+  const closeAgentTab = useCallback(() => {
+    setSelectedTask(null);
+    setActiveTab('workspace');
+  }, []);
+
+  useEffect(() => {
+    setSelectedTask(null);
+    setActiveTab('workspace');
+  }, [scopeKey]);
 
   const refreshTask = useCallback((task: AgentTaskViewModel) => {
     setSelectedTask((current) =>
@@ -48,12 +65,13 @@ export const OrchestrationStoreProvider = ({
   const value = useMemo<OrchestrationStore>(
     () => ({
       activeTab,
+      closeAgentTab,
       selectedTask,
       selectTask,
       refreshTask,
       setActiveTab,
     }),
-    [activeTab, refreshTask, selectTask, selectedTask],
+    [activeTab, closeAgentTab, refreshTask, selectTask, selectedTask],
   );
 
   return createElement(
