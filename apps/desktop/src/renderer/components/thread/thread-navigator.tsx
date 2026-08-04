@@ -268,7 +268,7 @@ export const ThreadNavigator = ({
     <>
       <nav
         aria-label="Threads"
-        className="flex h-full min-h-0 w-full flex-col bg-surface/55"
+        className="flex h-full min-h-0 w-full flex-col bg-navigation-background"
       >
         <div className="window-drag-region relative shrink-0 px-3 pb-2 pt-10">
           {onToggleNavigator ? (
@@ -351,7 +351,7 @@ export const ThreadNavigator = ({
                             data-thread-item
                             aria-expanded={expanded}
                             aria-disabled={workspace.busy}
-                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default"
+                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default"
                             onClick={() => {
                               if (!workspace.busy) {
                                 store.toggleProjectExpanded(project.id);
@@ -369,16 +369,16 @@ export const ThreadNavigator = ({
                           >
                             {expanded ? (
                               <FolderOpen
-                                className="size-4 shrink-0 text-secondary"
+                                className="size-4 shrink-0 text-navigation"
                                 aria-hidden="true"
                               />
                             ) : (
                               <Folder
-                                className="size-4 shrink-0 text-secondary"
+                                className="size-4 shrink-0 text-navigation"
                                 aria-hidden="true"
                               />
                             )}
-                            <span className="min-w-0 flex-1 truncate text-sm">
+                            <span className="min-w-0 flex-1 truncate text-sm font-normal">
                               {project.name}
                             </span>
                           </span>
@@ -565,8 +565,10 @@ const SectionHeading = ({
   onAction,
   children,
 }: SectionHeadingProps) => (
-  <div className="mb-1 flex h-7 items-center px-2 text-sm text-secondary">
-    <span id={id}>{label}</span>
+  <div className="mb-1 flex h-7 items-center px-2 text-sm font-normal">
+    <span id={id} className="text-navigation-heading">
+      {label}
+    </span>
     <span className="ml-auto text-xs tabular-nums text-tertiary">
       {count}
     </span>
@@ -620,8 +622,8 @@ const ThreadButton = ({
     data-thread-row
     className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-stretch overflow-hidden rounded-lg ${
       current
-        ? 'bg-surface-hover text-foreground'
-        : 'text-secondary hover:bg-surface-hover hover:text-foreground'
+        ? 'bg-surface text-foreground'
+        : 'text-navigation hover:bg-surface hover:text-foreground'
     }`}
   >
     <span
@@ -646,7 +648,9 @@ const ThreadButton = ({
         actionsEnabled ? 'rounded-l-lg' : 'rounded-lg'
       }`}
     >
-      <span className="min-w-0 flex-1 truncate text-sm font-normal">
+      <span
+        className={`min-w-0 flex-1 truncate text-sm ${current ? 'font-medium' : 'font-normal'}`}
+      >
         {title ?? `${labelKind === 'chat' ? '聊天' : '任务'} ${threadId.slice(-4)}`}
       </span>
     </span>

@@ -55,7 +55,7 @@ src/renderer/
 
 ## 颜色
 
-中性文字只能使用以下四档语义色：
+中性文字只能使用以下语义色：
 
 | 语义 | 浅色模式 | 深色模式 | Tailwind 类 |
 |---|---|---|---|
@@ -63,15 +63,23 @@ src/renderer/
 | 次级文字 | `primary` 70% | `primary` 70% | `text-secondary` |
 | 对话过程、弱化正文 | `primary` 60% | `primary` 60% | `text-process` |
 | 辅助文字 | `primary` 50% | `primary` 50% | `text-tertiary` / `text-muted-foreground` |
+| 导航项目 / 普通任务 | `primary` 85% | `primary` 85% | `text-navigation` |
+| 导航分组标题 | `primary` 35% | `primary` 50% | `text-navigation-heading` |
+| 导航背景 | `#F9F9F9` | `#202020` | `bg-navigation-background` |
 | 页面背景 | `#FFFFFF` | `#181818` | `bg-background` |
 
 使用规则：
 
 - 标题、正文、当前选中项使用主文字。
 - 说明文字、分组标题、非当前导航项使用次级文字。
+- Codex 风格的左侧任务导航使用专用语义色：分组标题使用
+  `text-navigation-heading`；项目名和普通任务使用 `text-navigation` 与
+  `400` 字重，当前任务使用主文字、`500` 字重并以 `bg-surface` 标示；
+  整个区域使用 `bg-navigation-background`。
 - Agent 思考过程、任务过程、弱化正文使用过程文字。
 - 时间、数量、路径、占位符、图标和低优先级元数据使用辅助文字。
-- 70%/60%/50% 语义变量必须通过相对 `rgb()` 从当前 `--primary` 动态计算，不得固定复制某个主题的 RGB 通道。
+- 所有百分比语义变量必须通过相对 `rgb()` 从当前 `--primary` 动态计算，
+  不得固定复制某个主题的 RGB 通道。
 - 禁止使用 `text-foreground/60`、`text-white/50` 或硬编码 RGBA 绕过语义变量。
 - `--primary` 是主文字和主题前景色的唯一源值；`--foreground` 只是兼容现有组件的别名，必须引用 `--primary`，不得另建 `--text-primary`。
 - 状态色仅用于成功、警告、错误和正在执行等明确状态。
@@ -85,6 +93,9 @@ src/renderer/
 --secondary
 --process
 --tertiary
+--navigation
+--navigation-heading
+--navigation-background
 --background
 --success
 --user-message
@@ -115,7 +126,8 @@ src/renderer/
 - Markdown 代码块对已知围栏语言提供浅色/深色语法高亮，包括 PHP、Go、
   Java、C#、C 和 C++，并提供可键盘操作、有成功或失败反馈的复制按钮；
   未知语言必须安全回退为纯文本。
-- 导航项和普通列表项默认 `14px / 500`；不要靠普遍加粗制造层级，应优先使用语义色、背景和间距。
+- 除左侧任务导航的 Codex 特例外，导航项和普通列表项默认 `14px / 500`；
+  不要靠普遍加粗制造层级，应优先使用语义色、背景和间距。
 - 禁止使用不存在或含义不明确的字号类，例如 `text-md`。14px 使用 `text-sm`。
 
 ## 新 UI 检查清单
@@ -127,10 +139,12 @@ src/renderer/
 - 工具方法是否按实际复用范围放在模块目录或 `utils/`，而不是形成无边界的公共杂物文件？
 - `useState` 等状态写入是否具有明确、完整的类型？
 - 新增组件和方法是否优先使用箭头函数，源码文件和目录是否遵循 kebab-case？
-- 是否只使用了上述四档中性文字语义，而不是硬编码灰色或任意透明度？
+- 是否只使用了上述中性文字语义，而不是硬编码灰色或任意透明度？
 - 浅色和深色下是否分别保持 `#1A1C1F` / 白色的正确层级？
 - 正文是否为 `14px / 1.5 / 500`？
-- 普通导航项是否保持正常字重，当前项是否主要通过背景和主文字区分？
+- 左侧任务导航的分组标题是否使用辅助文字，项目与任务是否使用主文字，
+  当前任务是否通过 `500` 字重和 `bg-surface` 区分，区域背景是否使用
+  `bg-navigation-background`？
 - 说明文字是否使用次级色，元数据和占位符是否使用辅助色？
 - Agent 过程内容是否使用过程色？
 - Markdown 粗体和代码是否符合各自字重、字号规范？

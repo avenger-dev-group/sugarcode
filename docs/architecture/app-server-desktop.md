@@ -311,6 +311,13 @@ remains visually neutral; only the selected conversation row receives a
 selection background. Thread rows reserve a non-shrinking action column inside
 the navigator boundary; titles truncate within the remaining column and cannot
 push fork, archive or delete actions outside the visible/clickable area.
+The navigator uses the Codex-derived text hierarchy: dedicated subdued section
+labels, normal-weight 85-percent project and inactive Thread titles, and a
+medium-weight primary selected Thread title over the lighter semantic surface.
+Its column uses a dedicated gray background token (`#F9F9F9` light, `#202020`
+dark), so the selected surface keeps restrained contrast in both themes. The
+section-label token rises from 35 percent in light mode to 50 percent in dark
+mode to retain readable contrast.
 Destructive conversation confirmation uses a basic human-facing warning and
 never displays the internal Thread ID. The composer exposes the latest
 single-request input against the selected model's effective context
