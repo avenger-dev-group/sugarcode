@@ -284,6 +284,7 @@ export class WorkspaceController {
 
   activateProject = async (
     projectId: string,
+    preferredThreadId?: string,
   ): Promise<WorkspaceSelectResult> => {
     const project = this.projects.get(projectId);
     if (!project) {
@@ -303,7 +304,11 @@ export class WorkspaceController {
       this.publish('failed', 'The saved project is no longer available.');
       return { accepted: false, reason: 'invalid' };
     }
-    return this.activateProjectPath(validated, projectId);
+    return this.activateProjectPath(
+      validated,
+      projectId,
+      preferredThreadId,
+    );
   };
 
   focusTask = async (threadId: string): Promise<WorkspaceSelectResult> => {
@@ -314,7 +319,7 @@ export class WorkspaceController {
         )
       : undefined;
     if (project !== undefined) {
-      const activated = await this.activateProject(project.id);
+      const activated = await this.activateProject(project.id, threadId);
       if (!activated.accepted) {
         return activated;
       }
@@ -601,6 +606,7 @@ export class WorkspaceController {
   private activateProjectPath = async (
     selected: string,
     requestedProjectId?: string,
+    preferredThreadId?: string,
   ): Promise<WorkspaceSelectResult> => {
     if (this.options.supervisor.getWorkspaceSwitchBlock()) {
       return { accepted: false, reason: 'busy' };
@@ -624,7 +630,11 @@ export class WorkspaceController {
     this.activeProjectId = projectId;
     this.publish('selecting');
     if (
-      !(await this.options.supervisor.switchWorkspace(selected, 'project'))
+      !(await this.options.supervisor.switchWorkspace(
+        selected,
+        'project',
+        preferredThreadId,
+      ))
     ) {
       this.workspacePath = previousPath;
       this.workspaceKind = previousKind;

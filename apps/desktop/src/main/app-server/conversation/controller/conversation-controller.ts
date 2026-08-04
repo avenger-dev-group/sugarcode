@@ -181,7 +181,7 @@ export class ConversationController extends ConversationLifecycleController {
     this.phase = 'unavailable';
     this.navigator.status = 'loading';
     this.navigator.activeTruncated = false;
-    this.navigator.pendingThreadId = undefined;
+    this.navigator.pendingThreadId = preferredThreadId;
     this.navigator.pendingMutation = undefined;
     resetThreadSearch(this.navigator);
     this.publish();
@@ -211,17 +211,20 @@ export class ConversationController extends ConversationLifecycleController {
       } else {
         this.phase = 'idle';
       }
+      this.navigator.pendingThreadId = undefined;
       this.notice = undefined;
       this.publish();
       return true;
     } catch (error) {
       if (error instanceof ThreadRegistryProtocolError) {
+        this.navigator.pendingThreadId = undefined;
         this.onProtocolFailure();
         return false;
       }
       if (error instanceof ConnectionClosedError || isAbortError(error)) {
         this.transportClosed();
       } else {
+        this.navigator.pendingThreadId = undefined;
         this.navigator.status = 'error';
         this.navigator.selectionNotice =
           error instanceof RpcResponseError

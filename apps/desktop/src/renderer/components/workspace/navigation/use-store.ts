@@ -5,6 +5,7 @@ import {
   activateWorkspaceChat,
   activateWorkspaceProject,
   deleteWorkspaceTask,
+  focusWorkspaceTask,
   resumeWorkspaceProject,
   selectWorkspace,
 } from '@/renderer/services/workspace';
@@ -64,6 +65,11 @@ export const useStore = (): WorkspaceNavigationStore => {
       runSelection(
         () => activateWorkspaceProject(projectId),
         '无法打开所选项目。',
+      ),
+    focusTask: (threadId: string) =>
+      runSelection(
+        () => focusWorkspaceTask(threadId),
+        '无法打开所选会话。',
       ),
     activateChat: async (threadId?: string) => {
       const accepted = await runSelection(

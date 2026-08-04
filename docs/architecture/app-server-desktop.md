@@ -216,9 +216,14 @@ matching `thread/started` bind the Runtime, and early `turn/started` events rema
 buffered until the `turn/start` response is accepted. This keeps the newly
 started Turn in its owning projection and then opens the requested foreground
 workspace. A workspace-loading snapshot publishes an empty foreground index
-until the destination list arrives. Main never learns Thread ownership or titles
-from a Renderer snapshot. Transient navigation state therefore cannot rebind a
-background Thread to the new foreground workspace.
+until the destination list arrives, but retains an explicitly requested target
+Thread ID as pending presentation state. Renderer resolves that target's title
+from the persistent project/chat navigation projection while its transcript is
+loading, so the conversation header does not temporarily fall back to the
+new-Thread label. Cross-project task selection uses the same Main-owned focus
+transaction so the target ID survives the workspace boundary. Main never learns
+Thread ownership or titles from a Renderer snapshot. Transient navigation state
+therefore cannot rebind a background Thread to the new foreground workspace.
 Project ordering is
 import-recency order: a newly imported
 project enters at the top, while later activation never changes its position.

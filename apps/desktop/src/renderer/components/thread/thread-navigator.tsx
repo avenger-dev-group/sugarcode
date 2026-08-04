@@ -196,9 +196,10 @@ export const ThreadNavigator = ({
     threadId: string,
   ): Promise<void> => {
     if (
-      (!projectActive || workspace.state.activeProjectId !== projectId) &&
-      !(await workspace.activateProject(projectId))
+      !projectActive ||
+      workspace.state.activeProjectId !== projectId
     ) {
+      await workspace.focusTask(threadId);
       return;
     }
     await store.selectThread(threadId);

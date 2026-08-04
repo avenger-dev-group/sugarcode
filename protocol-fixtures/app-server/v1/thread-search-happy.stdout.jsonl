@@ -23,6 +23,6 @@
 {"jsonrpc":"2.0","method":"turn/completed","params":{"workspaceId":"unbound","threadId":"00000000-0000-7000-8000-000000000002","turn":{"id":"00000000-0001-7000-8000-000000000002","status":"completed"}}}
 {"id":"start-3","jsonrpc":"2.0","result":{"thread":{"id":"00000000-0000-7000-8000-000000000003","workspaceId":"unbound"}}}
 {"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"00000000-0000-7000-8000-000000000003","workspaceId":"unbound"}}}
-{"id":"search-1","jsonrpc":"2.0","result":{"data":[{"id":"00000000-0000-7000-8000-000000000002","workspaceId":"unbound","title":"Hello"}],"nextCursor":"00000000-0000-7000-8000-000000000002"}}
-{"id":"search-2","jsonrpc":"2.0","result":{"data":[{"id":"00000000-0000-7000-8000-000000000001","workspaceId":"unbound","title":"Hello"}],"nextCursor":null}}
+{"id":"search-1","jsonrpc":"2.0","result":{"data":[{"id":"00000000-0000-7000-8000-000000000002","workspaceId":"unbound"}],"nextCursor":"00000000-0000-7000-8000-000000000002"}}
+{"id":"search-2","jsonrpc":"2.0","result":{"data":[{"id":"00000000-0000-7000-8000-000000000001","workspaceId":"unbound"}],"nextCursor":null}}
 {"id":"search-empty","jsonrpc":"2.0","result":{"data":[],"nextCursor":null}}

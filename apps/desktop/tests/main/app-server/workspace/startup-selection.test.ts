@@ -103,6 +103,8 @@ test('cold startup restores navigation without selecting or reordering projects'
 
   let configuredWorkspace = false;
   let bindingId: string | null = null;
+  let preferredThreadId: string | undefined;
+  let selectedThreadId: string | null = null;
   const supervisor = {
     subscribe: (): (() => void) => () => undefined,
     configureInitialWorkspace: (): boolean => {
@@ -110,13 +112,24 @@ test('cold startup restores navigation without selecting or reordering projects'
       return true;
     },
     getWorkspaceSwitchBlock: (): null => null,
-    switchWorkspace: async (workspacePath: string): Promise<boolean> => {
+    switchWorkspace: async (
+      workspacePath: string,
+      _runtimeKind: 'project' | 'chat',
+      requestedThreadId?: string,
+    ): Promise<boolean> => {
+      preferredThreadId = requestedThreadId;
       bindingId = path.basename(workspacePath) === 'project-alpha'
         ? 'a'.repeat(64)
         : 'c'.repeat(64);
       return true;
     },
     getWorkspaceBindingId: (): string | null => bindingId,
+    conversation: {
+      selectThread: async (threadId: string) => {
+        selectedThreadId = threadId;
+        return { accepted: true, reason: 'accepted' as const };
+      },
+    },
   } as unknown as ConnectionSupervisor;
   const controller = new WorkspaceController({
     threadRegistry: new ThreadRegistry(),
@@ -162,7 +175,9 @@ test('cold startup restores navigation without selecting or reordering projects'
   assert.deepEqual(snapshot.chatThreadIds, [CHAT_THREAD_ID]);
   assert.equal(snapshot.chatTitles?.[CHAT_THREAD_ID], 'Saved chat');
 
-  assert.equal((await controller.activateProject('project-alpha')).accepted, true);
+  assert.equal((await controller.focusTask(PROJECT_THREAD_ID)).accepted, true);
+  assert.equal(preferredThreadId, PROJECT_THREAD_ID);
+  assert.equal(selectedThreadId, PROJECT_THREAD_ID);
   assert.deepEqual(
     controller.getSnapshot().projects?.map((project) => project.id),
     ['project-beta', 'project-alpha'],

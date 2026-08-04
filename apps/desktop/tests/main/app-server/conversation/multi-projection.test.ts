@@ -219,11 +219,21 @@ test('workspace loading never publishes the previous Thread index under the new 
         };
       }
       await adminListBarrier;
-      return { data: [], nextCursor: null };
+      return {
+        data: [
+          {
+            id: THREAD_NEW,
+            workspaceId: WORKSPACE_ADMIN,
+            title: 'Admin task',
+          },
+        ],
+        nextCursor: null,
+      };
     },
     resumeThread: async (threadId) => ({
       threadId,
-      workspaceId: WORKSPACE_WEB,
+      workspaceId:
+        threadId === THREAD_NEW ? WORKSPACE_ADMIN : WORKSPACE_WEB,
       turns: [],
     }),
     startThread: async () => ({
@@ -259,11 +269,15 @@ test('workspace loading never publishes the previous Thread index under the new 
   );
   assert.equal(controller.registry.getWorkspaceId(THREAD_WEB), WORKSPACE_WEB);
 
-  const switching = controller.switchWorkspace(WORKSPACE_ADMIN);
+  const switching = controller.switchWorkspace(
+    WORKSPACE_ADMIN,
+    THREAD_NEW,
+  );
   await Promise.resolve();
   const loading = controller.getSnapshot();
   assert.equal(loading.navigator.status, 'loading');
   assert.deepEqual(loading.navigator.activeThreadIds, []);
+  assert.equal(loading.navigator.pendingThreadId, THREAD_NEW);
   assert.equal(controller.registry.getWorkspaceId(THREAD_WEB), WORKSPACE_WEB);
 
   controller.handleNotification({
@@ -279,7 +293,12 @@ test('workspace loading never publishes the previous Thread index under the new 
 
   releaseAdminList();
   assert.equal(await switching, true);
-  assert.equal(controller.getSnapshot().phase, 'idle');
+  assert.equal(controller.getSnapshot().phase, 'ready');
+  assert.equal(controller.getSnapshot().threadId, THREAD_NEW);
+  assert.equal(
+    controller.getSnapshot().navigator.pendingThreadId,
+    undefined,
+  );
 });
 
 test('background lifecycle stays in its Thread projection and becomes unread', async () => {

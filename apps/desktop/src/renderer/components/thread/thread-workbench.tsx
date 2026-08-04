@@ -52,6 +52,7 @@ import type {
   TranscriptMessageViewModel,
   TranscriptTurnProps,
 } from './types';
+import { resolveConversationTitle } from './conversation-title';
 import { ProcessActivityGroup } from './process-activity-group';
 import { ThreadNavigator } from './thread-navigator';
 import { isCompactToolActivity } from './tool-activity';
@@ -353,9 +354,11 @@ export const ThreadWorkbenchView = ({
   } = useTranscriptFollow(store.thread);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const workspace = useWorkspaceNavigationStore();
-  const conversationTitle = store.thread.threadIdentity
-    ? store.navigator.threadTitles[store.thread.threadIdentity] ?? '新对话'
-    : '新对话';
+  const conversationTitle = resolveConversationTitle(
+    store.thread,
+    store.navigator,
+    workspace.state,
+  );
   const conversationSubtitle =
     workspace.state.kind === 'chat'
       ? '独立 Chat'
