@@ -81,6 +81,7 @@ import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
 } from './transcript-follow';
+import { completedProcessDurationLabel } from './activity-disclosure';
 import { toTurnFailureViewModel } from './turn-failure';
 import { toActiveTurnProgress } from './turn-progress';
 
@@ -865,9 +866,18 @@ export const toThreadViewModel = (
         ? previousTurn.failure
         : nextFailure;
     const terminalLabel = TERMINAL_LABELS[turn.status];
+    const completedAgentMessageId =
+      turn.status === 'completed'
+        ? turn.messages.findLast((message) => message.role === 'agent')?.id
+        : undefined;
+    const durationLabel = completedProcessDurationLabel(
+      turn.id,
+      completedAgentMessageId,
+    );
     const isError = turn.status === 'failed';
     if (
       previousTurn?.status === turn.status &&
+      previousTurn.durationLabel === durationLabel &&
       previousTurn.model?.displayName === model?.displayName &&
       previousTurn.model?.wireApi === model?.wireApi &&
       previousTurn.messages === stableMessages &&
@@ -889,6 +899,7 @@ export const toThreadViewModel = (
     return {
       id: turn.id,
       status: turn.status,
+      ...(durationLabel ? { durationLabel } : {}),
       ...(model ? { model } : {}),
       messages: stableMessages,
       ...(pendingAgentOutputs ? { pendingAgentOutputs } : {}),

@@ -141,9 +141,11 @@ const TurnActivity = ({
 const TurnActivityTimeline = ({
   activities,
   turnStatus,
+  durationLabel,
 }: Readonly<{
   activities: readonly TurnActivityViewModel[];
   turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
+  durationLabel?: string;
 }>) => {
   const requiresAttention = activities.some(
     (entry) =>
@@ -158,6 +160,7 @@ const TurnActivityTimeline = ({
       groupId={activities[0]?.activity.id ?? 'empty-process'}
       status={turnStatus}
       requiresAttention={requiresAttention}
+      durationLabel={durationLabel}
     >
       {activities.map((entry, index) => {
         if (!isCompactToolActivity(entry)) {
@@ -222,6 +225,7 @@ const TranscriptTurnView = ({
         <TurnActivityTimeline
           activities={turn.activities}
           turnStatus={turn.status}
+          durationLabel={turn.durationLabel}
         />
       ) : null}
       {!turn.activities &&

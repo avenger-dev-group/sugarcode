@@ -2,9 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  completedProcessDurationLabel,
+  formatProcessDuration,
   processActivityLabel,
   shouldAutoExpandActivityGroup,
 } from '../../../src/renderer/components/thread/activity-disclosure.ts';
+
+const uuidV7At = (timestampMs: number): string => {
+  const timestamp = timestampMs.toString(16).padStart(12, '0');
+  return `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-000000000001`;
+};
 
 test('activity groups label every terminal Turn state', () => {
   assert.equal(processActivityLabel('completed', false), 'Processed');
@@ -21,4 +28,19 @@ test('active and attention-required activity groups start expanded', () => {
 test('attention label takes precedence over the Turn state', () => {
   assert.equal(processActivityLabel('inProgress', true), 'Action required');
   assert.equal(processActivityLabel('failed', true), 'Action required');
+});
+
+test('formats completed process duration like the Codex disclosure', () => {
+  assert.equal(formatProcessDuration(5_000), '5s');
+  assert.equal(formatProcessDuration(359_999), '5m 59s');
+  assert.equal(formatProcessDuration(3_723_000), '1h 2m 3s');
+});
+
+test('derives completed duration from canonical UUIDv7 lifecycle IDs', () => {
+  assert.equal(
+    completedProcessDurationLabel(uuidV7At(1_000), uuidV7At(360_999)),
+    '5m 59s',
+  );
+  assert.equal(completedProcessDurationLabel('invalid', uuidV7At(2_000)), undefined);
+  assert.equal(completedProcessDurationLabel(uuidV7At(2_000), undefined), undefined);
 });

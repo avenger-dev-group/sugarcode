@@ -131,6 +131,7 @@ export type CompactToolActivity = Extract<
 export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
+  durationLabel?: string;
   model?: TurnModelViewModel;
   messages: readonly TranscriptMessageViewModel[];
   pendingAgentOutputs?: readonly AgentMessageViewModel[];
@@ -265,6 +266,7 @@ export type ProcessActivityGroupProps = Readonly<{
   groupId: string;
   status: ConversationTurnStatus;
   requiresAttention: boolean;
+  durationLabel?: string;
   children: ReactNode;
 }>;
 
