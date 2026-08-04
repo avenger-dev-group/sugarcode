@@ -52,6 +52,14 @@
   --user-message-foreground: var(--primary);
   --destructive: oklch(0.577 0.245 27.325);
   --success: oklch(0.627 0.194 149.214);
+  --syntax-attribute: #116329;
+  --syntax-comment: #57606a;
+  --syntax-deletion: #82071e;
+  --syntax-keyword: #cf222e;
+  --syntax-number: #0550ae;
+  --syntax-string: #0a3069;
+  --syntax-title: #8250df;
+  --syntax-variable: #953800;
 }
 
 .dark {
@@ -61,6 +69,14 @@
   --user-message-foreground: var(--background);
   --destructive: oklch(0.704 0.191 22.216);
   --success: oklch(0.792 0.209 151.711);
+  --syntax-attribute: #7ee787;
+  --syntax-comment: #8b949e;
+  --syntax-deletion: #ffdcd7;
+  --syntax-keyword: #ff7b72;
+  --syntax-number: #79c0ff;
+  --syntax-string: #a5d6ff;
+  --syntax-title: #d2a8ff;
+  --syntax-variable: #ffa657;
 }
 
 :root,
@@ -217,7 +233,69 @@
 }
 
 .agent-markdown-segment {
-  animation: agent-markdown-enter 120ms ease-out both;
+  animation: agent-markdown-enter 150ms cubic-bezier(0.37, 0.55, 0.86, 0.88) both;
+}
+
+.agent-code-block .hljs-comment,
+.agent-code-block .hljs-quote {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+
+.agent-code-block .hljs-keyword,
+.agent-code-block .hljs-selector-tag,
+.agent-code-block .hljs-subst {
+  color: var(--syntax-keyword);
+}
+
+.agent-code-block .hljs-doctag,
+.agent-code-block .hljs-regexp,
+.agent-code-block .hljs-string {
+  color: var(--syntax-string);
+}
+
+.agent-code-block .hljs-literal,
+.agent-code-block .hljs-meta,
+.agent-code-block .hljs-number {
+  color: var(--syntax-number);
+}
+
+.agent-code-block .hljs-section,
+.agent-code-block .hljs-selector-id,
+.agent-code-block .hljs-title {
+  color: var(--syntax-title);
+}
+
+.agent-code-block .hljs-built_in,
+.agent-code-block .hljs-template-variable,
+.agent-code-block .hljs-type,
+.agent-code-block .hljs-variable {
+  color: var(--syntax-variable);
+}
+
+.agent-code-block .hljs-attr,
+.agent-code-block .hljs-attribute,
+.agent-code-block .hljs-bullet,
+.agent-code-block .hljs-link,
+.agent-code-block .hljs-name,
+.agent-code-block .hljs-symbol {
+  color: var(--syntax-attribute);
+}
+
+.agent-code-block .hljs-addition {
+  color: var(--syntax-attribute);
+}
+
+.agent-code-block .hljs-deletion {
+  color: var(--syntax-deletion);
+}
+
+.agent-code-block .hljs-emphasis {
+  font-style: italic;
+}
+
+.agent-code-block .hljs-strong {
+  font-weight: 500;
 }
 
 @media (prefers-reduced-motion: reduce) {

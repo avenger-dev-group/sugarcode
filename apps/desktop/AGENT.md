@@ -106,10 +106,15 @@ src/renderer/
 - UI 字体：`-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`。
 - 普通正文：`14px / 1.5 / 500`，优先使用 `text-sm font-normal leading-normal`。
 - 局部对话或输入区需要更松的行高时可使用 `22px`，不要随意增加其他行高。
+- Agent Markdown 正文固定为 `14px / 22px / 400`，容器使用 `font-normal`；
+  标题和加粗强调内容按语义提升到 `500`。
 - 标题、按钮、强调标签：`500`，使用 `font-medium`。
 - `font-semibold` 固定为 `600`，只用于确实需要更强层级的标题或状态。
-- Markdown `**加粗**`：`700`，使用 `font-bold`。
+- Markdown `**加粗**`：`500`，使用 `font-medium`。
 - 代码正文：`12px / 400`，使用项目的 `font-mono`。代码标签和紧凑元数据可更小，但不得改变代码正文基线。
+- Markdown 代码块对已知围栏语言提供浅色/深色语法高亮，包括 PHP、Go、
+  Java、C#、C 和 C++，并提供可键盘操作、有成功或失败反馈的复制按钮；
+  未知语言必须安全回退为纯文本。
 - 导航项和普通列表项默认 `14px / 500`；不要靠普遍加粗制造层级，应优先使用语义色、背景和间距。
 - 禁止使用不存在或含义不明确的字号类，例如 `text-md`。14px 使用 `text-sm`。
 

@@ -8,6 +8,7 @@ import {
   useRef,
 } from 'react';
 
+import { AgentCodeBlock } from './code-block/code-block';
 import {
   projectAgentMarkdownTokens,
   type AgentMarkdownTokenCache,
@@ -15,30 +16,7 @@ import {
 import type { AgentMarkdownProps } from './types';
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
-const CODE_LANGUAGE_HINT_PATTERN =
-  /^[A-Za-z0-9][A-Za-z0-9_+.#-]{0,63}$/u;
 const FENCED_CODE_PATTERN = /^ {0,3}(?:`{3,}|~{3,})/u;
-
-const codeLanguageHint = (language: string | undefined): string | null => {
-  const hint = language?.trimStart().split(/\s+/u, 1)[0];
-  return hint && CODE_LANGUAGE_HINT_PATTERN.test(hint) ? hint : null;
-};
-
-const codeFenceLineCount = (text: string): number => {
-  if (text.length === 0) {
-    return 0;
-  }
-  let lines = 1;
-  for (const character of text) {
-    if (character === '\n') {
-      lines += 1;
-    }
-  }
-  return lines;
-};
-
-const codeFenceLineLabel = (lines: number): string =>
-  `${lines} ${lines === 1 ? 'line' : 'lines'}`;
 
 const tableAlignmentClass = (
   alignment: 'center' | 'left' | 'right' | null,
@@ -96,14 +74,14 @@ const renderTokens = (
       case 'heading': {
         const content = children(token.tokens);
         const headingClasses = {
-          1: 'mt-5 text-lg leading-[1.35] tracking-[-0.02em]',
-          2: 'mt-5 text-base leading-[1.4] tracking-[-0.01em]',
-          3: 'mt-4 text-sm leading-[22px]',
-          4: 'mt-4 text-sm leading-[22px]',
-          5: 'mt-4 text-sm leading-[22px]',
-          6: 'mt-4 text-sm leading-[22px] text-secondary',
+          1: 'text-2xl leading-tight',
+          2: 'text-xl leading-tight',
+          3: 'text-[17px] leading-[22px]',
+          4: 'text-[17px] leading-[22px]',
+          5: 'text-[15px] leading-5',
+          6: 'text-[15px] leading-5',
         } as const;
-        const className = `${headingClasses[token.depth as keyof typeof headingClasses] ?? headingClasses[6]} font-medium first:mt-0`;
+        const className = `${headingClasses[token.depth as keyof typeof headingClasses] ?? headingClasses[6]} mt-5 mb-2.5 font-medium first:mt-0`;
         switch (token.depth) {
           case 1:
             return [
@@ -147,7 +125,7 @@ const renderTokens = (
         return [
           <p
             key={key}
-            className="mt-3 break-words text-sm font-normal leading-[22px] first:mt-0"
+            className="mb-[11px] break-words text-sm leading-[22px] last:mb-0"
           >
             {children(token.tokens)}
           </p>,
@@ -156,101 +134,88 @@ const renderTokens = (
         return [
           <blockquote
             key={key}
-            className="mt-3 border-l-2 pl-3 text-secondary first:mt-0"
+            className="relative mb-2 py-2 pl-6 leading-6 last:mb-0 before:absolute before:inset-y-2 before:left-0 before:w-1 before:rounded-full before:bg-border"
           >
             {children(token.tokens)}
           </blockquote>,
         ];
       case 'list': {
         const list = token as Tokens.List;
-        const items = list.items.map((item, itemIndex) => (
-          <li key={`${key}:item:${itemIndex}`} className="pl-1">
-            {children(item.tokens)}
-          </li>
-        ));
+        const hasTasks = list.items.some((item) => item.task);
+        const items = list.items.map((item, itemIndex) => {
+          const taskControl = item.task ? (
+            <input
+              aria-label={item.checked ? 'Completed task' : 'Incomplete task'}
+              checked={item.checked === true}
+              className="mt-0.5 size-4 shrink-0 accent-primary disabled:opacity-100"
+              disabled
+              readOnly
+              type="checkbox"
+            />
+          ) : null;
+          return (
+            <li
+              key={`${key}:item:${itemIndex}`}
+              className={
+                item.task
+                  ? 'grid grid-cols-[auto_minmax(0,1fr)] gap-x-1.5'
+                  : 'pl-0.5'
+              }
+            >
+              {taskControl}
+              <div className={item.task ? 'min-w-0' : undefined}>
+                {children(item.tokens)}
+              </div>
+            </li>
+          );
+        });
         const className =
-          'mt-3 ml-5 space-y-1 text-sm font-normal leading-[22px] first:mt-0';
+          'mb-2.5 space-y-2 text-sm leading-[22px] last:mb-0 [&_ol]:mt-2 [&_ol]:mb-0 [&_ul]:mt-2 [&_ul]:mb-0';
         return list.ordered
           ? [
               <ol
                 key={key}
-                className={`${className} list-decimal`}
+                className={`${className} ${hasTasks ? 'list-none pl-0' : 'list-decimal pl-[21px]'}`}
                 start={typeof list.start === 'number' ? list.start : undefined}
               >
                 {items}
               </ol>,
             ]
           : [
-              <ul key={key} className={`${className} list-disc`}>
+              <ul
+                key={key}
+                className={`${className} ${hasTasks ? 'list-none pl-0' : 'list-disc pl-[21px] [&_ul]:list-[circle] [&_ul_ul]:list-[square]'}`}
+              >
                 {items}
               </ul>,
             ];
       }
       case 'code': {
-        if (!FENCED_CODE_PATTERN.test(token.raw)) {
-          return [
-            <pre
-              key={key}
-              className="mt-3 max-w-full overflow-x-auto rounded-xl border bg-surface p-3 font-mono text-xs font-normal leading-normal first:mt-0"
-            >
-              <code>{token.text}</code>
-            </pre>,
-          ];
-        }
-        const languageHint = codeLanguageHint(token.lang);
-        const lineLabel = codeFenceLineLabel(
-          codeFenceLineCount(token.text),
-        );
-        const captionLabel = languageHint
-          ? `Language hint ${languageHint}, ${lineLabel}`
-          : `Code fence, ${lineLabel}`;
-        const captionId = `${key}:code-fence-caption`;
         return [
-          <figure
+          <AgentCodeBlock
             key={key}
-            aria-labelledby={captionId}
-            className="mt-3 min-w-0 max-w-full overflow-hidden rounded-xl border bg-surface first:mt-0"
-          >
-            <figcaption
-              id={captionId}
-              aria-label={captionLabel}
-              className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 border-b px-3 py-2 font-mono text-[10px] text-tertiary"
-            >
-              <span className="uppercase tracking-[0.14em]">
-                {languageHint ? 'Language hint' : 'Code fence'}
-              </span>
-              {languageHint ? (
-                <span className="min-w-0 break-all tracking-[0.08em]">
-                  {languageHint}
-                </span>
-              ) : null}
-              <span className="ml-auto shrink-0 whitespace-nowrap tracking-[0.08em]">
-                {lineLabel}
-              </span>
-            </figcaption>
-            <pre className="max-w-full overflow-x-auto p-3 font-mono text-xs font-normal leading-normal">
-              <code>{token.text}</code>
-            </pre>
-          </figure>,
+            code={token.text}
+            language={FENCED_CODE_PATTERN.test(token.raw) ? token.lang : undefined}
+          />,
         ];
       }
       case 'hr':
-        return [<hr key={key} className="my-5 border-border" />];
+        return [<hr key={key} className="my-7 border-border" />];
       case 'table': {
         const table = token as Tokens.Table;
         return [
           <div
             key={key}
-            className="mt-3 max-w-full overflow-x-auto rounded-xl border first:mt-0"
+            className="mb-2.5 max-w-full overflow-x-auto last:mb-0"
           >
-            <table className="w-full min-w-[32rem] border-collapse text-sm font-normal leading-[22px]">
-              <thead className="bg-surface">
+            <table className="w-max min-w-full border-separate border-spacing-0 text-left text-sm leading-[22px]">
+              <thead>
                 <tr>
                   {table.header.map((cell, cellIndex) => (
                     <th
                       key={`${key}:header:${cellIndex}`}
                       scope="col"
-                      className={`border-r px-3 py-2.5 font-medium last:border-r-0 ${tableAlignmentClass(cell.align)}`}
+                      className={`max-w-[30rem] border-b border-border px-0 py-2 pr-6 font-semibold leading-4 last:pr-0 ${tableAlignmentClass(cell.align)}`}
                     >
                       {children(cell.tokens)}
                     </th>
@@ -261,12 +226,12 @@ const renderTokens = (
                 {table.rows.map((row, rowIndex) => (
                   <tr
                     key={`${key}:row:${rowIndex}`}
-                    className="border-t align-top"
+                    className="align-top [&:not(:last-child)>td]:border-b [&:not(:last-child)>td]:border-border"
                   >
                     {row.map((cell, cellIndex) => (
                       <td
                         key={`${key}:row:${rowIndex}:cell:${cellIndex}`}
-                        className={`border-r px-3 py-2.5 last:border-r-0 ${tableAlignmentClass(cell.align)}`}
+                        className={`max-w-[30rem] px-0 py-2.5 pr-6 break-words last:pr-0 ${tableAlignmentClass(cell.align)}`}
                       >
                         {children(cell.tokens)}
                       </td>
@@ -280,7 +245,7 @@ const renderTokens = (
       }
       case 'strong':
         return [
-          <strong key={key} className="font-bold">
+          <strong key={key} className="font-medium">
             {children(token.tokens)}
           </strong>,
         ];
@@ -290,7 +255,7 @@ const renderTokens = (
         return [
           <code
             key={key}
-            className="break-words rounded bg-surface px-1 py-0.5 font-mono text-xs font-normal"
+            className="break-words rounded-md bg-surface px-1.5 py-px font-mono text-[0.92em] font-normal"
           >
             {token.text}
           </code>,
@@ -341,7 +306,11 @@ const renderTokens = (
           </Fragment>,
         ];
       case 'del':
-        return [<Fragment key={key}>{children(token.tokens)}</Fragment>];
+        return [
+          <del key={key} className="decoration-secondary">
+            {children(token.tokens)}
+          </del>,
+        ];
       case 'checkbox':
       case 'list_item':
         return [];
@@ -371,7 +340,7 @@ const AgentMarkdownView = ({
   }, [isStreaming, source]);
 
   return (
-    <div className="min-w-0 max-w-full text-foreground">
+    <div className="min-w-0 max-w-full font-normal text-foreground">
       {renderTokens(projection.tokens, 'root', isStreaming)}
     </div>
   );

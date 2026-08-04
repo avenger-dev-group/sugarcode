@@ -246,6 +246,20 @@ projection as completed Agent messages. Because the provider-neutral delta does
 not reveal whether text will resolve as commentary or a final answer until round
 completion, Desktop presents it as a streaming Agent response first and then
 settles it into its durable final role without showing raw Markdown source.
+The shared projection uses the Codex Desktop-derived transcript rhythm: 14/22
+normal-weight body copy, medium-weight scaled headings and emphasis, an
+inset four-pixel quote rule, nested and task-list treatment, horizontally scrollable
+separator-led tables, compact code surfaces and a 150-millisecond streaming
+fade that is disabled by reduced-motion preferences. Every neutral color
+continues to come from the mandated semantic theme tokens, so this presentation
+remains identical in structure across light and dark modes. Unsafe HTML stays
+omitted, while link and remote-media behavior remains governed by the existing
+Desktop boundary rather than by Markdown styling.
+Recognized fenced-code languages, including PHP, Go, Java, C#, C and C++, are
+highlighted with Renderer-owned light and dark syntax colors. Every code block
+exposes a keyboard-accessible copy action with bounded success or failure
+feedback; unknown languages and oversized input remain plain text, and
+highlighted HTML is generated only from escaped code.
 The stream preview is not a persistence or protocol invariant: when the
 provider's completed item differs because of gateway normalization or
 model-specific event assembly, the durable completed text replaces the preview
