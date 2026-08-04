@@ -269,8 +269,11 @@ the DAG layout consumes that same per-card height so short titles stay compact
 while longer titles cannot overlap edges or adjacent ranks. The canvas refits
 the graph when a collapsed activity becomes visible, when its graph layout
 changes or when the available conversation width changes; once the viewport is
-stable, manual pan and zoom remain untouched. Agent detail owns a dedicated
-keyboard-focusable vertical scroll area, so
+stable, manual pan and zoom remain untouched. Each refit derives a fresh
+viewport directly from the graph bounds and the conversation's currently visible
+rectangle, so repeated inspector resizing or collapsing cannot accumulate an
+off-canvas translation. Agent detail owns a dedicated keyboard-focusable
+vertical scroll area, so
 the frozen prompt, revisions, dependencies and final result remain reachable
 without moving the conversation transcript. Thread changes also clear the
 transient task selection so Agent detail can never leak across conversations.

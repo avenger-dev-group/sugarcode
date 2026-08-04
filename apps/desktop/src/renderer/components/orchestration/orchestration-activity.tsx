@@ -13,6 +13,8 @@ import {
   type EdgeProps,
   type Node,
   type NodeProps,
+  type ReactFlowInstance,
+  type Rect,
 } from '@xyflow/react';
 import {
   Binoculars,
@@ -42,6 +44,7 @@ import type {
 } from './types';
 import { formatAgentTaskDuration } from './presentation';
 import { useOrchestrationStore } from './use-store';
+import { calculateVisibleGraphViewport } from './viewport';
 
 const ROOT_NODE_WIDTH = 188;
 const ROOT_NODE_HEIGHT = 72;
@@ -50,6 +53,9 @@ const AGENT_NODE_TITLE_WIDTH = 196;
 const AGENT_NODE_CHROME_HEIGHT = 76;
 const AGENT_NODE_TITLE_LINE_HEIGHT = 16;
 const ROOT_NODE_ID = 'main-agent';
+const GRAPH_MIN_ZOOM = 0.45;
+const GRAPH_MAX_ZOOM = 1.6;
+const GRAPH_FIT_PADDING = 0.2;
 
 let titleMeasurementContext: CanvasRenderingContext2D | null | undefined;
 
@@ -319,6 +325,7 @@ const layoutGraph = (
 ): Readonly<{
   nodes: OrchestrationNode[];
   edges: OrchestrationEdge[];
+  bounds: Rect;
 }> => {
   const graph = new graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
@@ -367,6 +374,8 @@ const layoutGraph = (
         x: graph.node(ROOT_NODE_ID).x - ROOT_NODE_WIDTH / 2,
         y: graph.node(ROOT_NODE_ID).y - ROOT_NODE_HEIGHT / 2,
       },
+      width: ROOT_NODE_WIDTH,
+      height: ROOT_NODE_HEIGHT,
       selectable: false,
       draggable: false,
       focusable: false,
@@ -382,6 +391,8 @@ const layoutGraph = (
           x: position.x - AGENT_NODE_WIDTH / 2,
           y: position.y - height / 2,
         },
+        width: AGENT_NODE_WIDTH,
+        height,
         selectable: false,
         draggable: false,
         focusable: true,
@@ -413,10 +424,68 @@ const layoutGraph = (
       });
     }
   }
-  return { nodes, edges };
+  const left = Math.min(...nodes.map((node) => node.position.x));
+  const top = Math.min(...nodes.map((node) => node.position.y));
+  const right = Math.max(
+    ...nodes.map((node) => node.position.x + (node.width ?? 0)),
+  );
+  const bottom = Math.max(
+    ...nodes.map((node) => node.position.y + (node.height ?? 0)),
+  );
+  return {
+    nodes,
+    edges,
+    bounds: {
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top,
+    },
+  };
 };
 
-const GraphControls = () => {
+const fitGraphToVisibleArea = (
+  flow: ReactFlowInstance<OrchestrationNode, OrchestrationEdge>,
+  element: HTMLDivElement,
+  bounds: Rect,
+  duration: number,
+): Promise<boolean> => {
+  const containerRect = element.getBoundingClientRect();
+  const clipElement = element.closest<HTMLElement>(
+    '[data-slot="scroll-area-viewport"]',
+  );
+  const clipRect = clipElement?.getBoundingClientRect();
+  const visibleLeft = Math.max(
+    containerRect.left,
+    clipRect?.left ?? containerRect.left,
+  );
+  const visibleRight = Math.min(
+    containerRect.right,
+    clipRect?.right ?? containerRect.right,
+  );
+  const viewport = calculateVisibleGraphViewport({
+    bounds,
+    containerWidth: containerRect.width,
+    containerHeight: containerRect.height,
+    visibleLeft: visibleLeft - containerRect.left,
+    visibleRight: visibleRight - containerRect.left,
+    minZoom: GRAPH_MIN_ZOOM,
+    maxZoom: GRAPH_MAX_ZOOM,
+    padding: GRAPH_FIT_PADDING,
+  });
+  if (!viewport) {
+    return Promise.resolve(false);
+  }
+  return flow.setViewport(viewport, { duration });
+};
+
+const GraphControls = ({
+  container,
+  bounds,
+}: Readonly<{
+  container: RefObject<HTMLDivElement | null>;
+  bounds: Rect;
+}>) => {
   const flow = useReactFlow<OrchestrationNode, OrchestrationEdge>();
   return (
     <Panel
@@ -449,7 +518,12 @@ const GraphControls = () => {
         size="icon"
         variant="ghost"
         className="size-6"
-        onClick={() => void flow.fitView({ padding: 0.2, duration: 160 })}
+        onClick={() => {
+          const element = container.current;
+          if (element) {
+            void fitGraphToVisibleArea(flow, element, bounds, 160);
+          }
+        }}
         aria-label="Fit orchestration to view"
       >
         <Focus className="size-3.5" aria-hidden="true" />
@@ -460,9 +534,11 @@ const GraphControls = () => {
 
 const GraphAutoFit = ({
   container,
+  bounds,
   layoutKey,
 }: Readonly<{
   container: RefObject<HTMLDivElement | null>;
+  bounds: Rect;
   layoutKey: string;
 }>): null => {
   const flow = useReactFlow<OrchestrationNode, OrchestrationEdge>();
@@ -500,42 +576,9 @@ const GraphAutoFit = ({
             return;
           }
           const duration = animate && !reducedMotion ? 160 : 0;
-          void flow.fitView({
-            padding: 0.2,
-            duration: 0,
-          }).then(() => {
-            if (request !== fitRequest) {
-              return;
-            }
-            if (!clipElement) {
-              return;
-            }
-            const containerRect = element.getBoundingClientRect();
-            const clipRect = clipElement.getBoundingClientRect();
-            const visibleLeft = Math.max(
-              containerRect.left,
-              clipRect.left,
-            );
-            const visibleRight = Math.min(
-              containerRect.right,
-              clipRect.right,
-            );
-            if (visibleRight <= visibleLeft) {
-              return;
-            }
-            const visibleCenter =
-              (visibleLeft + visibleRight) / 2;
-            const containerCenter =
-              (containerRect.left + containerRect.right) / 2;
-            const viewport = flow.getViewport();
-            void flow.setViewport(
-              {
-                ...viewport,
-                x: viewport.x + visibleCenter - containerCenter,
-              },
-              { duration },
-            );
-          });
+          if (request === fitRequest) {
+            void fitGraphToVisibleArea(flow, element, bounds, duration);
+          }
           wasVisible = true;
         });
       });
@@ -566,7 +609,7 @@ const GraphAutoFit = ({
         window.cancelAnimationFrame(followUpFrame);
       }
     };
-  }, [container, flow, layoutKey]);
+  }, [bounds, container, flow, layoutKey]);
 
   return null;
 };
@@ -661,8 +704,8 @@ export const OrchestrationActivity = ({
           edges={graph.edges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          minZoom={0.45}
-          maxZoom={1.6}
+          minZoom={GRAPH_MIN_ZOOM}
+          maxZoom={GRAPH_MAX_ZOOM}
           nodesDraggable={false}
           nodesConnectable={false}
           elementsSelectable={false}
@@ -680,9 +723,10 @@ export const OrchestrationActivity = ({
           />
           <GraphAutoFit
             container={graphContainer}
+            bounds={graph.bounds}
             layoutKey={layoutKey}
           />
-          <GraphControls />
+          <GraphControls container={graphContainer} bounds={graph.bounds} />
         </ReactFlow>
       </div>
     </section>
