@@ -27,6 +27,7 @@ use sugarcode_app_server_protocol::ModelWireApi as PublicModelWireApi;
 use sugarcode_app_server_protocol::ProviderErrorMetadata;
 use sugarcode_app_server_protocol::ThreadForkResponse;
 use sugarcode_app_server_protocol::ThreadResumeResponse;
+use sugarcode_app_server_protocol::ThreadTitleUpdatedNotification;
 use sugarcode_app_server_protocol::TokenUsage;
 use sugarcode_app_server_protocol::TokenUsageSample;
 use sugarcode_app_server_protocol::TokenUsageSource;
@@ -273,7 +274,7 @@ fn map_snapshot_parts(
     snapshot: DurableThreadSnapshot,
     workspace_id: &str,
 ) -> (sugarcode_app_server_protocol::Thread, Vec<TurnSnapshot>) {
-    let title = sugarcode_state::derive_thread_title(&snapshot);
+    let title = snapshot.title.clone();
     (
         sugarcode_app_server_protocol::Thread {
             id: snapshot.id.into_string(),
@@ -606,6 +607,15 @@ pub(crate) fn map_core_event(
     workspace_id: &str,
 ) -> Result<JsonRpcMessage, EventMappingError> {
     let notification = match event.kind {
+        CoreEventKind::ThreadTitleUpdated { thread_id, title } => notification(
+            "thread/title/updated",
+            to_value(ThreadTitleUpdatedNotification {
+                workspace_id: workspace_id.to_owned(),
+                thread_id: thread_id.into_string(),
+                title,
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
         CoreEventKind::TurnStarted { thread_id, turn_id } => notification(
             "turn/started",
             to_value(TurnStartedNotification {

@@ -94,7 +94,11 @@ export const parseThreadDescendantsListResponse = (
 
 export const parseThreadEmptyResponse = (
   value: unknown,
-  method: 'thread/archive' | 'thread/unarchive' | 'thread/delete',
+  method:
+    | 'thread/archive'
+    | 'thread/unarchive'
+    | 'thread/delete'
+    | 'thread/title/generate',
 ): void => {
   if (!isRecord(value) || Object.keys(value).length !== 0) {
     throw new Error(`Invalid ${method} response.`);

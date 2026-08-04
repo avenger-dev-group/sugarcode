@@ -22,6 +22,7 @@ use futures_util::stream;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -132,6 +133,7 @@ use tokio_util::sync::CancellationToken;
 mod agent_loop;
 mod collaboration;
 mod terminal;
+mod thread_title;
 mod tool_dispatch;
 
 use agent_loop::AgentLoopState;
@@ -196,6 +198,7 @@ pub struct CoreRuntime {
     collaboration: Arc<CollaborationCoordinator>,
     event_tx: mpsc::Sender<CoreEvent>,
     active: Arc<Mutex<BTreeMap<ThreadId, ActiveTurn>>>,
+    title_generations: Arc<Mutex<BTreeSet<ThreadId>>>,
 }
 
 pub struct ResolvedModel {
@@ -419,6 +422,7 @@ impl CoreRuntime {
                 collaboration: Arc::new(CollaborationCoordinator::default()),
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
+                title_generations: Arc::new(Mutex::new(BTreeSet::new())),
             },
             event_rx,
         )
@@ -452,6 +456,7 @@ impl CoreRuntime {
                 collaboration: Arc::new(CollaborationCoordinator::default()),
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
+                title_generations: Arc::new(Mutex::new(BTreeSet::new())),
             },
             event_rx,
         )
@@ -554,6 +559,7 @@ impl CoreRuntime {
                 collaboration: Arc::new(CollaborationCoordinator::default()),
                 event_tx,
                 active: Arc::new(Mutex::new(BTreeMap::new())),
+                title_generations: Arc::new(Mutex::new(BTreeSet::new())),
             },
             event_rx,
         )
@@ -615,6 +621,51 @@ impl CoreApi for CoreRuntime {
 
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {
         self.lock_core()?.resume_thread(thread_id)
+    }
+
+    fn generate_thread_title(
+        &mut self,
+        request_id: CoreRequestId,
+        thread_id: ThreadId,
+    ) -> Result<(), CoreError> {
+        let snapshot = self.lock_core()?.resume_thread(&thread_id)?;
+        if snapshot.title.is_some() {
+            return Ok(());
+        }
+        let source = thread_title::title_source(&snapshot).ok_or(CoreError::InvalidInput)?;
+        let selected_profile_id = self
+            .lock_core()?
+            .latest_model_selection(&thread_id)
+            .map(|selection| selection.profile_id);
+        let model_gateway = self
+            .model_gateway
+            .as_ref()
+            .ok_or(CoreError::ModelUnavailable)?
+            .resolve(selected_profile_id.as_deref())
+            .map_err(|_| CoreError::ModelUnavailable)?;
+        {
+            let mut generations = self.title_generations.lock().map_err(|_| {
+                CoreError::Internal("thread title generation lock is unavailable".to_string())
+            })?;
+            if !generations.insert(thread_id.clone()) {
+                return Ok(());
+            }
+        }
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            thread_title::generate(
+                runtime.clone(),
+                request_id,
+                thread_id.clone(),
+                model_gateway,
+                source,
+            )
+            .await;
+            if let Ok(mut generations) = runtime.title_generations.lock() {
+                generations.remove(&thread_id);
+            }
+        });
+        Ok(())
     }
 
     fn list_descendants(

@@ -776,6 +776,7 @@ pub(super) fn tool_result_content(name: &str, result: &CoreToolResult) -> String
 pub(super) fn durable_thread_snapshot(thread: &Thread) -> DurableThreadSnapshot {
     DurableThreadSnapshot {
         id: thread.id.clone(),
+        title: thread.title.clone(),
         lifecycle: thread.lifecycle,
         origin: thread.origin.clone(),
         turns: thread

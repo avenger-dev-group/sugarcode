@@ -42,6 +42,17 @@ pub(super) struct ThreadCreatedRecord<'a> {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(super) struct ThreadTitleUpdatedRecord<'a> {
+    pub schema_version: u32,
+    pub sequence: u64,
+    #[serde(rename = "type")]
+    pub record_type: &'static str,
+    pub thread_id: &'a str,
+    pub title: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct StoredThreadOriginRef<'a> {
     pub parent_thread_id: &'a str,
     pub parent_turn_id: &'a str,
@@ -1110,6 +1121,23 @@ struct StoredThreadCreated {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredThreadTitleUpdated {
+    schema_version: u32,
+    sequence: u64,
+    #[serde(rename = "type")]
+    record_type: ThreadTitleUpdatedType,
+    thread_id: ThreadId,
+    title: String,
+}
+
+#[derive(Debug, Deserialize)]
+enum ThreadTitleUpdatedType {
+    #[serde(rename = "threadTitleUpdated")]
+    ThreadTitleUpdated,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredThreadOrigin {
     parent_thread_id: ThreadId,
     parent_turn_id: TurnId,
@@ -1756,6 +1784,11 @@ pub(super) enum DecodedRecord {
         workspace_binding_id: Option<String>,
         origin: Option<DurableThreadOrigin>,
     },
+    ThreadTitleUpdated {
+        sequence: u64,
+        thread_id: ThreadId,
+        title: String,
+    },
     TurnStarted {
         sequence: u64,
         thread_id: ThreadId,
@@ -1796,6 +1829,7 @@ impl DecodedRecord {
     pub fn sequence(&self) -> u64 {
         match self {
             Self::ThreadCreated { sequence, .. }
+            | Self::ThreadTitleUpdated { sequence, .. }
             | Self::TurnStarted { sequence, .. }
             | Self::TurnItemAdded { sequence, .. }
             | Self::TurnItemCompleted { sequence, .. }
@@ -1851,6 +1885,7 @@ pub(super) fn decode_record(
     if !matches!(
         record_type,
         "threadCreated"
+            | "threadTitleUpdated"
             | "turnStarted"
             | "turnItemStarted"
             | "turnItemCompleted"
@@ -1894,6 +1929,36 @@ pub(super) fn decode_record(
                     task_id: origin.task_id,
                     role: origin.role,
                 }),
+            })
+        }
+        "threadTitleUpdated" => {
+            let record =
+                serde_json::from_value::<StoredThreadTitleUpdated>(value).map_err(|_| {
+                    RolloutError::Corrupt(RolloutDiagnostic {
+                        path: path.to_path_buf(),
+                        offset,
+                        kind: "invalidRecordShape",
+                    })
+                })?;
+            let StoredThreadTitleUpdated {
+                schema_version,
+                sequence,
+                thread_id,
+                title,
+                record_type: ThreadTitleUpdatedType::ThreadTitleUpdated,
+            } = record;
+            debug_assert_eq!(schema_version, CURRENT_ROLLOUT_SCHEMA_VERSION);
+            if !super::is_valid_thread_title(&title) {
+                return Err(RolloutError::Corrupt(RolloutDiagnostic {
+                    path: path.to_path_buf(),
+                    offset,
+                    kind: "invalidThreadTitle",
+                }));
+            }
+            Ok(DecodedRecord::ThreadTitleUpdated {
+                sequence,
+                thread_id,
+                title,
             })
         }
         "turnCompleted" => {
@@ -2720,6 +2785,21 @@ pub(super) fn encode_thread_created(
     .map_err(|_| RolloutError::Poisoned)
 }
 
+pub(super) fn encode_thread_title_updated(
+    sequence: u64,
+    thread_id: &ThreadId,
+    title: &str,
+) -> Result<Vec<u8>, RolloutError> {
+    serde_json::to_vec(&ThreadTitleUpdatedRecord {
+        schema_version: CURRENT_ROLLOUT_SCHEMA_VERSION,
+        sequence,
+        record_type: "threadTitleUpdated",
+        thread_id: thread_id.as_str(),
+        title,
+    })
+    .map_err(|_| RolloutError::Poisoned)
+}
+
 pub(super) fn encode_turn_started(
     sequence: u64,
     thread_id: &ThreadId,
@@ -2836,6 +2916,7 @@ pub(super) fn encode_thread_deleted(
 pub(super) fn empty_thread(thread_id: ThreadId) -> DurableThreadSnapshot {
     DurableThreadSnapshot {
         id: thread_id,
+        title: None,
         turns: Vec::new(),
         lifecycle: super::DurableThreadLifecycle::Active,
         origin: None,

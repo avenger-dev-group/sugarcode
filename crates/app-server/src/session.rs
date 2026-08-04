@@ -73,6 +73,8 @@ use sugarcode_app_server_protocol::ThreadSearchResponse;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
+use sugarcode_app_server_protocol::ThreadTitleGenerateParams;
+use sugarcode_app_server_protocol::ThreadTitleGenerateResponse;
 use sugarcode_app_server_protocol::ThreadUnarchiveParams;
 use sugarcode_app_server_protocol::ThreadUnarchiveResponse;
 use sugarcode_app_server_protocol::TurnInterruptParams;
@@ -508,6 +510,20 @@ where
                 }
                 self.start_thread(id, object.get("params").cloned())
             }
+            "thread/title/generate" => {
+                let Some(id) = request_id else {
+                    return Vec::new();
+                };
+                if self.state != SessionState::Ready {
+                    return vec![error(
+                        Some(id),
+                        ERROR_NOT_INITIALIZED,
+                        "Not initialized",
+                        None,
+                    )];
+                }
+                self.generate_thread_title(id, object.get("params").cloned())
+            }
             "thread/list" => {
                 let Some(id) = request_id else {
                     return Vec::new();
@@ -835,6 +851,7 @@ where
 fn core_event_thread_id(kind: &CoreEventKind) -> Option<&ThreadId> {
     match kind {
         CoreEventKind::ThreadStarted { thread_id }
+        | CoreEventKind::ThreadTitleUpdated { thread_id, .. }
         | CoreEventKind::TurnStarted { thread_id, .. }
         | CoreEventKind::ItemStarted { thread_id, .. }
         | CoreEventKind::AgentOutputDelta { thread_id, .. }

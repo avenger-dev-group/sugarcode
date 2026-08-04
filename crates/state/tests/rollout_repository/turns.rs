@@ -1407,6 +1407,7 @@ fn active_turn_rejects_lifecycle_records_and_non_terminal_fork_snapshots() {
             .create_thread_snapshot(&DurableThreadSnapshot {
                 id: ThreadId::parse("00000000-0000-7000-8000-000000000002")
                     .expect("valid thread UUIDv7"),
+                title: None,
                 turns: vec![in_progress],
                 lifecycle: DurableThreadLifecycle::Active,
                 origin: None,

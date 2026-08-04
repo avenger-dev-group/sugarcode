@@ -60,6 +60,10 @@ export type ConversationRpc = Readonly<{
     threadId: string,
     signal?: AbortSignal,
   ) => Promise<void>;
+  generateThreadTitle?: (
+    threadId: string,
+    signal?: AbortSignal,
+  ) => Promise<void>;
   startThread: (signal?: AbortSignal) => Promise<ThreadStartResponse>;
   importAsset: (
     params: AssetImportParams,
@@ -204,6 +208,20 @@ export class ConversationRpcClient implements ConversationRpc {
         signal,
       ),
       'thread/delete',
+    );
+  };
+
+  generateThreadTitle = async (
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    parseThreadEmptyResponse(
+      await this.client.requestReady(
+        'thread/title/generate',
+        { threadId },
+        signal,
+      ),
+      'thread/title/generate',
     );
   };
 

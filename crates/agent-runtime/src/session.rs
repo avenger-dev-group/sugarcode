@@ -67,6 +67,11 @@ where
         self.core.resume_thread(thread_id)
     }
 
+    pub fn generate_thread_title(&mut self, thread_id: ThreadId) -> Result<(), CoreError> {
+        let request_id = self.next_request_id()?;
+        self.core.generate_thread_title(request_id, thread_id)
+    }
+
     pub fn list_descendants(
         &mut self,
         thread_id: &ThreadId,

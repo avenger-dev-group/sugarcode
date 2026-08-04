@@ -213,6 +213,7 @@ fn indexes_a_materialized_thread_snapshot_in_one_rebuildable_update() {
         .expect("source turn");
     let fork = DurableThreadSnapshot {
         id: thread(2),
+        title: None,
         turns: vec![
             turn(2, "copied private history"),
             turn(3, "second copied message"),
@@ -272,6 +273,7 @@ fn fork_search_update_failure_never_rolls_back_the_durable_snapshot() {
     repository
         .create_thread_snapshot(&DurableThreadSnapshot {
             id: thread(2),
+            title: None,
             turns: vec![turn(2, "copied private history")],
             lifecycle: DurableThreadLifecycle::Active,
             origin: None,

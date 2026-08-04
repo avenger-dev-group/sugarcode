@@ -58,6 +58,7 @@ fn failed_unarchive_write_does_not_restore_the_thread_in_memory() {
         thread_id.clone(),
         DurableThreadSnapshot {
             id: thread_id.clone(),
+            title: None,
             turns: Vec::new(),
             lifecycle: DurableThreadLifecycle::Archived,
             origin: None,
@@ -99,6 +100,7 @@ fn failed_fork_write_does_not_materialize() {
         ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
     let source = DurableThreadSnapshot {
         id: source_id.clone(),
+        title: None,
         turns: vec![DurableTurnSnapshot {
             model: None,
             id: TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7"),
@@ -148,6 +150,7 @@ impl ThreadRepository for FailingRepository {
             thread_id.clone(),
             DurableThreadSnapshot {
                 id: thread_id.clone(),
+                title: None,
                 turns: Vec::new(),
                 lifecycle: DurableThreadLifecycle::Active,
                 origin: None,

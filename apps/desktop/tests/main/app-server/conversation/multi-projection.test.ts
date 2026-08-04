@@ -147,6 +147,17 @@ test('new Thread and Turn lifecycle may arrive before their RPC responses', asyn
       });
       return { turn: { id: TURN_WEB, status: 'inProgress' } };
     },
+    generateThreadTitle: async (threadId) => {
+      controller.handleNotification({
+        kind: 'notification',
+        method: 'thread/title/updated',
+        params: {
+          workspaceId: WORKSPACE_WEB,
+          threadId,
+          title: '安全启动会话',
+        },
+      });
+    },
     interruptTurn: async () => ({}),
   };
   const controller = new ConversationController({
@@ -166,6 +177,10 @@ test('new Thread and Turn lifecycle may arrive before their RPC responses', asyn
   assert.equal(snapshot.threadId, THREAD_WEB);
   assert.equal(snapshot.activeTurnId, TURN_WEB);
   assert.equal(snapshot.phase, 'inProgress');
+  assert.equal(
+    snapshot.navigator.activeThreadTitles[THREAD_WEB],
+    '安全启动会话',
+  );
   assert.equal(protocolFailures, 0);
 });
 

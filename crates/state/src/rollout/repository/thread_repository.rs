@@ -1,5 +1,4 @@
 use super::*;
-use crate::derive_thread_title;
 
 impl RolloutRepository {
     fn create_thread_record(
@@ -30,6 +29,7 @@ impl RolloutRepository {
             RolloutThreadState {
                 snapshot: DurableThreadSnapshot {
                     id: thread_id.clone(),
+                    title: None,
                     turns: Vec::new(),
                     lifecycle: DurableThreadLifecycle::Active,
                     origin: origin.cloned(),
@@ -94,15 +94,20 @@ impl ThreadRepository for RolloutRepository {
             });
         }
 
-        let record_count = snapshot.turns.iter().try_fold(1usize, |count, turn| {
-            count
-                .checked_add(2)
-                .and_then(|count| count.checked_add(turn.items.len().checked_mul(2)?))
-                .ok_or_else(|| RolloutError::LimitExceeded {
-                    path: self.root.clone(),
-                    kind: "rolloutRecords",
-                })
-        })?;
+        let initial_record_count = 1usize + usize::from(snapshot.title.is_some());
+        let record_count =
+            snapshot
+                .turns
+                .iter()
+                .try_fold(initial_record_count, |count, turn| {
+                    count
+                        .checked_add(2)
+                        .and_then(|count| count.checked_add(turn.items.len().checked_mul(2)?))
+                        .ok_or_else(|| RolloutError::LimitExceeded {
+                            path: self.root.clone(),
+                            kind: "rolloutRecords",
+                        })
+                })?;
         if record_count > MAX_ROLLOUT_RECORDS_PER_FILE {
             return Err(RolloutError::LimitExceeded {
                 path: self.root.clone(),
@@ -130,6 +135,24 @@ impl ThreadRepository for RolloutRepository {
         let mut snapshot_turn_ids = BTreeSet::new();
         let mut snapshot_item_ids = BTreeSet::new();
         let mut record_sequence = 1u64;
+        if let Some(title) = snapshot.title.as_deref() {
+            if !super::super::is_valid_thread_title(title) {
+                return Err(RolloutError::InvalidRecord {
+                    kind: "invalidThreadTitle",
+                });
+            }
+            record_sequence =
+                record_sequence
+                    .checked_add(1)
+                    .ok_or(RolloutError::InvalidRecord {
+                        kind: "recordSequenceOverflow",
+                    })?;
+            records.push(encode_thread_title_updated(
+                record_sequence,
+                &snapshot.id,
+                title,
+            )?);
+        }
         let mut turn_record_sequences = Vec::with_capacity(snapshot.turns.len());
         for turn in &snapshot.turns {
             if turn.items.is_empty() {
@@ -260,6 +283,44 @@ impl ThreadRepository for RolloutRepository {
         self.threads.insert(snapshot.id.clone(), state.clone());
         let _ = self.projection.record_thread_snapshot(&state);
         let _ = self.search_projection.record_thread_snapshot(&state);
+        Ok(())
+    }
+
+    fn set_thread_title(&mut self, thread_id: &ThreadId, title: &str) -> Result<(), RolloutError> {
+        self.ensure_available()?;
+        if !super::super::is_valid_thread_title(title) {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidThreadTitle",
+            });
+        }
+        let thread = self
+            .thread(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread.snapshot.lifecycle != DurableThreadLifecycle::Active
+            || thread.snapshot.title.is_some()
+        {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidThreadTitleUpdate",
+            });
+        }
+        let record_sequence =
+            thread
+                .last_record_sequence
+                .checked_add(1)
+                .ok_or(RolloutError::InvalidRecord {
+                    kind: "recordSequenceOverflow",
+                })?;
+        let next_file_record_count =
+            usize::try_from(record_sequence).map_err(|_| RolloutError::LimitExceeded {
+                path: self.root.clone(),
+                kind: "rolloutRecords",
+            })?;
+        let path = self.thread_path(thread_id)?;
+        let bytes = encode_thread_title_updated(record_sequence, thread_id, title)?;
+        self.append_record(&path, &bytes, false, next_file_record_count)?;
+        let thread = self.thread_mut(thread_id).expect("validated thread exists");
+        thread.snapshot.title = Some(title.to_owned());
+        thread.last_record_sequence = record_sequence;
         Ok(())
     }
 
@@ -813,7 +874,7 @@ impl ThreadRepository for RolloutRepository {
         for summary in &mut matching {
             summary.title = self
                 .thread(&summary.id)
-                .and_then(|thread| derive_thread_title(&thread.snapshot));
+                .and_then(|thread| thread.snapshot.title.clone());
         }
         let next_cursor = has_more
             .then(|| matching.last().map(|thread| thread.id.clone()))
@@ -860,7 +921,7 @@ impl ThreadRepository for RolloutRepository {
         for summary in &mut results {
             summary.title = self
                 .thread(&summary.id)
-                .and_then(|thread| derive_thread_title(&thread.snapshot));
+                .and_then(|thread| thread.snapshot.title.clone());
         }
         let next_cursor = has_more
             .then(|| results.last().map(|thread| thread.id.clone()))

@@ -122,6 +122,7 @@ pub enum TurnInterruptOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Thread {
     id: ThreadId,
+    title: Option<String>,
     origin: Option<DurableThreadOrigin>,
     turns: BTreeMap<TurnId, Turn>,
     active_turn_id: Option<TurnId>,
@@ -755,6 +756,16 @@ pub trait CoreApi {
         Err(CoreError::StateUnavailable)
     }
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError>;
+    fn set_thread_title(&mut self, _thread_id: &ThreadId, _title: String) -> Result<(), CoreError> {
+        Err(CoreError::StateUnavailable)
+    }
+    fn generate_thread_title(
+        &mut self,
+        _request_id: CoreRequestId,
+        _thread_id: ThreadId,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::ModelUnavailable)
+    }
     fn list_descendants(
         &mut self,
         _thread_id: &ThreadId,
@@ -1261,6 +1272,7 @@ impl Core {
             snapshot.id.clone(),
             Thread {
                 id: snapshot.id.clone(),
+                title: snapshot.title.clone(),
                 origin: snapshot.origin.clone(),
                 turns,
                 active_turn_id: None,

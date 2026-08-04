@@ -51,6 +51,7 @@ use sugarcode_app_server_protocol::ThreadSearchResponse;
 use sugarcode_app_server_protocol::ThreadStartParams;
 use sugarcode_app_server_protocol::ThreadStartResponse;
 use sugarcode_app_server_protocol::ThreadStartedNotification;
+use sugarcode_app_server_protocol::ThreadTitleUpdatedNotification;
 use sugarcode_app_server_protocol::ThreadUnarchiveParams;
 use sugarcode_app_server_protocol::ThreadUnarchiveResponse;
 use sugarcode_app_server_protocol::TokenUsage;
@@ -584,6 +585,24 @@ fn thread_start_params_require_a_workspace_id() {
             "missing, unknown, or non-object params must be rejected"
         );
     }
+}
+
+#[test]
+fn thread_title_update_fixture_is_provider_neutral() {
+    let fixture = include_str!(
+        "../../../protocol-fixtures/app-server/v1/thread-title-updated.notification.json"
+    );
+    let value: serde_json::Value = serde_json::from_str(fixture).expect("valid fixture JSON");
+    let params = value.get("params").cloned().expect("notification params");
+    assert_eq!(
+        serde_json::from_value::<ThreadTitleUpdatedNotification>(params)
+            .expect("thread title update notification"),
+        ThreadTitleUpdatedNotification {
+            workspace_id: "workspace-test".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            title: "修复会话标题".to_string(),
+        }
+    );
 }
 
 #[test]

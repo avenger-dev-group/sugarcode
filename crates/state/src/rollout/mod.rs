@@ -24,6 +24,7 @@ pub const MAX_TOTAL_REPLAY_RECORDS: usize = 1_000_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableThreadSnapshot {
     pub id: ThreadId,
+    pub title: Option<String>,
     pub turns: Vec<DurableTurnSnapshot>,
     pub lifecycle: DurableThreadLifecycle,
     pub origin: Option<DurableThreadOrigin>,
@@ -67,93 +68,30 @@ pub struct DurableThreadPage {
 
 pub const MAX_THREAD_TITLE_CHARS: usize = 48;
 
-pub fn derive_thread_title(snapshot: &DurableThreadSnapshot) -> Option<String> {
-    let user_messages = snapshot
-        .turns
-        .iter()
-        .flat_map(|turn| &turn.items)
-        .filter_map(|item| match item {
-            DurableItemSnapshot::UserMessage { content, .. } => Some(content),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+pub fn is_valid_thread_title(title: &str) -> bool {
+    !title.trim().is_empty()
+        && title == title.trim()
+        && title.chars().count() <= MAX_THREAD_TITLE_CHARS
+        && title.len() <= 256
+        && !title.chars().any(char::is_control)
+        && ThreadId::parse(title).is_err()
+        && !is_id_derived_thread_title(title)
+}
 
-    let first_user_message = user_messages.first().copied()?;
-    for content in &user_messages {
-        if let Some(title) = title_from_text_content(content)
-            && !is_generic_greeting(&title)
-        {
-            return Some(title);
-        }
+fn is_id_derived_thread_title(title: &str) -> bool {
+    fn is_hex_suffix(suffix: &str) -> bool {
+        let suffix = suffix.trim();
+        suffix.len() == 4
+            && suffix
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
     }
 
-    for content in &user_messages {
-        if let Some(title) = attachment_title(content) {
-            return Some(title);
-        }
-    }
-
-    title_from_text_content(first_user_message)
-}
-
-fn title_from_text_content(content: &[DurableUserContentPart]) -> Option<String> {
-    let text = content
-        .iter()
-        .filter_map(|part| match part {
-            DurableUserContentPart::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    normalize_thread_title(&text)
-}
-
-fn normalize_thread_title(text: &str) -> Option<String> {
-    let sanitized = text
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect::<String>();
-    let normalized = sanitized.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        return None;
-    }
-    let mut characters = normalized.chars();
-    let title = characters
-        .by_ref()
-        .take(MAX_THREAD_TITLE_CHARS)
-        .collect::<String>();
-    Some(if characters.next().is_some() {
-        format!("{title}…")
-    } else {
-        title
-    })
-}
-
-fn is_generic_greeting(title: &str) -> bool {
-    matches!(
-        title
-            .trim_matches(|character: char| {
-                character.is_ascii_punctuation() || matches!(character, '，' | '。' | '！' | '？')
-            })
-            .to_lowercase()
-            .as_str(),
-        "你好" | "您好" | "嗨" | "哈喽" | "hello" | "hi" | "hey"
-    )
-}
-
-fn attachment_title(content: &[DurableUserContentPart]) -> Option<String> {
-    content.iter().find_map(|part| match part {
-        DurableUserContentPart::Image { asset } | DurableUserContentPart::Document { asset } => {
-            normalize_thread_title(&format!("处理 {}", asset.original_name))
-        }
-        DurableUserContentPart::Text { .. } => None,
-    })
+    title.strip_prefix("任务").is_some_and(is_hex_suffix)
+        || title
+            .to_ascii_lowercase()
+            .strip_prefix("task")
+            .is_some_and(is_hex_suffix)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1331,6 +1269,15 @@ pub trait ThreadRepository: fmt::Debug + Send {
         &mut self,
         snapshot: &DurableThreadSnapshot,
     ) -> Result<(), RolloutError>;
+    fn set_thread_title(
+        &mut self,
+        _thread_id: &ThreadId,
+        _title: &str,
+    ) -> Result<(), RolloutError> {
+        Err(RolloutError::InvalidRecord {
+            kind: "threadTitlesUnsupported",
+        })
+    }
     fn append_completed_turn(
         &mut self,
         thread_id: &ThreadId,

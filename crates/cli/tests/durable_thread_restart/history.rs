@@ -45,10 +45,7 @@ fn resumes_completed_history_across_two_cli_processes() {
         }),
         1,
     );
-    assert_eq!(
-        listed[0]["result"]["data"],
-        json!([{"id": thread_id, "title": "Hello"}])
-    );
+    assert_eq!(listed[0]["result"]["data"], json!([{"id": thread_id}]));
     assert_eq!(listed[0]["result"]["nextCursor"], Value::Null);
     let resumed = second.send(
         json!({

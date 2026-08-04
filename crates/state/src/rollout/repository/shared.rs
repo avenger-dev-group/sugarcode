@@ -90,6 +90,10 @@ impl ThreadRepository for WorkspaceRolloutRepository {
         self.with_repository(|repository| repository.create_thread_snapshot(snapshot))
     }
 
+    fn set_thread_title(&mut self, thread_id: &ThreadId, title: &str) -> Result<(), RolloutError> {
+        self.with_repository(|repository| repository.set_thread_title(thread_id, title))
+    }
+
     fn append_completed_turn(
         &mut self,
         thread_id: &ThreadId,

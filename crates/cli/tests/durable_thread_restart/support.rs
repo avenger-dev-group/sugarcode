@@ -789,7 +789,7 @@ pub(super) fn assert_deleted_views(server: &mut RunningServer, request_prefix: &
     );
     assert_eq!(
         listed[0]["result"]["data"],
-        json!([{"id": "00000000-0000-7000-8000-000000000003", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000003"}])
     );
     let searched = server.send(
         json!({
@@ -802,7 +802,7 @@ pub(super) fn assert_deleted_views(server: &mut RunningServer, request_prefix: &
     );
     assert_eq!(
         searched[0]["result"]["data"],
-        json!([{"id": "00000000-0000-7000-8000-000000000003", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000003"}])
     );
 }
 
@@ -819,7 +819,7 @@ pub(super) fn assert_active_archive_views(server: &mut RunningServer, request_pr
         listed[0]["result"]["data"],
         json!([
             {"id": "00000000-0000-7000-8000-000000000003"},
-            {"id": "00000000-0000-7000-8000-000000000001", "title": "Hello"}
+            {"id": "00000000-0000-7000-8000-000000000001"}
         ])
     );
     let searched = server.send(
@@ -833,7 +833,7 @@ pub(super) fn assert_active_archive_views(server: &mut RunningServer, request_pr
     );
     assert_eq!(
         searched[0]["result"]["data"],
-        json!([{"id": "00000000-0000-7000-8000-000000000001", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000001"}])
     );
     let resume_archived = server.send(
         json!({

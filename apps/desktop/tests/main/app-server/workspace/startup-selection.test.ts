@@ -65,6 +65,9 @@ test('cold startup restores navigation without selecting or reordering projects'
           path: projectPath,
           name: 'project-alpha',
           threadIds: [PROJECT_THREAD_ID],
+          threadTitles: {
+            [PROJECT_THREAD_ID]: 'Saved project task',
+          },
           lastOpenedAtMs: 1,
         },
         {
@@ -72,6 +75,7 @@ test('cold startup restores navigation without selecting or reordering projects'
           path: newerProjectPath,
           name: 'project-beta',
           threadIds: [],
+          threadTitles: {},
           lastOpenedAtMs: 2,
         },
       ],
@@ -125,12 +129,16 @@ test('cold startup restores navigation without selecting or reordering projects'
       id: 'project-beta',
       name: 'project-beta',
       threadIds: [],
+      threadTitles: {},
       lastOpenedAtMs: 2,
     },
     {
       id: 'project-alpha',
       name: 'project-alpha',
       threadIds: [PROJECT_THREAD_ID],
+      threadTitles: {
+        [PROJECT_THREAD_ID]: 'Saved project task',
+      },
       lastOpenedAtMs: 1,
     },
   ]);

@@ -10,6 +10,7 @@ fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
         ThreadId::parse("00000000-0000-7000-8000-000000000002").expect("valid thread UUIDv7");
     let fork = DurableThreadSnapshot {
         id: fork_id.clone(),
+        title: None,
         turns: vec![completed_turn(2), completed_turn(3)],
         lifecycle: DurableThreadLifecycle::Active,
         origin: None,
@@ -31,6 +32,7 @@ fn atomically_materializes_a_complete_independent_v1_thread_snapshot() {
                 .expect("source"),
             DurableThreadSnapshot {
                 id: source_id.clone(),
+                title: None,
                 turns: vec![completed_turn(1)],
                 lifecycle: DurableThreadLifecycle::Active,
                 origin: None,
@@ -140,6 +142,7 @@ fn fork_temp_collision_leaves_no_visible_thread_and_poisoned_state_recovers_on_r
     let error = repository
         .create_thread_snapshot(&DurableThreadSnapshot {
             id: fork_id.clone(),
+            title: None,
             turns: vec![completed_turn(2)],
             lifecycle: DurableThreadLifecycle::Active,
             origin: None,
@@ -210,6 +213,7 @@ fn fork_discovery_update_failure_never_rolls_back_the_durable_snapshot() {
     repository
         .create_thread_snapshot(&DurableThreadSnapshot {
             id: fork_id.clone(),
+            title: None,
             turns: vec![completed_turn(2)],
             lifecycle: DurableThreadLifecycle::Active,
             origin: None,

@@ -89,6 +89,14 @@ before a later provider request can emit another output reference.
 Duplicate completion or semantic events after completion are protocol errors.
 SSE record size and accumulated semantic output have independent limits.
 
+Thread-title generation is a separate provider-neutral Core request with the
+`sugarCodeThreadTitleV1` instruction source. It reuses the Thread's currently
+resolved model profile but exposes no tools, does not join the Agent Turn or its
+usage projection, and accepts only one bounded final-text output. Durable user
+content is quoted as untrusted source material; instructions inside that source
+cannot change the metadata task. A malformed, empty or failed title response is
+discarded without changing the owning Turn.
+
 Generation requests have no total Turn deadline. Connection setup remains
 bounded, and every wire has a 120-second SSE-record idle boundary so a gateway
 that accepts a request but never emits or closes cannot strand the Agent loop.

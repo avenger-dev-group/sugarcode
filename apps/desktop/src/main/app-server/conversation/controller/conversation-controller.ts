@@ -36,7 +36,6 @@ import {
   recordActiveThread,
   resetThreadSearch,
 } from '../thread-navigator';
-import { deriveThreadTitle } from '../thread-title';
 import {
   ConnectionClosedError,
   RpcResponseError,
@@ -510,6 +509,11 @@ export class ConversationController extends ConversationLifecycleController {
     }
     if (threadId === this.threadId && !this.navigator.pendingThreadId) {
       this.unreadThreadStatuses.delete(threadId);
+      if (!this.navigator.activeThreadTitles[threadId]) {
+        void rpc
+          .generateThreadTitle?.(threadId)
+          .catch((): undefined => undefined);
+      }
       return accepted();
     }
 
@@ -521,6 +525,11 @@ export class ConversationController extends ConversationLifecycleController {
       this.unreadThreadStatuses.delete(threadId);
       this.navigator.pendingThreadId = undefined;
       this.publish();
+      if (!this.navigator.activeThreadTitles[threadId]) {
+        void rpc
+          .generateThreadTitle?.(threadId)
+          .catch((): undefined => undefined);
+      }
       return accepted();
     }
 
@@ -544,6 +553,11 @@ export class ConversationController extends ConversationLifecycleController {
       this.navigator.pendingThreadId = undefined;
       this.notice = undefined;
       this.publish();
+      if (!this.navigator.activeThreadTitles[threadId]) {
+        void rpc
+          .generateThreadTitle?.(threadId)
+          .catch((): undefined => undefined);
+      }
       return accepted();
     } catch (error) {
       if (generation !== this.selectionGeneration || isAbortError(error)) {
@@ -801,16 +815,6 @@ export class ConversationController extends ConversationLifecycleController {
         this.drainPendingThreadLifecycle(response.thread.id);
       }
 
-      if (!this.navigator.activeThreadTitles[this.threadId]) {
-        const title = deriveThreadTitle(
-          input.input,
-          input.attachments?.[0]?.fileName,
-        );
-        if (title) {
-          recordActiveThread(this.navigator, this.threadId, title);
-        }
-      }
-
       const turnInput: TurnInputPart[] = [];
       if (input.input.length > 0) {
         turnInput.push({ type: 'text', text: input.input });
@@ -868,6 +872,11 @@ export class ConversationController extends ConversationLifecycleController {
       }
       if (buffered.length > 0) {
         this.publish();
+      }
+      if (!this.navigator.activeThreadTitles[this.threadId]) {
+        void rpc
+          .generateThreadTitle?.(this.threadId)
+          .catch((): undefined => undefined);
       }
       return accepted();
     } catch (error) {
@@ -991,6 +1000,15 @@ export class ConversationController extends ConversationLifecycleController {
     try {
       lifecycle = parseConversationLifecycle(message);
       if (!lifecycle) {
+        return;
+      }
+      if (lifecycle.type === 'threadTitleUpdated') {
+        recordActiveThread(
+          this.navigator,
+          lifecycle.params.threadId,
+          lifecycle.params.title,
+        );
+        this.publish();
         return;
       }
       if (belongsToPendingNewThread) {

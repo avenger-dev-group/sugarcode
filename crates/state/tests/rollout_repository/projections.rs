@@ -46,6 +46,34 @@ fn lists_threads_in_descending_uuid_order_with_stable_cursor_paging() {
 }
 
 #[test]
+fn generated_thread_title_survives_rollout_replay() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    {
+        let mut repository = RolloutRepository::open(&home).expect("repository");
+        repository.create_thread(&thread_id).expect("thread");
+        repository
+            .set_thread_title(&thread_id, "修复会话标题")
+            .expect("title");
+    }
+
+    let mut repository = RolloutRepository::open(&home).expect("reopened repository");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load thread")
+        .expect("thread exists");
+    assert_eq!(snapshot.title.as_deref(), Some("修复会话标题"));
+    assert_eq!(
+        repository.list_threads(None, 50).expect("list").data[0]
+            .title
+            .as_deref(),
+        Some("修复会话标题")
+    );
+}
+
+#[test]
 fn rebuilt_discovery_and_search_hide_subagent_threads() {
     let directory = tempdir().expect("home");
     let home = resolved_temp_home(&directory);

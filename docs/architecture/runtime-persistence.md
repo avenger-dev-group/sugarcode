@@ -63,9 +63,9 @@ shapes are intentionally incompatible with earlier development data. There is
 no dual reader or migration and repository code never deletes `~/.sugarcode`.
 
 Desktop's local window/session registry is a separate presentation record. Its
-schema version remains `1`, and only the current UUIDv7 shape is readable. No
-compatibility reader or migration exists; stale development session data is
-intentionally incompatible and is never removed by the app.
+schema version remains `1`, and only the current generated-title shape is
+readable. There is no dual reader or migration for the earlier v1 shape; a
+later normal save replaces stale session data with the current v1 record.
 
 Restart converts unfinished Turns and unfinished compaction checkpoints to
 Interrupted. It never retries an external call, reapplies a file change or
@@ -263,9 +263,12 @@ Thread search indexes completed user/final assistant text only. Attachments,
 commentary, tool payloads, provider context, compaction bodies and diagnostics
 are excluded.
 
-Thread list, search, resume and fork responses expose an optional display title
-derived deterministically from durable user content. The first task-bearing
-prompt wins, generic greetings are skipped when later content exists, and an
-attachment-only prompt uses its original file name. Titles are bounded to 48
-Unicode characters and remain a rollout-derived projection: they require no
-model call and introduce no second persistence authority.
+Thread list, search, resume and fork responses expose an optional display title.
+After the first accepted task-bearing Turn, Core starts a separate bounded,
+tool-free model request that treats the durable user content as untrusted source
+material and asks for a concise title in the same language. A valid result is
+bounded to 48 Unicode characters, appended once as a `threadTitleUpdated`
+rollout record and then projected by every read path; title generation failure
+never fails the owning Turn, and a later accepted Turn may retry while the
+Thread remains untitled. A Thread without an explicit title projects no display
+title; durable user text is never reused as a title fallback.

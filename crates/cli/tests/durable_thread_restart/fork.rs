@@ -165,7 +165,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         listed[0]["result"]["data"],
-        json!([{"id": "00000000-0000-7000-8000-000000000002", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000002"}])
     );
     let searched = second.send(
         json!({
@@ -178,7 +178,7 @@ fn forks_complete_history_across_processes_with_independent_lifecycle_and_ids() 
     );
     assert_eq!(
         searched[0]["result"]["data"],
-        json!([{"id": "00000000-0000-7000-8000-000000000002", "title": "Hello"}])
+        json!([{"id": "00000000-0000-7000-8000-000000000002"}])
     );
     let resumed = second.send(
         json!({

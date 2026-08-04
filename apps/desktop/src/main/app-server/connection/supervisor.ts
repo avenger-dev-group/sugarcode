@@ -968,7 +968,7 @@ export class ConnectionSupervisor {
         this.threadTitles.get(threadId) ??
         navigator.activeThreadTitles[threadId] ??
         navigator.search.threadTitles[threadId] ??
-        threadId,
+        '未命名会话',
     };
   };
 

@@ -18,6 +18,7 @@ use super::ThreadRepository;
 use super::format::encode_thread_archived;
 use super::format::encode_thread_created;
 use super::format::encode_thread_deleted;
+use super::format::encode_thread_title_updated;
 use super::format::encode_thread_unarchived;
 use super::format::encode_turn_completed;
 use super::format::encode_turn_item_added;

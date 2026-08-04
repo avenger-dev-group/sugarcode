@@ -421,6 +421,7 @@ mod interruption;
 mod lifecycle;
 mod mcp_tools;
 mod shell_approval;
+mod thread_title;
 mod workspace_instructions;
 mod workspace_patch;
 mod workspace_search;

@@ -148,6 +148,70 @@ where
         ]
     }
 
+    pub(in crate::session) fn generate_thread_title(
+        &mut self,
+        id: RequestId,
+        params: Option<Value>,
+    ) -> Vec<JsonRpcMessage> {
+        let Ok(params) = params.ok_or(()).and_then(|value| {
+            serde_json::from_value::<ThreadTitleGenerateParams>(value).map_err(|_| ())
+        }) else {
+            return vec![error(
+                Some(id),
+                ERROR_INVALID_PARAMS,
+                "Invalid params",
+                None,
+            )];
+        };
+        if self.accepted_request_ids.contains(&id) {
+            return vec![error(
+                Some(id),
+                ERROR_DUPLICATE_REQUEST,
+                "Duplicate request id",
+                None,
+            )];
+        }
+        let thread_id = ThreadId::parse(params.thread_id.clone()).expect("validated thread ID");
+        if !self.agent.contains_thread(&thread_id) {
+            return vec![error(
+                Some(id),
+                ERROR_THREAD_NOT_FOUND,
+                "Thread not found",
+                Some(json!({ "threadId": params.thread_id })),
+            )];
+        }
+        match self.agent.generate_thread_title(thread_id) {
+            Ok(()) => {
+                self.accepted_request_ids.insert(id.clone());
+                vec![JsonRpcMessage::Response(JsonRpcResponse {
+                    jsonrpc: JsonRpcVersion::V2,
+                    id,
+                    result: serde_json::to_value(ThreadTitleGenerateResponse::default())
+                        .expect("thread/title/generate response must serialize"),
+                })]
+            }
+            Err(CoreError::ModelUnavailable) => vec![error(
+                Some(id),
+                ERROR_MODEL_UNAVAILABLE,
+                "Model unavailable",
+                None,
+            )],
+            Err(CoreError::InvalidInput) => vec![error(
+                Some(id),
+                ERROR_INVALID_PARAMS,
+                "Invalid params",
+                None,
+            )],
+            Err(CoreError::StateUnavailable) => vec![error(
+                Some(id),
+                ERROR_STATE_UNAVAILABLE,
+                "State unavailable",
+                None,
+            )],
+            Err(_) => vec![error(Some(id), ERROR_INTERNAL, "Internal error", None)],
+        }
+    }
+
     pub(in crate::session) fn resume_thread(
         &mut self,
         id: RequestId,

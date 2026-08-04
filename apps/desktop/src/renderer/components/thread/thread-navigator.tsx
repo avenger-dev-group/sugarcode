@@ -115,6 +115,7 @@ export const ThreadNavigator = ({
               id: workspace.state.activeProjectId ?? 'legacy-project',
               name: projectName,
               threadIds: projectThreadIds,
+              threadTitles: store.navigator.threadTitles,
               lastOpenedAtMs: 0,
             },
           ]
@@ -204,6 +205,7 @@ export const ThreadNavigator = ({
 
   const renderThreadList = (
     threadIds: readonly string[],
+    threadTitles: Readonly<Record<string, string>>,
     kind: ThreadLabelKind,
     active: boolean,
     onSelect: (threadId: string) => Promise<void>,
@@ -220,7 +222,8 @@ export const ThreadNavigator = ({
             key={threadId}
             threadId={threadId}
             title={
-              store.navigator.threadTitles[threadId] ??
+              (active ? store.navigator.threadTitles[threadId] : undefined) ??
+              threadTitles[threadId] ??
               workspace.state.chatTitles?.[threadId]
             }
             current={threadId === displayedThreadId}
@@ -240,7 +243,6 @@ export const ThreadNavigator = ({
               workspace.busy ||
               (threadId === displayedThreadId && selectedTurnActive)
             }
-            labelKind={kind}
             actionsEnabled={active}
             onSelect={onSelect}
             onFork={store.forkThread}
@@ -400,6 +402,7 @@ export const ThreadNavigator = ({
                         {expanded
                           ? renderThreadList(
                               project.threadIds,
+                              project.threadTitles,
                               'project',
                               active,
                               (threadId) =>
@@ -440,6 +443,7 @@ export const ThreadNavigator = ({
               </SectionHeading>
               {renderThreadList(
                 chatThreadIds,
+                workspace.state.chatTitles ?? {},
                 'chat',
                 chatActive,
                 selectChatThread,
@@ -594,7 +598,6 @@ type ThreadButtonProps = Readonly<{
   status: ThreadNavigationStatus;
   disabled: boolean;
   mutationDisabled: boolean;
-  labelKind: ThreadLabelKind;
   actionsEnabled: boolean;
   pendingMutation: ThreadStore['navigator']['pendingMutation'];
   onSelect: (threadId: string) => Promise<void>;
@@ -610,7 +613,6 @@ const ThreadButton = ({
   status,
   disabled,
   mutationDisabled,
-  labelKind,
   actionsEnabled,
   pendingMutation,
   onSelect,
@@ -632,7 +634,7 @@ const ThreadButton = ({
       data-thread-item
       aria-current={current ? 'page' : undefined}
       aria-busy={status === 'opening' || status === 'running'}
-      aria-label={`${current ? 'Current ' : ''}${title ?? `Thread ${threadId}`}`}
+      aria-label={`${current ? 'Current ' : ''}${title ?? 'Untitled conversation'}`}
       aria-disabled={disabled}
       onClick={() => {
         if (!disabled) {
@@ -651,7 +653,7 @@ const ThreadButton = ({
       <span
         className={`min-w-0 flex-1 truncate text-sm ${current ? 'font-medium' : 'font-normal'}`}
       >
-        {title ?? `${labelKind === 'chat' ? '聊天' : '任务'} ${threadId.slice(-4)}`}
+        {title ?? (status === 'running' ? '新会话' : '未命名会话')}
       </span>
     </span>
     {actionsEnabled ? (
@@ -660,7 +662,7 @@ const ThreadButton = ({
         className="flex min-w-fit shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100"
       >
         <ThreadActionButton
-          label={`Fork Thread ${threadId}`}
+          label={`创建会话分支：${title ?? '未命名会话'}`}
           active={
             pendingMutation?.kind === 'fork' &&
             pendingMutation.threadId === threadId
@@ -671,7 +673,7 @@ const ThreadButton = ({
           <GitFork aria-hidden="true" />
         </ThreadActionButton>
         <ThreadActionButton
-          label={`Archive Thread ${threadId}`}
+          label={`归档会话：${title ?? '未命名会话'}`}
           active={
             pendingMutation?.kind === 'archive' &&
             pendingMutation.threadId === threadId
@@ -682,7 +684,7 @@ const ThreadButton = ({
           <Archive aria-hidden="true" />
         </ThreadActionButton>
         <ThreadActionButton
-          label={`Delete Thread ${threadId}`}
+          label={`删除会话：${title ?? '未命名会话'}`}
           active={
             pendingMutation?.kind === 'delete' &&
             pendingMutation.threadId === threadId

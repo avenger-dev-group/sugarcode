@@ -321,8 +321,7 @@ fn failed_and_interrupted_turns_resume_but_do_not_enter_search_fork_or_history()
         (
             "SugarCode deterministic",
             json!([{
-                "id": "00000000-0000-7000-8000-000000000001",
-                "title": "completed searchable marker"
+                "id": "00000000-0000-7000-8000-000000000001"
             }]),
         ),
         ("failed private marker", json!([])),

@@ -142,6 +142,12 @@ export type ThreadStartResponse = { thread: Thread, };
 
 export type ThreadStartedNotification = { thread: Thread, };
 
+export type ThreadTitleGenerateParams = { threadId: string, };
+
+export type ThreadTitleGenerateResponse = Record<string, never>;
+
+export type ThreadTitleUpdatedNotification = { workspaceId: string, threadId: string, title: string, };
+
 export type ThreadResumeParams = { threadId: string, workspaceId: string, };
 
 export type TurnSnapshotStatus = "inProgress" | "completed" | "failed" | "interrupted";

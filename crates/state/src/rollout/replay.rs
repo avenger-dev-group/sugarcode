@@ -193,6 +193,23 @@ pub(super) fn replay_all(root: &Path) -> Result<ReplayResult, RolloutError> {
                     snapshot = Some(created);
                     workspace_binding_id = binding;
                 }
+                DecodedRecord::ThreadTitleUpdated {
+                    thread_id,
+                    title,
+                    sequence: _,
+                } => {
+                    let thread = snapshot
+                        .as_mut()
+                        .ok_or_else(|| corrupt(&path, offset as u64, "missingThreadCreated"))?;
+                    if thread_id != expected_thread_id {
+                        return Err(corrupt(&path, offset as u64, "threadIdMismatch"));
+                    }
+                    if thread.lifecycle != DurableThreadLifecycle::Active || thread.title.is_some()
+                    {
+                        return Err(corrupt(&path, offset as u64, "invalidThreadTitleUpdate"));
+                    }
+                    thread.title = Some(title);
+                }
                 DecodedRecord::TurnStarted {
                     thread_id,
                     mut turn,

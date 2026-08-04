@@ -17,6 +17,7 @@ impl Core {
         let thread_id = ThreadId::new_v7();
         let thread = Thread {
             id: thread_id.clone(),
+            title: None,
             origin: origin.clone(),
             turns: BTreeMap::new(),
             active_turn_id: None,
@@ -517,6 +518,7 @@ impl CoreApi for Core {
         }
         let snapshot = DurableThreadSnapshot {
             id: ThreadId::new_v7(),
+            title: source.title.clone(),
             turns,
             lifecycle: DurableThreadLifecycle::Active,
             origin: None,
@@ -526,6 +528,24 @@ impl CoreApi for Core {
             .map_err(map_repository_error)?;
         self.materialize_snapshot(&snapshot);
         Ok(snapshot)
+    }
+
+    fn set_thread_title(&mut self, thread_id: &ThreadId, title: String) -> Result<(), CoreError> {
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .ok_or_else(|| CoreError::ThreadNotFound(thread_id.clone()))?;
+        if thread.lifecycle != DurableThreadLifecycle::Active {
+            return Err(CoreError::ThreadNotFound(thread_id.clone()));
+        }
+        if thread.title.is_some() {
+            return Ok(());
+        }
+        self.repository
+            .set_thread_title(thread_id, &title)
+            .map_err(map_repository_error)?;
+        thread.title = Some(title);
+        Ok(())
     }
 
     fn resume_thread(&mut self, thread_id: &ThreadId) -> Result<DurableThreadSnapshot, CoreError> {

@@ -71,6 +71,9 @@ use crate::ThreadSearchResponse;
 use crate::ThreadStartParams;
 use crate::ThreadStartResponse;
 use crate::ThreadStartedNotification;
+use crate::ThreadTitleGenerateParams;
+use crate::ThreadTitleGenerateResponse;
+use crate::ThreadTitleUpdatedNotification;
 use crate::ThreadUnarchiveParams;
 use crate::ThreadUnarchiveResponse;
 use crate::TokenUsage;
@@ -197,6 +200,9 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         ThreadStartParams::decl(),
         ThreadStartResponse::decl(),
         ThreadStartedNotification::decl(),
+        ThreadTitleGenerateParams::decl(),
+        ThreadTitleGenerateResponse::decl(),
+        ThreadTitleUpdatedNotification::decl(),
         ThreadResumeParams::decl(),
         TurnSnapshotStatus::decl(),
         TurnSnapshot::decl(),
@@ -512,6 +518,18 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("ThreadStartedNotification.schema.json"),
         &schema_for!(ThreadStartedNotification),
+    )?;
+    write_schema(
+        out_dir.join("ThreadTitleGenerateParams.schema.json"),
+        &schema_for!(ThreadTitleGenerateParams),
+    )?;
+    write_schema(
+        out_dir.join("ThreadTitleGenerateResponse.schema.json"),
+        &schema_for!(ThreadTitleGenerateResponse),
+    )?;
+    write_schema(
+        out_dir.join("ThreadTitleUpdatedNotification.schema.json"),
+        &schema_for!(ThreadTitleUpdatedNotification),
     )?;
     write_schema(
         out_dir.join("ThreadResumeParams.schema.json"),

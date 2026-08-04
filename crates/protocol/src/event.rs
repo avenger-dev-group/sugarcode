@@ -27,6 +27,10 @@ pub enum CoreEventKind {
     ThreadStarted {
         thread_id: ThreadId,
     },
+    ThreadTitleUpdated {
+        thread_id: ThreadId,
+        title: String,
+    },
     TurnStarted {
         thread_id: ThreadId,
         turn_id: TurnId,

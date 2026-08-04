@@ -57,6 +57,7 @@ type StoredProject = Readonly<{
   path: string;
   name: string;
   threadIds: readonly string[];
+  threadTitles: Readonly<Record<string, string>>;
   lastOpenedAtMs: number;
   workspaceId?: string;
 }>;
@@ -86,6 +87,13 @@ const sameIds = (
 ): boolean =>
   left.length === right.length &&
   left.every((value, index) => value === right[index]);
+
+const sameTitles = (
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean =>
+  Object.keys(left).length === Object.keys(right).length &&
+  Object.entries(left).every(([threadId, title]) => right[threadId] === title);
 
 export class WorkspaceController {
   private readonly options: WorkspaceControllerOptions;
@@ -163,11 +171,18 @@ export class WorkspaceController {
         ...project,
         path: canonicalPath,
         name: path.basename(canonicalPath),
+        threadTitles: Object.fromEntries(
+          Object.entries(project.threadTitles).filter(([threadId]) =>
+            project.threadIds.includes(threadId),
+          ),
+        ),
       });
     }
     this.chatThreadIds = stored.chats.map((chat) => chat.threadId);
     for (const chat of stored.chats) {
-      this.chatTitles.set(chat.threadId, chat.title ?? chat.threadId);
+      if (chat.title && chat.title !== chat.threadId) {
+        this.chatTitles.set(chat.threadId, chat.title);
+      }
       if (chat.workspaceId) {
         this.chatWorkspaceIds.set(chat.threadId, chat.workspaceId);
       }
@@ -402,13 +417,34 @@ export class WorkspaceController {
           (threadId) => !nextIds.includes(threadId),
         );
         if (!sameIds(project.threadIds, filtered)) {
-          this.projects.set(projectId, { ...project, threadIds: filtered });
+          this.projects.set(projectId, {
+            ...project,
+            threadIds: filtered,
+            threadTitles: Object.fromEntries(
+              Object.entries(project.threadTitles).filter(([threadId]) =>
+                filtered.includes(threadId),
+              ),
+            ),
+          });
           membershipChanged = true;
         }
       }
-      if (!sameIds(this.projectThreadIds, nextIds) || membershipChanged) {
+      const nextTitles = Object.fromEntries(
+        nextIds.flatMap((threadId) => {
+          const title = conversation.navigator.activeThreadTitles[threadId];
+          return title ? [[threadId, title]] : [];
+        }),
+      );
+      const activeTitles = this.activeProjectId
+        ? this.projects.get(this.activeProjectId)?.threadTitles ?? {}
+        : {};
+      if (
+        !sameIds(this.projectThreadIds, nextIds) ||
+        !sameTitles(activeTitles, nextTitles) ||
+        membershipChanged
+      ) {
         this.projectThreadIds = [...nextIds];
-        this.refreshActiveProjectRecord();
+        this.refreshActiveProjectRecord(nextTitles);
         if (this.snapshot.status === 'ready') {
           void this.persist().catch((): undefined => undefined);
         }
@@ -431,6 +467,11 @@ export class WorkspaceController {
     this.chatThreadIds = nextChatIds;
     for (const threadId of nextIds) {
       this.chatWorkspaceIds.set(threadId, workspaceId);
+      const title = conversation.navigator.activeThreadTitles[threadId];
+      if (title && this.chatTitles.get(threadId) !== title) {
+        this.chatTitles.set(threadId, title);
+        changed = true;
+      }
     }
     if (nextIds.length > 0) {
       this.projectThreadIds = this.projectThreadIds.filter(
@@ -441,7 +482,15 @@ export class WorkspaceController {
           (threadId) => !nextIds.includes(threadId),
         );
         if (!sameIds(project.threadIds, filtered)) {
-          this.projects.set(projectId, { ...project, threadIds: filtered });
+          this.projects.set(projectId, {
+            ...project,
+            threadIds: filtered,
+            threadTitles: Object.fromEntries(
+              Object.entries(project.threadTitles).filter(([threadId]) =>
+                filtered.includes(threadId),
+              ),
+            ),
+          });
           changed = true;
         }
       }
@@ -453,11 +502,6 @@ export class WorkspaceController {
     ) {
       this.activeChatThreadId = conversation.threadId;
       this.chatDirectories.set(conversation.threadId, this.workspacePath);
-      const title =
-        conversation.navigator.activeThreadTitles[conversation.threadId];
-      if (title) {
-        this.chatTitles.set(conversation.threadId, title);
-      }
       this.chatWorkspaceIds.set(conversation.threadId, workspaceId);
       if (!this.chatThreadIds.includes(conversation.threadId)) {
         this.chatThreadIds = [
@@ -587,6 +631,7 @@ export class WorkspaceController {
       path: selected,
       name: path.basename(selected),
       threadIds: this.projectThreadIds,
+      threadTitles: existing?.threadTitles ?? {},
       lastOpenedAtMs: existing?.lastOpenedAtMs ?? Date.now(),
       ...(this.options.supervisor.getWorkspaceBindingId()
         ? { workspaceId: this.options.supervisor.getWorkspaceBindingId() as string }
@@ -606,7 +651,9 @@ export class WorkspaceController {
     return { accepted: true };
   };
 
-  private refreshActiveProjectRecord = (): void => {
+  private refreshActiveProjectRecord = (
+    threadTitles?: Readonly<Record<string, string>>,
+  ): void => {
     if (
       this.workspaceKind !== 'project' ||
       !this.activeProjectId ||
@@ -620,6 +667,7 @@ export class WorkspaceController {
       path: this.projectPath,
       name: path.basename(this.projectPath),
       threadIds: this.projectThreadIds,
+      threadTitles: threadTitles ?? current?.threadTitles ?? {},
       lastOpenedAtMs: current?.lastOpenedAtMs ?? Date.now(),
       ...(this.options.supervisor.getWorkspaceBindingId()
         ? { workspaceId: this.options.supervisor.getWorkspaceBindingId() as string }
@@ -720,6 +768,7 @@ export class WorkspaceController {
           id: project.id,
           name: project.name,
           threadIds: project.threadIds,
+          threadTitles: project.threadTitles,
           lastOpenedAtMs: project.lastOpenedAtMs,
         })),
       ...(this.activeProjectId
@@ -784,16 +833,19 @@ export class WorkspaceController {
                 ? { threadId: this.activeChatThreadId }
                 : {}),
             },
-      chats: [...chatIds].map((threadId) => ({
-        threadId,
-        title: this.chatTitles.get(threadId) ?? threadId,
-        ...(this.chatWorkspaceIds.get(threadId)
-          ? { workspaceId: this.chatWorkspaceIds.get(threadId) }
-          : {}),
-        ...(this.chatDirectories.get(threadId)
-          ? { directory: this.chatDirectories.get(threadId) }
-          : {}),
-      })),
+      chats: [...chatIds].map((threadId) => {
+        const title = this.chatTitles.get(threadId);
+        return {
+          threadId,
+          ...(title ? { title } : {}),
+          ...(this.chatWorkspaceIds.get(threadId)
+            ? { workspaceId: this.chatWorkspaceIds.get(threadId) }
+            : {}),
+          ...(this.chatDirectories.get(threadId)
+            ? { directory: this.chatDirectories.get(threadId) }
+            : {}),
+        };
+      }),
     };
     try {
       await handle.writeFile(
@@ -887,6 +939,7 @@ const isStoredProject = (value: unknown): value is StoredProject => {
         'path',
         'name',
         'threadIds',
+        'threadTitles',
         'lastOpenedAtMs',
         'workspaceId',
       ].includes(key)
@@ -902,6 +955,16 @@ const isStoredProject = (value: unknown): value is StoredProject => {
     Array.isArray(record.threadIds) &&
     record.threadIds.length <= 1_000 &&
     record.threadIds.every(isThreadId) &&
+    typeof record.threadTitles === 'object' &&
+    record.threadTitles !== null &&
+    !Array.isArray(record.threadTitles) &&
+    Object.entries(record.threadTitles).every(
+      ([threadId, title]) =>
+        (record.threadIds as unknown[]).includes(threadId) &&
+        typeof title === 'string' &&
+        title.length > 0 &&
+        Buffer.byteLength(title, 'utf8') <= 256,
+    ) &&
     Number.isSafeInteger(record.lastOpenedAtMs) &&
     (record.lastOpenedAtMs as number) >= 0 &&
     (record.workspaceId === undefined ||

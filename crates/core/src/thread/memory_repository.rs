@@ -14,6 +14,7 @@ impl ThreadRepository for MemoryThreadRepository {
             thread_id.clone(),
             DurableThreadSnapshot {
                 id: thread_id.clone(),
+                title: None,
                 turns: Vec::new(),
                 lifecycle: DurableThreadLifecycle::Active,
                 origin: None,
@@ -49,6 +50,20 @@ impl ThreadRepository for MemoryThreadRepository {
             return Err(RolloutError::Collision { kind: "thread" });
         }
         self.threads.insert(snapshot.id.clone(), snapshot.clone());
+        Ok(())
+    }
+
+    fn set_thread_title(&mut self, thread_id: &ThreadId, title: &str) -> Result<(), RolloutError> {
+        let thread = self
+            .threads
+            .get_mut(thread_id)
+            .ok_or(RolloutError::InvalidId { kind: "thread" })?;
+        if thread.lifecycle != DurableThreadLifecycle::Active || thread.title.is_some() {
+            return Err(RolloutError::InvalidRecord {
+                kind: "invalidThreadTitleUpdate",
+            });
+        }
+        thread.title = Some(title.to_owned());
         Ok(())
     }
 
@@ -255,7 +270,7 @@ impl ThreadRepository for MemoryThreadRepository {
                     title: self
                         .threads
                         .get(&id)
-                        .and_then(sugarcode_state::derive_thread_title),
+                        .and_then(|thread| thread.title.clone()),
                     id,
                 })
                 .collect(),
@@ -313,7 +328,7 @@ impl ThreadRepository for MemoryThreadRepository {
             })
             .map(|thread| DurableThreadSummary {
                 id: thread.id.clone(),
-                title: sugarcode_state::derive_thread_title(thread),
+                title: thread.title.clone(),
             })
             .collect::<Vec<_>>();
         matches.sort_unstable_by(|left, right| right.id.cmp(&left.id));

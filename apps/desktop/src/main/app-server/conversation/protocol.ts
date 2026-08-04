@@ -5,6 +5,7 @@ import type {
   ModelSelectionSnapshot,
   ThreadStartResponse,
   ThreadStartedNotification,
+  ThreadTitleUpdatedNotification,
   TurnSnapshotStatus,
   TurnCompletedNotification,
   TurnError,
@@ -310,6 +311,10 @@ export type ConversationLifecycle =
   | Readonly<{
       type: 'threadStarted';
       params: ThreadStartedNotification;
+    }>
+  | Readonly<{
+      type: 'threadTitleUpdated';
+      params: ThreadTitleUpdatedNotification;
     }>
   | Readonly<{
       type: 'turnStarted';
@@ -1463,6 +1468,7 @@ export type ConversationLifecycleRoute = Readonly<{
 
 const CONVERSATION_LIFECYCLE_METHODS = new Set([
   'thread/started',
+  'thread/title/updated',
   'turn/started',
   'item/started',
   'turn/agentOutput/delta',
@@ -1543,6 +1549,24 @@ export const parseConversationLifecycle = (
             id: params.thread.id,
             workspaceId: params.thread.workspaceId,
           },
+        },
+      };
+    }
+    case 'thread/title/updated': {
+      if (
+        !isRecord(params) ||
+        !isWorkspaceId(params.workspaceId) ||
+        !isUuidV7(params.threadId) ||
+        !isThreadTitle(params.title)
+      ) {
+        throw new Error('Invalid thread/title/updated notification.');
+      }
+      return {
+        type: 'threadTitleUpdated',
+        params: {
+          workspaceId: params.workspaceId,
+          threadId: params.threadId,
+          title: params.title,
         },
       };
     }

@@ -368,6 +368,7 @@ impl App {
             CoreEventKind::TokenUsageUpdated { .. } => {}
             CoreEventKind::Warning { .. } => {}
             CoreEventKind::ThreadStarted { .. } => {}
+            CoreEventKind::ThreadTitleUpdated { .. } => {}
         }
     }
 

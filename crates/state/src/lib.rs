@@ -95,6 +95,7 @@ pub use rollout::DurableWorkspaceInstructionsStatus;
 pub use rollout::DurableWorkspaceSkillsAudit;
 pub use rollout::DurableWorkspaceSkillsSource;
 pub use rollout::DurableWorkspaceSkillsStatus;
+pub use rollout::MAX_THREAD_TITLE_CHARS;
 pub use rollout::ProjectionDiagnostic;
 pub use rollout::RolloutDiagnostic;
 pub use rollout::RolloutError;
@@ -102,7 +103,7 @@ pub use rollout::RolloutRepository;
 pub use rollout::RolloutRepositoryStore;
 pub use rollout::ThreadRepository;
 pub use rollout::WorkspaceRolloutRepository;
-pub use rollout::derive_thread_title;
+pub use rollout::is_valid_thread_title;
 pub use rollout::terminal_turn_record_fits;
 
 use std::error::Error;

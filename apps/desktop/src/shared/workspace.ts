@@ -21,6 +21,7 @@ export type WorkspaceProjectSummary = Readonly<{
   id: string;
   name: string;
   threadIds: readonly string[];
+  threadTitles: Readonly<Record<string, string>>;
   lastOpenedAtMs: number;
 }>;
 
@@ -235,6 +236,7 @@ export const isWorkspaceStateSnapshot = (
             'id',
             'name',
             'threadIds',
+            'threadTitles',
             'lastOpenedAtMs',
           ]) &&
           typeof project.id === 'string' &&
@@ -245,6 +247,13 @@ export const isWorkspaceStateSnapshot = (
           Array.isArray(project.threadIds) &&
           project.threadIds.length <= 1_000 &&
           project.threadIds.every(isThreadId) &&
+          isRecord(project.threadTitles) &&
+          Object.entries(project.threadTitles).every(
+            ([threadId, title]) =>
+              (project.threadIds as unknown[]).includes(threadId) &&
+              typeof title === 'string' &&
+              title.length > 0,
+          ) &&
           Number.isSafeInteger(project.lastOpenedAtMs) &&
           (project.lastOpenedAtMs as number) >= 0,
       ))) &&

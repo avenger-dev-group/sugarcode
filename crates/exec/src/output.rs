@@ -366,6 +366,7 @@ pub(crate) fn map_core_event(event: &CoreEvent) -> Option<MappedExecEvent> {
             turn_id: None,
             event: ExecEventV1::ThreadStarted,
         },
+        CoreEventKind::ThreadTitleUpdated { .. } => return None,
         CoreEventKind::TurnStarted { thread_id, turn_id } => MappedExecEvent {
             thread_id: Some(thread_id.as_str().to_string()),
             turn_id: Some(turn_id.as_str().to_string()),

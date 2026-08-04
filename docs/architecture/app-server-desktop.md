@@ -148,9 +148,13 @@ writes. Shell workspace write remains a separate explicitly approved policy.
 Runtime replacement is Main-owned and cannot let events from the old scope
 update the new projection.
 
-Public `Thread` values may carry a bounded optional title derived by Core from
-durable user content. Main validates and projects that title; Renderer uses the
-canonical ID fallback only until a content title exists.
+Public `Thread` values may carry Core's bounded optional generated title. Main
+requests generation after the first accepted Turn and whenever an untitled
+Thread is opened, then projects the asynchronous `thread/title/updated`
+notification into the owning conversation and workspace registry. Renderer
+never substitutes a canonical ID, user-prompt excerpt or an ID-derived “task”
+label: an untitled running Thread displays “新会话” and any other untitled
+Thread uses a neutral unnamed label.
 
 Command approval has three Desktop modes: ask every time, automatically approve
 later requests in the current Thread, or automatically approve later requests
@@ -180,9 +184,12 @@ approval is checked against the request's recorded workspace, not the currently
 visible project.
 
 Main persists a versioned multi-project session registry with canonical paths,
-opaque workspace bindings, per-project Thread IDs, isolated-chat directories,
-titles and recency. The schema number remains `1`, and that number directly
-names the current UUIDv7 shape; there is no compatibility reader or migration.
+opaque workspace bindings, per-project Thread IDs and title maps, isolated-chat
+directories, titles and recency. Per-project title maps keep every expanded
+project stable across foreground switches and cold launches instead of making
+titles depend on the active conversation projection. The schema number remains
+`1` and its current shape requires per-project title maps; the earlier v1 shape
+has no compatibility reader or migration.
 Project and chat membership is mutually exclusive, and chat reconciliation is
 scoped to the active chat workspace so other chat directories remain intact.
 Its stored active entry
@@ -304,7 +311,9 @@ new Thread directly. Transient workspace activation gates competing navigation
 actions without replacing section icons, fading navigation content or shifting
 the navigator layout; fast project and chat creation therefore remain visually
 stable instead of flashing a global loading treatment. An expanded empty
-project shows one subdued “没有会话” label. Thread labels use link semantics, and
+project shows one subdued “没有会话” label. Thread labels use generated titles
+when available and neutral untitled placeholders otherwise; internal IDs are
+never presentation labels. Thread labels use link semantics, and
 only discrete actions such as
 creating, forking, archiving or deleting use buttons. The active project folder
 remains visually neutral; only the selected conversation row receives a
