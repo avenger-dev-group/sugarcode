@@ -773,12 +773,19 @@ async fn invalid_shell_arguments_receive_field_specific_correction_guidance() {
                 })),
                 Ok(model_event::COMPLETED),
             ],
-            vec![
-                Ok(model_event::text_delta(
-                    "The command requires an absolute executable path.".to_string(),
-                )),
-                Ok(model_event::COMPLETED),
-            ],
+            vec![Ok(model_event::tool_call(ModelToolCall {
+                id: "call_shell_corrected_path".to_string(),
+                name: "shell/exec".to_string(),
+                arguments: serde_json::json!({
+                    "description": "Inspect the working tree.",
+                    "command": "/usr/bin/git",
+                    "arguments": ["status", "--short"],
+                    "cwd": "."
+                }),
+            }))],
+            vec![Ok(model_event::final_response(
+                "The working tree was inspected.",
+            ))],
         ])),
         requests: Arc::clone(&requests),
     };
@@ -816,16 +823,19 @@ async fn invalid_shell_arguments_receive_field_specific_correction_guidance() {
     ) {}
 
     let requests = requests.lock().expect("requests");
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     let correction = requests[1]
         .messages
         .iter()
         .flat_map(message_tool_results)
         .map(tool_result_serialized)
-        .find(|content| content.contains("shell/exec error: invalidArguments"))
+        .find(|content| {
+            content.contains("\"tool\":\"shell/exec\"")
+                && content.contains("\"code\":\"invalidArguments\"")
+        })
         .expect("shell correction result");
-    assert!(correction.contains("expected=command must be one absolute executable path"));
-    assert!(correction.contains("suggestedAction=useAbsoluteExecutablePath"));
+    assert!(correction.contains("command must be one absolute executable path"));
+    assert!(correction.contains("\"suggestedAction\":\"useAbsoluteExecutablePath\""));
     drop(requests);
 
     let turn = runtime

@@ -235,13 +235,16 @@ an invariant that makes durable continuation unsafe. User interruption,
 consumer closure and shutdown finish as `interrupted`. A Desktop protocol
 mismatch is a connection diagnostic and does not claim storage corruption.
 
-Tool validation is recoverable for at most three consecutive invalid rounds,
-counted across changing argument payloads and fingerprints. It emits
-`toolValidationRejected` plus a bounded model result and keeps the sidecar
-alive. Shell argument rejection identifies the violated safe shape with a
-bounded expected summary and suggested action, without retaining the rejected
-command or arguments; the absolute-executable, JSON-only `argvJson` and
-direct sandbox requirements remain unchanged. Both preferred schemas use the
+Tool validation emits `toolValidationRejected` plus a bounded structured JSON
+model result and keeps the sidecar alive. Consecutive retry exhaustion is
+calculated per structural signature (tool, error kind, field path, reason and
+expected shape), not across unrelated invalid payloads; the existing total
+non-progress budget still bounds alternating failures. Workspace rejection
+identifies the field path, stable reason, expected shape, value-free actual JSON
+type and suggested action. Shell rejection identifies the violated safe shape
+with a bounded expected summary and suggested action. Neither path retains the
+rejected command or argument values; the absolute-executable, JSON-only
+`argvJson` and direct sandbox requirements remain unchanged. Both preferred schemas use the
 capability-advertised absolute workspace root as cwd; runtime/replay also accept
 the earlier direct dot and validated shell-relative forms. The model-facing
 direct and Full Access shell branches are mutually exclusive, so fields rejected
@@ -250,7 +253,11 @@ string timeout is normalized as compatible shell syntax while the durable
 ToolCall retains its original arguments. Rollout execution-
 attempt validation branches on `kind`: sandbox receipts are mandatory for
 direct and forbidden for approved Full Access shell. A valid batch resets the
-counter. Provider transport/protocol errors, tool errors, Desktop protocol
+consecutive signature counter. After an `invalidArguments` result, ordinary
+final text is discarded until a valid call for every rejected tool name has
+been observed; one repeated final attempt then fails as typed
+`unsupportedToolArguments`. A valid unrelated read does not clear a pending
+write correction. Provider transport/protocol errors, tool errors, Desktop protocol
 errors and durable-state failures remain distinct; each model failure
 terminates only its Turn and does not terminate the app-server process or
 another Thread.

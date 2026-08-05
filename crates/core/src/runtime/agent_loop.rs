@@ -13,10 +13,12 @@ pub(super) struct AgentLoopState {
     consecutive_approval_denials: u8,
     last_tool_validation_signature: Option<String>,
     consecutive_tool_argument_errors: u8,
+    pending_tool_argument_corrections: BTreeSet<String>,
     last_tool_execution_signature: Option<String>,
     consecutive_tool_execution_errors: u8,
     total_non_progress_rounds: u8,
     premature_final_recoveries: u8,
+    tool_argument_recovery_final_rejections: u8,
 }
 
 impl AgentLoopState {
@@ -72,16 +74,43 @@ impl AgentLoopState {
     }
 
     pub(super) fn record_tool_argument_error(&mut self, signature: String) -> bool {
-        self.last_tool_validation_signature = Some(signature);
-        self.consecutive_tool_argument_errors =
-            self.consecutive_tool_argument_errors.saturating_add(1);
+        if self.last_tool_validation_signature.as_deref() == Some(&signature) {
+            self.consecutive_tool_argument_errors =
+                self.consecutive_tool_argument_errors.saturating_add(1);
+        } else {
+            self.last_tool_validation_signature = Some(signature);
+            self.consecutive_tool_argument_errors = 1;
+        }
         self.consecutive_tool_argument_errors >= MAX_CONSECUTIVE_TOOL_ARGUMENT_ERRORS
             || self.record_non_progress()
     }
 
-    pub(super) fn reset_tool_argument_errors(&mut self) {
+    pub(super) fn require_tool_argument_correction(&mut self, tool_name: &str) {
+        self.pending_tool_argument_corrections
+            .insert(tool_name.to_string());
+    }
+
+    pub(super) fn record_valid_tool_arguments(&mut self, calls: &[ModelToolCall]) {
+        for call in calls {
+            self.pending_tool_argument_corrections.remove(&call.name);
+        }
         self.last_tool_validation_signature = None;
         self.consecutive_tool_argument_errors = 0;
+        if self.pending_tool_argument_corrections.is_empty() {
+            self.tool_argument_recovery_final_rejections = 0;
+        }
+    }
+
+    pub(super) fn needs_tool_argument_recovery(&self) -> bool {
+        !self.pending_tool_argument_corrections.is_empty()
+    }
+
+    pub(super) fn record_tool_argument_recovery_final(&mut self) -> bool {
+        self.tool_argument_recovery_final_rejections = self
+            .tool_argument_recovery_final_rejections
+            .saturating_add(1);
+        self.tool_argument_recovery_final_rejections > MAX_PREMATURE_FINAL_RECOVERIES
+            || self.record_non_progress()
     }
 
     pub(super) fn record_tool_execution_error(&mut self, signature: String) -> bool {

@@ -32,7 +32,7 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
         definitions.push(ModelToolDefinition {
             name: "workspace/edit".to_string(),
             description:
-                "Atomically create, update or delete up to 64 UTF-8 files. Every update and delete is revision-guarded; all update coordinates refer to each file's original revision. The whole operations array commits or rolls back together."
+                "Atomically create, update or delete up to 64 UTF-8 files. Copy every update/delete baseSha256 exactly from workspace/read. Update edits use original one-based line coordinates and exact line text without an extra trailing newline. The whole operations array commits or rolls back together."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -321,10 +321,62 @@ pub(super) enum ShellToolKind {
     Shell,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct ToolArgumentGuidance {
+    pub field_path: Option<String>,
+    pub reason: &'static str,
     pub expected_summary: &'static str,
+    pub actual_summary: Option<String>,
     pub suggested_action: &'static str,
+}
+
+impl ToolArgumentGuidance {
+    fn generic(expected_summary: &'static str, suggested_action: &'static str) -> Self {
+        Self {
+            field_path: None,
+            reason: "schemaMismatch",
+            expected_summary,
+            actual_summary: None,
+            suggested_action,
+        }
+    }
+
+    fn at(
+        field_path: impl Into<String>,
+        reason: &'static str,
+        expected_summary: &'static str,
+        actual: Option<&serde_json::Value>,
+        suggested_action: &'static str,
+    ) -> Self {
+        Self {
+            field_path: Some(field_path.into()),
+            reason,
+            expected_summary,
+            actual_summary: actual.map(|value| format!("type={}", json_value_type(value))),
+            suggested_action,
+        }
+    }
+
+    pub(super) fn durable_expected_summary(&self) -> String {
+        match self.field_path.as_deref() {
+            Some(path) => format!(
+                "{path}: {}; expected {}",
+                self.reason, self.expected_summary
+            ),
+            None => self.expected_summary.to_string(),
+        }
+    }
+}
+
+fn json_value_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 pub(super) fn shell_tool_argument_guidance(
@@ -348,21 +400,21 @@ pub(super) fn shell_tool_argument_guidance(
             .get("timeoutMs")
             .is_some_and(|value| shell_timeout_ms(value).is_none())
     {
-        return Some(ToolArgumentGuidance {
-            expected_summary: "timeoutMs must be a bounded positive integer number of milliseconds; compatible decimal strings may contain ASCII digits only",
-            suggested_action: "useBoundedTimeoutMilliseconds",
-        });
+        return Some(ToolArgumentGuidance::generic(
+            "timeoutMs must be a bounded positive integer number of milliseconds; compatible decimal strings may contain ASCII digits only",
+            "useBoundedTimeoutMilliseconds",
+        ));
     }
     Some(if is_shell {
-        ToolArgumentGuidance {
-            expected_summary: "kind shell requires description, a complete bounded command string, the advertised authoritative absolute workspace root or a workspace-relative cwd, and optional timeoutMs; argvJson is not used",
-            suggested_action: "useFullAccessShellSchema",
-        }
+        ToolArgumentGuidance::generic(
+            "kind shell requires description, a complete bounded command string, the advertised authoritative absolute workspace root or a workspace-relative cwd, and optional timeoutMs; argvJson is not used",
+            "useFullAccessShellSchema",
+        )
     } else {
-        ToolArgumentGuidance {
-            expected_summary: "command must be one absolute executable path; kind direct also requires description, argvJson, and the advertised authoritative absolute workspace root as cwd; legacy calls may use cwd \".\" or omit kind",
-            suggested_action: "useAbsoluteExecutablePath",
-        }
+        ToolArgumentGuidance::generic(
+            "command must be one absolute executable path; kind direct also requires description, argvJson, and the advertised authoritative absolute workspace root as cwd; legacy calls may use cwd \".\" or omit kind",
+            "useAbsoluteExecutablePath",
+        )
     })
 }
 
@@ -384,36 +436,37 @@ fn shell_argv(
 ) -> Result<Vec<String>, ToolArgumentGuidance> {
     if let Some(value) = arguments.get("argvJson") {
         let Some(encoded) = value.as_str() else {
-            return Err(ToolArgumentGuidance {
-                expected_summary: "argvJson must be a string containing JSON array syntax such as [\"status\",\"--short\"]",
-                suggested_action: "encodeArgvAsJsonArray",
-            });
+            return Err(ToolArgumentGuidance::generic(
+                "argvJson must be a string containing JSON array syntax such as [\"status\",\"--short\"]",
+                "encodeArgvAsJsonArray",
+            ));
         };
-        return serde_json::from_str::<Vec<String>>(encoded).map_err(|_| ToolArgumentGuidance {
-            expected_summary:
+        return serde_json::from_str::<Vec<String>>(encoded).map_err(|_| {
+            ToolArgumentGuidance::generic(
                 "argvJson must contain only one valid JSON array of strings, never a shell command line",
-            suggested_action: "encodeArgvAsJsonArray",
+                "encodeArgvAsJsonArray",
+            )
         });
     }
     let values = arguments
         .get("argv")
         .or_else(|| arguments.get("arguments"))
         .and_then(serde_json::Value::as_array)
-        .ok_or(ToolArgumentGuidance {
-            expected_summary:
+        .ok_or_else(|| {
+            ToolArgumentGuidance::generic(
                 "argvJson must contain JSON array syntax such as [\"status\",\"--short\"]",
-            suggested_action: "encodeArgvAsJsonArray",
+                "encodeArgvAsJsonArray",
+            )
         })?;
     values
         .iter()
         .map(|value| {
-            value
-                .as_str()
-                .map(ToOwned::to_owned)
-                .ok_or(ToolArgumentGuidance {
-                    expected_summary: "every argv item must be a string",
-                    suggested_action: "encodeArgvAsJsonArray",
-                })
+            value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                ToolArgumentGuidance::generic(
+                    "every argv item must be a string",
+                    "encodeArgvAsJsonArray",
+                )
+            })
         })
         .collect()
 }
@@ -566,6 +619,573 @@ fn invalid_command_path(value: &str) -> bool {
 #[cfg(not(windows))]
 fn invalid_command_path(_value: &str) -> bool {
     false
+}
+
+pub(super) fn workspace_tool_argument_guidance(
+    call: &ModelToolCall,
+) -> Option<ToolArgumentGuidance> {
+    if workspace_tool_arguments(call).is_ok() {
+        return None;
+    }
+    let Some(arguments) = call.arguments.as_object() else {
+        return Some(ToolArgumentGuidance::at(
+            "$",
+            "invalidType",
+            "an object",
+            Some(&call.arguments),
+            "useObjectArguments",
+        ));
+    };
+    let allowed = match call.name.as_str() {
+        "workspace/read" => &["path"][..],
+        "workspace/list" => &["path", "recursive"][..],
+        "workspace/search" => &[
+            "path",
+            "query",
+            "mode",
+            "regex",
+            "caseSensitive",
+            "filePattern",
+        ][..],
+        "workspace/edit" => &["operations", "path", "baseSha256", "edits"][..],
+        "workspace/apply-diff" => &["files", "path", "diff"][..],
+        _ => return None,
+    };
+    if let Some((key, value)) = arguments
+        .iter()
+        .find(|(key, _)| !allowed.contains(&key.as_str()))
+    {
+        return Some(ToolArgumentGuidance::at(
+            format!("$.{key}"),
+            "unexpectedField",
+            "only fields declared by this tool",
+            Some(value),
+            "removeUnexpectedField",
+        ));
+    }
+
+    match call.name.as_str() {
+        "workspace/read" => diagnose_exact_string_object(arguments, &["path"]),
+        "workspace/list" => diagnose_exact_string_object(arguments, &["path"]).or_else(|| {
+            arguments.get("recursive").and_then(|value| {
+                compatible_boolean(value).is_none().then(|| {
+                    ToolArgumentGuidance::at(
+                        "$.recursive",
+                        "invalidType",
+                        "a boolean",
+                        Some(value),
+                        "correctField",
+                    )
+                })
+            })
+        }),
+        "workspace/search" => diagnose_workspace_search(arguments),
+        "workspace/edit" => diagnose_workspace_edit(arguments),
+        "workspace/apply-diff" => diagnose_workspace_apply_diff(arguments),
+        _ => None,
+    }
+    .or_else(|| {
+        Some(ToolArgumentGuidance::at(
+            "$",
+            "schemaMismatch",
+            "the exact advertised tool argument schema",
+            Some(&call.arguments),
+            "correctArguments",
+        ))
+    })
+}
+
+fn diagnose_exact_string_object(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    required: &[&str],
+) -> Option<ToolArgumentGuidance> {
+    for name in required {
+        match arguments.get(*name) {
+            None => {
+                return Some(ToolArgumentGuidance::at(
+                    format!("$.{name}"),
+                    "missingRequiredField",
+                    "a string",
+                    None,
+                    "addRequiredField",
+                ));
+            }
+            Some(value) if !value.is_string() => {
+                return Some(ToolArgumentGuidance::at(
+                    format!("$.{name}"),
+                    "invalidType",
+                    "a string",
+                    Some(value),
+                    "correctField",
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    None
+}
+
+fn diagnose_workspace_search(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Option<ToolArgumentGuidance> {
+    if let Some(guidance) = diagnose_exact_string_object(arguments, &["path", "query"]) {
+        return Some(guidance);
+    }
+    if let Some(value) = arguments.get("mode")
+        && !matches!(value.as_str(), Some("content" | "path"))
+    {
+        return Some(ToolArgumentGuidance::at(
+            "$.mode",
+            "invalidEnum",
+            "one of: content, path",
+            Some(value),
+            "correctField",
+        ));
+    }
+    for name in ["regex", "caseSensitive"] {
+        if let Some(value) = arguments.get(name)
+            && !value.is_boolean()
+        {
+            return Some(ToolArgumentGuidance::at(
+                format!("$.{name}"),
+                "invalidType",
+                "a boolean",
+                Some(value),
+                "correctField",
+            ));
+        }
+    }
+    if let Some(value) = arguments.get("filePattern")
+        && !value.is_string()
+    {
+        return Some(ToolArgumentGuidance::at(
+            "$.filePattern",
+            "invalidType",
+            "a string",
+            Some(value),
+            "correctField",
+        ));
+    }
+    None
+}
+
+fn diagnose_workspace_edit(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Option<ToolArgumentGuidance> {
+    if let Some(operations) = arguments.get("operations") {
+        if arguments.len() != 1 {
+            return Some(ToolArgumentGuidance::at(
+                "$",
+                "conflictingShape",
+                "only operations for the batch workspace/edit form",
+                None,
+                "useWorkspaceEditOperations",
+            ));
+        }
+        let Some(operations) = operations.as_array() else {
+            return Some(ToolArgumentGuidance::at(
+                "$.operations",
+                "invalidType",
+                "a non-empty array of create, update, or delete operations",
+                Some(operations),
+                "useWorkspaceEditOperations",
+            ));
+        };
+        if operations.is_empty()
+            || operations.len() > sugarcode_tools::MAX_WORKSPACE_CHANGE_SET_FILES
+        {
+            return Some(ToolArgumentGuidance::at(
+                "$.operations",
+                "outOfRange",
+                "a non-empty array within the advertised maximum file count",
+                None,
+                "useWorkspaceEditOperations",
+            ));
+        }
+        for (index, value) in operations.iter().enumerate() {
+            let path = format!("$.operations[{index}]");
+            let Some(operation) = value.as_object() else {
+                return Some(ToolArgumentGuidance::at(
+                    path,
+                    "invalidType",
+                    "an operation object",
+                    Some(value),
+                    "useWorkspaceEditOperations",
+                ));
+            };
+            let Some(kind) = operation.get("type") else {
+                return Some(ToolArgumentGuidance::at(
+                    format!("{path}.type"),
+                    "missingRequiredField",
+                    "one of: create, update, delete",
+                    None,
+                    "addRequiredField",
+                ));
+            };
+            let Some(kind) = kind.as_str() else {
+                return Some(ToolArgumentGuidance::at(
+                    format!("{path}.type"),
+                    "invalidType",
+                    "one of: create, update, delete",
+                    Some(kind),
+                    "correctField",
+                ));
+            };
+            let expected_fields = match kind {
+                "create" => &["type", "path", "content", "expectedAbsent"][..],
+                "update" => &["type", "path", "baseSha256", "edits"][..],
+                "delete" => &["type", "path", "baseSha256"][..],
+                _ => {
+                    return Some(ToolArgumentGuidance::at(
+                        format!("{path}.type"),
+                        "invalidEnum",
+                        "one of: create, update, delete",
+                        Some(operation.get("type").expect("validated type")),
+                        "correctField",
+                    ));
+                }
+            };
+            if let Some((name, value)) = operation
+                .iter()
+                .find(|(name, _)| !expected_fields.contains(&name.as_str()))
+            {
+                return Some(ToolArgumentGuidance::at(
+                    format!("{path}.{name}"),
+                    "unexpectedField",
+                    "only fields valid for the selected operation type",
+                    Some(value),
+                    "removeUnexpectedField",
+                ));
+            }
+            if let Some(guidance) = diagnose_operation_fields(operation, &path, kind) {
+                return Some(guidance);
+            }
+        }
+        return None;
+    }
+
+    if arguments.len() != 3 {
+        return Some(ToolArgumentGuidance::at(
+            "$",
+            "conflictingShape",
+            "either {operations} or the legacy {path, baseSha256, edits} form",
+            None,
+            "useWorkspaceEditOperations",
+        ));
+    }
+    diagnose_exact_string_object(arguments, &["path"])
+        .or_else(|| diagnose_sha256(arguments.get("baseSha256"), "$.baseSha256"))
+        .or_else(|| diagnose_line_edits(arguments.get("edits"), "$.edits"))
+}
+
+fn diagnose_operation_fields(
+    operation: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+    kind: &str,
+) -> Option<ToolArgumentGuidance> {
+    match operation.get("path") {
+        None => {
+            return Some(ToolArgumentGuidance::at(
+                format!("{path}.path"),
+                "missingRequiredField",
+                "a string",
+                None,
+                "addRequiredField",
+            ));
+        }
+        Some(value) if !value.is_string() => {
+            return Some(ToolArgumentGuidance::at(
+                format!("{path}.path"),
+                "invalidType",
+                "a string",
+                Some(value),
+                "correctField",
+            ));
+        }
+        Some(_) => {}
+    }
+    match kind {
+        "create" => {
+            match operation.get("content") {
+                None => {
+                    return Some(ToolArgumentGuidance::at(
+                        format!("{path}.content"),
+                        "missingRequiredField",
+                        "a bounded UTF-8 string",
+                        None,
+                        "addRequiredField",
+                    ));
+                }
+                Some(value)
+                    if value.as_str().is_none_or(|value| {
+                        value.len() > sugarcode_tools::MAX_WORKSPACE_READ_BYTES
+                    }) =>
+                {
+                    return Some(ToolArgumentGuidance::at(
+                        format!("{path}.content"),
+                        "invalidTypeOrSize",
+                        "a bounded UTF-8 string",
+                        Some(value),
+                        "correctField",
+                    ));
+                }
+                Some(_) => {}
+            }
+            match operation.get("expectedAbsent") {
+                Some(serde_json::Value::Bool(true)) => None,
+                value => Some(ToolArgumentGuidance::at(
+                    format!("{path}.expectedAbsent"),
+                    if value.is_some() {
+                        "invalidConst"
+                    } else {
+                        "missingRequiredField"
+                    },
+                    "the boolean true",
+                    value,
+                    "correctField",
+                )),
+            }
+        }
+        "update" => diagnose_sha256(operation.get("baseSha256"), &format!("{path}.baseSha256"))
+            .or_else(|| diagnose_line_edits(operation.get("edits"), &format!("{path}.edits"))),
+        "delete" => diagnose_sha256(operation.get("baseSha256"), &format!("{path}.baseSha256")),
+        _ => None,
+    }
+}
+
+fn diagnose_sha256(value: Option<&serde_json::Value>, path: &str) -> Option<ToolArgumentGuidance> {
+    let valid = value
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        });
+    (!valid).then(|| {
+        ToolArgumentGuidance::at(
+            path,
+            if value.is_some() {
+                "invalidFormat"
+            } else {
+                "missingRequiredField"
+            },
+            "the 64-character lowercase SHA-256 returned by workspace/read",
+            value,
+            "readFileAndUseReturnedSha256",
+        )
+    })
+}
+
+fn diagnose_line_edits(
+    value: Option<&serde_json::Value>,
+    path: &str,
+) -> Option<ToolArgumentGuidance> {
+    let Some(value) = value else {
+        return Some(ToolArgumentGuidance::at(
+            path,
+            "missingRequiredField",
+            "a non-empty array of line edits",
+            None,
+            "addRequiredField",
+        ));
+    };
+    let Some(edits) = value.as_array() else {
+        return Some(ToolArgumentGuidance::at(
+            path,
+            "invalidType",
+            "a non-empty array of line edits",
+            Some(value),
+            "correctField",
+        ));
+    };
+    if edits.is_empty() || edits.len() > sugarcode_tools::MAX_WORKSPACE_PATCH_HUNKS {
+        return Some(ToolArgumentGuidance::at(
+            path,
+            "outOfRange",
+            "a non-empty array within the advertised maximum edit count",
+            None,
+            "correctField",
+        ));
+    }
+    let mut total_bytes = 0usize;
+    for (index, value) in edits.iter().enumerate() {
+        let edit_path = format!("{path}[{index}]");
+        let Some(edit) = value.as_object() else {
+            return Some(ToolArgumentGuidance::at(
+                edit_path,
+                "invalidType",
+                "a line edit object",
+                Some(value),
+                "correctField",
+            ));
+        };
+        let expected_fields = ["startLine", "deleteLineCount", "expected", "replacement"];
+        if let Some((name, value)) = edit
+            .iter()
+            .find(|(name, _)| !expected_fields.contains(&name.as_str()))
+        {
+            return Some(ToolArgumentGuidance::at(
+                format!("{edit_path}.{name}"),
+                "unexpectedField",
+                "only startLine, deleteLineCount, expected, and replacement",
+                Some(value),
+                "removeUnexpectedField",
+            ));
+        }
+        for (name, positive) in [("startLine", true), ("deleteLineCount", false)] {
+            let number = edit
+                .get(name)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok());
+            if number.is_none_or(|value| positive && value == 0) {
+                return Some(ToolArgumentGuidance::at(
+                    format!("{edit_path}.{name}"),
+                    if edit.contains_key(name) {
+                        "invalidInteger"
+                    } else {
+                        "missingRequiredField"
+                    },
+                    if positive {
+                        "a positive 32-bit integer"
+                    } else {
+                        "a non-negative 32-bit integer"
+                    },
+                    edit.get(name),
+                    "correctField",
+                ));
+            }
+        }
+        for name in ["expected", "replacement"] {
+            let Some(text) = edit.get(name).and_then(serde_json::Value::as_str) else {
+                return Some(ToolArgumentGuidance::at(
+                    format!("{edit_path}.{name}"),
+                    if edit.contains_key(name) {
+                        "invalidType"
+                    } else {
+                        "missingRequiredField"
+                    },
+                    "a string",
+                    edit.get(name),
+                    "correctField",
+                ));
+            };
+            total_bytes = total_bytes.saturating_add(text.len());
+        }
+    }
+    (total_bytes > sugarcode_tools::MAX_WORKSPACE_PATCH_BYTES).then(|| {
+        ToolArgumentGuidance::at(
+            path,
+            "payloadTooLarge",
+            "edits whose expected and replacement text fit the advertised byte limit",
+            None,
+            "splitEditBatch",
+        )
+    })
+}
+
+fn diagnose_workspace_apply_diff(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Option<ToolArgumentGuidance> {
+    if let Some(files) = arguments.get("files") {
+        if arguments.len() != 1 {
+            return Some(ToolArgumentGuidance::at(
+                "$",
+                "conflictingShape",
+                "only files for the batch workspace/apply-diff form",
+                None,
+                "useWorkspaceDiffFiles",
+            ));
+        }
+        let Some(files) = files.as_array() else {
+            return Some(ToolArgumentGuidance::at(
+                "$.files",
+                "invalidType",
+                "a non-empty array of {path, diff} objects",
+                Some(files),
+                "useWorkspaceDiffFiles",
+            ));
+        };
+        if files.is_empty() || files.len() > sugarcode_tools::MAX_WORKSPACE_CHANGE_SET_FILES {
+            return Some(ToolArgumentGuidance::at(
+                "$.files",
+                "outOfRange",
+                "a non-empty array within the advertised maximum file count",
+                None,
+                "useWorkspaceDiffFiles",
+            ));
+        }
+        for (index, value) in files.iter().enumerate() {
+            let path = format!("$.files[{index}]");
+            let Some(file) = value.as_object() else {
+                return Some(ToolArgumentGuidance::at(
+                    path,
+                    "invalidType",
+                    "a {path, diff} object",
+                    Some(value),
+                    "useWorkspaceDiffFiles",
+                ));
+            };
+            if file.len() != 2 {
+                return Some(ToolArgumentGuidance::at(
+                    path,
+                    "schemaMismatch",
+                    "exactly path and diff fields",
+                    None,
+                    "useWorkspaceDiffFiles",
+                ));
+            }
+            for name in ["path", "diff"] {
+                match file.get(name) {
+                    None => {
+                        return Some(ToolArgumentGuidance::at(
+                            format!("{path}.{name}"),
+                            "missingRequiredField",
+                            "a string",
+                            None,
+                            "addRequiredField",
+                        ));
+                    }
+                    Some(value) if !value.is_string() => {
+                        return Some(ToolArgumentGuidance::at(
+                            format!("{path}.{name}"),
+                            "invalidType",
+                            "a string",
+                            Some(value),
+                            "correctField",
+                        ));
+                    }
+                    Some(value)
+                        if name == "diff"
+                            && value.as_str().is_some_and(|diff| {
+                                diff.is_empty()
+                                    || diff.len() > sugarcode_tools::MAX_WORKSPACE_PATCH_BYTES
+                            }) =>
+                    {
+                        return Some(ToolArgumentGuidance::at(
+                            format!("{path}.diff"),
+                            "invalidSize",
+                            "a non-empty diff within the advertised byte limit",
+                            Some(value),
+                            "correctField",
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        return None;
+    }
+    if arguments.len() != 2 {
+        return Some(ToolArgumentGuidance::at(
+            "$",
+            "conflictingShape",
+            "either {files} or the legacy {path, diff} form",
+            None,
+            "useWorkspaceDiffFiles",
+        ));
+    }
+    diagnose_exact_string_object(arguments, &["path", "diff"])
 }
 
 pub(super) fn workspace_tool_arguments(

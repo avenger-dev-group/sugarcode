@@ -45,6 +45,11 @@ update: path, baseSha256, edits[]
 delete: path, baseSha256
 ```
 
+The advertised schema describes the exact fields for each operation, the
+read-derived SHA requirement, original-revision line coordinates and newline
+conventions. These constraints live beside the tool definition so every model
+wire receives the same preventive guidance before its first call.
+
 Update edits target the same original revision, are strictly ascending and do
 not overlap. EOF insertion uses `lineCount + 1` with zero deletion. The base
 SHA and exact expected text prevent stale or ambiguous writes. LF, CRLF and
@@ -88,6 +93,13 @@ Diagnostics contain edit/hunk index, line, redacted expected/actual summaries
 and a suggested action. The model-facing tool result carries the same bounded
 diagnostic plus argument byte count and SHA-256 so a retry can be correlated;
 raw rejected arguments are not public.
+
+Schema rejection uses the same JSON result envelope before any execution. For
+workspace tools it adds a JSONPath-like `fieldPath`, stable `reason`, bounded
+`expected`, value-free actual JSON type and `suggestedAction`. The result also
+states that completion is not allowed until corrected arguments for that same
+tool name validate. The rejected argument values remain private; durable audit
+retains only the safe diagnosis, argument byte count and SHA-256.
 
 ## Workspace concurrency and shell
 

@@ -238,12 +238,22 @@ fn alternating_tool_failures_share_one_total_non_progress_budget() {
     let mut state = AgentLoopState::default();
 
     assert!(!state.record_tool_argument_error("invalid-edit-1".to_owned()));
-    state.reset_tool_argument_errors();
+    state.record_valid_tool_arguments(&[]);
     assert!(!state.record_tool_execution_error("invalid-patch-1".to_owned()));
     state.reset_tool_execution_errors();
     assert!(!state.record_tool_argument_error("invalid-edit-2".to_owned()));
-    state.reset_tool_argument_errors();
+    state.record_valid_tool_arguments(&[]);
     assert!(state.record_tool_execution_error("invalid-patch-2".to_owned()));
+}
+
+#[test]
+fn only_repeated_argument_error_signatures_use_the_consecutive_limit() {
+    let mut state = AgentLoopState::default();
+
+    assert!(!state.record_tool_argument_error("missing-path".to_owned()));
+    assert!(!state.record_tool_argument_error("invalid-path-type".to_owned()));
+    assert!(!state.record_tool_argument_error("invalid-path-type".to_owned()));
+    assert!(state.record_tool_argument_error("invalid-path-type".to_owned()));
 }
 
 #[tokio::test]

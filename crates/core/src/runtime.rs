@@ -172,6 +172,7 @@ use tool_dispatch::serialized_tool_result_bytes;
 use tool_dispatch::shell_tool_argument_guidance;
 use tool_dispatch::shell_tool_arguments;
 use tool_dispatch::shell_workspace_root;
+use tool_dispatch::workspace_tool_argument_guidance;
 use tool_dispatch::workspace_tool_arguments;
 use tool_dispatch::workspace_tool_definitions;
 
@@ -1363,9 +1364,11 @@ async fn run_turn(
                     }
                     let mut tool_calls = match round_output {
                         CompletedRoundOutput::Final { output_index, text } => {
-                            if agent_loop.has_observed_tool_calls()
-                                && looks_like_unfinished_process_update(&text)
-                            {
+                            let awaiting_argument_correction =
+                                agent_loop.needs_tool_argument_recovery();
+                            let unfinished_process_update = agent_loop.has_observed_tool_calls()
+                                && looks_like_unfinished_process_update(&text);
+                            if awaiting_argument_correction || unfinished_process_update {
                                 let durable_event = CancellationToken::new();
                                 if !send_event(
                                     &runtime,
@@ -1384,9 +1387,18 @@ async fn run_turn(
                                 {
                                     break 'rounds Terminal::StateUnavailable;
                                 }
-                                if agent_loop.record_premature_final() {
+                                let recovery_exhausted = if awaiting_argument_correction {
+                                    agent_loop.record_tool_argument_recovery_final()
+                                } else {
+                                    agent_loop.record_premature_final()
+                                };
+                                if recovery_exhausted {
                                     break 'rounds Terminal::Failed(ModelError::new(
-                                        ModelErrorKind::Incomplete,
+                                        if awaiting_argument_correction {
+                                            ModelErrorKind::UnsupportedToolArguments
+                                        } else {
+                                            ModelErrorKind::Incomplete
+                                        },
                                         false,
                                     ));
                                 }
@@ -1511,11 +1523,16 @@ async fn run_turn(
                         ));
                     }
                     match validate_tool_call_batch(&runtime, &tool_calls) {
-                        Ok(()) => agent_loop.reset_tool_argument_errors(),
+                        Ok(()) => agent_loop.record_valid_tool_arguments(&tool_calls),
                         Err(ToolBatchValidationFailure::Fatal(error)) => {
                             break 'rounds Terminal::Failed(error);
                         }
                         Err(ToolBatchValidationFailure::Rejected(rejection)) => {
+                            for (call, kind) in tool_calls.iter().zip(&rejection.kinds) {
+                                if *kind == Some(CoreToolErrorKind::InvalidArguments) {
+                                    agent_loop.require_tool_argument_correction(&call.name);
+                                }
+                            }
                             let repeated = agent_loop
                                 .record_tool_argument_error(rejection.fingerprint.clone());
                             if let Err(error) = record_rejected_tool_batch(
@@ -2749,19 +2766,36 @@ fn validate_tool_call_batch(
                 serde_json::json!({"calls": calls.len(), "duplicateId": true}),
             )));
         }
+        let mut call_guidance = None;
         let validation = match call.name.as_str() {
             name if name.starts_with("collaboration/") => runtime.collaboration.validate_call(call),
             "workspace/read" if runtime.workspace_read.is_some() => {
-                workspace_tool_arguments(call).map(|_| ())
+                let validation = workspace_tool_arguments(call).map(|_| ());
+                if validation.is_err() {
+                    call_guidance = workspace_tool_argument_guidance(call);
+                }
+                validation
             }
             "workspace/list" if runtime.workspace_list.is_some() => {
-                workspace_tool_arguments(call).map(|_| ())
+                let validation = workspace_tool_arguments(call).map(|_| ());
+                if validation.is_err() {
+                    call_guidance = workspace_tool_argument_guidance(call);
+                }
+                validation
             }
             "workspace/search" if runtime.workspace_search.is_some() => {
-                workspace_tool_arguments(call).map(|_| ())
+                let validation = workspace_tool_arguments(call).map(|_| ());
+                if validation.is_err() {
+                    call_guidance = workspace_tool_argument_guidance(call);
+                }
+                validation
             }
             "workspace/edit" | "workspace/apply-diff" if runtime.workspace_patch.is_some() => {
-                workspace_tool_arguments(call).map(|_| ())
+                let validation = workspace_tool_arguments(call).map(|_| ());
+                if validation.is_err() {
+                    call_guidance = workspace_tool_argument_guidance(call);
+                }
+                validation
             }
             "shell/exec"
                 if runtime.shell_executor.is_some() && runtime.approval_requester.is_some() =>
@@ -2807,9 +2841,10 @@ fn validate_tool_call_batch(
         let kind = validation
             .err()
             .map(|_| CoreToolErrorKind::InvalidArguments);
-        guidance.push(
-            kind.and_then(|_| shell_tool_argument_guidance(call, shell_workspace_root(runtime))),
-        );
+        guidance.push(kind.and_then(|_| {
+            call_guidance
+                .or_else(|| shell_tool_argument_guidance(call, shell_workspace_root(runtime)))
+        }));
         kinds.push(kind);
     }
     if kinds.iter().all(Option::is_none) {
@@ -2817,11 +2852,19 @@ fn validate_tool_call_batch(
     }
     let mut hasher = Sha256::new();
     hasher.update(b"tool-validation-v1\0");
-    for (call, kind) in calls.iter().zip(&kinds) {
+    for ((call, kind), guidance) in calls.iter().zip(&kinds).zip(&guidance) {
         hasher.update(call.name.as_bytes());
         hasher.update(b"\0");
         if let Some(kind) = kind {
             hasher.update(kind.to_string().as_bytes());
+        }
+        hasher.update(b"\0");
+        if let Some(guidance) = guidance {
+            hasher.update(guidance.field_path.as_deref().unwrap_or("$").as_bytes());
+            hasher.update(b"\0");
+            hasher.update(guidance.reason.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(guidance.expected_summary.as_bytes());
         }
         hasher.update(b"\0");
     }
@@ -2861,7 +2904,8 @@ async fn record_rejected_tool_batch(
     {
         let kind = validation_kind.unwrap_or(CoreToolErrorKind::BatchRejected);
         let arguments = serde_json::to_vec(&call.arguments).unwrap_or_default();
-        let content = validation_rejection_content(&call.name, kind, &arguments, None, *guidance);
+        let content =
+            validation_rejection_content(&call.name, kind, &arguments, None, guidance.as_ref());
         append_completed_tool_item(
             runtime,
             prepared,
@@ -2872,9 +2916,13 @@ async fn record_rejected_tool_batch(
                 None,
                 None,
                 None,
-                guidance.map(|value| value.expected_summary.to_string()),
-                None,
-                guidance.map(|value| value.suggested_action),
+                guidance
+                    .as_ref()
+                    .map(ToolArgumentGuidance::durable_expected_summary),
+                guidance
+                    .as_ref()
+                    .and_then(|value| value.actual_summary.clone()),
+                guidance.as_ref().map(|value| value.suggested_action),
             ),
         )
         .await?;
@@ -2893,40 +2941,40 @@ fn validation_rejection_content(
     kind: CoreToolErrorKind,
     arguments: &[u8],
     diagnostic: Option<&WorkspaceEditDiagnostic>,
-    guidance: Option<ToolArgumentGuidance>,
+    guidance: Option<&ToolArgumentGuidance>,
 ) -> String {
-    let mut fields = vec![
-        format!("{tool_name} error: {kind}"),
-        format!("argumentsBytes={}", arguments.len()),
-        format!("argumentsSha256={}", sha256(arguments)),
-    ];
-    if let Some(edit_index) = diagnostic.and_then(|value| value.edit_index) {
-        fields.push(format!("editIndex={edit_index}"));
-    }
-    if let Some(hunk_index) = diagnostic.and_then(|value| value.hunk_index) {
-        fields.push(format!("hunkIndex={hunk_index}"));
-    }
-    if let Some(line) = diagnostic.and_then(|value| value.line) {
-        fields.push(format!("line={line}"));
-    }
-    if let Some(expected) = diagnostic
+    let expected = diagnostic
         .and_then(|value| value.expected_summary.as_deref())
-        .or_else(|| guidance.map(|value| value.expected_summary))
-    {
-        fields.push(format!("expected={expected}"));
-    }
-    if let Some(actual) = diagnostic.and_then(|value| value.actual_summary.as_deref()) {
-        fields.push(format!("actual={actual}"));
-    }
-    fields.push(format!(
-        "suggestedAction={}",
-        diagnostic
-            .map(|value| value.suggested_action.as_str())
-            .or_else(|| guidance.map(|value| value.suggested_action))
-            .or_else(|| validation_rejection_action(kind))
-            .unwrap_or("correctArguments")
-    ));
-    fields.join("; ")
+        .or_else(|| guidance.map(|value| value.expected_summary));
+    let actual = diagnostic
+        .and_then(|value| value.actual_summary.as_deref())
+        .or_else(|| guidance.and_then(|value| value.actual_summary.as_deref()));
+    let suggested_action = diagnostic
+        .map(|value| value.suggested_action.as_str())
+        .or_else(|| guidance.map(|value| value.suggested_action))
+        .or_else(|| validation_rejection_action(kind))
+        .unwrap_or("correctArguments");
+    serde_json::json!({
+        "ok": false,
+        "error": {
+            "tool": tool_name,
+            "code": kind.to_string(),
+            "retryable": validation_rejection_action(kind).is_some()
+                || kind == CoreToolErrorKind::InvalidArguments,
+            "argumentsBytes": arguments.len(),
+            "argumentsSha256": sha256(arguments),
+            "fieldPath": guidance.and_then(|value| value.field_path.as_deref()),
+            "reason": guidance.map(|value| value.reason),
+            "editIndex": diagnostic.and_then(|value| value.edit_index),
+            "hunkIndex": diagnostic.and_then(|value| value.hunk_index),
+            "line": diagnostic.and_then(|value| value.line),
+            "expected": expected,
+            "actual": actual,
+            "suggestedAction": suggested_action,
+            "instruction": "Correct the indicated arguments and call the tool again. Do not claim completion until a corrected tool call succeeds."
+        }
+    })
+    .to_string()
 }
 
 #[allow(clippy::too_many_arguments)]

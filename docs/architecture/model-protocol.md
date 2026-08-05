@@ -104,6 +104,15 @@ second match fails as typed `incomplete` instead of creating an unbounded retry;
 ordinary final text, long responses and planning text without the trailing
 unfulfilled heading do not enter this recovery path.
 
+Argument correction has a separate deterministic gate. When Core returns an
+`invalidArguments` ToolResult, it records the rejected SugarCode tool name and
+will not accept final text in place of a retry. Such text is closed with
+`agentOutputDiscarded`; a valid call for that same tool name clears the pending
+correction after batch validation. One further final-only response fails as
+typed `unsupportedToolArguments`, so this recovery cannot loop indefinitely.
+This rule is structural and does not depend on recognizing promise wording in
+the model's prose.
+
 Thread-title generation is a separate provider-neutral Core request with the
 `sugarCodeThreadTitleV1` instruction source. It reuses the Thread's currently
 resolved model profile but exposes no tools, does not join the Agent Turn or its
@@ -252,8 +261,11 @@ Durable calls and results remain in model order.
 Tool definitions, validation and dispatch use provider-neutral SugarCode names.
 An unknown name, incompatible arguments or a handler-level user error is an
 untrusted model outcome. Core records bounded `toolValidationRejected` or tool
-result feedback and allows a bounded correction round; it does not terminate
-the app-server process. Only an internal runtime invariant that prevents safe
+result feedback and allows a bounded correction round. Invalid workspace
+arguments receive structured JSON containing field path, stable reason,
+expected shape, value-free actual type, suggested action, byte count and
+argument hash; raw values are not reflected. Core does not terminate the
+app-server process. Only an internal runtime invariant that prevents safe
 Turn closure is process-fatal. This distinction mirrors the provider adapters:
 they may normalize unambiguous syntax and naming differences, but never invent
 a tool, change its authority or execute malformed arguments.

@@ -775,8 +775,8 @@ async fn unknown_tool_calls_return_model_visible_errors_without_execution() {
         assert_eq!(results.len(), 1);
         let content = tool_result_serialized(results[0]);
         assert!(content.contains("unknownTool"));
-        assert!(content.contains("argumentsBytes="));
-        assert!(content.contains("argumentsSha256="));
+        assert!(content.contains("\"argumentsBytes\":"));
+        assert!(content.contains("\"argumentsSha256\":"));
         drop(requests);
         let snapshot = runtime.resume_thread(&thread_id).expect("resume");
         let turn = snapshot
@@ -814,12 +814,14 @@ async fn invalid_tool_batch_is_rejected_without_partial_execution() {
                     arguments: serde_json::json!({}),
                 },
             ]))],
-            vec![
-                Ok(model_event::text_delta(
-                    "Regenerated after batch rejection.".to_string(),
-                )),
-                Ok(model_event::COMPLETED),
-            ],
+            vec![Ok(model_event::tool_call(ModelToolCall {
+                id: "call_retry".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({"path": "README.txt"}),
+            }))],
+            vec![Ok(model_event::final_response(
+                "Regenerated after batch rejection.",
+            ))],
         ])),
         requests: Arc::clone(&requests),
     };
@@ -855,7 +857,7 @@ async fn invalid_tool_batch_is_rejected_without_partial_execution() {
     ) {}
 
     let requests = requests.lock().expect("requests");
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     let results = requests[1]
         .messages
         .iter()
@@ -893,7 +895,127 @@ async fn invalid_tool_batch_is_rejected_without_partial_execution() {
 }
 
 #[tokio::test]
-async fn three_consecutive_argument_errors_end_with_explicit_terminal_kind() {
+async fn invalid_workspace_edit_requires_a_corrected_edit_before_finalizing() {
+    use sha2::Digest;
+
+    let directory = tempfile::tempdir().expect("workspace");
+    let target = directory.path().join("notes.txt");
+    std::fs::write(&target, "old\n").expect("workspace fixture");
+    let base_sha256 = format!("{:x}", sha2::Sha256::digest(b"old\n"));
+    let line_edit = serde_json::json!({
+        "startLine": 1,
+        "deleteLineCount": 1,
+        "expected": "old",
+        "replacement": "new"
+    });
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![Ok(model_event::tool_call(ModelToolCall {
+                id: "call_invalid_edit".to_string(),
+                name: "workspace/edit".to_string(),
+                arguments: serde_json::json!({
+                    "operations": [{
+                        "type": "update",
+                        "path": "notes.txt",
+                        "edits": [line_edit.clone()]
+                    }]
+                }),
+            }))],
+            vec![Ok(model_event::final_response(
+                "Let me re-read the current files to make precise edits:",
+            ))],
+            vec![Ok(model_event::tool_call(ModelToolCall {
+                id: "call_corrected_edit".to_string(),
+                name: "workspace/edit".to_string(),
+                arguments: serde_json::json!({
+                    "operations": [{
+                        "type": "update",
+                        "path": "notes.txt",
+                        "baseSha256": base_sha256,
+                        "edits": [line_edit]
+                    }]
+                }),
+            }))],
+            vec![Ok(model_event::final_response(
+                "The edit was applied and verified.",
+            ))],
+        ])),
+        requests: Arc::clone(&requests),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let workspace_patch: Arc<dyn WorkspacePatchExecutor> = tool;
+    let (runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        None,
+        None,
+    );
+    let mut runtime = runtime.with_workspace_patch(Some(workspace_patch));
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Fix notes.txt".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("async turn");
+    };
+    let mut discarded = false;
+    loop {
+        let event = events.recv().await.expect("terminal");
+        discarded |= matches!(event.kind, CoreEventKind::AgentOutputDiscarded { .. });
+        if matches!(event.kind, CoreEventKind::TurnCompleted { .. }) {
+            break;
+        }
+    }
+
+    assert!(discarded);
+    assert_eq!(
+        std::fs::read_to_string(target).expect("edited file"),
+        "new\n"
+    );
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 4);
+    let correction = requests[1]
+        .messages
+        .iter()
+        .flat_map(message_tool_results)
+        .map(tool_result_serialized)
+        .find(|content| content.contains("\"tool\":\"workspace/edit\""))
+        .expect("workspace/edit correction");
+    assert!(correction.contains("\"fieldPath\":\"$.operations[0].baseSha256\""));
+    assert!(correction.contains("\"reason\":\"missingRequiredField\""));
+    assert!(correction.contains("readFileAndUseReturnedSha256"));
+    drop(requests);
+
+    let turn = runtime
+        .resume_thread(&thread_id)
+        .expect("resume")
+        .turns
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert_eq!(turn.status, DurableTurnStatus::Completed);
+    assert!(!turn.items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
+            if text.contains("Let me re-read")
+    )));
+}
+
+#[tokio::test]
+async fn repeated_structural_argument_errors_end_with_explicit_terminal_kind() {
     let invalid_round = |id: &str, arguments: serde_json::Value| {
         vec![Ok(model_event::tool_call(ModelToolCall {
             id: id.to_string(),
@@ -906,6 +1028,7 @@ async fn three_consecutive_argument_errors_end_with_explicit_terminal_kind() {
             invalid_round("call_invalid_1", serde_json::json!({})),
             invalid_round("call_invalid_2", serde_json::json!({ "path": 7 })),
             invalid_round("call_invalid_3", serde_json::json!({ "path": false })),
+            invalid_round("call_invalid_4", serde_json::json!({ "path": null })),
         ])),
         requests: Arc::new(Mutex::new(Vec::new())),
     };

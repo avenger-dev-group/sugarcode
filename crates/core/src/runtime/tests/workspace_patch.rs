@@ -153,8 +153,8 @@ async fn rollout_0036_validation_rejection_allows_standard_diff_retry() {
     assert_eq!(result.len(), 1);
     let content = tool_result_serialized(result[0]);
     assert!(content.contains("headerCountMismatch"));
-    assert!(content.contains("argumentsBytes="));
-    assert!(content.contains("argumentsSha256="));
+    assert!(content.contains("\"argumentsBytes\":"));
+    assert!(content.contains("\"argumentsSha256\":"));
     assert!(!content.contains("\"patch\""));
     drop(requests);
     let turn = runtime
