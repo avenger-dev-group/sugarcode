@@ -4,8 +4,8 @@
 
 Workspace authority begins at one explicit, canonical absolute root selected
 by the user or CLI caller. Rust opens that root as a capability boundary.
-Model-facing workspace read/list/search/apply-patch/edit/apply-diff tools
-receive only workspace-relative UTF-8 paths. When Full Access shell is available, its
+Model-facing workspace read/list/search/apply-patch tools receive only
+workspace-relative UTF-8 paths. When Full Access shell is available, its
 per-request model schema additionally carries the exact authoritative absolute
 workspace root so the model never has to infer a host path.
 
@@ -36,11 +36,12 @@ durable results in model order.
 
 ## Freeform patch editing
 
-`workspace/apply-patch` is the preferred write tool. It accepts the bounded
-Codex-style envelope from `*** Begin Patch` through `*** End Patch`, with up to
-64 unique `Add File`, `Update File` or `Delete File` markers. Update chunks use
-optional `@@` context and exact lines prefixed by space, `+` or `-`; move and
-rename markers are intentionally not supported in this slice.
+`workspace/apply-patch` is the only model-facing workspace write tool. It
+accepts the bounded Codex-style envelope from `*** Begin Patch` through
+`*** End Patch`, with up to 64 unique `Add File`, `Update File` or `Delete File`
+markers. Update chunks use optional `@@` context and exact lines prefixed by
+space, `+` or `-`; move and rename markers are intentionally not supported in
+this slice.
 
 OpenAI Responses receives this as a native custom tool constrained by the
 runtime-owned Lark grammar and returns raw patch text without JSON escaping.
@@ -57,52 +58,21 @@ revision-guarded line edits. Adds, updates and deletes then enter the existing
 atomic ChangeSet prepare, write-ahead-log and commit path. A stale context is a
 structured `expectedMismatch` and performs no mutation.
 
-## Structured line editing
+## Internal write pipeline
 
-`workspace/edit` remains the exact structured write representation. Its model schema contains one
-bounded `operations[]` change set with at most 64 entries:
+The patch parser compiles every accepted envelope to one internal ChangeSet.
+Revision-bound line edits and unified-diff parsing remain internal executor
+mechanics; they are not separately advertised tool protocols. This keeps one
+write grammar in the model context and one correction target after validation
+failure.
 
-```text
-create: path, content, expectedAbsent=true
-update: path, baseSha256, edits[]
-delete: path, baseSha256
-```
-
-The advertised schema describes the exact fields for each operation, the
-read-derived SHA requirement, original-revision line coordinates and newline
-conventions. These constraints live beside the tool definition so every model
-wire receives the same preventive guidance before its first call.
-
-Update edits target the same original revision, are strictly ascending and do
-not overlap. EOF insertion uses `lineCount + 1` with zero deletion. The base
-SHA and exact expected text prevent stale or ambiguous writes. LF, CRLF and
-missing final newline are preserved intentionally. Create fails if anything
-already occupies the path; delete is revision-bound. The former single-file
-`{path, baseSha256, edits}` shape remains accepted only for rollout and runtime
-compatibility and is no longer emitted in the model schema.
-
-The model must pass the `sha256` returned by `workspace/read` directly as
-`baseSha256`. It must not invoke a platform utility or synthesize a placeholder
-hash. A revision mismatch still fails closed and requires a fresh read/rebase.
-
-## Unified diff compatibility
-
-`workspace/apply-diff` accepts a bounded `files[]` batch of standard unified
-diffs. Every entry supplies its authoritative `path`; Diff headers never grant
-path authority. `/dev/null` represents the absent side of create or delete.
-Counts may be omitted, function context and LF/CRLF are accepted, and
-no-final-newline cases are supported. Rename metadata, binary patches and Git
-extended headers are rejected. The former single-file `{path, diff}` shape is
-retained only for rollout and runtime compatibility.
-
-Both representations compile to one internal ChangeSet. The complete batch is
-validated before mutation, rejects duplicate paths and stages data on the same
-filesystem. A persisted write-ahead log precedes the first create, atomic
-replacement or delete. Any recognized failure rolls the whole batch back;
-workspace open completes or rolls back an interrupted log before admitting
-another write. One call ID owns ordered create/update/delete `FileChange`
-records and the matching ToolResult contains all revision receipts. The absent
-side uses the SHA-256 of empty content and zero bytes.
+The complete change set is validated before mutation, rejects duplicate paths
+and stages data on the same filesystem. A persisted write-ahead log precedes
+the first create, atomic replacement or delete. Any recognized failure rolls
+the whole batch back; workspace open completes or rolls back an interrupted log
+before admitting another write. One call ID owns ordered create/update/delete
+`FileChange` records and the matching ToolResult contains all revision receipts.
+The absent side uses the SHA-256 of empty content and zero bytes.
 
 Validation errors are structured:
 
@@ -131,9 +101,9 @@ may coexist; a writer holds the exclusive permit. This coordinates SugarCode
 activity only and does not claim isolation from the user or another process.
 
 In multi-workspace app-server mode, every scope derived from the same canonical
-root also shares one workspace write gate. Structured apply-patch/edit/apply-diff commits,
-Git stage/unstage/commit and workspace-write shell execution acquire that gate
-for their commit or process lifetime. Different canonical roots use independent
+root also shares one workspace write gate. Apply-patch commits, Git
+stage/unstage/commit and workspace-write shell execution acquire that gate for
+their commit or process lifetime. Different canonical roots use independent
 gates and may write concurrently. Read-only operations remain concurrent, and
 the gate still makes no claim about external processes or user edits.
 
@@ -196,9 +166,8 @@ false`, empty argv and absent sandbox/network/workspace-write policies.
 
 ## Other native capabilities
 
-The only model-visible local tools are `workspace/read`, `workspace/list`,
-`workspace/search`, `workspace/apply-patch`, `workspace/edit`,
-`workspace/apply-diff` and `shell/exec`.
+The only model-visible built-in local tools are `workspace/read`,
+`workspace/list`, `workspace/search`, `workspace/apply-patch` and `shell/exec`.
 There is no parallel `read_file`, `search_code`, `workspace/find`,
 `workspace/change-set` or `shell/run` namespace.
 

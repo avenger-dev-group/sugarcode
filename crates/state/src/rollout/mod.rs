@@ -1222,6 +1222,9 @@ pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {
         DurableItemSnapshot::ToolCall {
             name, arguments, ..
         } => {
+            if matches!(name.as_str(), "workspace/edit" | "workspace/apply-diff") {
+                return false;
+            }
             if name != "workspace/apply-patch" {
                 return true;
             }

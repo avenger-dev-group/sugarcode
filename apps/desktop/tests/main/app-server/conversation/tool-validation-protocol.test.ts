@@ -7,7 +7,7 @@ const rejection = {
   type: 'toolValidationRejected',
   id: '00000000-0002-7000-8000-000000001405',
   callId: 'chatcmpl-tool-bde02b193a056385',
-  name: 'workspace/edit',
+  name: 'workspace/apply-patch',
   kind: 'expectedMismatch',
   argumentsBytes: 218,
   argumentsSha256: 'a'.repeat(64),

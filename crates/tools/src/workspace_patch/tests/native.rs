@@ -89,7 +89,7 @@ async fn workspace_freeform_patch_rejects_stale_context_without_mutation() {
 }
 
 #[tokio::test]
-async fn workspace_edit_applies_multiple_original_revision_line_splices() {
+async fn line_edit_engine_applies_multiple_original_revision_splices() {
     let workspace = tempdir().expect("workspace");
     let before = b"one\ntwo\nthree\nfour\n";
     fs::write(workspace.path().join("notes.txt"), before).expect("seed file");
@@ -149,7 +149,7 @@ async fn workspace_edit_applies_multiple_original_revision_line_splices() {
 }
 
 #[tokio::test]
-async fn workspace_edit_handles_blank_lines_missing_final_newline_and_conflicts() {
+async fn line_edit_engine_handles_blank_lines_missing_final_newline_and_conflicts() {
     let workspace = tempdir().expect("workspace");
     let before = b"one\ntwo";
     fs::write(workspace.path().join("notes.txt"), before).expect("seed file");
@@ -202,7 +202,7 @@ async fn workspace_edit_handles_blank_lines_missing_final_newline_and_conflicts(
 }
 
 #[tokio::test]
-async fn workspace_edit_rejects_bad_counts_overlap_and_expected_content() {
+async fn line_edit_engine_rejects_bad_counts_overlap_and_expected_content() {
     let workspace = tempdir().expect("workspace");
     let before = b"one\ntwo\nthree\n";
     fs::write(workspace.path().join("notes.txt"), before).expect("seed file");

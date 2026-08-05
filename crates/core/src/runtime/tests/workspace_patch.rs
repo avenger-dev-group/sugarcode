@@ -2,9 +2,7 @@ use super::*;
 use sugarcode_tools::WorkspacePatchExecutor;
 
 fn update_patch(before: &str, after: &str) -> String {
-    format!(
-        "*** Begin Patch\n*** Update File: notes.txt\n@@\n-{before}\n+{after}\n*** End Patch"
-    )
+    format!("*** Begin Patch\n*** Update File: notes.txt\n@@\n-{before}\n+{after}\n*** End Patch")
 }
 
 async fn runtime_with_patch_rounds(
@@ -172,8 +170,7 @@ async fn corrected_apply_patch_clears_the_argument_recovery_gate() {
 #[tokio::test]
 async fn three_invalid_apply_patches_end_with_explicit_terminal_kind() {
     let directory = tempfile::tempdir().expect("workspace");
-    std::fs::write(directory.path().join("notes.txt"), "old\n")
-        .expect("workspace fixture");
+    std::fs::write(directory.path().join("notes.txt"), "old\n").expect("workspace fixture");
     let invalid_round = |id: &str, patch: &str| {
         vec![Ok(model_event::tool_call(ModelToolCall {
             id: id.to_string(),

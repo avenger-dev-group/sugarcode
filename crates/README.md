@@ -50,9 +50,10 @@ signatures and reasoning envelopes never enter the public Desktop protocol.
 
 `state` owns the content-addressed `content/v1` asset store in addition to v1
 configuration and rollout. Rollout persists attachment descriptors, not Base64
-or absolute paths. `tools` exposes `workspace/edit` for revision-bound line
-splices and `workspace/apply-diff` for one-file standard unified diff; both
-share one review, commit-barrier and atomic-replacement pipeline.
+or absolute paths. `tools` exposes the single model-facing
+`workspace/apply-patch` write protocol; its freeform parser compiles bounded
+multi-file changes into the shared review, commit-barrier and atomic-replacement
+pipeline.
 
 `agent-runtime` is the surface-neutral in-process composition and session
 boundary. `app-server` owns only JSON-RPC mapping on top of it. `exec` owns the

@@ -373,32 +373,20 @@ test('overlapping workspace write declarations remain correlated by call ID', as
       type: 'toolCall',
       id: '00000000-0005-7000-8000-000000000001',
       callId: 'patch_call_1',
-      name: 'workspace/edit',
+      name: 'workspace/apply-patch',
       arguments: {
-        operations: [
-          {
-            kind: 'create',
-            path: 'src/a.ts',
-            content: 'export const a = 1;\n',
-            expectedAbsent: true,
-          },
-        ],
+        patch:
+          '*** Begin Patch\n*** Add File: src/a.ts\n+export const a = 1;\n*** End Patch',
       },
     },
     {
       type: 'toolCall',
       id: '00000000-0005-7000-8000-000000000002',
       callId: 'patch_call_2',
-      name: 'workspace/edit',
+      name: 'workspace/apply-patch',
       arguments: {
-        operations: [
-          {
-            kind: 'create',
-            path: 'src/b.ts',
-            content: 'export const b = 2;\n',
-            expectedAbsent: true,
-          },
-        ],
+        patch:
+          '*** Begin Patch\n*** Add File: src/b.ts\n+export const b = 2;\n*** End Patch',
       },
     },
   ];

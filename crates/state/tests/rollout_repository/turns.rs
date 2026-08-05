@@ -1398,11 +1398,15 @@ fn file_change_proposal_survives_recovery_without_replaying_the_write() {
                     id: ItemId::parse("00000000-0002-7000-8000-000000000002")
                         .expect("valid item UUIDv7"),
                     call_id: "call_patch".to_string(),
-                    name: "workspace/apply-diff".to_string(),
-                    arguments: json!({
-                        "path": "notes.txt",
-                        "diff": "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n"
-                    }),
+                    name: "workspace/apply-patch".to_string(),
+                    arguments: json!(concat!(
+                        "*** Begin Patch\n",
+                        "*** Update File: notes.txt\n",
+                        "@@\n",
+                        "-old\n",
+                        "+new\n",
+                        "*** End Patch",
+                    )),
                 },
             )
             .expect("tool call");

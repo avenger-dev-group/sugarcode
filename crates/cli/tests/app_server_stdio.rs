@@ -730,9 +730,9 @@ fn workspace_search_tool_lifecycle_matches_golden_trace() {
 }
 
 #[test]
-fn workspace_apply_diff_lifecycle_matches_golden_trace() {
+fn workspace_apply_patch_lifecycle_matches_golden_trace() {
     const TOOL_CALL: &str = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_patch_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-diff\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"diff\\\":\\\"--- a/notes.txt\\\\n+++ b/notes.txt\\\\n@@ -1,3 +1,3 @@\\\\n one\\\\n-two\\\\n+second\\\\n three\\\\n\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_patch_fixture\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-patch\",\"arguments\":\"{\\\"patch\\\":\\\"*** Begin Patch\\\\n*** Update File: notes.txt\\\\n@@\\\\n-two\\\\n+second\\\\n*** End Patch\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n"
     );
@@ -753,7 +753,7 @@ fn workspace_apply_diff_lifecycle_matches_golden_trace() {
         ],
     );
     run_golden_with_options(
-        "turn-workspace-apply-diff",
+        "turn-workspace-apply-patch",
         &sugarcode_home,
         Some(workspace.path()),
         true,

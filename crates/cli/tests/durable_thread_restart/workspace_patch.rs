@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn resumes_forks_and_continues_line_edit_history_without_replaying_the_write() {
+fn resumes_forks_and_continues_patch_history_without_replaying_the_write() {
     const TOOL_CALL: &str = concat!(
-        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_edit_restart\",\"type\":\"function\",\"function\":{\"name\":\"workspace/edit\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\",\\\"baseSha256\\\":\\\"b6285c57e8797db5d4c51c80d6f11938afda9b11c6a003549709189e9b4b92a2\\\",\\\"edits\\\":[{\\\"startLine\\\":2,\\\"deleteLineCount\\\":1,\\\"expected\\\":\\\"two\\\",\\\"replacement\\\":\\\"second\\\"}]}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_patch_restart\",\"type\":\"function\",\"function\":{\"name\":\"workspace/apply-patch\",\"arguments\":\"{\\\"patch\\\":\\\"*** Begin Patch\\\\n*** Update File: notes.txt\\\\n@@\\\\n-two\\\\n+second\\\\n*** End Patch\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n"
     );
@@ -111,16 +111,18 @@ fn resumes_forks_and_continues_line_edit_history_without_replaying_the_write() {
         .iter()
         .find_map(|message| message["tool_calls"].as_array()?.first())
         .expect("replayed tool call");
-    assert_eq!(replayed_call["function"]["name"], "workspace_edit");
+    assert_eq!(replayed_call["function"]["name"], "workspace_apply-patch");
     let replayed_arguments: Value = serde_json::from_str(
         replayed_call["function"]["arguments"]
             .as_str()
             .expect("serialized tool arguments"),
     )
     .expect("replayed tool arguments");
-    assert_eq!(replayed_arguments["path"], "notes.txt");
-    assert_eq!(replayed_arguments["edits"][0]["deleteLineCount"], 1);
-    assert!(replayed_arguments.get("diff").is_none());
+    assert!(
+        replayed_arguments["patch"]
+            .as_str()
+            .is_some_and(|patch| patch.contains("*** Update File: notes.txt"))
+    );
     assert_eq!(
         fs::read_to_string(target).expect("file after restart"),
         "one\nsecond\nthree\n"

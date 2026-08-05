@@ -17,7 +17,7 @@ Fixture groups:
   `thread-delete-*`: durable lifecycle operations;
 - `turn-start-*`, `turn-provider-error`: text Turn lifecycle and failure;
 - `turn-workspace-read`, `turn-workspace-list`,
-  `turn-workspace-search`, `turn-workspace-apply-diff`: bounded workspace
+  `turn-workspace-search`, `turn-workspace-apply-patch`: bounded workspace
   tools and durable Items;
 - `turn-shell-approval-*`: bidirectional command approval, durable decision,
   execution-attempt and result ordering;
@@ -35,12 +35,6 @@ Turn input uses ordered content parts. Public ToolCall Items keep provider-
 neutral raw JSON arguments, and validation failures use the independent
 `toolValidationRejected` Item. Fixtures must not recreate the removed empty-
 path pseudo ToolCall or private patch dialect.
-
-The minimized rollout 0036 diff that reproduces the historical hunk-count
-failure lives with the Core end-to-end regression at
-`crates/core/src/runtime/tests/fixtures/rollout_0036_header_count_mismatch.diff`.
-The regression proves the structured rejection remains provider-visible, the
-next standard unified diff succeeds, and the sidecar reaches a normal terminal.
 
 ## Exec v1
 

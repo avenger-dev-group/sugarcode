@@ -2766,8 +2766,7 @@ fn validate_tool_call_batch(
                 }
                 validation
             }
-            "workspace/apply-patch" if runtime.workspace_patch.is_some() =>
-            {
+            "workspace/apply-patch" if runtime.workspace_patch.is_some() => {
                 let validation = workspace_tool_arguments(call).map(|_| ());
                 if validation.is_err() {
                     call_guidance = workspace_tool_argument_guidance(call);

@@ -1212,8 +1212,8 @@ fn tool_items_use_provider_neutral_camel_case_public_fields() {
 fn tool_validation_rejection_is_a_distinct_diagnostic_item() {
     let item = Item::ToolValidationRejected {
         id: "00000000-0002-7000-8000-000000000003".to_string(),
-        call_id: "call_edit".to_string(),
-        name: "workspace/edit".to_string(),
+        call_id: "call_patch".to_string(),
+        name: "workspace/apply-patch".to_string(),
         kind: "expectedMismatch".to_string(),
         arguments_bytes: 128,
         arguments_sha256: "a".repeat(64),
@@ -1229,8 +1229,8 @@ fn tool_validation_rejection_is_a_distinct_diagnostic_item() {
         json!({
             "type": "toolValidationRejected",
             "id": "00000000-0002-7000-8000-000000000003",
-            "callId": "call_edit",
-            "name": "workspace/edit",
+            "callId": "call_patch",
+            "name": "workspace/apply-patch",
             "kind": "expectedMismatch",
             "argumentsBytes": 128,
             "argumentsSha256": "a".repeat(64),

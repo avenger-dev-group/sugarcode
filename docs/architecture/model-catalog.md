@@ -165,19 +165,19 @@ is smaller than the rejected request and under the recovery target.
 
 Adapters map internal tool names to request-local provider-safe names and keep
 the reverse map for replay and results. ToolCall history stores the original
-provider-neutral JSON arguments, so `workspace/edit`, collaboration and shell
-calls survive restart without reconstruction through obsolete special fields.
+provider-neutral arguments, so apply-patch, collaboration and shell calls
+survive restart without reconstruction through provider-specific fields.
 
-The local model surface is exactly six provider-neutral names:
-`workspace/read`, `workspace/list`, `workspace/search`, `workspace/edit`,
-`workspace/apply-diff` and `shell/exec`. List recursion, path/content search,
-multi-file create/update/delete and direct/full-shell execution are schema
-branches inside those names rather than extra tools. Preferred schemas expose
-`operations[]`, `files[]`, search `mode` and shell `kind`; the former
-single-file edit/apply-diff shapes and missing-`kind` direct calls are accepted
-only by runtime/replay compatibility. OpenAI Responses, Chat Completions and
-Anthropic receive the same logical schemas through request-local safe-name
-mapping, and ordered multi-`FileChange` history retains the original call ID.
+The built-in local tool namespace has five provider-neutral names:
+`workspace/read`, `workspace/list`, `workspace/search`,
+`workspace/apply-patch` and `shell/exec`. List recursion, path/content search,
+multi-file create/update/delete and direct/full-shell execution remain inside
+those names rather than becoming extra tools. Apply-patch is native freeform on
+supported OpenAI Responses gateways and uses the exact `{patch: string}`
+fallback elsewhere. OpenAI Responses, Chat Completions and Anthropic receive
+the same logical tool through request-local safe-name mapping, and ordered
+multi-`FileChange` history retains the original call ID.
+
 When native command execution is present, `shell/exec` is the one dynamic local
 schema: its description includes the capability-owned authoritative absolute
 workspace root and its preferred cwd schema fixes both direct and shell calls
