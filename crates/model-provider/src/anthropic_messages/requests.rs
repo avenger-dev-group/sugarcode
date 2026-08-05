@@ -19,7 +19,16 @@ pub(crate) fn anthropic_request(
     strict_tools: ModelStrictToolsMode,
     max_output_tokens: u32,
 ) -> Result<Value, ModelError> {
-    let messages = anthropic_messages(request)?;
+    let freeform_fallbacks = request
+        .tools
+        .iter()
+        .filter_map(|tool| {
+            tool.freeform
+                .as_ref()
+                .map(|freeform| (tool.name.clone(), freeform.fallback_argument.clone()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let messages = anthropic_messages(request, &freeform_fallbacks)?;
     let tools = request
         .tools
         .iter()
@@ -60,10 +69,13 @@ fn rendered_instructions(request: &ModelRequest) -> String {
         .join("\n\n")
 }
 
-fn anthropic_messages(request: &ModelRequest) -> Result<Vec<Value>, ModelError> {
+fn anthropic_messages(
+    request: &ModelRequest,
+    freeform_fallbacks: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<Value>, ModelError> {
     let mut messages = Vec::<Value>::new();
     for source in &request.messages {
-        let mut message = anthropic_message(source)?;
+        let mut message = anthropic_message(source, freeform_fallbacks)?;
         if let Some(previous) = messages.last_mut()
             && previous.get("role") == message.get("role")
         {
@@ -83,7 +95,10 @@ fn anthropic_messages(request: &ModelRequest) -> Result<Vec<Value>, ModelError> 
     Ok(messages)
 }
 
-fn anthropic_message(message: &ModelMessage) -> Result<Value, ModelError> {
+fn anthropic_message(
+    message: &ModelMessage,
+    freeform_fallbacks: &std::collections::BTreeMap<String, String>,
+) -> Result<Value, ModelError> {
     if let Some(context) = sole_provider_context(message)? {
         ensure_context_wire(context, ProviderWireApi::AnthropicMessages)?;
         let content = serde_json::from_slice::<Vec<Value>>(&context.payload()?)
@@ -98,7 +113,10 @@ fn anthropic_message(message: &ModelMessage) -> Result<Value, ModelError> {
             | ModelContentPart::ContextCompaction { content: text } => {
                 Ok(json!({"type": "text", "text": text}))
             }
-            ModelContentPart::ToolCall { call } => Ok(anthropic_tool_call(call)),
+            ModelContentPart::ToolCall { call } => Ok(anthropic_tool_call(
+                call,
+                freeform_fallbacks.get(&call.name).map(String::as_str),
+            )),
             ModelContentPart::ToolResult { result } => Ok(json!({
                 "type": "tool_result",
                 "tool_use_id": result.call_id,
@@ -133,12 +151,20 @@ fn anthropic_message(message: &ModelMessage) -> Result<Value, ModelError> {
     }))
 }
 
-fn anthropic_tool_call(call: &ModelToolCall) -> Value {
+fn anthropic_tool_call(call: &ModelToolCall, fallback_argument: Option<&str>) -> Value {
+    let input = match (fallback_argument, call.arguments.as_str()) {
+        (Some(field), Some(raw)) => {
+            let mut object = serde_json::Map::new();
+            object.insert(field.to_owned(), Value::String(raw.to_owned()));
+            Value::Object(object)
+        }
+        _ => call.arguments.clone(),
+    };
     json!({
         "type": "tool_use",
         "id": call.id,
         "name": call.name,
-        "input": call.arguments,
+        "input": input,
     })
 }
 

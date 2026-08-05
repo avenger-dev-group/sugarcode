@@ -109,10 +109,12 @@ completed state.
 
 ## Model history
 
-Durable ToolCall stores `callId`, SugarCode tool name and the original JSON
-arguments. This removes empty-path pseudo calls and preserves line edits,
-collaboration envelopes and shell descriptions across restart. Provider result
-history preserves call ordering and parallel batch relationships.
+Durable ToolCall stores `callId`, SugarCode tool name and the original
+provider-neutral argument value. Function tools retain their JSON object;
+freeform tools retain their raw string. This removes empty-path pseudo calls and
+preserves patch text, line edits, collaboration envelopes and shell descriptions
+across restart. Provider result history preserves call ordering and parallel
+batch relationships.
 
 Runtime maintains two histories during an active Turn. Wire replay history
 retains native provider continuation in its exact block, signature and tool

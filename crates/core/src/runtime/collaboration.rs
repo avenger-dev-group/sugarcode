@@ -193,6 +193,7 @@ impl CollaborationCoordinator {
                     },
                     "required": ["tasks"]
                 }),
+                freeform: None,
             },
             ModelToolDefinition {
                 name: "collaboration/amend".to_string(),
@@ -206,6 +207,7 @@ impl CollaborationCoordinator {
                     },
                     "required": ["clientTaskKey", "amendmentMarkdown"]
                 }),
+                freeform: None,
             },
             ModelToolDefinition {
                 name: "collaboration/wait".to_string(),
@@ -218,6 +220,7 @@ impl CollaborationCoordinator {
                     },
                     "required": ["clientTaskKeys"]
                 }),
+                freeform: None,
             },
             ModelToolDefinition {
                 name: "collaboration/interrupt".to_string(),
@@ -230,6 +233,7 @@ impl CollaborationCoordinator {
                     },
                     "required": ["clientTaskKey"]
                 }),
+                freeform: None,
             },
         ]
     }

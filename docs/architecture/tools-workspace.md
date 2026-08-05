@@ -4,8 +4,8 @@
 
 Workspace authority begins at one explicit, canonical absolute root selected
 by the user or CLI caller. Rust opens that root as a capability boundary.
-Model-facing workspace read/list/search/edit/apply-diff tools receive only
-workspace-relative UTF-8 paths. When Full Access shell is available, its
+Model-facing workspace read/list/search/apply-patch/edit/apply-diff tools
+receive only workspace-relative UTF-8 paths. When Full Access shell is available, its
 per-request model schema additionally carries the exact authoritative absolute
 workspace root so the model never has to infer a host path.
 
@@ -34,9 +34,32 @@ unsupported file types and observed identity changes.
 Read-only batches validate completely, run with bounded concurrency and return
 durable results in model order.
 
+## Freeform patch editing
+
+`workspace/apply-patch` is the preferred write tool. It accepts the bounded
+Codex-style envelope from `*** Begin Patch` through `*** End Patch`, with up to
+64 unique `Add File`, `Update File` or `Delete File` markers. Update chunks use
+optional `@@` context and exact lines prefixed by space, `+` or `-`; move and
+rename markers are intentionally not supported in this slice.
+
+OpenAI Responses receives this as a native custom tool constrained by the
+runtime-owned Lark grammar and returns raw patch text without JSON escaping.
+Chat Completions and Anthropic receive the same internal tool through the exact
+fallback schema `{patch: string}`. Core accepts either representation, runs the
+same bounded parser, and never attempts to heuristically repair malformed
+syntax.
+
+Markers are the authoritative requested paths for this tool. Every path still
+passes the normal capability-relative traversal, symlink, reparse-point and
+identity checks. Updates and deletes are read through the opened workspace
+capability to bind them to the observed revision; exact context is compiled to
+revision-guarded line edits. Adds, updates and deletes then enter the existing
+atomic ChangeSet prepare, write-ahead-log and commit path. A stale context is a
+structured `expectedMismatch` and performs no mutation.
+
 ## Structured line editing
 
-`workspace/edit` is the preferred write tool. Its model schema contains one
+`workspace/edit` remains the exact structured write representation. Its model schema contains one
 bounded `operations[]` change set with at most 64 entries:
 
 ```text
@@ -108,7 +131,7 @@ may coexist; a writer holds the exclusive permit. This coordinates SugarCode
 activity only and does not claim isolation from the user or another process.
 
 In multi-workspace app-server mode, every scope derived from the same canonical
-root also shares one workspace write gate. Structured edit/apply-diff commits,
+root also shares one workspace write gate. Structured apply-patch/edit/apply-diff commits,
 Git stage/unstage/commit and workspace-write shell execution acquire that gate
 for their commit or process lifetime. Different canonical roots use independent
 gates and may write concurrently. Read-only operations remain concurrent, and
@@ -174,7 +197,8 @@ false`, empty argv and absent sandbox/network/workspace-write policies.
 ## Other native capabilities
 
 The only model-visible local tools are `workspace/read`, `workspace/list`,
-`workspace/search`, `workspace/edit`, `workspace/apply-diff` and `shell/exec`.
+`workspace/search`, `workspace/apply-patch`, `workspace/edit`,
+`workspace/apply-diff` and `shell/exec`.
 There is no parallel `read_file`, `search_code`, `workspace/find`,
 `workspace/change-set` or `shell/run` namespace.
 

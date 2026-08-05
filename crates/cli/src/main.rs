@@ -27,7 +27,7 @@ struct TuiArgs {
     /// Active workspace scope relative to the explicit workspace root.
     #[arg(long, value_name = "RELATIVE_DIR", requires = "workspace")]
     workspace_scope: Option<String>,
-    /// Enable bounded workspace/edit and workspace/apply-diff writes for this process only.
+    /// Enable bounded workspace/apply-patch writes for this process only.
     #[arg(long, requires = "workspace")]
     allow_workspace_write: bool,
     /// Enable sandboxed shell-command writes inside the explicit workspace.
@@ -191,7 +191,7 @@ struct AppServerArgs {
     /// Keep durable Threads workspace-free while exposing an isolated Desktop chat directory.
     #[arg(long, hide = true, requires = "workspace")]
     unbound_threads: bool,
-    /// Enable bounded workspace/edit and workspace/apply-diff writes for this process only.
+    /// Enable bounded workspace/apply-patch writes for this process only.
     #[arg(long, requires = "workspace")]
     allow_workspace_write: bool,
     /// Enable sandboxed shell-command writes inside the explicit workspace.
@@ -228,7 +228,7 @@ struct ExecArgs {
     /// Active workspace scope relative to the explicit workspace root.
     #[arg(long, value_name = "RELATIVE_DIR", requires = "workspace")]
     workspace_scope: Option<String>,
-    /// Enable bounded workspace/edit and workspace/apply-diff writes for this process only.
+    /// Enable bounded workspace/apply-patch writes for this process only.
     #[arg(long, requires = "workspace")]
     allow_workspace_write: bool,
     /// Enable sandboxed shell-command writes inside the explicit workspace.

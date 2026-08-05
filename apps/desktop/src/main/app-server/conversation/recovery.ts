@@ -364,7 +364,7 @@ export const recoverConversation = (
       if (item.type === 'workspacePatchCall') {
         if (fileChanges.has(item.callId)) {
           throw new Error(
-            'thread/resume returned a duplicate workspace/apply-diff call.',
+            'thread/resume returned a duplicate workspace/apply-patch call.',
           );
         }
         fileChange = {
@@ -463,7 +463,7 @@ export const recoverConversation = (
                   item.outcome.afterBytes))
         ) {
           throw new Error(
-            'thread/resume returned an unmatched workspace/apply-diff result.',
+            'thread/resume returned an unmatched workspace/apply-patch result.',
           );
         }
         const completedFileChange: ConversationFileChangeActivity = {
@@ -838,7 +838,7 @@ export const recoverConversation = (
       [...fileChanges.values()].some((activity) => !activity.result)
     ) {
       throw new Error(
-        'thread/resume returned terminal workspace/apply-diff activity without a result.',
+        'thread/resume returned terminal workspace/apply-patch activity without a result.',
       );
     }
     if (

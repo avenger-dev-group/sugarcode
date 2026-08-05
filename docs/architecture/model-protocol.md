@@ -25,7 +25,8 @@ Messages preserve original part order. Supported parts are:
 - final or commentary text;
 - image assets;
 - PDF documents;
-- tool calls with JSON arguments;
+- tool calls with provider-neutral argument values: JSON objects for function
+  tools or one raw string for a freeform tool;
 - JSON, text or error tool results;
 - private provider continuation context.
 
@@ -157,6 +158,11 @@ function name/arguments under a nested `function` object are normalized too.
 Missing arguments become an empty object for normal schema validation; malformed
 encoded argument text is retained as a non-object so Core emits bounded tool
 schema correction feedback and never executes it.
+Responses custom-tool calls normalize `input` into the same ToolCall argument
+slot as a raw string. Their history uses `custom_tool_call` paired with
+`custom_tool_call_output`; function history continues to use the corresponding
+function pair. Opaque Responses continuation is scanned for custom call IDs so
+the following output always uses the matching wire item type.
 
 Text deltas are provisional rendering hints and are not required to be
 byte-identical to the completed item. Known terminal events are handled
@@ -232,6 +238,7 @@ tool calls but reject a full response snapshot on the continuation request.
 | Image | `input_image` | image content | image block |
 | PDF | `input_file` | rejected before request | document block |
 | Text document | normalized text | normalized text | normalized text |
+| Freeform tool | native `custom` tool with grammar | JSON function fallback | JSON function fallback |
 
 Provider authentication is wire-specific: bearer for OpenAI wires and
 `x-api-key` plus Anthropic version for Messages. Custom Base URLs use the same
@@ -239,7 +246,10 @@ selected wire behavior.
 
 ## Tools
 
-Tool schemas are converted per wire. Strictness is decided per tool, and the
+Tool definitions retain a provider-neutral JSON fallback schema and may also
+carry a raw-text grammar. Responses encodes the latter as a native `custom`
+tool with a Lark grammar; Chat Completions and Anthropic expose the fallback as
+an ordinary function/input schema. Strictness is decided per JSON tool, and the
 request fails before network I/O when forced strict mode cannot represent a
 schema. Provider-safe tool names are request-local aliases; history and public
 state keep SugarCode names.

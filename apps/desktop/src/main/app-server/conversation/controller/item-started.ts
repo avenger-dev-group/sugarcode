@@ -272,7 +272,7 @@ export abstract class ConversationItemStartedController extends ConversationItem
             entry.activity.callId === callId,
         )
       ) {
-        throw new Error('Duplicate workspace/apply-diff activity.');
+        throw new Error('Duplicate workspace/apply-patch activity.');
       }
       const activity: MutableFileChangeActivity = {
         id: lifecycle.params.item.id,

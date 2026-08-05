@@ -89,6 +89,7 @@ impl McpRuntimeAdapter {
                     name,
                     description: tool.description().unwrap_or("").to_owned(),
                     parameters: tool.input_schema().clone(),
+                    freeform: None,
                 });
             }
             servers.push(McpServerRuntime { spec, inventory });

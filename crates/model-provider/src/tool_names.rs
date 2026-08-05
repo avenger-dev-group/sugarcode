@@ -149,11 +149,13 @@ mod tests {
                     name: "workspace/read".to_owned(),
                     description: "read".to_owned(),
                     parameters: serde_json::json!({"type": "object"}),
+                    freeform: None,
                 },
                 ModelToolDefinition {
                     name: "workspace_read".to_owned(),
                     description: "collision".to_owned(),
                     parameters: serde_json::json!({"type": "object"}),
+                    freeform: None,
                 },
             ],
             messages: vec![

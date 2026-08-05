@@ -189,7 +189,7 @@ export abstract class ConversationItemCompletedController extends ConversationIt
         activity.callStatus !== 'inProgress'
       ) {
         throw new Error(
-          'Completed workspace/apply-diff call did not match its started Item.',
+          'Completed workspace/apply-patch call did not match its started Item.',
         );
       }
       activity.callStatus = 'completed';
@@ -237,7 +237,7 @@ export abstract class ConversationItemCompletedController extends ConversationIt
         )
       ) {
         throw new Error(
-          'Completed workspace/apply-diff result did not match its started Item.',
+          'Completed workspace/apply-patch result did not match its started Item.',
         );
       }
       result.status = 'completed';

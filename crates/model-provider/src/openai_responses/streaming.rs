@@ -208,7 +208,10 @@ fn reconcile_openai_output_items(
             }
             continue;
         }
-        if completed_item.item.get("type").and_then(Value::as_str) == Some("function_call") {
+        if matches!(
+            completed_item.item.get("type").and_then(Value::as_str),
+            Some("function_call" | "custom_tool_call")
+        ) {
             merged.push(completed_item.item);
         }
     }
@@ -217,7 +220,7 @@ fn reconcile_openai_output_items(
 
 fn openai_output_item_key(item: &Value) -> Option<(String, String)> {
     let kind = item.get("type")?.as_str()?;
-    let id = if kind == "function_call" {
+    let id = if matches!(kind, "function_call" | "custom_tool_call") {
         item.get("call_id")
             .and_then(Value::as_str)
             .or_else(|| item.get("id").and_then(Value::as_str))?

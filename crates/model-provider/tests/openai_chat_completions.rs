@@ -1965,6 +1965,7 @@ fn tool_request() -> ModelRequest {
             "properties": { "path": { "type": "string" } },
             "required": ["path"]
         }),
+        freeform: None,
     });
     request
 }

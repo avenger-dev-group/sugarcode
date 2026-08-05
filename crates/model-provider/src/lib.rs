@@ -46,6 +46,8 @@ pub use types::ModelTerminalMetadata;
 pub use types::ModelTextPhase;
 pub use types::ModelToolCall;
 pub use types::ModelToolDefinition;
+pub use types::ModelToolGrammar;
+pub use types::ModelToolGrammarSyntax;
 pub use types::ModelToolResult;
 pub use types::ModelToolResultContent;
 pub use types::ModelUsage;

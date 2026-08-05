@@ -274,7 +274,7 @@ fn full_access_shell_normalizes_a_bounded_decimal_string_timeout() {
 }
 
 #[test]
-fn all_local_capabilities_expose_exactly_six_unified_model_tools() {
+fn all_local_capabilities_expose_exactly_five_unified_model_tools() {
     let directory = tempfile::tempdir().expect("workspace");
     let tool = Arc::new(sugarcode_tools::WorkspaceTool::open(directory.path()).expect("tool"));
     let provider = SequencedProvider {
@@ -306,8 +306,7 @@ fn all_local_capabilities_expose_exactly_six_unified_model_tools() {
             "workspace/read",
             "workspace/list",
             "workspace/search",
-            "workspace/edit",
-            "workspace/apply-diff",
+            "workspace/apply-patch",
             "shell/exec",
         ]
     );

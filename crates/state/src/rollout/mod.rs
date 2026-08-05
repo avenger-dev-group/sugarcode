@@ -1222,59 +1222,22 @@ pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {
         DurableItemSnapshot::ToolCall {
             name, arguments, ..
         } => {
-            if !matches!(name.as_str(), "workspace/edit" | "workspace/apply-diff") {
+            if name != "workspace/apply-patch" {
                 return true;
             }
-            let legacy_valid = arguments
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(valid_patch_path)
-                && match name.as_str() {
-                    "workspace/edit" => arguments
-                        .get("edits")
-                        .and_then(serde_json::Value::as_array)
-                        .is_some_and(|edits| !edits.is_empty()),
-                    "workspace/apply-diff" => arguments
-                        .get("diff")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|diff| !diff.is_empty()),
-                    _ => false,
-                };
-            let batch_valid = match name.as_str() {
-                "workspace/edit" => arguments
-                    .get("operations")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|operations| {
-                        !operations.is_empty()
-                            && operations.len() <= 64
-                            && operations.iter().all(|operation| {
-                                operation
-                                    .get("path")
-                                    .and_then(serde_json::Value::as_str)
-                                    .is_some_and(valid_patch_path)
-                            })
-                    }),
-                "workspace/apply-diff" => arguments
-                    .get("files")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|files| {
-                        !files.is_empty()
-                            && files.len() <= 64
-                            && files.iter().all(|file| {
-                                file.get("path")
-                                    .and_then(serde_json::Value::as_str)
-                                    .is_some_and(valid_patch_path)
-                                    && file
-                                        .get("diff")
-                                        .and_then(serde_json::Value::as_str)
-                                        .is_some_and(|diff| !diff.is_empty())
-                            })
-                    }),
-                _ => false,
-            };
-            (legacy_valid || batch_valid)
-                && serde_json::to_vec(arguments)
-                    .is_ok_and(|encoded| encoded.len() <= 6 * 1024 * 1024)
+            let patch = arguments.as_str().or_else(|| {
+                arguments
+                    .as_object()
+                    .filter(|object| object.len() == 1)
+                    .and_then(|object| object.get("patch"))
+                    .and_then(serde_json::Value::as_str)
+            });
+            patch.is_some_and(|patch| {
+                !patch.is_empty()
+                    && patch.len() <= 96 * 1024
+                    && patch.starts_with("*** Begin Patch\n")
+                    && patch.ends_with("*** End Patch")
+            })
         }
         DurableItemSnapshot::FileChange {
             path,

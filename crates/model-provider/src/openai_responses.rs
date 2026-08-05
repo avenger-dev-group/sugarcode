@@ -463,6 +463,37 @@ fn parse_openai_response(value: Value) -> Result<ModelResponse, ModelError> {
                 };
                 push_tool(&mut items, id, name, arguments);
             }
+            Some("custom_tool_call") => {
+                let id = value
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| value.get("id").and_then(Value::as_str))
+                    .ok_or_else(|| {
+                        protocol_error_for_json(
+                            ModelProtocolStage::OutputNormalization,
+                            ModelProtocolCode::MalformedToolCall,
+                            Some("response.completed"),
+                            value,
+                        )
+                    })?;
+                let name = value.get("name").and_then(Value::as_str).ok_or_else(|| {
+                    protocol_error_for_json(
+                        ModelProtocolStage::OutputNormalization,
+                        ModelProtocolCode::MalformedToolCall,
+                        Some("response.completed"),
+                        value,
+                    )
+                })?;
+                let input = value.get("input").and_then(Value::as_str).ok_or_else(|| {
+                    protocol_error_for_json(
+                        ModelProtocolStage::OutputNormalization,
+                        ModelProtocolCode::MalformedToolCall,
+                        Some("response.completed"),
+                        value,
+                    )
+                })?;
+                push_tool(&mut items, id, name, Value::String(input.to_owned()));
+            }
             Some("reasoning") => {}
             _ => {
                 return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
@@ -481,10 +512,12 @@ fn parse_openai_response(value: Value) -> Result<ModelResponse, ModelError> {
                 .get("id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
-            continuation: if output
-                .iter()
-                .any(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
-            {
+            continuation: if output.iter().any(|item| {
+                matches!(
+                    item.get("type").and_then(Value::as_str),
+                    Some("function_call" | "custom_tool_call")
+                )
+            }) {
                 ModelContinuation::ToolCalls
             } else {
                 ModelContinuation::Complete

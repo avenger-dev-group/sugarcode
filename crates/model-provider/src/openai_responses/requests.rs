@@ -15,10 +15,37 @@ pub(super) fn openai_request(
     parallel_tools: bool,
     max_output_tokens: u32,
 ) -> Result<Value, ModelError> {
+    openai_request_with_custom_call_ids(
+        request,
+        strict_tools,
+        parallel_tools,
+        max_output_tokens,
+        &std::collections::BTreeSet::new(),
+    )
+}
+
+fn openai_request_with_custom_call_ids(
+    request: &ModelRequest,
+    strict_tools: ModelStrictToolsMode,
+    parallel_tools: bool,
+    max_output_tokens: u32,
+    inherited_custom_call_ids: &std::collections::BTreeSet<String>,
+) -> Result<Value, ModelError> {
+    let freeform_fallbacks = request
+        .tools
+        .iter()
+        .filter_map(|tool| {
+            tool.freeform
+                .as_ref()
+                .map(|freeform| (tool.name.clone(), freeform.fallback_argument.clone()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut custom_call_ids = custom_call_ids(request, &freeform_fallbacks)?;
+    custom_call_ids.extend(inherited_custom_call_ids.iter().cloned());
     let input = request
         .messages
         .iter()
-        .map(openai_input_items)
+        .map(|message| openai_input_items(message, &freeform_fallbacks, &custom_call_ids))
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .flatten()
@@ -27,6 +54,18 @@ pub(super) fn openai_request(
         .tools
         .iter()
         .map(|tool| {
+            if let Some(freeform) = &tool.freeform {
+                return Ok(json!({
+                    "type": "custom",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "format": {
+                        "type": "grammar",
+                        "syntax": freeform.syntax.as_str(),
+                        "definition": freeform.definition,
+                    },
+                }));
+            }
             let strict = crate::tool_schema::strict_for_tool(
                 &tool.name,
                 &tool.parameters,
@@ -67,6 +106,16 @@ pub(super) fn openai_provider_managed_request(
     parallel_tools: bool,
     max_output_tokens: u32,
 ) -> Result<Value, ModelError> {
+    let freeform_fallbacks = request
+        .tools
+        .iter()
+        .filter_map(|tool| {
+            tool.freeform
+                .as_ref()
+                .map(|freeform| (tool.name.clone(), freeform.fallback_argument.clone()))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let custom_call_ids = custom_call_ids(request, &freeform_fallbacks)?;
     let mut previous_response_id = None;
     let mut tail_start = 0usize;
     for (index, message) in request.messages.iter().enumerate() {
@@ -82,11 +131,12 @@ pub(super) fn openai_provider_managed_request(
     if previous_response_id.is_some() {
         managed_request.messages = request.messages[tail_start..].to_vec();
     }
-    let mut body = openai_request(
+    let mut body = openai_request_with_custom_call_ids(
         &managed_request,
         strict_tools,
         parallel_tools,
         max_output_tokens,
+        &custom_call_ids,
     )?;
     body["store"] = Value::Bool(true);
     if let Some(previous_response_id) = previous_response_id {
@@ -95,7 +145,11 @@ pub(super) fn openai_provider_managed_request(
     Ok(body)
 }
 
-fn openai_input_items(message: &ModelMessage) -> Result<Vec<Value>, ModelError> {
+fn openai_input_items(
+    message: &ModelMessage,
+    freeform_fallbacks: &std::collections::BTreeMap<String, String>,
+    custom_call_ids: &std::collections::BTreeSet<String>,
+) -> Result<Vec<Value>, ModelError> {
     if let Some(context) = sole_provider_context(message)? {
         ensure_context_wire(context, ProviderWireApi::OpenAiResponses)?;
         return serde_json::from_slice::<Vec<Value>>(&context.payload()?)
@@ -148,12 +202,24 @@ fn openai_input_items(message: &ModelMessage) -> Result<Vec<Value>, ModelError> 
                 "role": "user",
                 "content": content,
             })),
-            ModelContentPart::ToolCall { call } => Ok(openai_tool_call(call)),
-            ModelContentPart::ToolResult { result } => Ok(json!({
-                "type": "function_call_output",
-                "call_id": result.call_id,
-                "output": tool_result_text(&result.content),
-            })),
+            ModelContentPart::ToolCall { call } => Ok(openai_tool_call(
+                call,
+                freeform_fallbacks
+                    .get(call.name.as_str())
+                    .map(String::as_str),
+            )),
+            ModelContentPart::ToolResult { result } => {
+                let kind = if custom_call_ids.contains(result.call_id.as_str()) {
+                    "custom_tool_call_output"
+                } else {
+                    "function_call_output"
+                };
+                Ok(json!({
+                    "type": kind,
+                    "call_id": result.call_id,
+                    "output": tool_result_text(&result.content),
+                }))
+            }
             ModelContentPart::ImageAsset(_) | ModelContentPart::PdfDocument(_) => {
                 Err(ModelError::new(ModelErrorKind::InvalidRequest, false))
             }
@@ -162,13 +228,59 @@ fn openai_input_items(message: &ModelMessage) -> Result<Vec<Value>, ModelError> 
         .collect()
 }
 
-fn openai_tool_call(call: &ModelToolCall) -> Value {
-    json!({
-        "type": "function_call",
-        "call_id": call.id,
-        "name": call.name,
-        "arguments": serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_owned()),
-    })
+fn openai_tool_call(call: &ModelToolCall, fallback_argument: Option<&str>) -> Value {
+    if let Some(fallback_argument) = fallback_argument {
+        json!({
+            "type": "custom_tool_call",
+            "call_id": call.id,
+            "name": call.name,
+            "input": freeform_input(&call.arguments, fallback_argument),
+        })
+    } else {
+        json!({
+            "type": "function_call",
+            "call_id": call.id,
+            "name": call.name,
+            "arguments": serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_owned()),
+        })
+    }
+}
+
+fn freeform_input(arguments: &Value, fallback_argument: &str) -> String {
+    arguments
+        .as_str()
+        .or_else(|| arguments.get(fallback_argument).and_then(Value::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| arguments.to_string())
+}
+
+fn custom_call_ids(
+    request: &ModelRequest,
+    freeform_fallbacks: &std::collections::BTreeMap<String, String>,
+) -> Result<std::collections::BTreeSet<String>, ModelError> {
+    let mut ids = std::collections::BTreeSet::new();
+    for message in &request.messages {
+        for part in &message.content {
+            if let ModelContentPart::ToolCall { call } = part
+                && freeform_fallbacks.contains_key(call.name.as_str())
+            {
+                ids.insert(call.id.clone());
+            }
+        }
+        if let Some(context) = sole_provider_context(message)? {
+            ensure_context_wire(context, ProviderWireApi::OpenAiResponses)?;
+            let output = serde_json::from_slice::<Vec<Value>>(&context.payload()?)
+                .map_err(|_| protocol_error())?;
+            for item in &output {
+                if item.get("type").and_then(Value::as_str) == Some("custom_tool_call")
+                    && let Some(call_id) = item.get("call_id").and_then(Value::as_str)
+                {
+                    ids.insert(call_id.to_owned());
+                }
+            }
+        }
+    }
+    Ok(ids)
 }
 
 fn data_url(media_type: &str, bytes: &[u8]) -> String {

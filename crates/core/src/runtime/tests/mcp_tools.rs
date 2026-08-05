@@ -19,6 +19,7 @@ impl McpToolExecutor for RecordedMcpExecutor {
                 "required": ["value"],
                 "additionalProperties": false
             }),
+            freeform: None,
         }]
     }
 

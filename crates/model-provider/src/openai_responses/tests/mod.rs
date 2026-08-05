@@ -1,6 +1,8 @@
 use super::*;
 use crate::ModelAssetRef;
 use crate::ModelToolDefinition;
+use crate::ModelToolGrammar;
+use crate::ModelToolGrammarSyntax;
 use crate::ModelToolResult;
 use crate::anthropic_messages::requests::anthropic_request;
 
@@ -43,6 +45,7 @@ fn request_with_strict_and_loose_tools() -> ModelRequest {
                 "required": ["path"],
                 "additionalProperties": false
             }),
+            freeform: None,
         },
         ModelToolDefinition {
             name: "loose_tool".to_owned(),
@@ -51,9 +54,28 @@ fn request_with_strict_and_loose_tools() -> ModelRequest {
                 "type": "object",
                 "properties": {"path": {"type": "string"}}
             }),
+            freeform: None,
         },
     ];
     request
+}
+
+fn freeform_tool() -> ModelToolDefinition {
+    ModelToolDefinition {
+        name: "workspace/apply-patch".to_owned(),
+        description: "apply patch".to_owned(),
+        parameters: json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"patch": {"type": "string"}},
+            "required": ["patch"]
+        }),
+        freeform: Some(ModelToolGrammar {
+            syntax: ModelToolGrammarSyntax::Lark,
+            definition: "start: \"patch\"".to_owned(),
+            fallback_argument: "patch".to_owned(),
+        }),
+    }
 }
 
 fn asset(media_type: &str, original_name: &str, bytes: &[u8]) -> ModelAssetRef {
@@ -103,6 +125,77 @@ fn openai_responses_explicitly_requests_sequential_tool_calls() {
         .expect("Responses request");
 
     assert_eq!(body["parallel_tool_calls"], false);
+}
+
+#[test]
+fn responses_uses_native_custom_tools_while_anthropic_keeps_json_fallback() {
+    let mut request = continuation_request(Vec::new());
+    request.tools.push(freeform_tool());
+
+    let responses = openai_request(&request, ModelStrictToolsMode::Auto, false, 1024)
+        .expect("Responses request");
+    assert_eq!(responses["tools"][0]["type"], "custom");
+    assert_eq!(responses["tools"][0]["format"]["type"], "grammar");
+    assert_eq!(responses["tools"][0]["format"]["syntax"], "lark");
+    assert!(responses["tools"][0].get("parameters").is_none());
+    assert!(responses["tools"][0].get("strict").is_none());
+
+    request
+        .messages
+        .push(ModelMessage::tool_calls(vec![ModelToolCall {
+            id: "call_custom".to_owned(),
+            name: "workspace/apply-patch".to_owned(),
+            arguments: Value::String("raw patch".to_owned()),
+        }]));
+    let anthropic =
+        anthropic_request(&request, ModelStrictToolsMode::Auto, 1024).expect("Anthropic request");
+    assert_eq!(
+        anthropic["tools"][0]["input_schema"],
+        request.tools[0].parameters
+    );
+    assert!(anthropic["tools"][0].get("format").is_none());
+    assert_eq!(
+        anthropic["messages"][0]["content"][0]["input"]["patch"],
+        "raw patch"
+    );
+}
+
+#[test]
+fn responses_normalizes_and_replays_custom_tool_calls_with_matching_outputs() {
+    let raw_patch = "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch";
+    let response = parse_openai_response(json!({
+        "id": "resp_custom",
+        "status": "completed",
+        "output": [{
+            "type": "custom_tool_call",
+            "call_id": "call_custom",
+            "name": "workspace_apply-patch",
+            "input": raw_patch
+        }]
+    }))
+    .expect("custom response");
+    let ModelOutputItemKind::ToolCall(call) = &response.output[0].kind else {
+        panic!("custom tool call");
+    };
+    assert_eq!(call.arguments, Value::String(raw_patch.to_owned()));
+
+    let mut request = continuation_request(vec![
+        ModelMessage::tool_calls(vec![ModelToolCall {
+            id: "call_custom".to_owned(),
+            name: "workspace/apply-patch".to_owned(),
+            arguments: Value::String(raw_patch.to_owned()),
+        }]),
+        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+            "call_custom".to_owned(),
+            "ok".to_owned(),
+        )]),
+    ]);
+    request.tools.push(freeform_tool());
+    let body =
+        openai_request(&request, ModelStrictToolsMode::Auto, false, 1024).expect("replay request");
+    assert_eq!(body["input"][0]["type"], "custom_tool_call");
+    assert_eq!(body["input"][0]["input"], raw_patch);
+    assert_eq!(body["input"][1]["type"], "custom_tool_call_output");
 }
 
 #[test]
@@ -178,6 +271,32 @@ fn provider_managed_responses_uses_previous_response_id_and_only_sends_tail() {
     assert_eq!(body["input"][0]["type"], "function_call_output");
     assert!(!body.to_string().contains("opaque"));
     assert!(!body.to_string().contains("original task"));
+}
+
+#[test]
+fn provider_managed_responses_pairs_custom_outputs_from_opaque_context() {
+    let mut request = continuation_request(vec![
+        continuation_message(
+            ProviderWireApi::OpenAiResponses,
+            json!([{
+                "type": "custom_tool_call",
+                "call_id": "call_custom",
+                "name": "workspace_apply-patch",
+                "input": "patch"
+            }]),
+        ),
+        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+            "call_custom".to_owned(),
+            "applied".to_owned(),
+        )]),
+    ]);
+    request.tools.push(freeform_tool());
+
+    let body = openai_provider_managed_request(&request, ModelStrictToolsMode::Auto, false, 1024)
+        .expect("provider-managed custom request");
+    assert_eq!(body["input"].as_array().map(Vec::len), Some(1));
+    assert_eq!(body["input"][0]["type"], "custom_tool_call_output");
+    assert_eq!(body["input"][0]["call_id"], "call_custom");
 }
 
 #[test]

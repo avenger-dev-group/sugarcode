@@ -36,6 +36,7 @@ use serde::Serialize;
 use serde::de::MapAccess;
 use serde::de::SeqAccess;
 use serde::de::Visitor;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -1189,6 +1190,15 @@ impl ChatRequest {
         strict_tools: ModelStrictToolsMode,
         parallel_tools: bool,
     ) -> Result<Self, ModelError> {
+        let freeform_fallbacks = request
+            .tools
+            .iter()
+            .filter_map(|tool| {
+                tool.freeform
+                    .as_ref()
+                    .map(|freeform| (tool.name.clone(), freeform.fallback_argument.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
         let system = request
             .instructions
             .into_iter()
@@ -1199,7 +1209,10 @@ impl ChatRequest {
         if !system.is_empty() {
             messages.push(ChatMessage::system(system));
         }
-        messages.extend(chat_messages_from_model_messages(request.messages)?);
+        messages.extend(chat_messages_from_model_messages(
+            request.messages,
+            &freeform_fallbacks,
+        )?);
         let tools = request
             .tools
             .into_iter()
@@ -1272,6 +1285,7 @@ enum ChatContent {
 
 fn chat_messages_from_model_messages(
     messages: Vec<ModelMessage>,
+    freeform_fallbacks: &BTreeMap<String, String>,
 ) -> Result<Vec<ChatMessage>, ModelError> {
     let mut rendered = Vec::with_capacity(messages.len());
     for message in messages {
@@ -1297,15 +1311,21 @@ fn chat_messages_from_model_messages(
                     text.push_str(&part);
                     ordered_content.push(serde_json::json!({"type": "text", "text": part}));
                 }
-                ModelContentPart::ToolCall { call } => calls.push(ChatToolCall {
-                    id: call.id,
-                    kind: "function".to_owned(),
-                    function: ChatFunctionCall {
-                        name: call.name,
-                        arguments: serde_json::to_string(&call.arguments)
-                            .expect("tool arguments serialize"),
-                    },
-                }),
+                ModelContentPart::ToolCall { call } => {
+                    let arguments = serde_json::to_string(&json_fallback_arguments(
+                        &call.arguments,
+                        freeform_fallbacks.get(&call.name).map(String::as_str),
+                    ))
+                    .expect("tool arguments serialize");
+                    calls.push(ChatToolCall {
+                        id: call.id,
+                        kind: "function".to_owned(),
+                        function: ChatFunctionCall {
+                            name: call.name,
+                            arguments,
+                        },
+                    });
+                }
                 ModelContentPart::ToolResult { result } => results.push(result),
                 ModelContentPart::ImageAsset(asset) => {
                     has_image = true;
@@ -1362,6 +1382,21 @@ fn chat_messages_from_model_messages(
         });
     }
     Ok(rendered)
+}
+
+fn json_fallback_arguments(arguments: &Value, fallback_argument: Option<&str>) -> Value {
+    let Some(fallback_argument) = fallback_argument else {
+        return arguments.clone();
+    };
+    let Some(input) = arguments.as_str() else {
+        return arguments.clone();
+    };
+    let mut object = serde_json::Map::new();
+    object.insert(
+        fallback_argument.to_owned(),
+        Value::String(input.to_owned()),
+    );
+    Value::Object(object)
 }
 
 fn chat_tool_result_text(content: &ModelToolResultContent) -> String {

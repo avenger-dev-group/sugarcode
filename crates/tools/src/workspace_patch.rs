@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 mod atomic;
 mod conflict;
 mod diff;
+mod freeform;
 mod parser;
 mod text;
 
@@ -37,6 +38,12 @@ use diff::DiffOperation;
 use diff::apply_hunks;
 use diff::apply_hunks_detailed;
 use diff::render_diff;
+use freeform::FilePatch;
+use freeform::UpdateChunk;
+pub use freeform::WORKSPACE_APPLY_PATCH_LARK_GRAMMAR;
+pub use freeform::WorkspaceFreeformPatchErrorKind;
+use freeform::parse_workspace_freeform_patch;
+pub use freeform::validate_workspace_freeform_patch;
 #[cfg(test)]
 use parser::parse_patch;
 use parser::parse_patch_detailed;
@@ -416,6 +423,20 @@ pub trait WorkspacePatchExecutor: fmt::Debug + Send + Sync {
         })
     }
 
+    fn prepare_freeform_patch<'a>(
+        &'a self,
+        patch: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = WorkspaceChangeSetPrepareOutcome> + Send + 'a>> {
+        let _ = (patch, cancellation);
+        Box::pin(async {
+            WorkspaceChangeSetPrepareOutcome::Error {
+                operation_index: None,
+                kind: WorkspacePatchErrorKind::UnsupportedDiffFeature,
+            }
+        })
+    }
+
     fn commit_change_set<'a>(
         &'a self,
         prepared: WorkspaceChangeSetPrepared,
@@ -491,6 +512,18 @@ impl WorkspacePatchExecutor for WorkspaceTool {
         ))
     }
 
+    fn prepare_freeform_patch<'a>(
+        &'a self,
+        patch: &'a str,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = WorkspaceChangeSetPrepareOutcome> + Send + 'a>> {
+        Box::pin(WorkspaceTool::prepare_freeform_patch(
+            self,
+            patch,
+            cancellation,
+        ))
+    }
+
     fn commit_change_set<'a>(
         &'a self,
         prepared: WorkspaceChangeSetPrepared,
@@ -505,6 +538,96 @@ impl WorkspacePatchExecutor for WorkspaceTool {
 }
 
 impl WorkspaceTool {
+    pub async fn prepare_freeform_patch(
+        &self,
+        patch: &str,
+        cancellation: &CancellationToken,
+    ) -> WorkspaceChangeSetPrepareOutcome {
+        let parsed = match parse_workspace_freeform_patch(patch) {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                return WorkspaceChangeSetPrepareOutcome::Error {
+                    operation_index: None,
+                    kind: WorkspacePatchErrorKind::UnsupportedDiffFeature,
+                };
+            }
+        };
+        let mut operations = Vec::with_capacity(parsed.files.len());
+        for (operation_index, file) in parsed.files.into_iter().enumerate() {
+            if cancellation.is_cancelled() {
+                return WorkspaceChangeSetPrepareOutcome::Error {
+                    operation_index: Some(operation_index),
+                    kind: WorkspacePatchErrorKind::Cancelled,
+                };
+            }
+            match file {
+                FilePatch::Add { path, content } => {
+                    operations.push(WorkspaceChangeSetOperation::Create { path, content });
+                }
+                FilePatch::Delete { path } => {
+                    let content = match self
+                        .read(&WorkspaceReadArguments { path: path.clone() }, cancellation)
+                        .await
+                    {
+                        WorkspaceReadOutcome::Content { content, .. } => content,
+                        WorkspaceReadOutcome::Error { kind } => {
+                            return WorkspaceChangeSetPrepareOutcome::Error {
+                                operation_index: Some(operation_index),
+                                kind: map_read_error(kind),
+                            };
+                        }
+                    };
+                    operations.push(WorkspaceChangeSetOperation::Delete {
+                        path,
+                        base_sha256: sha256(content.as_bytes()),
+                    });
+                }
+                FilePatch::Update { path, chunks } => {
+                    let content = match self
+                        .read(&WorkspaceReadArguments { path: path.clone() }, cancellation)
+                        .await
+                    {
+                        WorkspaceReadOutcome::Content { content, .. } => content,
+                        WorkspaceReadOutcome::Error { kind } => {
+                            return WorkspaceChangeSetPrepareOutcome::Error {
+                                operation_index: Some(operation_index),
+                                kind: map_read_error(kind),
+                            };
+                        }
+                    };
+                    let text = match TextFile::parse(content.as_bytes()) {
+                        Ok(text) => text,
+                        Err(kind) => {
+                            return WorkspaceChangeSetPrepareOutcome::Error {
+                                operation_index: Some(operation_index),
+                                kind,
+                            };
+                        }
+                    };
+                    let edits = match freeform_chunks_to_edits(&text.lines, &chunks) {
+                        Ok(edits) => edits,
+                        Err(diagnostic) => {
+                            return WorkspaceChangeSetPrepareOutcome::ValidationRejected {
+                                operation_index,
+                                kind: WorkspacePatchErrorKind::ExpectedMismatch,
+                                diagnostic,
+                            };
+                        }
+                    };
+                    operations.push(WorkspaceChangeSetOperation::Update(
+                        WorkspaceEditArguments {
+                            path,
+                            base_sha256: sha256(content.as_bytes()),
+                            edits,
+                        },
+                    ));
+                }
+            }
+        }
+        self.prepare_change_set(&WorkspaceChangeSetArguments { operations }, cancellation)
+            .await
+    }
+
     pub async fn prepare_change_set(
         &self,
         arguments: &WorkspaceChangeSetArguments,
@@ -1517,6 +1640,65 @@ fn wal_target_state(
 
 fn change_set_commit_error(kind: WorkspacePatchErrorKind) -> WorkspaceChangeSetCommitOutcome {
     WorkspaceChangeSetCommitOutcome::Error { kind }
+}
+
+fn freeform_chunks_to_edits(
+    lines: &[String],
+    chunks: &[UpdateChunk],
+) -> Result<Vec<WorkspaceLineEdit>, WorkspaceEditDiagnostic> {
+    let mut cursor = 0usize;
+    let mut edits = Vec::with_capacity(chunks.len());
+    for (chunk_offset, chunk) in chunks.iter().enumerate() {
+        if let Some(context) = &chunk.context {
+            let Some(context_offset) = lines[cursor..].iter().position(|line| line == context)
+            else {
+                return Err(freeform_mismatch_diagnostic(chunk_offset, cursor));
+            };
+            cursor += context_offset + 1;
+        }
+        let start = if chunk.old_lines.is_empty() {
+            if chunk.end_of_file {
+                lines.len()
+            } else {
+                cursor
+            }
+        } else {
+            let Some(relative) = lines[cursor..]
+                .windows(chunk.old_lines.len())
+                .position(|candidate| candidate == chunk.old_lines.as_slice())
+            else {
+                return Err(freeform_mismatch_diagnostic(chunk_offset, cursor));
+            };
+            let start = cursor + relative;
+            if chunk.end_of_file && start + chunk.old_lines.len() != lines.len() {
+                return Err(freeform_mismatch_diagnostic(chunk_offset, start));
+            }
+            start
+        };
+        let start_line = u32::try_from(start + 1)
+            .map_err(|_| freeform_mismatch_diagnostic(chunk_offset, start))?;
+        let delete_line_count = u32::try_from(chunk.old_lines.len())
+            .map_err(|_| freeform_mismatch_diagnostic(chunk_offset, start))?;
+        edits.push(WorkspaceLineEdit {
+            start_line,
+            delete_line_count,
+            expected: chunk.old_lines.join("\n"),
+            replacement: chunk.new_lines.join("\n"),
+        });
+        cursor = start + chunk.old_lines.len();
+    }
+    Ok(edits)
+}
+
+fn freeform_mismatch_diagnostic(chunk_offset: usize, cursor: usize) -> WorkspaceEditDiagnostic {
+    WorkspaceEditDiagnostic {
+        edit_index: u32::try_from(chunk_offset + 1).ok(),
+        hunk_index: u32::try_from(chunk_offset + 1).ok(),
+        line: u32::try_from(cursor + 1).ok(),
+        expected_summary: Some("patch context".to_string()),
+        actual_summary: Some("workspace content".to_string()),
+        suggested_action: "readFileAndRebase".to_string(),
+    }
 }
 
 fn line_edits_to_diff(

@@ -16,6 +16,79 @@ fn edit(path: &str, before: &[u8], edits: Vec<WorkspaceLineEdit>) -> WorkspaceEd
 }
 
 #[tokio::test]
+async fn workspace_freeform_patch_commits_one_atomic_multi_file_change_set() {
+    let workspace = tempdir().expect("workspace");
+    fs::write(workspace.path().join("notes.txt"), "one\ntwo\n").expect("seed update");
+    fs::write(workspace.path().join("stale.txt"), "remove\n").expect("seed delete");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let patch = concat!(
+        "*** Begin Patch\n",
+        "*** Add File: added.txt\n",
+        "+created\n",
+        "*** Update File: notes.txt\n",
+        "@@\n",
+        " one\n",
+        "-two\n",
+        "+second\n",
+        "*** Delete File: stale.txt\n",
+        "*** End Patch",
+    );
+
+    let WorkspaceChangeSetPrepareOutcome::Prepared(prepared) =
+        tool.prepare_freeform_patch(patch, &cancellation()).await
+    else {
+        panic!("prepare freeform patch");
+    };
+    assert_eq!(prepared.changes().len(), 3);
+    assert!(matches!(
+        tool.commit_change_set(prepared, &cancellation()).await,
+        WorkspaceChangeSetCommitOutcome::Applied { receipts } if receipts.len() == 3
+    ));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("added.txt")).expect("added file"),
+        "created\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("notes.txt")).expect("updated file"),
+        "one\nsecond\n"
+    );
+    assert!(!workspace.path().join("stale.txt").exists());
+}
+
+#[tokio::test]
+async fn workspace_freeform_patch_rejects_stale_context_without_mutation() {
+    let workspace = tempdir().expect("workspace");
+    fs::write(workspace.path().join("notes.txt"), "actual\n").expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let outcome = tool
+        .prepare_freeform_patch(
+            concat!(
+                "*** Begin Patch\n",
+                "*** Update File: notes.txt\n",
+                "@@\n",
+                "-expected\n",
+                "+replacement\n",
+                "*** End Patch",
+            ),
+            &cancellation(),
+        )
+        .await;
+
+    assert!(matches!(
+        outcome,
+        WorkspaceChangeSetPrepareOutcome::ValidationRejected {
+            kind: WorkspacePatchErrorKind::ExpectedMismatch,
+            diagnostic: WorkspaceEditDiagnostic { suggested_action, .. },
+            ..
+        } if suggested_action == "readFileAndRebase"
+    ));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("notes.txt")).expect("unchanged file"),
+        "actual\n"
+    );
+}
+
+#[tokio::test]
 async fn workspace_edit_applies_multiple_original_revision_line_splices() {
     let workspace = tempdir().expect("workspace");
     let before = b"one\ntwo\nthree\nfour\n";

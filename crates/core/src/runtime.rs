@@ -49,6 +49,8 @@ use sugarcode_model_provider::ModelRole;
 use sugarcode_model_provider::ModelTextPhase;
 use sugarcode_model_provider::ModelToolCall;
 use sugarcode_model_provider::ModelToolDefinition;
+use sugarcode_model_provider::ModelToolGrammar;
+use sugarcode_model_provider::ModelToolGrammarSyntax;
 use sugarcode_model_provider::ModelToolResult;
 use sugarcode_model_provider::ModelToolResultContent;
 use sugarcode_model_provider::ModelUsage;
@@ -109,9 +111,7 @@ use sugarcode_tools::ShellCommandExecutor;
 use sugarcode_tools::ShellCommandOutcome;
 use sugarcode_tools::ShellOutputStream;
 use sugarcode_tools::WorkspaceAdvancedSearchOutcome;
-use sugarcode_tools::WorkspaceChangeSetArguments;
 use sugarcode_tools::WorkspaceChangeSetCommitOutcome;
-use sugarcode_tools::WorkspaceChangeSetOperation;
 use sugarcode_tools::WorkspaceChangeSetPrepareOutcome;
 use sugarcode_tools::WorkspaceEditDiagnostic;
 use sugarcode_tools::WorkspaceFileChangeKind;
@@ -120,7 +120,6 @@ use sugarcode_tools::WorkspaceListArguments;
 use sugarcode_tools::WorkspaceListErrorKind;
 use sugarcode_tools::WorkspaceListExecutor;
 use sugarcode_tools::WorkspaceListOutcome;
-use sugarcode_tools::WorkspacePatchArguments;
 use sugarcode_tools::WorkspacePatchErrorKind;
 use sugarcode_tools::WorkspacePatchExecutor;
 use sugarcode_tools::WorkspaceReadArguments;
@@ -1609,9 +1608,7 @@ async fn run_turn(
                             "workspace/read" => runtime.workspace_read.is_some(),
                             "workspace/list" => runtime.workspace_list.is_some(),
                             "workspace/search" => runtime.workspace_search.is_some(),
-                            "workspace/edit" | "workspace/apply-diff" => {
-                                runtime.workspace_patch.is_some()
-                            }
+                            "workspace/apply-patch" => runtime.workspace_patch.is_some(),
                             "shell/exec" => {
                                 runtime.shell_executor.is_some()
                                     && runtime.approval_requester.is_some()
@@ -2291,29 +2288,12 @@ async fn run_turn(
                                 .workspace_patch
                                 .as_ref()
                                 .expect("validated workspace write executor");
-                            let legacy_shape = arguments.change_set.is_none();
-                            let change_set = if let Some(change_set) = arguments.change_set {
-                                change_set
-                            } else if let Some(edit) = arguments.edit {
-                                WorkspaceChangeSetArguments {
-                                    operations: vec![WorkspaceChangeSetOperation::Update(edit)],
-                                }
-                            } else {
-                                WorkspaceChangeSetArguments {
-                                    operations: vec![WorkspaceChangeSetOperation::Diff(
-                                        WorkspacePatchArguments {
-                                            path: arguments.path.clone(),
-                                            diff: arguments
-                                                .diff
-                                                .expect("validated workspace/apply-diff input"),
-                                            base_sha256: None,
-                                        },
-                                    )],
-                                }
-                            };
-                            let prepare_outcome = executor
-                                .prepare_change_set(&change_set, &cancellation)
-                                .await;
+                            let patch = arguments
+                                .freeform_patch
+                                .as_deref()
+                                .expect("validated workspace/apply-patch input");
+                            let prepare_outcome =
+                                executor.prepare_freeform_patch(patch, &cancellation).await;
                             let workspace_tool_name = call.name.as_str();
                             let mut workspace_diagnostic = None;
                             let (mut result, mut content, interrupted_after_commit) =
@@ -2412,11 +2392,7 @@ async fn run_turn(
                                                             "afterBytes": receipt.after_bytes,
                                                         }))
                                                         .collect::<Vec<_>>();
-                                                    let payload = if legacy_shape {
-                                                        receipts.into_iter().next().expect("legacy write receipt")
-                                                    } else {
-                                                        serde_json::json!({ "files": receipts })
-                                                    };
+                                                    let payload = serde_json::json!({ "files": receipts });
                                                     let content = serde_json::to_string(&payload)
                                                     .expect("workspace write result serializes");
                                                     (
@@ -2790,7 +2766,8 @@ fn validate_tool_call_batch(
                 }
                 validation
             }
-            "workspace/edit" | "workspace/apply-diff" if runtime.workspace_patch.is_some() => {
+            "workspace/apply-patch" if runtime.workspace_patch.is_some() =>
+            {
                 let validation = workspace_tool_arguments(call).map(|_| ());
                 if validation.is_err() {
                     call_guidance = workspace_tool_argument_guidance(call);

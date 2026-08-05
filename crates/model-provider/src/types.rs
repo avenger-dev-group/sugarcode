@@ -573,6 +573,31 @@ pub struct ModelToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    /// Optional raw-text input accepted by wires with native custom-tool
+    /// support. `parameters` remains the provider-neutral JSON fallback for
+    /// wires that only support function tools.
+    pub freeform: Option<ModelToolGrammar>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelToolGrammar {
+    pub syntax: ModelToolGrammarSyntax,
+    pub definition: String,
+    /// Object field used by JSON-only provider fallbacks.
+    pub fallback_argument: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelToolGrammarSyntax {
+    Lark,
+}
+
+impl ModelToolGrammarSyntax {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lark => "lark",
+        }
+    }
 }
 
 impl ModelToolDefinition {
@@ -584,6 +609,13 @@ impl ModelToolDefinition {
                 serde_json::to_vec(&self.parameters)
                     .ok()
                     .and_then(|parameters| total.checked_add(parameters.len()))
+            })
+            .and_then(|total| {
+                self.freeform.as_ref().map_or(Some(total), |freeform| {
+                    total
+                        .checked_add(freeform.definition.len())
+                        .and_then(|total| total.checked_add(freeform.fallback_argument.len()))
+                })
             })
             .unwrap_or(usize::MAX)
     }
@@ -600,6 +632,7 @@ impl fmt::Debug for ModelToolDefinition {
             .field("name", &self.name)
             .field("description", &"<redacted>")
             .field("parameters", &"<redacted>")
+            .field("freeform", &self.freeform.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }

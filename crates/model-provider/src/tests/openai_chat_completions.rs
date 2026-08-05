@@ -21,6 +21,7 @@ fn chat_strict_auto_is_resolved_per_tool() {
                     "required": ["path"],
                     "additionalProperties": false
                 }),
+                freeform: None,
             },
             ModelToolDefinition {
                 name: "loose_tool".to_owned(),
@@ -29,6 +30,7 @@ fn chat_strict_auto_is_resolved_per_tool() {
                     "type": "object",
                     "properties": {"path": {"type": "string"}}
                 }),
+                freeform: None,
             },
         ],
     };
@@ -58,6 +60,7 @@ fn chat_compatibility_baseline_omits_optional_request_fields() {
                 "properties": {"path": {"type": "string"}},
                 "required": ["path"]
             }),
+            freeform: None,
         }],
     };
     let body = serde_json::to_value(
@@ -72,6 +75,51 @@ fn chat_compatibility_baseline_omits_optional_request_fields() {
 }
 
 #[test]
+fn chat_uses_json_function_fallback_for_freeform_tools() {
+    let request = ModelRequest {
+        model: "fixture".to_owned(),
+        instructions: Vec::new(),
+        messages: vec![ModelMessage::tool_calls(vec![ModelToolCall {
+            id: "call_custom".to_owned(),
+            name: "workspace/apply-patch".to_owned(),
+            arguments: serde_json::Value::String("raw patch".to_owned()),
+        }])],
+        tools: vec![ModelToolDefinition {
+            name: "workspace/apply-patch".to_owned(),
+            description: "apply patch".to_owned(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"patch": {"type": "string"}},
+                "required": ["patch"],
+                "additionalProperties": false
+            }),
+            freeform: Some(crate::ModelToolGrammar {
+                syntax: crate::ModelToolGrammarSyntax::Lark,
+                definition: "start: \"patch\"".to_owned(),
+                fallback_argument: "patch".to_owned(),
+            }),
+        }],
+    };
+    let body = serde_json::to_value(
+        ChatRequest::from_model_request(request, ModelStrictToolsMode::Auto, false)
+            .expect("chat request"),
+    )
+    .expect("request JSON");
+
+    assert_eq!(body["tools"][0]["type"], "function");
+    assert_eq!(
+        body["tools"][0]["function"]["parameters"]["required"][0],
+        "patch"
+    );
+    assert!(body["tools"][0].get("format").is_none());
+    let arguments = body["messages"][0]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .and_then(|arguments| serde_json::from_str::<serde_json::Value>(arguments).ok())
+        .expect("fallback arguments");
+    assert_eq!(arguments["patch"], "raw patch");
+}
+
+#[test]
 fn chat_encodes_images_and_rejects_pdf_parts() {
     let image = ModelAssetRef {
         asset_id: format!("ast_{}", "a".repeat(64)),
@@ -81,16 +129,19 @@ fn chat_encodes_images_and_rejects_pdf_parts() {
         size_bytes: 3,
         bytes: b"png".to_vec(),
     };
-    let messages = chat_messages_from_model_messages(vec![ModelMessage {
-        role: ModelRole::User,
-        content: vec![
-            ModelContentPart::Text {
-                phase: ModelTextPhase::Final,
-                text: "inspect".to_owned(),
-            },
-            ModelContentPart::ImageAsset(image.clone()),
-        ],
-    }])
+    let messages = chat_messages_from_model_messages(
+        vec![ModelMessage {
+            role: ModelRole::User,
+            content: vec![
+                ModelContentPart::Text {
+                    phase: ModelTextPhase::Final,
+                    text: "inspect".to_owned(),
+                },
+                ModelContentPart::ImageAsset(image.clone()),
+            ],
+        }],
+        &BTreeMap::new(),
+    )
     .expect("image request");
     let value = serde_json::to_value(&messages[0]).expect("chat message");
     assert_eq!(value["content"][0]["type"], "text");
@@ -100,14 +151,17 @@ fn chat_encodes_images_and_rejects_pdf_parts() {
         "data:image/png;base64,cG5n"
     );
 
-    let result = chat_messages_from_model_messages(vec![ModelMessage {
-        role: ModelRole::User,
-        content: vec![ModelContentPart::PdfDocument(ModelAssetRef {
-            media_type: "application/pdf".to_owned(),
-            original_name: "document.pdf".to_owned(),
-            ..image
-        })],
-    }]);
+    let result = chat_messages_from_model_messages(
+        vec![ModelMessage {
+            role: ModelRole::User,
+            content: vec![ModelContentPart::PdfDocument(ModelAssetRef {
+                media_type: "application/pdf".to_owned(),
+                original_name: "document.pdf".to_owned(),
+                ..image
+            })],
+        }],
+        &BTreeMap::new(),
+    );
     let Err(error) = result else {
         panic!("PDF must be rejected");
     };
@@ -135,16 +189,19 @@ fn recognized_reasoning_extension_is_replayed_only_on_chat_wire() {
         serde_json::to_vec(&raw).expect("context payload"),
     )
     .expect("context envelope");
-    let messages = chat_messages_from_model_messages(vec![
-        ModelMessage {
-            role: ModelRole::Assistant,
-            content: vec![ModelContentPart::ProviderContext(context)],
-        },
-        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
-            "call_1".to_owned(),
-            "contents".to_owned(),
-        )]),
-    ])
+    let messages = chat_messages_from_model_messages(
+        vec![
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: vec![ModelContentPart::ProviderContext(context)],
+            },
+            ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+                "call_1".to_owned(),
+                "contents".to_owned(),
+            )]),
+        ],
+        &BTreeMap::new(),
+    )
     .expect("chat continuation");
 
     assert_eq!(messages.len(), 2);
@@ -161,10 +218,13 @@ fn recognized_reasoning_extension_is_replayed_only_on_chat_wire() {
         serde_json::to_vec(&serde_json::json!([])).expect("wrong payload"),
     )
     .expect("wrong-wire context");
-    let Err(error) = chat_messages_from_model_messages(vec![ModelMessage {
-        role: ModelRole::Assistant,
-        content: vec![ModelContentPart::ProviderContext(wrong_wire)],
-    }]) else {
+    let Err(error) = chat_messages_from_model_messages(
+        vec![ModelMessage {
+            role: ModelRole::Assistant,
+            content: vec![ModelContentPart::ProviderContext(wrong_wire)],
+        }],
+        &BTreeMap::new(),
+    ) else {
         panic!("cross-wire replay must fail");
     };
     assert_eq!(error.kind(), ModelErrorKind::InvalidRequest);

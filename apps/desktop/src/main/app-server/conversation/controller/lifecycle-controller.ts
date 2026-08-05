@@ -202,7 +202,7 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
           )
         ) {
           throw new Error(
-            'Turn completed before workspace/apply-diff activity completed.',
+            'Turn completed before workspace/apply-patch activity completed.',
           );
         }
         if (
