@@ -5,6 +5,7 @@ import { isConversationStateSnapshot } from '../../src/shared/conversation.ts';
 
 const THREAD_WEB = '00000000-0001-7000-8000-000000000001';
 const THREAD_ADMIN = '00000000-0001-7000-8000-000000000002';
+const TURN_REVIEW = '00000000-0001-7000-8000-000000000003';
 
 const snapshot = (unreadStatus: string) => ({
   revision: 1,
@@ -97,5 +98,99 @@ test('advanced search truncation may occur before the match limit', () => {
       ],
     }),
     true,
+  );
+});
+
+const fullAccessCommandTurn = (
+  status: 'inProgress' | 'completed',
+  resultStatus: 'inProgress' | 'completed',
+) => ({
+  id: TURN_REVIEW,
+  status,
+  messages: [] as const,
+  commandApproval: {
+    callItemId: 'call-item-eslint',
+    id: 'approval-request-eslint',
+    callId: 'call-eslint',
+    approvalId: 'approval-eslint',
+    command: 'npx eslint . 2>&1 | tail -60',
+    argumentCount: 0,
+    fullAccess: true,
+    requestStatus: 'completed',
+    decision: {
+      id: 'approval-decision-eslint',
+      status: 'completed',
+      value: 'approved',
+    },
+    executionAttempt: {
+      id: 'execution-attempt-eslint',
+      status: 'completed',
+    },
+    executionResult: {
+      id: 'execution-result-eslint',
+      status: resultStatus,
+      outcome: {
+        type: 'process',
+        stdoutBytes: 5_990,
+        stderrBytes: 0,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        encoding: 'utf8Lossy',
+        durationMs: 2_745,
+        outcome: { type: 'exitCode', code: 0 },
+      },
+    },
+  },
+});
+
+test('conversation snapshots accept an active Full Access shell result without sandbox receipts', () => {
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'inProgress',
+      threadId: THREAD_WEB,
+      activeTurnId: TURN_REVIEW,
+      turns: [fullAccessCommandTurn('inProgress', 'inProgress')],
+    }),
+    true,
+  );
+});
+
+test('conversation snapshots accept a completed Full Access shell result without sandbox receipts', () => {
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'ready',
+      threadId: THREAD_WEB,
+      turns: [fullAccessCommandTurn('completed', 'completed')],
+    }),
+    true,
+  );
+});
+
+test('conversation snapshots reject a process result with only one sandbox receipt', () => {
+  const turn = fullAccessCommandTurn('completed', 'completed');
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'ready',
+      threadId: THREAD_WEB,
+      turns: [
+        {
+          ...turn,
+          commandApproval: {
+            ...turn.commandApproval,
+            executionResult: {
+              ...turn.commandApproval.executionResult,
+              outcome: {
+                ...turn.commandApproval.executionResult.outcome,
+                sandboxPolicy: 'filesystemReadOnlyV1',
+              },
+            },
+          },
+        },
+      ],
+    }),
+    false,
   );
 });

@@ -1154,7 +1154,7 @@ const isCommandExecutionResultOutcome = (
   }
   if (
     value.type !== 'process' ||
-    Object.keys(value).length !== 10 ||
+    ![8, 10].includes(Object.keys(value).length) ||
     typeof value.stdoutBytes !== 'number' ||
     !Number.isSafeInteger(value.stdoutBytes) ||
     value.stdoutBytes < 0 ||
@@ -1167,8 +1167,12 @@ const isCommandExecutionResultOutcome = (
     typeof value.durationMs !== 'number' ||
     !Number.isSafeInteger(value.durationMs) ||
     value.durationMs < 0 ||
-    value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
-    value.networkPolicy !== 'networkDeniedV1' ||
+    ((Object.hasOwn(value, 'sandboxPolicy') ||
+      Object.hasOwn(value, 'networkPolicy')) &&
+      (value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
+        value.networkPolicy !== 'networkDeniedV1')) ||
+    Object.hasOwn(value, 'sandboxPolicy') !==
+      Object.hasOwn(value, 'networkPolicy') ||
     !isRecord(value.outcome)
   ) {
     return false;

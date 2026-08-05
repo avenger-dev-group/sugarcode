@@ -169,6 +169,11 @@ removes credential-like variables before spawning a sandboxed command.
 Preload exposes fixed validated operations and minimized snapshots. Renderer
 owns presentation state only and receives no executable path, environment,
 absolute workspace path or raw native capability.
+Minimized command process results preserve their authority receipt shape:
+sandboxed direct execution carries both `filesystemReadOnlyV1` and
+`networkDeniedV1`, while approved Full Access execution carries neither.
+Shared snapshot validation accepts exactly those paired-or-absent forms and
+never drops a Full Access result merely because sandbox receipts are absent.
 
 Desktop starts project and isolated chat roots with bounded structured file
 writes. Shell workspace write remains a separate explicitly approved policy.
