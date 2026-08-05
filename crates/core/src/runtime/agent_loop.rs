@@ -5,6 +5,7 @@ pub(super) const MAX_CONSECUTIVE_APPROVAL_DENIALS: u8 = 3;
 pub(super) const MAX_CONSECUTIVE_TOOL_ARGUMENT_ERRORS: u8 = 3;
 pub(super) const MAX_CONSECUTIVE_TOOL_EXECUTION_ERRORS: u8 = 3;
 pub(super) const MAX_TOTAL_NON_PROGRESS_ROUNDS: u8 = 4;
+pub(super) const MAX_PREMATURE_FINAL_RECOVERIES: u8 = 1;
 
 #[derive(Debug, Default)]
 pub(super) struct AgentLoopState {
@@ -15,6 +16,7 @@ pub(super) struct AgentLoopState {
     last_tool_execution_signature: Option<String>,
     consecutive_tool_execution_errors: u8,
     total_non_progress_rounds: u8,
+    premature_final_recoveries: u8,
 }
 
 impl AgentLoopState {
@@ -44,6 +46,19 @@ impl AgentLoopState {
             return false;
         }
         true
+    }
+
+    pub(super) fn has_observed_tool_calls(&self) -> bool {
+        !self.call_ids.is_empty()
+    }
+
+    pub(super) fn needs_completion_recovery(&self) -> bool {
+        self.premature_final_recoveries > 0
+    }
+
+    pub(super) fn record_premature_final(&mut self) -> bool {
+        self.premature_final_recoveries = self.premature_final_recoveries.saturating_add(1);
+        self.premature_final_recoveries > MAX_PREMATURE_FINAL_RECOVERIES
     }
 
     pub(super) fn record_approval_denied(&mut self) -> bool {
@@ -90,4 +105,41 @@ impl AgentLoopState {
         self.total_non_progress_rounds = self.total_non_progress_rounds.saturating_add(1);
         self.total_non_progress_rounds >= MAX_TOTAL_NON_PROGRESS_ROUNDS
     }
+}
+
+pub(super) fn looks_like_unfinished_process_update(text: &str) -> bool {
+    const MAX_CANDIDATE_BYTES: usize = 1_024;
+    const CONTINUATION_CUES: &[&str] = &[
+        "i will",
+        "i'll ",
+        "let me ",
+        "now start",
+        "now begin",
+        "现在开始",
+        "現在開始",
+        "接下来",
+        "接下來",
+        "下一步",
+        "将开始",
+        "將開始",
+    ];
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_CANDIDATE_BYTES {
+        return false;
+    }
+    let lowered = trimmed.to_lowercase();
+    if !CONTINUATION_CUES.iter().any(|cue| lowered.contains(cue)) {
+        return false;
+    }
+    let Some(last_line) = trimmed
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    else {
+        return false;
+    };
+    last_line.starts_with('#')
+        || (last_line.len() > 4 && last_line.starts_with("**") && last_line.ends_with("**"))
 }

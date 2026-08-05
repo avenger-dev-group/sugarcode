@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn unfinished_process_update_detection_is_narrow_and_structural() {
+    assert!(looks_like_unfinished_process_update(
+        "好的，现在开始逐一修复。\n\n**修复 1: emoji-picker-react 类型错误**"
+    ));
+    assert!(looks_like_unfinished_process_update(
+        "I will fix these now.\n\n## Fix 1: type errors"
+    ));
+    assert!(!looks_like_unfinished_process_update(
+        "修复已完成。\n\n**验证：116 项测试全部通过。**"
+    ));
+    assert!(!looks_like_unfinished_process_update(
+        "现在开始逐一说明已经完成的修复。"
+    ));
+}
+
+#[test]
+fn premature_final_recovery_is_bounded_to_one_extra_round() {
+    let mut state = AgentLoopState::default();
+
+    assert!(!state.record_premature_final());
+    assert!(state.needs_completion_recovery());
+    assert!(state.record_premature_final());
+}
+
+#[test]
 fn completed_text_replaces_a_different_streaming_preview() {
     let response = ModelResponse {
         output: vec![sugarcode_model_provider::ModelOutputItem {
@@ -20,6 +45,106 @@ fn completed_text_replaces_a_different_streaming_preview() {
         classify_model_response(response, &preview).expect("completed response"),
         CompletedRoundOutput::Final { text, .. } if text == "authoritative completed text"
     ));
+}
+
+#[tokio::test]
+async fn unfinished_process_update_after_tool_use_continues_before_finalizing() {
+    #[derive(Debug)]
+    struct ImmediateWorkspaceRead;
+
+    impl WorkspaceReadExecutor for ImmediateWorkspaceRead {
+        fn read<'a>(
+            &'a self,
+            _arguments: &'a WorkspaceReadArguments,
+            _cancellation: &'a CancellationToken,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = WorkspaceReadOutcome> + Send + 'a>>
+        {
+            Box::pin(async {
+                WorkspaceReadOutcome::Content {
+                    content: "fixture".to_owned(),
+                    bytes: 7,
+                }
+            })
+        }
+    }
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![
+                Ok(model_event::tool_call(ModelToolCall {
+                    id: "call_inspect".to_owned(),
+                    name: "workspace/read".to_owned(),
+                    arguments: serde_json::json!({"path": "README.md"}),
+                })),
+                Ok(model_event::COMPLETED),
+            ],
+            vec![Ok(model_event::final_response(
+                "好的，现在开始逐一修复。\n\n**修复 1: 类型错误**",
+            ))],
+            vec![Ok(model_event::final_response(
+                "修复已完成，并已通过验证。",
+            ))],
+        ])),
+        requests: requests.clone(),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_owned(),
+        Some(Arc::new(ImmediateWorkspaceRead)),
+        None,
+    );
+    runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Fix the project".to_owned()),
+        )
+        .expect("start turn");
+
+    let mut lifecycle = Vec::new();
+    loop {
+        let event = events.recv().await.expect("core event");
+        let completed = matches!(event.kind, CoreEventKind::TurnCompleted { .. });
+        lifecycle.push(event);
+        if completed {
+            break;
+        }
+    }
+    assert!(
+        lifecycle
+            .iter()
+            .any(|event| matches!(event.kind, CoreEventKind::AgentOutputDiscarded { .. }))
+    );
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    assert!(snapshot.turns[0].items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
+            if text == "修复已完成，并已通过验证。"
+    )));
+    assert!(!snapshot.turns[0].items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
+            if text.contains("现在开始逐一修复")
+    )));
+
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 3);
+    assert!(!requests[1].instructions.iter().any(|instruction| {
+        instruction.source == ModelInstructionSource::SugarCodeCompletionRecoveryV1
+    }));
+    assert!(requests[2].instructions.iter().any(|instruction| {
+        instruction.source == ModelInstructionSource::SugarCodeCompletionRecoveryV1
+    }));
 }
 
 #[test]

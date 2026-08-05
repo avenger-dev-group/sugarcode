@@ -125,6 +125,7 @@ impl fmt::Debug for ModelInstruction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelInstructionSource {
     SugarCodeBaseAgentV1,
+    SugarCodeCompletionRecoveryV1,
     SugarCodeModelSwitchV1,
     SugarCodeActiveTurnCompactionV1,
     SugarCodeThreadTitleV1,
@@ -138,6 +139,7 @@ impl ModelInstructionSource {
     fn prefix(self) -> &'static str {
         match self {
             Self::SugarCodeBaseAgentV1 => "",
+            Self::SugarCodeCompletionRecoveryV1 => "",
             Self::SugarCodeModelSwitchV1 => "",
             Self::SugarCodeActiveTurnCompactionV1 => "",
             Self::SugarCodeThreadTitleV1 => "",

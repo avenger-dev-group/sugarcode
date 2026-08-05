@@ -104,6 +104,24 @@ impl ShellCommandExecutor for RootedShell {
     }
 }
 
+fn shell_schema_branch<'a>(parameters: &'a serde_json::Value, kind: &str) -> &'a serde_json::Value {
+    parameters
+        .get("oneOf")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|branches| {
+            branches.iter().find(|branch| {
+                branch
+                    .pointer("/properties/kind/const")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(kind)
+            })
+        })
+        .unwrap_or_else(|| {
+            assert_eq!(kind, "direct", "single-branch schema must be direct");
+            parameters
+        })
+}
+
 #[cfg(any(target_os = "macos", windows))]
 #[test]
 fn shell_schema_advertises_and_validates_the_authoritative_absolute_root() {
@@ -135,19 +153,44 @@ fn shell_schema_advertises_and_validates_the_authoritative_absolute_root() {
             .contains("Never guess, translate or invent")
     );
     assert!(
-        definition
-            .parameters
+        shell_schema_branch(&definition.parameters, "shell")
             .pointer("/properties/cwd/description")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|description| description.contains(&encoded_root)
                 && description.contains("process starts in cwd"))
     );
     assert_eq!(
-        definition.parameters.pointer("/properties/cwd/const"),
+        shell_schema_branch(&definition.parameters, "shell").pointer("/properties/cwd/const"),
         Some(&serde_json::Value::String(
             root.to_str().expect("UTF-8 root").to_string()
         ))
     );
+    let direct_schema = shell_schema_branch(&definition.parameters, "direct");
+    let shell_schema = shell_schema_branch(&definition.parameters, "shell");
+    assert!(direct_schema.pointer("/properties/argvJson").is_some());
+    assert!(direct_schema.pointer("/properties/timeoutMs").is_none());
+    assert!(shell_schema.pointer("/properties/argvJson").is_none());
+    assert!(shell_schema.pointer("/properties/timeoutMs").is_some());
+    assert_eq!(
+        direct_schema.get("required"),
+        Some(&serde_json::json!([
+            "description",
+            "kind",
+            "command",
+            "argvJson",
+            "cwd"
+        ]))
+    );
+    assert_eq!(
+        shell_schema.get("required"),
+        Some(&serde_json::json!([
+            "description",
+            "kind",
+            "command",
+            "cwd"
+        ]))
+    );
+    let schema_validator = jsonschema::validator_for(&definition.parameters).expect("shell schema");
 
     let call = |cwd: &str| ModelToolCall {
         id: "call_full_shell".to_string(),
@@ -159,8 +202,23 @@ fn shell_schema_advertises_and_validates_the_authoritative_absolute_root() {
             "cwd": cwd
         }),
     };
-    assert!(shell_tool_arguments(&call(root.to_str().expect("UTF-8 root")), Some(&root)).is_ok());
+    let preferred_shell_call = call(root.to_str().expect("UTF-8 root"));
+    assert!(schema_validator.is_valid(&preferred_shell_call.arguments));
+    assert!(shell_tool_arguments(&preferred_shell_call, Some(&root)).is_ok());
     assert!(shell_tool_arguments(&call("/Users/sugar/workspace/guessed"), Some(&root)).is_err());
+    let shell_call_with_direct_argv = ModelToolCall {
+        id: "call_mixed_authority".to_string(),
+        name: "shell/exec".to_string(),
+        arguments: serde_json::json!({
+            "description": "Inspect the active workspace.",
+            "kind": "shell",
+            "command": "git status --short",
+            "argvJson": "[]",
+            "cwd": root.to_str().expect("UTF-8 root")
+        }),
+    };
+    assert!(!schema_validator.is_valid(&shell_call_with_direct_argv.arguments));
+    assert!(shell_tool_arguments(&shell_call_with_direct_argv, Some(&root)).is_err());
 
     let direct_call = |cwd: &str| ModelToolCall {
         id: "call_direct".to_string(),
@@ -173,6 +231,7 @@ fn shell_schema_advertises_and_validates_the_authoritative_absolute_root() {
             "cwd": cwd
         }),
     };
+    assert!(schema_validator.is_valid(&direct_call(root.to_str().expect("UTF-8 root")).arguments));
     assert!(
         shell_tool_arguments(
             &direct_call(root.to_str().expect("UTF-8 root")),
@@ -184,6 +243,34 @@ fn shell_schema_advertises_and_validates_the_authoritative_absolute_root() {
     assert!(
         shell_tool_arguments(&direct_call("/Users/sugar/workspace/guessed"), Some(&root)).is_err()
     );
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn full_access_shell_normalizes_a_bounded_decimal_string_timeout() {
+    let root = std::path::PathBuf::from("/workspace");
+    let call = |timeout_ms: serde_json::Value| ModelToolCall {
+        id: "call_string_timeout".to_string(),
+        name: "shell/exec".to_string(),
+        arguments: serde_json::json!({
+            "description": "Install all project dependencies.",
+            "kind": "shell",
+            "command": "pnpm install",
+            "cwd": "/workspace",
+            "timeoutMs": timeout_ms
+        }),
+    };
+
+    let normalized = shell_tool_arguments(&call(serde_json::json!("120000")), Some(&root))
+        .expect("bounded decimal timeout compatibility");
+    assert_eq!(normalized.timeout_ms, 120_000);
+    assert!(shell_tool_arguments(&call(serde_json::json!("120000ms")), Some(&root)).is_err());
+    assert!(shell_tool_arguments(&call(serde_json::json!("600001")), Some(&root)).is_err());
+
+    let invalid = call(serde_json::json!("120000ms"));
+    let guidance = shell_tool_argument_guidance(&invalid, Some(&root)).expect("timeout guidance");
+    assert!(guidance.expected_summary.contains("ASCII digits only"));
+    assert_eq!(guidance.suggested_action, "useBoundedTimeoutMilliseconds");
 }
 
 #[test]
@@ -542,21 +629,20 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             .any(|tool| tool.name == "shell/exec")
     );
     assert!(requests[0].tools.iter().any(|tool| {
+        let direct_schema = shell_schema_branch(&tool.parameters, "direct");
         tool.name == "shell/exec"
             && tool
                 .description
                 .contains("writes inside the active workspace scope")
             && tool.description.contains("network access is denied")
-            && tool
-                .parameters
+            && direct_schema
                 .pointer("/properties/command/description")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|description| {
                     description.contains("absolute executable path")
                         && description.contains("Bare names")
                 })
-            && tool
-                .parameters
+            && direct_schema
                 .pointer("/properties/argvJson/description")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|description| {

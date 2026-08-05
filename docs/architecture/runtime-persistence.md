@@ -158,6 +158,15 @@ that is absent from a ToolCall-only completed snapshot is explicitly discarded
 and never becomes a durable Item; this lifecycle close happens before the next
 model request starts.
 
+A completed model response may also be non-durable when it is an obvious
+unfinished process update after tool use. Detection is deliberately
+conjunctive and bounded: the response must be short, contain an explicit
+future/continuation cue and end in a heading with no body. Runtime emits
+`agentOutputDiscarded`, injects the completion-recovery instruction and
+continues the same Turn once. A repeated match terminates as `incomplete`;
+there is no recovery loop, and the rejected text never enters portable or
+durable assistant history.
+
 The same discard boundary applies when a provisional preview reaches its local
 rendering budget. Core stops retaining further deltas for that output reference
 but continues parsing the provider stream; only the authoritative final text,
@@ -234,7 +243,11 @@ bounded expected summary and suggested action, without retaining the rejected
 command or arguments; the absolute-executable, JSON-only `argvJson` and
 direct sandbox requirements remain unchanged. Both preferred schemas use the
 capability-advertised absolute workspace root as cwd; runtime/replay also accept
-the earlier direct dot and validated shell-relative forms. Rollout execution-
+the earlier direct dot and validated shell-relative forms. The model-facing
+direct and Full Access shell branches are mutually exclusive, so fields rejected
+by one authority are not advertised by that authority. A bounded ASCII-decimal
+string timeout is normalized as compatible shell syntax while the durable
+ToolCall retains its original arguments. Rollout execution-
 attempt validation branches on `kind`: sandbox receipts are mandatory for
 direct and forbidden for approved Full Access shell. A valid batch resets the
 counter. Provider transport/protocol errors, tool errors, Desktop protocol

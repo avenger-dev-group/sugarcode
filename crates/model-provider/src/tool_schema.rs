@@ -179,6 +179,42 @@ mod tests {
     }
 
     #[test]
+    fn auto_downgrades_a_discriminated_tool_union() {
+        let schema = json!({
+            "type": "object",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "const": "direct" },
+                        "argvJson": { "type": "string" }
+                    },
+                    "required": ["kind", "argvJson"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": { "type": "string", "const": "shell" },
+                        "timeoutMs": { "type": "integer" }
+                    },
+                    "required": ["kind", "timeoutMs"]
+                }
+            ]
+        });
+        assert!(
+            !strict_for_tool(
+                "shell/exec",
+                &schema,
+                ToolSchemaDialect::OpenAi,
+                ModelStrictToolsMode::Auto
+            )
+            .expect("auto downgrade")
+        );
+    }
+
+    #[test]
     fn enabled_reports_the_tool_and_schema_reason() {
         let error = strict_for_tool(
             "mcp__fixture__loose",

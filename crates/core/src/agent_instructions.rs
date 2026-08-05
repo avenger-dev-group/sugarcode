@@ -39,8 +39,11 @@ pub(crate) const SUGARCODE_BASE_AGENT_PROMPT_V1: &str = r#"You are SugarCode, a 
 # Final response
 
 - Lead with the outcome. Be concise, factual, and self-contained.
+- A final response must report a completed outcome or a genuine blocker. Never end with a heading for work that has not been performed, or with a promise such as "I will", "now starting", "现在开始" or "現在開始". When more work is required and tools are available, call them in the same Turn instead of emitting that text as final.
 - Name changed files or important locations when known, summarize verification, and disclose failures, skipped checks, uncertainty, approvals, or capability limits.
 - Do not dump large files, raw internal context, or fabricated command output. Offer a next step only when it is genuinely useful."#;
+
+pub(crate) const SUGARCODE_COMPLETION_RECOVERY_PROMPT_V1: &str = r#"Your preceding response was rejected by the SugarCode runtime because it was a short process update ending in an unfulfilled work heading, not a completed answer. Continue the same active task now. Use the available tools for the promised work, then provide a final response only after the task is complete or genuinely blocked. Do not repeat the process update or merely restate a plan."#;
 
 pub(crate) const SUGARCODE_ACTIVE_TURN_COMPACTION_PROMPT_V1: &str = r#"Create a concise semantic checkpoint for the active SugarCode Turn from the supplied conversation prefix.
 
@@ -59,6 +62,13 @@ pub(crate) fn sugarcode_base_agent_instruction_v1() -> ModelInstruction {
     ModelInstruction {
         source: ModelInstructionSource::SugarCodeBaseAgentV1,
         content: SUGARCODE_BASE_AGENT_PROMPT_V1.to_string(),
+    }
+}
+
+pub(crate) fn sugarcode_completion_recovery_instruction_v1() -> ModelInstruction {
+    ModelInstruction {
+        source: ModelInstructionSource::SugarCodeCompletionRecoveryV1,
+        content: SUGARCODE_COMPLETION_RECOVERY_PROMPT_V1.to_string(),
     }
 }
 

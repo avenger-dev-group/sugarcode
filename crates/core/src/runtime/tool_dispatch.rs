@@ -168,15 +168,32 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
                 })
             },
         );
-        let kinds = if cfg!(any(target_os = "macos", windows)) {
-            serde_json::json!(["direct", "shell"])
-        } else {
-            serde_json::json!(["direct"])
-        };
-        definitions.push(ModelToolDefinition {
-            name: "shell/exec".to_string(),
-            description,
-            parameters: serde_json::json!({
+        let direct_parameters = serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "A short plain-language explanation shown in the approval UI. Describe the user-visible action without executable paths, argv, cwd, or policy names."
+                },
+                "kind": {
+                    "type": "string",
+                    "const": "direct"
+                },
+                "command": {
+                    "type": "string",
+                    "description": "One exact absolute executable path. Bare names are rejected."
+                },
+                "argvJson": {
+                    "type": "string",
+                    "description": "A JSON-encoded array of argv strings after command, for example [\"status\",\"--short\"]. This is JSON array syntax, never a shell command line."
+                },
+                "cwd": cwd_parameters.clone()
+            },
+            "required": ["description", "kind", "command", "argvJson", "cwd"]
+        });
+        let parameters = if cfg!(any(target_os = "macos", windows)) {
+            let shell_parameters = serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
@@ -186,15 +203,11 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
                     },
                     "kind": {
                         "type": "string",
-                        "enum": kinds
+                        "const": "shell"
                     },
                     "command": {
                         "type": "string",
-                        "description": "For direct, one absolute executable path; Bare names are rejected. For shell, the complete shell command string."
-                    },
-                    "argvJson": {
-                        "type": "string",
-                        "description": "A JSON-encoded array of argv strings after command, for example [\"status\",\"--short\"]. This is JSON array syntax, never a shell command line."
+                        "description": "One complete shell command string. Use this branch only when shell syntax such as pipes, redirections, conditionals, variables or globs is required."
                     },
                     "cwd": cwd_parameters,
                     "timeoutMs": {
@@ -204,7 +217,18 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
                     }
                 },
                 "required": ["description", "kind", "command", "cwd"]
-            }),
+            });
+            serde_json::json!({
+                "type": "object",
+                "oneOf": [direct_parameters, shell_parameters]
+            })
+        } else {
+            direct_parameters
+        };
+        definitions.push(ModelToolDefinition {
+            name: "shell/exec".to_string(),
+            description,
+            parameters,
         });
     }
     if runtime.mcp_capability.is_enabled()
@@ -264,6 +288,14 @@ fn workspace_list_parameters() -> serde_json::Value {
     })
 }
 
+fn compatible_boolean(value: &serde_json::Value) -> Option<bool> {
+    value.as_bool().or_else(|| match value.as_str() {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    })
+}
+
 pub(super) struct WorkspaceToolArguments {
     pub path: String,
     pub recursive: bool,
@@ -310,6 +342,17 @@ pub(super) fn shell_tool_argument_guidance(
         .get("kind")
         .and_then(serde_json::Value::as_str)
         == Some("shell");
+    if is_shell
+        && call
+            .arguments
+            .get("timeoutMs")
+            .is_some_and(|value| shell_timeout_ms(value).is_none())
+    {
+        return Some(ToolArgumentGuidance {
+            expected_summary: "timeoutMs must be a bounded positive integer number of milliseconds; compatible decimal strings may contain ASCII digits only",
+            suggested_action: "useBoundedTimeoutMilliseconds",
+        });
+    }
     Some(if is_shell {
         ToolArgumentGuidance {
             expected_summary: "kind shell requires description, a complete bounded command string, the advertised authoritative absolute workspace root or a workspace-relative cwd, and optional timeoutMs; argvJson is not used",
@@ -321,6 +364,19 @@ pub(super) fn shell_tool_argument_guidance(
             suggested_action: "useAbsoluteExecutablePath",
         }
     })
+}
+
+fn shell_timeout_ms(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| {
+            value.as_str().and_then(|value| {
+                (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+                    .then(|| value.parse::<u64>().ok())
+                    .flatten()
+            })
+        })
+        .filter(|value| *value > 0 && *value <= sugarcode_tools::MAX_FULL_ACCESS_SHELL_TIMEOUT_MS)
 }
 
 fn shell_argv(
@@ -419,11 +475,7 @@ pub(super) fn shell_tool_arguments(
     let timeout_ms = arguments
         .get("timeoutMs")
         .map(|value| {
-            value
-                .as_u64()
-                .filter(|value| {
-                    *value > 0 && *value <= sugarcode_tools::MAX_FULL_ACCESS_SHELL_TIMEOUT_MS
-                })
+            shell_timeout_ms(value)
                 .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))
         })
         .transpose()?
@@ -580,8 +632,7 @@ pub(super) fn workspace_tool_arguments(
         arguments
             .get("recursive")
             .map(|value| {
-                value
-                    .as_bool()
+                compatible_boolean(value)
                     .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))
             })
             .transpose()?

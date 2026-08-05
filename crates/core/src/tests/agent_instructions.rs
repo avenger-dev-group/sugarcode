@@ -34,6 +34,7 @@ fn base_agent_prompt_is_fixed_complete_and_provider_counted() {
         "Never guess, translate or invent an absolute workspace path",
         "# Engineering workflow",
         "# Final response",
+        "A final response must report a completed outcome or a genuine blocker",
     ] {
         assert!(
             instruction.content.contains(required),
@@ -49,6 +50,23 @@ fn base_agent_prompt_is_fixed_complete_and_provider_counted() {
         !instruction
             .content
             .contains("Both are bounded writes to one existing file")
+    );
+}
+
+#[test]
+fn completion_recovery_prompt_requires_action_in_the_same_turn() {
+    let instruction = sugarcode_completion_recovery_instruction_v1();
+
+    assert_eq!(
+        instruction.source,
+        ModelInstructionSource::SugarCodeCompletionRecoveryV1
+    );
+    assert!(instruction.content.contains("short process update"));
+    assert!(instruction.content.contains("Use the available tools"));
+    assert!(
+        instruction
+            .content
+            .contains("complete or genuinely blocked")
     );
 }
 

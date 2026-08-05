@@ -20,7 +20,10 @@ unsupported file types and observed identity changes.
   JSON object containing `content`, `bytes` and the exact content `sha256`.
 - `workspace/list` lists one directory level by default. `recursive: true`
   returns sorted relative `path`, `name` and entry `kind` values plus `scanned`
-  and `truncated`; recursion never follows symlinks or reparse points.
+  and `truncated`; recursion never follows symlinks or reparse points. The
+  preferred schema uses a JSON boolean. Runtime and Desktop live/durable
+  projection compatibility also accept the exact lowercase strings `"true"`
+  and `"false"`; other strings, numbers and null remain invalid.
 - `workspace/search` owns both search modes. The default remains bounded,
   case-sensitive literal UTF-8 `content` search. Explicit `mode: "content"`
   additionally supports `regex`, `caseSensitive` and `filePattern`, returning
@@ -110,13 +113,23 @@ runtime/replay compatibility only.
 
 On macOS and Windows, `kind: "shell"` accepts one bounded complete command. Its
 preferred model-facing cwd is the same exact authoritative absolute root. The
-runtime also accepts a single dot and validated workspace-relative
+model-facing JSON Schema is a discriminated `oneOf`: the direct branch requires
+`argvJson` and does not advertise `timeoutMs`, while the Full Access shell branch
+may advertise `timeoutMs` and cannot contain `argvJson`. Runtime compatibility
+for historical direct argument arrays remains outside that preferred schema.
+This keeps provider-generated arguments aligned with the authority-specific
+runtime validator instead of exposing fields that the selected branch rejects.
+The runtime also accepts a single dot and validated workspace-relative
 subdirectories for compatibility, but any other absolute cwd is rejected
 before approval or execution. The process already starts in cwd, so the schema
 directs the model not to invent a host path or prepend `cd` merely to re-enter
 the workspace. The account login shell (`-lc`) or `%COMSPEC% /C` then gives
 pipes, redirections, conditionals, variables and globs their platform meaning.
 The default timeout is 300 seconds and the maximum is 600 seconds.
+The preferred schema keeps `timeoutMs` as an integer. Runtime compatibility
+also normalizes a bounded non-empty decimal string containing ASCII digits only;
+signs, units, whitespace, fractions, zero and values above the maximum remain
+invalid. This unambiguous normalization does not change shell authority.
 This mode is Full Access: it is not sandboxed, may use network and may read or
 write outside the workspace. It is denied by default and requires an explicit
 one-call, current-Thread or current-workspace Desktop authorization which is

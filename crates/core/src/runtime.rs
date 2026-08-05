@@ -144,6 +144,7 @@ mod thread_title;
 mod tool_dispatch;
 
 use agent_loop::AgentLoopState;
+use agent_loop::looks_like_unfinished_process_update;
 use collaboration::AgentAccess;
 use collaboration::CollaborationCoordinator;
 use terminal::Terminal;
@@ -176,6 +177,7 @@ use tool_dispatch::workspace_tool_definitions;
 
 use crate::agent_instructions::sugarcode_active_turn_compaction_instruction_v1;
 use crate::agent_instructions::sugarcode_base_agent_instruction_v1;
+use crate::agent_instructions::sugarcode_completion_recovery_instruction_v1;
 use crate::agent_instructions::sugarcode_model_switch_instruction_v1;
 
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
@@ -1058,9 +1060,13 @@ async fn run_turn(
         } else {
             Vec::new()
         };
+        let mut instructions = prepared.instructions.clone();
+        if agent_loop.needs_completion_recovery() {
+            instructions.push(sugarcode_completion_recovery_instruction_v1());
+        }
         let initial_request = ModelRequest {
             model: model_gateway.model.to_string(),
-            instructions: prepared.instructions.clone(),
+            instructions: instructions.clone(),
             messages: messages.clone(),
             tools: tools.clone(),
         };
@@ -1099,7 +1105,7 @@ async fn run_turn(
         }
         let request = ModelRequest {
             model: model_gateway.model.to_string(),
-            instructions: prepared.instructions.clone(),
+            instructions: instructions.clone(),
             messages: messages.clone(),
             tools: tools.clone(),
         };
@@ -1179,7 +1185,7 @@ async fn run_turn(
                     Ok(compacted) => {
                         let compacted_tokens = ModelRequest {
                             model: model_gateway.model.to_string(),
-                            instructions: prepared.instructions.clone(),
+                            instructions: instructions.clone(),
                             messages: compacted.clone(),
                             tools: tools.clone(),
                         }
@@ -1357,6 +1363,35 @@ async fn run_turn(
                     }
                     let mut tool_calls = match round_output {
                         CompletedRoundOutput::Final { output_index, text } => {
+                            if agent_loop.has_observed_tool_calls()
+                                && looks_like_unfinished_process_update(&text)
+                            {
+                                let durable_event = CancellationToken::new();
+                                if !send_event(
+                                    &runtime,
+                                    &durable_event,
+                                    request_id,
+                                    CoreEventKind::AgentOutputDiscarded {
+                                        thread_id: thread_id.clone(),
+                                        turn_id: turn_id.clone(),
+                                        output: CoreAgentOutputRef {
+                                            response_ordinal,
+                                            output_index,
+                                        },
+                                    },
+                                )
+                                .await
+                                {
+                                    break 'rounds Terminal::StateUnavailable;
+                                }
+                                if agent_loop.record_premature_final() {
+                                    break 'rounds Terminal::Failed(ModelError::new(
+                                        ModelErrorKind::Incomplete,
+                                        false,
+                                    ));
+                                }
+                                continue 'rounds;
+                            }
                             let item = match runtime
                                 .lock_core()
                                 .and_then(|mut core| core.start_agent_message(&thread_id, &turn_id))

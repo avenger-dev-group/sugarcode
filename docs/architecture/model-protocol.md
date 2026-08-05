@@ -94,6 +94,16 @@ shared preview budget, but Core still classifies the authoritative completed
 text instead of failing the Turn solely because that final answer or commentary
 is long.
 
+After a Turn has executed at least one tool call, Core also rejects one narrow
+class of semantically premature final output: a short response that contains an
+explicit future/continuation cue and ends in a heading with no body. Core closes
+that provider-neutral output reference with `agentOutputDiscarded`, adds the
+`sugarCodeCompletionRecoveryV1` instruction, and requests one same-Turn
+continuation. The completed output is never persisted as assistant history. A
+second match fails as typed `incomplete` instead of creating an unbounded retry;
+ordinary final text, long responses and planning text without the trailing
+unfulfilled heading do not enter this recovery path.
+
 Thread-title generation is a separate provider-neutral Core request with the
 `sugarCodeThreadTitleV1` instruction source. It reuses the Thread's currently
 resolved model profile but exposes no tools, does not join the Agent Turn or its
@@ -247,6 +257,21 @@ the app-server process. Only an internal runtime invariant that prevents safe
 Turn closure is process-fatal. This distinction mirrors the provider adapters:
 they may normalize unambiguous syntax and naming differences, but never invent
 a tool, change its authority or execute malformed arguments.
+
+Core validation and Desktop live/durable projection accept the exact lowercase
+strings `"true"` and `"false"` for `workspace/list.recursive` as a narrow
+compatible-gateway normalization. The model-facing schema remains boolean, and
+other strings, numbers and null still fail validation before the read-only
+batch executes.
+
+On platforms that expose both `shell/exec` authorities, its provider-neutral
+schema uses a discriminated `oneOf`. The direct branch requires `argvJson` and
+does not expose a timeout, while the Full Access shell branch excludes
+`argvJson` and alone exposes the optional timeout. Provider adapters preserve
+that logical union; automatic strict-tool selection downgrades it when a strict
+dialect cannot represent `oneOf`. Core may normalize a shell timeout emitted as
+a bounded, digits-only decimal string; it does not accept units, signs,
+fractions, whitespace, zero or an out-of-range value.
 
 Structured final output is intentionally absent until a production consumer
 requires it. Audio, video, image generation, hosted file upload and file search

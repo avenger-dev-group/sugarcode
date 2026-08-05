@@ -2742,6 +2742,7 @@ name = "sugarcode-core"
 version = "1.0.0"
 dependencies = [
  "futures-util",
+ "jsonschema",
  "serde",
  "serde_json",
  "sha2",

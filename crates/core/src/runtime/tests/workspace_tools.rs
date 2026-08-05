@@ -11,6 +11,132 @@ fn workspace_read_payload(content: &str) -> String {
     .expect("workspace/read payload")
 }
 
+#[test]
+fn workspace_list_accepts_only_exact_lowercase_boolean_strings() {
+    for (value, expected) in [
+        (serde_json::json!(true), true),
+        (serde_json::json!(false), false),
+        (serde_json::json!("true"), true),
+        (serde_json::json!("false"), false),
+    ] {
+        let arguments = workspace_tool_arguments(&ModelToolCall {
+            id: "call_list".to_string(),
+            name: "workspace/list".to_string(),
+            arguments: serde_json::json!({"path": ".", "recursive": value}),
+        })
+        .expect("compatible recursive boolean");
+        assert_eq!(arguments.recursive, expected);
+    }
+
+    for value in [
+        serde_json::json!("TRUE"),
+        serde_json::json!("False"),
+        serde_json::json!(" false"),
+        serde_json::json!("0"),
+        serde_json::json!(0),
+        serde_json::Value::Null,
+    ] {
+        assert!(
+            workspace_tool_arguments(&ModelToolCall {
+                id: "call_invalid_list".to_string(),
+                name: "workspace/list".to_string(),
+                arguments: serde_json::json!({"path": ".", "recursive": value}),
+            })
+            .is_err(),
+            "recursive must reject {value}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn compatible_list_boolean_does_not_reject_a_read_only_batch() {
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("package.json"), "fixture package")
+        .expect("package fixture");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![Ok(model_event::tool_call_batch(vec![
+                ModelToolCall {
+                    id: "call_list".to_string(),
+                    name: "workspace/list".to_string(),
+                    arguments: serde_json::json!({"path": ".", "recursive": "false"}),
+                },
+                ModelToolCall {
+                    id: "call_read".to_string(),
+                    name: "workspace/read".to_string(),
+                    arguments: serde_json::json!({"path": "package.json"}),
+                },
+            ]))],
+            vec![Ok(model_event::final_response("Review completed."))],
+        ])),
+        requests: Arc::clone(&requests),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let workspace_read: Arc<dyn WorkspaceReadExecutor> = tool.clone();
+    let workspace_list: Arc<dyn WorkspaceListExecutor> = tool;
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(workspace_read),
+        Some(workspace_list),
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Review the project".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("asynchronous turn");
+    };
+
+    while !matches!(
+        events.recv().await.expect("terminal event").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
+    let results = message_tool_results(requests[1].messages.last().expect("result message"));
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result.call_id.as_str())
+            .collect::<Vec<_>>(),
+        ["call_list", "call_read"]
+    );
+    assert!(
+        results
+            .iter()
+            .all(|result| !tool_result_serialized(result).contains("Rejected"))
+    );
+    drop(requests);
+
+    let turn = runtime
+        .resume_thread(&thread_id)
+        .expect("resume")
+        .turns
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert_eq!(turn.status, DurableTurnStatus::Completed);
+    assert!(!turn.items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::ToolValidationRejected { .. }
+    )));
+}
+
 #[derive(Debug)]
 struct ConcurrentWorkspaceRead {
     barrier: Arc<tokio::sync::Barrier>,

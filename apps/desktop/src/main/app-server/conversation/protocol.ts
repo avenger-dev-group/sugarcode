@@ -548,6 +548,9 @@ const parseWorkspaceListEntryCount = (content: string): number => {
   return parsed.entries.length;
 };
 
+const isCompatibleBoolean = (value: unknown): boolean =>
+  typeof value === 'boolean' || value === 'true' || value === 'false';
+
 const parseWorkspaceSearchResult = (
   content: string,
 ): Readonly<{ matches: number; truncated: boolean }> => {
@@ -1424,7 +1427,7 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       typeof argumentsValue.path !== 'string' ||
       argumentsValue.path.length === 0 ||
       (Object.hasOwn(argumentsValue, 'recursive') &&
-        typeof argumentsValue.recursive !== 'boolean')
+        !isCompatibleBoolean(argumentsValue.recursive))
     ) {
       throw new Error('Invalid workspace/list ToolCall Item.');
     }

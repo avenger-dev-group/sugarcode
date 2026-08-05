@@ -1078,8 +1078,7 @@ impl WorkspaceTool {
             cleanup_staged(&self.root, &staged);
             return change_set_commit_error(kind);
         }
-        let mut committed = 0usize;
-        for index in 0..staged.len() {
+        for (committed, index) in (0..staged.len()).enumerate() {
             if let Err(kind) = apply_staged(&self.root, &mut staged[index]) {
                 let current_is_after = staged_target_has_after(&staged[index]);
                 let current_is_before = staged_target_has_before(&staged[index]);
@@ -1096,7 +1095,6 @@ impl WorkspaceTool {
                     WorkspacePatchErrorKind::AtomicReplaceUnavailable
                 });
             }
-            committed += 1;
         }
         if let Err(kind) = remove_change_set_wal(&self.root) {
             return change_set_commit_error(kind);

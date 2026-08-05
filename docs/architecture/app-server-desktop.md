@@ -58,7 +58,10 @@ synchronized on Unix, where directory handles support that durability boundary.
 ToolCall contains call ID, SugarCode tool name and JSON arguments. Validation
 failure is its own `toolValidationRejected` Item. `FileChange`, approvals,
 execution attempts and results remain independent durable Items. Unknown fields
-or broken lifecycle correlation fail closed. A model response may declare
+or broken lifecycle correlation fail closed. Desktop mirrors Core's narrow
+compatible-gateway normalization for `workspace/list.recursive`: native JSON
+booleans and exact lowercase `"true"` / `"false"` strings project identically,
+while every other encoding still fails closed. A model response may declare
 multiple calls, including multiple workspace writes, before the runtime begins
 their sequential approval and execution. Main retains every declaration as an
 independent activity correlated by call ID; one pending call cannot overwrite or

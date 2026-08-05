@@ -92,6 +92,26 @@ test('recursive workspace/list calls and results remain supported lifecycle Item
   );
 });
 
+test('compatible workspace/list boolean strings remain supported in live lifecycle', () => {
+  for (const recursive of ['true', 'false']) {
+    for (const method of ['item/started', 'item/completed'] as const) {
+      const lifecycle = lifecycleItem(method, {
+        type: 'toolCall',
+        id: `00000000-0002-7000-8000-00000000000${recursive === 'true' ? '3' : '4'}`,
+        callId: `list-${recursive}`,
+        name: 'workspace/list',
+        arguments: { path: '.', recursive },
+      });
+      assert.equal(
+        lifecycle?.type === (method === 'item/started' ? 'itemStarted' : 'itemCompleted')
+          ? lifecycle.params.item.type
+          : undefined,
+        'workspaceListCall',
+      );
+    }
+  }
+});
+
 test('advanced workspace/search calls and path-mode results remain supported lifecycle Items', () => {
   const call = lifecycleItem('item/started', {
     type: 'toolCall',
@@ -159,13 +179,25 @@ test('unknown workspace tool arguments still fail closed', () => {
       }),
     /Invalid workspace\/list ToolCall Item/u,
   );
+
+  for (const recursive of ['TRUE', 'False', ' false', '0', 0, null]) {
+    assert.throws(
+      () =>
+        lifecycleItem('item/started', {
+          type: 'toolCall',
+          id: '00000000-0004-7000-8000-000000000002',
+          callId: 'list-invalid-recursive',
+          name: 'workspace/list',
+          arguments: { path: '.', recursive },
+        }),
+      /Invalid workspace\/list ToolCall Item/u,
+    );
+  }
 });
 
-test('a Thread quarantined on a recursive list can be restored after upgrade', () => {
+test('a Thread quarantined on a compatible list boolean can be restored after upgrade', () => {
   const content = JSON.stringify({
-    entries: [{ path: 'src', name: 'src', kind: 'directory' }],
-    scanned: 1,
-    truncated: false,
+    entries: [{ name: 'src', kind: 'directory' }],
   });
   const snapshot = parseThreadResumeResponse({
     thread: { id: THREAD_ID, workspaceId: WORKSPACE_ID },
@@ -179,7 +211,7 @@ test('a Thread quarantined on a recursive list can be restored after upgrade', (
             id: '00000000-0005-7000-8000-000000000001',
             callId: 'list-recovered',
             name: 'workspace/list',
-            arguments: { path: '.', recursive: true },
+            arguments: { path: '.', recursive: 'false' },
           },
           {
             type: 'toolResult',

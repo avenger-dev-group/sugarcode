@@ -34,14 +34,6 @@ import {
 import type { ModelConfigSettingsPanelProps } from './types';
 import { PROVIDER_PRESETS, useStore } from './use-store';
 
-const usesPlaintextHttp = (endpoint: string): boolean => {
-  try {
-    return new URL(endpoint).protocol === 'http:';
-  } catch {
-    return false;
-  }
-};
-
 const contextSummary = (raw: string): string | null => {
   const value = Number(raw);
   if (
@@ -321,19 +313,6 @@ export const ModelConfigSettingsPanel = (
                     })
                   }
                 />
-                {usesPlaintextHttp(store.selectedConnection.baseUrl) ? (
-                  <span
-                    className="flex items-start gap-1.5 text-xs text-destructive"
-                    role="alert"
-                  >
-                    <AlertTriangle
-                      className="mt-0.5 size-3.5 shrink-0"
-                      aria-hidden="true"
-                    />
-                    HTTP sends prompts and API credentials without transport
-                    encryption.
-                  </span>
-                ) : null}
               </label>
 
               <label className="grid gap-1 text-sm">

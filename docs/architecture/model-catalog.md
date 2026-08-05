@@ -141,6 +141,13 @@ unchanged. Across Turns only user/assistant text, commentary, provider-neutral
 ToolCalls and ToolResults are portable; response IDs, encrypted reasoning and
 native signatures remain inside the original Turn and wire.
 
+Runtime may append one other provider-neutral instruction within the frozen
+selection: `sugarCodeCompletionRecoveryV1`. It appears only after tool use when
+Core discards a short final response that promises more work and ends in an
+unfulfilled heading. The instruction asks the same model to continue the active
+task and is bounded to one recovery request; it does not change the profile,
+wire, capabilities or cross-Turn history rules.
+
 Historical image or PDF content that the newly frozen model cannot accept is
 replaced with a bounded text descriptor containing kind, original name, media
 type, byte size and SHA-256. Runtime emits at most one
@@ -174,7 +181,12 @@ mapping, and ordered multi-`FileChange` history retains the original call ID.
 When native command execution is present, `shell/exec` is the one dynamic local
 schema: its description includes the capability-owned authoritative absolute
 workspace root and its preferred cwd schema fixes both direct and shell calls
-to that exact value. A single dot, missing direct `kind` and shell-relative cwd
+to that exact value. The platform-specific schema is a discriminated union:
+direct requires `argvJson` and excludes `timeoutMs`, while Full Access shell
+excludes `argvJson` and alone advertises the optional timeout. Auto strictness
+downgrades this union when a provider strict dialect cannot represent `oneOf`;
+explicitly forced strict mode fails before network I/O. A single dot, missing
+direct `kind`, shell-relative cwd and a bounded decimal-string shell timeout
 remain runtime/replay compatibility rather than model-preferred shapes. The
 base Agent instruction describes both branches and forbids guessing or
 translating the root; obsolete direct-only and single-file write instructions
