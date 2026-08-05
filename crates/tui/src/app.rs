@@ -305,6 +305,7 @@ impl App {
             CoreEventKind::AgentOutputDiscarded { output, .. } => {
                 self.pending_outputs.remove(&output);
             }
+            CoreEventKind::CommandOutputDelta { .. } => {}
             CoreEventKind::AgentOutputResolved { output, item, .. } => {
                 let should_upsert = match &item.kind {
                     CoreItemKind::AgentMessage { text } if text.is_empty() => {

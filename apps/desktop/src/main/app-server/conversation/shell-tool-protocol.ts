@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-const MAX_COMMAND_BYTES = 1024;
+const MAX_COMMAND_BYTES = 32 * 1024;
 const MAX_DESCRIPTION_BYTES = 512;
 const MAX_ARGUMENTS = 64;
 const MAX_ARGUMENT_BYTES = 8 * 1024;
@@ -34,26 +34,41 @@ export const parseShellToolCallPayload = (
   const keys = Object.keys(value).sort().join(',');
   const usesJsonArguments =
     keys === 'argvJson,command,cwd,description';
+  const usesDirectKind =
+    keys === 'argvJson,command,cwd,description,kind';
   const usesLegacyArguments =
     keys === 'arguments,command,cwd,description';
+  const usesShell =
+    (keys === 'command,cwd,description,kind' ||
+      keys === 'command,cwd,description,kind,timeoutMs') &&
+    value.kind === 'shell';
   if (
-    (!usesJsonArguments && !usesLegacyArguments) ||
-    value.cwd !== '.' ||
+    (!usesJsonArguments && !usesDirectKind && !usesLegacyArguments && !usesShell) ||
+    typeof value.cwd !== 'string' ||
     typeof value.description !== 'string' ||
     value.description.length === 0 ||
     utf8Bytes(value.description) > MAX_DESCRIPTION_BYTES ||
     hasControlCharacters(value.description) ||
     typeof value.command !== 'string' ||
     value.command.length === 0 ||
-    !path.isAbsolute(value.command) ||
     utf8Bytes(value.command) > MAX_COMMAND_BYTES ||
-    hasControlCharacters(value.command)
+    value.command.includes('\0') ||
+    (!usesShell && (!path.isAbsolute(value.command) || hasControlCharacters(value.command))) ||
+    (usesDirectKind && value.kind !== 'direct') ||
+    (usesShell &&
+      value.timeoutMs !== undefined &&
+      (!Number.isSafeInteger(value.timeoutMs) ||
+        (value.timeoutMs as number) < 1 ||
+        (value.timeoutMs as number) > 600_000))
   ) {
     throw new Error('Invalid shell/exec ToolCall Item.');
   }
 
+  if (usesShell) {
+    return { command: value.command, arguments: [] };
+  }
   let argumentsValue: unknown = value.arguments;
-  if (usesJsonArguments) {
+  if (usesJsonArguments || usesDirectKind) {
     if (
       typeof value.argvJson !== 'string' ||
       utf8Bytes(value.argvJson) > MAX_TOTAL_BYTES

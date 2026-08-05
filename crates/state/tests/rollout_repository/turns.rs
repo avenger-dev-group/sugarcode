@@ -1178,7 +1178,13 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
             id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
             call_id: "call_shell".to_string(),
             name: "shell/exec".to_string(),
-            arguments: json!({"command": "/bin/echo", "arguments": ["ok"], "cwd": "."}),
+            arguments: json!({
+                "description": "Run the sandboxed command.",
+                "kind": "direct",
+                "command": "/bin/echo",
+                "argvJson": "[\"ok\"]",
+                "cwd": "/workspace/project"
+            }),
         },
         DurableItemSnapshot::CommandApprovalRequest {
             id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
@@ -1186,7 +1192,7 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
             call_id: "call_shell".to_string(),
             command: "/bin/echo".to_string(),
             arguments: vec!["ok".to_string()],
-            cwd: ".".to_string(),
+            cwd: "/workspace/project".to_string(),
             environment_policy: "minimalV1".to_string(),
             sandboxed: true,
             sandbox_policy: Some("filesystemReadOnlyV1".to_string()),
@@ -1247,6 +1253,96 @@ fn workspace_write_attempt_requires_the_exact_risk_acknowledgement() {
             },
         )
         .expect("acknowledged attempt");
+}
+
+#[test]
+fn full_access_shell_attempt_accepts_the_unsandboxed_audit_shape() {
+    let directory = tempdir().expect("home");
+    let home = resolved_temp_home(&directory);
+    let thread_id =
+        ThreadId::parse("00000000-0000-7000-8000-000000000001").expect("valid thread UUIDv7");
+    let turn_id = TurnId::parse("00000000-0001-7000-8000-000000000001").expect("valid turn UUIDv7");
+    let mut repository = RolloutRepository::open(&home).expect("repository");
+    repository.create_thread(&thread_id).expect("thread");
+    repository
+        .begin_turn(
+            &thread_id,
+            &DurableTurnSnapshot {
+                model: None,
+                id: turn_id.clone(),
+                status: DurableTurnStatus::InProgress,
+                items: vec![DurableItemSnapshot::UserMessage {
+                    id: ItemId::parse("00000000-0002-7000-8000-000000000001")
+                        .expect("valid item UUIDv7"),
+                    content: vec![sugarcode_state::DurableUserContentPart::Text {
+                        text: "Run the approved pipeline".to_string(),
+                    }],
+                }],
+                context_compaction: None,
+                workspace_instructions: None,
+                workspace_skills: None,
+                error: None,
+                usage: None,
+            },
+        )
+        .expect("turn start");
+    for item in [
+        DurableItemSnapshot::ToolCall {
+            id: ItemId::parse("00000000-0002-7000-8000-000000000002").expect("valid item UUIDv7"),
+            call_id: "call_full_shell".to_string(),
+            name: "shell/exec".to_string(),
+            arguments: json!({
+                "description": "Inspect tracked files.",
+                "kind": "shell",
+                "command": "git ls-files | head -50",
+                "cwd": "/workspace/project"
+            }),
+        },
+        DurableItemSnapshot::CommandApprovalRequest {
+            id: ItemId::parse("00000000-0002-7000-8000-000000000003").expect("valid item UUIDv7"),
+            approval_id: "approval/full-shell".to_string(),
+            call_id: "call_full_shell".to_string(),
+            command: "git ls-files | head -50".to_string(),
+            arguments: Vec::new(),
+            cwd: "/workspace/project".to_string(),
+            environment_policy: "hostInheritedV1".to_string(),
+            sandboxed: false,
+            sandbox_policy: None,
+            workspace_write_policy: None,
+            workspace_write_risk: None,
+            network_policy: None,
+        },
+        DurableItemSnapshot::CommandApprovalDecision {
+            id: ItemId::parse("00000000-0002-7000-8000-000000000004").expect("valid item UUIDv7"),
+            approval_id: "approval/full-shell".to_string(),
+            decision: "approved".to_string(),
+            workspace_write_risk_acknowledgement: None,
+        },
+        DurableItemSnapshot::CommandExecutionAttempt {
+            id: ItemId::parse("00000000-0002-7000-8000-000000000005").expect("valid item UUIDv7"),
+            approval_id: "approval/full-shell".to_string(),
+            call_id: "call_full_shell".to_string(),
+        },
+    ] {
+        repository
+            .append_turn_item(&thread_id, &turn_id, &item)
+            .expect("append full access shell audit");
+    }
+
+    drop(repository);
+    let repository = RolloutRepository::open(&home).expect("reopen repository");
+    let snapshot = repository
+        .load_thread(&thread_id)
+        .expect("load thread")
+        .expect("thread exists");
+    assert!(matches!(
+        snapshot.turns[0].items.last(),
+        Some(DurableItemSnapshot::CommandExecutionAttempt {
+            approval_id,
+            call_id,
+            ..
+        }) if approval_id == "approval/full-shell" && call_id == "call_full_shell"
+    ));
 }
 
 #[test]

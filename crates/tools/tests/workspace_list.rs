@@ -5,6 +5,8 @@ use sugarcode_tools::WorkspaceListEntry;
 use sugarcode_tools::WorkspaceListEntryKind;
 use sugarcode_tools::WorkspaceListErrorKind;
 use sugarcode_tools::WorkspaceListOutcome;
+use sugarcode_tools::WorkspaceRecursiveListEntry;
+use sugarcode_tools::WorkspaceRecursiveListOutcome;
 use sugarcode_tools::WorkspaceTool;
 use tokio_util::sync::CancellationToken;
 
@@ -48,6 +50,78 @@ async fn lists_one_directory_non_recursively_in_utf8_byte_order() {
             ],
             name_bytes: 22,
         }
+    );
+}
+
+#[tokio::test]
+async fn recursively_lists_relative_paths_in_stable_order() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir_all(workspace.path().join("src/nested")).expect("nested");
+    fs::write(workspace.path().join("src/zeta.rs"), "z").expect("zeta");
+    fs::write(workspace.path().join("src/nested/Alpha.rs"), "a").expect("alpha");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
+
+    assert_eq!(
+        tool.list_recursive(
+            &WorkspaceListArguments {
+                path: "src".to_string(),
+            },
+            &CancellationToken::new(),
+        )
+        .await,
+        WorkspaceRecursiveListOutcome::Entries {
+            entries: vec![
+                WorkspaceRecursiveListEntry {
+                    path: "src/nested".to_string(),
+                    name: "nested".to_string(),
+                    kind: WorkspaceListEntryKind::Directory,
+                },
+                WorkspaceRecursiveListEntry {
+                    path: "src/nested/Alpha.rs".to_string(),
+                    name: "Alpha.rs".to_string(),
+                    kind: WorkspaceListEntryKind::File,
+                },
+                WorkspaceRecursiveListEntry {
+                    path: "src/zeta.rs".to_string(),
+                    name: "zeta.rs".to_string(),
+                    kind: WorkspaceListEntryKind::File,
+                },
+            ],
+            scanned: 3,
+            truncated: false,
+        }
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recursive_listing_reports_but_never_follows_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let outside = tempfile::tempdir().expect("outside");
+    fs::write(outside.path().join("secret"), "secret").expect("secret");
+    symlink(outside.path(), workspace.path().join("linked")).expect("link");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
+
+    let WorkspaceRecursiveListOutcome::Entries { entries, .. } = tool
+        .list_recursive(
+            &WorkspaceListArguments {
+                path: ".".to_string(),
+            },
+            &CancellationToken::new(),
+        )
+        .await
+    else {
+        panic!("recursive listing");
+    };
+    assert_eq!(
+        entries,
+        vec![WorkspaceRecursiveListEntry {
+            path: "linked".to_string(),
+            name: "linked".to_string(),
+            kind: WorkspaceListEntryKind::Link,
+        }]
     );
 }
 

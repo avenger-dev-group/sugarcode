@@ -15,6 +15,7 @@ use crate::CommandApprovalParams;
 use crate::CommandApprovalResponse;
 use crate::CommandApprovalResponseDecision;
 use crate::CommandNetworkPolicy;
+use crate::CommandOutputDeltaNotification;
 use crate::CommandSandboxPolicy;
 use crate::CommandWorkspaceWritePolicy;
 use crate::CommandWorkspaceWriteRisk;
@@ -180,6 +181,7 @@ pub fn generate_typescript(out_dir: &Path) -> io::Result<()> {
         AgentOutputDeltaNotification::decl(),
         AgentOutputDiscardedNotification::decl(),
         AgentMessageDeltaNotification::decl(),
+        CommandOutputDeltaNotification::decl(),
         ItemCompletedNotification::decl(),
         Thread::decl(),
         ThreadOrigin::decl(),
@@ -441,6 +443,10 @@ pub fn generate_json_schema(out_dir: &Path) -> io::Result<()> {
     write_schema(
         out_dir.join("AgentMessageDeltaNotification.schema.json"),
         &schema_for!(AgentMessageDeltaNotification),
+    )?;
+    write_schema(
+        out_dir.join("CommandOutputDeltaNotification.schema.json"),
+        &schema_for!(CommandOutputDeltaNotification),
     )?;
     write_schema(
         out_dir.join("ItemCompletedNotification.schema.json"),

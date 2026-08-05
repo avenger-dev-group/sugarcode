@@ -135,7 +135,9 @@ pub(super) fn durable_item_snapshot(item: &CoreItemSnapshot) -> DurableItemSnaps
             call_id: call_id.clone(),
             path: path.clone(),
             kind: match kind {
+                sugarcode_protocol::CoreFileChangeKind::Create => "create".to_string(),
                 sugarcode_protocol::CoreFileChangeKind::Update => "update".to_string(),
+                sugarcode_protocol::CoreFileChangeKind::Delete => "delete".to_string(),
             },
             diff: diff.clone(),
             before_sha256: before_sha256.clone(),

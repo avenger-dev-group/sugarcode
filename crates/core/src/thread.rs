@@ -1054,6 +1054,8 @@ impl Core {
                             call_id: call_id.clone(),
                             path: path.clone(),
                             kind: match kind.as_str() {
+                                "create" => sugarcode_protocol::CoreFileChangeKind::Create,
+                                "delete" => sugarcode_protocol::CoreFileChangeKind::Delete,
                                 "update" => sugarcode_protocol::CoreFileChangeKind::Update,
                                 _ => sugarcode_protocol::CoreFileChangeKind::Update,
                             },

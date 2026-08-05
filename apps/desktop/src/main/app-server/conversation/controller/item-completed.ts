@@ -198,11 +198,15 @@ export abstract class ConversationItemCompletedController extends ConversationIt
         turn,
         lifecycle.params.item.callId,
       );
+      const changeIndex = activity.changes.findIndex(
+        (change) => change.id === lifecycle.params.item.id,
+      );
+      const change = activity.changes[changeIndex];
       if (
-        !activity.change ||
-        activity.change.status !== 'inProgress' ||
+        !change ||
+        change.status !== 'inProgress' ||
         !fileChangeProposalsEqual(
-          activity.change,
+          change,
           toFileChangeProposal(lifecycle.params.item),
         )
       ) {
@@ -210,10 +214,13 @@ export abstract class ConversationItemCompletedController extends ConversationIt
           'Completed FileChange did not match its started Item.',
         );
       }
-      activity.change = {
-        ...activity.change,
+      activity.changes[changeIndex] = {
+        ...change,
         status: 'completed',
       };
+      if (activity.change?.id === change.id) {
+        activity.change = activity.changes[changeIndex];
+      }
     } else if (lifecycle.params.item.type === 'workspacePatchResult') {
       const activity = this.requireFileChange(
         turn,

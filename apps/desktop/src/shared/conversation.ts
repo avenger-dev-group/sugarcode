@@ -160,7 +160,7 @@ export type ConversationFileChangeProposal = Readonly<{
   id: string;
   status: ConversationMessageStatus;
   path: string;
-  kind: 'update';
+  kind: 'create' | 'update' | 'delete';
   diff: string;
   beforeSha256: string;
   afterSha256: string;
@@ -179,14 +179,27 @@ export type ConversationFileChangeResultOutcome =
       beforeBytes: number;
       afterBytes: number;
     }>
+  | Readonly<{
+      type: 'success';
+      files: readonly Readonly<{
+        path: string;
+        kind: 'create' | 'update' | 'delete';
+        beforeSha256: string;
+        afterSha256: string;
+        beforeBytes: number;
+        afterBytes: number;
+      }>[];
+    }>
   | Readonly<{ type: 'error'; kind: string }>;
 
 export type ConversationFileChangeActivity = Readonly<{
   id: string;
   callId: string;
   path: string;
+  paths?: readonly string[];
   callStatus: ConversationMessageStatus;
   change?: ConversationFileChangeProposal;
+  changes?: readonly ConversationFileChangeProposal[];
   result?: Readonly<{
     id: string;
     status: ConversationMessageStatus;
@@ -216,8 +229,8 @@ export type ConversationCommandExecutionResultOutcome =
         | Readonly<{ type: 'exitCode'; code: number }>
         | Readonly<{ type: 'signal'; signal: number }>
         | Readonly<{ type: 'timedOut' }>;
-      sandboxPolicy: 'filesystemReadOnlyV1';
-      networkPolicy: 'networkDeniedV1';
+      sandboxPolicy?: 'filesystemReadOnlyV1';
+      networkPolicy?: 'networkDeniedV1';
     }>;
 
 export type ConversationCommandApprovalActivity = Readonly<{
@@ -227,6 +240,8 @@ export type ConversationCommandApprovalActivity = Readonly<{
   approvalId: string;
   command: string;
   argumentCount: number;
+  fullAccess?: boolean;
+  liveOutput?: Readonly<{ stdout: string; stderr: string }>;
   requestStatus: ConversationMessageStatus;
   decision?: Readonly<{
     id: string;
@@ -700,6 +715,7 @@ export const isValidFileChangePath = (value: unknown): value is string => {
 export const isValidFileChangeDiff = (
   value: unknown,
   path: string,
+  kind: ConversationFileChangeProposal['kind'] = 'update',
 ): value is string => {
   if (
     typeof value !== 'string' ||
@@ -713,8 +729,8 @@ export const isValidFileChangeDiff = (
   const lines = value.slice(0, -1).split('\n');
   if (
     lines.length > MAX_FILE_CHANGE_DIFF_LINES ||
-    lines[0] !== `--- a/${path}` ||
-    lines[1] !== `+++ b/${path}`
+    lines[0] !== (kind === 'create' ? '--- /dev/null' : `--- a/${path}`) ||
+    lines[1] !== (kind === 'delete' ? '+++ /dev/null' : `+++ b/${path}`)
   ) {
     return false;
   }
@@ -765,7 +781,7 @@ export const isValidFileChangeDiff = (
     }
     hunks += 1;
   }
-  return hunks > 0;
+  return hunks > 0 || (lines.length === 2 && kind !== 'update');
 };
 
 const isTurnError = (value: unknown): value is ConversationTurnError =>
@@ -932,8 +948,7 @@ const isWorkspaceSearchOutcome = (
       Number.isSafeInteger(value.matches) &&
       value.matches >= 0 &&
       value.matches <= 200 &&
-      typeof value.truncated === 'boolean' &&
-      (!value.truncated || value.matches === 200)
+      typeof value.truncated === 'boolean'
     );
   }
   return (
@@ -987,6 +1002,35 @@ const isFileChangeResultOutcome = (
       value.kind.length > 0
     );
   }
+  if (
+    value.type === 'success' &&
+    Object.keys(value).length === 2 &&
+    Array.isArray(value.files)
+  ) {
+    return (
+      value.files.length > 0 &&
+      value.files.length <= 64 &&
+      value.files.every(
+        (receipt) =>
+          isRecord(receipt) &&
+          Object.keys(receipt).length === 6 &&
+          isValidFileChangePath(receipt.path) &&
+          (receipt.kind === 'create' ||
+            receipt.kind === 'update' ||
+            receipt.kind === 'delete') &&
+          isValidSha256(receipt.beforeSha256) &&
+          isValidSha256(receipt.afterSha256) &&
+          typeof receipt.beforeBytes === 'number' &&
+          Number.isSafeInteger(receipt.beforeBytes) &&
+          receipt.beforeBytes >= 0 &&
+          receipt.beforeBytes <= 256 * 1024 &&
+          typeof receipt.afterBytes === 'number' &&
+          Number.isSafeInteger(receipt.afterBytes) &&
+          receipt.afterBytes >= 0 &&
+          receipt.afterBytes <= 256 * 1024,
+      )
+    );
+  }
   return (
     value.type === 'success' &&
     Object.keys(value).length === 6 &&
@@ -1018,28 +1062,41 @@ const isFileChangeActivity = (
     return false;
   }
   const change = value.change;
+  const validProposal = (proposal: unknown): proposal is ConversationFileChangeProposal =>
+    isRecord(proposal) &&
+    isId(proposal.id) &&
+    proposal.id !== value.id &&
+    typeof proposal.status === 'string' &&
+    MESSAGE_STATUSES.has(proposal.status as ConversationMessageStatus) &&
+    isValidFileChangePath(proposal.path) &&
+    (proposal.kind === 'create' || proposal.kind === 'update' || proposal.kind === 'delete') &&
+    isValidFileChangeDiff(proposal.diff, proposal.path, proposal.kind) &&
+    isValidSha256(proposal.beforeSha256) &&
+    isValidSha256(proposal.afterSha256) &&
+    typeof proposal.beforeBytes === 'number' &&
+    Number.isSafeInteger(proposal.beforeBytes) &&
+    proposal.beforeBytes >= 0 &&
+    proposal.beforeBytes <= 256 * 1024 &&
+    typeof proposal.afterBytes === 'number' &&
+    Number.isSafeInteger(proposal.afterBytes) &&
+    proposal.afterBytes >= 0 &&
+    proposal.afterBytes <= 256 * 1024 &&
+    (proposal.newlineStyle === 'lf' || proposal.newlineStyle === 'crLf') &&
+    typeof proposal.finalNewline === 'boolean';
   if (
     change !== undefined &&
-    (!isRecord(change) ||
-      !isId(change.id) ||
-      change.id === value.id ||
-      typeof change.status !== 'string' ||
-      !MESSAGE_STATUSES.has(change.status as ConversationMessageStatus) ||
-      change.path !== value.path ||
-      change.kind !== 'update' ||
-      !isValidFileChangeDiff(change.diff, value.path) ||
-      !isValidSha256(change.beforeSha256) ||
-      !isValidSha256(change.afterSha256) ||
-      typeof change.beforeBytes !== 'number' ||
-      !Number.isSafeInteger(change.beforeBytes) ||
-      change.beforeBytes < 0 ||
-      change.beforeBytes > 256 * 1024 ||
-      typeof change.afterBytes !== 'number' ||
-      !Number.isSafeInteger(change.afterBytes) ||
-      change.afterBytes < 0 ||
-      change.afterBytes > 256 * 1024 ||
-      (change.newlineStyle !== 'lf' && change.newlineStyle !== 'crLf') ||
-      typeof change.finalNewline !== 'boolean')
+    (!validProposal(change) || change.path !== value.path)
+  ) {
+    return false;
+  }
+  const changes = value.changes;
+  if (
+    changes !== undefined &&
+    (!Array.isArray(changes) ||
+      changes.length > 64 ||
+      changes.some((proposal) => !validProposal(proposal)) ||
+      new Set(changes.map((proposal) => (proposal as ConversationFileChangeProposal).path)).size !==
+        changes.length)
   ) {
     return false;
   }
@@ -1062,12 +1119,20 @@ const isFileChangeActivity = (
   const parsedChange = change as ConversationFileChangeProposal | undefined;
   if (
     parsedResult?.outcome.type === 'success' &&
+    !('files' in parsedResult.outcome) &&
     (!parsedChange ||
       parsedResult.outcome.path !== parsedChange.path ||
       parsedResult.outcome.beforeSha256 !== parsedChange.beforeSha256 ||
       parsedResult.outcome.afterSha256 !== parsedChange.afterSha256 ||
       parsedResult.outcome.beforeBytes !== parsedChange.beforeBytes ||
       parsedResult.outcome.afterBytes !== parsedChange.afterBytes)
+  ) {
+    return false;
+  }
+  if (
+    parsedResult?.outcome.type === 'success' &&
+    'files' in parsedResult.outcome &&
+    (!Array.isArray(changes) || parsedResult.outcome.files.length !== changes.length)
   ) {
     return false;
   }
@@ -1129,6 +1194,16 @@ const isCommandExecutionResultOutcome = (
 const isCommandApprovalActivity = (
   value: unknown,
 ): value is ConversationCommandApprovalActivity => {
+  const fullAccess =
+    isRecord(value) && value.fullAccess === true;
+  const liveOutputValid =
+    !isRecord(value) ||
+    !Object.hasOwn(value, 'liveOutput') ||
+    (isRecord(value.liveOutput) &&
+      typeof value.liveOutput.stdout === 'string' &&
+      new TextEncoder().encode(value.liveOutput.stdout).byteLength <= 65_536 &&
+      typeof value.liveOutput.stderr === 'string' &&
+      new TextEncoder().encode(value.liveOutput.stderr).byteLength <= 65_536);
   if (
     !isRecord(value) ||
     !isId(value.callItemId) ||
@@ -1138,8 +1213,13 @@ const isCommandApprovalActivity = (
     !isId(value.approvalId) ||
     typeof value.command !== 'string' ||
     value.command.length === 0 ||
-    new TextEncoder().encode(value.command).byteLength > 1_024 ||
-    Array.from(value.command).some((character) => /\p{Cc}/u.test(character)) ||
+    new TextEncoder().encode(value.command).byteLength >
+      (fullAccess ? 32_768 : 1_024) ||
+    (fullAccess
+      ? value.command.includes('\0')
+      : Array.from(value.command).some((character) => /\p{Cc}/u.test(character))) ||
+    (Object.hasOwn(value, 'fullAccess') && typeof value.fullAccess !== 'boolean') ||
+    !liveOutputValid ||
     typeof value.argumentCount !== 'number' ||
     !Number.isSafeInteger(value.argumentCount) ||
     value.argumentCount < 0 ||

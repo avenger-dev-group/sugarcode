@@ -196,3 +196,71 @@ test('approval completion notifications retain their routed Workspace', () => {
   assert.equal(command?.workspaceId, WORKSPACE_WEB);
   assert.equal(mcp?.workspaceId, WORKSPACE_WEB);
 });
+
+test('sandbox auto-approval never grants Full Access shell approval', async () => {
+  const decisions: string[] = [];
+  let presentation = 0;
+  const controller = new CommandApprovalController({
+    platform: 'darwin',
+    createPresentationId: () => `presentation-${++presentation}`,
+    writeDecision: async (_requestId, decision) => {
+      decisions.push(decision);
+    },
+    onProtocolFailure: () => assert.fail('unexpected protocol failure'),
+    onWriteFailure: () => assert.fail('unexpected write failure'),
+    onSurfaceFailure: () => assert.fail('unexpected surface failure'),
+    getThreadWorkspaceId: () => WORKSPACE_WEB,
+  });
+  controller.markSurfaceReady();
+
+  const direct = { ...commandParams(WORKSPACE_WEB), approvalId: 'approval-direct' };
+  controller.handleServerRequest({
+    kind: 'request',
+    id: direct.approvalId,
+    method: 'item/commandExecution/requestApproval',
+    params: direct,
+  });
+  await controller.approve('presentation-1', 'thread');
+  controller.handleNotification({
+    kind: 'notification',
+    method: 'item/completed',
+    params: {
+      workspaceId: WORKSPACE_WEB,
+      threadId: THREAD_WEB,
+      turnId: TURN_WEB,
+      item: {
+        type: 'commandApprovalDecision',
+        id: 'decision-direct',
+        approvalId: direct.approvalId,
+        decision: 'approved',
+      },
+    },
+  });
+
+  const fullAccess = {
+    approvalId: 'approval-full-access',
+    workspaceId: WORKSPACE_WEB,
+    threadId: THREAD_WEB,
+    turnId: TURN_WEB,
+    callId: 'call-full-access',
+    description: 'Run the requested project command.',
+    command: 'printf ok | tee output.txt',
+    arguments: [] as string[],
+    cwd: '.',
+    approvalScope: 'command',
+    environmentPolicy: 'hostInheritedV1',
+    sandboxed: false,
+  };
+  controller.handleServerRequest({
+    kind: 'request',
+    id: fullAccess.approvalId,
+    method: 'item/commandExecution/requestApproval',
+    params: fullAccess,
+  });
+
+  assert.deepEqual(decisions, ['approved']);
+  assert.equal(controller.getSnapshot().status, 'pending');
+  assert.equal(controller.getSnapshot().request?.fullAccess, true);
+  await controller.deny('presentation-2');
+  controller.shutdown();
+});

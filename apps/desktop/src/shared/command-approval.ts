@@ -25,6 +25,10 @@ export type CommandApprovalActionState =
 export type CommandApprovalViewModel = Readonly<{
   presentationId: string;
   description: string;
+  command: string;
+  cwd: string;
+  fullAccess: boolean;
+  platformShell?: string;
   threadId: string;
   turnId: string;
   queueCount: number;
@@ -120,6 +124,9 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
     [
       'presentationId',
       'description',
+      'command',
+      'cwd',
+      'fullAccess',
       'threadId',
       'turnId',
       'queueCount',
@@ -128,12 +135,19 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
       'localExpiresAtMs',
       'actionState',
     ],
-    ['sourceAgent'],
+    ['sourceAgent', 'platformShell'],
   ) &&
   typeof value.presentationId === 'string' &&
   value.presentationId.length > 0 &&
   typeof value.description === 'string' &&
   value.description.length > 0 &&
+  typeof value.command === 'string' &&
+  value.command.length > 0 &&
+  typeof value.cwd === 'string' &&
+  value.cwd.length > 0 &&
+  typeof value.fullAccess === 'boolean' &&
+  (value.platformShell === undefined ||
+    (typeof value.platformShell === 'string' && value.platformShell.length > 0)) &&
   typeof value.threadId === 'string' &&
   value.threadId.length > 0 &&
   typeof value.turnId === 'string' &&

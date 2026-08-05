@@ -94,6 +94,52 @@ pub(super) fn atomic_replace(
         .map_err(|_| WorkspacePatchErrorKind::AtomicReplaceUnavailable)
 }
 
+#[cfg(unix)]
+pub(super) fn atomic_create(
+    root: &Dir,
+    temp_name: &Path,
+    parent: &Dir,
+    file_name: &Path,
+) -> Result<(), WorkspacePatchErrorKind> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let temp = CString::new(temp_name.as_os_str().as_bytes())
+        .map_err(|_| WorkspacePatchErrorKind::InvalidPath)?;
+    let target = CString::new(file_name.as_os_str().as_bytes())
+        .map_err(|_| WorkspacePatchErrorKind::InvalidPath)?;
+    // SAFETY: both descriptors and NUL-terminated relative names are valid.
+    if unsafe {
+        libc::linkat(
+            root.as_raw_fd(),
+            temp.as_ptr(),
+            parent.as_raw_fd(),
+            target.as_ptr(),
+            0,
+        )
+    } != 0
+    {
+        return Err(
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::AlreadyExists {
+                WorkspacePatchErrorKind::Conflict
+            } else {
+                WorkspacePatchErrorKind::AtomicReplaceUnavailable
+            },
+        );
+    }
+    root.remove_file(temp_name)
+        .map_err(|_| WorkspacePatchErrorKind::AtomicReplaceUnavailable)?;
+    root.try_clone()
+        .map(Dir::into_std_file)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| WorkspacePatchErrorKind::AtomicReplaceUnavailable)?;
+    parent
+        .try_clone()
+        .map(Dir::into_std_file)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| WorkspacePatchErrorKind::AtomicReplaceUnavailable)
+}
+
 #[cfg(windows)]
 pub(super) fn atomic_replace(
     root: &Dir,
@@ -120,6 +166,31 @@ pub(super) fn atomic_replace(
     };
     if result == 0 {
         Err(WorkspacePatchErrorKind::AtomicReplaceUnavailable)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn atomic_create(
+    root: &Dir,
+    temp_name: &Path,
+    parent: &Dir,
+    file_name: &Path,
+) -> Result<(), WorkspacePatchErrorKind> {
+    use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+    let source = wide_path(&directory_final_path(root)?.join(temp_name));
+    let target = wide_path(&directory_final_path(parent)?.join(file_name));
+    // SAFETY: both path buffers are NUL-terminated for the duration of the call.
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+        Err(
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::AlreadyExists {
+                WorkspacePatchErrorKind::Conflict
+            } else {
+                WorkspacePatchErrorKind::AtomicReplaceUnavailable
+            },
+        )
     } else {
         Ok(())
     }
@@ -191,6 +262,20 @@ pub(super) fn atomic_replace(
     parent: &Dir,
     file_name: &Path,
 ) -> Result<(), WorkspacePatchErrorKind> {
+    root.rename(temp_name, parent, file_name)
+        .map_err(|_| WorkspacePatchErrorKind::AtomicReplaceUnavailable)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn atomic_create(
+    root: &Dir,
+    temp_name: &Path,
+    parent: &Dir,
+    file_name: &Path,
+) -> Result<(), WorkspacePatchErrorKind> {
+    if parent.symlink_metadata(file_name).is_ok() {
+        return Err(WorkspacePatchErrorKind::Conflict);
+    }
     root.rename(temp_name, parent, file_name)
         .map_err(|_| WorkspacePatchErrorKind::AtomicReplaceUnavailable)
 }

@@ -25,7 +25,13 @@ fn base_agent_prompt_is_fixed_complete_and_provider_counted() {
         "automatically compact older active-Turn context",
         "one concise process update",
         "workspace/apply-diff",
+        "operations[]",
+        "files[]",
         "shell/exec",
+        "kind: \"direct\"",
+        "kind: \"shell\"",
+        "single-dot cwd and shell-relative subdirectories are runtime-only compatibility",
+        "Never guess, translate or invent an absolute workspace path",
         "# Engineering workflow",
         "# Final response",
     ] {
@@ -34,6 +40,16 @@ fn base_agent_prompt_is_fixed_complete_and_provider_counted() {
             "missing required base-prompt contract: {required}"
         );
     }
+    assert!(
+        !instruction
+            .content
+            .contains("shell/exec, when exposed, runs one exact absolute program")
+    );
+    assert!(
+        !instruction
+            .content
+            .contains("Both are bounded writes to one existing file")
+    );
 }
 
 #[test]

@@ -543,3 +543,182 @@ async fn workspace_patch_rejects_junction_parent_components() {
         }
     ));
 }
+
+#[tokio::test]
+async fn workspace_change_set_atomically_creates_updates_and_deletes() {
+    let workspace = tempdir().expect("workspace");
+    let update_before = b"old\n";
+    let delete_before = b"remove\n";
+    fs::write(workspace.path().join("update.txt"), update_before).expect("update fixture");
+    fs::write(workspace.path().join("delete.txt"), delete_before).expect("delete fixture");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let arguments = WorkspaceChangeSetArguments {
+        operations: vec![
+            WorkspaceChangeSetOperation::Create {
+                path: "create.txt".to_string(),
+                content: "created\n".to_string(),
+            },
+            WorkspaceChangeSetOperation::Update(edit(
+                "update.txt",
+                update_before,
+                vec![WorkspaceLineEdit {
+                    start_line: 1,
+                    delete_line_count: 1,
+                    expected: "old".to_string(),
+                    replacement: "new".to_string(),
+                }],
+            )),
+            WorkspaceChangeSetOperation::Delete {
+                path: "delete.txt".to_string(),
+                base_sha256: sha256(delete_before),
+            },
+        ],
+    };
+    let outcome = tool.prepare_change_set(&arguments, &cancellation()).await;
+    let WorkspaceChangeSetPrepareOutcome::Prepared(prepared) = outcome else {
+        panic!("prepare change set: {outcome:?}");
+    };
+    assert_eq!(prepared.changes().len(), 3);
+    assert_eq!(
+        prepared.changes()[0].kind(),
+        WorkspaceFileChangeKind::Create
+    );
+    assert!(
+        prepared.changes()[0]
+            .diff()
+            .starts_with("--- /dev/null\n+++ b/create.txt\n")
+    );
+    assert_eq!(
+        prepared.changes()[2].kind(),
+        WorkspaceFileChangeKind::Delete
+    );
+    assert!(
+        prepared.changes()[2]
+            .diff()
+            .starts_with("--- a/delete.txt\n+++ /dev/null\n")
+    );
+    let WorkspaceChangeSetCommitOutcome::Applied { receipts } =
+        tool.commit_change_set(prepared, &cancellation()).await
+    else {
+        panic!("commit change set");
+    };
+    assert_eq!(receipts.len(), 3);
+    assert_eq!(
+        fs::read(workspace.path().join("create.txt")).expect("created"),
+        b"created\n"
+    );
+    assert_eq!(
+        fs::read(workspace.path().join("update.txt")).expect("updated"),
+        b"new\n"
+    );
+    assert!(!workspace.path().join("delete.txt").exists());
+    assert!(!workspace.path().join(CHANGE_SET_WAL).exists());
+}
+
+#[tokio::test]
+async fn workspace_change_set_conflict_prevents_every_file_change() {
+    let workspace = tempdir().expect("workspace");
+    let update_before = b"old\n";
+    let delete_before = b"remove\n";
+    fs::write(workspace.path().join("update.txt"), update_before).expect("update fixture");
+    fs::write(workspace.path().join("delete.txt"), delete_before).expect("delete fixture");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let arguments = WorkspaceChangeSetArguments {
+        operations: vec![
+            WorkspaceChangeSetOperation::Create {
+                path: "create.txt".to_string(),
+                content: "created\n".to_string(),
+            },
+            WorkspaceChangeSetOperation::Update(edit(
+                "update.txt",
+                update_before,
+                vec![WorkspaceLineEdit {
+                    start_line: 1,
+                    delete_line_count: 1,
+                    expected: "old".to_string(),
+                    replacement: "new".to_string(),
+                }],
+            )),
+            WorkspaceChangeSetOperation::Delete {
+                path: "delete.txt".to_string(),
+                base_sha256: sha256(delete_before),
+            },
+        ],
+    };
+    let outcome = tool.prepare_change_set(&arguments, &cancellation()).await;
+    let WorkspaceChangeSetPrepareOutcome::Prepared(prepared) = outcome else {
+        panic!("prepare change set: {outcome:?}");
+    };
+    fs::write(workspace.path().join("update.txt"), b"external\n").expect("create conflict");
+    assert!(matches!(
+        tool.commit_change_set(prepared, &cancellation()).await,
+        WorkspaceChangeSetCommitOutcome::Error {
+            kind: WorkspacePatchErrorKind::Conflict
+        }
+    ));
+    assert!(!workspace.path().join("create.txt").exists());
+    assert_eq!(
+        fs::read(workspace.path().join("delete.txt")).expect("not deleted"),
+        delete_before
+    );
+    assert_eq!(
+        fs::read(workspace.path().join("update.txt")).expect("external kept"),
+        b"external\n"
+    );
+    assert!(!workspace.path().join(CHANGE_SET_WAL).exists());
+}
+
+#[test]
+fn workspace_change_set_open_recovers_a_partially_applied_wal() {
+    let workspace = tempdir().expect("workspace");
+    let first_before = b"first-before\n";
+    let first_after = b"first-after\n";
+    let second_before = b"second-before\n";
+    let second_after = b"second-after\n";
+    fs::write(workspace.path().join("first.txt"), first_after).expect("applied first file");
+    fs::write(workspace.path().join("second.txt"), second_before).expect("unapplied second file");
+    let rollback_temp = ".sugarcode-workspace-write-recovery.tmp";
+    fs::write(workspace.path().join(rollback_temp), first_before).expect("rollback temp");
+    let wal = ChangeSetWal {
+        version: 1,
+        changes: vec![
+            ChangeSetWalEntry {
+                path: "first.txt".to_string(),
+                kind: "update".to_string(),
+                before_sha256: sha256(first_before),
+                after_sha256: sha256(first_after),
+                before_bytes: first_before.len() as u64,
+                after_bytes: first_after.len() as u64,
+                forward_temp: None,
+                rollback_temp: Some(rollback_temp.to_string()),
+            },
+            ChangeSetWalEntry {
+                path: "second.txt".to_string(),
+                kind: "update".to_string(),
+                before_sha256: sha256(second_before),
+                after_sha256: sha256(second_after),
+                before_bytes: second_before.len() as u64,
+                after_bytes: second_after.len() as u64,
+                forward_temp: None,
+                rollback_temp: None,
+            },
+        ],
+    };
+    fs::write(
+        workspace.path().join(CHANGE_SET_WAL),
+        serde_json::to_vec(&wal).expect("serialize WAL"),
+    )
+    .expect("write WAL");
+
+    let _tool = WorkspaceTool::open(workspace.path()).expect("recover workspace");
+    assert_eq!(
+        fs::read(workspace.path().join("first.txt")).expect("first restored"),
+        first_before
+    );
+    assert_eq!(
+        fs::read(workspace.path().join("second.txt")).expect("second unchanged"),
+        second_before
+    );
+    assert!(!workspace.path().join(rollback_temp).exists());
+    assert!(!workspace.path().join(CHANGE_SET_WAL).exists());
+}

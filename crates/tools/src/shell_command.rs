@@ -9,6 +9,8 @@ use std::fmt;
 use std::future::Future;
 use std::io::Read;
 use std::io::Write;
+#[cfg(target_os = "macos")]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -22,11 +24,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-pub const MAX_SHELL_COMMAND_BYTES: usize = 1_024;
+pub const MAX_SHELL_COMMAND_BYTES: usize = 32 * 1_024;
 pub const MAX_SHELL_ARGUMENT_COUNT: usize = 64;
 pub const MAX_SHELL_ARGUMENT_BYTES: usize = 8 * 1_024;
 pub const MAX_SHELL_TOTAL_ARGUMENT_BYTES: usize = 32 * 1_024;
-pub const MAX_SHELL_OUTPUT_BYTES: usize = 24 * 1_024;
+pub const MAX_SHELL_OUTPUT_BYTES: usize = 32 * 1_024;
+pub const DEFAULT_FULL_ACCESS_SHELL_TIMEOUT_MS: u64 = 300_000;
+pub const MAX_FULL_ACCESS_SHELL_TIMEOUT_MS: u64 = 600_000;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const SUPERVISOR_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(35);
 #[cfg(unix)]
@@ -89,9 +93,30 @@ pub struct ShellCommandArguments {
     pub arguments: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct FullAccessShellArguments {
+    pub command: String,
+    pub cwd: String,
+    pub timeout_ms: u64,
+    pub output_tx: Option<tokio::sync::mpsc::UnboundedSender<ShellOutputChunk>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellOutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellOutputChunk {
+    pub stream: ShellOutputStream,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellCommandExecution {
     Completed(ShellCommandOutput),
+    FullAccessCompleted(ShellCommandOutput),
     Error(ShellCommandErrorKind),
     Cancelled,
 }
@@ -147,11 +172,24 @@ impl fmt::Display for ShellCommandErrorKind {
 pub trait ShellCommandExecutor: fmt::Debug + Send + Sync {
     fn sandbox_policy(&self) -> sugarcode_sandbox::CommandSandboxPolicy;
 
+    fn workspace_root_path(&self) -> Option<&Path> {
+        None
+    }
+
     fn execute(
         &self,
         arguments: ShellCommandArguments,
         cancellation: CancellationToken,
     ) -> ShellCommandFuture;
+
+    fn execute_full_access(
+        &self,
+        arguments: FullAccessShellArguments,
+        cancellation: CancellationToken,
+    ) -> ShellCommandFuture {
+        let _ = (arguments, cancellation);
+        Box::pin(async { ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable) })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -192,21 +230,35 @@ impl NativeShellCommandExecutor {
         sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
     ) -> Result<Self, sugarcode_sandbox::SandboxError> {
         let environment = Arc::new(CommandEnvironment(host_command_environment()));
-        let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(sandbox_policy)?;
-        probe_native_supervisor(
-            &supervisor_executable,
-            adapter.policy(),
-            &workspace_root,
-            &environment.0,
-        )
-        .map_err(|error| {
-            sugarcode_sandbox::SandboxError::unavailable(format!(
-                "command sandbox supervisor probe failed: {error}"
-            ))
-        })?;
+        #[cfg(unix)]
+        let sandbox_policy = {
+            let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(sandbox_policy)?;
+            probe_native_supervisor(
+                &supervisor_executable,
+                adapter.policy(),
+                &workspace_root,
+                &environment.0,
+            )
+            .map_err(|error| {
+                sugarcode_sandbox::SandboxError::unavailable(format!(
+                    "command sandbox supervisor probe failed: {error}"
+                ))
+            })?;
+            adapter.policy()
+        };
+        // Windows currently has no read-only command sandbox supervisor, but it
+        // does support the separately approved Full Access shell executor.
+        // Retain the configured policy so direct calls still fail closed at
+        // execution time instead of disabling the whole executor at startup.
+        #[cfg(windows)]
+        let sandbox_policy = sandbox_policy;
+        #[cfg(not(any(unix, windows)))]
+        return Err(sugarcode_sandbox::SandboxError::unavailable(
+            "native command execution is unavailable on this platform",
+        ));
         Ok(Self {
             supervisor_executable,
-            sandbox_policy: adapter.policy(),
+            sandbox_policy,
             workspace_root: Arc::new(workspace_root),
             environment,
         })
@@ -300,7 +352,7 @@ fn probe_native_supervisor(
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn probe_native_supervisor(
     _executable: &Path,
     _sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
@@ -313,6 +365,10 @@ fn probe_native_supervisor(
 impl ShellCommandExecutor for NativeShellCommandExecutor {
     fn sandbox_policy(&self) -> sugarcode_sandbox::CommandSandboxPolicy {
         self.sandbox_policy
+    }
+
+    fn workspace_root_path(&self) -> Option<&Path> {
+        Some(self.workspace_root.ambient_path())
     }
 
     fn execute(
@@ -348,6 +404,222 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
             run_native(executable, request, workspace_root, cancellation).await
         })
     }
+
+    fn execute_full_access(
+        &self,
+        arguments: FullAccessShellArguments,
+        cancellation: CancellationToken,
+    ) -> ShellCommandFuture {
+        let workspace_root = Arc::clone(&self.workspace_root);
+        let environment = Arc::clone(&self.environment);
+        Box::pin(async move {
+            execute_full_access_shell(arguments, workspace_root, environment, cancellation).await
+        })
+    }
+}
+
+async fn execute_full_access_shell(
+    arguments: FullAccessShellArguments,
+    workspace_root: Arc<CommandWorkspaceRoot>,
+    environment: Arc<CommandEnvironment>,
+    cancellation: CancellationToken,
+) -> ShellCommandExecution {
+    if arguments.command.is_empty()
+        || arguments.command.len() > MAX_SHELL_COMMAND_BYTES
+        || arguments.command.contains('\0')
+        || arguments.timeout_ms == 0
+        || arguments.timeout_ms > MAX_FULL_ACCESS_SHELL_TIMEOUT_MS
+    {
+        return ShellCommandExecution::Error(ShellCommandErrorKind::InvalidArguments);
+    }
+    let cwd = if arguments.cwd == "." {
+        workspace_root.ambient_path().to_path_buf()
+    } else {
+        let path = Path::new(&arguments.cwd);
+        if path.is_absolute() {
+            if path != workspace_root.ambient_path() {
+                return ShellCommandExecution::Error(ShellCommandErrorKind::InvalidArguments);
+            }
+            workspace_root.ambient_path().to_path_buf()
+        } else if path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return ShellCommandExecution::Error(ShellCommandErrorKind::InvalidArguments);
+        } else {
+            workspace_root.ambient_path().join(path)
+        }
+    };
+
+    #[cfg(target_os = "macos")]
+    let (shell, shell_arguments) = {
+        let shell = std::env::var("SHELL")
+            .ok()
+            .filter(|shell| Path::new(shell).is_absolute())
+            .unwrap_or_else(|| "/bin/zsh".to_string());
+        (shell, vec!["-lc".to_string(), arguments.command])
+    };
+    #[cfg(windows)]
+    let (shell, shell_arguments) = {
+        let shell = std::env::var("COMSPEC")
+            .ok()
+            .filter(|shell| Path::new(shell).is_absolute())
+            .unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".to_string());
+        (shell, vec!["/C".to_string(), arguments.command])
+    };
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (cwd, workspace_root, environment, cancellation);
+        return ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable);
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        let started = Instant::now();
+        let mut command = Command::new(shell);
+        command
+            .args(shell_arguments)
+            .current_dir(cwd)
+            .env_clear()
+            .envs(environment.0.iter().cloned())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(target_os = "macos")]
+        unsafe {
+            command.as_std_mut().pre_exec(|| {
+                if libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => return ShellCommandExecution::Error(map_spawn_error(&error)),
+        };
+        #[cfg(windows)]
+        let job = match windows_job::Job::assign(&child) {
+            Ok(job) => Some(job),
+            Err(kind) => {
+                let _ = child.kill().await;
+                return ShellCommandExecution::Error(kind);
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => return ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable),
+        };
+        let stderr = match child.stderr.take() {
+            Some(stderr) => stderr,
+            None => return ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable),
+        };
+        let stdout_reader = tokio::spawn(read_bounded_async(
+            stdout,
+            ShellOutputStream::Stdout,
+            arguments.output_tx.clone(),
+        ));
+        let stderr_reader = tokio::spawn(read_bounded_async(
+            stderr,
+            ShellOutputStream::Stderr,
+            arguments.output_tx,
+        ));
+        let timeout = Duration::from_millis(arguments.timeout_ms);
+        let (status, timed_out) = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                terminate_full_access_tree(&mut child);
+                let _ = child.wait().await;
+                stdout_reader.abort();
+                stderr_reader.abort();
+                return ShellCommandExecution::Cancelled;
+            }
+            _ = tokio::time::sleep(timeout) => {
+                terminate_full_access_tree(&mut child);
+                (child.wait().await.ok(), true)
+            }
+            status = child.wait() => (status.ok(), false),
+        };
+        #[cfg(windows)]
+        drop(job);
+        let stdout = match stdout_reader.await {
+            Ok(output) => output,
+            Err(_) => return ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable),
+        };
+        let stderr = match stderr_reader.await {
+            Ok(output) => output,
+            Err(_) => return ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable),
+        };
+        let outcome = if timed_out {
+            ShellCommandOutcome::TimedOut
+        } else if let Some(status) = status {
+            exit_outcome(status)
+        } else {
+            return ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable);
+        };
+        ShellCommandExecution::FullAccessCompleted(ShellCommandOutput {
+            stdout: String::from_utf8_lossy(&stdout.retained).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr.retained).into_owned(),
+            stdout_bytes: stdout.observed,
+            stderr_bytes: stderr.observed,
+            stdout_truncated: stdout.truncated,
+            stderr_truncated: stderr.truncated,
+            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            outcome,
+            sandbox_policy:
+                sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
+        })
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+async fn read_bounded_async(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+    stream: ShellOutputStream,
+    output_tx: Option<tokio::sync::mpsc::UnboundedSender<ShellOutputChunk>>,
+) -> BoundedOutput {
+    let mut retained = Vec::with_capacity(MAX_SHELL_OUTPUT_BYTES);
+    let mut observed = 0u64;
+    let mut buffer = [0u8; 8 * 1_024];
+    loop {
+        let read = match reader.read(&mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        observed = observed.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        let remaining = MAX_SHELL_OUTPUT_BYTES.saturating_sub(retained.len());
+        let emitted = read.min(remaining);
+        retained.extend_from_slice(&buffer[..emitted]);
+        if emitted > 0
+            && let Some(output_tx) = output_tx.as_ref()
+        {
+            let _ = output_tx.send(ShellOutputChunk {
+                stream,
+                content: String::from_utf8_lossy(&buffer[..emitted]).into_owned(),
+            });
+        }
+    }
+    BoundedOutput {
+        truncated: observed > u64::try_from(retained.len()).unwrap_or(u64::MAX),
+        retained,
+        observed,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn terminate_full_access_tree(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        // SAFETY: the child starts a dedicated process group with its pid as pgid.
+        unsafe {
+            libc::killpg(pid as i32, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn terminate_full_access_tree(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -54,6 +54,176 @@ impl ShellCommandExecutor for RecordedShell {
             })
         })
     }
+
+    fn execute_full_access(
+        &self,
+        arguments: FullAccessShellArguments,
+        _cancellation: CancellationToken,
+    ) -> sugarcode_tools::ShellCommandFuture {
+        Box::pin(async move {
+            if let Some(output_tx) = arguments.output_tx {
+                let _ = output_tx.send(sugarcode_tools::ShellOutputChunk {
+                    stream: sugarcode_tools::ShellOutputStream::Stdout,
+                    content: "live output\n".to_string(),
+                });
+            }
+            ShellCommandExecution::FullAccessCompleted(sugarcode_tools::ShellCommandOutput {
+                stdout: "live output\n".to_string(),
+                stderr: String::new(),
+                stdout_bytes: 12,
+                stderr_bytes: 0,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                duration_ms: 5,
+                outcome: ShellCommandOutcome::ExitCode { code: 0 },
+                sandbox_policy:
+                    sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
+            })
+        })
+    }
+}
+
+#[derive(Debug)]
+struct RootedShell(std::path::PathBuf);
+
+impl ShellCommandExecutor for RootedShell {
+    fn sandbox_policy(&self) -> sugarcode_tools::CommandSandboxPolicy {
+        sugarcode_tools::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1
+    }
+
+    fn workspace_root_path(&self) -> Option<&std::path::Path> {
+        Some(&self.0)
+    }
+
+    fn execute(
+        &self,
+        _arguments: ShellCommandArguments,
+        _cancellation: CancellationToken,
+    ) -> sugarcode_tools::ShellCommandFuture {
+        Box::pin(async { ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable) })
+    }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[test]
+fn shell_schema_advertises_and_validates_the_authoritative_absolute_root() {
+    let directory = tempfile::tempdir().expect("workspace");
+    let root = directory.path().to_path_buf();
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::new()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let (runtime, _events) = CoreRuntime::new_with_shell(
+        Core::new(),
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        None,
+        None,
+        None,
+        Arc::new(RootedShell(root.clone())),
+        Arc::new(FixedApproval(CommandApprovalOutcome::Approved)),
+    );
+    let definition = workspace_tool_definitions(&runtime)
+        .into_iter()
+        .find(|definition| definition.name == "shell/exec")
+        .expect("shell definition");
+    let encoded_root = serde_json::to_string(root.to_str().expect("UTF-8 root")).expect("JSON");
+    assert!(definition.description.contains(&encoded_root));
+    assert!(
+        definition
+            .description
+            .contains("Never guess, translate or invent")
+    );
+    assert!(
+        definition
+            .parameters
+            .pointer("/properties/cwd/description")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|description| description.contains(&encoded_root)
+                && description.contains("process starts in cwd"))
+    );
+    assert_eq!(
+        definition.parameters.pointer("/properties/cwd/const"),
+        Some(&serde_json::Value::String(
+            root.to_str().expect("UTF-8 root").to_string()
+        ))
+    );
+
+    let call = |cwd: &str| ModelToolCall {
+        id: "call_full_shell".to_string(),
+        name: "shell/exec".to_string(),
+        arguments: serde_json::json!({
+            "description": "Inspect the active workspace.",
+            "kind": "shell",
+            "command": "git status --short",
+            "cwd": cwd
+        }),
+    };
+    assert!(shell_tool_arguments(&call(root.to_str().expect("UTF-8 root")), Some(&root)).is_ok());
+    assert!(shell_tool_arguments(&call("/Users/sugar/workspace/guessed"), Some(&root)).is_err());
+
+    let direct_call = |cwd: &str| ModelToolCall {
+        id: "call_direct".to_string(),
+        name: "shell/exec".to_string(),
+        arguments: serde_json::json!({
+            "description": "Inspect the active workspace.",
+            "kind": "direct",
+            "command": "/usr/bin/git",
+            "argvJson": r#"["status","--short"]"#,
+            "cwd": cwd
+        }),
+    };
+    assert!(
+        shell_tool_arguments(
+            &direct_call(root.to_str().expect("UTF-8 root")),
+            Some(&root)
+        )
+        .is_ok()
+    );
+    assert!(shell_tool_arguments(&direct_call("."), Some(&root)).is_ok());
+    assert!(
+        shell_tool_arguments(&direct_call("/Users/sugar/workspace/guessed"), Some(&root)).is_err()
+    );
+}
+
+#[test]
+fn all_local_capabilities_expose_exactly_six_unified_model_tools() {
+    let directory = tempfile::tempdir().expect("workspace");
+    let tool = Arc::new(sugarcode_tools::WorkspaceTool::open(directory.path()).expect("tool"));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::new()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let workspace_read: Arc<dyn WorkspaceReadExecutor> = tool.clone();
+    let workspace_list: Arc<dyn WorkspaceListExecutor> = tool.clone();
+    let workspace_search: Arc<dyn WorkspaceSearchExecutor> = tool.clone();
+    let workspace_patch: Arc<dyn WorkspacePatchExecutor> = tool;
+    let (runtime, _events) = CoreRuntime::new_with_shell(
+        Core::new(),
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(workspace_read),
+        Some(workspace_list),
+        Some(workspace_search),
+        Arc::new(RecordedShell),
+        Arc::new(FixedApproval(CommandApprovalOutcome::Approved)),
+    );
+    let runtime = runtime.with_workspace_patch(Some(workspace_patch));
+
+    assert_eq!(
+        workspace_tool_definitions(&runtime)
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect::<Vec<_>>(),
+        vec![
+            "workspace/read",
+            "workspace/list",
+            "workspace/search",
+            "workspace/edit",
+            "workspace/apply-diff",
+            "shell/exec",
+        ]
+    );
 }
 
 #[derive(Debug)]
@@ -400,6 +570,103 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             .iter()
             .any(|tool| tool.name == "shell/exec")
     );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn full_access_shell_uses_unsandboxed_approval_and_streams_output() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![
+                Ok(model_event::tool_call(ModelToolCall {
+                    id: "call_full_shell".to_string(),
+                    name: "shell/exec".to_string(),
+                    arguments: serde_json::json!({
+                        "description": "Run the full shell fixture.",
+                        "kind": "shell",
+                        "command": "printf 'live output\\n' | cat",
+                        "cwd": ".",
+                        "timeoutMs": 5000
+                    }),
+                })),
+                Ok(model_event::COMPLETED),
+            ],
+            vec![
+                Ok(model_event::text_delta("Shell completed.".to_string())),
+                Ok(model_event::COMPLETED),
+            ],
+        ])),
+        requests,
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let (mut runtime, mut events) = CoreRuntime::new_with_shell(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        None,
+        None,
+        None,
+        Arc::new(RecordedShell),
+        Arc::new(FixedApproval(CommandApprovalOutcome::Approved)),
+    );
+    runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Run a shell pipeline".to_string()),
+        )
+        .expect("start shell turn");
+
+    let mut streamed = String::new();
+    loop {
+        match events.recv().await.expect("runtime event").kind {
+            CoreEventKind::CommandOutputDelta {
+                call_id,
+                stream,
+                delta,
+                ..
+            } => {
+                assert_eq!(call_id, "call_full_shell");
+                assert_eq!(stream, "stdout");
+                streamed.push_str(&delta);
+            }
+            CoreEventKind::TurnCompleted { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(streamed, "live output\n");
+
+    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
+    let items = &snapshot.turns[0].items;
+    assert!(items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::CommandApprovalRequest {
+            call_id,
+            sandboxed: false,
+            sandbox_policy: None,
+            workspace_write_policy: None,
+            network_policy: None,
+            ..
+        } if call_id == "call_full_shell"
+    )));
+    assert!(items.iter().any(|item| matches!(
+        item,
+        sugarcode_state::DurableItemSnapshot::ToolResult {
+            result: sugarcode_state::DurableToolResult::Process(result),
+            ..
+        } if result.stdout == "live output\n"
+            && result.sandbox_policy.is_none()
+            && result.workspace_write_policy.is_none()
+            && result.network_policy.is_none()
+    )));
 }
 
 #[tokio::test]

@@ -72,6 +72,24 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
         this.publish();
         return;
       }
+      case 'commandOutputDelta': {
+        const turn = this.requireCorrelatedTurn(
+          lifecycle.params.threadId,
+          lifecycle.params.turnId,
+        );
+        const approval = turn.commandApproval;
+        if (!approval || approval.callId !== lifecycle.params.callId) {
+          throw new Error('Command output delta did not match an active command.');
+        }
+        const output = approval.liveOutput ?? { stdout: '', stderr: '' };
+        const current = output[lifecycle.params.stream];
+        output[lifecycle.params.stream] = `${current}${lifecycle.params.delta}`.slice(
+          -64 * 1024,
+        );
+        approval.liveOutput = output;
+        this.publish();
+        return;
+      }
       case 'agentDelta': {
         const turn = this.requireCorrelatedTurn(
           lifecycle.params.threadId,
@@ -100,6 +118,8 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
           lifecycle.params.threadId,
           lifecycle.params.turn.id,
         );
+        const requiresDurableClosure =
+          lifecycle.params.turn.status === 'completed';
         if (
           lifecycle.params.turn.status === 'completed' &&
           turn.pendingAgentOutputs.length > 0
@@ -127,7 +147,7 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
             (entry) =>
               entry.type === 'workspaceRead' &&
               (entry.activity.callStatus !== 'completed' ||
-                (lifecycle.params.turn.status !== 'interrupted' &&
+                (requiresDurableClosure &&
                   entry.activity.result?.status !== 'completed') ||
                 (entry.activity.result &&
                   entry.activity.result.status !== 'completed')),
@@ -142,7 +162,7 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
             (entry) =>
               entry.type === 'workspaceList' &&
               (entry.activity.callStatus !== 'completed' ||
-                (lifecycle.params.turn.status !== 'interrupted' &&
+                (requiresDurableClosure &&
                   entry.activity.result?.status !== 'completed') ||
                 (entry.activity.result &&
                   entry.activity.result.status !== 'completed')),
@@ -157,7 +177,7 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
             (entry) =>
               entry.type === 'workspaceSearch' &&
               (entry.activity.callStatus !== 'completed' ||
-                (lifecycle.params.turn.status !== 'interrupted' &&
+                (requiresDurableClosure &&
                   entry.activity.result?.status !== 'completed') ||
                 (entry.activity.result &&
                   entry.activity.result.status !== 'completed')),
@@ -174,7 +194,7 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
               turn.fileChange.change.status !== 'completed') ||
             (turn.fileChange.result &&
               turn.fileChange.result.status !== 'completed') ||
-            (lifecycle.params.turn.status !== 'interrupted' &&
+            (requiresDurableClosure &&
               turn.fileChange.result?.status !== 'completed'))
         ) {
           throw new Error(
@@ -182,13 +202,13 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
           );
         }
         if (
-          (lifecycle.params.turn.status !== 'interrupted' &&
+          (requiresDurableClosure &&
             (turn.pendingCommandCalls?.length ?? 0) > 0) ||
           turn.activities.some(
             (entry) =>
               entry.type === 'commandApproval' &&
               (entry.activity.requestStatus !== 'completed' ||
-                (lifecycle.params.turn.status !== 'interrupted' &&
+                (requiresDurableClosure &&
                   entry.activity.decision?.status !== 'completed') ||
                 (entry.activity.decision &&
                   entry.activity.decision.status !== 'completed') ||
@@ -196,7 +216,7 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
                   entry.activity.executionAttempt.status !== 'completed') ||
                 (entry.activity.executionResult &&
                   entry.activity.executionResult.status !== 'completed') ||
-                (lifecycle.params.turn.status !== 'interrupted' &&
+                (requiresDurableClosure &&
                   entry.activity.executionAttempt &&
                   entry.activity.executionResult?.status !== 'completed')),
           )
@@ -206,7 +226,7 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
           );
         }
         if (
-          turn.pendingMcpCall ||
+          (requiresDurableClosure && turn.pendingMcpCall) ||
           turn.mcpActivities?.some(
             (activity) =>
               activity.callStatus !== 'completed' ||
@@ -215,7 +235,7 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
               (activity.executionAttempt &&
                 activity.executionAttempt.status !== 'completed') ||
               (activity.result && activity.result.status !== 'completed') ||
-              (lifecycle.params.turn.status !== 'interrupted' &&
+              (requiresDurableClosure &&
                 (!activity.decision || !activity.result)),
           )
         ) {

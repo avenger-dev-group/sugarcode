@@ -116,8 +116,10 @@ export type MutableFileChangeActivity = {
   id: string;
   callId: string;
   path: string;
+  paths: readonly string[];
   callStatus: ConversationMessage['status'];
   change?: ConversationFileChangeProposal;
+  changes: ConversationFileChangeProposal[];
   result?: {
     id: string;
     status: ConversationMessage['status'];
@@ -140,6 +142,7 @@ export type MutableCommandApprovalActivity = {
   approvalId: string;
   command: string;
   argumentCount: number;
+  fullAccess?: boolean;
   requestStatus: ConversationMessage['status'];
   decision?: {
     id: string;
@@ -156,6 +159,7 @@ export type MutableCommandApprovalActivity = {
     outcome: ConversationCommandExecutionResultOutcome;
   };
   argumentSignature: string;
+  liveOutput?: { stdout: string; stderr: string };
 };
 
 export type MutableMcpCall = {

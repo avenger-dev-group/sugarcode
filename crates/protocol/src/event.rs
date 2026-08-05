@@ -63,6 +63,13 @@ pub enum CoreEventKind {
         item_id: ItemId,
         delta: String,
     },
+    CommandOutputDelta {
+        thread_id: ThreadId,
+        turn_id: TurnId,
+        call_id: String,
+        stream: String,
+        delta: String,
+    },
     ItemCompleted {
         thread_id: ThreadId,
         turn_id: TurnId,

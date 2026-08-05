@@ -161,6 +161,25 @@ the reverse map for replay and results. ToolCall history stores the original
 provider-neutral JSON arguments, so `workspace/edit`, collaboration and shell
 calls survive restart without reconstruction through obsolete special fields.
 
+The local model surface is exactly six provider-neutral names:
+`workspace/read`, `workspace/list`, `workspace/search`, `workspace/edit`,
+`workspace/apply-diff` and `shell/exec`. List recursion, path/content search,
+multi-file create/update/delete and direct/full-shell execution are schema
+branches inside those names rather than extra tools. Preferred schemas expose
+`operations[]`, `files[]`, search `mode` and shell `kind`; the former
+single-file edit/apply-diff shapes and missing-`kind` direct calls are accepted
+only by runtime/replay compatibility. OpenAI Responses, Chat Completions and
+Anthropic receive the same logical schemas through request-local safe-name
+mapping, and ordered multi-`FileChange` history retains the original call ID.
+When native command execution is present, `shell/exec` is the one dynamic local
+schema: its description includes the capability-owned authoritative absolute
+workspace root and its preferred cwd schema fixes both direct and shell calls
+to that exact value. A single dot, missing direct `kind` and shell-relative cwd
+remain runtime/replay compatibility rather than model-preferred shapes. The
+base Agent instruction describes both branches and forbids guessing or
+translating the root; obsolete direct-only and single-file write instructions
+are not retained.
+
 Invalid tool arguments and schema mismatches produce bounded model-visible
 feedback and a public `toolValidationRejected` Item. The Item carries kind,
 argument byte count and SHA-256, optional edit/hunk/line diagnostics, redacted

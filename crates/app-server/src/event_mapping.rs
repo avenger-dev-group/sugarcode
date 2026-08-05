@@ -8,6 +8,7 @@ use sugarcode_app_server_protocol::AgentTaskRole;
 use sugarcode_app_server_protocol::AgentTaskStatus;
 use sugarcode_app_server_protocol::AssetDescriptor;
 use sugarcode_app_server_protocol::AssetKind;
+use sugarcode_app_server_protocol::CommandOutputDeltaNotification;
 use sugarcode_app_server_protocol::ContextCompactionOutcome as PublicContextCompactionOutcome;
 use sugarcode_app_server_protocol::ContextCompactionStrategy as PublicContextCompactionStrategy;
 use sugarcode_app_server_protocol::Item as PublicItem;
@@ -437,7 +438,7 @@ fn map_snapshot_parts(
                             id,
                             call_id,
                             path,
-                            kind: _,
+                            kind,
                             diff,
                             before_sha256,
                             after_sha256,
@@ -449,7 +450,11 @@ fn map_snapshot_parts(
                             id: id.into_string(),
                             call_id,
                             path,
-                            kind: sugarcode_app_server_protocol::FileChangeKind::Update,
+                            kind: match kind.as_str() {
+                                "create" => sugarcode_app_server_protocol::FileChangeKind::Create,
+                                "delete" => sugarcode_app_server_protocol::FileChangeKind::Delete,
+                                _ => sugarcode_app_server_protocol::FileChangeKind::Update,
+                            },
                             diff,
                             before_sha256,
                             after_sha256,
@@ -713,6 +718,24 @@ pub(crate) fn map_core_event(
                 thread_id: thread_id.into_string(),
                 turn_id: turn_id.into_string(),
                 item_id: item_id.into_string(),
+                delta,
+            })
+            .map_err(|_| EventMappingError)?,
+        ),
+        CoreEventKind::CommandOutputDelta {
+            thread_id,
+            turn_id,
+            call_id,
+            stream,
+            delta,
+        } => notification(
+            "item/commandExecution/outputDelta",
+            to_value(CommandOutputDeltaNotification {
+                workspace_id: workspace_id.to_owned(),
+                thread_id: thread_id.into_string(),
+                turn_id: turn_id.into_string(),
+                call_id,
+                stream,
                 delta,
             })
             .map_err(|_| EventMappingError)?,
@@ -1019,7 +1042,7 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
         CoreItemKind::FileChange {
             call_id,
             path,
-            kind: _,
+            kind,
             diff,
             before_sha256,
             after_sha256,
@@ -1031,7 +1054,17 @@ fn map_core_item(item: sugarcode_protocol::CoreItemSnapshot) -> PublicItem {
             id: item.id.into_string(),
             call_id,
             path,
-            kind: sugarcode_app_server_protocol::FileChangeKind::Update,
+            kind: match kind {
+                sugarcode_protocol::CoreFileChangeKind::Create => {
+                    sugarcode_app_server_protocol::FileChangeKind::Create
+                }
+                sugarcode_protocol::CoreFileChangeKind::Update => {
+                    sugarcode_app_server_protocol::FileChangeKind::Update
+                }
+                sugarcode_protocol::CoreFileChangeKind::Delete => {
+                    sugarcode_app_server_protocol::FileChangeKind::Delete
+                }
+            },
             diff,
             before_sha256,
             after_sha256,

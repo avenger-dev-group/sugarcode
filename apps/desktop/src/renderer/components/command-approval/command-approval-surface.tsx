@@ -4,6 +4,7 @@ import {
   FolderCheck,
   MessagesSquare,
   ShieldQuestion,
+  SquareTerminal,
 } from 'lucide-react';
 import { useRef } from 'react';
 
@@ -68,9 +69,11 @@ const MODES: readonly CommandApprovalMode[] = [
 const PermissionModeOptions = ({
   selectedMode,
   onSelect,
+  fullAccess,
 }: Readonly<{
   selectedMode: CommandApprovalMode;
   onSelect: (mode: CommandApprovalMode) => void;
+  fullAccess: boolean;
 }>) => (
   <div className="space-y-1.5" role="radiogroup" aria-label="后续授权模式">
     {MODES.map((mode) => {
@@ -96,7 +99,11 @@ const PermissionModeOptions = ({
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-medium">{copy.label}</span>
             <span className="mt-0.5 block text-xs leading-5 text-tertiary">
-              {copy.description}
+              {fullAccess && mode !== 'ask'
+                ? mode === 'thread'
+                  ? '仅当前任务后续的 Full Access Shell 命令自动批准。'
+                  : '仅此工作区后续的 Full Access Shell 命令自动批准，应用退出后清除。'
+                : copy.description}
             </span>
           </span>
           {selected ? (
@@ -188,17 +195,30 @@ export const CommandApprovalView = ({
                   查看任务
                 </Button>
               </div>
-              <p className="rounded-lg border bg-surface px-3 py-2.5 font-mono text-xs font-normal leading-normal text-foreground">
-                {request.description}
-              </p>
+              <div className="rounded-lg border bg-surface px-3 py-2.5">
+                <p className="text-xs leading-5 text-secondary">
+                  {request.description}
+                </p>
+                <div className="mt-2 flex items-center gap-1.5 text-[11px] text-tertiary">
+                  <SquareTerminal className="size-3.5" aria-hidden="true" />
+                  {request.fullAccess ? 'Full Access Shell' : '只读禁网沙箱'} · cwd {request.cwd}
+                  {request.platformShell ? ` · ${request.platformShell}` : ''}
+                </div>
+                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-background px-2.5 py-2 font-mono text-xs leading-5 text-foreground">
+                  {request.command}
+                </pre>
+              </div>
               <div className="mt-4">
                 <PermissionModeOptions
                   selectedMode={store.selectedMode}
                   onSelect={store.setSelectedMode}
+                  fullAccess={request.fullAccess}
                 />
               </div>
               <p className="mt-3 text-xs leading-5 text-tertiary">
-                自动批准只减少重复确认；命令仍受 SugarCode 的只读文件与禁网沙箱约束。
+                {request.fullAccess
+                  ? 'Full Access 允许联网及工作区外读写。授权只保存在当前应用会话中，可随时切回请求批准。'
+                  : '自动批准只减少重复确认；命令仍受 SugarCode 的只读文件与禁网沙箱约束。'}
               </p>
             </div>
 

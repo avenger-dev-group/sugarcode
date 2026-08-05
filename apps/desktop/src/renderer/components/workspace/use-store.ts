@@ -38,30 +38,36 @@ export const toFileChangeReviewViewModel = (
   turnStatus: ConversationTurnStatus,
   activity: ConversationFileChangeActivity,
 ): FileChangeReviewViewModel => {
-  const change = activity.change;
-  const hunks = change ? parseUnifiedDiff(change.diff) : undefined;
-  const lines = hunks?.flatMap((hunk) => hunk.lines) ?? [];
+  const changes = activity.changes ?? (activity.change ? [activity.change] : []);
+  const files = changes.map((change) => {
+    const hunks = parseUnifiedDiff(change.diff);
+    const lines = hunks.flatMap((hunk) => hunk.lines);
+    return {
+      id: change.id,
+      path: change.path,
+      kind: change.kind,
+      hunks,
+      additions: lines.filter((line) => line.kind === 'addition').length,
+      deletions: lines.filter((line) => line.kind === 'deletion').length,
+      beforeSha256: change.beforeSha256,
+      afterSha256: change.afterSha256,
+      beforeBytes: change.beforeBytes,
+      afterBytes: change.afterBytes,
+      newlineStyle: change.newlineStyle,
+      finalNewline: change.finalNewline,
+    } as const;
+  });
   return {
     id: activity.id,
-    path: activity.path,
+    path: files.length > 1 ? `${files.length} files` : activity.path,
     state: toPresentationState(phase, turnStatus, activity),
     ...(activity.result?.outcome.type === 'error'
       ? { errorKind: activity.result.outcome.kind }
       : {}),
-    ...(change && hunks
+    ...(files.length > 0
       ? {
-          change: {
-            id: change.id,
-            hunks,
-            additions: lines.filter((line) => line.kind === 'addition').length,
-            deletions: lines.filter((line) => line.kind === 'deletion').length,
-            beforeSha256: change.beforeSha256,
-            afterSha256: change.afterSha256,
-            beforeBytes: change.beforeBytes,
-            afterBytes: change.afterBytes,
-            newlineStyle: change.newlineStyle,
-            finalNewline: change.finalNewline,
-          },
+          change: files[0],
+          files,
         }
       : {}),
   };

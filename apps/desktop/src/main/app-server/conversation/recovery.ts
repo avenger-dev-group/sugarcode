@@ -370,7 +370,9 @@ export const recoverConversation = (
           id: item.id,
           callId: item.callId,
           path: item.path,
+          paths: item.paths,
           callStatus: 'completed',
+          changes: [],
         };
         activities.push({ type: 'fileChange', activity: fileChange });
         continue;
@@ -379,29 +381,32 @@ export const recoverConversation = (
         if (
           !fileChange ||
           fileChange.callId !== item.callId ||
-          fileChange.path !== item.path ||
-          fileChange.change ||
+          !(fileChange.paths ?? [fileChange.path]).includes(item.path) ||
+          (fileChange.changes ?? []).some((change) => change.path === item.path) ||
           fileChange.result
         ) {
           throw new Error(
             'thread/resume returned an unmatched FileChange proposal.',
           );
         }
+        const proposal = {
+          id: item.id,
+          status: 'completed' as const,
+          path: item.path,
+          kind: item.kind,
+          diff: item.diff,
+          beforeSha256: item.beforeSha256,
+          afterSha256: item.afterSha256,
+          beforeBytes: item.beforeBytes,
+          afterBytes: item.afterBytes,
+          newlineStyle: item.newlineStyle,
+          finalNewline: item.finalNewline,
+        };
+        const changes = [...(fileChange.changes ?? []), proposal];
         fileChange = {
           ...fileChange,
-          change: {
-            id: item.id,
-            status: 'completed',
-            path: item.path,
-            kind: item.kind,
-            diff: item.diff,
-            beforeSha256: item.beforeSha256,
-            afterSha256: item.afterSha256,
-            beforeBytes: item.beforeBytes,
-            afterBytes: item.afterBytes,
-            newlineStyle: item.newlineStyle,
-            finalNewline: item.finalNewline,
-          },
+          change: fileChange.change ?? proposal,
+          changes,
         };
         const changeIndex = activities.findIndex(
           (entry) =>
@@ -417,12 +422,24 @@ export const recoverConversation = (
           fileChange.callId !== item.callId ||
           fileChange.result ||
           (item.outcome.type === 'success' &&
-            (!fileChange.change ||
-              fileChange.change.path !== item.outcome.path ||
-              fileChange.change.beforeSha256 !== item.outcome.beforeSha256 ||
-              fileChange.change.afterSha256 !== item.outcome.afterSha256 ||
-              fileChange.change.beforeBytes !== item.outcome.beforeBytes ||
-              fileChange.change.afterBytes !== item.outcome.afterBytes))
+            ('files' in item.outcome
+              ? item.outcome.files.length !== (fileChange.changes ?? []).length ||
+                item.outcome.files.some((receipt, index) => {
+                  const change = fileChange?.changes?.[index];
+                  return !change ||
+                    receipt.path !== change.path ||
+                    receipt.kind !== change.kind ||
+                    receipt.beforeSha256 !== change.beforeSha256 ||
+                    receipt.afterSha256 !== change.afterSha256 ||
+                    receipt.beforeBytes !== change.beforeBytes ||
+                    receipt.afterBytes !== change.afterBytes;
+                })
+              : !fileChange.change ||
+                fileChange.change.path !== item.outcome.path ||
+                fileChange.change.beforeSha256 !== item.outcome.beforeSha256 ||
+                fileChange.change.afterSha256 !== item.outcome.afterSha256 ||
+                fileChange.change.beforeBytes !== item.outcome.beforeBytes ||
+                fileChange.change.afterBytes !== item.outcome.afterBytes))
         ) {
           throw new Error(
             'thread/resume returned an unmatched workspace/apply-diff result.',
@@ -630,6 +647,7 @@ export const recoverConversation = (
           approvalId: item.approvalId,
           command: item.command,
           argumentCount: item.arguments.length,
+          ...(item.sandboxed === false ? { fullAccess: true } : {}),
           requestStatus: 'completed',
         };
         activities.push({
@@ -761,8 +779,10 @@ export const recoverConversation = (
       });
     }
 
+    const requiresDurableClosure = turn.status === 'completed';
+
     if (
-      turn.status !== 'interrupted' &&
+      requiresDurableClosure &&
       workspaceReads.some((activity) => !activity.result)
     ) {
       throw new Error(
@@ -770,7 +790,7 @@ export const recoverConversation = (
       );
     }
     if (
-      turn.status !== 'interrupted' &&
+      requiresDurableClosure &&
       workspaceLists.some((activity) => !activity.result)
     ) {
       throw new Error(
@@ -778,21 +798,21 @@ export const recoverConversation = (
       );
     }
     if (
-      turn.status !== 'interrupted' &&
+      requiresDurableClosure &&
       workspaceSearches.some((activity) => !activity.result)
     ) {
       throw new Error(
         'thread/resume returned terminal workspace/search activity without a result.',
       );
     }
-    if (fileChange && turn.status !== 'interrupted' && !fileChange.result) {
+    if (fileChange && requiresDurableClosure && !fileChange.result) {
       throw new Error(
         'thread/resume returned terminal workspace/apply-diff activity without a result.',
       );
     }
     if (
       commandApproval &&
-      turn.status !== 'interrupted' &&
+      requiresDurableClosure &&
       !commandApproval.decision
     ) {
       throw new Error(
@@ -801,25 +821,24 @@ export const recoverConversation = (
     }
     if (
       commandApproval?.executionAttempt &&
-      turn.status !== 'interrupted' &&
+      requiresDurableClosure &&
       !commandApproval.executionResult
     ) {
       throw new Error(
         'thread/resume returned terminal command execution attempt without a result.',
       );
     }
-    if (turn.status !== 'interrupted' && commandCalls.size > 0) {
+    if (requiresDurableClosure && commandCalls.size > 0) {
       throw new Error(
         'thread/resume returned a terminal command call without durable closure.',
       );
     }
     if (
-      mcpCall ||
-      mcpActivities.some(
-        (activity) =>
-          !activity.decision ||
-          (turn.status !== 'interrupted' && !activity.result),
-      )
+      requiresDurableClosure &&
+      (mcpCall ||
+        mcpActivities.some(
+          (activity) => !activity.decision || !activity.result,
+        ))
     ) {
       throw new Error(
         'thread/resume returned terminal MCP activity without durable closure.',

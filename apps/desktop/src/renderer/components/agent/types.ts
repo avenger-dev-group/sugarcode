@@ -103,8 +103,8 @@ export type CommandExecutionResultViewModel = Readonly<{
           | Readonly<{ type: 'exitCode'; code: number }>
           | Readonly<{ type: 'signal'; signal: number }>
           | Readonly<{ type: 'timedOut' }>;
-        sandboxPolicy: 'filesystemReadOnlyV1';
-        networkPolicy: 'networkDeniedV1';
+        sandboxPolicy?: 'filesystemReadOnlyV1';
+        networkPolicy?: 'networkDeniedV1';
       }>;
 }>;
 
@@ -112,6 +112,8 @@ export type CommandApprovalActivityViewModel = Readonly<{
   id: string;
   command: string;
   argumentCount: number;
+  fullAccess?: boolean;
+  liveOutput?: Readonly<{ stdout: string; stderr: string }>;
   state: CommandApprovalPresentationState;
   executionAttempt?: Readonly<{
     id: string;

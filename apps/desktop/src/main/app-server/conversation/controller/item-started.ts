@@ -271,24 +271,29 @@ export abstract class ConversationItemStartedController extends ConversationItem
         id: lifecycle.params.item.id,
         callId: lifecycle.params.item.callId,
         path: lifecycle.params.item.path,
+        paths: lifecycle.params.item.paths,
         callStatus: 'inProgress',
+        changes: [],
       };
       turn.fileChange = activity;
       turn.activities.push({ type: 'fileChange', activity });
     } else if (lifecycle.params.item.type === 'workspacePatchChange') {
+      const changePath = lifecycle.params.item.path;
       const activity = this.requireFileChange(
         turn,
         lifecycle.params.item.callId,
       );
       if (
         activity.callStatus !== 'completed' ||
-        activity.path !== lifecycle.params.item.path ||
-        activity.change ||
+        !activity.paths.includes(changePath) ||
+        activity.changes.some((change) => change.path === changePath) ||
         activity.result
       ) {
         throw new Error('FileChange proposal started out of order.');
       }
-      activity.change = toFileChangeProposal(lifecycle.params.item);
+      const proposal = toFileChangeProposal(lifecycle.params.item);
+      activity.changes.push(proposal);
+      activity.change ??= proposal;
     } else if (lifecycle.params.item.type === 'workspacePatchResult') {
       const activity = this.requireFileChange(
         turn,
@@ -300,6 +305,7 @@ export abstract class ConversationItemStartedController extends ConversationItem
         !patchResultMatchesChange(
           lifecycle.params.item.outcome,
           activity.change,
+          activity.changes,
         )
       ) {
         throw new Error(
@@ -460,6 +466,7 @@ export abstract class ConversationItemStartedController extends ConversationItem
         approvalId: lifecycle.params.item.approvalId,
         command: call.command,
         argumentCount: call.arguments.length,
+        fullAccess: lifecycle.params.item.sandboxed === false,
         requestStatus: 'inProgress',
         argumentSignature: JSON.stringify(call.arguments),
       };

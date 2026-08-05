@@ -121,6 +121,37 @@ pub(super) fn create_temp(
     Err(WorkspacePatchErrorKind::Unavailable)
 }
 
+pub(super) fn create_temp_new(
+    root: &Dir,
+    bytes: &[u8],
+) -> Result<PathBuf, WorkspacePatchErrorKind> {
+    for _ in 0..32 {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let name = PathBuf::from(format!(
+            ".sugarcode-workspace-write-{}-{sequence:016x}.tmp",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use cap_fs_ext::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match root.open_with(&name, &options) {
+            Ok(file) => file.into_std(),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(map_read_error(map_io_error(&error))),
+        };
+        if file.write_all(bytes).is_err() || file.sync_all().is_err() {
+            let _ = root.remove_file(&name);
+            return Err(WorkspacePatchErrorKind::Unavailable);
+        }
+        return Ok(name);
+    }
+    Err(WorkspacePatchErrorKind::Unavailable)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TargetState {
     Before,

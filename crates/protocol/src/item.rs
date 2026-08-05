@@ -246,7 +246,9 @@ pub enum CoreMcpToolResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreFileChangeKind {
+    Create,
     Update,
+    Delete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -553,6 +553,12 @@ export const toThreadViewModel = (
           id: turn.commandApproval.id,
           command: turn.commandApproval.command,
           argumentCount: turn.commandApproval.argumentCount,
+          ...(turn.commandApproval.fullAccess
+            ? { fullAccess: true }
+            : {}),
+          ...(turn.commandApproval.liveOutput
+            ? { liveOutput: { ...turn.commandApproval.liveOutput } }
+            : {}),
           state: toCommandApprovalPresentationState(
             snapshot.phase,
             turn.status,
@@ -591,6 +597,9 @@ export const toThreadViewModel = (
       previousTurn.commandApproval.command === nextCommandApproval.command &&
       previousTurn.commandApproval.argumentCount ===
         nextCommandApproval.argumentCount &&
+      previousTurn.commandApproval.fullAccess === nextCommandApproval.fullAccess &&
+      JSON.stringify(previousTurn.commandApproval.liveOutput) ===
+        JSON.stringify(nextCommandApproval.liveOutput) &&
       previousTurn.commandApproval.state === nextCommandApproval.state &&
       previousTurn.commandApproval.executionAttempt?.id ===
         nextCommandApproval.executionAttempt?.id &&

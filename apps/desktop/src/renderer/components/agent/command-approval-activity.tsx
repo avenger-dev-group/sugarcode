@@ -166,7 +166,7 @@ export const CommandApprovalActivity = ({
           <p className="text-sm font-medium leading-normal">{copy.label}</p>
           <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
             <ShieldCheck className="size-3" aria-hidden="true" />
-            shell/exec
+            {activity.fullAccess ? 'Full Access Shell' : 'shell/exec'}
           </span>
         </div>
         <code className="mt-1 block min-w-0 break-all font-mono text-xs font-normal leading-normal text-secondary">
@@ -184,6 +184,22 @@ export const CommandApprovalActivity = ({
           <StateIcon state={activity.state} />
           <span>{copy.detail}</span>
         </p>
+        {activity.liveOutput &&
+        (activity.liveOutput.stdout.length > 0 ||
+          activity.liveOutput.stderr.length > 0) ? (
+          <div className="mt-3 max-h-48 overflow-auto rounded-lg border bg-background p-2.5 font-mono text-[11px] leading-relaxed">
+            {activity.liveOutput.stdout.length > 0 ? (
+              <pre className="whitespace-pre-wrap break-words text-secondary">
+                {activity.liveOutput.stdout}
+              </pre>
+            ) : null}
+            {activity.liveOutput.stderr.length > 0 ? (
+              <pre className="whitespace-pre-wrap break-words text-destructive">
+                {activity.liveOutput.stderr}
+              </pre>
+            ) : null}
+          </div>
+        ) : null}
         {activity.executionAttempt ? (
           <div
             className="mt-3 min-w-0 border-t pt-2.5"

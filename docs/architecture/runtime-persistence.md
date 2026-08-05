@@ -232,10 +232,15 @@ counted across changing argument payloads and fingerprints. It emits
 alive. Shell argument rejection identifies the violated safe shape with a
 bounded expected summary and suggested action, without retaining the rejected
 command or arguments; the absolute-executable, JSON-only `argvJson` and
-fixed-cwd requirements remain unchanged. A valid batch resets the counter. Provider
-transport/protocol errors, tool errors, Desktop protocol errors and
-durable-state failures remain distinct; each model failure terminates only its
-Turn and does not terminate the app-server process or another Thread.
+direct sandbox requirements remain unchanged. Both preferred schemas use the
+capability-advertised absolute workspace root as cwd; runtime/replay also accept
+the earlier direct dot and validated shell-relative forms. Rollout execution-
+attempt validation branches on `kind`: sandbox receipts are mandatory for
+direct and forbidden for approved Full Access shell. A valid batch resets the
+counter. Provider transport/protocol errors, tool errors, Desktop protocol
+errors and durable-state failures remain distinct; each model failure
+terminates only its Turn and does not terminate the app-server process or
+another Thread.
 
 Model capability flags constrain outbound requests but do not constrain what a
 compatible gateway may return. A provider-emitted multi-call batch is therefore

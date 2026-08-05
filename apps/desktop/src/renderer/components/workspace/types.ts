@@ -20,23 +20,28 @@ export type FileChangeReviewPresentationState =
   | 'interrupted'
   | 'outcomeUnknown';
 
+export type FileChangeReviewFile = Readonly<{
+  id: string;
+  path: string;
+  kind: 'create' | 'update' | 'delete';
+  hunks: readonly UnifiedDiffHunk[];
+  additions: number;
+  deletions: number;
+  beforeSha256: string;
+  afterSha256: string;
+  beforeBytes: number;
+  afterBytes: number;
+  newlineStyle: 'lf' | 'crLf';
+  finalNewline: boolean;
+}>;
+
 export type FileChangeReviewViewModel = Readonly<{
   id: string;
   path: string;
   state: FileChangeReviewPresentationState;
   errorKind?: string;
-  change?: Readonly<{
-    id: string;
-    hunks: readonly UnifiedDiffHunk[];
-    additions: number;
-    deletions: number;
-    beforeSha256: string;
-    afterSha256: string;
-    beforeBytes: number;
-    afterBytes: number;
-    newlineStyle: 'lf' | 'crLf';
-    finalNewline: boolean;
-  }>;
+  change?: FileChangeReviewFile;
+  files?: readonly FileChangeReviewFile[];
 }>;
 
 export type FileChangeReviewProps = Readonly<{

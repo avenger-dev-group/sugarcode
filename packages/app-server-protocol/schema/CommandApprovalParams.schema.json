@@ -31,10 +31,24 @@
       "type": "string"
     },
     "networkPolicy": {
-      "$ref": "#/$defs/CommandNetworkPolicy"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommandNetworkPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "sandboxPolicy": {
-      "$ref": "#/$defs/CommandSandboxPolicy"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommandSandboxPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "sandboxed": {
       "type": "boolean"
@@ -92,9 +106,7 @@
     "cwd",
     "approvalScope",
     "environmentPolicy",
-    "sandboxed",
-    "sandboxPolicy",
-    "networkPolicy"
+    "sandboxed"
   ],
   "$defs": {
     "AgentTaskRole": {

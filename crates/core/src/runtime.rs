@@ -101,26 +101,33 @@ use sugarcode_state::DurableWorkspaceInstructionsStatus;
 use sugarcode_state::DurableWorkspaceSkillsAudit;
 use sugarcode_state::DurableWorkspaceSkillsSource;
 use sugarcode_state::DurableWorkspaceSkillsStatus;
+use sugarcode_tools::FullAccessShellArguments;
 use sugarcode_tools::ShellCommandArguments;
 use sugarcode_tools::ShellCommandErrorKind;
 use sugarcode_tools::ShellCommandExecution;
 use sugarcode_tools::ShellCommandExecutor;
 use sugarcode_tools::ShellCommandOutcome;
+use sugarcode_tools::ShellOutputStream;
+use sugarcode_tools::WorkspaceAdvancedSearchOutcome;
+use sugarcode_tools::WorkspaceChangeSetArguments;
+use sugarcode_tools::WorkspaceChangeSetCommitOutcome;
+use sugarcode_tools::WorkspaceChangeSetOperation;
+use sugarcode_tools::WorkspaceChangeSetPrepareOutcome;
 use sugarcode_tools::WorkspaceEditDiagnostic;
+use sugarcode_tools::WorkspaceFileChangeKind;
 use sugarcode_tools::WorkspaceInstructionsSnapshot;
 use sugarcode_tools::WorkspaceListArguments;
 use sugarcode_tools::WorkspaceListErrorKind;
 use sugarcode_tools::WorkspaceListExecutor;
 use sugarcode_tools::WorkspaceListOutcome;
 use sugarcode_tools::WorkspacePatchArguments;
-use sugarcode_tools::WorkspacePatchCommitOutcome;
 use sugarcode_tools::WorkspacePatchErrorKind;
 use sugarcode_tools::WorkspacePatchExecutor;
-use sugarcode_tools::WorkspacePatchPrepareOutcome;
 use sugarcode_tools::WorkspaceReadArguments;
 use sugarcode_tools::WorkspaceReadErrorKind;
 use sugarcode_tools::WorkspaceReadExecutor;
 use sugarcode_tools::WorkspaceReadOutcome;
+use sugarcode_tools::WorkspaceRecursiveListOutcome;
 use sugarcode_tools::WorkspaceSearchArguments;
 use sugarcode_tools::WorkspaceSearchErrorKind;
 use sugarcode_tools::WorkspaceSearchExecutor;
@@ -148,18 +155,22 @@ use terminal::finish_interrupted;
 use terminal::finish_interrupted_and_emit;
 use terminal::finish_state_unavailable_and_emit;
 use terminal::send_event;
+use tool_dispatch::ShellToolKind;
 use tool_dispatch::ToolArgumentGuidance;
 use tool_dispatch::append_completed_agent_output_item;
 use tool_dispatch::append_completed_tool_item;
 use tool_dispatch::is_workspace_write_tool;
+use tool_dispatch::map_workspace_advanced_search_outcome;
 use tool_dispatch::map_workspace_list_outcome;
 use tool_dispatch::map_workspace_patch_error;
 use tool_dispatch::map_workspace_read_outcome;
+use tool_dispatch::map_workspace_recursive_list_outcome;
 use tool_dispatch::map_workspace_search_outcome;
 use tool_dispatch::serialized_file_change_bytes;
 use tool_dispatch::serialized_tool_result_bytes;
 use tool_dispatch::shell_tool_argument_guidance;
 use tool_dispatch::shell_tool_arguments;
+use tool_dispatch::shell_workspace_root;
 use tool_dispatch::workspace_tool_arguments;
 use tool_dispatch::workspace_tool_definitions;
 
@@ -1876,22 +1887,28 @@ async fn run_turn(
                             continue 'tool_batch;
                         }
                         if call.name == "shell/exec" {
-                            let arguments = match shell_tool_arguments(&call) {
+                            let arguments =
+                                match shell_tool_arguments(&call, shell_workspace_root(&runtime)) {
                                 Ok(arguments) => arguments,
                                 Err(error) => break 'rounds Terminal::Failed(error),
                             };
-                            let command_policy = runtime
-                                .shell_executor
-                                .as_ref()
-                                .expect("validated shell executor")
-                                .sandbox_policy();
+                            let full_access = arguments.kind == ShellToolKind::Shell;
+                            let command_policy = (!full_access).then(|| {
+                                runtime
+                                    .shell_executor
+                                    .as_ref()
+                                    .expect("validated shell executor")
+                                    .sandbox_policy()
+                            });
                             let _root_workspace_permit =
                                 if runtime.collaboration.access_for_child(&thread_id).is_none() {
                                     Some(
                                         runtime
                                             .collaboration
                                             .acquire_workspace(
-                                                if command_policy.workspace_write.is_some() {
+                                                if full_access
+                                                    || command_policy.is_some_and(|policy| policy.workspace_write.is_some())
+                                                {
                                                     AgentAccess::WorkspaceWrite
                                                 } else {
                                                     AgentAccess::ReadOnly
@@ -1916,15 +1933,16 @@ async fn run_turn(
                             {
                                 break 'rounds error;
                             }
-                            let filesystem_policy =
-                                core_filesystem_policy(command_policy.filesystem);
+                            let filesystem_policy = command_policy
+                                .map(|policy| core_filesystem_policy(policy.filesystem));
                             let workspace_write_policy = command_policy
-                                .workspace_write
+                                .and_then(|policy| policy.workspace_write)
                                 .map(core_workspace_write_policy);
                             let workspace_write_risk = workspace_write_policy.map(|_| {
                             sugarcode_protocol::CoreCommandWorkspaceWriteRisk::NonTransactionalWorkspaceTreeV1
                         });
-                            let network_policy = core_network_policy(command_policy.network);
+                            let network_policy = command_policy
+                                .map(|policy| core_network_policy(policy.network));
                             let approval_id =
                                 format!("approval/{}/{}/{}", thread_id, turn_id, call.id);
                             if let Err(error) = append_completed_tool_item(
@@ -1937,11 +1955,11 @@ async fn run_turn(
                                     arguments: arguments.arguments.clone(),
                                     cwd: arguments.cwd.clone(),
                                     environment_policy: SHELL_ENVIRONMENT_POLICY.to_string(),
-                                    sandboxed: true,
-                                    sandbox_policy: Some(filesystem_policy),
+                                    sandboxed: !full_access,
+                                    sandbox_policy: filesystem_policy,
                                     workspace_write_policy,
                                     workspace_write_risk,
-                                    network_policy: Some(network_policy),
+                                    network_policy,
                                 },
                             )
                             .await
@@ -1962,7 +1980,7 @@ async fn run_turn(
                                     arguments: arguments.arguments.clone(),
                                     cwd: arguments.cwd.clone(),
                                     environment_policy: SHELL_ENVIRONMENT_POLICY.to_string(),
-                                    sandboxed: true,
+                                    sandboxed: !full_access,
                                     sandbox_policy: filesystem_policy,
                                     workspace_write_policy,
                                     workspace_write_risk,
@@ -2052,18 +2070,86 @@ async fn run_turn(
                                     {
                                         break 'rounds error;
                                     }
-                                    let execution = runtime
+                                    let executor = runtime
                                         .shell_executor
                                         .as_ref()
-                                        .expect("validated shell executor")
-                                        .execute(
-                                            ShellCommandArguments {
-                                                command: arguments.command.clone(),
-                                                arguments: arguments.arguments.clone(),
-                                            },
-                                            cancellation.clone(),
-                                        )
-                                        .await;
+                                        .expect("validated shell executor");
+                                    let execution = if full_access {
+                                        let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
+                                        let mut execution = executor
+                                            .execute_full_access(
+                                                FullAccessShellArguments {
+                                                    command: arguments.command.clone(),
+                                                    cwd: arguments.cwd.clone(),
+                                                    timeout_ms: arguments.timeout_ms,
+                                                    output_tx: Some(output_tx),
+                                                },
+                                                cancellation.clone(),
+                                            );
+                                        let mut output_open = true;
+                                        loop {
+                                            tokio::select! {
+                                                biased;
+                                                chunk = output_rx.recv(), if output_open => {
+                                                    if let Some(chunk) = chunk {
+                                                        if !send_event(
+                                                            &runtime,
+                                                            &cancellation,
+                                                            prepared.request_id,
+                                                            CoreEventKind::CommandOutputDelta {
+                                                                thread_id: thread_id.clone(),
+                                                                turn_id: turn_id.clone(),
+                                                                call_id: call.id.clone(),
+                                                                stream: match chunk.stream {
+                                                                    ShellOutputStream::Stdout => "stdout".to_string(),
+                                                                    ShellOutputStream::Stderr => "stderr".to_string(),
+                                                                },
+                                                                delta: chunk.content,
+                                                            },
+                                                        ).await {
+                                                            break ShellCommandExecution::Cancelled;
+                                                        }
+                                                    } else {
+                                                        output_open = false;
+                                                    }
+                                                }
+                                                result = &mut execution => {
+                                                    let mut result = result;
+                                                    while let Ok(chunk) = output_rx.try_recv() {
+                                                        if !send_event(
+                                                            &runtime,
+                                                            &cancellation,
+                                                            prepared.request_id,
+                                                            CoreEventKind::CommandOutputDelta {
+                                                                thread_id: thread_id.clone(),
+                                                                turn_id: turn_id.clone(),
+                                                                call_id: call.id.clone(),
+                                                                stream: match chunk.stream {
+                                                                    ShellOutputStream::Stdout => "stdout".to_string(),
+                                                                    ShellOutputStream::Stderr => "stderr".to_string(),
+                                                                },
+                                                                delta: chunk.content,
+                                                            },
+                                                        ).await {
+                                                            result = ShellCommandExecution::Cancelled;
+                                                            break;
+                                                        }
+                                                    }
+                                                    break result;
+                                                },
+                                            }
+                                        }
+                                    } else {
+                                        executor
+                                            .execute(
+                                                ShellCommandArguments {
+                                                    command: arguments.command.clone(),
+                                                    arguments: arguments.arguments.clone(),
+                                                },
+                                                cancellation.clone(),
+                                            )
+                                            .await
+                                    };
                                     match shell_execution_result(execution) {
                                         Some(result) => result,
                                         None => break 'rounds Terminal::Interrupted,
@@ -2152,31 +2238,38 @@ async fn run_turn(
                                 .workspace_patch
                                 .as_ref()
                                 .expect("validated workspace write executor");
-                            let prepare_outcome = if let Some(edit) = arguments.edit.as_ref() {
-                                executor.prepare_edit(edit, &cancellation).await
+                            let legacy_shape = arguments.change_set.is_none();
+                            let change_set = if let Some(change_set) = arguments.change_set {
+                                change_set
+                            } else if let Some(edit) = arguments.edit {
+                                WorkspaceChangeSetArguments {
+                                    operations: vec![WorkspaceChangeSetOperation::Update(edit)],
+                                }
                             } else {
-                                executor
-                                    .prepare(
-                                        &WorkspacePatchArguments {
+                                WorkspaceChangeSetArguments {
+                                    operations: vec![WorkspaceChangeSetOperation::Diff(
+                                        WorkspacePatchArguments {
                                             path: arguments.path.clone(),
                                             diff: arguments
                                                 .diff
-                                                .clone()
                                                 .expect("validated workspace/apply-diff input"),
                                             base_sha256: None,
                                         },
-                                        &cancellation,
-                                    )
-                                    .await
+                                    )],
+                                }
                             };
+                            let prepare_outcome = executor
+                                .prepare_change_set(&change_set, &cancellation)
+                                .await;
                             let workspace_tool_name = call.name.as_str();
                             let mut workspace_diagnostic = None;
                             let (mut result, mut content, interrupted_after_commit) =
                                 match prepare_outcome {
-                                    WorkspacePatchPrepareOutcome::Error {
+                                    WorkspaceChangeSetPrepareOutcome::Error {
                                         kind: WorkspacePatchErrorKind::Cancelled,
+                                        ..
                                     } => break 'rounds Terminal::Interrupted,
-                                    WorkspacePatchPrepareOutcome::Error { kind } => {
+                                    WorkspaceChangeSetPrepareOutcome::Error { kind, .. } => {
                                         let kind = map_workspace_patch_error(kind);
                                         (
                                             CoreToolResult::Error { kind },
@@ -2184,10 +2277,14 @@ async fn run_turn(
                                             false,
                                         )
                                     }
-                                    WorkspacePatchPrepareOutcome::ValidationRejected {
+                                    WorkspaceChangeSetPrepareOutcome::ValidationRejected {
+                                        operation_index,
                                         kind,
-                                        diagnostic,
+                                        mut diagnostic,
                                     } => {
+                                        if diagnostic.edit_index.is_none() {
+                                            diagnostic.edit_index = u32::try_from(operation_index + 1).ok();
+                                        }
                                         workspace_diagnostic = Some(diagnostic);
                                         let kind = map_workspace_patch_error(kind);
                                         (
@@ -2196,37 +2293,46 @@ async fn run_turn(
                                             false,
                                         )
                                     }
-                                    WorkspacePatchPrepareOutcome::Prepared(proposal) => {
-                                        let file_change = CoreItemKind::FileChange {
-                                            call_id: call.id.clone(),
-                                            path: proposal.path().to_string(),
-                                            kind: CoreFileChangeKind::Update,
-                                            diff: proposal.diff().to_string(),
-                                            before_sha256: proposal.before_sha256().to_string(),
-                                            after_sha256: proposal.after_sha256().to_string(),
-                                            before_bytes: proposal.before_bytes(),
-                                            after_bytes: proposal.after_bytes(),
-                                            newline_style: match proposal.newline() {
-                                                sugarcode_tools::WorkspaceNewlineStyle::Lf => {
-                                                    CoreFileChangeNewlineStyle::Lf
-                                                }
-                                                sugarcode_tools::WorkspaceNewlineStyle::CrLf => {
-                                                    CoreFileChangeNewlineStyle::CrLf
-                                                }
-                                            },
-                                            final_newline: proposal.final_newline(),
-                                        };
-                                        let change_bytes =
-                                            serialized_file_change_bytes(&file_change);
+                                    WorkspaceChangeSetPrepareOutcome::Prepared(proposal) => {
+                                        let file_changes = proposal
+                                            .changes()
+                                            .iter()
+                                            .map(|change| CoreItemKind::FileChange {
+                                                call_id: call.id.clone(),
+                                                path: change.path().to_string(),
+                                                kind: match change.kind() {
+                                                    WorkspaceFileChangeKind::Create => CoreFileChangeKind::Create,
+                                                    WorkspaceFileChangeKind::Update => CoreFileChangeKind::Update,
+                                                    WorkspaceFileChangeKind::Delete => CoreFileChangeKind::Delete,
+                                                },
+                                                diff: change.diff().to_string(),
+                                                before_sha256: change.before_sha256().to_string(),
+                                                after_sha256: change.after_sha256().to_string(),
+                                                before_bytes: change.before_bytes(),
+                                                after_bytes: change.after_bytes(),
+                                                newline_style: match change.newline() {
+                                                    sugarcode_tools::WorkspaceNewlineStyle::Lf => CoreFileChangeNewlineStyle::Lf,
+                                                    sugarcode_tools::WorkspaceNewlineStyle::CrLf => CoreFileChangeNewlineStyle::CrLf,
+                                                },
+                                                final_newline: change.final_newline(),
+                                            })
+                                            .collect::<Vec<_>>();
+                                        let change_bytes = file_changes
+                                            .iter()
+                                            .map(serialized_file_change_bytes)
+                                            .try_fold(0usize, usize::checked_add)
+                                            .unwrap_or(usize::MAX);
                                         if change_bytes <= MAX_SERIALIZED_TOOL_RESULT_BYTES {
-                                            if let Err(error) = append_completed_tool_item(
-                                                &runtime,
-                                                &prepared,
-                                                file_change,
-                                            )
-                                            .await
-                                            {
-                                                break 'rounds error;
+                                            for file_change in file_changes {
+                                                if let Err(error) = append_completed_tool_item(
+                                                    &runtime,
+                                                    &prepared,
+                                                    file_change,
+                                                )
+                                                .await
+                                                {
+                                                    break 'rounds error;
+                                                }
                                             }
                                             if cancellation.is_cancelled() {
                                                 break 'rounds Terminal::Interrupted;
@@ -2237,27 +2343,28 @@ async fn run_turn(
                                                 .workspace_patch
                                                 .as_ref()
                                                 .expect("validated workspace write executor")
-                                                .commit(*proposal, &CancellationToken::new())
+                                                .commit_change_set(proposal, &CancellationToken::new())
                                                 .await;
                                             let interrupted = cancellation.is_cancelled();
                                             match outcome {
-                                                WorkspacePatchCommitOutcome::Applied {
-                                                    path,
-                                                    before_sha256,
-                                                    after_sha256,
-                                                    before_bytes,
-                                                    after_bytes,
-                                                } => {
-                                                    let content = serde_json::to_string(
-                                                        &serde_json::json!({
-                                                            "path": path,
-                                                            "kind": "update",
-                                                            "beforeSha256": before_sha256,
-                                                            "afterSha256": after_sha256,
-                                                            "beforeBytes": before_bytes,
-                                                            "afterBytes": after_bytes,
-                                                        }),
-                                                    )
+                                                WorkspaceChangeSetCommitOutcome::Applied { receipts } => {
+                                                    let receipts = receipts
+                                                        .into_iter()
+                                                        .map(|receipt| serde_json::json!({
+                                                            "path": receipt.path,
+                                                            "kind": receipt.kind.as_str(),
+                                                            "beforeSha256": receipt.before_sha256,
+                                                            "afterSha256": receipt.after_sha256,
+                                                            "beforeBytes": receipt.before_bytes,
+                                                            "afterBytes": receipt.after_bytes,
+                                                        }))
+                                                        .collect::<Vec<_>>();
+                                                    let payload = if legacy_shape {
+                                                        receipts.into_iter().next().expect("legacy write receipt")
+                                                    } else {
+                                                        serde_json::json!({ "files": receipts })
+                                                    };
+                                                    let content = serde_json::to_string(&payload)
                                                     .expect("workspace write result serializes");
                                                     (
                                                         CoreToolResult::Success {
@@ -2268,7 +2375,7 @@ async fn run_turn(
                                                         interrupted,
                                                     )
                                                 }
-                                                WorkspacePatchCommitOutcome::Error { kind } => {
+                                                WorkspaceChangeSetCommitOutcome::Error { kind } => {
                                                     let kind = map_workspace_patch_error(kind);
                                                     (
                                                         CoreToolResult::Error { kind },
@@ -2424,52 +2531,93 @@ async fn run_turn(
                                 map_workspace_read_outcome(outcome)
                             }
                             "workspace/list" => {
-                                let outcome = runtime
-                                    .workspace_list
-                                    .as_ref()
-                                    .expect("validated workspace/list executor")
-                                    .list(
-                                        &WorkspaceListArguments {
-                                            path: arguments.path.clone(),
-                                        },
-                                        &cancellation,
-                                    )
-                                    .await;
-                                if matches!(
-                                    outcome,
-                                    WorkspaceListOutcome::Error {
-                                        kind: WorkspaceListErrorKind::Cancelled
+                                if arguments.recursive {
+                                    let outcome = runtime
+                                        .workspace_list
+                                        .as_ref()
+                                        .expect("validated workspace/list executor")
+                                        .list_recursive(
+                                            &WorkspaceListArguments {
+                                                path: arguments.path.clone(),
+                                            },
+                                            &cancellation,
+                                        )
+                                        .await;
+                                    if matches!(
+                                        outcome,
+                                        WorkspaceRecursiveListOutcome::Error {
+                                            kind: WorkspaceListErrorKind::Cancelled
+                                        }
+                                    ) {
+                                        break 'rounds Terminal::Interrupted;
                                     }
-                                ) {
-                                    break 'rounds Terminal::Interrupted;
+                                    map_workspace_recursive_list_outcome(outcome)
+                                } else {
+                                    let outcome = runtime
+                                        .workspace_list
+                                        .as_ref()
+                                        .expect("validated workspace/list executor")
+                                        .list(
+                                            &WorkspaceListArguments {
+                                                path: arguments.path.clone(),
+                                            },
+                                            &cancellation,
+                                        )
+                                        .await;
+                                    if matches!(
+                                        outcome,
+                                        WorkspaceListOutcome::Error {
+                                            kind: WorkspaceListErrorKind::Cancelled
+                                        }
+                                    ) {
+                                        break 'rounds Terminal::Interrupted;
+                                    }
+                                    map_workspace_list_outcome(outcome)
                                 }
-                                map_workspace_list_outcome(outcome)
                             }
                             "workspace/search" => {
-                                let outcome = runtime
-                                    .workspace_search
-                                    .as_ref()
-                                    .expect("validated workspace/search executor")
-                                    .search(
-                                        &WorkspaceSearchArguments {
-                                            path: arguments.path.clone(),
-                                            query: arguments
-                                                .query
-                                                .clone()
-                                                .expect("validated workspace/search query"),
-                                        },
-                                        &cancellation,
-                                    )
-                                    .await;
-                                if matches!(
-                                    outcome,
-                                    WorkspaceSearchOutcome::Error {
-                                        kind: WorkspaceSearchErrorKind::Cancelled
+                                if let Some(advanced) = arguments.advanced_search.as_ref() {
+                                    let outcome = runtime
+                                        .workspace_search
+                                        .as_ref()
+                                        .expect("validated workspace/search executor")
+                                        .search_advanced(advanced, &cancellation)
+                                        .await;
+                                    if matches!(
+                                        outcome,
+                                        WorkspaceAdvancedSearchOutcome::Error {
+                                            kind: WorkspaceSearchErrorKind::Cancelled
+                                        }
+                                    ) {
+                                        break 'rounds Terminal::Interrupted;
                                     }
-                                ) {
-                                    break 'rounds Terminal::Interrupted;
+                                    map_workspace_advanced_search_outcome(outcome)
+                                } else {
+                                    let outcome = runtime
+                                        .workspace_search
+                                        .as_ref()
+                                        .expect("validated workspace/search executor")
+                                        .search(
+                                            &WorkspaceSearchArguments {
+                                                path: arguments.path.clone(),
+                                                query: arguments
+                                                    .query
+                                                    .clone()
+                                                    .expect("validated workspace/search query"),
+                                            },
+                                            &cancellation,
+                                        )
+                                        .await;
+                                    if matches!(
+                                        outcome,
+                                        WorkspaceSearchOutcome::Error {
+                                            kind: WorkspaceSearchErrorKind::Cancelled
+                                        }
+                                    ) {
+                                        break 'rounds Terminal::Interrupted;
+                                    }
+                                    map_workspace_search_outcome(outcome)
                                 }
-                                map_workspace_search_outcome(outcome)
                             }
                             _ => unreachable!("tool availability was validated"),
                         };
@@ -2582,7 +2730,7 @@ fn validate_tool_call_batch(
             "shell/exec"
                 if runtime.shell_executor.is_some() && runtime.approval_requester.is_some() =>
             {
-                shell_tool_arguments(call).map(|_| ())
+                shell_tool_arguments(call, shell_workspace_root(runtime)).map(|_| ())
             }
             name if name.starts_with("mcp__")
                 && runtime.mcp_capability.is_enabled()
@@ -2623,7 +2771,9 @@ fn validate_tool_call_batch(
         let kind = validation
             .err()
             .map(|_| CoreToolErrorKind::InvalidArguments);
-        guidance.push(kind.and_then(|_| shell_tool_argument_guidance(call)));
+        guidance.push(
+            kind.and_then(|_| shell_tool_argument_guidance(call, shell_workspace_root(runtime))),
+        );
         kinds.push(kind);
     }
     if kinds.iter().all(Option::is_none) {
@@ -3031,49 +3181,88 @@ async fn execute_read_only_tool_batch(
                         (result, content, interrupted)
                     }
                     "workspace/list" => {
-                        let outcome = runtime
-                            .workspace_list
-                            .as_ref()
-                            .expect("validated workspace/list executor")
-                            .list(
-                                &WorkspaceListArguments {
-                                    path: arguments.path,
-                                },
-                                &cancellation,
-                            )
-                            .await;
-                        let interrupted = matches!(
-                            outcome,
-                            WorkspaceListOutcome::Error {
-                                kind: WorkspaceListErrorKind::Cancelled
-                            }
-                        );
-                        let (result, content) = map_workspace_list_outcome(outcome);
-                        (result, content, interrupted)
+                        if arguments.recursive {
+                            let outcome = runtime
+                                .workspace_list
+                                .as_ref()
+                                .expect("validated workspace/list executor")
+                                .list_recursive(
+                                    &WorkspaceListArguments {
+                                        path: arguments.path,
+                                    },
+                                    &cancellation,
+                                )
+                                .await;
+                            let interrupted = matches!(
+                                outcome,
+                                WorkspaceRecursiveListOutcome::Error {
+                                    kind: WorkspaceListErrorKind::Cancelled
+                                }
+                            );
+                            let (result, content) = map_workspace_recursive_list_outcome(outcome);
+                            (result, content, interrupted)
+                        } else {
+                            let outcome = runtime
+                                .workspace_list
+                                .as_ref()
+                                .expect("validated workspace/list executor")
+                                .list(
+                                    &WorkspaceListArguments {
+                                        path: arguments.path,
+                                    },
+                                    &cancellation,
+                                )
+                                .await;
+                            let interrupted = matches!(
+                                outcome,
+                                WorkspaceListOutcome::Error {
+                                    kind: WorkspaceListErrorKind::Cancelled
+                                }
+                            );
+                            let (result, content) = map_workspace_list_outcome(outcome);
+                            (result, content, interrupted)
+                        }
                     }
                     "workspace/search" => {
-                        let outcome = runtime
-                            .workspace_search
-                            .as_ref()
-                            .expect("validated workspace/search executor")
-                            .search(
-                                &WorkspaceSearchArguments {
-                                    path: arguments.path,
-                                    query: arguments
-                                        .query
-                                        .expect("validated workspace/search query"),
-                                },
-                                &cancellation,
-                            )
-                            .await;
-                        let interrupted = matches!(
-                            outcome,
-                            WorkspaceSearchOutcome::Error {
-                                kind: WorkspaceSearchErrorKind::Cancelled
-                            }
-                        );
-                        let (result, content) = map_workspace_search_outcome(outcome);
-                        (result, content, interrupted)
+                        if let Some(advanced) = arguments.advanced_search {
+                            let outcome = runtime
+                                .workspace_search
+                                .as_ref()
+                                .expect("validated workspace/search executor")
+                                .search_advanced(&advanced, &cancellation)
+                                .await;
+                            let interrupted = matches!(
+                                outcome,
+                                WorkspaceAdvancedSearchOutcome::Error {
+                                    kind: WorkspaceSearchErrorKind::Cancelled
+                                }
+                            );
+                            let (result, content) = map_workspace_advanced_search_outcome(outcome);
+                            (result, content, interrupted)
+                        } else {
+                            let outcome = runtime
+                                .workspace_search
+                                .as_ref()
+                                .expect("validated workspace/search executor")
+                                .search(
+                                    &WorkspaceSearchArguments {
+                                        path: arguments.path,
+                                        query: arguments
+                                            .query
+                                            .expect("validated workspace/search query"),
+                                    },
+                                    &cancellation,
+                                )
+                                .await;
+                            let interrupted = matches!(
+                                outcome,
+                                WorkspaceSearchOutcome::Error {
+                                    kind: WorkspaceSearchErrorKind::Cancelled
+                                }
+                            );
+                            let (result, content) = map_workspace_search_outcome(outcome);
+                            (result, content, interrupted)
+                        }
                     }
                     _ => unreachable!("read-only batch was validated"),
                 };
@@ -3153,7 +3342,7 @@ async fn persist_mixed_batch_calls(
                 inventory_sha256: prepared_call.inventory_sha256,
             }
         } else if call.name == "shell/exec" {
-            shell_tool_arguments(call).map_err(Terminal::Failed)?;
+            shell_tool_arguments(call, shell_workspace_root(runtime)).map_err(Terminal::Failed)?;
             CoreItemKind::ToolCall {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
@@ -4117,6 +4306,32 @@ fn shell_execution_result(execution: ShellCommandExecution) -> Option<(CoreToolR
                     .workspace_write
                     .map(core_workspace_write_policy),
                 network_policy: Some(core_network_policy(output.sandbox_policy.network)),
+            })
+        }
+        ShellCommandExecution::FullAccessCompleted(output) => {
+            CoreToolResult::Process(sugarcode_protocol::CoreProcessResult {
+                stdout: output.stdout,
+                stderr: output.stderr,
+                stdout_bytes: output.stdout_bytes,
+                stderr_bytes: output.stderr_bytes,
+                stdout_truncated: output.stdout_truncated,
+                stderr_truncated: output.stderr_truncated,
+                encoding: "utf8Lossy".to_string(),
+                duration_ms: output.duration_ms,
+                outcome: match output.outcome {
+                    ShellCommandOutcome::ExitCode { code } => {
+                        sugarcode_protocol::CoreProcessOutcome::ExitCode { code }
+                    }
+                    ShellCommandOutcome::Signal { signal } => {
+                        sugarcode_protocol::CoreProcessOutcome::Signal { signal }
+                    }
+                    ShellCommandOutcome::TimedOut => {
+                        sugarcode_protocol::CoreProcessOutcome::TimedOut
+                    }
+                },
+                sandbox_policy: None,
+                workspace_write_policy: None,
+                network_policy: None,
             })
         }
     };

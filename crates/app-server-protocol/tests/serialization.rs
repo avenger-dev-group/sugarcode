@@ -8,6 +8,7 @@ use sugarcode_app_server_protocol::AgentTaskRole;
 use sugarcode_app_server_protocol::AgentTaskStatus;
 use sugarcode_app_server_protocol::CommandApprovalParams;
 use sugarcode_app_server_protocol::CommandNetworkPolicy;
+use sugarcode_app_server_protocol::CommandOutputDeltaNotification;
 use sugarcode_app_server_protocol::CommandSandboxPolicy;
 use sugarcode_app_server_protocol::CommandWorkspaceWritePolicy;
 use sugarcode_app_server_protocol::CommandWorkspaceWriteRisk;
@@ -1055,6 +1056,27 @@ fn provisional_agent_output_fixture_is_additive_and_provider_neutral() {
                 output_index: 0,
             },
             delta: "Inspecting the workspace".to_string(),
+        }
+    );
+}
+
+#[test]
+fn command_output_delta_fixture_is_call_correlated_and_provider_neutral() {
+    let fixture = include_str!(
+        "../../../protocol-fixtures/app-server/v1/command-output-delta.notification.json"
+    );
+    let value: serde_json::Value = serde_json::from_str(fixture).expect("valid fixture JSON");
+    let params = value.get("params").cloned().expect("notification params");
+    assert_eq!(
+        serde_json::from_value::<CommandOutputDeltaNotification>(params)
+            .expect("command output notification"),
+        CommandOutputDeltaNotification {
+            workspace_id: "workspace-test".to_string(),
+            thread_id: "00000000-0000-7000-8000-000000000001".to_string(),
+            turn_id: "00000000-0001-7000-8000-000000000001".to_string(),
+            call_id: "call_full_shell".to_string(),
+            stream: "stdout".to_string(),
+            delta: "build complete\n".to_string(),
         }
     );
 }

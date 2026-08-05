@@ -60,7 +60,7 @@ export type CommandWorkspaceWriteRisk = "nonTransactionalWorkspaceTreeV1";
 
 export type ApprovalSourceAgent = { taskId: string, role: AgentTaskRole, };
 
-export type CommandApprovalParams = { approvalId: string, workspaceId: string, threadId: string, turnId: string, callId: string, description: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy: CommandSandboxPolicy, sourceAgent?: ApprovalSourceAgent, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy: CommandNetworkPolicy, };
+export type CommandApprovalParams = { approvalId: string, workspaceId: string, threadId: string, turnId: string, callId: string, description: string, command: string, arguments: Array<string>, cwd: string, approvalScope: string, environmentPolicy: string, sandboxed: boolean, sandboxPolicy?: CommandSandboxPolicy, sourceAgent?: ApprovalSourceAgent, workspaceWritePolicy?: CommandWorkspaceWritePolicy, workspaceWriteRisk?: CommandWorkspaceWriteRisk, networkPolicy?: CommandNetworkPolicy, };
 
 export type CommandApprovalResponse = { decision: CommandApprovalResponseDecision, workspaceWriteRiskAcknowledgement?: CommandWorkspaceWriteRisk, };
 
@@ -70,7 +70,7 @@ export type McpToolCallApprovalParams = { approvalId: string, workspaceId: strin
 
 export type McpToolCallApprovalResponse = { decision: McpToolCallApprovalResponseDecision, };
 
-export type FileChangeKind = "update";
+export type FileChangeKind = "create" | "update" | "delete";
 
 export type FileChangeNewlineStyle = "lf" | "crLf";
 
@@ -101,6 +101,8 @@ export type AgentOutputDeltaNotification = { workspaceId: string, threadId: stri
 export type AgentOutputDiscardedNotification = { workspaceId: string, threadId: string, turnId: string, output: AgentOutputRef, };
 
 export type AgentMessageDeltaNotification = { workspaceId: string, threadId: string, turnId: string, itemId: string, delta: string, };
+
+export type CommandOutputDeltaNotification = { workspaceId: string, threadId: string, turnId: string, callId: string, stream: string, delta: string, };
 
 export type ItemCompletedNotification = { workspaceId: string, threadId: string, turnId: string, item: Item, };
 

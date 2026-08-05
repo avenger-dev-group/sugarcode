@@ -7,7 +7,7 @@ import path from 'node:path';
 
 import type { ServerMessage } from '../transport/server-message';
 
-const MAX_COMMAND_BYTES = 1024;
+const MAX_COMMAND_BYTES = 32 * 1024;
 const MAX_DESCRIPTION_BYTES = 512;
 const MAX_ARGUMENT_BYTES = 8 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024;
@@ -62,6 +62,35 @@ const isAbsoluteCommand = (
   return path.posix.isAbsolute(command);
 };
 
+const isSafeCommandCwd = (
+  cwd: string,
+  platform: NodeJS.Platform,
+  allowRelative: boolean,
+): boolean => {
+  if (cwd === '.') {
+    return true;
+  }
+  const flavor = platform === 'win32' ? path.win32 : path.posix;
+  if (flavor.isAbsolute(cwd)) {
+    if (
+      platform === 'win32' &&
+      (cwd.startsWith('\\\\') ||
+        cwd.startsWith('\\\\?\\') ||
+        cwd.startsWith('\\\\.\\'))
+    ) {
+      return false;
+    }
+    return flavor.normalize(cwd) === cwd;
+  }
+  const parts =
+    platform === 'win32' ? cwd.split(/[\\/]/u) : cwd.split('/');
+  return (
+    allowRelative &&
+    cwd.length > 0 &&
+    parts.every((part) => part.length > 0 && part !== '.' && part !== '..')
+  );
+};
+
 export const parseCommandApprovalRequest = (
   id: RequestId,
   value: unknown,
@@ -84,10 +113,14 @@ export const parseCommandApprovalRequest = (
         'approvalScope',
         'environmentPolicy',
         'sandboxed',
+      ],
+      [
         'sandboxPolicy',
         'networkPolicy',
+        'workspaceWritePolicy',
+        'workspaceWriteRisk',
+        'sourceAgent',
       ],
-      ['workspaceWritePolicy', 'workspaceWriteRisk', 'sourceAgent'],
     ) ||
     typeof id !== 'string' ||
     !isBoundedIdentifier(value.approvalId) ||
@@ -97,20 +130,21 @@ export const parseCommandApprovalRequest = (
     !isBoundedIdentifier(value.turnId) ||
     !isBoundedIdentifier(value.callId) ||
     !isBoundedCommandText(value.description, MAX_DESCRIPTION_BYTES) ||
-    !isBoundedCommandText(value.command, MAX_COMMAND_BYTES) ||
-    !isAbsoluteCommand(value.command, platform) ||
+    (typeof value.command !== 'string' ||
+      value.command.length === 0 ||
+      Buffer.byteLength(value.command) > MAX_COMMAND_BYTES ||
+      value.command.includes('\0')) ||
     !Array.isArray(value.arguments) ||
     value.arguments.length > MAX_ARGUMENTS ||
     value.arguments.some(
       (argument) =>
         !isBoundedCommandText(argument, MAX_ARGUMENT_BYTES, true),
     ) ||
-    value.cwd !== '.' ||
+    !isBoundedCommandText(value.cwd, 4 * 1024) ||
     value.approvalScope !== 'command' ||
     (value.environmentPolicy !== 'minimalV1' &&
       value.environmentPolicy !== 'hostInheritedV1') ||
-    value.sandboxed !== true ||
-    value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
+    typeof value.sandboxed !== 'boolean' ||
     (value.workspaceWritePolicy !== undefined &&
       value.workspaceWritePolicy !== 'commandWorkspaceWriteV1') ||
     (value.workspaceWriteRisk !== undefined &&
@@ -119,7 +153,18 @@ export const parseCommandApprovalRequest = (
     (value.workspaceWritePolicy === 'commandWorkspaceWriteV1') !==
       (value.workspaceWriteRisk ===
         'nonTransactionalWorkspaceTreeV1') ||
-    value.networkPolicy !== 'networkDeniedV1'
+    (value.sandboxed
+      ? value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
+        value.networkPolicy !== 'networkDeniedV1' ||
+        !isAbsoluteCommand(value.command, platform) ||
+        !isSafeCommandCwd(value.cwd, platform, false)
+      : (platform !== 'darwin' && platform !== 'win32') ||
+        value.sandboxPolicy !== undefined ||
+        value.networkPolicy !== undefined ||
+        value.workspaceWritePolicy !== undefined ||
+        value.workspaceWriteRisk !== undefined ||
+        value.arguments.length !== 0 ||
+        !isSafeCommandCwd(value.cwd, platform, true))
   ) {
     return null;
   }
@@ -163,11 +208,13 @@ export const parseCommandApprovalRequest = (
     description: value.description,
     command: value.command,
     arguments: [...argumentsList],
-    cwd: '.',
+    cwd: value.cwd,
     approvalScope: 'command',
     environmentPolicy: value.environmentPolicy,
-    sandboxed: true,
-    sandboxPolicy: 'filesystemReadOnlyV1',
+    sandboxed: value.sandboxed,
+    ...(value.sandboxPolicy === 'filesystemReadOnlyV1'
+      ? { sandboxPolicy: 'filesystemReadOnlyV1' as const }
+      : {}),
     ...(normalizedSourceAgent
       ? { sourceAgent: normalizedSourceAgent }
       : {}),
@@ -178,7 +225,9 @@ export const parseCommandApprovalRequest = (
             'nonTransactionalWorkspaceTreeV1' as const,
         }
       : {}),
-    networkPolicy: 'networkDeniedV1',
+    ...(value.networkPolicy === 'networkDeniedV1'
+      ? { networkPolicy: 'networkDeniedV1' as const }
+      : {}),
   };
 };
 

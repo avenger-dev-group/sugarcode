@@ -37,6 +37,7 @@ pub use item::AgentOutputRef;
 pub use item::AgentTaskAccess;
 pub use item::AgentTaskRole;
 pub use item::AgentTaskStatus;
+pub use item::CommandOutputDeltaNotification;
 pub use item::ContextCompactionOutcome;
 pub use item::ContextCompactionStrategy;
 pub use item::FileChangeKind;

@@ -367,11 +367,11 @@ where
             approval_scope: "command".to_string(),
             environment_policy: pending.request.environment_policy,
             sandboxed: pending.request.sandboxed,
-            sandbox_policy: match pending.request.sandbox_policy {
+            sandbox_policy: pending.request.sandbox_policy.map(|policy| match policy {
                 sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1 => {
                     sugarcode_app_server_protocol::CommandSandboxPolicy::FilesystemReadOnlyV1
                 }
-            },
+            }),
             source_agent,
             workspace_write_policy: pending.request.workspace_write_policy.map(|policy| {
                 match policy {
@@ -381,11 +381,11 @@ where
                 }
             }),
             workspace_write_risk,
-            network_policy: match pending.request.network_policy {
+            network_policy: pending.request.network_policy.map(|policy| match policy {
                 sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1 => {
                     sugarcode_app_server_protocol::CommandNetworkPolicy::NetworkDeniedV1
                 }
-            },
+            }),
         };
         self.pending_approvals.insert(
             id.clone(),
@@ -858,6 +858,7 @@ fn core_event_thread_id(kind: &CoreEventKind) -> Option<&ThreadId> {
         | CoreEventKind::AgentOutputResolved { thread_id, .. }
         | CoreEventKind::AgentOutputDiscarded { thread_id, .. }
         | CoreEventKind::AgentMessageDelta { thread_id, .. }
+        | CoreEventKind::CommandOutputDelta { thread_id, .. }
         | CoreEventKind::ItemCompleted { thread_id, .. }
         | CoreEventKind::TokenUsageUpdated { thread_id, .. }
         | CoreEventKind::Warning { thread_id, .. }

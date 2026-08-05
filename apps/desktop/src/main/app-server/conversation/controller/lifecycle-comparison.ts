@@ -31,16 +31,31 @@ export const toFileChangeProposal = (
 export const patchResultMatchesChange = (
   outcome: WorkspacePatchResultItem['outcome'],
   change: ConversationFileChangeProposal | undefined,
+  changes: readonly ConversationFileChangeProposal[] = change ? [change] : [],
 ): boolean =>
   outcome.type === 'error' ||
-  Boolean(
-    change?.status === 'completed' &&
-    outcome.path === change.path &&
-    outcome.beforeSha256 === change.beforeSha256 &&
-    outcome.afterSha256 === change.afterSha256 &&
-    outcome.beforeBytes === change.beforeBytes &&
-    outcome.afterBytes === change.afterBytes,
-  );
+  ('files' in outcome
+    ? outcome.files.length === changes.length &&
+      outcome.files.every((receipt, index) => {
+        const proposed = changes[index];
+        return Boolean(
+          proposed?.status === 'completed' &&
+            receipt.path === proposed.path &&
+            receipt.kind === proposed.kind &&
+            receipt.beforeSha256 === proposed.beforeSha256 &&
+            receipt.afterSha256 === proposed.afterSha256 &&
+            receipt.beforeBytes === proposed.beforeBytes &&
+            receipt.afterBytes === proposed.afterBytes,
+        );
+      })
+    : Boolean(
+        change?.status === 'completed' &&
+          outcome.path === change.path &&
+          outcome.beforeSha256 === change.beforeSha256 &&
+          outcome.afterSha256 === change.afterSha256 &&
+          outcome.beforeBytes === change.beforeBytes &&
+          outcome.afterBytes === change.afterBytes,
+      ));
 
 export const fileChangeProposalsEqual = (
   left: ConversationFileChangeProposal,

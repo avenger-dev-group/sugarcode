@@ -3,6 +3,8 @@
   "title": "FileChangeKind",
   "type": "string",
   "enum": [
-    "update"
+    "create",
+    "update",
+    "delete"
   ]
 }

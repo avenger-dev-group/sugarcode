@@ -85,6 +85,8 @@ export class CommandApprovalController {
   private active: ActiveApproval | null = null;
   private modeScope: CommandApprovalModeScope =
     createCommandApprovalModeScope('ask');
+  private fullAccessModeScope: CommandApprovalModeScope =
+    createCommandApprovalModeScope('ask');
   private surfaceReady = false;
   private closed = false;
 
@@ -147,11 +149,13 @@ export class CommandApprovalController {
       void this.writeDecision(request.id, 'denied');
       return;
     }
-    if (this.options.platform === 'win32') {
-      void this.denyThenFail(request.id, this.options.onProtocolFailure);
-      return;
-    }
-    if (this.shouldApproveAutomatically(params.threadId, params.workspaceId)) {
+    if (
+      this.shouldApproveAutomatically(
+        params.threadId,
+        params.workspaceId,
+        !params.sandboxed,
+      )
+    ) {
       void this.approveAutomatically(request.id);
       return;
     }
@@ -240,12 +244,16 @@ export class CommandApprovalController {
       return actionResult('invalid');
     }
     this.applyMode(mode, typeof threadId === 'string' ? threadId : null);
+    if (mode === 'ask') {
+      this.fullAccessModeScope = createCommandApprovalModeScope('ask');
+    }
     this.transition(this.snapshot.status);
     return actionResult('accepted');
   };
 
   resetScope = (): void => {
     this.applyMode('ask', null);
+    this.fullAccessModeScope = createCommandApprovalModeScope('ask');
     this.transition(this.snapshot.status);
   };
 
@@ -321,6 +329,7 @@ export class CommandApprovalController {
           requestedMode,
           active.params.threadId,
           active.params.workspaceId,
+          !active.params.sandboxed,
         );
       }
       return actionResult('accepted');
@@ -352,14 +361,20 @@ export class CommandApprovalController {
   private shouldApproveAutomatically = (
     threadId: string,
     workspaceId: string,
+    fullAccess: boolean,
   ): boolean => {
+    const activeScope = fullAccess ? this.fullAccessModeScope : this.modeScope;
     const evaluation = evaluateAutomaticCommandApproval(
-      this.modeScope,
+      activeScope,
       threadId,
       workspaceId,
     );
-    if (evaluation.scope !== this.modeScope) {
-      this.modeScope = evaluation.scope;
+    if (evaluation.scope !== activeScope) {
+      if (fullAccess) {
+        this.fullAccessModeScope = evaluation.scope;
+      } else {
+        this.modeScope = evaluation.scope;
+      }
       this.transition(this.snapshot.status);
     }
     return evaluation.approveAutomatically;
@@ -369,13 +384,19 @@ export class CommandApprovalController {
     mode: CommandApprovalMode,
     threadId: string | null,
     workspaceId: string | null = null,
+    fullAccess = false,
   ): void => {
-    this.modeScope = createCommandApprovalModeScope(
+    const scope = createCommandApprovalModeScope(
       mode,
       threadId,
       workspaceId ??
         (threadId ? this.options.getThreadWorkspaceId(threadId) : null),
     );
+    if (fullAccess) {
+      this.fullAccessModeScope = scope;
+    } else {
+      this.modeScope = scope;
+    }
   };
 
   private denyThenFail = async (
@@ -403,6 +424,17 @@ export class CommandApprovalController {
     return {
       presentationId: active.presentationId,
       description: active.params.description,
+      command: active.params.command,
+      cwd: active.params.cwd,
+      fullAccess: !active.params.sandboxed,
+      ...(!active.params.sandboxed
+        ? {
+            platformShell:
+              this.options.platform === 'win32'
+                ? (process.env.ComSpec ?? '%COMSPEC%')
+                : (process.env.SHELL ?? '/bin/zsh'),
+          }
+        : {}),
       threadId: active.params.threadId,
       turnId: active.params.turnId,
       queueCount: this.options.getQueueCount?.() ?? 1,
@@ -448,12 +480,16 @@ export class CommandApprovalController {
     status: CommandApprovalStatus,
     request?: CommandApprovalViewModel,
   ): void => {
+    const activeScope =
+      this.active && !this.active.params.sandboxed
+        ? this.fullAccessModeScope
+        : this.modeScope;
     this.snapshot = {
       revision: this.snapshot.revision + 1,
       status,
-      mode: this.modeScope.mode,
-      ...(this.modeScope.threadId
-        ? { modeThreadId: this.modeScope.threadId }
+      mode: activeScope.mode,
+      ...(activeScope.threadId
+        ? { modeThreadId: activeScope.threadId }
         : {}),
       ...(request ? { request } : {}),
     };

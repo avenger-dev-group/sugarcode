@@ -380,7 +380,9 @@ pub enum McpToolResult {
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub enum FileChangeKind {
+    Create,
     Update,
+    Delete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
@@ -499,6 +501,18 @@ pub struct AgentMessageDeltaNotification {
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
+    pub delta: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct CommandOutputDeltaNotification {
+    pub workspace_id: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub call_id: String,
+    pub stream: String,
     pub delta: String,
 }
 

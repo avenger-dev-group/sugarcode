@@ -221,9 +221,19 @@ pub(super) fn render_diff(
             .iter()
             .filter(|op| !matches!(op, DiffOperation::Remove(_)))
             .count();
+        let old_start = if old_count == 0 {
+            old_positions[start].saturating_sub(1)
+        } else {
+            old_positions[start]
+        };
+        let new_start = if new_count == 0 {
+            new_positions[start].saturating_sub(1)
+        } else {
+            new_positions[start]
+        };
         diff.push_str(&format!(
             "@@ -{},{} +{},{} @@\n",
-            old_positions[start], old_count, new_positions[start], new_count
+            old_start, old_count, new_start, new_count
         ));
         for operation in &operations[start..end] {
             let (prefix, value) = match operation {

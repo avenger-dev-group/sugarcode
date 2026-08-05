@@ -10,6 +10,7 @@ export type WorkspacePatchCallItem = Readonly<{
   id: string;
   callId: string;
   path: string;
+  paths: readonly string[];
 }>;
 
 export type WorkspacePatchChangeItem = ConversationFileChangeProposal &
@@ -22,16 +23,7 @@ export type WorkspacePatchResultItem = Readonly<{
   type: 'workspacePatchResult';
   id: string;
   callId: string;
-  outcome:
-    | Readonly<{
-        type: 'success';
-        path: string;
-        beforeSha256: string;
-        afterSha256: string;
-        beforeBytes: number;
-        afterBytes: number;
-      }>
-    | Readonly<{ type: 'error'; kind: string }>;
+  outcome: import('@/shared/conversation').ConversationFileChangeResultOutcome;
 }>;
 
 export type WorkspacePatchItem =
@@ -63,26 +55,46 @@ const parseSuccessContent = (
   } catch {
     throw new Error('Invalid workspace/apply-diff success content.');
   }
-  if (
-    !isRecord(parsed) ||
-    Object.keys(parsed).sort().join(',') !==
-      'afterBytes,afterSha256,beforeBytes,beforeSha256,kind,path' ||
-    parsed.kind !== 'update' ||
-    !isValidFileChangePath(parsed.path) ||
-    !isValidSha256(parsed.beforeSha256) ||
-    !isValidSha256(parsed.afterSha256) ||
-    !isBoundedByteCount(parsed.beforeBytes) ||
-    !isBoundedByteCount(parsed.afterBytes)
-  ) {
+  const parseReceipt = (receipt: unknown) => {
+    if (
+      !isRecord(receipt) ||
+      Object.keys(receipt).sort().join(',') !==
+        'afterBytes,afterSha256,beforeBytes,beforeSha256,kind,path' ||
+      (receipt.kind !== 'create' && receipt.kind !== 'update' && receipt.kind !== 'delete') ||
+      !isValidFileChangePath(receipt.path) ||
+      !isValidSha256(receipt.beforeSha256) ||
+      !isValidSha256(receipt.afterSha256) ||
+      !isBoundedByteCount(receipt.beforeBytes) ||
+      !isBoundedByteCount(receipt.afterBytes)
+    ) {
+      throw new Error('Invalid workspace/apply-diff success receipt.');
+    }
+    return {
+      path: receipt.path,
+      kind: receipt.kind,
+      beforeSha256: receipt.beforeSha256,
+      afterSha256: receipt.afterSha256,
+      beforeBytes: receipt.beforeBytes,
+      afterBytes: receipt.afterBytes,
+    } as const;
+  };
+  if (isRecord(parsed) && Object.keys(parsed).length === 1 && Array.isArray(parsed.files)) {
+    if (parsed.files.length === 0 || parsed.files.length > 64) {
+      throw new Error('Invalid workspace/apply-diff success content.');
+    }
+    return { type: 'success', files: parsed.files.map(parseReceipt) };
+  }
+  const receipt = parseReceipt(parsed);
+  if (receipt.kind !== 'update') {
     throw new Error('Invalid workspace/apply-diff success content.');
   }
   return {
     type: 'success',
-    path: parsed.path,
-    beforeSha256: parsed.beforeSha256,
-    afterSha256: parsed.afterSha256,
-    beforeBytes: parsed.beforeBytes,
-    afterBytes: parsed.afterBytes,
+    path: receipt.path,
+    beforeSha256: receipt.beforeSha256,
+    afterSha256: receipt.afterSha256,
+    beforeBytes: receipt.beforeBytes,
+    afterBytes: receipt.afterBytes,
   };
 };
 
@@ -96,10 +108,39 @@ export const parseWorkspacePatchItem = (
     if (
       !isId(value.id) ||
       !isId(value.callId) ||
-      !isRecord(argumentsValue) ||
-      !isValidFileChangePath(argumentsValue.path)
+      !isRecord(argumentsValue)
     ) {
       throw new Error('Invalid workspace write ToolCall Item.');
+    }
+    const batchEntries = value.name === 'workspace/edit'
+      ? argumentsValue.operations
+      : argumentsValue.files;
+    if (Array.isArray(batchEntries)) {
+      if (
+        Object.keys(argumentsValue).length !== 1 ||
+        batchEntries.length === 0 ||
+        batchEntries.length > 64 ||
+        batchEntries.some(
+          (entry) => !isRecord(entry) || !isValidFileChangePath(entry.path),
+        )
+      ) {
+        throw new Error('Invalid batch workspace write ToolCall arguments.');
+      }
+      const paths = batchEntries.map((entry) => (entry as Record<string, unknown>).path as string);
+      const path = paths[0];
+      if (path === undefined) {
+        throw new Error('Batch workspace write requires one path.');
+      }
+      return {
+        type: 'workspacePatchCall',
+        id: value.id,
+        callId: value.callId,
+        path,
+        paths,
+      };
+    }
+    if (!isValidFileChangePath(argumentsValue.path)) {
+      throw new Error('Invalid legacy workspace write ToolCall Item.');
     }
     const allowedKeys =
       value.name === 'workspace/edit'
@@ -137,6 +178,7 @@ export const parseWorkspacePatchItem = (
       id: value.id,
       callId: value.callId,
       path: argumentsValue.path,
+      paths: [argumentsValue.path],
     };
   }
 
@@ -145,8 +187,8 @@ export const parseWorkspacePatchItem = (
       !isId(value.id) ||
       !isId(value.callId) ||
       !isValidFileChangePath(value.path) ||
-      value.kind !== 'update' ||
-      !isValidFileChangeDiff(value.diff, value.path) ||
+      (value.kind !== 'create' && value.kind !== 'update' && value.kind !== 'delete') ||
+      !isValidFileChangeDiff(value.diff, value.path, value.kind) ||
       !isValidSha256(value.beforeSha256) ||
       !isValidSha256(value.afterSha256) ||
       !isBoundedByteCount(value.beforeBytes) ||
@@ -161,7 +203,7 @@ export const parseWorkspacePatchItem = (
       id: value.id,
       callId: value.callId,
       path: value.path,
-      kind: 'update',
+      kind: value.kind,
       diff: value.diff,
       beforeSha256: value.beforeSha256,
       afterSha256: value.afterSha256,

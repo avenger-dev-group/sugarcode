@@ -149,6 +149,7 @@ export type CommandApprovalRequestItem = Readonly<{
   callId: string;
   command: string;
   arguments: readonly string[];
+  sandboxed?: boolean;
 }>;
 
 export type CommandApprovalDecisionItem = Readonly<{
@@ -185,8 +186,8 @@ export type CommandExecutionResultOutcome =
         | Readonly<{ type: 'exitCode'; code: number }>
         | Readonly<{ type: 'signal'; signal: number }>
         | Readonly<{ type: 'timedOut' }>;
-      sandboxPolicy: 'filesystemReadOnlyV1';
-      networkPolicy: 'networkDeniedV1';
+      sandboxPolicy?: 'filesystemReadOnlyV1';
+      networkPolicy?: 'networkDeniedV1';
     }>;
 
 export type CommandExecutionResultItem = Readonly<{
@@ -352,6 +353,17 @@ export type ConversationLifecycle =
       }>;
     }>
   | Readonly<{
+      type: 'commandOutputDelta';
+      params: Readonly<{
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        callId: string;
+        stream: 'stdout' | 'stderr';
+        delta: string;
+      }>;
+    }>
+  | Readonly<{
       type: 'itemCompleted';
       params: Omit<ItemCompletedNotification, 'item'> & {
         item: ConversationItem;
@@ -431,6 +443,9 @@ const utf8Bytes = (value: string): number =>
 const hasControlCharacters = (value: string): boolean =>
   Array.from(value).some((character) => /\p{Cc}/u.test(character));
 
+const isSafeRecordedCommandRootCwd = (cwd: string): boolean =>
+  cwd === '.' || (path.isAbsolute(cwd) && path.normalize(cwd) === cwd);
+
 const parseCommandArguments = (value: unknown): readonly string[] => {
   if (
     !Array.isArray(value) ||
@@ -481,31 +496,51 @@ const parseWorkspaceListEntryCount = (content: string): number => {
   } catch {
     throw new Error('Invalid workspace/list success content.');
   }
+  if (!isRecord(parsed) || !Array.isArray(parsed.entries)) {
+    throw new Error('Invalid workspace/list success content.');
+  }
+  const keys = Object.keys(parsed).sort().join(',');
+  const recursive = keys === 'entries,scanned,truncated';
   if (
-    !isRecord(parsed) ||
-    Object.keys(parsed).length !== 1 ||
-    !Array.isArray(parsed.entries) ||
-    parsed.entries.length > MAX_WORKSPACE_LIST_ENTRIES
+    (keys !== 'entries' && !recursive) ||
+    parsed.entries.length > MAX_WORKSPACE_LIST_ENTRIES ||
+    (recursive &&
+      (typeof parsed.scanned !== 'number' ||
+        !Number.isSafeInteger(parsed.scanned) ||
+        parsed.scanned < parsed.entries.length ||
+        parsed.scanned > 20_001 ||
+        typeof parsed.truncated !== 'boolean'))
   ) {
     throw new Error('Invalid workspace/list success content.');
   }
   let totalNameBytes = 0;
   for (const entry of parsed.entries) {
+    const entryKeys = isRecord(entry)
+      ? Object.keys(entry).sort().join(',')
+      : '';
     if (
       !isRecord(entry) ||
-      Object.keys(entry).length !== 2 ||
+      entryKeys !== (recursive ? 'kind,name,path' : 'kind,name') ||
       typeof entry.name !== 'string' ||
       entry.name.length === 0 ||
       typeof entry.kind !== 'string' ||
-      !WORKSPACE_LIST_ENTRY_KINDS.has(entry.kind)
+      !WORKSPACE_LIST_ENTRY_KINDS.has(entry.kind) ||
+      (recursive &&
+        (typeof entry.path !== 'string' ||
+          entry.path.length === 0 ||
+          hasControlCharacters(entry.path)))
     ) {
       throw new Error('Invalid workspace/list entry.');
     }
     const nameBytes = utf8Bytes(entry.name);
-    if (nameBytes > MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES) {
+    const pathBytes = recursive ? utf8Bytes(entry.path as string) : 0;
+    if (
+      nameBytes > MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES ||
+      pathBytes > MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES
+    ) {
       throw new Error('Invalid workspace/list entry.');
     }
-    totalNameBytes += nameBytes;
+    totalNameBytes += nameBytes + pathBytes;
     if (totalNameBytes > MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES) {
       throw new Error('Invalid workspace/list success content.');
     }
@@ -522,27 +557,53 @@ const parseWorkspaceSearchResult = (
   } catch {
     throw new Error('Invalid workspace/search success content.');
   }
+  if (!isRecord(parsed) || !Array.isArray(parsed.matches)) {
+    throw new Error('Invalid workspace/search success content.');
+  }
+  const keys = Object.keys(parsed).sort().join(',');
+  const advanced = keys === 'matches,scanned,truncated';
   if (
-    !isRecord(parsed) ||
-    Object.keys(parsed).length !== 2 ||
-    !Array.isArray(parsed.matches) ||
+    (keys !== 'matches,truncated' && !advanced) ||
     parsed.matches.length > MAX_WORKSPACE_SEARCH_MATCHES ||
     typeof parsed.truncated !== 'boolean' ||
-    (parsed.truncated && parsed.matches.length !== MAX_WORKSPACE_SEARCH_MATCHES)
+    (!advanced &&
+      parsed.truncated &&
+      parsed.matches.length !== MAX_WORKSPACE_SEARCH_MATCHES) ||
+    (advanced &&
+      (typeof parsed.scanned !== 'number' ||
+        !Number.isSafeInteger(parsed.scanned) ||
+        parsed.scanned < 0 ||
+        parsed.scanned > 20_001))
   ) {
     throw new Error('Invalid workspace/search success content.');
   }
   let totalPathBytes = 0;
   for (const match of parsed.matches) {
+    const matchKeys = isRecord(match)
+      ? Object.keys(match).sort().join(',')
+      : '';
     if (
       !isRecord(match) ||
-      Object.keys(match).length !== 2 ||
+      matchKeys !== (advanced ? 'excerpt,kind,line,path' : 'line,path') ||
       typeof match.path !== 'string' ||
       match.path.length === 0 ||
-      Array.from(match.path).some((character) => /\p{Cc}/u.test(character)) ||
-      typeof match.line !== 'number' ||
-      !Number.isSafeInteger(match.line) ||
-      match.line < 1
+      hasControlCharacters(match.path) ||
+      (advanced
+        ? !(
+            (typeof match.line === 'number' &&
+              Number.isSafeInteger(match.line) &&
+              match.line >= 1 &&
+              typeof match.excerpt === 'string' &&
+              Array.from(match.excerpt).length <= 300 &&
+              match.kind === null) ||
+            (match.line === null &&
+              match.excerpt === null &&
+              typeof match.kind === 'string' &&
+              WORKSPACE_LIST_ENTRY_KINDS.has(match.kind))
+          )
+        : typeof match.line !== 'number' ||
+          !Number.isSafeInteger(match.line) ||
+          match.line < 1)
     ) {
       throw new Error('Invalid workspace/search match.');
     }
@@ -1131,12 +1192,16 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
     if (
       !isId(value.approvalId) ||
       !isId(value.callId) ||
-      value.cwd !== '.' ||
+      typeof value.cwd !== 'string' ||
       (value.environmentPolicy !== 'minimalV1' &&
         value.environmentPolicy !== 'hostInheritedV1') ||
-      value.sandboxed !== true ||
-      value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
-      value.networkPolicy !== 'networkDeniedV1'
+      typeof value.sandboxed !== 'boolean' ||
+      (value.sandboxed
+        ? !isSafeRecordedCommandRootCwd(value.cwd) ||
+          value.sandboxPolicy !== 'filesystemReadOnlyV1' ||
+          value.networkPolicy !== 'networkDeniedV1'
+        : Object.hasOwn(value, 'sandboxPolicy') ||
+          Object.hasOwn(value, 'networkPolicy'))
     ) {
       throw new Error('Invalid command approval request Item.');
     }
@@ -1146,12 +1211,28 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
     ) {
       return null;
     }
+    const payload = value.sandboxed
+      ? validateCommandPayload(value.command, value.arguments)
+      : (() => {
+          if (
+            typeof value.command !== 'string' ||
+            value.command.length === 0 ||
+            utf8Bytes(value.command) > 32 * 1024 ||
+            value.command.includes('\0') ||
+            !Array.isArray(value.arguments) ||
+            value.arguments.length !== 0
+          ) {
+            throw new Error('Invalid Full Access shell approval Item.');
+          }
+          return { command: value.command, arguments: [] as readonly string[] };
+        })();
     return {
       type: 'commandApprovalRequest',
       id: value.id,
       approvalId: value.approvalId,
       callId: value.callId,
-      ...validateCommandPayload(value.command, value.arguments),
+      ...payload,
+      sandboxed: value.sandboxed,
     };
   }
   if (value.type === 'commandApprovalDecision') {
@@ -1202,7 +1283,7 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
     }
     if (
       value.result.type !== 'process' ||
-      Object.keys(value.result).length !== 12 ||
+      ![10, 12].includes(Object.keys(value.result).length) ||
       typeof value.result.stdout !== 'string' ||
       typeof value.result.stderr !== 'string' ||
       typeof value.result.stdoutBytes !== 'number' ||
@@ -1217,8 +1298,12 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       typeof value.result.durationMs !== 'number' ||
       !Number.isSafeInteger(value.result.durationMs) ||
       value.result.durationMs < 0 ||
-      value.result.sandboxPolicy !== 'filesystemReadOnlyV1' ||
-      value.result.networkPolicy !== 'networkDeniedV1' ||
+      ((Object.hasOwn(value.result, 'sandboxPolicy') ||
+        Object.hasOwn(value.result, 'networkPolicy')) &&
+        (value.result.sandboxPolicy !== 'filesystemReadOnlyV1' ||
+          value.result.networkPolicy !== 'networkDeniedV1')) ||
+      Object.hasOwn(value.result, 'sandboxPolicy') !==
+        Object.hasOwn(value.result, 'networkPolicy') ||
       Object.hasOwn(value.result, 'workspaceWritePolicy') ||
       !isRecord(value.result.outcome)
     ) {
@@ -1268,8 +1353,12 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
         encoding: 'utf8Lossy',
         durationMs: value.result.durationMs,
         outcome: processOutcome,
-        sandboxPolicy: 'filesystemReadOnlyV1',
-        networkPolicy: 'networkDeniedV1',
+        ...(value.result.sandboxPolicy === 'filesystemReadOnlyV1'
+          ? {
+              sandboxPolicy: 'filesystemReadOnlyV1' as const,
+              networkPolicy: 'networkDeniedV1' as const,
+            }
+          : {}),
       },
     };
   }
@@ -1325,12 +1414,17 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
   }
   if (value.type === 'toolCall' && value.name === 'workspace/list') {
     const argumentsValue = value.arguments;
+    const keys = isRecord(argumentsValue)
+      ? Object.keys(argumentsValue).sort().join(',')
+      : '';
     if (
       !isId(value.callId) ||
       !isRecord(argumentsValue) ||
-      Object.keys(argumentsValue).join(',') !== 'path' ||
+      (keys !== 'path' && keys !== 'path,recursive') ||
       typeof argumentsValue.path !== 'string' ||
-      argumentsValue.path.length === 0
+      argumentsValue.path.length === 0 ||
+      (Object.hasOwn(argumentsValue, 'recursive') &&
+        typeof argumentsValue.recursive !== 'boolean')
     ) {
       throw new Error('Invalid workspace/list ToolCall Item.');
     }
@@ -1379,10 +1473,20 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
   }
   if (value.type === 'toolCall' && value.name === 'workspace/search') {
     const argumentsValue = value.arguments;
+    const allowedKeys = new Set([
+      'path',
+      'query',
+      'mode',
+      'regex',
+      'caseSensitive',
+      'filePattern',
+    ]);
     if (
       !isId(value.callId) ||
       !isRecord(argumentsValue) ||
-      Object.keys(argumentsValue).sort().join(',') !== 'path,query' ||
+      Object.keys(argumentsValue).length < 2 ||
+      Object.keys(argumentsValue).length > allowedKeys.size ||
+      Object.keys(argumentsValue).some((key) => !allowedKeys.has(key)) ||
       typeof argumentsValue.path !== 'string' ||
       argumentsValue.path.length === 0 ||
       typeof argumentsValue.query !== 'string' ||
@@ -1393,7 +1497,16 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
       ) ||
       Array.from(argumentsValue.query).every((character) =>
         /\s/u.test(character),
-      )
+      ) ||
+      (Object.hasOwn(argumentsValue, 'mode') &&
+        argumentsValue.mode !== 'content' &&
+        argumentsValue.mode !== 'path') ||
+      (Object.hasOwn(argumentsValue, 'regex') &&
+        typeof argumentsValue.regex !== 'boolean') ||
+      (Object.hasOwn(argumentsValue, 'caseSensitive') &&
+        typeof argumentsValue.caseSensitive !== 'boolean') ||
+      (Object.hasOwn(argumentsValue, 'filePattern') &&
+        typeof argumentsValue.filePattern !== 'string')
     ) {
       throw new Error('Invalid workspace/search ToolCall Item.');
     }
@@ -1475,6 +1588,7 @@ const CONVERSATION_LIFECYCLE_METHODS = new Set([
   'turn/agentOutput/delta',
   'turn/agentOutput/discarded',
   'item/agentMessage/delta',
+  'item/commandExecution/outputDelta',
   'item/completed',
   'thread/tokenUsage/updated',
   'turn/warning',
@@ -1669,6 +1783,28 @@ export const parseConversationLifecycle = (
           threadId: params.threadId,
           turnId: params.turnId,
           itemId: params.itemId,
+          delta: params.delta,
+        },
+      };
+    }
+    case 'item/commandExecution/outputDelta': {
+      const correlation = parseThreadAndTurn(params);
+      if (
+        !isRecord(params) ||
+        !isId(params.callId) ||
+        (params.stream !== 'stdout' && params.stream !== 'stderr') ||
+        typeof params.delta !== 'string' ||
+        params.delta.length === 0 ||
+        utf8Bytes(params.delta) > 8 * 1024
+      ) {
+        throw new Error('Invalid command output delta notification.');
+      }
+      return {
+        type: 'commandOutputDelta',
+        params: {
+          ...correlation,
+          callId: params.callId,
+          stream: params.stream,
           delta: params.delta,
         },
       };

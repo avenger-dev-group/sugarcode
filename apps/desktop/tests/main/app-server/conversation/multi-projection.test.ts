@@ -202,6 +202,136 @@ test('new Thread and Turn lifecycle may arrive before their RPC responses', asyn
   assert.equal(protocolFailures, 0);
 });
 
+test('a failed approved shell batch remains reloadable without quarantining its Thread', async () => {
+  let quarantinedThreadId: string | null = null;
+  const rpc: ConversationRpc = {
+    findLatestActiveThread: async () => null,
+    listActiveThreads: async () => ({ data: [], nextCursor: null }),
+    resumeThread: async (threadId) => ({
+      threadId,
+      workspaceId: WORKSPACE_WEB,
+      turns: [],
+    }),
+    startThread: async () => ({
+      thread: { id: THREAD_WEB, workspaceId: WORKSPACE_WEB },
+    }),
+    importAsset: async () => {
+      throw new Error('not used');
+    },
+    startTurn: async () => ({
+      turn: { id: TURN_WEB, status: 'inProgress' },
+    }),
+    interruptTurn: async () => ({}),
+  };
+  const controller = new ConversationController({
+    getRpc: () => rpc,
+    onProtocolFailure: () => assert.fail('unexpected protocol failure'),
+    onThreadProjectionFailure: (threadId) => {
+      quarantinedThreadId = threadId;
+    },
+  });
+
+  assert.equal(await controller.restoreForConnection(WORKSPACE_WEB), true);
+  controller.connectionReady();
+  assert.equal(
+    (await controller.startTurn({ input: 'Review the project' })).accepted,
+    true,
+  );
+
+  const items = [
+    {
+      type: 'toolCall',
+      id: '00000000-0004-7000-8000-000000000001',
+      callId: 'call_shell_1',
+      name: 'shell/exec',
+      arguments: {
+        description: 'Inspect tracked files.',
+        kind: 'shell',
+        command: 'git ls-files | head -50',
+        cwd: '/workspace/project',
+      },
+    },
+    {
+      type: 'toolCall',
+      id: '00000000-0004-7000-8000-000000000002',
+      callId: 'call_shell_2',
+      name: 'shell/exec',
+      arguments: {
+        description: 'Inspect recent history.',
+        kind: 'shell',
+        command: 'git log --oneline -15',
+        cwd: '/workspace/project',
+      },
+    },
+    {
+      type: 'toolCall',
+      id: '00000000-0004-7000-8000-000000000003',
+      callId: 'call_read_1',
+      name: 'workspace/read',
+      arguments: { path: 'src/env.d.ts' },
+    },
+    {
+      type: 'commandApprovalRequest',
+      id: '00000000-0004-7000-8000-000000000004',
+      approvalId: 'approval_1',
+      callId: 'call_shell_1',
+      command: 'git ls-files | head -50',
+      arguments: [] as string[],
+      cwd: '/workspace/project',
+      environmentPolicy: 'hostInheritedV1',
+      sandboxed: false,
+    },
+    {
+      type: 'commandApprovalDecision',
+      id: '00000000-0004-7000-8000-000000000005',
+      approvalId: 'approval_1',
+      decision: 'approved',
+    },
+  ];
+  for (const item of items) {
+    controller.handleNotification({
+      kind: 'notification',
+      method: 'item/started',
+      params: {
+        workspaceId: WORKSPACE_WEB,
+        threadId: THREAD_WEB,
+        turnId: TURN_WEB,
+        item,
+      },
+    });
+    controller.handleNotification({
+      kind: 'notification',
+      method: 'item/completed',
+      params: {
+        workspaceId: WORKSPACE_WEB,
+        threadId: THREAD_WEB,
+        turnId: TURN_WEB,
+        item,
+      },
+    });
+  }
+  controller.handleNotification({
+    kind: 'notification',
+    method: 'turn/completed',
+    params: {
+      workspaceId: WORKSPACE_WEB,
+      threadId: THREAD_WEB,
+      turn: {
+        id: TURN_WEB,
+        status: 'failed',
+        error: { kind: 'stateUnavailable', retryable: false },
+      },
+    },
+  });
+
+  const snapshot = controller.getSnapshot();
+  assert.equal(quarantinedThreadId, null);
+  assert.deepEqual(snapshot.navigator.reloadRequiredThreadIds, []);
+  assert.equal(snapshot.threadId, THREAD_WEB);
+  assert.equal(snapshot.turns[0]?.status, 'failed');
+  assert.equal(snapshot.turns[0]?.error?.kind, 'stateUnavailable');
+});
+
 test('workspace loading never publishes the previous Thread index under the new binding', async () => {
   let listCalls = 0;
   let releaseAdminList = (): void => undefined;

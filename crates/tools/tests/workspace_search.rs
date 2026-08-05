@@ -3,9 +3,12 @@ use sugarcode_tools::MAX_WORKSPACE_LIST_ENTRIES;
 use sugarcode_tools::MAX_WORKSPACE_READ_BYTES;
 use sugarcode_tools::MAX_WORKSPACE_SEARCH_MATCHES;
 use sugarcode_tools::MAX_WORKSPACE_SEARCH_TOTAL_READ_BYTES;
+use sugarcode_tools::WorkspaceAdvancedSearchArguments;
+use sugarcode_tools::WorkspaceAdvancedSearchOutcome;
 use sugarcode_tools::WorkspaceSearchArguments;
 use sugarcode_tools::WorkspaceSearchErrorKind;
 use sugarcode_tools::WorkspaceSearchMatch;
+use sugarcode_tools::WorkspaceSearchMode;
 use sugarcode_tools::WorkspaceSearchOutcome;
 use sugarcode_tools::WorkspaceTool;
 use tokio_util::sync::CancellationToken;
@@ -75,6 +78,92 @@ async fn searches_content_recursively_with_stable_literal_semantics() {
             truncated: false,
         }
     );
+}
+
+#[tokio::test]
+async fn advanced_search_unifies_path_regex_case_and_glob_modes() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    fs::create_dir_all(workspace.path().join("src/Nested")).expect("nested");
+    fs::write(
+        workspace.path().join("src/Nested/Widget.rs"),
+        "first\nNeedle-42 and trailing text\n",
+    )
+    .expect("rust file");
+    fs::write(
+        workspace.path().join("src/Nested/Widget.txt"),
+        "needle-42\n",
+    )
+    .expect("text file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
+
+    let WorkspaceAdvancedSearchOutcome::Matches { matches, .. } = tool
+        .search_advanced(
+            &WorkspaceAdvancedSearchArguments {
+                path: "src".to_string(),
+                query: "widget.RS".to_string(),
+                mode: WorkspaceSearchMode::Path,
+                case_sensitive: false,
+                regex: false,
+                file_pattern: None,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+    else {
+        panic!("path matches");
+    };
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].path, "src/Nested/Widget.rs");
+    assert_eq!(matches[0].line, None);
+
+    let WorkspaceAdvancedSearchOutcome::Matches { matches, .. } = tool
+        .search_advanced(
+            &WorkspaceAdvancedSearchArguments {
+                path: "src".to_string(),
+                query: r"needle-\d+".to_string(),
+                mode: WorkspaceSearchMode::Content,
+                case_sensitive: false,
+                regex: true,
+                file_pattern: Some("*.rs".to_string()),
+            },
+            &CancellationToken::new(),
+        )
+        .await
+    else {
+        panic!("content matches");
+    };
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].path, "src/Nested/Widget.rs");
+    assert_eq!(matches[0].line, Some(2));
+    assert_eq!(
+        matches[0].excerpt.as_deref(),
+        Some("Needle-42 and trailing text")
+    );
+}
+
+#[tokio::test]
+async fn advanced_search_rejects_invalid_regex_and_glob() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
+    for (query, regex, pattern) in [("(", true, None), ("needle", false, Some("["))] {
+        assert_eq!(
+            tool.search_advanced(
+                &WorkspaceAdvancedSearchArguments {
+                    path: ".".to_string(),
+                    query: query.to_string(),
+                    mode: WorkspaceSearchMode::Content,
+                    case_sensitive: true,
+                    regex,
+                    file_pattern: pattern.map(str::to_string),
+                },
+                &CancellationToken::new(),
+            )
+            .await,
+            WorkspaceAdvancedSearchOutcome::Error {
+                kind: WorkspaceSearchErrorKind::InvalidQuery,
+            }
+        );
+    }
 }
 
 #[tokio::test]

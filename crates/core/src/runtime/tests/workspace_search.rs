@@ -1,4 +1,5 @@
 use super::*;
+use sugarcode_tools::WorkspaceAdvancedSearchArguments;
 use sugarcode_tools::WorkspaceListExecutor;
 use sugarcode_tools::WorkspaceSearchExecutor;
 
@@ -27,6 +28,24 @@ impl WorkspaceSearchExecutor for BlockingWorkspaceSearch {
             }
             cancellation.cancelled().await;
             WorkspaceSearchOutcome::Error {
+                kind: WorkspaceSearchErrorKind::Cancelled,
+            }
+        })
+    }
+
+    fn search_advanced<'a>(
+        &'a self,
+        _arguments: &'a WorkspaceAdvancedSearchArguments,
+        cancellation: &'a CancellationToken,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = WorkspaceAdvancedSearchOutcome> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            if let Some(entered) = self.entered.lock().expect("entered").take() {
+                let _ = entered.send(());
+            }
+            cancellation.cancelled().await;
+            WorkspaceAdvancedSearchOutcome::Error {
                 kind: WorkspaceSearchErrorKind::Cancelled,
             }
         })

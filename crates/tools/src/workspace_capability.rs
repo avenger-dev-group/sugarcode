@@ -34,6 +34,7 @@ pub enum WorkspaceReadErrorKind {
 
 pub struct WorkspaceTool {
     pub(crate) root: Dir,
+    pub(crate) ambient_path: PathBuf,
     pub(crate) root_reopen: WorkspaceRootReopen,
     pub(crate) binding_id: String,
     pub(crate) write_gate: Arc<WorkspaceWriteGate>,
@@ -70,8 +71,11 @@ impl WorkspaceTool {
         let root_path = root.to_path_buf();
         let binding_id = workspace_binding_id(root);
         let root = open_root_nofollow(root)?;
+        crate::workspace_patch::recover_pending_change_set(&root)
+            .map_err(|_| WorkspaceReadErrorKind::Unavailable)?;
         Ok(Self {
             root,
+            ambient_path: root_path.clone(),
             root_reopen: WorkspaceRootReopen::AmbientPath(root_path),
             binding_id,
             write_gate: Arc::new(WorkspaceWriteGate {
@@ -89,6 +93,7 @@ impl WorkspaceTool {
                     .try_clone()
                     .map_err(|error| map_io_error(&error))?,
                 root_reopen: self.root_reopen.try_clone()?,
+                ambient_path: self.ambient_path.clone(),
                 binding_id: self.binding_id.clone(),
                 write_gate: Arc::clone(&self.write_gate),
             });
@@ -108,6 +113,7 @@ impl WorkspaceTool {
         let reopen_parent = parent.try_clone().map_err(|error| map_io_error(&error))?;
         Ok(Self {
             root,
+            ambient_path: self.ambient_path.join(scope),
             root_reopen: WorkspaceRootReopen::Relative {
                 parent: reopen_parent,
                 name: name.clone(),

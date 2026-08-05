@@ -69,3 +69,33 @@ test('reload-required navigation rejects duplicate or invalid Thread IDs', () =>
     );
   }
 });
+
+test('advanced search truncation may occur before the match limit', () => {
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'ready',
+      threadId: THREAD_WEB,
+      turns: [
+        {
+          id: 'turn-search',
+          status: 'completed',
+          messages: [],
+          workspaceSearch: {
+            id: 'search-call',
+            callId: 'call-search',
+            path: '.',
+            query: 'component',
+            callStatus: 'completed',
+            result: {
+              id: 'search-result',
+              status: 'completed',
+              outcome: { type: 'success', matches: 1, truncated: true },
+            },
+          },
+        },
+      ],
+    }),
+    true,
+  );
+});

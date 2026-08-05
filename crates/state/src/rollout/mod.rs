@@ -776,21 +776,29 @@ pub(crate) fn valid_incremental_item(
     else {
         return Err("invalidCommandExecutionAttempt");
     };
-    let Some((call_command, call_argv, call_cwd)) = shell_call_execution_arguments(call_arguments)
-    else {
+    let Some(call) = shell_call_execution_arguments(call_arguments) else {
         return Err("invalidCommandExecutionAttempt");
     };
-    if call_command != request_command
-        || call_argv != *request_arguments
-        || call_cwd != cwd
+    let policy_matches_mode = if call.full_access {
+        !*sandboxed
+            && sandbox_policy.is_none()
+            && workspace_write_policy.is_none()
+            && workspace_write_risk.is_none()
+            && network_policy.is_none()
+    } else {
+        *sandboxed
+            && sandbox_policy.as_deref() == Some("filesystemReadOnlyV1")
+            && matches!(
+                workspace_write_policy.as_deref(),
+                None | Some("commandWorkspaceWriteV1")
+            )
+            && network_policy.as_deref() == Some("networkDeniedV1")
+    };
+    if call.command != request_command
+        || call.argv != *request_arguments
+        || call.cwd != cwd
         || !matches!(environment_policy.as_str(), "minimalV1" | "hostInheritedV1")
-        || !sandboxed
-        || sandbox_policy.as_deref() != Some("filesystemReadOnlyV1")
-        || !matches!(
-            workspace_write_policy.as_deref(),
-            None | Some("commandWorkspaceWriteV1")
-        )
-        || network_policy.as_deref() != Some("networkDeniedV1")
+        || !policy_matches_mode
         || matching_decision.is_none_or(|(decision, acknowledgement)| {
             decision != "approved" || acknowledgement != workspace_write_risk
         })
@@ -800,9 +808,16 @@ pub(crate) fn valid_incremental_item(
     Ok(())
 }
 
+struct ShellCallExecutionArguments<'a> {
+    command: &'a str,
+    argv: Vec<String>,
+    cwd: &'a str,
+    full_access: bool,
+}
+
 fn shell_call_execution_arguments(
     arguments: &serde_json::Value,
-) -> Option<(&str, Vec<String>, &str)> {
+) -> Option<ShellCallExecutionArguments<'_>> {
     let object = arguments.as_object()?;
     let command = object.get("command")?.as_str()?;
     let cwd = object.get("cwd")?.as_str()?;
@@ -810,7 +825,19 @@ fn shell_call_execution_arguments(
         .into_iter()
         .filter(|key| object.contains_key(*key))
         .count();
-    if argument_source_count != 1 {
+    let kind = object.get("kind").and_then(serde_json::Value::as_str);
+    if kind == Some("shell") {
+        if argument_source_count != 0 {
+            return None;
+        }
+        return Some(ShellCallExecutionArguments {
+            command,
+            argv: Vec::new(),
+            cwd,
+            full_access: true,
+        });
+    }
+    if argument_source_count != 1 || !matches!(kind, None | Some("direct")) {
         return None;
     }
     let argv = if let Some(value) = object.get("argvJson") {
@@ -824,7 +851,12 @@ fn shell_call_execution_arguments(
             .map(|value| value.as_str().map(ToOwned::to_owned))
             .collect::<Option<Vec<_>>>()?
     };
-    Some((command, argv, cwd))
+    Some(ShellCallExecutionArguments {
+        command,
+        argv,
+        cwd,
+        full_access: false,
+    })
 }
 
 fn valid_mcp_item(existing: &[DurableItemSnapshot], item: &DurableItemSnapshot) -> bool {
@@ -1193,23 +1225,56 @@ pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {
             if !matches!(name.as_str(), "workspace/edit" | "workspace/apply-diff") {
                 return true;
             }
-            let Some(path) = arguments.get("path").and_then(serde_json::Value::as_str) else {
-                return false;
-            };
-            let has_write = match name.as_str() {
+            let legacy_valid = arguments
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(valid_patch_path)
+                && match name.as_str() {
+                    "workspace/edit" => arguments
+                        .get("edits")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|edits| !edits.is_empty()),
+                    "workspace/apply-diff" => arguments
+                        .get("diff")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|diff| !diff.is_empty()),
+                    _ => false,
+                };
+            let batch_valid = match name.as_str() {
                 "workspace/edit" => arguments
-                    .get("edits")
+                    .get("operations")
                     .and_then(serde_json::Value::as_array)
-                    .is_some_and(|edits| !edits.is_empty()),
+                    .is_some_and(|operations| {
+                        !operations.is_empty()
+                            && operations.len() <= 64
+                            && operations.iter().all(|operation| {
+                                operation
+                                    .get("path")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(valid_patch_path)
+                            })
+                    }),
                 "workspace/apply-diff" => arguments
-                    .get("diff")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|diff| !diff.is_empty()),
+                    .get("files")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|files| {
+                        !files.is_empty()
+                            && files.len() <= 64
+                            && files.iter().all(|file| {
+                                file.get("path")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(valid_patch_path)
+                                    && file
+                                        .get("diff")
+                                        .and_then(serde_json::Value::as_str)
+                                        .is_some_and(|diff| !diff.is_empty())
+                            })
+                    }),
                 _ => false,
             };
-            valid_patch_path(path)
-                && has_write
-                && serde_json::to_vec(arguments).is_ok_and(|encoded| encoded.len() <= 96 * 1024)
+            (legacy_valid || batch_valid)
+                && serde_json::to_vec(arguments)
+                    .is_ok_and(|encoded| encoded.len() <= 6 * 1024 * 1024)
         }
         DurableItemSnapshot::FileChange {
             path,
@@ -1222,7 +1287,7 @@ pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {
             newline_style,
             ..
         } => {
-            kind == "update"
+            matches!(kind.as_str(), "create" | "update" | "delete")
                 && matches!(newline_style.as_str(), "lf" | "crLf")
                 && valid_patch_path(path)
                 && valid_sha256(before_sha256)
@@ -1232,7 +1297,11 @@ pub(crate) fn valid_file_change_item(item: &DurableItemSnapshot) -> bool {
                 && !diff.is_empty()
                 && diff.len() <= 192 * 1024
                 && diff.lines().count() <= 5_000
-                && diff.starts_with(&format!("--- a/{path}\n+++ b/{path}\n"))
+                && match kind.as_str() {
+                    "create" => diff.starts_with(&format!("--- /dev/null\n+++ b/{path}\n")),
+                    "delete" => diff.starts_with(&format!("--- a/{path}\n+++ /dev/null\n")),
+                    _ => diff.starts_with(&format!("--- a/{path}\n+++ b/{path}\n")),
+                }
         }
         _ => true,
     }

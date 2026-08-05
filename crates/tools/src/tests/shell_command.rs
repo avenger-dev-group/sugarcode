@@ -82,6 +82,73 @@ fn command_environment_preserves_host_toolchains_without_credentials() {
     assert!(!format!("{:?}", CommandEnvironment(environment)).contains("model-secret"));
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn full_access_shell_executes_pipeline_redirection_and_streams_output() {
+    let directory = tempfile::tempdir().expect("workspace");
+    let workspace = WorkspaceTool::open(directory.path()).expect("workspace tool");
+    let workspace_root =
+        Arc::new(CommandWorkspaceRoot::from_workspace(&workspace).expect("command workspace root"));
+    let environment = Arc::new(CommandEnvironment(host_command_environment()));
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
+    let execution = execute_full_access_shell(
+        FullAccessShellArguments {
+            command:
+                "printf 'sugar code\\n' | tr '[:lower:]' '[:upper:]' > result.txt && cat result.txt"
+                    .to_string(),
+            cwd: directory.path().to_string_lossy().into_owned(),
+            timeout_ms: 5_000,
+            output_tx: Some(output_tx),
+        },
+        workspace_root,
+        environment,
+        CancellationToken::new(),
+    )
+    .await;
+
+    let ShellCommandExecution::FullAccessCompleted(output) = execution else {
+        panic!("full access execution: {execution:?}");
+    };
+    assert_eq!(output.stdout, "SUGAR CODE\n");
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("result.txt")).expect("redirected file"),
+        "SUGAR CODE\n"
+    );
+    let mut streamed = String::new();
+    while let Ok(chunk) = output_rx.try_recv() {
+        assert_eq!(chunk.stream, ShellOutputStream::Stdout);
+        streamed.push_str(&chunk.content);
+    }
+    assert_eq!(streamed, "SUGAR CODE\n");
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn full_access_shell_rejects_a_non_authoritative_absolute_cwd() {
+    let directory = tempfile::tempdir().expect("workspace");
+    let other = tempfile::tempdir().expect("other directory");
+    let workspace = WorkspaceTool::open(directory.path()).expect("workspace tool");
+    let workspace_root =
+        Arc::new(CommandWorkspaceRoot::from_workspace(&workspace).expect("command workspace root"));
+    let execution = execute_full_access_shell(
+        FullAccessShellArguments {
+            command: "pwd".to_string(),
+            cwd: other.path().to_string_lossy().into_owned(),
+            timeout_ms: 5_000,
+            output_tx: None,
+        },
+        workspace_root,
+        Arc::new(CommandEnvironment(host_command_environment())),
+        CancellationToken::new(),
+    )
+    .await;
+
+    assert_eq!(
+        execution,
+        ShellCommandExecution::Error(ShellCommandErrorKind::InvalidArguments)
+    );
+}
+
 #[test]
 fn supervisor_rejects_sensitive_or_malformed_environment_entries() {
     assert_eq!(

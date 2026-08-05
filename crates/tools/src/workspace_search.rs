@@ -6,12 +6,17 @@ use crate::workspace_capability::map_io_error;
 use crate::workspace_capability::open_regular_file_nofollow;
 use crate::workspace_capability::validate_directory_handle;
 use crate::workspace_list::MAX_WORKSPACE_LIST_ENTRIES;
+use crate::workspace_list::WorkspaceListArguments;
+use crate::workspace_list::WorkspaceListEntryKind;
 use crate::workspace_list::WorkspaceListErrorKind;
+use crate::workspace_list::WorkspaceRecursiveListOutcome;
 use crate::workspace_list::cap_metadata_is_reparse_point;
 use crate::workspace_list::classify_directory_open_error;
 use crate::workspace_list::map_iteration_error;
 use crate::workspace_list::validate_list_path;
 use crate::workspace_read::READ_CHUNK_BYTES;
+use crate::workspace_read::WorkspaceReadArguments;
+use crate::workspace_read::WorkspaceReadOutcome;
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 use std::fmt;
@@ -38,6 +43,42 @@ const WORKSPACE_SEARCH_DEADLINE: Duration = Duration::from_secs(5);
 pub struct WorkspaceSearchArguments {
     pub path: String,
     pub query: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceSearchMode {
+    Content,
+    Path,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceAdvancedSearchArguments {
+    pub path: String,
+    pub query: String,
+    pub mode: WorkspaceSearchMode,
+    pub case_sensitive: bool,
+    pub regex: bool,
+    pub file_pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceAdvancedSearchMatch {
+    pub path: String,
+    pub line: Option<usize>,
+    pub excerpt: Option<String>,
+    pub kind: Option<WorkspaceListEntryKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceAdvancedSearchOutcome {
+    Matches {
+        matches: Vec<WorkspaceAdvancedSearchMatch>,
+        scanned: usize,
+        truncated: bool,
+    },
+    Error {
+        kind: WorkspaceSearchErrorKind,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +136,12 @@ pub trait WorkspaceSearchExecutor: fmt::Debug + Send + Sync {
         arguments: &'a WorkspaceSearchArguments,
         cancellation: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = WorkspaceSearchOutcome> + Send + 'a>>;
+
+    fn search_advanced<'a>(
+        &'a self,
+        arguments: &'a WorkspaceAdvancedSearchArguments,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = WorkspaceAdvancedSearchOutcome> + Send + 'a>>;
 }
 
 struct SearchEntry {
@@ -168,6 +215,124 @@ impl SearchState {
 }
 
 impl WorkspaceTool {
+    pub async fn search_advanced(
+        &self,
+        arguments: &WorkspaceAdvancedSearchArguments,
+        cancellation: &CancellationToken,
+    ) -> WorkspaceAdvancedSearchOutcome {
+        if cancellation.is_cancelled() {
+            return advanced_error(WorkspaceSearchErrorKind::Cancelled);
+        }
+        if validate_query(&arguments.query).is_err() {
+            return advanced_error(WorkspaceSearchErrorKind::InvalidQuery);
+        }
+        let expression = if arguments.regex {
+            arguments.query.clone()
+        } else {
+            regex::escape(&arguments.query)
+        };
+        let matcher = match regex::RegexBuilder::new(&expression)
+            .case_insensitive(!arguments.case_sensitive)
+            .build()
+        {
+            Ok(matcher) => matcher,
+            Err(_) => return advanced_error(WorkspaceSearchErrorKind::InvalidQuery),
+        };
+        let file_pattern = match arguments.file_pattern.as_deref() {
+            Some(pattern) if !pattern.trim().is_empty() => match glob::Pattern::new(pattern) {
+                Ok(pattern) => Some(pattern),
+                Err(_) => return advanced_error(WorkspaceSearchErrorKind::InvalidQuery),
+            },
+            _ => None,
+        };
+        let listed = self
+            .list_recursive(
+                &WorkspaceListArguments {
+                    path: arguments.path.clone(),
+                },
+                cancellation,
+            )
+            .await;
+        let WorkspaceRecursiveListOutcome::Entries {
+            entries,
+            scanned,
+            mut truncated,
+        } = listed
+        else {
+            let WorkspaceRecursiveListOutcome::Error { kind } = listed else {
+                unreachable!()
+            };
+            return advanced_error(map_list_error(kind));
+        };
+        let started = Instant::now();
+        let mut matches = Vec::new();
+        for entry in entries {
+            if cancellation.is_cancelled() {
+                return advanced_error(WorkspaceSearchErrorKind::Cancelled);
+            }
+            if started.elapsed() >= WORKSPACE_SEARCH_DEADLINE {
+                return advanced_error(WorkspaceSearchErrorKind::SearchTimedOut);
+            }
+            if arguments.mode == WorkspaceSearchMode::Path {
+                if matcher.is_match(&entry.path) {
+                    if matches.len() >= MAX_WORKSPACE_SEARCH_MATCHES {
+                        truncated = true;
+                        break;
+                    }
+                    matches.push(WorkspaceAdvancedSearchMatch {
+                        path: entry.path,
+                        line: None,
+                        excerpt: None,
+                        kind: Some(entry.kind),
+                    });
+                }
+                continue;
+            }
+            if entry.kind != WorkspaceListEntryKind::File
+                || file_pattern
+                    .as_ref()
+                    .is_some_and(|pattern| !pattern.matches(&entry.path))
+            {
+                continue;
+            }
+            let outcome = self
+                .read(
+                    &WorkspaceReadArguments {
+                        path: entry.path.clone(),
+                    },
+                    cancellation,
+                )
+                .await;
+            let WorkspaceReadOutcome::Content { content, .. } = outcome else {
+                continue;
+            };
+            for (line_index, line) in content.lines().enumerate() {
+                if !matcher.is_match(line) {
+                    continue;
+                }
+                if matches.len() >= MAX_WORKSPACE_SEARCH_MATCHES {
+                    truncated = true;
+                    break;
+                }
+                matches.push(WorkspaceAdvancedSearchMatch {
+                    path: entry.path.clone(),
+                    line: Some(line_index + 1),
+                    excerpt: Some(line.chars().take(300).collect()),
+                    kind: None,
+                });
+            }
+            if truncated {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        WorkspaceAdvancedSearchOutcome::Matches {
+            matches,
+            scanned,
+            truncated,
+        }
+    }
+
     pub async fn search(
         &self,
         arguments: &WorkspaceSearchArguments,
@@ -363,6 +528,18 @@ impl WorkspaceSearchExecutor for WorkspaceTool {
         cancellation: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = WorkspaceSearchOutcome> + Send + 'a>> {
         Box::pin(WorkspaceTool::search(self, arguments, cancellation))
+    }
+
+    fn search_advanced<'a>(
+        &'a self,
+        arguments: &'a WorkspaceAdvancedSearchArguments,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = WorkspaceAdvancedSearchOutcome> + Send + 'a>> {
+        Box::pin(WorkspaceTool::search_advanced(
+            self,
+            arguments,
+            cancellation,
+        ))
     }
 }
 
@@ -651,6 +828,10 @@ fn map_list_error(kind: WorkspaceListErrorKind) -> WorkspaceSearchErrorKind {
 
 fn error(kind: WorkspaceSearchErrorKind) -> WorkspaceSearchOutcome {
     WorkspaceSearchOutcome::Error { kind }
+}
+
+fn advanced_error(kind: WorkspaceSearchErrorKind) -> WorkspaceAdvancedSearchOutcome {
+    WorkspaceAdvancedSearchOutcome::Error { kind }
 }
 
 #[cfg(test)]

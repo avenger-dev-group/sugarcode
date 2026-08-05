@@ -272,6 +272,12 @@ export const createConversationSnapshot = (
               approvalId: turn.commandApproval.approvalId,
               command: turn.commandApproval.command,
               argumentCount: turn.commandApproval.argumentCount,
+              ...(turn.commandApproval.fullAccess
+                ? { fullAccess: true }
+                : {}),
+              ...(turn.commandApproval.liveOutput
+                ? { liveOutput: { ...turn.commandApproval.liveOutput } }
+                : {}),
               requestStatus: turn.commandApproval.requestStatus,
               ...(turn.commandApproval.decision
                 ? { decision: { ...turn.commandApproval.decision } }
@@ -354,11 +360,15 @@ export const createConversationSnapshot = (
 
 const cloneFileChangeActivity = (
   activity: MutableFileChangeActivity | ConversationFileChangeActivity,
-): ConversationFileChangeActivity => ({
+): MutableFileChangeActivity => ({
   id: activity.id,
   callId: activity.callId,
   path: activity.path,
+  paths: [...(activity.paths ?? [activity.path])],
   callStatus: activity.callStatus,
+  changes: (activity.changes ?? (activity.change ? [activity.change] : [])).map(
+    (change) => ({ ...change }),
+  ),
   ...(activity.change
     ? {
         change: { ...activity.change },

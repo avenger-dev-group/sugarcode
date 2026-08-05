@@ -359,10 +359,10 @@ fn request(approval_id: &str) -> CommandApprovalRequest {
         cwd: ".".to_string(),
         environment_policy: "minimalV1".to_string(),
         sandboxed: true,
-        sandbox_policy: sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1,
+        sandbox_policy: Some(sugarcode_protocol::CoreCommandSandboxPolicy::FilesystemReadOnlyV1),
         workspace_write_policy: None,
         workspace_write_risk: None,
-        network_policy: sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1,
+        network_policy: Some(sugarcode_protocol::CoreCommandNetworkPolicy::NetworkDeniedV1),
     }
 }
 

@@ -18,6 +18,9 @@ pub const MAX_WORKSPACE_LIST_COMPONENTS: usize = 64;
 pub const MAX_WORKSPACE_LIST_ENTRIES: usize = 1_000;
 pub const MAX_WORKSPACE_LIST_ENTRY_NAME_BYTES: usize = 1_024;
 pub const MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES: usize = 256 * 1_024;
+pub const MAX_WORKSPACE_RECURSIVE_LIST_DEPTH: usize = 32;
+pub const MAX_WORKSPACE_RECURSIVE_LIST_SCANNED: usize = 20_000;
+pub const MAX_WORKSPACE_RECURSIVE_LIST_RESULTS: usize = 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceListArguments {
@@ -47,6 +50,25 @@ impl WorkspaceListEntryKind {
 pub struct WorkspaceListEntry {
     pub name: String,
     pub kind: WorkspaceListEntryKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceRecursiveListEntry {
+    pub path: String,
+    pub name: String,
+    pub kind: WorkspaceListEntryKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceRecursiveListOutcome {
+    Entries {
+        entries: Vec<WorkspaceRecursiveListEntry>,
+        scanned: usize,
+        truncated: bool,
+    },
+    Error {
+        kind: WorkspaceListErrorKind,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,9 +120,162 @@ pub trait WorkspaceListExecutor: fmt::Debug + Send + Sync {
         arguments: &'a WorkspaceListArguments,
         cancellation: &'a CancellationToken,
     ) -> Pin<Box<dyn Future<Output = WorkspaceListOutcome> + Send + 'a>>;
+
+    fn list_recursive<'a>(
+        &'a self,
+        arguments: &'a WorkspaceListArguments,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = WorkspaceRecursiveListOutcome> + Send + 'a>>;
 }
 
 impl WorkspaceTool {
+    pub async fn list_recursive(
+        &self,
+        arguments: &WorkspaceListArguments,
+        cancellation: &CancellationToken,
+    ) -> WorkspaceRecursiveListOutcome {
+        if cancellation.is_cancelled() {
+            return recursive_error(WorkspaceListErrorKind::Cancelled);
+        }
+        let components = match validate_list_path(&arguments.path) {
+            Ok(components) => components,
+            Err(kind) => return recursive_error(kind),
+        };
+        let mut directory = match self.root.try_clone() {
+            Ok(directory) => directory,
+            Err(error) => return recursive_error(map_list_io_error(&error)),
+        };
+        for component in &components {
+            directory = match directory.open_dir_nofollow(component) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    return recursive_error(classify_directory_open_error(
+                        &directory, component, &error,
+                    ));
+                }
+            };
+            if let Err(kind) = validate_directory_handle(&directory) {
+                return recursive_error(map_read_error(kind));
+            }
+        }
+        let base = components
+            .iter()
+            .map(|component| component.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let root_snapshot = match FileSnapshot::from_directory(&directory) {
+            Ok(snapshot) => snapshot,
+            Err(kind) => return recursive_error(map_read_error(kind)),
+        };
+        let root_entries = match collect_directory_entries(&directory, cancellation).await {
+            Ok((mut entries, _)) => {
+                entries.sort_unstable_by(|left, right| {
+                    left.name.as_bytes().cmp(right.name.as_bytes())
+                });
+                entries
+            }
+            Err(kind) => return recursive_error(kind),
+        };
+        let mut stack = vec![RecursiveListFrame {
+            directory,
+            relative_path: base,
+            depth: 0,
+            opened_snapshot: root_snapshot,
+            entries: root_entries,
+            next_entry: 0,
+        }];
+        let mut results = Vec::new();
+        let mut scanned = 0usize;
+        let mut result_bytes = 0usize;
+        let mut truncated = false;
+        while let Some(frame) = stack.last_mut() {
+            if cancellation.is_cancelled() {
+                return recursive_error(WorkspaceListErrorKind::Cancelled);
+            }
+            if frame.next_entry >= frame.entries.len() {
+                let frame = stack.pop().expect("recursive list stack is non-empty");
+                let final_snapshot = match FileSnapshot::from_directory(&frame.directory) {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => return recursive_error(WorkspaceListErrorKind::ChangedDuringList),
+                };
+                if final_snapshot != frame.opened_snapshot {
+                    return recursive_error(WorkspaceListErrorKind::ChangedDuringList);
+                }
+                continue;
+            }
+            let entry = frame.entries[frame.next_entry].clone();
+            frame.next_entry += 1;
+            scanned = scanned.saturating_add(1);
+            if scanned > MAX_WORKSPACE_RECURSIVE_LIST_SCANNED {
+                truncated = true;
+                break;
+            }
+            let path = if frame.relative_path.is_empty() {
+                entry.name.clone()
+            } else {
+                format!("{}/{}", frame.relative_path, entry.name)
+            };
+            result_bytes = match result_bytes.checked_add(path.len() + entry.name.len()) {
+                Some(bytes) if bytes <= MAX_WORKSPACE_LIST_TOTAL_NAME_BYTES => bytes,
+                _ => {
+                    truncated = true;
+                    break;
+                }
+            };
+            if results.len() >= MAX_WORKSPACE_RECURSIVE_LIST_RESULTS {
+                truncated = true;
+                break;
+            }
+            results.push(WorkspaceRecursiveListEntry {
+                path: path.clone(),
+                name: entry.name.clone(),
+                kind: entry.kind,
+            });
+            if entry.kind == WorkspaceListEntryKind::Directory {
+                if frame.depth >= MAX_WORKSPACE_RECURSIVE_LIST_DEPTH {
+                    truncated = true;
+                    continue;
+                }
+                let child_depth = frame.depth + 1;
+                let child = match frame.directory.open_dir_nofollow(&entry.name) {
+                    Ok(child) => child,
+                    Err(_) => return recursive_error(WorkspaceListErrorKind::ChangedDuringList),
+                };
+                if validate_directory_handle(&child).is_err() {
+                    return recursive_error(WorkspaceListErrorKind::ChangedDuringList);
+                }
+                let snapshot = match FileSnapshot::from_directory(&child) {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => return recursive_error(WorkspaceListErrorKind::ChangedDuringList),
+                };
+                let child_entries = match collect_directory_entries(&child, cancellation).await {
+                    Ok((mut entries, _)) => {
+                        entries.sort_unstable_by(|left, right| {
+                            left.name.as_bytes().cmp(right.name.as_bytes())
+                        });
+                        entries
+                    }
+                    Err(kind) => return recursive_error(kind),
+                };
+                stack.push(RecursiveListFrame {
+                    directory: child,
+                    relative_path: path,
+                    depth: child_depth,
+                    opened_snapshot: snapshot,
+                    entries: child_entries,
+                    next_entry: 0,
+                });
+            }
+            tokio::task::yield_now().await;
+        }
+        results.sort_unstable_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()));
+        WorkspaceRecursiveListOutcome::Entries {
+            entries: results,
+            scanned,
+            truncated,
+        }
+    }
+
     pub fn list_now(&self, arguments: &WorkspaceListArguments) -> WorkspaceListOutcome {
         let components = match validate_list_path(&arguments.path) {
             Ok(components) => components,
@@ -394,6 +569,23 @@ impl WorkspaceListExecutor for WorkspaceTool {
     ) -> Pin<Box<dyn Future<Output = WorkspaceListOutcome> + Send + 'a>> {
         Box::pin(WorkspaceTool::list(self, arguments, cancellation))
     }
+
+    fn list_recursive<'a>(
+        &'a self,
+        arguments: &'a WorkspaceListArguments,
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = WorkspaceRecursiveListOutcome> + Send + 'a>> {
+        Box::pin(WorkspaceTool::list_recursive(self, arguments, cancellation))
+    }
+}
+
+struct RecursiveListFrame {
+    directory: Dir,
+    relative_path: String,
+    depth: usize,
+    opened_snapshot: FileSnapshot,
+    entries: Vec<WorkspaceListEntry>,
+    next_entry: usize,
 }
 
 pub(crate) fn validate_list_path(path: &str) -> Result<Vec<PathBuf>, WorkspaceListErrorKind> {
@@ -466,6 +658,10 @@ pub(crate) fn cap_metadata_is_reparse_point(_metadata: &cap_std::fs::Metadata) -
 
 fn error(kind: WorkspaceListErrorKind) -> WorkspaceListOutcome {
     WorkspaceListOutcome::Error { kind }
+}
+
+fn recursive_error(kind: WorkspaceListErrorKind) -> WorkspaceRecursiveListOutcome {
+    WorkspaceRecursiveListOutcome::Error { kind }
 }
 
 #[cfg(test)]

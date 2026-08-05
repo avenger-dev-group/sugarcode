@@ -4,7 +4,10 @@
 
 Workspace authority begins at one explicit, canonical absolute root selected
 by the user or CLI caller. Rust opens that root as a capability boundary.
-Model-facing tools receive only workspace-relative UTF-8 paths.
+Model-facing workspace read/list/search/edit/apply-diff tools receive only
+workspace-relative UTF-8 paths. When Full Access shell is available, its
+per-request model schema additionally carries the exact authoritative absolute
+workspace root so the model never has to infer a host path.
 
 The same root supplies root-to-scope `AGENTS.md`, local Skills, read/list/search,
 file editing, command cwd, Git, Desktop explorer and optional local MCP
@@ -15,31 +18,37 @@ unsupported file types and observed identity changes.
 
 - `workspace/read` reads one stable bounded regular UTF-8 file and returns a
   JSON object containing `content`, `bytes` and the exact content `sha256`.
-- `workspace/list` lists one directory level.
-- `workspace/search` performs bounded literal UTF-8 content search without
-  shell, Git, host `rg` or ignore-file authority.
+- `workspace/list` lists one directory level by default. `recursive: true`
+  returns sorted relative `path`, `name` and entry `kind` values plus `scanned`
+  and `truncated`; recursion never follows symlinks or reparse points.
+- `workspace/search` owns both search modes. The default remains bounded,
+  case-sensitive literal UTF-8 `content` search. Explicit `mode: "content"`
+  additionally supports `regex`, `caseSensitive` and `filePattern`, returning
+  a line number and at most 300 characters of excerpt. `mode: "path"` performs
+  a default case-insensitive substring search over relative paths. Neither mode
+  invokes shell, Git, host `rg` or ignore-file authority.
 
 Read-only batches validate completely, run with bounded concurrency and return
 durable results in model order.
 
 ## Structured line editing
 
-`workspace/edit` is the preferred write tool. Arguments contain:
+`workspace/edit` is the preferred write tool. Its model schema contains one
+bounded `operations[]` change set with at most 64 entries:
 
 ```text
-path
-baseSha256
-edits[]:
-  startLine          1-based in the original revision
-  deleteLineCount
-  expected           exact deleted text
-  replacement
+create: path, content, expectedAbsent=true
+update: path, baseSha256, edits[]
+delete: path, baseSha256
 ```
 
-All edits target the same original revision, are strictly ascending and do not
-overlap. EOF insertion uses `lineCount + 1` with zero deletion. The base SHA and
-exact expected text prevent stale or ambiguous writes. LF, CRLF and missing
-final newline are preserved intentionally.
+Update edits target the same original revision, are strictly ascending and do
+not overlap. EOF insertion uses `lineCount + 1` with zero deletion. The base
+SHA and exact expected text prevent stale or ambiguous writes. LF, CRLF and
+missing final newline are preserved intentionally. Create fails if anything
+already occupies the path; delete is revision-bound. The former single-file
+`{path, baseSha256, edits}` shape remains accepted only for rollout and runtime
+compatibility and is no longer emitted in the model schema.
 
 The model must pass the `sha256` returned by `workspace/read` directly as
 `baseSha256`. It must not invoke a platform utility or synthesize a placeholder
@@ -47,16 +56,22 @@ hash. A revision mismatch still fails closed and requires a fresh read/rebase.
 
 ## Unified diff compatibility
 
-`workspace/apply-diff` accepts one standard unified diff for the separately
-supplied `path`. Diff headers never grant path authority. Counts may be omitted,
-function context and LF/CRLF are accepted, and one-file no-final-newline cases
-are supported. Multi-file changes, rename metadata, binary patches and Git
-extended headers are rejected.
+`workspace/apply-diff` accepts a bounded `files[]` batch of standard unified
+diffs. Every entry supplies its authoritative `path`; Diff headers never grant
+path authority. `/dev/null` represents the absent side of create or delete.
+Counts may be omitted, function context and LF/CRLF are accepted, and
+no-final-newline cases are supported. Rename metadata, binary patches and Git
+extended headers are rejected. The former single-file `{path, diff}` shape is
+retained only for rollout and runtime compatibility.
 
-Both edit forms compile to one internal change set and share base revision
-checks, review receipt, commit barrier, fsync and atomic replacement. A bounded
-`FileChange` is durable before the filesystem commit. A matching success result
-is the commit receipt; restart never retries an outcome-unknown write.
+Both representations compile to one internal ChangeSet. The complete batch is
+validated before mutation, rejects duplicate paths and stages data on the same
+filesystem. A persisted write-ahead log precedes the first create, atomic
+replacement or delete. Any recognized failure rolls the whole batch back;
+workspace open completes or rolls back an interrupted log before admitting
+another write. One call ID owns ordered create/update/delete `FileChange`
+records and the matching ToolResult contains all revision receipts. The absent
+side uses the SHA-256 of empty content and zero bytes.
 
 Validation errors are structured:
 
@@ -84,41 +99,59 @@ for their commit or process lifetime. Different canonical roots use independent
 gates and may write concurrently. Read-only operations remain concurrent, and
 the gate still makes no claim about external processes or user edits.
 
-`shell/exec` is a separate authority. It requires an absolute executable,
-bounded argv, fixed workspace-relative cwd, a filtered host command
-environment, no shell string, an app-server approval decision and platform
-sandbox support. `hostInheritedV1` preserves non-sensitive host variables such
-as `PATH`, `HOME`, locale/temp locations and language-toolchain roots, while
-names containing credential markers such as key, token, secret, password,
-credential, auth or cookie are excluded before the sandbox boundary. The
+`shell/exec` is one tool with two distinct authorities. `kind: "direct"`
+requires an absolute executable, bounded JSON argv, the exact authoritative
+absolute workspace root as model-facing cwd, an app-server approval decision
+and platform sandbox support. The executor resolves that advertised path back
+to its capability-owned root rather than reopening arbitrary ambient paths. It
+retains the read-only/no-network default and never tokenizes a shell string. A
+single-dot cwd and calls without `kind` that contain `argvJson` remain
+runtime/replay compatibility only.
+
+On macOS and Windows, `kind: "shell"` accepts one bounded complete command. Its
+preferred model-facing cwd is the same exact authoritative absolute root. The
+runtime also accepts a single dot and validated workspace-relative
+subdirectories for compatibility, but any other absolute cwd is rejected
+before approval or execution. The process already starts in cwd, so the schema
+directs the model not to invent a host path or prepend `cd` merely to re-enter
+the workspace. The account login shell (`-lc`) or `%COMSPEC% /C` then gives
+pipes, redirections, conditionals, variables and globs their platform meaning.
+The default timeout is 300 seconds and the maximum is 600 seconds.
+This mode is Full Access: it is not sandboxed, may use network and may read or
+write outside the workspace. It is denied by default and requires an explicit
+one-call, current-Thread or current-workspace Desktop authorization which is
+kept only in Main-process memory and cannot be inherited from direct sandbox
+auto-approval. Cancellation and timeout terminate the process tree. Output is
+streamed by call ID and the durable final stdout plus stderr is bounded to
+64 KiB.
+
+Both modes use a filtered `hostInheritedV1` environment. It preserves
+non-sensitive host variables such as `PATH`, `HOME`, locale/temp locations and
+language-toolchain roots, while credential-like names are excluded. The
 trusted Desktop sidecar inherits the Desktop process environment; the command
 supervisor applies the credential filter again and bounds the resulting map.
-Desktop may remember the user's approval mode for the current Thread or
-workspace and answer later approval requests automatically; this does not
-expand filesystem, network, executable or workspace-write authority.
-Attempt-without-result means writes may have occurred. Shell executable rules
-are not weakened by model-relative file paths.
+Desktop may remember each mode's approval scope for the current Thread or
+workspace. Direct approval does not expand filesystem, network, executable or
+workspace-write authority. Attempt-without-result means writes may have
+occurred.
 
-The model-facing schema repeats the non-shell shape at both tool and field
-level: `command` is one absolute executable path, flags and operands are
-encoded as one JSON string array in `argvJson`, and `cwd` is `"."`. The scalar
-`argvJson` field avoids array coercion and the nested `arguments` naming
-collision in compatible function-call envelopes. Runtime parses it only as a
-JSON `Vec<String>` and still accepts the earlier array forms when replaying
-history; it never tokenizes a shell command string. A rejected call receives a
-bounded field-specific expected shape and suggested action, while durable
-diagnostics retain only that safe guidance plus argument byte count and
-SHA-256. SugarCode never repairs a bare command through `PATH`, splits a shell
-string or persists the rejected arguments. An explicitly invoked absolute
-program or script may use the inherited `PATH` internally, including
-`/usr/bin/env` shebang resolution. SugarCode does not bundle Node, Java or
-another project runtime: availability follows the host environment seen by the
-sidecar. A missing executable returns structured `commandNotFound` guidance;
-the Agent should inspect repository-native scripts/configuration, try safe
-installed alternatives and, only after those are exhausted, identify the exact
-missing dependency and suggest installation or configuration.
+The direct schema encodes flags and operands as one JSON string array in
+`argvJson`. Runtime also accepts the earlier array forms when replaying history.
+A rejected call receives bounded field-specific guidance; durable diagnostics
+retain only that safe guidance plus argument byte count and SHA-256. SugarCode
+never repairs a bare direct command through `PATH`. An explicitly invoked
+absolute program may use inherited `PATH` internally. Full shell mode delegates
+parsing to the selected platform shell only after Full Access approval.
+Rollout validation distinguishes the two audit shapes: direct requires its
+sandbox and network-denial receipts, while Full Access requires `sandboxed:
+false`, empty argv and absent sandbox/network/workspace-write policies.
 
 ## Other native capabilities
+
+The only model-visible local tools are `workspace/read`, `workspace/list`,
+`workspace/search`, `workspace/edit`, `workspace/apply-diff` and `shell/exec`.
+There is no parallel `read_file`, `search_code`, `workspace/find`,
+`workspace/change-set` or `shell/run` namespace.
 
 The Git engine opens only the exact root, uses vendored libgit2 and never runs
 system Git, hooks, filters, signing, credential helpers, remotes or network.

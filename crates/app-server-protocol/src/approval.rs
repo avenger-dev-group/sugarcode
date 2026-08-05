@@ -55,7 +55,9 @@ pub struct CommandApprovalParams {
     pub approval_scope: String,
     pub environment_policy: String,
     pub sandboxed: bool,
-    pub sandbox_policy: CommandSandboxPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sandbox_policy: Option<CommandSandboxPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub source_agent: Option<ApprovalSourceAgent>,
@@ -65,7 +67,9 @@ pub struct CommandApprovalParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub workspace_write_risk: Option<CommandWorkspaceWriteRisk>,
-    pub network_policy: CommandNetworkPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub network_policy: Option<CommandNetworkPolicy>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema, TS)]

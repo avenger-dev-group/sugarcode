@@ -63,6 +63,13 @@ multiple command calls before the runtime begins their sequential approval and
 execution. Main retains those declarations by call ID; one pending call cannot
 overwrite or invalidate another.
 
+One workspace edit/apply-diff call may publish multiple ordered `FileChange`
+Items with the same call ID. `kind` is `create`, `update` or `delete`, and
+`/dev/null` is the absent Diff side. Desktop groups them into one ChangeSet
+activity while preserving per-file review and keeps accepting historical
+single-update activity/results. A batch ToolResult carries the ordered revision
+receipts for all files.
+
 Collaboration coordination calls (`dispatch`, `amend`, `wait` and `interrupt`)
 remain public lifecycle Items but are hidden from the ordinary tool transcript.
 Desktop validates their exact ToolCall and ToolResult envelopes during live
@@ -186,6 +193,15 @@ does not relax the read-only/no-network command sandbox or authorize shell
 workspace writes. Normal terminal approval states close without a persistent
 completion toast.
 
+Full Access `shell/exec kind=shell` uses a separate Main-process approval scope;
+automatic approval learned from sandboxed direct commands can never answer it.
+The approval surface displays the complete command, cwd, selected platform
+shell and the network/outside-workspace risk. Its one-call/Thread/workspace
+authorization is revocable, is never persisted to the Desktop session, and is
+cleared on application exit. `item/commandExecution/outputDelta` streams
+bounded stdout/stderr by call ID into the matching activity; only the bounded
+final process result is durable.
+
 Command and MCP approvals enter one Main-owned FIFO queue across every project
 and Thread. Only the head is presented, and its local countdown starts after the
 matching approval surface reports ready. Closing the UI or transport safely
@@ -298,10 +314,15 @@ failure does not start a Turn.
 
 The transcript correlates every activity by call ID, including parallel or
 repeated read tools and multiple declared command calls awaiting sequential
-approval. Interrupted recovery may retain unmatched command declarations as
-non-executed history; it never replays or fabricates their side effects. File
-changes remain individually reviewable. Public validation Items keep the
-connection alive and need no empty-path ToolCall special case.
+approval. A multi-file ChangeSet is one expandable activity with ordered
+create/update/delete Diffs. Live command output remains attached to its command
+activity and is capped independently per stream. Interrupted or failed
+recovery may retain unmatched command declarations and result-less sibling
+workspace calls as non-executed history; only a successfully completed Turn
+requires every declared activity to have durable closure. Recovery never
+replays or fabricates side effects. File changes remain individually reviewable
+inside the ChangeSet. Public validation Items keep the connection alive and
+need no empty-path ToolCall special case.
 
 Provisional Agent text is rendered through the same incremental Markdown
 projection as completed Agent messages. Because the provider-neutral delta does

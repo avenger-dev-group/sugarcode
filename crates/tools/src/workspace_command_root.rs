@@ -3,9 +3,11 @@ use crate::workspace_capability::WorkspaceTool;
 use std::fmt;
 #[cfg(unix)]
 use std::fs::File;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub struct CommandWorkspaceRoot {
+    ambient_path: PathBuf,
     #[cfg(unix)]
     directory: File,
     #[cfg(unix)]
@@ -40,6 +42,7 @@ impl CommandWorkspaceRoot {
         }
         let identity = CommandWorkspaceRootIdentity::from_metadata(&metadata);
         Ok(Self {
+            ambient_path: workspace.ambient_path.clone(),
             directory,
             identity,
             write_gate: Arc::clone(&workspace.write_gate),
@@ -51,6 +54,7 @@ impl CommandWorkspaceRoot {
         workspace: &WorkspaceTool,
     ) -> Result<Self, WorkspaceReadErrorKind> {
         Ok(Self {
+            ambient_path: workspace.ambient_path.clone(),
             write_gate: Arc::clone(&workspace.write_gate),
         })
     }
@@ -68,6 +72,10 @@ impl CommandWorkspaceRoot {
     pub(crate) async fn acquire_write(&self) -> crate::workspace_capability::WorkspaceWritePermit {
         crate::workspace_capability::WorkspaceWriteGate::acquire_async(Arc::clone(&self.write_gate))
             .await
+    }
+
+    pub(crate) fn ambient_path(&self) -> &std::path::Path {
+        &self.ambient_path
     }
 }
 

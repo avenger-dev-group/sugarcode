@@ -207,6 +207,7 @@ impl WorkspaceTool {
         Ok((
             Self {
                 root,
+                ambient_path: self.ambient_path.join(scope),
                 root_reopen: WorkspaceRootReopen::Relative { parent, name },
                 binding_id: crate::workspace_capability::derived_workspace_binding_id(
                     self.binding_id(),
@@ -323,6 +324,7 @@ impl WorkspaceTool {
                 .clone();
             Self {
                 root,
+                ambient_path: self.ambient_path.join(scope),
                 root_reopen: WorkspaceRootReopen::Relative { parent, name },
                 binding_id: crate::workspace_capability::derived_workspace_binding_id(
                     self.binding_id(),

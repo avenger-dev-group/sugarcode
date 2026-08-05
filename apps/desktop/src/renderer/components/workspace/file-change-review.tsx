@@ -111,18 +111,13 @@ const lineClass = (line: UnifiedDiffLine): string => {
   }
 };
 
-const DiffPanel = ({
+const SingleDiffPanel = ({
   compact,
-  review,
+  change,
 }: Readonly<{
   compact: boolean;
-  review: FileChangeReviewProps['review'];
+  change: NonNullable<FileChangeReviewProps['review']['change']>;
 }>) => {
-  const change = review.change;
-  if (!change) {
-    return null;
-  }
-
   return (
     <div
       id={`file-change-${change.id}`}
@@ -136,8 +131,14 @@ const DiffPanel = ({
         className="max-h-96 max-w-full min-w-0 overflow-auto font-mono text-xs font-normal leading-5"
         tabIndex={0}
         role="region"
-        aria-label={`Unified diff for ${review.path}`}
+        aria-label={`Unified diff for ${change.path}`}
       >
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-surface px-3 py-1.5">
+          <code className="break-all text-[11px] text-secondary">{change.path}</code>
+          <span className="ml-3 shrink-0 text-[10px] uppercase tracking-[0.12em] text-tertiary">
+            {change.kind}
+          </span>
+        </div>
         {change.hunks.map((hunk) => (
           <div key={hunk.header}>
             <div className="sticky top-0 border-y bg-background px-3 py-1 text-[10px] text-tertiary">
@@ -196,6 +197,23 @@ const DiffPanel = ({
   );
 };
 
+const DiffPanel = ({
+  compact,
+  review,
+}: Readonly<{
+  compact: boolean;
+  review: FileChangeReviewProps['review'];
+}>) => {
+  const files = review.files ?? (review.change ? [review.change] : []);
+  return files.length > 0 ? (
+    <div className="space-y-2">
+      {files.map((change) => (
+        <SingleDiffPanel key={change.id} compact={compact} change={change} />
+      ))}
+    </div>
+  ) : null;
+};
+
 export const FileChangeReview = ({
   review,
   variant = 'card',
@@ -208,6 +226,9 @@ export const FileChangeReview = ({
       ? `Failure kind ${review.errorKind}`
       : copy.detail;
   const change = review.change;
+  const files = review.files ?? (change ? [change] : []);
+  const additions = files.reduce((total, file) => total + file.additions, 0);
+  const deletions = files.reduce((total, file) => total + file.deletions, 0);
 
   if (compact) {
     const action =
@@ -249,10 +270,10 @@ export const FileChangeReview = ({
                 <>
                   <span className="ml-auto font-mono text-[10px] text-tertiary">
                     <span className="text-emerald-700 dark:text-emerald-300">
-                      +{change.additions}
+                      +{additions}
                     </span>{' '}
                     <span className="text-destructive">
-                      −{change.deletions}
+                      −{deletions}
                     </span>
                   </span>
                   <Button
@@ -345,9 +366,9 @@ export const FileChangeReview = ({
               </Button>
               <span className="font-mono text-[10px] text-tertiary">
                 <span className="text-emerald-700 dark:text-emerald-300">
-                  +{change.additions}
+                  +{additions}
                 </span>{' '}
-                <span className="text-destructive">−{change.deletions}</span>
+                <span className="text-destructive">−{deletions}</span>
               </span>
             </div>
           ) : null}
