@@ -252,7 +252,7 @@ fn fork_remaps_complete_history_and_keeps_threads_independent() {
 fn fork_remaps_a_completed_compaction_boundary_without_rewriting_the_summary() {
     let mut core = Core::new();
     let source = start_thread(&mut core, 1);
-    let maximum_output = "x".repeat(MAX_AGENT_MESSAGE_BYTES);
+    let maximum_output = "x".repeat(LARGE_AGENT_OUTPUT_BYTES);
     for request in 2..=7 {
         let prepared = core
             .prepare_text_turn(

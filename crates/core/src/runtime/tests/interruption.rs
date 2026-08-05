@@ -54,11 +54,11 @@ async fn active_turn_remains_running_after_thirty_minutes_until_interrupted() {
 }
 
 #[tokio::test]
-async fn output_limit_fails_once_without_committing_the_oversized_delta() {
-    let oversized = "x".repeat(crate::thread::MAX_AGENT_MESSAGE_BYTES + 1);
+async fn final_text_above_the_preview_budget_completes_and_persists() {
+    let completed_text = "x".repeat(MAX_AGENT_PREVIEW_BYTES + 64 * 1024);
     let (mut runtime, mut events, thread_id) = runtime(RecordedProvider {
         events: vec![
-            Ok(model_event::text_delta(oversized)),
+            Ok(model_event::text_delta(completed_text.clone())),
             Ok(model_event::COMPLETED),
         ],
         stay_open: false,
@@ -77,22 +77,14 @@ async fn output_limit_fails_once_without_committing_the_oversized_delta() {
     let mut lifecycle = Vec::new();
     while lifecycle
         .last()
-        .is_none_or(|event: &CoreEvent| !matches!(event.kind, CoreEventKind::TurnFailed { .. }))
+        .is_none_or(|event: &CoreEvent| !matches!(event.kind, CoreEventKind::TurnCompleted { .. }))
     {
         lifecycle.push(events.recv().await.expect("core event"));
     }
-    assert!(
-        !lifecycle
-            .iter()
-            .any(|event| matches!(event.kind, CoreEventKind::AgentMessageDelta { .. }))
-    );
-    let CoreEventKind::TurnFailed { error, .. } =
-        lifecycle.last().expect("failed terminal").kind.clone()
-    else {
-        panic!("failed terminal");
-    };
-    assert_eq!(error.kind, CoreTurnErrorKind::OutputTooLarge);
-    assert!(!error.retryable);
+    assert!(lifecycle.iter().any(|event| matches!(
+        &event.kind,
+        CoreEventKind::AgentMessageDelta { delta, .. } if delta == &completed_text
+    )));
 
     let snapshot = runtime.resume_thread(&thread_id).expect("resume");
     let turn = snapshot
@@ -100,14 +92,12 @@ async fn output_limit_fails_once_without_committing_the_oversized_delta() {
         .iter()
         .find(|turn| turn.id == turn_id)
         .expect("persisted turn");
-    assert_eq!(turn.status, DurableTurnStatus::Failed);
-    assert_eq!(
-        turn.error.as_ref().map(|error| error.kind),
-        Some(DurableTurnErrorKind::OutputTooLarge)
-    );
-    assert!(!turn.items.iter().any(|item| matches!(
+    assert_eq!(turn.status, DurableTurnStatus::Completed);
+    assert!(turn.error.is_none());
+    assert!(turn.items.iter().any(|item| matches!(
         item,
-        sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
+        sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
+            if text == &completed_text
     )));
 }
 

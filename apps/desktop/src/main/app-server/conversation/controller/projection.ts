@@ -23,7 +23,26 @@ import type {
 export const createMutableTurns = (
   recovered: RecoveredConversation,
 ): MutableTurn[] =>
-  recovered.turns.map((turn) => ({
+  recovered.turns.map((turn) => {
+    const activities = (turn.activities ?? []).map(
+      toMutableConversationActivity,
+    );
+    const latestFileChange = [...activities]
+      .reverse()
+      .find(
+        (
+          entry,
+        ): entry is Extract<
+          MutableConversationActivity,
+          { type: 'fileChange' }
+        > => entry.type === 'fileChange',
+      )?.activity;
+    const legacyFileChange = latestFileChange ??
+      (turn.fileChange
+        ? cloneFileChangeActivity(turn.fileChange)
+        : undefined);
+
+    return {
       id: turn.id,
       status: turn.status,
       ...(turn.model ? { model: { ...turn.model } } : {}),
@@ -34,7 +53,7 @@ export const createMutableTurns = (
         status,
       })),
       pendingAgentOutputs: [] as MutableAgentOutput[],
-      activities: (turn.activities ?? []).map(toMutableConversationActivity),
+      activities,
       ...(turn.contextCompactions
         ? {
             contextCompactions: turn.contextCompactions.map((activity) => ({
@@ -88,9 +107,9 @@ export const createMutableTurns = (
             },
           }
         : {}),
-      ...(turn.fileChange
+      ...(legacyFileChange
         ? {
-            fileChange: cloneFileChangeActivity(turn.fileChange),
+            fileChange: legacyFileChange,
           }
         : {}),
       ...(turn.commandApproval
@@ -155,7 +174,8 @@ export const createMutableTurns = (
             },
           }
         : {}),
-    }));
+    };
+  });
 
 type ConversationSnapshotSource = Readonly<{
   revision: number;

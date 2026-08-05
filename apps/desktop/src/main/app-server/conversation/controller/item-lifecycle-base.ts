@@ -146,12 +146,20 @@ export abstract class ConversationItemLifecycleBase {
     turn: MutableTurn,
     callId: string,
   ): MutableFileChangeActivity => {
-    if (!turn.fileChange || turn.fileChange.callId !== callId) {
+    const activity = turn.activities.find(
+      (
+        entry,
+      ): entry is Extract<
+        MutableConversationActivity,
+        { type: 'fileChange' }
+      > => entry.type === 'fileChange' && entry.activity.callId === callId,
+    )?.activity;
+    if (!activity) {
       throw new Error(
         'Workspace write lifecycle referenced another call.',
       );
     }
-    return turn.fileChange;
+    return activity;
   };
 
   protected requireCommandApproval = (
@@ -293,9 +301,13 @@ export abstract class ConversationItemLifecycleBase {
       turn.workspaceList?.result?.id === itemId ||
       turn.workspaceSearch?.id === itemId ||
       turn.workspaceSearch?.result?.id === itemId ||
-      turn.fileChange?.id === itemId ||
-      turn.fileChange?.change?.id === itemId ||
-      turn.fileChange?.result?.id === itemId ||
+      turn.activities.some(
+        (entry) =>
+          entry.type === 'fileChange' &&
+          (entry.activity.id === itemId ||
+            entry.activity.changes.some((change) => change.id === itemId) ||
+            entry.activity.result?.id === itemId),
+      ) ||
       turn.pendingCommandCalls?.some((call) => call.id === itemId) ||
       turn.commandApproval?.callItemId === itemId ||
       turn.commandApproval?.id === itemId ||

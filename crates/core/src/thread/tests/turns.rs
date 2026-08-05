@@ -249,7 +249,7 @@ fn provider_history_preserves_balanced_tools_from_an_interrupted_turn() {
 fn provider_history_compacts_deterministically_above_the_compatibility_target() {
     let mut core = Core::new();
     let thread_id = start_thread(&mut core, 1);
-    let maximum_output = "x".repeat(MAX_AGENT_MESSAGE_BYTES);
+    let maximum_output = "x".repeat(LARGE_AGENT_OUTPUT_BYTES);
     for request in 2..=7 {
         let prepared = core
             .prepare_text_turn(
@@ -333,7 +333,7 @@ fn provider_history_compacts_deterministically_above_the_compatibility_target() 
 fn interrupted_checkpoint_is_rebuilt_with_recoverable_input() {
     let mut core = Core::new();
     let thread_id = start_thread(&mut core, 1);
-    let maximum_output = "x".repeat(MAX_AGENT_MESSAGE_BYTES);
+    let maximum_output = "x".repeat(LARGE_AGENT_OUTPUT_BYTES);
     for request in 2..=7 {
         let prepared = core
             .prepare_text_turn(

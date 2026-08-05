@@ -188,14 +188,18 @@ export abstract class ConversationLifecycleController extends ConversationItemCo
           );
         }
         if (
-          turn.fileChange &&
-          (turn.fileChange.callStatus !== 'completed' ||
-            (turn.fileChange.change &&
-              turn.fileChange.change.status !== 'completed') ||
-            (turn.fileChange.result &&
-              turn.fileChange.result.status !== 'completed') ||
-            (requiresDurableClosure &&
-              turn.fileChange.result?.status !== 'completed'))
+          turn.activities.some(
+            (entry) =>
+              entry.type === 'fileChange' &&
+              (entry.activity.callStatus !== 'completed' ||
+                entry.activity.changes.some(
+                  (change) => change.status !== 'completed',
+                ) ||
+                (entry.activity.result &&
+                  entry.activity.result.status !== 'completed') ||
+                (requiresDurableClosure &&
+                  entry.activity.result?.status !== 'completed')),
+          )
         ) {
           throw new Error(
             'Turn completed before workspace/apply-diff activity completed.',

@@ -183,6 +183,7 @@ const MAX_ACTIVE_TURN_COMPACTION_BYTES: usize = 32 * 1024;
 const SHELL_ENVIRONMENT_POLICY: &str = "hostInheritedV1";
 const MAX_ACTIVE_TURN_COMPACTION_SUMMARY_BYTES: usize = 23 * 1024;
 const MAX_ACTIVE_TURN_TASK_ANCHOR_BYTES: usize = 7 * 1024;
+pub(crate) const MAX_AGENT_PREVIEW_BYTES: usize = 512 * 1024;
 const READ_ONLY_TOOL_CONCURRENCY: usize = 4;
 const MAX_AMBIGUOUS_CONTEXT_RECOVERIES: usize = 1;
 const MAX_EXPLICIT_CONTEXT_RECOVERIES: usize = 2;
@@ -1223,7 +1224,7 @@ async fn run_turn(
                     if preview
                         .len()
                         .checked_add(delta.len())
-                        .is_none_or(|bytes| bytes > crate::thread::MAX_AGENT_MESSAGE_BYTES)
+                        .is_none_or(|bytes| bytes > MAX_AGENT_PREVIEW_BYTES)
                     {
                         let had_visible_preview = !preview.is_empty();
                         preview_text.remove(&output_index);
@@ -3007,12 +3008,7 @@ fn classify_model_response(
             if output.next().is_some() {
                 return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
             }
-            validate_completed_text(
-                first.output_index,
-                &text,
-                preview_text,
-                crate::thread::MAX_AGENT_MESSAGE_BYTES,
-            )?;
+            validate_completed_text(first.output_index, preview_text)?;
             if !text.chars().any(|character| !character.is_whitespace()) {
                 return Err(ModelError::new(ModelErrorKind::Incomplete, false));
             }
@@ -3031,12 +3027,7 @@ fn classify_model_response(
                     serde_json::json!({"continuation": "complete", "firstOutput": "commentary"}),
                 ));
             }
-            validate_completed_text(
-                first.output_index,
-                &text,
-                preview_text,
-                crate::thread::MAX_AGENT_COMMENTARY_BYTES,
-            )?;
+            validate_completed_text(first.output_index, preview_text)?;
             if text.is_empty() {
                 return Err(ModelError::new(ModelErrorKind::UnsupportedOutput, false));
             }
@@ -3083,13 +3074,8 @@ fn classify_model_response(
 
 fn validate_completed_text(
     output_index: u32,
-    text: &str,
     preview_text: &BTreeMap<u32, String>,
-    max_bytes: usize,
 ) -> Result<(), ModelError> {
-    if text.len() > max_bytes {
-        return Err(output_too_large_error());
-    }
     if !preview_text.is_empty()
         && (preview_text.len() != 1 || !preview_text.contains_key(&output_index))
     {

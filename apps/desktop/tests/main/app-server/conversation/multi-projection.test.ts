@@ -332,6 +332,131 @@ test('a failed approved shell batch remains reloadable without quarantining its 
   assert.equal(snapshot.turns[0]?.error?.kind, 'stateUnavailable');
 });
 
+test('overlapping workspace write declarations remain correlated by call ID', async () => {
+  let quarantinedThreadId: string | null = null;
+  const rpc: ConversationRpc = {
+    findLatestActiveThread: async () => null,
+    listActiveThreads: async () => ({ data: [], nextCursor: null }),
+    resumeThread: async (threadId) => ({
+      threadId,
+      workspaceId: WORKSPACE_WEB,
+      turns: [],
+    }),
+    startThread: async () => ({
+      thread: { id: THREAD_WEB, workspaceId: WORKSPACE_WEB },
+    }),
+    importAsset: async () => {
+      throw new Error('not used');
+    },
+    startTurn: async () => ({
+      turn: { id: TURN_WEB, status: 'inProgress' },
+    }),
+    interruptTurn: async () => ({}),
+  };
+  const controller = new ConversationController({
+    getRpc: () => rpc,
+    onProtocolFailure: () => assert.fail('unexpected protocol failure'),
+    onThreadProjectionFailure: (threadId) => {
+      quarantinedThreadId = threadId;
+    },
+  });
+
+  assert.equal(await controller.restoreForConnection(WORKSPACE_WEB), true);
+  controller.connectionReady();
+  assert.equal(
+    (await controller.startTurn({ input: 'Apply both changes' })).accepted,
+    true,
+  );
+
+  const calls = [
+    {
+      type: 'toolCall',
+      id: '00000000-0005-7000-8000-000000000001',
+      callId: 'patch_call_1',
+      name: 'workspace/edit',
+      arguments: {
+        operations: [
+          {
+            kind: 'create',
+            path: 'src/a.ts',
+            content: 'export const a = 1;\n',
+            expectedAbsent: true,
+          },
+        ],
+      },
+    },
+    {
+      type: 'toolCall',
+      id: '00000000-0005-7000-8000-000000000002',
+      callId: 'patch_call_2',
+      name: 'workspace/edit',
+      arguments: {
+        operations: [
+          {
+            kind: 'create',
+            path: 'src/b.ts',
+            content: 'export const b = 2;\n',
+            expectedAbsent: true,
+          },
+        ],
+      },
+    },
+  ];
+  const results = calls.map((call, index) => ({
+    type: 'toolResult',
+    id: `00000000-0005-7000-8000-00000000000${index + 3}`,
+    callId: call.callId,
+    name: call.name,
+    result: { type: 'error', kind: 'baseRevisionMismatch' },
+  }));
+  const publishItem = (
+    method: 'item/started' | 'item/completed',
+    item: Record<string, unknown>,
+  ): void => {
+    controller.handleNotification({
+      kind: 'notification',
+      method,
+      params: {
+        workspaceId: WORKSPACE_WEB,
+        threadId: THREAD_WEB,
+        turnId: TURN_WEB,
+        item,
+      },
+    });
+  };
+
+  publishItem('item/started', calls[0] ?? {});
+  publishItem('item/started', calls[1] ?? {});
+  for (const call of calls) {
+    publishItem('item/completed', call);
+  }
+  for (const result of results) {
+    publishItem('item/started', result);
+    publishItem('item/completed', result);
+  }
+  controller.handleNotification({
+    kind: 'notification',
+    method: 'turn/completed',
+    params: {
+      workspaceId: WORKSPACE_WEB,
+      threadId: THREAD_WEB,
+      turn: { id: TURN_WEB, status: 'completed' },
+    },
+  });
+
+  const snapshot = controller.getSnapshot();
+  const fileChanges = snapshot.turns[0]?.activities?.filter(
+    (entry) => entry.type === 'fileChange',
+  );
+  assert.equal(quarantinedThreadId, null);
+  assert.equal(snapshot.turns[0]?.status, 'completed');
+  assert.deepEqual(
+    fileChanges?.map((entry) => entry.activity.callId),
+    ['patch_call_1', 'patch_call_2'],
+  );
+  assert.equal(snapshot.turns[0]?.fileChange?.callId, 'patch_call_2');
+});
+
 test('workspace loading never publishes the previous Thread index under the new binding', async () => {
   let listCalls = 0;
   let releaseAdminList = (): void => undefined;

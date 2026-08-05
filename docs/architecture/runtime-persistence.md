@@ -280,6 +280,12 @@ MiB private-response resource boundary, and `outputTooLarge` is limited to
 visible or locally retained output. Existing durable `outputTooLarge` records
 retain their original meaning when replayed.
 
+Completed final text and commentary paired with tool calls have no
+phase-specific byte ceiling. An oversized provisional preview may be discarded
+at the rendering budget, while the authoritative completed text remains
+eligible for durable persistence and replay under the shared rollout and
+provider resource boundaries.
+
 Thread search indexes completed user/final assistant text only. Attachments,
 commentary, tool payloads, provider context, compaction bodies and diagnostics
 are excluded.

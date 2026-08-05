@@ -47,6 +47,68 @@ fn provisional_commentary_preview_does_not_block_a_completed_tool_call() {
 }
 
 #[test]
+fn completed_tool_commentary_has_no_commentary_specific_byte_limit() {
+    let commentary = "x".repeat(MAX_AGENT_PREVIEW_BYTES + 1);
+    let response = ModelResponse {
+        output: vec![
+            sugarcode_model_provider::ModelOutputItem {
+                output_index: 0,
+                kind: ModelOutputItemKind::AssistantText {
+                    phase: ModelTextPhase::Commentary,
+                    text: commentary.clone(),
+                },
+            },
+            sugarcode_model_provider::ModelOutputItem {
+                output_index: 1,
+                kind: ModelOutputItemKind::ToolCall(ModelToolCall {
+                    id: "call_after_long_commentary".to_owned(),
+                    name: "workspace/read".to_owned(),
+                    arguments: serde_json::json!({"path": "README.md"}),
+                }),
+            },
+        ],
+        usage: None,
+        terminal: ModelTerminalMetadata::completed(ModelContinuation::ToolCalls),
+        provider_context: None,
+    };
+
+    assert!(matches!(
+        classify_model_response(response, &BTreeMap::new()).expect("tool commentary response"),
+        CompletedRoundOutput::ToolUse {
+            commentary: Some((0, text)),
+            calls,
+        } if text == commentary
+            && calls.len() == 1
+            && calls[0].id == "call_after_long_commentary"
+    ));
+}
+
+#[test]
+fn completed_final_text_has_no_final_specific_byte_limit() {
+    let text = "x".repeat(MAX_AGENT_PREVIEW_BYTES + 1);
+    let response = ModelResponse {
+        output: vec![sugarcode_model_provider::ModelOutputItem {
+            output_index: 0,
+            kind: ModelOutputItemKind::AssistantText {
+                phase: ModelTextPhase::Final,
+                text: text.clone(),
+            },
+        }],
+        usage: None,
+        terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
+        provider_context: None,
+    };
+
+    assert!(matches!(
+        classify_model_response(response, &BTreeMap::new()).expect("final response"),
+        CompletedRoundOutput::Final {
+            output_index: 0,
+            text: completed,
+        } if completed == text
+    ));
+}
+
+#[test]
 fn alternating_tool_failures_share_one_total_non_progress_budget() {
     let mut state = AgentLoopState::default();
 
@@ -69,9 +131,7 @@ async fn oversized_provisional_preview_is_discarded_without_failing_final_output
             async move {
                 Ok(stream::iter(vec![
                     Ok(model_event::text_delta("visible preview".to_owned())),
-                    Ok(model_event::text_delta(
-                        "x".repeat(crate::thread::MAX_AGENT_MESSAGE_BYTES),
-                    )),
+                    Ok(model_event::text_delta("x".repeat(MAX_AGENT_PREVIEW_BYTES))),
                     Ok(model_event::final_response("Authoritative final answer.")),
                 ])
                 .boxed())

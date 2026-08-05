@@ -47,6 +47,7 @@ export const recoverConversation = (
     let workspaceRead: ConversationWorkspaceReadActivity | undefined;
     let workspaceList: ConversationWorkspaceListActivity | undefined;
     let workspaceSearch: ConversationWorkspaceSearchActivity | undefined;
+    const fileChanges = new Map<string, ConversationFileChangeActivity>();
     let fileChange: ConversationFileChangeActivity | undefined;
     const commandCalls = new Map<
       string,
@@ -361,9 +362,9 @@ export const recoverConversation = (
         continue;
       }
       if (item.type === 'workspacePatchCall') {
-        if (fileChange && !fileChange.result) {
+        if (fileChanges.has(item.callId)) {
           throw new Error(
-            'thread/resume returned overlapping workspace/apply-diff activity.',
+            'thread/resume returned a duplicate workspace/apply-diff call.',
           );
         }
         fileChange = {
@@ -374,16 +375,21 @@ export const recoverConversation = (
           callStatus: 'completed',
           changes: [],
         };
+        fileChanges.set(item.callId, fileChange);
         activities.push({ type: 'fileChange', activity: fileChange });
         continue;
       }
       if (item.type === 'workspacePatchChange') {
+        const matchingFileChange = fileChanges.get(item.callId);
         if (
-          !fileChange ||
-          fileChange.callId !== item.callId ||
-          !(fileChange.paths ?? [fileChange.path]).includes(item.path) ||
-          (fileChange.changes ?? []).some((change) => change.path === item.path) ||
-          fileChange.result
+          !matchingFileChange ||
+          !(matchingFileChange.paths ?? [matchingFileChange.path]).includes(
+            item.path,
+          ) ||
+          (matchingFileChange.changes ?? []).some(
+            (change) => change.path === item.path,
+          ) ||
+          matchingFileChange.result
         ) {
           throw new Error(
             'thread/resume returned an unmatched FileChange proposal.',
@@ -402,30 +408,41 @@ export const recoverConversation = (
           newlineStyle: item.newlineStyle,
           finalNewline: item.finalNewline,
         };
-        const changes = [...(fileChange.changes ?? []), proposal];
-        fileChange = {
-          ...fileChange,
-          change: fileChange.change ?? proposal,
+        const changes = [
+          ...(matchingFileChange.changes ?? []),
+          proposal,
+        ];
+        const completedFileChange: ConversationFileChangeActivity = {
+          ...matchingFileChange,
+          change: matchingFileChange.change ?? proposal,
           changes,
         };
+        fileChanges.set(item.callId, completedFileChange);
+        if (fileChange?.callId === item.callId) {
+          fileChange = completedFileChange;
+        }
         const changeIndex = activities.findIndex(
           (entry) =>
             entry.type === 'fileChange' &&
             entry.activity.callId === item.callId,
         );
-        activities[changeIndex] = { type: 'fileChange', activity: fileChange };
+        activities[changeIndex] = {
+          type: 'fileChange',
+          activity: completedFileChange,
+        };
         continue;
       }
       if (item.type === 'workspacePatchResult') {
+        const matchingFileChange = fileChanges.get(item.callId);
         if (
-          !fileChange ||
-          fileChange.callId !== item.callId ||
-          fileChange.result ||
+          !matchingFileChange ||
+          matchingFileChange.result ||
           (item.outcome.type === 'success' &&
             ('files' in item.outcome
-              ? item.outcome.files.length !== (fileChange.changes ?? []).length ||
+              ? item.outcome.files.length !==
+                  (matchingFileChange.changes ?? []).length ||
                 item.outcome.files.some((receipt, index) => {
-                  const change = fileChange?.changes?.[index];
+                  const change = matchingFileChange.changes?.[index];
                   return !change ||
                     receipt.path !== change.path ||
                     receipt.kind !== change.kind ||
@@ -434,31 +451,42 @@ export const recoverConversation = (
                     receipt.beforeBytes !== change.beforeBytes ||
                     receipt.afterBytes !== change.afterBytes;
                 })
-              : !fileChange.change ||
-                fileChange.change.path !== item.outcome.path ||
-                fileChange.change.beforeSha256 !== item.outcome.beforeSha256 ||
-                fileChange.change.afterSha256 !== item.outcome.afterSha256 ||
-                fileChange.change.beforeBytes !== item.outcome.beforeBytes ||
-                fileChange.change.afterBytes !== item.outcome.afterBytes))
+              : !matchingFileChange.change ||
+                matchingFileChange.change.path !== item.outcome.path ||
+                matchingFileChange.change.beforeSha256 !==
+                  item.outcome.beforeSha256 ||
+                matchingFileChange.change.afterSha256 !==
+                  item.outcome.afterSha256 ||
+                matchingFileChange.change.beforeBytes !==
+                  item.outcome.beforeBytes ||
+                matchingFileChange.change.afterBytes !==
+                  item.outcome.afterBytes))
         ) {
           throw new Error(
             'thread/resume returned an unmatched workspace/apply-diff result.',
           );
         }
-        fileChange = {
-          ...fileChange,
+        const completedFileChange: ConversationFileChangeActivity = {
+          ...matchingFileChange,
           result: {
             id: item.id,
             status: 'completed',
             outcome: { ...item.outcome },
           },
         };
+        fileChanges.set(item.callId, completedFileChange);
+        if (fileChange?.callId === item.callId) {
+          fileChange = completedFileChange;
+        }
         const resultIndex = activities.findIndex(
           (entry) =>
             entry.type === 'fileChange' &&
             entry.activity.callId === item.callId,
         );
-        activities[resultIndex] = { type: 'fileChange', activity: fileChange };
+        activities[resultIndex] = {
+          type: 'fileChange',
+          activity: completedFileChange,
+        };
         continue;
       }
       if (item.type === 'mcpCall') {
@@ -805,7 +833,10 @@ export const recoverConversation = (
         'thread/resume returned terminal workspace/search activity without a result.',
       );
     }
-    if (fileChange && requiresDurableClosure && !fileChange.result) {
+    if (
+      requiresDurableClosure &&
+      [...fileChanges.values()].some((activity) => !activity.result)
+    ) {
       throw new Error(
         'thread/resume returned terminal workspace/apply-diff activity without a result.',
       );

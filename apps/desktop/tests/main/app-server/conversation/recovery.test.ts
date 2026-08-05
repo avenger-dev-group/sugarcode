@@ -54,6 +54,70 @@ test('an interrupted batch may contain multiple declared command calls', () => {
   });
 });
 
+test('overlapping workspace writes recover by call ID', () => {
+  const snapshot: ResumeSnapshot = {
+    threadId: '00000000-0000-7000-8000-000000000019',
+    workspaceId: 'workspace-test',
+    turns: [
+      {
+        id: '00000000-0001-7000-8000-000000000038',
+        status: 'completed',
+        items: [
+          {
+            type: 'workspacePatchCall',
+            id: 'item_patch_call_1',
+            callId: 'patch_call_1',
+            path: 'src/a.ts',
+            paths: ['src/a.ts'],
+          },
+          {
+            type: 'workspacePatchCall',
+            id: 'item_patch_call_2',
+            callId: 'patch_call_2',
+            path: 'src/b.ts',
+            paths: ['src/b.ts'],
+          },
+          {
+            type: 'workspacePatchResult',
+            id: 'item_patch_result_1',
+            callId: 'patch_call_1',
+            outcome: { type: 'error', kind: 'baseRevisionMismatch' },
+          },
+          {
+            type: 'workspacePatchResult',
+            id: 'item_patch_result_2',
+            callId: 'patch_call_2',
+            outcome: { type: 'error', kind: 'baseRevisionMismatch' },
+          },
+        ],
+      },
+    ],
+  };
+
+  const recovered = recoverConversation(snapshot.threadId, snapshot);
+  const fileChanges = recovered.turns[0]?.activities?.filter(
+    (entry) => entry.type === 'fileChange',
+  );
+
+  assert.deepEqual(
+    fileChanges?.map((entry) => ({
+      callId: entry.activity.callId,
+      result: entry.activity.result?.outcome,
+    })),
+    [
+      {
+        callId: 'patch_call_1',
+        result: { type: 'error', kind: 'baseRevisionMismatch' },
+      },
+      {
+        callId: 'patch_call_2',
+        result: { type: 'error', kind: 'baseRevisionMismatch' },
+      },
+    ],
+  );
+  assert.equal(recovered.turns[0]?.fileChange?.callId, 'patch_call_2');
+});
+
 test('a failed batch recovers approved Full Access shell history with unstarted sibling tools', () => {
   const snapshot: ResumeSnapshot = {
     threadId: '00000000-0000-7000-8000-000000000018',

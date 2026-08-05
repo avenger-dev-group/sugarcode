@@ -88,6 +88,11 @@ round contains only ToolCalls. Every preview therefore has a terminal lifecycle
 before a later provider request can emit another output reference.
 Duplicate completion or semantic events after completion are protocol errors.
 SSE record size and accumulated semantic output have independent limits.
+Completed final text and commentary that accompanies tool calls have no
+phase-specific byte limit. Their provisional preview may stop rendering at the
+shared preview budget, but Core still classifies the authoritative completed
+text instead of failing the Turn solely because that final answer or commentary
+is long.
 
 Thread-title generation is a separate provider-neutral Core request with the
 `sugarCodeThreadTitleV1` instruction source. It reuses the Thread's currently

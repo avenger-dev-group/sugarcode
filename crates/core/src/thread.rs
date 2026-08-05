@@ -47,8 +47,6 @@ use snapshots::{
 };
 
 const DETERMINISTIC_AGENT_MESSAGE: &str = "SugarCode deterministic response.";
-pub const MAX_AGENT_MESSAGE_BYTES: usize = 512 * 1024;
-pub const MAX_AGENT_COMMENTARY_BYTES: usize = 512;
 pub const MAX_PROVIDER_HISTORY_BYTES: usize = crate::context::MAX_PROVIDER_CONTEXT_BYTES;
 pub const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
 
@@ -1736,12 +1734,6 @@ impl Core {
                 ));
             }
         };
-        if current_len
-            .checked_add(delta.len())
-            .is_none_or(|length| length > MAX_AGENT_MESSAGE_BYTES)
-        {
-            return Err(CoreError::OutputTooLarge);
-        }
         item.append_agent_message_delta(delta)?;
         let snapshot = item.snapshot();
         let terminal_budget = DurableTurnSnapshot {

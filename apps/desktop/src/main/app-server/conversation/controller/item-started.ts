@@ -264,7 +264,14 @@ export abstract class ConversationItemStartedController extends ConversationItem
         outcome: { ...lifecycle.params.item.outcome },
       };
     } else if (lifecycle.params.item.type === 'workspacePatchCall') {
-      if (turn.fileChange && !turn.fileChange.result) {
+      const callId = lifecycle.params.item.callId;
+      if (
+        turn.activities.some(
+          (entry) =>
+            entry.type === 'fileChange' &&
+            entry.activity.callId === callId,
+        )
+      ) {
         throw new Error('Duplicate workspace/apply-diff activity.');
       }
       const activity: MutableFileChangeActivity = {

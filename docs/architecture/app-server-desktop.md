@@ -59,9 +59,12 @@ ToolCall contains call ID, SugarCode tool name and JSON arguments. Validation
 failure is its own `toolValidationRejected` Item. `FileChange`, approvals,
 execution attempts and results remain independent durable Items. Unknown fields
 or broken lifecycle correlation fail closed. A model response may declare
-multiple command calls before the runtime begins their sequential approval and
-execution. Main retains those declarations by call ID; one pending call cannot
-overwrite or invalidate another.
+multiple calls, including multiple workspace writes, before the runtime begins
+their sequential approval and execution. Main retains every declaration as an
+independent activity correlated by call ID; one pending call cannot overwrite or
+invalidate another. The minimized Turn's `activities` list is authoritative for
+workspace-write lifecycle, while its singular `fileChange` field remains only a
+latest-activity compatibility projection for older Renderer consumers.
 
 One workspace edit/apply-diff call may publish multiple ordered `FileChange`
 Items with the same call ID. `kind` is `create`, `update` or `delete`, and
