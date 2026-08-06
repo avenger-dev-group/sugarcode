@@ -46,14 +46,13 @@ ADK sessions are process-local caches. Before a new Turn, provider-neutral
 completed history is rebuilt from Rust SQLite. Worker loss interrupts active
 Turns and child tasks; it never resumes an incomplete tool call or side effect.
 
-The primary `LlmAgent` runs inside a bounded ADK `LoopAgent`. Public text never
-declares lifecycle completion: the model must call ADK's internal `exit_loop`
-tool after it has emitted the final outcome or genuine blocker. A normal model
-stop starts the next loop iteration in the same workspace, Thread and Turn. If
-four iterations finish without the structured exit event, the Turn fails with
-a retryable protocol error instead of being silently persisted as completed.
-The internal exit tool is retained in model history but is not projected as a
-user-visible workspace activity.
+The primary `LlmAgent` follows ADK's structured tool loop. Function-call Items
+continue the same Turn through execution and a subsequent model request; a
+terminal model response completes the Turn once. Public text is never parsed to
+infer lifecycle state, and the runtime does not repeat terminal responses while
+waiting for a provider-specific completion marker. Each individual provider
+request has a bounded output budget and wall-clock deadline so a continuously
+streaming model cannot keep a Turn alive indefinitely.
 
 ## UI compatibility
 
@@ -70,6 +69,9 @@ Renderer can show the transcript before the first model stream event arrives.
 Consecutive commentary deltas are coalesced into one process paragraph during
 live projection, and persisted commentary deltas are coalesced again on restore;
 provider chunk boundaries must never become visible paragraph spacing.
+Commentary uses the same streaming-safe GFM renderer as Agent responses, with
+the process-text tone, so headings, lists, emphasis and inline code have one
+consistent Markdown interpretation.
 Reselecting the foreground Thread is idempotent even while its Turn is active
 and republishes its current snapshot. Main tracks active Turns by workspace and
 Thread rather than as one global foreground Turn. Selecting another Thread,

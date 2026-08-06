@@ -327,6 +327,7 @@ const renderTokens = (
 const AgentMarkdownView = ({
   source,
   isStreaming,
+  tone = 'default',
 }: AgentMarkdownProps): ReactElement => {
   const cache = useRef<AgentMarkdownTokenCache | undefined>(undefined);
   const projection = useMemo(() => {
@@ -340,7 +341,9 @@ const AgentMarkdownView = ({
   }, [isStreaming, source]);
 
   return (
-    <div className="min-w-0 max-w-full font-normal text-foreground">
+    <div
+      className={`min-w-0 max-w-full font-normal ${tone === 'process' ? 'text-process' : 'text-foreground'}`}
+    >
       {renderTokens(projection.tokens, 'root', isStreaming)}
     </div>
   );

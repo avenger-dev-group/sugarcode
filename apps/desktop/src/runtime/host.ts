@@ -1,9 +1,7 @@
 import {
   createEvent,
-  EXIT_LOOP,
   InMemorySessionService,
   LlmAgent,
-  LoopAgent,
   Runner,
   type BaseLlm,
   type Event,
@@ -60,7 +58,6 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
 const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
-const MAX_TURN_LOOP_ITERATIONS = 4;
 
 type RuntimeHostOptions = Readonly<{
   postEvent: (event: RuntimeEvent) => void;
@@ -1443,7 +1440,6 @@ export class RuntimeHost {
             controller.signal,
           )
         : [];
-      const completionProtocolEnabled = Boolean(this.nativeRuntime);
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
@@ -1479,47 +1475,25 @@ export class RuntimeHost {
                 this.runMcpTool(command, request),
               ),
               ...collaborationTools,
-              EXIT_LOOP,
             ]
             : []),
         ],
       });
-      const turnAgent = completionProtocolEnabled
-        ? new LoopAgent({
-            name: 'sugarcode_turn_loop',
-            description:
-              'Continue the coding Turn until the worker explicitly declares it terminal.',
-            subAgents: [agent],
-            maxIterations: MAX_TURN_LOOP_ITERATIONS,
-          })
-        : agent;
       const runner = new Runner({
         appName: APPLICATION_NAME,
-        agent: turnAgent,
+        agent,
         sessionService: this.sessions,
       });
-      let completionDeclared = !completionProtocolEnabled;
       for await (const event of runner.runAsync({
         userId: command.workspaceId,
         sessionId: command.threadId,
         newMessage: this.contentFromParts(command.content, resolved.selection),
         abortSignal: controller.signal,
       })) {
-        if (event.actions.escalate === true) {
-          completionDeclared = true;
-        }
         this.publishAgentEvent(command, event);
         if (!event.partial) {
           this.persistModelHistory(command, event);
         }
-      }
-      if (!controller.signal.aborted && !completionDeclared) {
-        throw new ProviderAdapterError({
-          kind: 'protocol',
-          retryable: true,
-          message:
-            'The model exhausted the bounded Turn loop without declaring completion.',
-        });
       }
       await this.collaboration.waitForTurn(command.turnId, controller.signal);
       this.emitCompleted(
@@ -1773,7 +1747,7 @@ export class RuntimeHost {
           delta: part.text,
         });
       }
-      if (part.functionCall?.name && part.functionCall.name !== 'exit_loop') {
+      if (part.functionCall?.name) {
         this.emit({
           type: 'turn.toolCall',
           requestId: command.requestId,
@@ -1786,10 +1760,7 @@ export class RuntimeHost {
           arguments: part.functionCall.args ?? {},
         });
       }
-      if (
-        part.functionResponse?.name &&
-        part.functionResponse.name !== 'exit_loop'
-      ) {
+      if (part.functionResponse?.name) {
         this.emit({
           type: 'turn.toolResult',
           requestId: command.requestId,

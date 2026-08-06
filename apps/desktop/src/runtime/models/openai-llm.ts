@@ -22,6 +22,7 @@ import type {
 
 import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
+import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
 import type {
   NormalizedLlmRequest,
@@ -43,6 +44,18 @@ type ToolCallAccumulator = {
   name: string;
   arguments: string;
 };
+
+const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
+const MAX_OUTPUT_TOKENS = 65_536;
+
+const maxOutputTokens = (request: NormalizedLlmRequest): number =>
+  Math.max(
+    1,
+    Math.min(
+      request.config?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+      MAX_OUTPUT_TOKENS,
+    ),
+  );
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -406,17 +419,19 @@ export class OpenAiLlm extends BaseLlm {
   private readonly wireApi: OpenAiWireApi;
   private readonly parallelTools: boolean;
   private readonly maxRetries: number;
+  private readonly timeoutMs: number;
 
   constructor(options: OpenAiLlmOptions) {
     super({ model: options.model });
     this.wireApi = options.wireApi;
     this.parallelTools = options.parallelTools ?? false;
     this.maxRetries = options.maxRetries ?? 2;
+    this.timeoutMs = options.timeoutMs ?? 120_000;
     this.client = new OpenAI({
       apiKey: options.apiKey || 'sugarcode-no-key',
       baseURL: validateBaseUrl(options.baseUrl),
       defaultHeaders: options.headers,
-      timeout: options.timeoutMs ?? 120_000,
+      timeout: this.timeoutMs,
       maxRetries: 0,
     });
   }
@@ -428,14 +443,24 @@ export class OpenAiLlm extends BaseLlm {
   ): AsyncGenerator<LlmResponse, void> {
     void _stream;
     const request = normalizeLlmRequest(llmRequest, this.model);
+    const deadline = createRequestDeadline(abortSignal, this.timeoutMs);
     try {
       if (this.wireApi === 'openaiResponses') {
-        yield* this.streamResponses(request, abortSignal);
+        yield* this.streamResponses(request, deadline.signal);
       } else {
-        yield* this.streamChatCompletions(request, abortSignal);
+        yield* this.streamChatCompletions(request, deadline.signal);
       }
     } catch (error) {
+      if (deadline.didTimeout() && !abortSignal?.aborted) {
+        throw new ProviderAdapterError({
+          kind: 'timeout',
+          retryable: true,
+          message: `The model stream exceeded the ${this.timeoutMs} ms request deadline.`,
+        });
+      }
       throw mapOpenAiError(error, abortSignal);
+    } finally {
+      deadline.dispose();
     }
   }
 
@@ -458,6 +483,7 @@ export class OpenAiLlm extends BaseLlm {
     const completedCalls: ToolCallAccumulator[] = [];
     let text = '';
     let thought = '';
+    let completed = false;
     const stream = streamWithPreOutputRetry<ResponseStreamEvent>({
       signal: abortSignal,
       maxRetries: this.maxRetries,
@@ -470,6 +496,7 @@ export class OpenAiLlm extends BaseLlm {
             instructions: request.system || undefined,
             tools: [...responseTools(request.tools)],
             parallel_tool_calls: this.parallelTools,
+            max_output_tokens: maxOutputTokens(request),
             stream: true,
             store: false,
           },
@@ -510,6 +537,7 @@ export class OpenAiLlm extends BaseLlm {
           break;
         }
         case 'response.completed': {
+          completed = true;
           const parts: Part[] = [];
           if (thought) {
             parts.push({ text: thought, thought: true });
@@ -559,6 +587,16 @@ export class OpenAiLlm extends BaseLlm {
           break;
       }
     }
+    if (abortSignal?.aborted) {
+      throw cancelledProviderError();
+    }
+    if (!completed) {
+      throw new ProviderAdapterError({
+        kind: 'protocol',
+        retryable: false,
+        message: 'OpenAI Responses stream ended before response.completed.',
+      });
+    }
   }
 
   private async *streamChatCompletions(
@@ -581,6 +619,7 @@ export class OpenAiLlm extends BaseLlm {
             messages: [...chatMessages(request)],
             tools: [...chatTools(request.tools)],
             parallel_tool_calls: this.parallelTools,
+            max_completion_tokens: maxOutputTokens(request),
             stream: true,
             stream_options: { include_usage: true },
           },
@@ -624,6 +663,16 @@ export class OpenAiLlm extends BaseLlm {
           calls.set(delta.index, current);
         }
       }
+    }
+    if (abortSignal?.aborted) {
+      throw cancelledProviderError();
+    }
+    if (!terminalReason) {
+      throw new ProviderAdapterError({
+        kind: 'protocol',
+        retryable: false,
+        message: 'OpenAI Chat Completions stream ended without a finish reason.',
+      });
     }
     const parts: Part[] = [];
     if (thought) {

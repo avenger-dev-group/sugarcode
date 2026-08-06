@@ -16,6 +16,7 @@ import { FinishReason, type Part } from '@google/genai';
 
 import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
+import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
 import type {
   NormalizedLlmRequest,
@@ -320,15 +321,17 @@ export class AnthropicLlm extends BaseLlm {
 
   private readonly client: Anthropic;
   private readonly maxRetries: number;
+  private readonly timeoutMs: number;
 
   constructor(options: ProviderAdapterOptions) {
     super({ model: options.model });
     this.maxRetries = options.maxRetries ?? 2;
+    this.timeoutMs = options.timeoutMs ?? 120_000;
     this.client = new Anthropic({
       apiKey: options.apiKey || 'sugarcode-no-key',
       baseURL: validateBaseUrl(options.baseUrl),
       defaultHeaders: options.headers,
-      timeout: options.timeoutMs ?? 120_000,
+      timeout: this.timeoutMs,
       maxRetries: 0,
     });
   }
@@ -340,6 +343,7 @@ export class AnthropicLlm extends BaseLlm {
   ): AsyncGenerator<LlmResponse, void> {
     void _stream;
     const request = normalizeLlmRequest(llmRequest, this.model);
+    const deadline = createRequestDeadline(abortSignal, this.timeoutMs);
     const blocks = new Map<number, AnthropicBlockAccumulator>();
     const completedToolCalls: Array<{
       id: string;
@@ -358,10 +362,10 @@ export class AnthropicLlm extends BaseLlm {
     let completed = false;
     try {
       const stream = streamWithPreOutputRetry<RawMessageStreamEvent>({
-        signal: abortSignal,
+        signal: deadline.signal,
         maxRetries: this.maxRetries,
         shouldRetry: (error) =>
-          mapAnthropicError(error, abortSignal).details.retryable,
+          mapAnthropicError(error, deadline.signal).details.retryable,
         create: async () =>
           this.client.messages.create(
             {
@@ -375,7 +379,7 @@ export class AnthropicLlm extends BaseLlm {
               tools: [...anthropicTools(request.tools)],
               stream: true,
             },
-            { signal: abortSignal },
+            { signal: deadline.signal },
           ),
       });
       for await (const event of stream) {
@@ -543,7 +547,16 @@ export class AnthropicLlm extends BaseLlm {
         });
       }
     } catch (error) {
+      if (deadline.didTimeout() && !abortSignal?.aborted) {
+        throw new ProviderAdapterError({
+          kind: 'timeout',
+          retryable: true,
+          message: `The model stream exceeded the ${this.timeoutMs} ms request deadline.`,
+        });
+      }
       throw mapAnthropicError(error, abortSignal);
+    } finally {
+      deadline.dispose();
     }
   }
 

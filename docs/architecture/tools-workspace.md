@@ -32,6 +32,13 @@ before native dispatch. A crash after the claim records failure and never
 replays the effect. Pending proposals may be re-presented after their stored
 arguments and approval metadata are validated.
 
+Workspace patches use the SugarCode `*** Begin Patch` / operation-marker /
+`*** End Patch` grammar. The runtime rejects malformed or GNU unified-diff
+documents before creating an operation or asking for approval. Native parser
+failures remain execution failures after an approved operation and are returned
+to the Agent with actionable format guidance; they must never be presented as
+approval denial.
+
 ## MCP and collaboration
 
 MCP uses ADK `MCPToolset`. Configuration is durable, but enabled selections,

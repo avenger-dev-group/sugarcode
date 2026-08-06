@@ -58,7 +58,7 @@ const patchSchema = {
     patch: {
       type: Type.STRING,
       description:
-        'A complete SugarCode apply_patch document with Begin Patch and End Patch markers.',
+        'A complete SugarCode patch using exact `*** Begin Patch`, `*** Add File: path` / `*** Update File: path` / `*** Delete File: path`, and `*** End Patch` markers. GNU unified-diff `--- a/` and `+++ b/` headers are unsupported.',
     },
   },
   required: ['patch'],
@@ -97,6 +97,40 @@ const commandSchema = {
 } satisfies Schema;
 
 const parseNativeResult = (value: string): unknown => JSON.parse(value) as unknown;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const invalidPatchFormat = (): Readonly<Record<string, unknown>> => ({
+  ok: false,
+  error: 'invalidPatchFormat',
+  message:
+    'Use the SugarCode patch format: `*** Begin Patch`, one or more `*** Add File: path`, `*** Update File: path`, or `*** Delete File: path` operations, then `*** End Patch`. GNU unified-diff headers are unsupported.',
+});
+
+const validPatchDocument = (patch: string): boolean => {
+  const normalized = patch.replace(/\r\n/gu, '\n').trim();
+  return (
+    normalized.startsWith('*** Begin Patch\n') &&
+    normalized.endsWith('\n*** End Patch') &&
+    /^\*\*\* (?:Add|Update|Delete) File: .+$/mu.test(normalized)
+  );
+};
+
+const explainPatchFailure = (result: unknown): unknown => {
+  if (
+    isRecord(result) &&
+    result.ok === false &&
+    result.error === 'UnsupportedDiffFeature'
+  ) {
+    return {
+      ...result,
+      message:
+        'The patch used unsupported diff syntax. Retry with exact SugarCode `*** Begin Patch` and `*** Add File:`, `*** Update File:`, or `*** Delete File:` operation markers; do not use GNU `--- a/` or `+++ b/` headers.',
+    };
+  }
+  return result;
+};
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === 'string');
@@ -147,12 +181,12 @@ export const executePrivilegedWorkspaceTool = async (
     if (typeof argumentsValue.patch !== 'string') {
       throw new Error('workspace_apply_patch arguments are invalid');
     }
-    return parseNativeResult(
+    return explainPatchFailure(parseNativeResult(
       await nativeRuntime.workspaceApplyPatch(
         workspaceId,
         argumentsValue.patch,
       ),
-    );
+    ));
   }
   if (
     toolName !== 'shell_exec' ||
@@ -287,6 +321,9 @@ export const createWorkspaceTools = (
         return { ok: false, error: 'approvalUnavailable' };
       }
       const patch = input.patch;
+      if (!validPatchDocument(patch)) {
+        return invalidPatchFormat();
+      }
       return runPrivileged(
         'workspace_apply_patch',
         { patch },

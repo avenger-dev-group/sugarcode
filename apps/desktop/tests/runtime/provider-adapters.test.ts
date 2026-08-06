@@ -127,15 +127,17 @@ test('OpenAI Chat Completions SDK streams text and usage into ADK responses', as
 
   assert.equal(receivedBody?.model, 'fixture-model');
   assert.equal(receivedBody?.stream, true);
+  assert.equal(receivedBody?.max_completion_tokens, 8_192);
   assert.equal(events[0]?.content?.parts?.[0]?.text, 'Hello');
   assert.equal(events.at(-1)?.turnComplete, true);
   assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 6);
 });
 
 test('OpenAI Responses SDK maps function calls back to the ADK tool name', async (context) => {
+  let receivedBody: Record<string, unknown> | undefined;
   const fixture = await serve(async (request, response) => {
     assert.equal(request.url, '/v1/responses');
-    await readBody(request);
+    receivedBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
     writeSse(response, [
       {
         event: 'response.output_item.added',
@@ -232,7 +234,47 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
   assert.equal(functionCall?.id, 'call_fixture');
   assert.equal(functionCall?.name, 'workspace/read');
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
+  assert.equal(receivedBody?.max_output_tokens, 8_192);
   assert.equal(events.at(-1)?.turnComplete, true);
+});
+
+test('OpenAI SDK stops a continuously streaming response at the request deadline', async (context) => {
+  const fixture = await serve(async (_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write(
+      `data: ${JSON.stringify({
+        id: 'chatcmpl_streaming',
+        object: 'chat.completion.chunk',
+        created: 1,
+        model: 'fixture-model',
+        choices: [
+          { index: 0, delta: { content: 'Still working' }, finish_reason: null },
+        ],
+      })}\n\n`,
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    response.end();
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiChatCompletions',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+    timeoutMs: 25,
+    maxRetries: 0,
+  });
+
+  await assert.rejects(
+    collect(model.generateContentAsync(llmRequest(), true)),
+    (error: unknown) =>
+      error instanceof Error &&
+      'details' in error &&
+      typeof error.details === 'object' &&
+      error.details !== null &&
+      'kind' in error.details &&
+      error.details.kind === 'timeout',
+  );
 });
 
 test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK responses', async (context) => {

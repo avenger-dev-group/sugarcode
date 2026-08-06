@@ -129,4 +129,5 @@ export type CommandApprovalActivityProps = Readonly<{
 export type AgentMarkdownProps = Readonly<{
   source: string;
   isStreaming: boolean;
+  tone?: 'default' | 'process';
 }>;
