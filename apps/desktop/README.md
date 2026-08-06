@@ -15,7 +15,9 @@ app-server` process and an internal TypeScript ADK utility process. Renderer and
 preload remain provider-neutral: Electron Main routes model configuration,
 attachment import, conversation/thread, approval-backed patch, Git and bounded
 command requests to the utility runtime without exposing ADK or provider SDK
-types.
+types. The unchanged MCP settings, session and approval APIs are also backed by
+the utility runtime and ADK `MCPToolset`; enabling MCP no longer restarts the
+CLI sidecar.
 
 Electron Main owns both process lifecycles, the native file picker, workspace
 authority and validated projections. Preload exposes only fixed typed actions.
@@ -28,6 +30,10 @@ Full Access shell commands require a persisted approval, stream bounded output
 and support Turn cancellation. The unchanged terminal preload API now routes
 through the utility runtime to an in-process Rust PTY/ConPTY implementation;
 it no longer launches the CLI terminal bridge.
+MCP configuration is revisioned in the v3 SQLite store. MCP starts disabled,
+uses an explicitly selected compatible server set, hashes the discovered tool
+inventory and persists every call proposal before showing the existing
+approval UI.
 
 The public app-server contract is generated from Rust in
 `crates/app-server-protocol`. Desktop validates every incoming v1 message at

@@ -2,16 +2,18 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use sugarcode_state::McpServerConfig;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
 
@@ -807,6 +809,45 @@ impl Store {
         )?)?)
     }
 
+    pub(super) fn inspect_mcp_config_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&mcp_config_inspection(
+            &self.connection,
+        )?)?)
+    }
+
+    pub(super) fn save_mcp_config_json(
+        &mut self,
+        expected_revision: &str,
+        servers_json: &str,
+    ) -> Result<String> {
+        validate_revision(expected_revision)?;
+        let inputs: Vec<McpServerInput> = serde_json::from_str(servers_json)?;
+        let servers = validated_mcp_servers(inputs)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = mcp_config_inspection(&transaction)?;
+        if current.revision != expected_revision {
+            return Ok(serde_json::to_string(&McpConfigAction {
+                accepted: false,
+                reason: "stale",
+                inspection: Some(current),
+            })?);
+        }
+        transaction.execute(
+            "INSERT INTO mcp_config (singleton, config_json, updated_at) \
+             VALUES (1, ?1, unixepoch()) ON CONFLICT(singleton) DO UPDATE SET \
+             config_json = excluded.config_json, updated_at = excluded.updated_at",
+            [serde_json::to_string(&servers)?],
+        )?;
+        transaction.commit()?;
+        Ok(serde_json::to_string(&McpConfigAction {
+            accepted: true,
+            reason: "accepted",
+            inspection: Some(mcp_config_inspection(&self.connection)?),
+        })?)
+    }
+
     pub(super) fn save_model_config_json(
         &mut self,
         expected_revision: &str,
@@ -1108,6 +1149,125 @@ fn model_config_inspection(connection: &Connection) -> Result<ModelConfigInspect
     })
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(tag = "transport", rename_all = "camelCase")]
+enum McpServerInput {
+    Stdio {
+        id: String,
+        executable: String,
+        argv: Vec<String>,
+        cwd: String,
+    },
+    LoopbackStreamableHttp {
+        id: String,
+        endpoint: String,
+    },
+}
+
+fn validated_mcp_servers(inputs: Vec<McpServerInput>) -> Result<Vec<McpServerInput>> {
+    if inputs.len() > sugarcode_state::MAX_MCP_SERVERS {
+        return Err(PersistenceError::InvalidInput(
+            "too many MCP servers".to_owned(),
+        ));
+    }
+    let mut validated = inputs
+        .into_iter()
+        .map(|input| {
+            let config = match &input {
+                McpServerInput::Stdio {
+                    id,
+                    executable,
+                    argv,
+                    cwd,
+                } => McpServerConfig::stdio(
+                    id.clone(),
+                    PathBuf::from(executable),
+                    argv.clone(),
+                    PathBuf::from(cwd),
+                ),
+                McpServerInput::LoopbackStreamableHttp { id, endpoint } => {
+                    McpServerConfig::loopback_streamable_http(id.clone(), endpoint)
+                }
+            };
+            config.map(|_| input).map_err(|kind| {
+                PersistenceError::InvalidInput(format!("invalid MCP server: {kind}"))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    validated.sort_by(|left, right| {
+        mcp_server_id(left)
+            .as_bytes()
+            .cmp(mcp_server_id(right).as_bytes())
+    });
+    if validated
+        .windows(2)
+        .any(|pair| mcp_server_id(&pair[0]) == mcp_server_id(&pair[1]))
+    {
+        return Err(PersistenceError::InvalidInput(
+            "duplicate MCP server identifier".to_owned(),
+        ));
+    }
+    Ok(validated)
+}
+
+fn mcp_server_id(server: &McpServerInput) -> &str {
+    match server {
+        McpServerInput::Stdio { id, .. } | McpServerInput::LoopbackStreamableHttp { id, .. } => id,
+    }
+}
+
+fn current_mcp_servers(connection: &Connection) -> Result<Vec<McpServerInput>> {
+    let config_json: Option<String> = connection
+        .query_row(
+            "SELECT config_json FROM mcp_config WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    config_json
+        .map(|value| serde_json::from_str(&value).map_err(PersistenceError::from))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn mcp_config_inspection(connection: &Connection) -> Result<McpConfigInspection> {
+    let servers = current_mcp_servers(connection)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"mcp-config-v1\0");
+    for server in &servers {
+        hasher.update(mcp_server_id(server).as_bytes());
+        hasher.update(b"\0");
+        match server {
+            McpServerInput::Stdio {
+                executable,
+                argv,
+                cwd,
+                ..
+            } => {
+                hasher.update(b"stdio\0");
+                hasher.update(executable.as_bytes());
+                hasher.update(b"\0");
+                for argument in argv {
+                    hasher.update(argument.as_bytes());
+                    hasher.update(b"\0");
+                }
+                hasher.update(b"\0");
+                hasher.update(cwd.as_bytes());
+            }
+            McpServerInput::LoopbackStreamableHttp { endpoint, .. } => {
+                hasher.update(b"loopbackStreamableHttp\0");
+                hasher.update(endpoint.as_bytes());
+            }
+        }
+        hasher.update(b"\0");
+    }
+    Ok(McpConfigInspection {
+        contract_version: 1,
+        revision: format!("{:x}", hasher.finalize()),
+        servers,
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(
     tag = "action",
@@ -1162,6 +1322,23 @@ struct ModelConfigAction {
     reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     inspection: Option<ModelConfigInspection>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpConfigInspection {
+    contract_version: u8,
+    revision: String,
+    servers: Vec<McpServerInput>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpConfigAction {
+    accepted: bool,
+    reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inspection: Option<McpConfigInspection>,
 }
 
 fn validate_id(name: &str, value: &str) -> Result<()> {
@@ -1284,6 +1461,19 @@ fn migrate(connection: &mut Connection) -> Result<()> {
                pdf_pages INTEGER, created_at INTEGER NOT NULL DEFAULT (unixepoch())\
              ) STRICT;\
              PRAGMA user_version = 4;",
+        )?;
+        transaction.commit()?;
+        version = 4;
+    }
+    if version == 4 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE mcp_config (\
+               singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\
+               config_json TEXT NOT NULL,\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             PRAGMA user_version = 5;",
         )?;
         transaction.commit()?;
     }

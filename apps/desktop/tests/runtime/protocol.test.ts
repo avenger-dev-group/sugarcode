@@ -74,3 +74,39 @@ test('private terminal protocol requires UUID sessions and UTF-8 byte bounds', (
     delta: '中'.repeat(10_923),
   }), false);
 });
+
+test('private MCP protocol keeps configuration and approval events provider-neutral', () => {
+  assert.equal(isRuntimeCommand({
+    type: 'mcp.configSave',
+    requestId: 'request-config',
+    request: {
+      expectedRevision: '0'.repeat(64),
+      servers: [{
+        id: 'fixture',
+        transport: 'loopbackStreamableHttp',
+        endpoint: 'http://127.0.0.1:8788/mcp',
+      }],
+    },
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'mcp.sessionSet',
+    requestId: 'request-session',
+    serverIds: ['fixture', 'fixture'],
+  }), false);
+  assert.equal(isRuntimeEvent({
+    type: 'mcp.approvalRequested',
+    sequence: 4,
+    requestId: 'request-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: '019fd4ee-6482-7e10-943a-1ef2ea409dcc',
+    turnId: '019fd4ee-6482-7e10-943a-1ef2ea409dce',
+    approvalId: 'approval-fixture',
+    operationId: 'operation-fixture',
+    serverId: 'fixture',
+    name: 'mcp__fixture__echo',
+    argumentsJson: '{"value":"hello"}',
+    argumentsBytes: 17,
+    argumentsSha256: 'a'.repeat(64),
+    inventorySha256: 'b'.repeat(64),
+  }), true);
+});

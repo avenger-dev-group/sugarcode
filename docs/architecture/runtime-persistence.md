@@ -313,6 +313,8 @@ Schema v1 records provider-neutral workspaces, Threads, Turns, ordered Turn
 items, operations, approvals and Agent tasks. Schema v2 adds model profiles and
 separately stored credentials; schema v3 adds Thread archive and fork lineage;
 schema v4 adds content-addressed asset metadata.
+Schema v5 adds the revisioned provider-neutral MCP server configuration; it does
+not copy the rollout-v1 config file.
 The connection enables foreign keys, WAL mode and a bounded busy timeout, and
 the database file is restricted to the owning user on Unix.
 
@@ -358,6 +360,18 @@ explicit close, owner loss, overload or runtime shutdown terminate the process
 tree. A utility-process crash is projected as the existing terminal failure
 rather than recreating or replaying a shell session.
 
+MCP configuration is durable SQLite state, while the enabled MCP selection,
+ADK `MCPToolset` objects and open transports are process-local. Enabling a
+selection first revalidates compatibility, connects to every selected server,
+discovers its tools and freezes a SHA-256 inventory receipt. Each model-visible
+tool is named `mcp__<serverId>__<tool>`. Calls enter the same runtime-owned FIFO
+as local privileged tools, persist an operation/approval proposal and execute
+only after the matching UI decision. A worker crash rejects the visible
+approval and re-probes the last enabled selection; it never resumes an MCP side
+effect. Stdio server stderr is inherited by the utility worker and therefore
+continues through Main's bounded runtime logging path. HTTP transport remains
+restricted to explicit loopback endpoints.
+
 The TypeScript ADK session remains an in-process cache. Before the first new
 Turn on a Thread, Runtime rebuilds completed user/model events from SQLite into
 ADK, reopening and hash-verifying every referenced asset before provider I/O.
@@ -366,7 +380,7 @@ resumed as completed history. SQLite stores SugarCode's own discriminated text,
 reasoning, media, tool-call and tool-result parts; serialized ADK `Event` objects
 and provider SDK response objects are not persistence formats.
 
-Pending-approval replay, MCP and dynamic multi-Agent state remain migration
-gates. Workspace selection and app connection state therefore continue to use
+Pending-approval replay and dynamic multi-Agent state remain migration gates.
+Workspace selection and app connection state therefore continue to use
 app-server during coexistence; neither app-server nor the CLI sidecar may be
 removed at this checkpoint.

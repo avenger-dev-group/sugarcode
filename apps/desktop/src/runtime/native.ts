@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module';
 
 export type NativeRuntimeBinding = Readonly<{
+  inspectMcpConfigJson: () => string;
+  saveMcpConfigJson: (expectedRevision: string, serversJson: string) => string;
   importAssetJson: (
     fileName: string,
     mediaType: string | undefined,

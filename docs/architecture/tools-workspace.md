@@ -212,9 +212,12 @@ no-follow capability. The initial ADK tool set exposes provider-neutral
 their ADK schemas and JSON result mapping, while Rust owns validation, resource
 limits and filesystem access.
 
-Write, Git, command, PTY and MCP tools are not yet exposed by the 3.0 ADK host.
-They must enter through the native addon. Write and execution tools additionally
-must persist an operation proposal and pending approval before notifying the UI,
-then use the stable operation ID for commit/result idempotency. Until that path
-is complete, the legacy app-server remains the only path advertising those
-capabilities.
+The 3.0 host now exposes write, Git and bounded command tools through the native
+addon, and routes the existing terminal UI to Rust PTY/ConPTY sessions. MCP
+tools are discovered through ADK `MCPToolset` after explicit session enablement.
+Every write, execution or MCP call persists an operation proposal and pending
+approval before notifying the UI, then uses the stable operation ID for
+commit/result idempotency. MCP tools add a stable server prefix and bind the
+approval to the SHA-256 hash of both canonical arguments and the discovered
+inventory. Rust remains the authority for workspace, Git, command and PTY
+effects; MCP transport and tool invocation stay inside TypeScript ADK runtime.

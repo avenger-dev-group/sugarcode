@@ -6,16 +6,14 @@ export default defineConfig({
   build: {
     lib: {
       entry: path.resolve(__dirname, 'src/runtime/entry.ts'),
-      fileName: () => 'runtime.js',
-      formats: ['cjs'],
+      fileName: () => 'runtime.mjs',
+      formats: ['es'],
     },
     rollupOptions: {
-      external: [
-        '@anthropic-ai/sdk',
-        '@google/adk',
-        '@google/genai',
-        'openai',
-      ],
+      output: {
+        banner:
+          "import { createRequire as __sugarcodeCreateRequire } from 'node:module'; const require = __sugarcodeCreateRequire(import.meta.url);",
+      },
     },
   },
   resolve: {

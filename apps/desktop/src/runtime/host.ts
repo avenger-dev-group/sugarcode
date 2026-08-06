@@ -34,11 +34,20 @@ import {
   type RuntimeUsage,
 } from './protocol.ts';
 import { createWorkspaceTools } from './tools/workspace.ts';
+import {
+  RuntimeMcpManager,
+  type McpToolApproval,
+} from './mcp.ts';
+import type {
+  McpConfigActionResult,
+  McpConfigInspection,
+} from '../shared/mcp.ts';
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
 const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
 
 type RuntimeHostOptions = Readonly<{
   postEvent: (event: RuntimeEvent) => void;
@@ -47,10 +56,13 @@ type RuntimeHostOptions = Readonly<{
 }>;
 
 type PendingApproval = Readonly<{
+  requestId: string;
   workspaceId: string;
   threadId: string;
   turnId: string;
   operationId: string;
+  kind: 'command' | 'mcp';
+  publish: () => void;
   resolve: (decision: 'approved' | 'denied') => void;
 }>;
 
@@ -75,6 +87,20 @@ type ResolvedProfile = Readonly<{
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const stableJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(stableJsonValue);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => [key, stableJsonValue(item)]),
+  );
+};
 
 const capabilityEnabled = (value: unknown): boolean => value !== 'disabled';
 
@@ -179,8 +205,11 @@ export class RuntimeHost {
   private readonly sessions = new InMemorySessionService();
   private readonly activeTurns = new Map<string, AbortController>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly approvalQueue: string[] = [];
+  private activeApprovalId: string | null = null;
   private readonly activeOperations = new Map<string, Set<string>>();
   private readonly terminals = new Map<string, ActiveTerminal>();
+  private readonly mcp = new RuntimeMcpManager();
   private sequence = 0;
   private initialized = false;
   private shuttingDown = false;
@@ -199,6 +228,11 @@ export class RuntimeHost {
           this.nativeRuntime = this.loadNative(
             command.nativeModulePath,
             command.dataDirectory,
+          );
+          this.mcp.configure(
+            this.parseNativeJson<McpConfigInspection>(
+              this.nativeRuntime.inspectMcpConfigJson(),
+            ),
           );
         }
         this.initialized = true;
@@ -292,7 +326,8 @@ export class RuntimeHost {
           !pending ||
           pending.workspaceId !== command.workspaceId ||
           pending.threadId !== command.threadId ||
-          pending.turnId !== command.turnId
+          pending.turnId !== command.turnId ||
+          this.activeApprovalId !== command.approvalId
         ) {
           this.emit({
             type: 'runtime.log',
@@ -302,21 +337,74 @@ export class RuntimeHost {
           });
           break;
         }
-        this.requireNative().resolveApproval(command.approvalId, command.decision);
-        this.pendingApprovals.delete(command.approvalId);
-        this.emit({
-          type: 'approval.resolved',
-          requestId: command.requestId,
-          workspaceId: pending.workspaceId,
-          threadId: pending.threadId,
-          turnId: pending.turnId,
-          approvalId: command.approvalId,
-          operationId: pending.operationId,
-          decision: command.decision,
-        });
-        pending.resolve(command.decision);
+        this.finishApproval(
+          command.approvalId,
+          pending,
+          command.decision,
+          command.requestId,
+        );
         break;
       }
+      case 'mcp.configInspect': {
+        this.requireReady(command.requestId);
+        const inspection = this.parseNativeJson<McpConfigInspection>(
+          this.requireNative().inspectMcpConfigJson(),
+        );
+        this.mcp.configure(inspection);
+        this.emit({
+          type: 'mcp.configInspection',
+          requestId: command.requestId,
+          inspection,
+        });
+        break;
+      }
+      case 'mcp.configSave': {
+        this.requireReady(command.requestId);
+        if (
+          this.activeTurns.size > 0 ||
+          this.pendingApprovals.size > 0 ||
+          this.mcp.getActiveServerIds().length > 0
+        ) {
+          const reason = this.activeTurns.size > 0
+            ? 'turnActive'
+            : this.pendingApprovals.size > 0
+              ? 'approvalPending'
+              : 'sessionActive';
+          this.emit({
+            type: 'mcp.configAction',
+            requestId: command.requestId,
+            action: { accepted: false, reason },
+          });
+          break;
+        }
+        try {
+          const action = this.parseNativeJson<McpConfigActionResult>(
+            this.requireNative().saveMcpConfigJson(
+              command.request.expectedRevision,
+              JSON.stringify(command.request.servers),
+            ),
+          );
+          if (action.inspection) {
+            this.mcp.configure(action.inspection);
+          }
+          this.emit({
+            type: 'mcp.configAction',
+            requestId: command.requestId,
+            action,
+          });
+        } catch {
+          this.emit({
+            type: 'mcp.configAction',
+            requestId: command.requestId,
+            action: { accepted: false, reason: 'unavailable' },
+          });
+        }
+        break;
+      }
+      case 'mcp.sessionSet':
+        this.requireReady(command.requestId);
+        void this.setMcpSession(command);
+        break;
       case 'thread.list':
         this.requireReady(command.requestId);
         this.emit({
@@ -530,6 +618,7 @@ export class RuntimeHost {
         for (const sessionId of [...this.terminals.keys()]) {
           this.closeTerminal(sessionId);
         }
+        void this.mcp.close();
         break;
     }
   };
@@ -1226,6 +1315,9 @@ export class RuntimeHost {
                   });
                 },
               ),
+              ...this.mcp.toolsForTurn((request) =>
+                this.runMcpTool(command, request),
+              ),
             ]
           : [],
       });
@@ -1340,29 +1432,34 @@ export class RuntimeHost {
     );
     const decision = await new Promise<'approved' | 'denied'>((resolve) => {
       this.pendingApprovals.set(approvalId, {
-        workspaceId: command.workspaceId,
-        threadId: command.threadId,
-        turnId: command.turnId,
-        operationId,
-        resolve,
-      });
-      this.emit({
-        type: 'approval.requested',
         requestId: command.requestId,
         workspaceId: command.workspaceId,
         threadId: command.threadId,
         turnId: command.turnId,
-        approvalId,
         operationId,
-        toolName,
-        argumentsSummary: this.approvalArgumentsSummary(
-          toolName,
-          argumentsValue,
-          argumentsJson,
-        ),
-        fullAccess:
-          toolName === 'shell_exec' && argumentsValue.mode === 'fullAccess',
+        kind: 'command',
+        publish: () => {
+          this.emit({
+            type: 'approval.requested',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            approvalId,
+            operationId,
+            toolName,
+            argumentsSummary: this.approvalArgumentsSummary(
+              toolName,
+              argumentsValue,
+              argumentsJson,
+            ),
+            fullAccess:
+              toolName === 'shell_exec' && argumentsValue.mode === 'fullAccess',
+          });
+        },
+        resolve,
       });
+      this.enqueueApproval(approvalId);
     });
     if (decision === 'denied') {
       return { ok: false, error: 'userDenied' };
@@ -1439,18 +1536,208 @@ export class RuntimeHost {
     }
   };
 
+  private setMcpSession = async (
+    command: Extract<RuntimeCommand, { type: 'mcp.sessionSet' }>,
+  ): Promise<void> => {
+    const action = this.activeTurns.size > 0
+      ? { accepted: false as const, reason: 'turnActive' as const }
+      : this.pendingApprovals.size > 0
+        ? { accepted: false as const, reason: 'approvalPending' as const }
+        : await this.mcp.setActive(command.serverIds);
+    this.emit({
+      type: 'mcp.sessionAction',
+      requestId: command.requestId,
+      action,
+      activeServerIds: this.mcp.getActiveServerIds(),
+    });
+  };
+
+  private runMcpTool = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    request: McpToolApproval,
+  ): Promise<unknown> => {
+    const operationId = randomUUID();
+    const approvalId = randomUUID();
+    const argumentsJson = JSON.stringify(stableJsonValue(request.argumentsValue));
+    if (Buffer.byteLength(argumentsJson, 'utf8') > MAX_MCP_ARGUMENT_BYTES) {
+      return { ok: false, error: 'mcpArgumentsTooLarge' };
+    }
+    const argumentsSha256 = createHash('sha256')
+      .update(argumentsJson)
+      .digest('hex');
+    this.requireNative().proposeOperation(
+      operationId,
+      approvalId,
+      command.turnId,
+      request.name,
+      argumentsSha256,
+      argumentsJson,
+    );
+    const decision = await new Promise<'approved' | 'denied'>((resolve) => {
+      this.pendingApprovals.set(approvalId, {
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        kind: 'mcp',
+        publish: () => {
+          this.emit({
+            type: 'mcp.approvalRequested',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            approvalId,
+            operationId,
+            serverId: request.serverId,
+            name: request.name,
+            argumentsJson,
+            argumentsBytes: Buffer.byteLength(argumentsJson, 'utf8'),
+            argumentsSha256,
+            inventorySha256: request.inventorySha256,
+          });
+        },
+        resolve,
+      });
+      this.enqueueApproval(approvalId);
+    });
+    if (decision === 'denied') {
+      return { ok: false, error: 'userDenied' };
+    }
+    const operations = this.activeOperations.get(command.turnId) ?? new Set<string>();
+    operations.add(operationId);
+    this.activeOperations.set(command.turnId, operations);
+    let began = false;
+    try {
+      began = this.requireNative().beginOperation(operationId);
+      if (!began) {
+        return { ok: false, error: 'operationNotExecutable' };
+      }
+      this.emit({
+        type: 'operation.started',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+      });
+      const output = await request.execute();
+      const result = isRecord(output) ? output : { value: output };
+      const succeeded = result.isError !== true;
+      this.requireNative().completeOperation(
+        operationId,
+        JSON.stringify(result),
+        succeeded,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        succeeded,
+        result,
+      });
+      return output;
+    } catch (error) {
+      const result = {
+        ok: false,
+        error: error instanceof Error ? error.message : 'mcpToolFailed',
+      };
+      if (began) {
+        this.requireNative().completeOperation(
+          operationId,
+          JSON.stringify(result),
+          false,
+        );
+        this.emit({
+          type: 'operation.completed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          operationId,
+          succeeded: false,
+          result,
+        });
+      }
+      return result;
+    } finally {
+      const active = this.activeOperations.get(command.turnId);
+      active?.delete(operationId);
+      if (active?.size === 0) {
+        this.activeOperations.delete(command.turnId);
+      }
+    }
+  };
+
+  private enqueueApproval = (approvalId: string): void => {
+    this.approvalQueue.push(approvalId);
+    this.publishNextApproval();
+  };
+
+  private publishNextApproval = (): void => {
+    if (this.activeApprovalId) {
+      return;
+    }
+    while (this.approvalQueue.length > 0) {
+      const approvalId = this.approvalQueue[0];
+      const pending = this.pendingApprovals.get(approvalId);
+      if (!pending) {
+        this.approvalQueue.shift();
+        continue;
+      }
+      this.activeApprovalId = approvalId;
+      pending.publish();
+      return;
+    }
+  };
+
+  private finishApproval = (
+    approvalId: string,
+    pending: PendingApproval,
+    decision: 'approved' | 'denied',
+    requestId: string,
+  ): void => {
+    let effectiveDecision = decision;
+    try {
+      this.requireNative().resolveApproval(approvalId, decision);
+    } catch {
+      effectiveDecision = 'denied';
+    }
+    this.pendingApprovals.delete(approvalId);
+    const index = this.approvalQueue.indexOf(approvalId);
+    if (index >= 0) {
+      this.approvalQueue.splice(index, 1);
+    }
+    const wasActive = this.activeApprovalId === approvalId;
+    if (wasActive) {
+      this.activeApprovalId = null;
+      this.emit({
+        type: pending.kind === 'mcp'
+          ? 'mcp.approvalResolved'
+          : 'approval.resolved',
+        requestId,
+        workspaceId: pending.workspaceId,
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+        approvalId,
+        operationId: pending.operationId,
+        decision: effectiveDecision,
+      });
+    }
+    pending.resolve(effectiveDecision);
+    this.publishNextApproval();
+  };
+
   private cancelTurnApprovals = (turnId: string): void => {
     for (const [approvalId, pending] of this.pendingApprovals) {
       if (pending.turnId !== turnId) {
         continue;
       }
-      try {
-        this.nativeRuntime?.resolveApproval(approvalId, 'denied');
-      } catch {
-        // Recovery keeps unresolved approvals visible if persistence is unavailable.
-      }
-      this.pendingApprovals.delete(approvalId);
-      pending.resolve('denied');
+      this.finishApproval(approvalId, pending, 'denied', pending.requestId);
     }
   };
 

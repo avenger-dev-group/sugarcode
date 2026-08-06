@@ -11,7 +11,7 @@ import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
 import { GitController } from '@/main/app-server/git/controller';
 import { registerGitIpc } from '@/main/app-server/git/ipc';
 import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
-import { McpConfigController } from '@/main/app-server/mcp/config-controller';
+import { McpSessionController } from '@/main/app-server/mcp/session-controller';
 import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
 import { ThreadRegistry } from '@/main/app-server/thread-registry';
 import { WorkspaceController } from '@/main/app-server/workspace/controller';
@@ -25,6 +25,8 @@ import { RuntimeModelConfigController } from '@/main/runtime/model-config-contro
 import { RuntimeConversationController } from '@/main/runtime/conversation-controller';
 import { RuntimeApprovalController } from '@/main/runtime/approval-controller';
 import { RuntimeGitAdapter } from '@/main/runtime/git-adapter';
+import { RuntimeMcpConfigController } from '@/main/runtime/mcp-config-controller';
+import { RuntimeMcpApprovalController } from '@/main/runtime/mcp-approval-controller';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
@@ -44,6 +46,8 @@ let runtimeSupervisor: RuntimeSupervisor | null = null;
 let runtimeConversationController: RuntimeConversationController | null = null;
 let runtimeApprovalController: RuntimeApprovalController | null = null;
 let runtimeGitAdapter: RuntimeGitAdapter | null = null;
+let runtimeMcpSessionController: McpSessionController | null = null;
+let runtimeMcpApprovalController: RuntimeMcpApprovalController | null = null;
 let disposeRuntimeEvents: (() => void) | null = null;
 let disposeRuntimeWorkspaceEvents: (() => void) | null = null;
 
@@ -115,6 +119,7 @@ const createWindow = (): void => {
   window.webContents.on('render-process-gone', () => {
     supervisor?.approvalSurfacesUnavailable();
     runtimeApprovalController?.surfaceUnavailable();
+    runtimeMcpApprovalController?.surfaceUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
   });
@@ -139,7 +144,7 @@ const createWindow = (): void => {
 const startApplication = async (): Promise<void> => {
   await app.whenReady();
   runtimeSupervisor = new RuntimeSupervisor({
-    runtimePath: path.join(__dirname, 'runtime.js'),
+    runtimePath: path.join(__dirname, 'runtime.mjs'),
     dataDirectory: path.join(app.getPath('home'), '.sugarcode', 'v3'),
     nativeModulePath: app.isPackaged
       ? path.join(process.resourcesPath, 'sugarcode-desktop-native.node')
@@ -158,6 +163,47 @@ const startApplication = async (): Promise<void> => {
     runtimeSupervisor,
   );
   runtimeApprovalController = new RuntimeApprovalController(runtimeSupervisor);
+  runtimeMcpApprovalController = new RuntimeMcpApprovalController(runtimeSupervisor);
+  runtimeMcpSessionController = new McpSessionController({
+    getRestartBlock: () => {
+      const phase = runtimeConversationController?.getSnapshot().phase;
+      if (phase === 'starting' || phase === 'inProgress' || phase === 'stopping') {
+        return 'turnActive';
+      }
+      if (
+        runtimeApprovalController?.getSnapshot().status === 'pending' ||
+        runtimeMcpApprovalController?.getSnapshot().status === 'pending'
+      ) {
+        return 'approvalPending';
+      }
+      return null;
+    },
+    restart: async (serverIds) => {
+      try {
+        const event = await runtimeSupervisor?.request(
+          { type: 'mcp.sessionSet', requestId: randomUUID(), serverIds },
+          'mcp.sessionAction',
+          45_000,
+        );
+        return event?.action.accepted === true;
+      } catch {
+        return false;
+      }
+    },
+  });
+  const runtimeMcpConfigController = new RuntimeMcpConfigController(
+    runtimeSupervisor,
+    (inspection) => {
+      runtimeMcpSessionController?.initialize(
+        inspection.servers.map(({ id, transport }) => ({ id, transport })),
+      );
+    },
+  );
+  void runtimeMcpConfigController.inspect().catch(() => {
+    runtimeMcpSessionController?.unavailable(
+      'MCP configuration could not be loaded from local storage.',
+    );
+  });
   runtimeGitAdapter = new RuntimeGitAdapter(runtimeSupervisor);
   const threadRegistry = new ThreadRegistry();
   supervisor = new ConnectionSupervisor({
@@ -212,6 +258,10 @@ const startApplication = async (): Promise<void> => {
       runtimeWorkspaceId,
       workspace.path,
     );
+    runtimeMcpApprovalController?.openWorkspace(
+      runtimeWorkspaceId,
+      workspace.path,
+    );
     runtimeGitAdapter?.openWorkspace(runtimeWorkspaceId);
     void runtimeConversationController?.switchWorkspace(
       runtimeWorkspaceId,
@@ -225,7 +275,7 @@ const startApplication = async (): Promise<void> => {
     getRuntimeWorkspaceId: () => activeRuntimeWorkspaceId,
     isApprovalPending: () =>
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
-      supervisor?.mcpApprovals.getSnapshot().status === 'pending',
+      runtimeMcpApprovalController?.getSnapshot().status === 'pending',
   });
   previewController = new PreviewController({
     dialog,
@@ -233,7 +283,7 @@ const startApplication = async (): Promise<void> => {
     getWorkspaceState: workspaceController.getSnapshot,
     isApprovalPending: () =>
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
-      supervisor?.mcpApprovals.getSnapshot().status === 'pending',
+      runtimeMcpApprovalController?.getSnapshot().status === 'pending',
   });
   disposeConnectionIpc = registerConnectionIpc({
     supervisor,
@@ -251,9 +301,9 @@ const startApplication = async (): Promise<void> => {
     isAllowedUrl: isAllowedRendererUrl,
   });
   disposeMcpIpc = registerMcpIpc({
-    session: supervisor.mcpSession,
-    approvals: supervisor.mcpApprovals,
-    config: new McpConfigController({ supervisor }),
+    session: runtimeMcpSessionController,
+    approvals: runtimeMcpApprovalController,
+    config: runtimeMcpConfigController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -288,7 +338,7 @@ const startApplication = async (): Promise<void> => {
   const hidePreviewForApproval = (): void => {
     const approvalPending =
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
-      supervisor?.mcpApprovals.getSnapshot().status === 'pending';
+      runtimeMcpApprovalController?.getSnapshot().status === 'pending';
     if (!approvalPending) {
       terminalController?.resumeAfterApproval();
       return;
@@ -306,7 +356,7 @@ const startApplication = async (): Promise<void> => {
   const unsubscribeCommandApproval =
     runtimeApprovalController.subscribe(hidePreviewForApproval);
   const unsubscribeMcpApproval =
-    supervisor.mcpApprovals.subscribe(hidePreviewForApproval);
+    runtimeMcpApprovalController.subscribe(hidePreviewForApproval);
   disposePreviewApprovalSubscriptions = () => {
     unsubscribeCommandApproval();
     unsubscribeMcpApproval();

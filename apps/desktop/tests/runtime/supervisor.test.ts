@@ -162,3 +162,81 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
   assert.equal((await response).inspection.config, null);
   supervisor.shutdown();
 });
+
+test('RuntimeSupervisor restores an active MCP selection and cancels visible approval on crash', async () => {
+  const children: FixtureChild[] = [];
+  const events: RuntimeEvent[] = [];
+  const supervisor = new RuntimeSupervisor({
+    runtimePath: '/fixture/runtime.js',
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+    spawn: () => {
+      const child = new FixtureChild();
+      children.push(child);
+      return child as never;
+    },
+  });
+  supervisor.subscribe((event) => events.push(event));
+  supervisor.start();
+  const first = children[0];
+  first.emit('spawn');
+  first.emit('message', {
+    type: 'runtime.ready',
+    sequence: 1,
+    requestId: first.messages[0]?.requestId,
+    protocolVersion: 1,
+  });
+  supervisor.send({
+    type: 'mcp.sessionSet',
+    requestId: 'request-mcp-session',
+    serverIds: ['fixture'],
+  });
+  first.emit('message', {
+    type: 'mcp.sessionAction',
+    sequence: 2,
+    requestId: 'request-mcp-session',
+    action: { accepted: true, reason: 'accepted' },
+    activeServerIds: ['fixture'],
+  });
+  first.emit('message', {
+    type: 'mcp.approvalRequested',
+    sequence: 3,
+    requestId: 'request-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-fixture',
+    approvalId: 'approval-fixture',
+    operationId: 'operation-fixture',
+    serverId: 'fixture',
+    name: 'mcp__fixture__echo',
+    argumentsJson: '{}',
+    argumentsBytes: 2,
+    argumentsSha256: 'a'.repeat(64),
+    inventorySha256: 'b'.repeat(64),
+  });
+  first.emit('exit', 9);
+  assert.ok(events.some(
+    (event) =>
+      event.type === 'mcp.approvalResolved' &&
+      event.approvalId === 'approval-fixture' &&
+      event.decision === 'denied',
+  ));
+
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const second = children[1];
+  second.emit('spawn');
+  second.emit('message', {
+    type: 'runtime.ready',
+    sequence: 1,
+    requestId: second.messages[0]?.requestId,
+    protocolVersion: 1,
+  });
+  assert.equal(second.messages[1]?.type, 'mcp.sessionSet');
+  assert.deepEqual(
+    second.messages[1]?.type === 'mcp.sessionSet'
+      ? second.messages[1].serverIds
+      : [],
+    ['fixture'],
+  );
+  supervisor.shutdown();
+});

@@ -151,8 +151,9 @@ Workspace replacement starts a new sidecar with the exact canonical root,
 validates the returned opaque binding and resumes only a matching durable
 Thread.
 
-MCP also starts disabled. Main may restart the sidecar with an explicit bounded
-selection only after user action and capability validation.
+MCP also starts disabled. Main may enable an explicit bounded selection only
+after user action and capability validation; the utility runtime probes that
+selection without restarting the sidecar.
 
 ## 8. Package smoke
 
@@ -200,7 +201,7 @@ verified and replaced as one compatible release unit.
 
 ## 11. 3.0 utility-runtime migration state
 
-Branch `3.0` now builds a second Electron Main target, `runtime.js`, and starts
+Branch `3.0` now builds a second Electron Main target, `runtime.mjs`, and starts
 it with `utilityProcess`. Main sends an internal provider-neutral initialize
 command over the utility-process parent port; the worker loads the platform
 `sugarcode-desktop-native.node`, opens `~/.sugarcode/v3`, and reports a versioned
@@ -210,8 +211,13 @@ monotonic process-lifetime sequence.
 
 The native addon is built from `crates/desktop-native` before Desktop start or
 package and is copied as a Forge extra resource. The four model/Agent packages
-remain external to the worker bundle so their Node-targeted exports retain
-their own module semantics inside the packaged application.
+and the MCP SDK are bundled into `runtime.mjs`; Forge does not copy the pnpm
+workspace's linked `node_modules` into `app.asar`, so leaving these packages as
+Rollup externals would make the packaged utility process fail at startup. The
+bundle remains ESM so ADK's `import.meta.url`-based module loading keeps valid
+Node semantics. It supplies an ESM-local `createRequire` bridge for bundled
+CommonJS transitive dependencies that still load Node built-ins with
+`require()`.
 
 This is a coexistence checkpoint, not the final packaging contract. Model
 configuration, attachment import, conversation/thread projection,
@@ -224,7 +230,13 @@ stdout/stderr. It also owns in-process PTY/ConPTY sessions with input, resize,
 termination and process containment. These v3 paths no longer launch the CLI's
 hidden command supervisor or `__desktop-terminal` bridge.
 
+The existing MCP Renderer/preload contract now uses private `mcp.*` utility
+commands and events. Configuration is stored in v3 SQLite, and explicit session
+enablement constructs ADK `MCPToolset` instances directly in the worker. Tool
+inventory probing, per-call approval, operation idempotency and crash-time
+selection restoration no longer restart or depend on the CLI sidecar.
+
 The CLI sidecar and app-server still own workspace/connection state, while
-pending-approval replay, MCP and dynamic multi-Agent parity remain incomplete.
+pending-approval replay and dynamic multi-Agent parity remain incomplete.
 The sidecar, app-server and CLI build hooks may be removed only after those
 remaining paths migrate and pass native package smoke.

@@ -97,6 +97,20 @@ impl NativeRuntime {
     }
 
     #[napi]
+    pub fn inspect_mcp_config_json(&self) -> Result<String> {
+        self.with_store(Store::inspect_mcp_config_json)
+    }
+
+    #[napi]
+    pub fn save_mcp_config_json(
+        &self,
+        expected_revision: String,
+        servers_json: String,
+    ) -> Result<String> {
+        self.with_store(|store| store.save_mcp_config_json(&expected_revision, &servers_json))
+    }
+
+    #[napi]
     pub fn read_asset_json(&self, asset_id: String) -> Result<String> {
         let row = self
             .with_store(|store| store.asset(&asset_id))?

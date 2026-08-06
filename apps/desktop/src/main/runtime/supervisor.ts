@@ -43,6 +43,18 @@ export class RuntimeSupervisor {
     string,
     Extract<RuntimeCommand, { type: 'terminal.create' }>
   >();
+  private readonly pendingMcpSessionCommands = new Map<
+    string,
+    Extract<RuntimeCommand, { type: 'mcp.sessionSet' }>
+  >();
+  private readonly pendingToolApprovals = new Map<
+    string,
+    Extract<RuntimeEvent, { type: 'approval.requested' | 'mcp.approvalRequested' }>
+  >();
+  private activeMcpSession: Extract<
+    RuntimeCommand,
+    { type: 'mcp.sessionSet' }
+  > | null = null;
   private child: RuntimeChild | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
   private restartAttempt = 0;
@@ -149,6 +161,9 @@ export class RuntimeSupervisor {
     }
     this.activeTurns.clear();
     this.activeTerminals.clear();
+    this.pendingMcpSessionCommands.clear();
+    this.pendingToolApprovals.clear();
+    this.activeMcpSession = null;
   };
 
   private spawn = (): void => {
@@ -212,11 +227,36 @@ export class RuntimeSupervisor {
     } else if (value.type === 'terminal.exited' ||
       (value.type === 'terminal.error' && value.fatal)) {
       this.activeTerminals.delete(value.sessionId);
+    } else if (value.type === 'mcp.sessionAction') {
+      const command = this.pendingMcpSessionCommands.get(value.requestId);
+      this.pendingMcpSessionCommands.delete(value.requestId);
+      if (command && value.action.accepted) {
+        this.activeMcpSession = {
+          ...command,
+          serverIds: [...value.activeServerIds],
+        };
+      }
+    } else if (
+      value.type === 'approval.requested' ||
+      value.type === 'mcp.approvalRequested'
+    ) {
+      this.pendingToolApprovals.set(value.approvalId, value);
+    } else if (
+      value.type === 'approval.resolved' ||
+      value.type === 'mcp.approvalResolved'
+    ) {
+      this.pendingToolApprovals.delete(value.approvalId);
     }
     this.emit(value);
     if (value.type === 'runtime.ready') {
       for (const command of this.workspaceCommands.values()) {
         this.post(command);
+      }
+      if (this.activeMcpSession) {
+        this.post({
+          ...this.activeMcpSession,
+          requestId: randomUUID(),
+        });
       }
       const commands = this.queuedCommands.splice(0);
       for (const command of commands) {
@@ -232,6 +272,8 @@ export class RuntimeSupervisor {
       this.activeTerminals.set(command.sessionId, command);
     } else if (command.type === 'terminal.close') {
       this.activeTerminals.delete(command.sessionId);
+    } else if (command.type === 'mcp.sessionSet') {
+      this.pendingMcpSessionCommands.set(command.requestId, command);
     }
     this.child?.postMessage(command);
   };
@@ -242,6 +284,23 @@ export class RuntimeSupervisor {
     }
     this.child = null;
     this.ready = false;
+    this.pendingMcpSessionCommands.clear();
+    for (const approval of this.pendingToolApprovals.values()) {
+      this.emit({
+        type: approval.type === 'mcp.approvalRequested'
+          ? 'mcp.approvalResolved'
+          : 'approval.resolved',
+        sequence: 0,
+        requestId: approval.requestId,
+        workspaceId: approval.workspaceId,
+        threadId: approval.threadId,
+        turnId: approval.turnId,
+        approvalId: approval.approvalId,
+        operationId: approval.operationId,
+        decision: 'denied',
+      });
+    }
+    this.pendingToolApprovals.clear();
     for (const turn of this.activeTurns.values()) {
       this.emit({
         type: 'turn.completed',

@@ -302,6 +302,12 @@ test('RuntimeHost streams and controls native PTY sessions without a CLI bridge'
     resolveExited = resolve;
   });
   const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    saveMcpConfigJson: () => '{}',
     createTerminalJson: () => JSON.stringify({ shell: '/bin/zsh' }),
     terminalInput: (_sessionId: string, data: string): void => {
       inputs.push(data);
@@ -402,6 +408,12 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     resolveCompleted = resolve;
   });
   const native: NativeRuntimeBinding = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    saveMcpConfigJson: () => '{}',
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
     executeCommandJson: async () => '{}',
@@ -517,6 +529,12 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     resolveCompleted = resolve;
   });
   const native: NativeRuntimeBinding = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    saveMcpConfigJson: () => '{}',
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
     executeCommandJson: async () => '{}',
@@ -628,6 +646,12 @@ test('RuntimeHost approves and persists command execution before native dispatch
     resolveCompleted = resolve;
   });
   const native: NativeRuntimeBinding = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    saveMcpConfigJson: () => '{}',
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
     executeCommandJson: async (_operationId, _workspaceId, mode, command) => {
@@ -828,6 +852,12 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     ],
   });
   const native: NativeRuntimeBinding = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    saveMcpConfigJson: () => '{}',
     importAssetJson: () => JSON.stringify(asset),
     readAssetJson: () => JSON.stringify({ asset, data: 'Zml4dHVyZQ==' }),
     executeCommandJson: async () => '{}',

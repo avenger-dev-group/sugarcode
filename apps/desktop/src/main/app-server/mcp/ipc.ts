@@ -14,9 +14,14 @@ import {
   MCP_SESSION_TOGGLE_CHANNEL,
 } from '@/shared/mcp';
 
-import type { McpApprovalController } from './approval-controller';
-import type { McpConfigController } from './config-controller';
-import type { McpSessionController } from './session-controller';
+import type {
+  McpApprovalActionResult,
+  McpApprovalStateSnapshot,
+  McpConfigActionResult,
+  McpConfigInspection,
+  McpSessionActionResult,
+  McpSessionStateSnapshot,
+} from '@/shared/mcp';
 import {
   getTrustedMainWindow,
   isTrustedIpcSender,
@@ -25,9 +30,25 @@ import {
 
 type McpIpcOptions = IpcSenderValidationOptions &
   Readonly<{
-    session: McpSessionController;
-    approvals: McpApprovalController;
-    config?: McpConfigController;
+    session: Readonly<{
+      getSnapshot: () => McpSessionStateSnapshot;
+      subscribe: (listener: (snapshot: McpSessionStateSnapshot) => void) => () => void;
+      toggle: (serverId: unknown) => McpSessionActionResult;
+      enable: () => Promise<McpSessionActionResult>;
+      disable: () => Promise<McpSessionActionResult>;
+    }>;
+    approvals: Readonly<{
+      getSnapshot: () => McpApprovalStateSnapshot;
+      markSurfaceReady: () => McpApprovalStateSnapshot;
+      subscribe: (listener: (snapshot: McpApprovalStateSnapshot) => void) => () => void;
+      approve: (presentationId: unknown) => Promise<McpApprovalActionResult>;
+      deny: (presentationId: unknown) => Promise<McpApprovalActionResult>;
+      surfaceUnavailable: () => void;
+    }>;
+    config?: Readonly<{
+      inspect: () => Promise<McpConfigInspection>;
+      save: (request: unknown) => Promise<McpConfigActionResult>;
+    }>;
   }>;
 
 export const registerMcpIpc = (options: McpIpcOptions): (() => void) => {

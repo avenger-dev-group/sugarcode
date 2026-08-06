@@ -361,6 +361,60 @@ fn model_configuration_is_revisioned_and_never_echoes_credentials() {
 }
 
 #[test]
+fn mcp_configuration_is_validated_revisioned_and_persisted_in_v3_sqlite() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let mut store = Store::open(directory.path()).expect("open v3 store");
+    let initial: Value =
+        serde_json::from_str(&store.inspect_mcp_config_json().expect("inspect MCP config"))
+            .expect("MCP inspection JSON");
+    assert_eq!(initial["contractVersion"], 1);
+    assert_eq!(initial["servers"], serde_json::json!([]));
+
+    let servers = serde_json::json!([{
+        "id": "fixture",
+        "transport": "stdio",
+        "executable": "/usr/bin/env",
+        "argv": ["node", "server.mjs"],
+        "cwd": "/tmp"
+    }]);
+    let saved: Value = serde_json::from_str(
+        &store
+            .save_mcp_config_json(
+                initial["revision"].as_str().expect("initial revision"),
+                &servers.to_string(),
+            )
+            .expect("save MCP config"),
+    )
+    .expect("MCP save JSON");
+    assert_eq!(saved["accepted"], true);
+    assert_eq!(saved["inspection"]["servers"], servers);
+
+    let stale: Value = serde_json::from_str(
+        &store
+            .save_mcp_config_json(initial["revision"].as_str().expect("old revision"), "[]")
+            .expect("stale MCP save"),
+    )
+    .expect("stale MCP JSON");
+    assert_eq!(stale["reason"], "stale");
+
+    drop(store);
+    let mut reopened = Store::open(directory.path()).expect("reopen v3 store");
+    let persisted: Value = serde_json::from_str(
+        &reopened
+            .inspect_mcp_config_json()
+            .expect("persisted MCP config"),
+    )
+    .expect("persisted MCP JSON");
+    assert_eq!(persisted["servers"], servers);
+    assert!(reopened
+        .save_mcp_config_json(
+            persisted["revision"].as_str().expect("persisted revision"),
+            r#"[{"id":"remote","transport":"loopbackStreamableHttp","endpoint":"https://example.com/mcp"}]"#,
+        )
+        .is_err());
+}
+
+#[test]
 fn schema_one_database_migrates_to_model_configuration_schema() {
     let directory = tempfile::tempdir().expect("tempdir");
     {
@@ -374,6 +428,7 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
              DROP TABLE model_credentials;
              DROP TABLE model_config;
              DROP TABLE content_assets;
+             DROP TABLE mcp_config;
              DROP INDEX threads_workspace_archive_updated;
              CREATE TABLE threads_v1 (
                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -402,5 +457,5 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 }

@@ -128,7 +128,8 @@ Electron Main owns:
 - model configuration commands;
 - workspace and native file pickers;
 - attachment reads and `asset/import`;
-- MCP session replacement and approvals;
+- MCP Renderer/preload projection, while configuration, ADK session state and
+  operation proposals are delegated to the private utility runtime;
 - command-approval policy and its current Thread/workspace scope;
 - Git and preview window;
 - terminal projection and confirmation, while PTY/ConPTY execution is delegated
@@ -221,8 +222,10 @@ cleared on application exit. `item/commandExecution/outputDelta` streams
 bounded stdout/stderr by call ID into the matching activity; only the bounded
 final process result is durable.
 
-Command and MCP approvals enter one Main-owned FIFO queue across every project
-and Thread. Only the head is presented, and its local countdown starts after the
+Legacy app-server Command and MCP approvals enter one Main-owned FIFO queue.
+Migrated utility-runtime local-tool and MCP approvals enter one runtime-owned
+FIFO across every project and Thread, so only one approval kind is emitted to
+Main at a time. Only the head is presented, and its local countdown starts after the
 matching approval surface reports ready. Closing the UI or transport safely
 rejects pending and queued requests. The view model identifies the source
 project and conversation. Renderer opens the modal only while its owning Thread
@@ -493,8 +496,19 @@ without limit. Terminal sessions are process-local: graceful
 workspace changes request termination, worker loss becomes the existing fatal
 terminal state, and shutdown drops Rust process containment.
 
-Workspace selection and connection state, pending-approval replay, MCP and
-dynamic multi-Agent behavior still depend on the old sidecar or have not
+The existing MCP configuration, selection and approval preload APIs now have
+private utility-runtime adapters. Revisioned configuration lives in v3 SQLite.
+Session enablement validates the bounded selection, constructs ADK
+`MCPToolset`s, probes tool inventories and exposes stable
+`mcp__<serverId>__<tool>` names. Every call carries canonical argument and
+inventory hashes into the existing approval view, then uses the Rust operation
+ledger before transport execution. The selection is process-local, starts
+disabled on application launch and is re-probed after a utility worker crash;
+pending calls are rejected rather than replayed. This path no longer invokes
+the CLI `config mcp` commands or restarts app-server.
+
+Workspace selection and connection state, pending-approval replay and dynamic
+multi-Agent behavior still depend on the old sidecar or have not
 reached parity. Those paths must migrate behind the same preload API before
 app-server is removed. The migration must not introduce a second
 Renderer-facing provider-specific API. If migration work touches the public

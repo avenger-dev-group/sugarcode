@@ -21,6 +21,16 @@ import type {
   WorkspaceGitMutationResponse,
   WorkspaceGitStatusResponse,
 } from '@sugarcode/app-server-protocol';
+import {
+  isMcpConfigActionResult,
+  isMcpConfigInspection,
+  isMcpConfigSaveRequest,
+  isMcpSessionActionResult,
+  type McpConfigActionResult,
+  type McpConfigInspection,
+  type McpConfigSaveRequest,
+  type McpSessionActionResult,
+} from '../shared/mcp.ts';
 
 export const RUNTIME_PROTOCOL_VERSION = 1 as const;
 
@@ -260,6 +270,17 @@ export type RuntimeCommand =
       requestId: string;
       connectionId: string;
     }>
+  | Readonly<{ type: 'mcp.configInspect'; requestId: string }>
+  | Readonly<{
+      type: 'mcp.configSave';
+      requestId: string;
+      request: McpConfigSaveRequest;
+    }>
+  | Readonly<{
+      type: 'mcp.sessionSet';
+      requestId: string;
+      serverIds: readonly string[];
+    }>
   | Readonly<{ type: 'shutdown'; requestId: string }>;
 
 export type RuntimeUsage = Readonly<{
@@ -391,6 +412,31 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'mcp.approvalRequested';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        approvalId: string;
+        operationId: string;
+        serverId: string;
+        name: string;
+        argumentsJson: string;
+        argumentsBytes: number;
+        argumentsSha256: string;
+        inventorySha256: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'mcp.approvalResolved';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        approvalId: string;
+        operationId: string;
+        decision: 'approved' | 'denied';
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'operation.started';
         workspaceId: string;
         threadId: string;
@@ -501,6 +547,22 @@ export type RuntimeEvent =
       Readonly<{
         type: 'model.discovery';
         discovery: ModelDiscoveryResult;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'mcp.configInspection';
+        inspection: McpConfigInspection;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'mcp.configAction';
+        action: McpConfigActionResult;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'mcp.sessionAction';
+        action: McpSessionActionResult;
+        activeServerIds: readonly string[];
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -762,6 +824,19 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.connectionId === 'string' &&
         /^[A-Za-z0-9_-]{1,64}$/u.test(value.connectionId)
       );
+    case 'mcp.configInspect':
+      return true;
+    case 'mcp.configSave':
+      return isMcpConfigSaveRequest(value.request);
+    case 'mcp.sessionSet':
+      return (
+        Array.isArray(value.serverIds) &&
+        value.serverIds.length <= 2 &&
+        value.serverIds.every(
+          (id) => typeof id === 'string' && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(id),
+        ) &&
+        new Set(value.serverIds).size === value.serverIds.length
+      );
     case 'shutdown':
       return true;
     default:
@@ -841,6 +916,31 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.fullAccess === 'boolean'
       );
     case 'approval.resolved':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.approvalId === 'string' &&
+        typeof value.operationId === 'string' &&
+        ['approved', 'denied'].includes(String(value.decision))
+      );
+    case 'mcp.approvalRequested':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.approvalId === 'string' &&
+        typeof value.operationId === 'string' &&
+        typeof value.serverId === 'string' &&
+        typeof value.name === 'string' &&
+        value.name.startsWith(`mcp__${value.serverId}__`) &&
+        typeof value.argumentsJson === 'string' &&
+        Number.isSafeInteger(value.argumentsBytes) &&
+        Number(value.argumentsBytes) >= 2 &&
+        Number(value.argumentsBytes) <= 32 * 1024 &&
+        utf8ByteLength(value.argumentsJson) === value.argumentsBytes &&
+        typeof value.argumentsSha256 === 'string' &&
+        /^[0-9a-f]{64}$/u.test(value.argumentsSha256) &&
+        typeof value.inventorySha256 === 'string' &&
+        /^[0-9a-f]{64}$/u.test(value.inventorySha256)
+      );
+    case 'mcp.approvalResolved':
       return (
         hasTurnCoordinates(value) &&
         typeof value.approvalId === 'string' &&
@@ -936,6 +1036,16 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
       return isModelConfigActionResult(value.action);
     case 'model.discovery':
       return isModelDiscoveryResult(value.discovery);
+    case 'mcp.configInspection':
+      return isMcpConfigInspection(value.inspection);
+    case 'mcp.configAction':
+      return isMcpConfigActionResult(value.action);
+    case 'mcp.sessionAction':
+      return (
+        isMcpSessionActionResult(value.action) &&
+        Array.isArray(value.activeServerIds) &&
+        value.activeServerIds.every((id) => typeof id === 'string')
+      );
     case 'thread.listResult':
       return (
         typeof value.workspaceId === 'string' &&
