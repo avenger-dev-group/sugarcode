@@ -39,6 +39,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
   });
   supervisor.subscribe((event) => events.push(event));
   supervisor.start();
+  assert.equal(supervisor.getLifecycleSnapshot().status, 'connecting');
   supervisor.send({
     type: 'workspace.open',
     requestId: 'request-workspace',
@@ -86,10 +87,13 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     requestId: first.messages[0]?.requestId,
     protocolVersion: 1,
   });
+  assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(first.messages[1]?.type, 'workspace.open');
   assert.equal(first.messages[2]?.type, 'turn.start');
   assert.equal(first.messages[3]?.type, 'terminal.create');
   first.emit('exit', 17);
+  assert.equal(supervisor.getLifecycleSnapshot().status, 'connecting');
+  assert.equal(supervisor.getLifecycleSnapshot().failure, 'crashed');
 
   assert.deepEqual(
     events.map((event) => event.type),
@@ -122,8 +126,10 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     requestId: second.messages[0]?.requestId,
     protocolVersion: 1,
   });
+  assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(second?.messages[1]?.type, 'workspace.open');
   supervisor.shutdown('request-shutdown');
+  assert.equal(supervisor.getLifecycleSnapshot().status, 'closed');
   assert.equal(children[1]?.killed, true);
 });
 

@@ -8,6 +8,40 @@ import {
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
+test('private Workspace protocol stays provider-neutral and bounds browser payloads', () => {
+  assert.equal(isRuntimeCommand({
+    type: 'workspace.list',
+    requestId: 'request-list',
+    workspaceId: 'workspace-fixture',
+    path: 'src',
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'workspace.inspect',
+    requestId: 'request-inspect',
+    workspaceId: 'workspace-fixture',
+    path: 'x'.repeat(1_025),
+  }), false);
+  assert.equal(isRuntimeEvent({
+    type: 'workspace.listResult',
+    sequence: 1,
+    requestId: 'request-list',
+    workspaceId: 'workspace-fixture',
+    path: '',
+    entries: [{ name: 'src', path: 'src', kind: 'directory' }],
+  }), true);
+  assert.equal(isRuntimeEvent({
+    type: 'workspace.inspected',
+    sequence: 2,
+    requestId: 'request-inspect',
+    workspaceId: 'workspace-fixture',
+    document: {
+      status: 'error',
+      path: 'fixture.txt',
+      kind: 'providerSpecificFailure',
+    },
+  }), false);
+});
+
 test('private terminal protocol requires UUID sessions and UTF-8 byte bounds', () => {
   assert.equal(isRuntimeCommand({
     type: 'terminal.input',

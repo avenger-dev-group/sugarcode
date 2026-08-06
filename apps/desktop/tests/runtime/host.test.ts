@@ -527,6 +527,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
     loadThreadJson: () => emptyThreadSnapshot(),
     workspaceRead: async () => '{}',
     workspaceList: async () => '{}',
+    workspaceInspectJson: () => '{}',
     workspaceSearch: async () => '{}',
     workspaceApplyPatch: async () => '{}',
   } as unknown as NativeRuntimeBinding;
@@ -635,7 +636,18 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
       readPath = path;
       return JSON.stringify({ ok: true, content: 'fixture', bytes: 7 });
     },
-    workspaceList: async () => JSON.stringify({ ok: true, entries: [] }),
+    workspaceList: async () => JSON.stringify({
+      ok: true,
+      entries: [{ name: 'src', kind: 'directory' }],
+    }),
+    workspaceInspectJson: () => JSON.stringify({
+      status: 'complete',
+      path: 'fixture.txt',
+      content: 'fixture',
+      bytes: 7,
+      lines: 1,
+      hasUtf8Bom: false,
+    }),
     workspaceSearch: async () => JSON.stringify({ ok: true, matches: [] }),
     workspaceApplyPatch: async () => JSON.stringify({ ok: true, files: [] }),
     gitStatusJson: () => '{}',
@@ -672,6 +684,18 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     canonicalRoot: '/fixture/workspace',
   });
   host.handle({
+    type: 'workspace.list',
+    requestId: 'request-workspace-list',
+    workspaceId: 'workspace-fixture',
+    path: '',
+  });
+  host.handle({
+    type: 'workspace.inspect',
+    requestId: 'request-workspace-inspect',
+    workspaceId: 'workspace-fixture',
+    path: 'fixture.txt',
+  });
+  host.handle({
     type: 'turn.start',
     requestId: 'request-turn',
     workspaceId: 'workspace-fixture',
@@ -695,6 +719,15 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   ]);
 
   assert.equal(readPath, 'fixture.txt');
+  assert.ok(events.some((event) => event.type === 'workspace.opened'));
+  assert.deepEqual(
+    events.find((event) => event.type === 'workspace.listResult')?.entries,
+    [{ name: 'src', path: 'src', kind: 'directory' }],
+  );
+  assert.equal(
+    events.find((event) => event.type === 'workspace.inspected')?.document.status,
+    'complete',
+  );
   assert.ok(events.some((event) => event.type === 'turn.toolCall'));
   assert.ok(events.some((event) => event.type === 'turn.toolResult'));
   assert.ok(
@@ -854,6 +887,7 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     loadThreadJson: () => emptyThreadSnapshot(),
     workspaceRead: async () => '{}',
     workspaceList: async () => '{}',
+    workspaceInspectJson: () => '{}',
     workspaceSearch: async () => '{}',
     workspaceApplyPatch: async () => {
       applyCount += 1;
@@ -980,6 +1014,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
     loadThreadJson: () => emptyThreadSnapshot(),
     workspaceRead: async () => '{}',
     workspaceList: async () => '{}',
+    workspaceInspectJson: () => '{}',
     workspaceSearch: async () => '{}',
     workspaceApplyPatch: async () => '{}',
     gitStatusJson: () => '{}',
@@ -1180,6 +1215,7 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     loadThreadJson: () => snapshot,
     workspaceRead: async () => '{}',
     workspaceList: async () => '{}',
+    workspaceInspectJson: () => '{}',
     workspaceSearch: async () => '{}',
     workspaceApplyPatch: async () => '{}',
     gitStatusJson: () => '{}',

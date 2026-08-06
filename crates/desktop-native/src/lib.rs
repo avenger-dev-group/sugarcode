@@ -31,6 +31,9 @@ use sugarcode_tools::ShellOutputChunk;
 use sugarcode_tools::ShellOutputStream;
 use sugarcode_tools::WorkspaceChangeSetCommitOutcome;
 use sugarcode_tools::WorkspaceChangeSetPrepareOutcome;
+use sugarcode_tools::WorkspaceInspectArguments;
+use sugarcode_tools::WorkspaceInspectErrorKind;
+use sugarcode_tools::WorkspaceInspectOutcome;
 use sugarcode_tools::WorkspaceListArguments;
 use sugarcode_tools::WorkspaceListOutcome;
 use sugarcode_tools::WorkspaceReadArguments;
@@ -770,6 +773,47 @@ impl NativeRuntime {
     }
 
     #[napi]
+    pub fn workspace_inspect_json(&self, workspace_id: String, path: String) -> Result<String> {
+        let workspace = self.workspace(&workspace_id)?;
+        let value = match workspace.inspect_now(&WorkspaceInspectArguments { path: path.clone() }) {
+            WorkspaceInspectOutcome::Complete {
+                content,
+                bytes,
+                lines,
+                has_utf8_bom,
+            } => json!({
+                "status": "complete",
+                "path": path,
+                "content": content,
+                "bytes": bytes,
+                "lines": lines,
+                "hasUtf8Bom": has_utf8_bom,
+            }),
+            WorkspaceInspectOutcome::Truncated {
+                content,
+                bytes,
+                returned_bytes,
+                lines,
+                has_utf8_bom,
+            } => json!({
+                "status": "truncated",
+                "path": path,
+                "content": content,
+                "bytes": bytes,
+                "returnedBytes": returned_bytes,
+                "lines": lines,
+                "hasUtf8Bom": has_utf8_bom,
+            }),
+            WorkspaceInspectOutcome::Error { kind } => json!({
+                "status": "error",
+                "path": path,
+                "kind": inspect_error_code(kind),
+            }),
+        };
+        json_string(value)
+    }
+
+    #[napi]
     pub async fn workspace_search(
         &self,
         workspace_id: String,
@@ -851,6 +895,22 @@ const fn read_error_code(kind: WorkspaceReadErrorKind) -> &'static str {
         WorkspaceReadErrorKind::ChangedDuringRead => "changedDuringRead",
         WorkspaceReadErrorKind::Cancelled => "cancelled",
         WorkspaceReadErrorKind::Unavailable => "unavailable",
+    }
+}
+
+const fn inspect_error_code(kind: WorkspaceInspectErrorKind) -> &'static str {
+    match kind {
+        WorkspaceInspectErrorKind::InvalidPath => "invalidPath",
+        WorkspaceInspectErrorKind::NotFound => "notFound",
+        WorkspaceInspectErrorKind::AccessDenied => "accessDenied",
+        WorkspaceInspectErrorKind::PathNotAllowed => "pathNotAllowed",
+        WorkspaceInspectErrorKind::NotRegularFile => "notRegularFile",
+        WorkspaceInspectErrorKind::Oversized => "oversized",
+        WorkspaceInspectErrorKind::Binary => "binary",
+        WorkspaceInspectErrorKind::InvalidEncoding => "invalidEncoding",
+        WorkspaceInspectErrorKind::LongLine => "longLine",
+        WorkspaceInspectErrorKind::Changed => "changed",
+        WorkspaceInspectErrorKind::Unavailable => "unavailable",
     }
 }
 
@@ -944,3 +1004,7 @@ fn git_error(kind: GitErrorKind) -> serde_json::Value {
 #[cfg(test)]
 #[path = "tests/persistence.rs"]
 mod persistence_tests;
+
+#[cfg(test)]
+#[path = "tests/workspace.rs"]
+mod workspace_tests;

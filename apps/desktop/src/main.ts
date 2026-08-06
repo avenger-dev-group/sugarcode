@@ -1,12 +1,11 @@
 import { app, BrowserWindow, dialog } from 'electron';
 import started from 'electron-squirrel-startup';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { registerCommandApprovalIpc } from '@/main/app-server/command-approval/ipc';
 import { registerConnectionIpc } from '@/main/app-server/connection/ipc';
-import { ConnectionSupervisor } from '@/main/app-server/connection/supervisor';
 import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
 import { GitController } from '@/main/app-server/git/controller';
 import { registerGitIpc } from '@/main/app-server/git/ipc';
@@ -23,13 +22,15 @@ import { registerTerminalIpc } from '@/main/terminal/ipc';
 import { RuntimeSupervisor } from '@/main/runtime/supervisor';
 import { RuntimeModelConfigController } from '@/main/runtime/model-config-controller';
 import { RuntimeConversationController } from '@/main/runtime/conversation-controller';
+import { RuntimeConnectionController } from '@/main/runtime/connection-controller';
 import { RuntimeApprovalController } from '@/main/runtime/approval-controller';
 import { RuntimeGitAdapter } from '@/main/runtime/git-adapter';
 import { RuntimeMcpConfigController } from '@/main/runtime/mcp-config-controller';
 import { RuntimeMcpApprovalController } from '@/main/runtime/mcp-approval-controller';
+import { RuntimeWorkspaceAdapter } from '@/main/runtime/workspace-adapter';
 
 let mainWindow: BrowserWindow | null = null;
-let supervisor: ConnectionSupervisor | null = null;
+let runtimeConnectionController: RuntimeConnectionController | null = null;
 let disposeConnectionIpc: (() => void) | null = null;
 let disposeCommandApprovalIpc: (() => void) | null = null;
 let disposeConversationIpc: (() => void) | null = null;
@@ -49,7 +50,6 @@ let runtimeGitAdapter: RuntimeGitAdapter | null = null;
 let runtimeMcpSessionController: McpSessionController | null = null;
 let runtimeMcpApprovalController: RuntimeMcpApprovalController | null = null;
 let disposeRuntimeEvents: (() => void) | null = null;
-let disposeRuntimeWorkspaceEvents: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -109,7 +109,6 @@ const createWindow = (): void => {
     'did-start-navigation',
     (_event, _url, _isInPlace, isMainFrame) => {
       if (isMainFrame) {
-        supervisor?.approvalSurfacesUnavailable();
         runtimeApprovalController?.surfaceUnavailable();
         previewController?.shutdown();
         terminalController?.rendererUnavailable();
@@ -117,14 +116,12 @@ const createWindow = (): void => {
     },
   );
   window.webContents.on('render-process-gone', () => {
-    supervisor?.approvalSurfacesUnavailable();
     runtimeApprovalController?.surfaceUnavailable();
     runtimeMcpApprovalController?.surfaceUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
   });
   window.once('closed', () => {
-    supervisor?.approvalSurfacesUnavailable();
     runtimeApprovalController?.surfaceUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
@@ -159,6 +156,9 @@ const startApplication = async (): Promise<void> => {
     }
   });
   runtimeSupervisor.start();
+  runtimeConnectionController = new RuntimeConnectionController(
+    runtimeSupervisor,
+  );
   runtimeConversationController = new RuntimeConversationController(
     runtimeSupervisor,
   );
@@ -206,16 +206,35 @@ const startApplication = async (): Promise<void> => {
   });
   runtimeGitAdapter = new RuntimeGitAdapter(runtimeSupervisor);
   const threadRegistry = new ThreadRegistry();
-  supervisor = new ConnectionSupervisor({
+  let activeRuntimeWorkspaceId: string | null = null;
+  const workspaceRuntime = new RuntimeWorkspaceAdapter({
+    runtime: runtimeSupervisor,
+    connection: runtimeConnectionController,
+    conversation: runtimeConversationController,
     threadRegistry,
-    desktopAppPath: app.getAppPath(),
-    isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-    clientVersion: app.getVersion(),
+    getWorkspaceSwitchBlock: () => {
+      const phase = runtimeConversationController?.getSnapshot().phase;
+      if (phase === 'starting' || phase === 'inProgress' || phase === 'stopping') {
+        return 'turnActive';
+      }
+      if (
+        runtimeApprovalController?.getSnapshot().status === 'pending' ||
+        runtimeMcpApprovalController?.getSnapshot().status === 'pending'
+      ) {
+        return 'approvalPending';
+      }
+      return null;
+    },
+    onWorkspaceOpened: (workspaceId, canonicalRoot) => {
+      activeRuntimeWorkspaceId = workspaceId;
+      runtimeApprovalController?.openWorkspace(workspaceId, canonicalRoot);
+      runtimeMcpApprovalController?.openWorkspace(workspaceId, canonicalRoot);
+      runtimeGitAdapter?.openWorkspace(workspaceId);
+    },
   });
   const workspaceController = new WorkspaceController({
     threadRegistry,
-    supervisor,
+    supervisor: workspaceRuntime,
     dialog,
     getMainWindow: () => mainWindow,
     sessionPath: path.join(app.getPath('userData'), 'workspace-session-v1.json'),
@@ -226,47 +245,6 @@ const startApplication = async (): Promise<void> => {
     },
   });
   await workspaceController.restore();
-  let runtimeWorkspaceGeneration = -1;
-  let activeRuntimeWorkspaceId: string | null = null;
-  disposeRuntimeWorkspaceEvents = workspaceController.subscribe((snapshot) => {
-    if (snapshot.status !== 'ready') {
-      activeRuntimeWorkspaceId = null;
-      return;
-    }
-    if (
-      snapshot.generation === runtimeWorkspaceGeneration &&
-      activeRuntimeWorkspaceId !== null
-    ) {
-      return;
-    }
-    const workspace = workspaceController.getLaunchContext();
-    if (!workspace) {
-      return;
-    }
-    runtimeWorkspaceGeneration = snapshot.generation;
-    const runtimeWorkspaceId = createHash('sha256')
-      .update(workspace.path)
-      .digest('hex');
-    activeRuntimeWorkspaceId = runtimeWorkspaceId;
-    runtimeSupervisor?.send({
-      type: 'workspace.open',
-      requestId: randomUUID(),
-      workspaceId: runtimeWorkspaceId,
-      canonicalRoot: workspace.path,
-    });
-    runtimeApprovalController?.openWorkspace(
-      runtimeWorkspaceId,
-      workspace.path,
-    );
-    runtimeMcpApprovalController?.openWorkspace(
-      runtimeWorkspaceId,
-      workspace.path,
-    );
-    runtimeGitAdapter?.openWorkspace(runtimeWorkspaceId);
-    void runtimeConversationController?.switchWorkspace(
-      runtimeWorkspaceId,
-    );
-  });
   terminalController = new TerminalController({
     dialog,
     runtime: runtimeSupervisor,
@@ -286,7 +264,7 @@ const startApplication = async (): Promise<void> => {
       runtimeMcpApprovalController?.getSnapshot().status === 'pending',
   });
   disposeConnectionIpc = registerConnectionIpc({
-    supervisor,
+    supervisor: runtimeConnectionController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -362,7 +340,6 @@ const startApplication = async (): Promise<void> => {
     unsubscribeMcpApproval();
   };
   createWindow();
-  void supervisor.start();
 };
 
 if (started) {
@@ -386,20 +363,17 @@ if (started) {
     runtimeSupervisor?.shutdown();
     terminalController?.shutdown();
     previewController?.shutdown();
-    supervisor?.shutdown();
   });
 
   app.on('will-quit', () => {
     runtimeSupervisor?.shutdown();
     runtimeSupervisor = null;
     runtimeConversationController = null;
+    runtimeConnectionController = null;
     runtimeApprovalController = null;
     runtimeGitAdapter = null;
     disposeRuntimeEvents?.();
     disposeRuntimeEvents = null;
-    disposeRuntimeWorkspaceEvents?.();
-    disposeRuntimeWorkspaceEvents = null;
-    supervisor?.shutdown();
     disposeConnectionIpc?.();
     disposeConnectionIpc = null;
     disposeCommandApprovalIpc?.();

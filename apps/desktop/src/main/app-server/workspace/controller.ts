@@ -1,4 +1,7 @@
 import type {
+  ConnectionStateListener,
+} from '@/shared/connection';
+import type {
   WorkspaceChatRequest,
   WorkspaceInspectRequest,
   WorkspaceInspectResult,
@@ -21,14 +24,41 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { ConnectionSupervisor } from '../connection/supervisor';
 import { ThreadRegistry } from '../thread-registry';
+
+export type WorkspaceRuntimeBoundary = Readonly<{
+  subscribe: (listener: ConnectionStateListener) => () => void;
+  getWorkspaceSwitchBlock: () => unknown | null;
+  switchWorkspace: (
+    workspacePath: string,
+    kind: WorkspaceKind,
+    preferredThreadId?: string,
+  ) => Promise<boolean>;
+  getWorkspaceBindingId: () => string | null;
+  deleteThread: (
+    workspaceId: string,
+    threadId: string,
+  ) => Promise<'deleted' | 'missing'>;
+  listWorkspace: (path: string) => Promise<{
+    path: string;
+    entries: readonly import('@/shared/workspace').WorkspaceEntry[];
+  }>;
+  inspectWorkspace: (
+    path: string,
+  ) => Promise<import('@/shared/workspace').WorkspaceInspectDocument>;
+  conversation: Readonly<{
+    getSnapshot: () => import('@/shared/conversation').ConversationStateSnapshot;
+    selectThread: (
+      threadId: string,
+    ) => Promise<import('@/shared/conversation').ConversationActionResult>;
+  }>;
+}>;
 
 type DialogBoundary = Pick<Dialog, 'showOpenDialog' | 'showMessageBox'>;
 
 type WorkspaceControllerOptions = Readonly<{
   threadRegistry: ThreadRegistry;
-  supervisor: ConnectionSupervisor;
+  supervisor: WorkspaceRuntimeBoundary;
   dialog: DialogBoundary;
   getMainWindow: () => BrowserWindow | null;
   sessionPath: string;
@@ -134,7 +164,7 @@ export class WorkspaceController {
         this.publish(
           'failed',
           connection.diagnostic?.summary ??
-            'The local CLI stopped while opening this workspace.',
+            'The local runtime stopped while opening this workspace.',
         );
       }
     });

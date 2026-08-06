@@ -18,6 +18,12 @@ export type ThreadRegistryView = Readonly<{
   threadTitles: Readonly<Record<string, string>>;
 }>;
 
+export type RuntimeThreadBinding = Readonly<{
+  id: string;
+  workspaceId: string;
+  title?: string;
+}>;
+
 type WorkspaceOwnerBinding = Readonly<{
   ownerKey: string;
   source: ThreadBindingSource;
@@ -171,6 +177,49 @@ export class ThreadRegistry {
     }
     for (const thread of threads) {
       this.bindProtocolThread(thread);
+    }
+    this.workspaceIndexes.set(workspaceId, nextIds);
+    this.authoritativeWorkspaces.add(workspaceId);
+    this.notify();
+  };
+
+  replaceRuntimeWorkspaceIndex = (
+    workspaceId: string,
+    threads: readonly RuntimeThreadBinding[],
+  ): void => {
+    if (threads.some((thread) => thread.workspaceId !== workspaceId)) {
+      throw new Error('Runtime Thread index crossed workspace ownership.');
+    }
+    const nextIds = threads.map((thread) => thread.id);
+    const nextSet = new Set(nextIds);
+    const previousIds = this.workspaceIndexes.get(workspaceId) ?? [];
+    for (const threadId of previousIds) {
+      if (!nextSet.has(threadId)) {
+        this.removeFromWorkspaceIndex(workspaceId, threadId);
+        const entry = this.entries.get(threadId);
+        if (entry?.workspaceId === workspaceId) {
+          if (entry.ownerKey) {
+            this.removeFromCachedOwnerIndex(entry.ownerKey, threadId);
+          }
+          this.entries.delete(threadId);
+        }
+      }
+    }
+    const ownerKey = this.workspaceOwners.get(workspaceId)?.ownerKey;
+    for (const thread of threads) {
+      const existing = this.entries.get(thread.id);
+      this.entries.set(thread.id, {
+        threadId: thread.id,
+        source: 'protocol',
+        workspaceId,
+        ...(ownerKey ? { ownerKey } : {}),
+        ...(thread.title ? { title: thread.title } : {}),
+        ...(existing?.runtime ? { runtime: existing.runtime } : {}),
+        ...(existing?.unreadStatus
+          ? { unreadStatus: existing.unreadStatus }
+          : {}),
+        reloadRequired: existing?.reloadRequired ?? false,
+      });
     }
     this.workspaceIndexes.set(workspaceId, nextIds);
     this.authoritativeWorkspaces.add(workspaceId);

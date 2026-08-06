@@ -37,6 +37,8 @@ import {
   type RuntimeThreadRecord,
   type RuntimeThreadSnapshot,
   type RuntimeUsage,
+  type RuntimeWorkspaceDocument,
+  type RuntimeWorkspaceEntry,
 } from './protocol.ts';
 import {
   createWorkspaceTools,
@@ -284,10 +286,34 @@ export class RuntimeHost {
         break;
       case 'workspace.open':
         this.requireReady(command.requestId);
-        this.nativeRuntime?.ensureWorkspace(
+        this.requireNative().ensureWorkspace(
           command.workspaceId,
           command.canonicalRoot,
         );
+        this.emit({
+          type: 'workspace.opened',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          canonicalRoot: command.canonicalRoot,
+        });
+        break;
+      case 'workspace.list':
+        this.requireReady(command.requestId);
+        void this.listWorkspace(command);
+        break;
+      case 'workspace.inspect':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'workspace.inspected',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          document: this.parseNativeJson<RuntimeWorkspaceDocument>(
+            this.requireNative().workspaceInspectJson(
+              command.workspaceId,
+              command.path,
+            ),
+          ),
+        });
         break;
       case 'asset.import':
         this.requireReady(command.requestId);
@@ -529,19 +555,22 @@ export class RuntimeHost {
         });
         break;
       }
-      case 'thread.delete':
+      case 'thread.delete': {
         this.requireReady(command.requestId);
-        if (!this.requireNative().deleteThread(command.threadId, command.workspaceId)) {
-          throw new Error(`Thread ${command.threadId} does not exist in this workspace.`);
-        }
+        const deleted = this.requireNative().deleteThread(
+          command.threadId,
+          command.workspaceId,
+        );
         this.emit({
           type: 'thread.mutated',
           requestId: command.requestId,
           workspaceId: command.workspaceId,
           operation: 'delete',
           threadId: command.threadId,
+          deleted,
         });
         break;
+      }
       case 'git.status':
         this.emit({
           type: 'git.result',
@@ -662,6 +691,49 @@ export class RuntimeHost {
         }
         void this.mcp.close();
         break;
+    }
+  };
+
+  private listWorkspace = async (
+    command: Extract<RuntimeCommand, { type: 'workspace.list' }>,
+  ): Promise<void> => {
+    try {
+      const result = this.parseNativeJson<{
+        ok: boolean;
+        entries?: readonly Readonly<{
+          name: string;
+          kind: RuntimeWorkspaceEntry['kind'];
+        }>[];
+      }>(
+        await this.requireNative().workspaceList(
+          command.workspaceId,
+          command.path,
+        ),
+      );
+      if (!result.ok || !result.entries) {
+        throw new Error('The workspace directory could not be listed.');
+      }
+      const prefix = command.path.length > 0 ? `${command.path}/` : '';
+      this.emit({
+        type: 'workspace.listResult',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        path: command.path,
+        entries: result.entries.map((entry) => ({
+          name: entry.name,
+          path: `${prefix}${entry.name}`,
+          kind: entry.kind,
+        })),
+      });
+    } catch (error) {
+      this.emit({
+        type: 'runtime.log',
+        requestId: command.requestId,
+        level: 'error',
+        message: error instanceof Error
+          ? error.message
+          : 'The workspace directory could not be listed.',
+      });
     }
   };
 

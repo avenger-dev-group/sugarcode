@@ -417,6 +417,15 @@ claimed operation fails closed. Already claimed or executing effects are never
 requeued. The interrupted parent Turn is not resumed, and recovered request
 events are not appended as duplicate history items.
 
-Workspace selection and app connection state continue to use app-server during
-coexistence; neither app-server nor the CLI sidecar may be removed at this
-checkpoint.
+Workspace selection and app connection state now use Electron Main and the
+TypeScript utility runtime. A canonical root is registered with Rust native
+storage before its Thread index is loaded; the existing Desktop session remains
+only a path-hidden navigation cache, while the v3 SQLite Thread rows are
+authoritative. Private Workspace list/inspect results come from the same Rust
+capability root used by Agent tools. On worker restart Main replays the active
+binding and reconstructs the conversation index without replaying a Turn or
+side effect.
+
+The legacy app-server and CLI sidecar are no longer used by Desktop at runtime,
+but their sources and package/build hooks remain until the following cleanup
+slice.

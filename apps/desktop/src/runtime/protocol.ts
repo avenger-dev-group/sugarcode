@@ -152,6 +152,47 @@ export type RuntimeModelSelection = Readonly<{
   }>;
 }>;
 
+export type RuntimeWorkspaceEntry = Readonly<{
+  name: string;
+  path: string;
+  kind: 'file' | 'directory' | 'link' | 'other';
+}>;
+
+export type RuntimeWorkspaceDocument =
+  | Readonly<{
+      status: 'complete';
+      path: string;
+      content: string;
+      bytes: number;
+      lines: number;
+      hasUtf8Bom: boolean;
+    }>
+  | Readonly<{
+      status: 'truncated';
+      path: string;
+      content: string;
+      bytes: number;
+      returnedBytes: number;
+      lines: number;
+      hasUtf8Bom: boolean;
+    }>
+  | Readonly<{
+      status: 'error';
+      path: string;
+      kind:
+        | 'invalidPath'
+        | 'notFound'
+        | 'accessDenied'
+        | 'pathNotAllowed'
+        | 'notRegularFile'
+        | 'oversized'
+        | 'binary'
+        | 'invalidEncoding'
+        | 'longLine'
+        | 'changed'
+        | 'unavailable';
+    }>;
+
 export type RuntimeCommand =
   | Readonly<{
       type: 'initialize';
@@ -165,6 +206,18 @@ export type RuntimeCommand =
       requestId: string;
       workspaceId: string;
       canonicalRoot: string;
+    }>
+  | Readonly<{
+      type: 'workspace.list';
+      requestId: string;
+      workspaceId: string;
+      path: string;
+    }>
+  | Readonly<{
+      type: 'workspace.inspect';
+      requestId: string;
+      workspaceId: string;
+      path: string;
     }>
   | Readonly<{
       type: 'asset.import';
@@ -366,6 +419,25 @@ export type RuntimeEvent =
         type: 'runtime.log';
         level: 'debug' | 'info' | 'warn' | 'error';
         message: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'workspace.opened';
+        workspaceId: string;
+        canonicalRoot: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'workspace.listResult';
+        workspaceId: string;
+        path: string;
+        entries: readonly RuntimeWorkspaceEntry[];
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'workspace.inspected';
+        workspaceId: string;
+        document: RuntimeWorkspaceDocument;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -617,6 +689,7 @@ export type RuntimeEvent =
         operation: 'create' | 'fork' | 'archive' | 'unarchive' | 'delete';
         threadId: string;
         snapshot?: RuntimeThreadSnapshot;
+        deleted?: boolean;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -638,6 +711,32 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const utf8ByteLength = (value: string): number =>
   new TextEncoder().encode(value).byteLength;
+
+const isSafeWorkspacePath = (
+  value: unknown,
+  allowRoot: boolean,
+): value is string =>
+  typeof value === 'string' &&
+  utf8ByteLength(value) <= 1_024 &&
+  (allowRoot || value.length > 0) &&
+  (value.length === 0 ||
+    (!value.startsWith('/') &&
+      !value.startsWith('\\') &&
+      value.split(/[\\/]/u).length <= 64 &&
+      !value
+        .split(/[\\/]/u)
+        .some((part) => part.length === 0 || part === '.' || part === '..') &&
+      ![...value].some((character) => {
+        const code = character.charCodeAt(0);
+        return code <= 0x1f || code === 0x7f;
+      })));
+
+const workspaceDocumentLineCount = (content: string): number =>
+  Math.max(
+    1,
+    (content.match(/\n/gu)?.length ?? 0) +
+      (content.endsWith('\n') ? 0 : 1),
+  );
 
 const SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -720,6 +819,16 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.workspaceId === 'string' &&
         typeof value.canonicalRoot === 'string' &&
         value.canonicalRoot.length > 0
+      );
+    case 'workspace.list':
+      return (
+        typeof value.workspaceId === 'string' &&
+        isSafeWorkspacePath(value.path, true)
+      );
+    case 'workspace.inspect':
+      return (
+        typeof value.workspaceId === 'string' &&
+        isSafeWorkspacePath(value.path, false)
       );
     case 'asset.import':
       return (
@@ -941,6 +1050,63 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         ['debug', 'info', 'warn', 'error'].includes(String(value.level)) &&
         typeof value.message === 'string'
       );
+    case 'workspace.opened':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.canonicalRoot === 'string' &&
+        value.canonicalRoot.length > 0
+      );
+    case 'workspace.listResult':
+      return (
+        typeof value.workspaceId === 'string' &&
+        isSafeWorkspacePath(value.path, true) &&
+        Array.isArray(value.entries) &&
+        value.entries.length <= 1_000 &&
+        value.entries.every(
+          (entry) =>
+            isRecord(entry) &&
+            typeof entry.name === 'string' &&
+            utf8ByteLength(entry.name) <= 1_024 &&
+            isSafeWorkspacePath(entry.path, false) &&
+            ['file', 'directory', 'link', 'other'].includes(String(entry.kind)),
+        )
+      );
+    case 'workspace.inspected':
+      return (
+        typeof value.workspaceId === 'string' &&
+        isRecord(value.document) &&
+        isSafeWorkspacePath(value.document.path, false) &&
+        ((value.document.status === 'complete' &&
+          typeof value.document.content === 'string' &&
+          Number.isSafeInteger(value.document.bytes) &&
+          value.document.bytes ===
+            utf8ByteLength(value.document.content) +
+              (value.document.hasUtf8Bom === true ? 3 : 0) &&
+          Number.isSafeInteger(value.document.lines) &&
+          value.document.lines === workspaceDocumentLineCount(value.document.content) &&
+          typeof value.document.hasUtf8Bom === 'boolean') ||
+          (value.document.status === 'truncated' &&
+            typeof value.document.content === 'string' &&
+            Number.isSafeInteger(value.document.bytes) &&
+            Number.isSafeInteger(value.document.returnedBytes) &&
+            value.document.returnedBytes === utf8ByteLength(value.document.content) &&
+            Number.isSafeInteger(value.document.lines) &&
+            typeof value.document.hasUtf8Bom === 'boolean') ||
+          (value.document.status === 'error' &&
+            [
+              'invalidPath',
+              'notFound',
+              'accessDenied',
+              'pathNotAllowed',
+              'notRegularFile',
+              'oversized',
+              'binary',
+              'invalidEncoding',
+              'longLine',
+              'changed',
+              'unavailable',
+            ].includes(String(value.document.kind))))
+      );
     case 'asset.imported':
       return isAssetDescriptor(value.asset);
     case 'turn.started':
@@ -1123,6 +1289,8 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
           String(value.operation),
         ) &&
         typeof value.threadId === 'string' &&
+        (value.deleted === undefined ||
+          (value.operation === 'delete' && typeof value.deleted === 'boolean')) &&
         (value.snapshot === undefined || isThreadSnapshot(value.snapshot))
       );
     case 'git.result':

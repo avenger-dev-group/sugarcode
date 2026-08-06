@@ -249,6 +249,15 @@ approval ID to the existing UI and executes only after a new explicit decision.
 Approval and the `executing` claim are atomic; a claimed operation interrupted
 by a crash becomes failed and is never replayed.
 
-The CLI sidecar and app-server still own workspace/connection state. The
-sidecar, app-server and CLI build hooks may be removed only after that remaining
-ownership migrates and passes native package smoke.
+Workspace and connection ownership has migrated to Electron Main plus the
+utility runtime. Main waits for private `workspace.opened` receipts, routes
+file-tree and inspection requests to Rust native capability methods, projects
+the utility-process lifecycle through the existing connection API and restores
+the active binding after a worker restart. Desktop no longer starts the CLI
+sidecar.
+
+The sidecar is still built and copied by the current development/package hooks,
+so this remains a packaging-coexistence checkpoint. After native package and
+launch smoke, the next cleanup slice may remove the unused app-server/CLI/TUI/
+exec sources, build hooks and packaged executable while retaining
+`runtime.mjs` and `sugarcode-desktop-native.node`.

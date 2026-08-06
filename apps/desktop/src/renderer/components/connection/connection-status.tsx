@@ -64,7 +64,7 @@ export const ConnectionStatusView = ({
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm font-medium">{connection.label}</p>
           <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
-            CLI / JSONL
+            TS / NATIVE
           </span>
         </div>
         <p className="mt-1 text-sm font-normal leading-normal text-secondary">
@@ -110,7 +110,7 @@ export const ConnectionStatusBarView = ({
         {connection.detail}
       </span>
       <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.12em] text-tertiary">
-        CLI / JSONL
+        TS / NATIVE
       </span>
     </footer>
   );

@@ -8,14 +8,20 @@ import {
   CONNECTION_STATE_GET_CHANNEL,
 } from '@/shared/connection';
 
-import type { ConnectionSupervisor } from './supervisor';
+import type {
+  ConnectionStateListener,
+  ConnectionStateSnapshot,
+} from '@/shared/connection';
 import {
   getTrustedMainWindow,
   isTrustedIpcSender,
 } from '../ipc/trusted-sender';
 
 type ConnectionIpcOptions = Readonly<{
-  supervisor: ConnectionSupervisor;
+  supervisor: Readonly<{
+    getSnapshot: () => ConnectionStateSnapshot;
+    subscribe: (listener: ConnectionStateListener) => () => void;
+  }>;
   getMainWindow: () => BrowserWindow | null;
   isAllowedUrl: (url: string) => boolean;
 }>;

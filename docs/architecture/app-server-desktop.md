@@ -478,11 +478,11 @@ release boundaries.
 
 ## 3.0 transition boundary
 
-Electron Main now also supervises an internal TypeScript ADK utility process.
+Electron Main now supervises an internal TypeScript ADK utility process.
 Its `RuntimeCommand` and `RuntimeEvent` discriminated unions are a private
 Electron protocol and contain stable request, workspace, Thread, Turn,
-operation and sequence identifiers without SDK types. The utility runtime is
-currently started alongside app-server. Existing Renderer/preload APIs for
+operation and sequence identifiers without SDK types. Desktop no longer starts
+the legacy app-server sidecar. Existing Renderer/preload APIs for
 model configuration, attachment import, conversations, approvals, Git and
 bounded command execution are backed by private Main adapters to the utility
 runtime; they do not expose ADK or provider SDK types. New ADK Turns expose a
@@ -527,9 +527,19 @@ scheduling, instruction amendments, waits, interruption and persisted task
 recovery. Active children become interrupted after a worker restart and are not
 silently replayed.
 
-Workspace selection and connection state still depend on the old sidecar.
-Those paths must migrate behind the same preload API before app-server is
-removed. The migration must not introduce a second Renderer-facing
-provider-specific API. If migration work touches the public app-server protocol
-while coexistence remains, Rust definitions, generated TypeScript and fixtures
-continue to change together.
+Workspace selection and connection state now also use the utility-runtime path
+behind the unchanged preload API. Main hashes each validated canonical root to
+its deterministic binding, waits for a private `workspace.opened` receipt, then
+loads the provider-neutral Thread index from v3 SQLite. File-tree browsing and
+document inspection use private `workspace.list` and `workspace.inspect`
+commands backed by the Rust native capability root; absolute paths remain in
+Main and never enter Renderer state. The runtime supervisor projects
+idle/connecting/ready/failed/closed lifecycle into the existing connection
+snapshot and replays the active binding after a worker crash before the
+conversation index and approval/Git owners are rebound.
+
+The app-server, CLI/TUI/exec sources, CLI build hooks and packaged sidecar remain
+only as cleanup debt for the next slice; they are no longer a Desktop runtime
+dependency. Removal must retain the provider-neutral preload surface and must
+not modify the public app-server protocol merely to delete unreachable Desktop
+wiring.

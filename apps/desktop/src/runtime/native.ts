@@ -91,6 +91,7 @@ export type NativeRuntimeBinding = Readonly<{
   loadThreadJson: (threadId: string) => string;
   workspaceRead: (workspaceId: string, path: string) => Promise<string>;
   workspaceList: (workspaceId: string, path: string) => Promise<string>;
+  workspaceInspectJson: (workspaceId: string, path: string) => string;
   workspaceSearch: (
     workspaceId: string,
     path: string,

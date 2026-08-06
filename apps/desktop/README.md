@@ -10,8 +10,10 @@ pnpm check
 pnpm desktop:package
 ```
 
-During the 3.0 migration this package runs both the bundled Rust `sugarcode
-app-server` process and an internal TypeScript ADK utility process. Renderer and
+During the 3.0 migration this package runs an internal TypeScript ADK utility
+process. The legacy Rust `sugarcode app-server` code and packaged executable are
+still present for the next cleanup slice, but Desktop no longer starts or uses
+that sidecar at runtime. Renderer and
 preload remain provider-neutral: Electron Main routes model configuration,
 attachment import, conversation/thread, approval-backed patch, Git and bounded
 command requests to the utility runtime without exposing ADK or provider SDK
@@ -22,12 +24,13 @@ private provider-neutral tool surface drives persisted DAG scheduling, separate
 child ADK invocations, amendments, waits and interruption in the utility
 runtime.
 
-Electron Main owns both process lifecycles, the native file picker, workspace
+Electron Main owns the utility-process lifecycle, the native file picker, workspace
 authority and validated projections. Preload exposes only fixed typed actions.
 Renderer supports text, file selection, drag-and-drop and image paste. The
 utility runtime imports those attachments into the v3 content-addressed store
-before `turn.start` references their descriptors. Workspace/connection state
-remains on app-server during coexistence. ADK command tools execute through the
+before `turn.start` references their descriptors. Workspace selection, file-tree
+listing, file inspection and connection state now use private provider-neutral
+runtime commands/events while preserving the existing preload API. ADK command tools execute through the
 native module: sandboxed direct commands are read-only/network-denied, while
 Full Access shell commands require a persisted approval, stream bounded output
 and support Turn cancellation. The unchanged terminal preload API now routes

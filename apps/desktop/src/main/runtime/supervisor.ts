@@ -27,9 +27,19 @@ type RuntimeSupervisorOptions = Readonly<{
 type RuntimeEventListener = (event: RuntimeEvent) => void;
 type RuntimeEventType = RuntimeEvent['type'];
 
+export type RuntimeLifecycleSnapshot = Readonly<{
+  revision: number;
+  status: 'idle' | 'connecting' | 'ready' | 'failed' | 'closed';
+  failure?: 'spawnFailed' | 'protocolInvalid' | 'crashed';
+  detail?: string;
+}>;
+
+type RuntimeLifecycleListener = (snapshot: RuntimeLifecycleSnapshot) => void;
+
 export class RuntimeSupervisor {
   private readonly options: RuntimeSupervisorOptions;
   private readonly listeners = new Set<RuntimeEventListener>();
+  private readonly lifecycleListeners = new Set<RuntimeLifecycleListener>();
   private readonly queuedCommands: RuntimeCommand[] = [];
   private readonly workspaceCommands = new Map<
     string,
@@ -61,6 +71,10 @@ export class RuntimeSupervisor {
   private sequence = 0;
   private ready = false;
   private stopped = false;
+  private lifecycle: RuntimeLifecycleSnapshot = {
+    revision: 0,
+    status: 'idle',
+  };
 
   constructor(options: RuntimeSupervisorOptions) {
     this.options = options;
@@ -71,10 +85,18 @@ export class RuntimeSupervisor {
     return () => this.listeners.delete(listener);
   };
 
+  getLifecycleSnapshot = (): RuntimeLifecycleSnapshot => this.lifecycle;
+
+  subscribeLifecycle = (listener: RuntimeLifecycleListener): (() => void) => {
+    this.lifecycleListeners.add(listener);
+    return () => this.lifecycleListeners.delete(listener);
+  };
+
   start = (): void => {
-    if (this.child || this.stopped) {
+    if (this.child || this.stopped || this.restartTimer) {
       return;
     }
+    this.publishLifecycle('connecting');
     this.spawn();
   };
 
@@ -148,6 +170,7 @@ export class RuntimeSupervisor {
     }
     this.stopped = true;
     this.ready = false;
+    this.publishLifecycle('closed');
     if (this.restartTimer) {
       clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -167,12 +190,23 @@ export class RuntimeSupervisor {
   };
 
   private spawn = (): void => {
-    const child = this.options.spawn
-      ? this.options.spawn(this.options.runtimePath)
-      : electron.utilityProcess.fork(this.options.runtimePath, [], {
-          serviceName: 'SugarCode Agent Runtime',
-          stdio: ['ignore', 'ignore', 'pipe'],
-        });
+    let child: RuntimeChild;
+    try {
+      child = this.options.spawn
+        ? this.options.spawn(this.options.runtimePath)
+        : electron.utilityProcess.fork(this.options.runtimePath, [], {
+            serviceName: 'SugarCode Agent Runtime',
+            stdio: ['ignore', 'ignore', 'pipe'],
+          });
+    } catch (error) {
+      this.publishLifecycle(
+        'failed',
+        'spawnFailed',
+        error instanceof Error ? error.message : 'Runtime process spawn failed.',
+      );
+      this.scheduleRestart();
+      return;
+    }
     this.child = child;
     this.ready = false;
     child.on('message', this.handleMessage);
@@ -202,6 +236,12 @@ export class RuntimeSupervisor {
 
   private handleMessage = (value: unknown): void => {
     if (!isRuntimeEvent(value)) {
+      this.ready = false;
+      this.publishLifecycle(
+        'failed',
+        'protocolInvalid',
+        'The utility runtime returned an invalid event.',
+      );
       this.emit({
         type: 'runtime.log',
         sequence: 0,
@@ -209,11 +249,13 @@ export class RuntimeSupervisor {
         level: 'error',
         message: 'Rejected an invalid event from the TypeScript runtime.',
       });
+      this.child?.kill();
       return;
     }
     if (value.type === 'runtime.ready') {
       this.ready = true;
       this.restartAttempt = 0;
+      this.publishLifecycle('ready');
     } else if (value.type === 'turn.started') {
       const command = this.queuedCommands.find(
         (candidate) =>
@@ -318,6 +360,18 @@ export class RuntimeSupervisor {
     if (this.stopped) {
       return;
     }
+    this.publishLifecycle(
+      'connecting',
+      'crashed',
+      `The TypeScript runtime exited with code ${code}.`,
+    );
+    this.scheduleRestart();
+  };
+
+  private scheduleRestart = (): void => {
+    if (this.stopped || this.restartTimer) {
+      return;
+    }
     const delay = Math.min(
       250 * 2 ** this.restartAttempt,
       MAX_RESTART_DELAY_MS,
@@ -325,8 +379,27 @@ export class RuntimeSupervisor {
     this.restartAttempt += 1;
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
-      this.spawn();
+      if (!this.stopped) {
+        this.publishLifecycle('connecting');
+        this.spawn();
+      }
     }, delay);
+  };
+
+  private publishLifecycle = (
+    status: RuntimeLifecycleSnapshot['status'],
+    failure?: RuntimeLifecycleSnapshot['failure'],
+    detail?: string,
+  ): void => {
+    this.lifecycle = {
+      revision: this.lifecycle.revision + 1,
+      status,
+      ...(failure ? { failure } : {}),
+      ...(detail ? { detail } : {}),
+    };
+    for (const listener of this.lifecycleListeners) {
+      listener(this.lifecycle);
+    }
   };
 
   private emit = (event: RuntimeEvent): void => {
