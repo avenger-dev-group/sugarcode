@@ -112,7 +112,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
   const terminalFailure = events[2];
   assert.equal(terminalFailure?.type, 'terminal.error');
   if (terminalFailure?.type === 'terminal.error') {
-    assert.equal(terminalFailure.error, 'bridgeCrashed');
+    assert.equal(terminalFailure.error, 'terminalCrashed');
     assert.equal(terminalFailure.fatal, true);
   }
 

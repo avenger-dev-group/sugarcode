@@ -42,7 +42,7 @@ const messageForResult = (
     case 'invalid':
       return 'Desktop Main rejected an invalid terminal request.';
     case 'failed':
-      return 'The local terminal bridge could not be started.';
+      return 'The local terminal session could not be started.';
     default:
       return 'The local terminal action failed.';
   }
@@ -53,14 +53,14 @@ const failureMessage = (
 ): string => {
   switch (snapshot.error) {
     case 'protocolInvalid':
-      return 'The terminal bridge sent an invalid protocol event and was closed.';
-    case 'bridgeCrashed':
-      return 'The terminal bridge stopped unexpectedly and its process tree was closed.';
+      return 'The terminal session sent an invalid protocol event and was closed.';
+    case 'terminalCrashed':
+      return 'The terminal session stopped unexpectedly and its process tree was closed.';
     case 'outputOverload':
       return 'Terminal output exceeded the bounded Main queue and the session was closed.';
     case 'spawnFailed':
     default:
-      return 'The packaged terminal bridge could not be started.';
+      return 'The native terminal session could not be started.';
   }
 };
 

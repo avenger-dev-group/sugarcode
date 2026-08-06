@@ -16,7 +16,6 @@ import { memo, useRef } from 'react';
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
 import { CommandApprovalActivity } from '@/renderer/components/agent/command-approval-activity';
-import { ContextCompactionActivity } from '@/renderer/components/agent/context-compaction-activity';
 import { WorkspaceReadActivity } from '@/renderer/components/agent/workspace-read-activity';
 import { WorkspaceListActivity } from '@/renderer/components/agent/workspace-list-activity';
 import { WorkspaceSearchActivity } from '@/renderer/components/agent/workspace-search-activity';
@@ -115,8 +114,6 @@ const TurnActivity = ({
   switch (entry.type) {
     case 'commentary':
       return <AgentCommentary commentary={entry.activity} />;
-    case 'contextCompaction':
-      return <ContextCompactionActivity activity={entry.activity} />;
     case 'workspaceRead':
       return <WorkspaceReadActivity activity={entry.activity} />;
     case 'workspaceList':
@@ -229,10 +226,6 @@ const TranscriptTurnView = ({
           durationLabel={turn.durationLabel}
         />
       ) : null}
-      {!turn.activities &&
-        turn.contextCompactions?.map((activity) => (
-          <ContextCompactionActivity key={activity.id} activity={activity} />
-        ))}
       {!turn.activities && turn.workspaceRead ? (
         <WorkspaceReadActivity activity={turn.workspaceRead} />
       ) : null}

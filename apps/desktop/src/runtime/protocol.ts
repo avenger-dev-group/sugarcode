@@ -623,7 +623,7 @@ export type RuntimeEvent =
         workspaceId: string;
         generation: number;
         sessionId: string;
-        error: 'spawnFailed' | 'protocolInvalid' | 'bridgeCrashed' | 'outputOverload';
+        error: 'spawnFailed' | 'protocolInvalid' | 'terminalCrashed' | 'outputOverload';
         fatal: boolean;
       }>)
   | (RuntimeEventBase &
@@ -1240,7 +1240,7 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.workspaceId === 'string' &&
         Number.isSafeInteger(value.generation) &&
         isSessionId(value.sessionId) &&
-        ['spawnFailed', 'protocolInvalid', 'bridgeCrashed', 'outputOverload'].includes(String(value.error)) &&
+        ['spawnFailed', 'protocolInvalid', 'terminalCrashed', 'outputOverload'].includes(String(value.error)) &&
         typeof value.fatal === 'boolean'
       );
     case 'terminal.exited':

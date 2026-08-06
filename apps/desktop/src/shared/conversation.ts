@@ -68,26 +68,6 @@ export type ConversationAgentOutput = Readonly<{
   text: string;
 }>;
 
-export type ConversationContextCompactionActivity = Readonly<{
-  id: string;
-  strategy: 'modelGeneratedActiveTurnV1';
-  ordinal: number;
-  preContextBytes: number;
-  sourceMessages: number;
-  sourceBytes: number;
-  sourceSha256: string;
-  status: ConversationMessageStatus;
-  outcome?:
-    | Readonly<{
-        type: 'completed';
-        postContextBytes: number;
-        summaryBytes: number;
-        summarySha256: string;
-      }>
-    | Readonly<{ type: 'failed'; kind: string }>
-    | Readonly<{ type: 'interrupted' }>;
-}>;
-
 export type ConversationWorkspaceReadOutcome =
   | Readonly<{
       type: 'success';
@@ -347,10 +327,6 @@ export type ConversationActivity =
       activity: ConversationCommentaryActivity;
     }>
   | Readonly<{
-      type: 'contextCompaction';
-      activity: ConversationContextCompactionActivity;
-    }>
-  | Readonly<{
       type: 'workspaceRead';
       activity: ConversationWorkspaceReadActivity;
     }>
@@ -464,7 +440,6 @@ export type ConversationTurn = Readonly<{
   messages: readonly ConversationMessage[];
   pendingAgentOutputs?: readonly ConversationAgentOutput[];
   activities?: readonly ConversationActivity[];
-  contextCompactions?: readonly ConversationContextCompactionActivity[];
   workspaceRead?: ConversationWorkspaceReadActivity;
   workspaceList?: ConversationWorkspaceListActivity;
   workspaceSearch?: ConversationWorkspaceSearchActivity;
@@ -508,7 +483,6 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
   unreadThreadStatuses?: Readonly<
     Record<string, ConversationTerminalTurnStatus>
   >;
-  reloadRequiredThreadIds?: readonly string[];
   search: Readonly<{
     query: string;
     status: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
@@ -680,12 +654,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isId = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
-
-const isThreadId = (value: unknown): value is string =>
-  typeof value === 'string' &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
-    value,
-  );
 
 export const isValidSha256 = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value);
@@ -1602,11 +1570,6 @@ const isThreadNavigator = (
               status as ConversationTerminalTurnStatus,
             ),
         ))) ||
-    (Object.hasOwn(value, 'reloadRequiredThreadIds') &&
-      (!Array.isArray(value.reloadRequiredThreadIds) ||
-        !value.reloadRequiredThreadIds.every(isThreadId) ||
-        new Set(value.reloadRequiredThreadIds).size !==
-          value.reloadRequiredThreadIds.length)) ||
     !isRecord(value.search) ||
     typeof value.search.query !== 'string' ||
     new TextEncoder().encode(value.search.query).byteLength >

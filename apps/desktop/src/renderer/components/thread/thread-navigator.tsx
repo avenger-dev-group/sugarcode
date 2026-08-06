@@ -237,8 +237,6 @@ export const ThreadNavigator = ({
               approvalRequired: approvalThreadIds.includes(threadId),
               pending:
                 active && threadId === store.navigator.pendingThreadId,
-              reloadRequired:
-                store.navigator.reloadRequiredThreadIds.includes(threadId),
               running: store.navigator.runningThreadIds.includes(threadId),
               terminalStatus:
                 store.navigator.unreadThreadStatuses[threadId],
@@ -789,17 +787,6 @@ const ThreadStatusIndicator = ({
           role="status"
           aria-label="后台任务执行失败，有未读更新"
           title="执行失败 · 有未读更新"
-        >
-          <CircleAlert className="size-4" aria-hidden="true" />
-        </span>
-      );
-    case 'reloadRequired':
-      return (
-        <span
-          className="mr-2 inline-flex size-5 shrink-0 self-center items-center justify-center text-destructive"
-          role="status"
-          aria-label="会话需要重新加载"
-          title="会话需要重新加载"
         >
           <CircleAlert className="size-4" aria-hidden="true" />
         </span>

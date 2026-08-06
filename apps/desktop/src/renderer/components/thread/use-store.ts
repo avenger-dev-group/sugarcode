@@ -67,8 +67,6 @@ import type {
   TurnViewModel,
 } from './types';
 import {
-  contextBudget,
-  estimatedTokensFromContextBytes,
   formatTokenUsageHint,
   latestTurnUsage,
 } from './context-budget';
@@ -399,48 +397,6 @@ export const toThreadViewModel = (
       JSON.stringify(nextPendingAgentOutputs)
         ? previousTurn?.pendingAgentOutputs
         : nextPendingAgentOutputs;
-    const nextContextCompactions = turn.contextCompactions?.map((activity) => {
-      const outcome = activity.outcome;
-      return {
-        id: activity.id,
-        ordinal: activity.ordinal,
-        state:
-          activity.status === 'inProgress'
-            ? ('compacting' as const)
-            : outcome?.type === 'completed'
-              ? ('completed' as const)
-              : outcome?.type === 'failed'
-                ? ('failed' as const)
-                : ('interrupted' as const),
-        preContextBytes: activity.preContextBytes,
-        ...(turn.model
-          ? {
-              contextWindowTokens: turn.model.contextWindowTokens,
-              estimatedPreContextTokens: estimatedTokensFromContextBytes(
-                activity.preContextBytes,
-              ),
-              budget: contextBudget(turn.model.contextWindowTokens),
-            }
-          : {}),
-        sourceMessages: activity.sourceMessages,
-        sourceBytes: activity.sourceBytes,
-        sourceSha256: activity.sourceSha256,
-        ...(outcome?.type === 'completed'
-          ? {
-              postContextBytes: outcome.postContextBytes,
-              summaryBytes: outcome.summaryBytes,
-              summarySha256: outcome.summarySha256,
-            }
-          : {}),
-        ...(outcome?.type === 'failed' ? { errorKind: outcome.kind } : {}),
-      };
-    });
-    const contextCompactions =
-      nextContextCompactions &&
-      JSON.stringify(previousTurn?.contextCompactions) ===
-        JSON.stringify(nextContextCompactions)
-        ? previousTurn?.contextCompactions
-        : nextContextCompactions;
     const nextWorkspaceRead = turn.workspaceRead
       ? (() => {
           const state = toWorkspaceReadPresentationState(
@@ -653,48 +609,6 @@ export const toThreadViewModel = (
                   : ('running' as const),
             },
           } as const;
-        case 'contextCompaction': {
-          const outcome = entry.activity.outcome;
-          return {
-            type: entry.type,
-            activity: {
-              id: entry.activity.id,
-              ordinal: entry.activity.ordinal,
-              state:
-                entry.activity.status === 'inProgress'
-                  ? ('compacting' as const)
-                  : outcome?.type === 'completed'
-                    ? ('completed' as const)
-                    : outcome?.type === 'failed'
-                      ? ('failed' as const)
-                      : ('interrupted' as const),
-              preContextBytes: entry.activity.preContextBytes,
-              ...(turn.model
-                ? {
-                    contextWindowTokens: turn.model.contextWindowTokens,
-                    estimatedPreContextTokens:
-                      estimatedTokensFromContextBytes(
-                        entry.activity.preContextBytes,
-                      ),
-                    budget: contextBudget(turn.model.contextWindowTokens),
-                  }
-                : {}),
-              sourceMessages: entry.activity.sourceMessages,
-              sourceBytes: entry.activity.sourceBytes,
-              sourceSha256: entry.activity.sourceSha256,
-              ...(outcome?.type === 'completed'
-                ? {
-                    postContextBytes: outcome.postContextBytes,
-                    summaryBytes: outcome.summaryBytes,
-                    summarySha256: outcome.summarySha256,
-                  }
-                : {}),
-              ...(outcome?.type === 'failed'
-                ? { errorKind: outcome.kind }
-                : {}),
-            },
-          } as const;
-        }
         case 'workspaceRead': {
           const outcome = entry.activity.result?.outcome;
           return {
@@ -890,7 +804,6 @@ export const toThreadViewModel = (
       previousTurn.model?.wireApi === model?.wireApi &&
       previousTurn.messages === stableMessages &&
       previousTurn.pendingAgentOutputs === pendingAgentOutputs &&
-      previousTurn.contextCompactions === contextCompactions &&
       previousTurn.activities === activities &&
       previousTurn.workspaceRead === workspaceRead &&
       previousTurn.workspaceList === workspaceList &&
@@ -911,7 +824,6 @@ export const toThreadViewModel = (
       ...(model ? { model } : {}),
       messages: stableMessages,
       ...(pendingAgentOutputs ? { pendingAgentOutputs } : {}),
-      ...(contextCompactions ? { contextCompactions } : {}),
       ...(activities ? { activities } : {}),
       ...(workspaceRead ? { workspaceRead } : {}),
       ...(workspaceList ? { workspaceList } : {}),
@@ -983,8 +895,6 @@ export const toThreadNavigatorViewModel = (
     threadTitles: snapshot.navigator.activeThreadTitles,
     runningThreadIds: snapshot.navigator.runningThreadIds ?? [],
     unreadThreadStatuses: snapshot.navigator.unreadThreadStatuses ?? {},
-    reloadRequiredThreadIds:
-      snapshot.navigator.reloadRequiredThreadIds ?? [],
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
     pendingMutation: snapshot.navigator.pendingMutation ?? null,

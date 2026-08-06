@@ -16,10 +16,13 @@ The final application must contain:
 
 - the Electron application and `app.asar`;
 - the application icon resources;
-- exactly the host-platform `sugarcode-desktop-native.node` capability module.
+- the host-platform `sugarcode-desktop-native.node` capability module;
+- `THIRD_PARTY_NOTICES.txt` for bundled native and model SDK dependencies.
 
 It must not contain a `sugarcode` executable, CLI manifest, app-server,
-terminal-bridge executable or `sugarcode-sidecar` directory.
+PTY sidecar executable or `sugarcode-sidecar` directory. The native terminal
+crate exposes only the embedded PTY API used by the N-API module; it has no
+stdio/JSONL entry point.
 
 ## Platform contract
 

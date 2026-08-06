@@ -5,13 +5,11 @@ import type { ThreadNavigationStatus } from './types';
 export const toThreadNavigationStatus = ({
   approvalRequired,
   pending,
-  reloadRequired = false,
   running,
   terminalStatus,
 }: Readonly<{
   approvalRequired: boolean;
   pending: boolean;
-  reloadRequired?: boolean;
   running: boolean;
   terminalStatus?: ConversationTerminalTurnStatus;
 }>): ThreadNavigationStatus => {
@@ -20,9 +18,6 @@ export const toThreadNavigationStatus = ({
   }
   if (pending) {
     return 'opening';
-  }
-  if (reloadRequired) {
-    return 'reloadRequired';
   }
   if (running) {
     return 'running';

@@ -1,7 +1,5 @@
-use crate::bridge::{Utf8StreamDecoder, pty_size, validate_size, validate_workspace};
 use crate::containment::ProcessContainment;
-use crate::protocol::MAX_INPUT_BYTES;
-use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, ExitStatus, PtySize, native_pty_system};
 use serde::Serialize;
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -14,9 +12,35 @@ use std::time::Duration;
 const COMMAND_QUEUE_CAPACITY: usize = 64;
 const EVENT_QUEUE_CAPACITY: usize = 128;
 const INTERNAL_QUEUE_CAPACITY: usize = 64;
+const MAX_INPUT_BYTES: usize = 65_536;
+const MIN_COLUMNS: u16 = 2;
+const MAX_COLUMNS: u16 = 500;
+const MIN_ROWS: u16 = 2;
+const MAX_ROWS: u16 = 300;
 const OUTPUT_CHUNK_BYTES: usize = 8_192;
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 const FORCE_KILL_TIMEOUT: Duration = Duration::from_millis(750);
+
+#[derive(Debug)]
+pub struct TerminalError {
+    message: String,
+}
+
+impl TerminalError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for TerminalError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for TerminalError {}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,15 +117,14 @@ impl fmt::Debug for EmbeddedTerminal {
 }
 
 impl EmbeddedTerminal {
-    pub fn spawn(workspace: &Path, columns: u16, rows: u16) -> Result<Self, crate::BridgeError> {
+    pub fn spawn(workspace: &Path, columns: u16, rows: u16) -> Result<Self, TerminalError> {
         validate_workspace(workspace)?;
         validate_size(columns, rows)?;
-        let mut containment = ProcessContainment::prepare().map_err(|error| {
-            crate::BridgeError::new(format!("process containment failed: {error}"))
-        })?;
+        let mut containment = ProcessContainment::prepare()
+            .map_err(|error| TerminalError::new(format!("process containment failed: {error}")))?;
         let pair = native_pty_system()
             .openpty(pty_size(columns, rows))
-            .map_err(|error| crate::BridgeError::new(format!("PTY creation failed: {error}")))?;
+            .map_err(|error| TerminalError::new(format!("PTY creation failed: {error}")))?;
         let mut command = CommandBuilder::new_default_prog();
         command.cwd(workspace);
         command.env("TERM", "xterm-256color");
@@ -110,34 +133,32 @@ impl EmbeddedTerminal {
         let child = pair
             .slave
             .spawn_command(command)
-            .map_err(|error| crate::BridgeError::new(format!("shell launch failed: {error}")))?;
+            .map_err(|error| TerminalError::new(format!("shell launch failed: {error}")))?;
         drop(pair.slave);
 
         #[cfg(unix)]
         containment
             .bind_process_group(child.process_id().ok_or_else(|| {
-                crate::BridgeError::new("PTY child did not expose a process identifier")
+                TerminalError::new("PTY child did not expose a process identifier")
             })?)
-            .map_err(|error| {
-                crate::BridgeError::new(format!("process containment failed: {error}"))
-            })?;
+            .map_err(|error| TerminalError::new(format!("process containment failed: {error}")))?;
         #[cfg(windows)]
         containment
-            .bind_process_handle(child.as_raw_handle().ok_or_else(|| {
-                crate::BridgeError::new("PTY child did not expose a process handle")
-            })?)
-            .map_err(|error| {
-                crate::BridgeError::new(format!("process containment failed: {error}"))
-            })?;
+            .bind_process_handle(
+                child.as_raw_handle().ok_or_else(|| {
+                    TerminalError::new("PTY child did not expose a process handle")
+                })?,
+            )
+            .map_err(|error| TerminalError::new(format!("process containment failed: {error}")))?;
 
         let reader = pair
             .master
             .try_clone_reader()
-            .map_err(|error| crate::BridgeError::new(format!("PTY reader failed: {error}")))?;
+            .map_err(|error| TerminalError::new(format!("PTY reader failed: {error}")))?;
         let writer = pair
             .master
             .take_writer()
-            .map_err(|error| crate::BridgeError::new(format!("PTY writer failed: {error}")))?;
+            .map_err(|error| TerminalError::new(format!("PTY writer failed: {error}")))?;
         let killer = child.clone_killer();
         let info = EmbeddedTerminalInfo {
             shell,
@@ -171,33 +192,33 @@ impl EmbeddedTerminal {
         &self.info
     }
 
-    pub fn input(&self, data: String) -> Result<(), crate::BridgeError> {
+    pub fn input(&self, data: String) -> Result<(), TerminalError> {
         if data.is_empty() || data.len() > MAX_INPUT_BYTES {
-            return Err(crate::BridgeError::new("terminal input was invalid"));
+            return Err(TerminalError::new("terminal input was invalid"));
         }
         self.send(EmbeddedCommand::Input(data))
     }
 
-    pub fn resize(&self, columns: u16, rows: u16) -> Result<(), crate::BridgeError> {
+    pub fn resize(&self, columns: u16, rows: u16) -> Result<(), TerminalError> {
         validate_size(columns, rows)?;
         self.send(EmbeddedCommand::Resize { columns, rows })
     }
 
-    pub fn terminate(&self) -> Result<(), crate::BridgeError> {
+    pub fn terminate(&self) -> Result<(), TerminalError> {
         self.send(EmbeddedCommand::Terminate)
     }
 
     pub fn drain_events(
         &self,
         maximum: usize,
-    ) -> Result<Vec<EmbeddedTerminalEvent>, crate::BridgeError> {
+    ) -> Result<Vec<EmbeddedTerminalEvent>, TerminalError> {
         if maximum == 0 || maximum > EVENT_QUEUE_CAPACITY {
-            return Err(crate::BridgeError::new("terminal event limit was invalid"));
+            return Err(TerminalError::new("terminal event limit was invalid"));
         }
         let events = self
             .events
             .lock()
-            .map_err(|_| crate::BridgeError::new("terminal event lock was poisoned"))?;
+            .map_err(|_| TerminalError::new("terminal event lock was poisoned"))?;
         let mut drained = Vec::new();
         while drained.len() < maximum {
             match events.try_recv() {
@@ -208,14 +229,12 @@ impl EmbeddedTerminal {
         Ok(drained)
     }
 
-    fn send(&self, command: EmbeddedCommand) -> Result<(), crate::BridgeError> {
+    fn send(&self, command: EmbeddedCommand) -> Result<(), TerminalError> {
         self.commands
             .try_send(command)
             .map_err(|error| match error {
-                TrySendError::Full(_) => crate::BridgeError::new("terminal command queue was full"),
-                TrySendError::Disconnected(_) => {
-                    crate::BridgeError::new("terminal session has exited")
-                }
+                TrySendError::Full(_) => TerminalError::new("terminal command queue was full"),
+                TrySendError::Disconnected(_) => TerminalError::new("terminal session has exited"),
             })
     }
 }
@@ -421,4 +440,113 @@ fn spawn_child_waiter(
     thread::spawn(move || {
         let _ = events.send(DriverEvent::ChildExited(child.wait()));
     });
+}
+
+fn validate_workspace(workspace: &Path) -> Result<(), TerminalError> {
+    if !workspace.is_absolute() {
+        return Err(TerminalError::new("terminal workspace must be absolute"));
+    }
+    let metadata = workspace.symlink_metadata().map_err(|error| {
+        TerminalError::new(format!("terminal workspace is unavailable: {error}"))
+    })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(TerminalError::new(
+            "terminal workspace must be a canonical directory",
+        ));
+    }
+    let canonical = workspace.canonicalize().map_err(|error| {
+        TerminalError::new(format!("terminal workspace is unavailable: {error}"))
+    })?;
+    if !canonical_workspace_path_matches(&canonical, workspace) {
+        return Err(TerminalError::new(
+            "terminal workspace path must already be canonical",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn canonical_workspace_path_matches(canonical: &Path, workspace: &Path) -> bool {
+    canonical == workspace
+}
+
+#[cfg(windows)]
+pub(crate) fn canonical_workspace_path_matches(canonical: &Path, workspace: &Path) -> bool {
+    fn comparable(path: &Path) -> String {
+        let value = path.to_string_lossy().replace('/', "\\");
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{rest}")
+        } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+            rest.to_string()
+        } else {
+            value
+        }
+    }
+
+    comparable(canonical).eq_ignore_ascii_case(&comparable(workspace))
+}
+
+fn validate_size(columns: u16, rows: u16) -> Result<(), TerminalError> {
+    if !(MIN_COLUMNS..=MAX_COLUMNS).contains(&columns) || !(MIN_ROWS..=MAX_ROWS).contains(&rows) {
+        return Err(TerminalError::new(
+            "terminal dimensions were outside the supported range",
+        ));
+    }
+    Ok(())
+}
+
+fn pty_size(columns: u16, rows: u16) -> PtySize {
+    PtySize {
+        rows,
+        cols: columns,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Utf8StreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    pub(crate) fn push(&mut self, bytes: &[u8]) -> String {
+        let mut combined = std::mem::take(&mut self.pending);
+        combined.extend_from_slice(bytes);
+        let mut decoded = String::with_capacity(combined.len());
+        let mut remaining = combined.as_slice();
+        while !remaining.is_empty() {
+            match std::str::from_utf8(remaining) {
+                Ok(valid) => {
+                    decoded.push_str(valid);
+                    break;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    decoded.push_str(
+                        std::str::from_utf8(&remaining[..valid])
+                            .expect("UTF-8 validator identified a valid prefix"),
+                    );
+                    remaining = &remaining[valid..];
+                    if let Some(invalid) = error.error_len() {
+                        decoded.push('\u{fffd}');
+                        remaining = &remaining[invalid..];
+                    } else {
+                        self.pending.extend_from_slice(remaining);
+                        break;
+                    }
+                }
+            }
+        }
+        decoded
+    }
+
+    pub(crate) fn finish(&mut self) -> Option<String> {
+        if self.pending.is_empty() {
+            None
+        } else {
+            self.pending.clear();
+            Some("\u{fffd}".to_owned())
+        }
+    }
 }

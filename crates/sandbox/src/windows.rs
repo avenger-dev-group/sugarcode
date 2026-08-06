@@ -99,7 +99,7 @@ const FILESYSTEM_READ_ONLY_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | LUA_TOKEN 
 const FILESYSTEM_READ_ONLY_COMPAT_TOKEN_FLAGS: u32 = DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED;
 const FILESYSTEM_READ_ONLY_RESTRICTING_SID: WELL_KNOWN_SID_TYPE = WinWriteRestrictedCodeSid;
 // Low remains below ordinary Medium filesystem objects. Untrusted prevents the
-// bundled CLI runtime from completing DLL initialization on supported Windows.
+// sandboxed command runtime from completing DLL initialization on supported Windows.
 const FILESYSTEM_READ_ONLY_INTEGRITY_SID: WELL_KNOWN_SID_TYPE = WinLowLabelSid;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const INFINITE: u32 = u32::MAX;

@@ -35,18 +35,3 @@ test('approval takes precedence over running and completed state', () => {
 test('opening takes precedence over a projected running state', () => {
   assert.equal(status({ pending: true, running: true }), 'opening');
 });
-
-test('reload-required follows approval and opening but precedes running and unread', () => {
-  assert.equal(
-    status({ reloadRequired: true, running: true, terminalStatus: 'failed' }),
-    'reloadRequired',
-  );
-  assert.equal(
-    status({ pending: true, reloadRequired: true, running: true }),
-    'opening',
-  );
-  assert.equal(
-    status({ approvalRequired: true, pending: true, reloadRequired: true }),
-    'approvalRequired',
-  );
-});

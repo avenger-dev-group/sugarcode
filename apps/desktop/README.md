@@ -29,4 +29,4 @@ a crash.
 
 The app bundle includes `runtime.mjs` and the native module as an extra
 resource. It does not include a `sugarcode` executable, app-server, TUI or
-terminal bridge process.
+PTY sidecar process.

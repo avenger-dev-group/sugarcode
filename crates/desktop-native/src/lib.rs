@@ -861,7 +861,7 @@ impl NativeRuntime {
         session_id: &str,
         operation: impl FnOnce(
             &EmbeddedTerminal,
-        ) -> std::result::Result<T, sugarcode_terminal::BridgeError>,
+        ) -> std::result::Result<T, sugarcode_terminal::TerminalError>,
     ) -> Result<T> {
         let terminals = self
             .terminals

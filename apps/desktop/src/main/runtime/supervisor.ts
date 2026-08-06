@@ -352,7 +352,7 @@ export class RuntimeSupervisor {
         workspaceId: terminal.workspaceId,
         generation: terminal.generation,
         sessionId: terminal.sessionId,
-        error: 'bridgeCrashed',
+        error: 'terminalCrashed',
         fatal: true,
       });
     }

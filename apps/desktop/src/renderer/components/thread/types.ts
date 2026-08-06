@@ -23,7 +23,6 @@ import type {
   WorkspaceReadActivityViewModel,
   WorkspaceSearchActivityViewModel,
 } from '../agent/types';
-import type { ContextCompactionActivityViewModel } from '../agent/context-compaction-activity';
 import type { FileChangeReviewViewModel } from '../workspace/types';
 import type { McpActivityViewModel } from '../mcp/types';
 import type { OrchestrationActivityViewModel } from '../orchestration/types';
@@ -89,10 +88,6 @@ export type TurnActivityViewModel =
       activity: AgentCommentaryViewModel;
     }>
   | Readonly<{
-      type: 'contextCompaction';
-      activity: ContextCompactionActivityViewModel;
-    }>
-  | Readonly<{
       type: 'workspaceRead';
       activity: WorkspaceReadActivityViewModel;
     }>
@@ -136,7 +131,6 @@ export type TurnViewModel = Readonly<{
   messages: readonly TranscriptMessageViewModel[];
   pendingAgentOutputs?: readonly AgentMessageViewModel[];
   activities?: readonly TurnActivityViewModel[];
-  contextCompactions?: readonly ContextCompactionActivityViewModel[];
   workspaceRead?: WorkspaceReadActivityViewModel;
   workspaceList?: WorkspaceListActivityViewModel;
   workspaceSearch?: WorkspaceSearchActivityViewModel;
@@ -165,7 +159,6 @@ export type ThreadNavigatorViewModel = Readonly<{
   unreadThreadStatuses: Readonly<
     Record<string, ConversationTerminalTurnStatus>
   >;
-  reloadRequiredThreadIds: readonly string[];
   selectedThreadId: string | null;
   pendingThreadId: string | null;
   pendingMutation: Readonly<{
@@ -183,7 +176,6 @@ export type ThreadNavigationStatus =
   | 'idle'
   | 'opening'
   | 'running'
-  | 'reloadRequired'
   | 'completed'
   | 'failed'
   | 'interrupted'

@@ -811,7 +811,7 @@ export class RuntimeHost {
       action();
       return true;
     } catch {
-      this.emitTerminalError(command, 'bridgeCrashed', true);
+      this.emitTerminalError(command, 'terminalCrashed', true);
       this.closeTerminal(command.sessionId);
       return false;
     }
@@ -873,7 +873,7 @@ export class RuntimeHost {
         ) {
           this.emitTerminalError(
             terminal,
-            event.code === 'outputOverload' ? 'outputOverload' : 'bridgeCrashed',
+            event.code === 'outputOverload' ? 'outputOverload' : 'terminalCrashed',
             event.fatal,
           );
           if (event.fatal) {
@@ -912,7 +912,7 @@ export class RuntimeHost {
 
   private emitTerminalError = (
     terminal: { requestId: string; workspaceId: string; generation: number; sessionId: string },
-    error: 'spawnFailed' | 'protocolInvalid' | 'bridgeCrashed' | 'outputOverload',
+    error: 'spawnFailed' | 'protocolInvalid' | 'terminalCrashed' | 'outputOverload',
     fatal: boolean,
   ): void => {
     this.emit({

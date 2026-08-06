@@ -95,7 +95,7 @@ export class TerminalController {
   };
 
   getFailureDiagnostic = (): string | null =>
-    this.active?.status === 'failed' ? this.active.error ?? 'bridgeCrashed' : null;
+    this.active?.status === 'failed' ? this.active.error ?? 'terminalCrashed' : null;
 
   getSnapshot = (request: TerminalSnapshotRequest): TerminalStateSnapshot => {
     const active = this.active;
@@ -406,7 +406,7 @@ export class TerminalController {
       this.options.runtime.send(command);
       return actionResult('accepted');
     } catch {
-      this.fail(active, 'bridgeCrashed');
+      this.fail(active, 'terminalCrashed');
       return actionResult('failed');
     }
   };
@@ -431,7 +431,7 @@ export class TerminalController {
         paused,
       });
     } catch {
-      this.fail(active, 'bridgeCrashed');
+      this.fail(active, 'terminalCrashed');
     }
   };
 

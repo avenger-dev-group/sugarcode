@@ -40,37 +40,6 @@ test('conversation snapshots reject non-terminal unread states', () => {
   assert.equal(isConversationStateSnapshot(snapshot('inProgress')), false);
 });
 
-test('reload-required navigation accepts unique UUIDv7 Thread IDs', () => {
-  assert.equal(
-    isConversationStateSnapshot({
-      ...snapshot('completed'),
-      navigator: {
-        ...snapshot('completed').navigator,
-        reloadRequiredThreadIds: [THREAD_WEB, THREAD_ADMIN],
-      },
-    }),
-    true,
-  );
-});
-
-test('reload-required navigation rejects duplicate or invalid Thread IDs', () => {
-  for (const reloadRequiredThreadIds of [
-    [THREAD_WEB, THREAD_WEB],
-    ['thread-web'],
-  ]) {
-    assert.equal(
-      isConversationStateSnapshot({
-        ...snapshot('completed'),
-        navigator: {
-          ...snapshot('completed').navigator,
-          reloadRequiredThreadIds,
-        },
-      }),
-      false,
-    );
-  }
-});
-
 test('advanced search truncation may occur before the match limit', () => {
   assert.equal(
     isConversationStateSnapshot({

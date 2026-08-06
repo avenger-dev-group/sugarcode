@@ -205,11 +205,11 @@ test('terminal controller surfaces utility-process loss as the existing failure 
     workspaceId: 'workspace-runtime',
     generation: 2,
     sessionId: SESSION_ID,
-    error: 'bridgeCrashed',
+    error: 'terminalCrashed',
     fatal: true,
   });
 
-  assert.equal(controller.getFailureDiagnostic(), 'bridgeCrashed');
+  assert.equal(controller.getFailureDiagnostic(), 'terminalCrashed');
   assert.equal(controller.getSnapshot({
     generation: 2,
     sessionId: SESSION_ID,

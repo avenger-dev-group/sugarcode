@@ -71,7 +71,7 @@ jobs:
       - name: Test active workspace scope boundary
         run: cargo test -p sugarcode-tools --test workspace_scope --locked -- --nocapture
 
-      - name: Test user-confirmed Desktop terminal bridge
+      - name: Test user-confirmed Desktop PTY boundary
         run: cargo test -p sugarcode-terminal --locked -- --nocapture
 
       - name: Test Rust workspace

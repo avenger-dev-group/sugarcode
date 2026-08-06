@@ -13,6 +13,7 @@ const config: ForgeConfig = {
     extraResource: [
       appIconPngPath,
       path.join(__dirname, 'native', 'sugarcode-desktop-native.node'),
+      path.resolve(__dirname, '..', '..', 'THIRD_PARTY_NOTICES.txt'),
     ],
     icon: appIconBasePath,
   },

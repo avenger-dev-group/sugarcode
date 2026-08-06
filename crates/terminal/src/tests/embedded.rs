@@ -1,6 +1,6 @@
-use super::bridge::Utf8StreamDecoder;
+use super::embedded::Utf8StreamDecoder;
 #[cfg(windows)]
-use super::bridge::canonical_workspace_path_matches;
+use super::embedded::canonical_workspace_path_matches;
 use super::{EmbeddedTerminal, EmbeddedTerminalEvent};
 
 #[test]
@@ -21,7 +21,7 @@ fn replaces_invalid_and_incomplete_utf8_deterministically() {
 }
 
 #[test]
-fn embedded_terminal_streams_output_and_exits_without_a_cli_bridge() {
+fn embedded_terminal_streams_output_and_exits() {
     let workspace = tempfile::tempdir().expect("workspace");
     let canonical_workspace = workspace
         .path()
