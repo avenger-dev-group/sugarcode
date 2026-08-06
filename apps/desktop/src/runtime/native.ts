@@ -7,6 +7,15 @@ export type NativeRuntimeBinding = Readonly<{
     workspaceId: string,
     title?: string,
   ) => void;
+  createThreadJson: (workspaceId: string, title?: string) => string;
+  listThreadsJson: (workspaceId: string, query?: string) => string;
+  setThreadArchivedJson: (
+    threadId: string,
+    workspaceId: string,
+    archived: boolean,
+  ) => string;
+  deleteThread: (threadId: string, workspaceId: string) => boolean;
+  forkThreadJson: (threadId: string, workspaceId: string) => string;
   startTurn: (
     turnId: string,
     threadId: string,
@@ -26,6 +35,20 @@ export type NativeRuntimeBinding = Readonly<{
     status: string,
     errorJson?: string,
   ) => boolean;
+  proposeOperation: (
+    operationId: string,
+    approvalId: string,
+    turnId: string,
+    toolName: string,
+    requestHash: string,
+    argumentsJson: string,
+  ) => boolean;
+  resolveApproval: (approvalId: string, decision: 'approved' | 'denied') => boolean;
+  completeOperation: (
+    operationId: string,
+    resultJson: string,
+    succeeded: boolean,
+  ) => boolean;
   loadThreadJson: (threadId: string) => string;
   workspaceRead: (workspaceId: string, path: string) => Promise<string>;
   workspaceList: (workspaceId: string, path: string) => Promise<string>;
@@ -34,6 +57,39 @@ export type NativeRuntimeBinding = Readonly<{
     path: string,
     query: string,
   ) => Promise<string>;
+  workspaceApplyPatch: (workspaceId: string, patch: string) => Promise<string>;
+  gitStatusJson: (workspaceId: string) => string;
+  gitDiffJson: (
+    workspaceId: string,
+    expectedRevision: string,
+    path: string,
+    source: 'worktree' | 'index',
+  ) => string;
+  gitMutateJson: (
+    workspaceId: string,
+    expectedRevision: string,
+    paths: readonly string[],
+    stage: boolean,
+  ) => string;
+  gitCommitJson: (
+    workspaceId: string,
+    expectedRevision: string,
+    message: string,
+    authorName: string,
+    authorEmail: string,
+  ) => string;
+  inspectModelConfigJson: () => string;
+  saveModelConfigJson: (
+    expectedRevision: string,
+    configJson: string,
+    credentialUpdatesJson: string,
+  ) => string;
+  deleteModelApiKeyJson: (
+    connectionId: string,
+    expectedRevision: string,
+  ) => string;
+  modelConnectionJson: (connectionId: string) => string;
+  modelProfileJson: (profileId?: string) => string;
 }>;
 
 type NativeExports = Readonly<{

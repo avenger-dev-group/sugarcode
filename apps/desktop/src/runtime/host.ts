@@ -6,10 +6,12 @@ import {
   type Event,
 } from '@google/adk';
 import type { Content, Part } from '@google/genai';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { SUGARCODE_BASE_AGENT_PROMPT_V1 } from './agent-instructions.ts';
 import { ProviderAdapterError } from './models/errors.ts';
 import { AnthropicLlm } from './models/anthropic-llm.ts';
+import { discoverModels } from './models/discovery.ts';
 import { OpenAiLlm } from './models/openai-llm.ts';
 import {
   loadNativeRuntime,
@@ -21,17 +23,30 @@ import type {
   RuntimeEventInput,
   RuntimeProviderConfig,
   RuntimeProviderError,
+  RuntimeModelSelection,
+  RuntimeThreadRecord,
+  RuntimeThreadSnapshot,
   RuntimeUsage,
 } from './protocol.ts';
 import { RUNTIME_PROTOCOL_VERSION } from './protocol.ts';
 import { createWorkspaceTools } from './tools/workspace.ts';
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
+const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
 
 type RuntimeHostOptions = Readonly<{
   postEvent: (event: RuntimeEvent) => void;
   createModel?: (provider: RuntimeProviderConfig) => BaseLlm;
   loadNative?: typeof loadNativeRuntime;
+}>;
+
+type PendingApproval = Readonly<{
+  workspaceId: string;
+  threadId: string;
+  turnId: string;
+  operationId: string;
+  resolve: (decision: 'approved' | 'denied') => void;
 }>;
 
 const defaultCreateModel = (provider: RuntimeProviderConfig): BaseLlm => {
@@ -47,6 +62,16 @@ const defaultCreateModel = (provider: RuntimeProviderConfig): BaseLlm => {
     ? new AnthropicLlm(common)
     : new OpenAiLlm({ ...common, wireApi: provider.wireApi });
 };
+
+type ResolvedProfile = Readonly<{
+  provider: RuntimeProviderConfig;
+  selection: RuntimeModelSelection;
+}>;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const capabilityEnabled = (value: unknown): boolean => value !== 'disabled';
 
 const providerError = (error: unknown): RuntimeProviderError => {
   if (error instanceof ProviderAdapterError) {
@@ -106,6 +131,7 @@ export class RuntimeHost {
   private readonly loadNative: NonNullable<RuntimeHostOptions['loadNative']>;
   private readonly sessions = new InMemorySessionService();
   private readonly activeTurns = new Map<string, AbortController>();
+  private readonly pendingApprovals = new Map<string, PendingApproval>();
   private sequence = 0;
   private initialized = false;
   private shuttingDown = false;
@@ -146,19 +172,246 @@ export class RuntimeHost {
         break;
       case 'turn.cancel':
         this.activeTurns.get(command.turnId)?.abort();
+        this.cancelTurnApprovals(command.turnId);
         break;
-      case 'approval.resolve':
+      case 'approval.resolve': {
+        const pending = this.pendingApprovals.get(command.approvalId);
+        if (
+          !pending ||
+          pending.workspaceId !== command.workspaceId ||
+          pending.threadId !== command.threadId ||
+          pending.turnId !== command.turnId
+        ) {
+          this.emit({
+            type: 'runtime.log',
+            requestId: command.requestId,
+            level: 'warn',
+            message: `Approval ${command.approvalId} has no matching pending runtime tool.`,
+          });
+          break;
+        }
+        this.requireNative().resolveApproval(command.approvalId, command.decision);
+        this.pendingApprovals.delete(command.approvalId);
         this.emit({
-          type: 'runtime.log',
+          type: 'approval.resolved',
           requestId: command.requestId,
-          level: 'warn',
-          message: `Approval ${command.approvalId} has no pending runtime tool.`,
+          workspaceId: pending.workspaceId,
+          threadId: pending.threadId,
+          turnId: pending.turnId,
+          approvalId: command.approvalId,
+          operationId: pending.operationId,
+          decision: command.decision,
         });
+        pending.resolve(command.decision);
+        break;
+      }
+      case 'thread.list':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'thread.listResult',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          query: command.query ?? '',
+          threads: this.parseNativeJson<RuntimeThreadRecord[]>(
+            this.requireNative().listThreadsJson(
+              command.workspaceId,
+              command.query,
+            ),
+          ),
+        });
+        break;
+      case 'thread.load':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'thread.loaded',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          snapshot: this.parseNativeJson<RuntimeThreadSnapshot>(
+            this.requireNative().loadThreadJson(command.threadId),
+          ),
+        });
+        break;
+      case 'thread.create': {
+        this.requireReady(command.requestId);
+        const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+          this.requireNative().createThreadJson(
+            command.workspaceId,
+            command.title,
+          ),
+        );
+        this.emit({
+          type: 'thread.mutated',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'create',
+          threadId: snapshot.thread.id,
+          snapshot,
+        });
+        break;
+      }
+      case 'thread.fork': {
+        this.requireReady(command.requestId);
+        const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+          this.requireNative().forkThreadJson(
+            command.threadId,
+            command.workspaceId,
+          ),
+        );
+        this.emit({
+          type: 'thread.mutated',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'fork',
+          threadId: snapshot.thread.id,
+          snapshot,
+        });
+        break;
+      }
+      case 'thread.archive':
+      case 'thread.unarchive': {
+        this.requireReady(command.requestId);
+        const operation = command.type === 'thread.archive' ? 'archive' : 'unarchive';
+        const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+          this.requireNative().setThreadArchivedJson(
+            command.threadId,
+            command.workspaceId,
+            operation === 'archive',
+          ),
+        );
+        this.emit({
+          type: 'thread.mutated',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation,
+          threadId: command.threadId,
+          snapshot,
+        });
+        break;
+      }
+      case 'thread.delete':
+        this.requireReady(command.requestId);
+        if (!this.requireNative().deleteThread(command.threadId, command.workspaceId)) {
+          throw new Error(`Thread ${command.threadId} does not exist in this workspace.`);
+        }
+        this.emit({
+          type: 'thread.mutated',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'delete',
+          threadId: command.threadId,
+        });
+        break;
+      case 'git.status':
+        this.emit({
+          type: 'git.result',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'status',
+          result: this.parseNativeJson(
+            this.requireNative().gitStatusJson(command.workspaceId),
+          ),
+        });
+        break;
+      case 'git.diff':
+        this.emit({
+          type: 'git.result',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'diff',
+          result: this.parseNativeJson(
+            this.requireNative().gitDiffJson(
+              command.workspaceId,
+              command.expectedRevision,
+              command.path,
+              command.source,
+            ),
+          ),
+        });
+        break;
+      case 'git.stage':
+      case 'git.unstage': {
+        const operation = command.type === 'git.stage' ? 'stage' : 'unstage';
+        this.emit({
+          type: 'git.result',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation,
+          result: this.parseNativeJson(
+            this.requireNative().gitMutateJson(
+              command.workspaceId,
+              command.expectedRevision,
+              command.paths,
+              operation === 'stage',
+            ),
+          ),
+        });
+        break;
+      }
+      case 'git.commit':
+        this.emit({
+          type: 'git.result',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'commit',
+          result: this.parseNativeJson(
+            this.requireNative().gitCommitJson(
+              command.workspaceId,
+              command.expectedRevision,
+              command.message,
+              command.authorName,
+              command.authorEmail,
+            ),
+          ),
+        });
+        break;
+      case 'model.inspect':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'model.configInspection',
+          requestId: command.requestId,
+          inspection: this.parseNativeJson(
+            this.requireNative().inspectModelConfigJson(),
+          ),
+        });
+        break;
+      case 'model.save':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'model.configAction',
+          requestId: command.requestId,
+          action: this.parseNativeJson(
+            this.requireNative().saveModelConfigJson(
+              command.request.expectedRevision,
+              JSON.stringify(command.request.config),
+              JSON.stringify(command.request.credentialUpdates),
+            ),
+          ),
+        });
+        break;
+      case 'model.deleteApiKey':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'model.configAction',
+          requestId: command.requestId,
+          action: this.parseNativeJson(
+            this.requireNative().deleteModelApiKeyJson(
+              command.connectionId,
+              command.expectedRevision,
+            ),
+          ),
+        });
+        break;
+      case 'model.discover':
+        this.requireReady(command.requestId);
+        void this.discover(command.requestId, command.connectionId);
         break;
       case 'shutdown':
         this.shuttingDown = true;
         for (const controller of this.activeTurns.values()) {
           controller.abort();
+        }
+        for (const turnId of this.activeTurns.keys()) {
+          this.cancelTurnApprovals(turnId);
         }
         this.activeTurns.clear();
         break;
@@ -168,6 +421,119 @@ export class RuntimeHost {
   private requireReady = (requestId: string): void => {
     if (!this.initialized || this.shuttingDown) {
       throw new Error(`Runtime is not ready for request ${requestId}.`);
+    }
+  };
+
+  private requireNative = (): NativeRuntimeBinding => {
+    if (!this.nativeRuntime) {
+      throw new Error('The SugarCode native runtime is unavailable.');
+    }
+    return this.nativeRuntime;
+  };
+
+  private parseNativeJson = <T>(value: string): T => JSON.parse(value) as T;
+
+  private resolveProfile = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+  ): ResolvedProfile => {
+    if (command.provider) {
+      const providerFamily = command.provider.wireApi === 'anthropicMessages'
+        ? 'anthropic'
+        : 'openai';
+      return {
+        provider: command.provider,
+        selection: {
+          profileId: 'runtime-direct',
+          providerFamily,
+          wireApi: command.provider.wireApi,
+          modelId: command.provider.model,
+          displayName: command.provider.model,
+          contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
+          effectiveCapabilities: {
+            toolCalls: true,
+            strictTools: false,
+            parallelTools: command.provider.parallelTools,
+            imageInput: true,
+            pdfInput: providerFamily === 'anthropic',
+          },
+        },
+      };
+    }
+    const resolved = this.parseNativeJson<unknown>(
+      this.requireNative().modelProfileJson(command.modelProfileId),
+    );
+    if (
+      !isRecord(resolved) ||
+      !isRecord(resolved.profile) ||
+      !isRecord(resolved.connection)
+    ) {
+      throw new Error('The selected model profile is invalid.');
+    }
+    const profile = resolved.profile;
+    const connection = resolved.connection;
+    const wireApi = connection.wireApi;
+    const providerFamily = connection.providerFamily;
+    if (
+      typeof profile.id !== 'string' ||
+      typeof profile.modelId !== 'string' ||
+      typeof profile.displayName !== 'string' ||
+      !['openai', 'anthropic'].includes(String(providerFamily)) ||
+      !['openaiResponses', 'openaiChatCompletions', 'anthropicMessages'].includes(
+        String(wireApi),
+      ) ||
+      typeof connection.baseUrl !== 'string'
+    ) {
+      throw new Error('The selected model profile is incomplete.');
+    }
+    const selection: RuntimeModelSelection = {
+      profileId: profile.id,
+      providerFamily: providerFamily as RuntimeModelSelection['providerFamily'],
+      wireApi: wireApi as RuntimeModelSelection['wireApi'],
+      modelId: profile.modelId,
+      displayName: profile.displayName,
+      contextWindowTokens:
+        typeof profile.contextWindowTokens === 'number'
+          ? profile.contextWindowTokens
+          : DEFAULT_CONTEXT_WINDOW_TOKENS,
+      effectiveCapabilities: {
+        toolCalls: capabilityEnabled(profile.toolCalls),
+        strictTools: profile.strictTools === 'enabled',
+        parallelTools: capabilityEnabled(profile.parallelTools),
+        imageInput: capabilityEnabled(profile.imageInput),
+        pdfInput: capabilityEnabled(profile.pdfInput),
+      },
+    };
+    return {
+      provider: {
+        wireApi: selection.wireApi,
+        model: selection.modelId,
+        baseUrl: connection.baseUrl,
+        ...(typeof resolved.apiKey === 'string'
+          ? { apiKey: resolved.apiKey }
+          : {}),
+        timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
+        parallelTools: selection.effectiveCapabilities.parallelTools,
+      },
+      selection,
+    };
+  };
+
+  private discover = async (
+    requestId: string,
+    connectionId: string,
+  ): Promise<void> => {
+    try {
+      const discovery = await discoverModels(
+        this.requireNative().modelConnectionJson(connectionId),
+      );
+      this.emit({ type: 'model.discovery', requestId, discovery });
+    } catch (error) {
+      this.emit({
+        type: 'runtime.log',
+        requestId,
+        level: 'error',
+        message: error instanceof Error ? error.message : 'Model discovery failed.',
+      });
     }
   };
 
@@ -185,6 +551,7 @@ export class RuntimeHost {
     const controller = new AbortController();
     this.activeTurns.set(command.turnId, controller);
     try {
+      const resolved = this.resolveProfile(command);
       this.nativeRuntime?.ensureThread(
         command.threadId,
         command.workspaceId,
@@ -193,8 +560,8 @@ export class RuntimeHost {
         command.turnId,
         command.threadId,
         command.requestId,
-        command.provider.wireApi,
-        command.provider.model,
+        resolved.provider.wireApi,
+        resolved.provider.model,
       );
       this.emit({
         type: 'turn.started',
@@ -202,6 +569,16 @@ export class RuntimeHost {
         workspaceId: command.workspaceId,
         threadId: command.threadId,
         turnId: command.turnId,
+        model: resolved.selection,
+      });
+      this.emit({
+        type: 'turn.userMessage',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        itemId: `${command.turnId}:user`,
+        content: command.content,
       });
       const session = await this.sessions.getSession({
         appName: APPLICATION_NAME,
@@ -219,9 +596,21 @@ export class RuntimeHost {
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
         instruction: SUGARCODE_BASE_AGENT_PROMPT_V1,
-        model: this.createModel(command.provider),
+        model: this.createModel(resolved.provider),
         tools: this.nativeRuntime
-          ? [...createWorkspaceTools(this.nativeRuntime, command.workspaceId)]
+          ? [
+              ...createWorkspaceTools(
+                this.nativeRuntime,
+                command.workspaceId,
+                (toolName, argumentsValue, execute) =>
+                  this.runPrivilegedTool(
+                    command,
+                    toolName,
+                    argumentsValue,
+                    execute,
+                  ),
+              ),
+            ]
           : [],
       });
       const runner = new Runner({
@@ -312,6 +701,84 @@ export class RuntimeHost {
     }
   };
 
+  private runPrivilegedTool = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    toolName: string,
+    argumentsValue: Readonly<Record<string, unknown>>,
+    execute: () => Promise<unknown>,
+  ): Promise<unknown> => {
+    const operationId = randomUUID();
+    const approvalId = randomUUID();
+    const argumentsJson = JSON.stringify(argumentsValue);
+    const requestHash = createHash('sha256').update(argumentsJson).digest('hex');
+    this.requireNative().proposeOperation(
+      operationId,
+      approvalId,
+      command.turnId,
+      toolName,
+      requestHash,
+      argumentsJson,
+    );
+    const decision = await new Promise<'approved' | 'denied'>((resolve) => {
+      this.pendingApprovals.set(approvalId, {
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        resolve,
+      });
+      this.emit({
+        type: 'approval.requested',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        approvalId,
+        operationId,
+        toolName,
+        argumentsSummary: `${toolName} (${Buffer.byteLength(argumentsJson, 'utf8')} bytes)`,
+      });
+    });
+    if (decision === 'denied') {
+      return { ok: false, error: 'userDenied' };
+    }
+    try {
+      const result = await execute();
+      this.requireNative().completeOperation(
+        operationId,
+        JSON.stringify(result),
+        true,
+      );
+      return result;
+    } catch (error) {
+      const result = {
+        ok: false,
+        error: error instanceof Error ? error.message : 'privilegedToolFailed',
+      };
+      this.requireNative().completeOperation(
+        operationId,
+        JSON.stringify(result),
+        false,
+      );
+      return result;
+    }
+  };
+
+  private cancelTurnApprovals = (turnId: string): void => {
+    for (const [approvalId, pending] of this.pendingApprovals) {
+      if (pending.turnId !== turnId) {
+        continue;
+      }
+      try {
+        this.nativeRuntime?.resolveApproval(approvalId, 'denied');
+      } catch {
+        // Recovery keeps unresolved approvals visible if persistence is unavailable.
+      }
+      this.pendingApprovals.delete(approvalId);
+      pending.resolve('denied');
+    }
+  };
+
   private emitCompleted = (
     command: Extract<RuntimeCommand, { type: 'turn.start' }>,
     status: 'completed' | 'interrupted' | 'failed',
@@ -354,8 +821,8 @@ export class RuntimeHost {
       this.nativeRuntime &&
       normalized.type !== 'runtime.ready' &&
       normalized.type !== 'runtime.log' &&
-      normalized.type !== 'turn.started' &&
-      normalized.type !== 'turn.completed'
+      normalized.type !== 'turn.completed' &&
+      'turnId' in normalized
     ) {
       const itemId =
         'itemId' in normalized
@@ -366,7 +833,7 @@ export class RuntimeHost {
               ? normalized.approvalId
               : String(normalized.sequence);
       this.nativeRuntime.appendItem(
-        `${normalized.type}:${itemId}`,
+        `${normalized.type}:${itemId}:${normalized.sequence}`,
         normalized.turnId,
         normalized.sequence,
         normalized.type,

@@ -5,11 +5,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 3;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
 
@@ -62,7 +64,8 @@ impl Store {
         let data_directory = data_directory.as_ref();
         fs::create_dir_all(data_directory)?;
         let database_path = data_directory.join(DATABASE_FILE);
-        let mut connection = Connection::open(database_path)?;
+        let mut connection = Connection::open(&database_path)?;
+        restrict_database_permissions(&database_path)?;
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -100,6 +103,22 @@ impl Store {
     ) -> Result<()> {
         validate_id("thread_id", thread_id)?;
         validate_id("workspace_id", workspace_id)?;
+        let existing_workspace: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT workspace_id FROM threads WHERE id = ?1",
+                [thread_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if existing_workspace
+            .as_deref()
+            .is_some_and(|id| id != workspace_id)
+        {
+            return Err(PersistenceError::Conflict(format!(
+                "thread {thread_id} belongs to a different workspace"
+            )));
+        }
         self.connection.execute(
             "INSERT INTO threads (id, workspace_id, title) VALUES (?1, ?2, ?3) \
              ON CONFLICT(id) DO UPDATE SET title = COALESCE(excluded.title, threads.title), \
@@ -107,6 +126,247 @@ impl Store {
             params![thread_id, workspace_id, title],
         )?;
         Ok(())
+    }
+
+    pub(super) fn create_thread_json(
+        &mut self,
+        workspace_id: &str,
+        title: Option<&str>,
+    ) -> Result<String> {
+        validate_id("workspace_id", workspace_id)?;
+        validate_title(title)?;
+        let thread_id = Uuid::now_v7().hyphenated().to_string();
+        self.ensure_thread(&thread_id, workspace_id, title)?;
+        self.load_thread_json(&thread_id)
+    }
+
+    pub(super) fn list_threads_json(
+        &mut self,
+        workspace_id: &str,
+        query: Option<&str>,
+    ) -> Result<String> {
+        validate_id("workspace_id", workspace_id)?;
+        let query = query.map(str::trim).filter(|value| !value.is_empty());
+        if query.is_some_and(|value| value.len() > 256) {
+            return Err(PersistenceError::InvalidInput(
+                "thread search query is too long".to_owned(),
+            ));
+        }
+        let pattern = query.map(|value| format!("%{}%", escape_like(value)));
+        let mut statement = self.connection.prepare(
+            "SELECT id, workspace_id, title, created_at, updated_at, archived_at, parent_thread_id \
+             FROM threads WHERE workspace_id = ?1 AND archived_at IS NULL \
+             AND (?2 IS NULL OR COALESCE(title, '') LIKE ?2 ESCAPE '\\') \
+             ORDER BY updated_at DESC, id DESC LIMIT 200",
+        )?;
+        let threads = statement
+            .query_map(params![workspace_id, pattern], thread_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(serde_json::to_string(&threads)?)
+    }
+
+    pub(super) fn set_thread_archived_json(
+        &mut self,
+        thread_id: &str,
+        workspace_id: &str,
+        archived: bool,
+    ) -> Result<String> {
+        validate_id("thread_id", thread_id)?;
+        validate_id("workspace_id", workspace_id)?;
+        let running: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns WHERE thread_id = ?1 AND status = 'running')",
+            [thread_id],
+            |row| row.get(0),
+        )?;
+        if running {
+            return Err(PersistenceError::Conflict(format!(
+                "thread {thread_id} has a running Turn"
+            )));
+        }
+        let updated = self.connection.execute(
+            if archived {
+                "UPDATE threads SET archived_at = unixepoch(), updated_at = unixepoch() \
+                 WHERE id = ?1 AND workspace_id = ?2 AND archived_at IS NULL"
+            } else {
+                "UPDATE threads SET archived_at = NULL, updated_at = unixepoch() \
+                 WHERE id = ?1 AND workspace_id = ?2 AND archived_at IS NOT NULL"
+            },
+            params![thread_id, workspace_id],
+        )?;
+        if updated == 0 {
+            let existing: Option<Option<i64>> = self
+                .connection
+                .query_row(
+                    "SELECT archived_at FROM threads WHERE id = ?1 AND workspace_id = ?2",
+                    params![thread_id, workspace_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match existing {
+                None => {
+                    return Err(PersistenceError::InvalidInput(format!(
+                        "thread {thread_id} does not exist in this workspace"
+                    )));
+                }
+                Some(value) if value.is_some() != archived => {
+                    return Err(PersistenceError::Conflict(format!(
+                        "thread {thread_id} archive state could not be changed"
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        self.load_thread_json(thread_id)
+    }
+
+    pub(super) fn delete_thread(&mut self, thread_id: &str, workspace_id: &str) -> Result<bool> {
+        validate_id("thread_id", thread_id)?;
+        validate_id("workspace_id", workspace_id)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let running: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns WHERE thread_id = ?1 AND status = 'running')",
+            [thread_id],
+            |row| row.get(0),
+        )?;
+        if running {
+            return Err(PersistenceError::Conflict(format!(
+                "thread {thread_id} has a running Turn"
+            )));
+        }
+        let owned: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1 AND workspace_id = ?2)",
+            params![thread_id, workspace_id],
+            |row| row.get(0),
+        )?;
+        if !owned {
+            return Ok(false);
+        }
+        transaction.execute(
+            "DELETE FROM approvals WHERE turn_id IN (SELECT id FROM turns WHERE thread_id = ?1)",
+            [thread_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM operations WHERE turn_id IN (SELECT id FROM turns WHERE thread_id = ?1)",
+            [thread_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM agent_tasks WHERE turn_id IN (SELECT id FROM turns WHERE thread_id = ?1)",
+            [thread_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM turn_items WHERE turn_id IN (SELECT id FROM turns WHERE thread_id = ?1)",
+            [thread_id],
+        )?;
+        transaction.execute("DELETE FROM turns WHERE thread_id = ?1", [thread_id])?;
+        transaction.execute(
+            "UPDATE threads SET parent_thread_id = NULL WHERE parent_thread_id = ?1",
+            [thread_id],
+        )?;
+        let deleted = transaction.execute(
+            "DELETE FROM threads WHERE id = ?1 AND workspace_id = ?2",
+            params![thread_id, workspace_id],
+        )?;
+        transaction.commit()?;
+        Ok(deleted == 1)
+    }
+
+    pub(super) fn fork_thread_json(
+        &mut self,
+        thread_id: &str,
+        workspace_id: &str,
+    ) -> Result<String> {
+        validate_id("thread_id", thread_id)?;
+        validate_id("workspace_id", workspace_id)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let title: Option<String> = transaction
+            .query_row(
+                "SELECT title FROM threads WHERE id = ?1 AND workspace_id = ?2",
+                params![thread_id, workspace_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                PersistenceError::InvalidInput(format!(
+                    "thread {thread_id} does not exist in this workspace"
+                ))
+            })?;
+        let new_thread_id = Uuid::now_v7().hyphenated().to_string();
+        transaction.execute(
+            "INSERT INTO threads (id, workspace_id, title, parent_thread_id) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![new_thread_id, workspace_id, title, thread_id],
+        )?;
+        let mut turn_statement = transaction.prepare(
+            "SELECT id, status, provider_wire_api, model, error_json, started_at, completed_at \
+             FROM turns WHERE thread_id = ?1 AND status != 'running' ORDER BY started_at, id",
+        )?;
+        let source_turns = turn_statement
+            .query_map([thread_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(turn_statement);
+        for (source_turn_id, status, wire_api, model, error_json, started_at, completed_at) in
+            source_turns
+        {
+            let new_turn_id = Uuid::now_v7().hyphenated().to_string();
+            transaction.execute(
+                "INSERT INTO turns (id, thread_id, request_id, status, provider_wire_api, model, \
+                 error_json, started_at, completed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    new_turn_id,
+                    new_thread_id,
+                    format!("fork:{new_thread_id}:{new_turn_id}"),
+                    status,
+                    wire_api,
+                    model,
+                    error_json,
+                    started_at,
+                    completed_at
+                ],
+            )?;
+            let mut item_statement = transaction.prepare(
+                "SELECT sequence, kind, payload_json FROM turn_items \
+                 WHERE turn_id = ?1 ORDER BY sequence, id",
+            )?;
+            let items = item_statement
+                .query_map([source_turn_id], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(item_statement);
+            for (sequence, kind, payload_json) in items {
+                transaction.execute(
+                    "INSERT INTO turn_items (id, turn_id, sequence, kind, payload_json) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        Uuid::now_v7().hyphenated().to_string(),
+                        new_turn_id,
+                        sequence,
+                        kind,
+                        payload_json
+                    ],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        self.load_thread_json(&new_thread_id)
     }
 
     pub(super) fn start_turn(
@@ -142,6 +402,10 @@ impl Store {
              (id, thread_id, request_id, status, provider_wire_api, model) \
              VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
             params![turn_id, thread_id, request_id, provider_wire_api, model],
+        )?;
+        self.connection.execute(
+            "UPDATE threads SET updated_at = unixepoch() WHERE id = ?1",
+            [thread_id],
         )?;
         Ok(())
     }
@@ -382,17 +646,10 @@ impl Store {
     pub(super) fn load_thread_json(&mut self, thread_id: &str) -> Result<String> {
         validate_id("thread_id", thread_id)?;
         let thread = self.connection.query_row(
-            "SELECT id, workspace_id, title, created_at, updated_at FROM threads WHERE id = ?1",
+            "SELECT id, workspace_id, title, created_at, updated_at, archived_at, parent_thread_id \
+             FROM threads WHERE id = ?1",
             [thread_id],
-            |row| {
-                Ok(ThreadRow {
-                    id: row.get(0)?,
-                    workspace_id: row.get(1)?,
-                    title: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
-                })
-            },
+            thread_row,
         )?;
         let mut statement = self.connection.prepare(
             "SELECT id, request_id, status, provider_wire_api, model, error_json, \
@@ -445,6 +702,368 @@ impl Store {
             items,
         })?)
     }
+
+    pub(super) fn inspect_model_config_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&model_config_inspection(
+            &self.connection,
+        )?)?)
+    }
+
+    pub(super) fn save_model_config_json(
+        &mut self,
+        expected_revision: &str,
+        config_json: &str,
+        credential_updates_json: &str,
+    ) -> Result<String> {
+        validate_revision(expected_revision)?;
+        let config: Value = serde_json::from_str(config_json)?;
+        let updates: Vec<CredentialUpdate> = serde_json::from_str(credential_updates_json)?;
+        let connection_ids = model_connection_ids(&config)?;
+        if updates.len() != connection_ids.len()
+            || updates
+                .iter()
+                .any(|update| !connection_ids.iter().any(|id| id == update.connection_id()))
+        {
+            return Err(PersistenceError::InvalidInput(
+                "credential updates do not match model connections".to_owned(),
+            ));
+        }
+        let canonical_config = serde_json::to_string(&config)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = model_config_inspection(&transaction)?;
+        if current.revision != expected_revision {
+            return Ok(serde_json::to_string(&ModelConfigAction {
+                accepted: false,
+                state: "blocked",
+                reason: Some("stale"),
+                inspection: Some(current),
+            })?);
+        }
+        transaction.execute(
+            "INSERT INTO model_config (singleton, config_json, updated_at) \
+             VALUES (1, ?1, unixepoch()) ON CONFLICT(singleton) DO UPDATE SET \
+             config_json = excluded.config_json, updated_at = excluded.updated_at",
+            [&canonical_config],
+        )?;
+        for update in updates {
+            match update {
+                CredentialUpdate::Preserve { .. } => {}
+                CredentialUpdate::Set {
+                    connection_id,
+                    value,
+                } => {
+                    transaction.execute(
+                        "INSERT INTO model_credentials (connection_id, api_key, updated_at) \
+                         VALUES (?1, ?2, unixepoch()) ON CONFLICT(connection_id) DO UPDATE SET \
+                         api_key = excluded.api_key, updated_at = excluded.updated_at",
+                        params![connection_id, value],
+                    )?;
+                }
+                CredentialUpdate::Delete { connection_id } => {
+                    transaction.execute(
+                        "DELETE FROM model_credentials WHERE connection_id = ?1",
+                        [connection_id],
+                    )?;
+                }
+            }
+        }
+        let placeholders = connection_ids.iter().map(|_| "?").collect::<Vec<_>>();
+        if !placeholders.is_empty() {
+            let sql = format!(
+                "DELETE FROM model_credentials WHERE connection_id NOT IN ({})",
+                placeholders.join(",")
+            );
+            transaction.execute(&sql, rusqlite::params_from_iter(connection_ids.iter()))?;
+        }
+        transaction.commit()?;
+        let inspection = model_config_inspection(&self.connection)?;
+        Ok(serde_json::to_string(&ModelConfigAction {
+            accepted: true,
+            state: "saved",
+            reason: None,
+            inspection: Some(inspection),
+        })?)
+    }
+
+    pub(super) fn delete_model_api_key_json(
+        &mut self,
+        connection_id: &str,
+        expected_revision: &str,
+    ) -> Result<String> {
+        validate_id("connection_id", connection_id)?;
+        validate_revision(expected_revision)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = model_config_inspection(&transaction)?;
+        if current.revision != expected_revision {
+            return Ok(serde_json::to_string(&ModelConfigAction {
+                accepted: false,
+                state: "blocked",
+                reason: Some("stale"),
+                inspection: Some(current),
+            })?);
+        }
+        let deleted = transaction.execute(
+            "DELETE FROM model_credentials WHERE connection_id = ?1",
+            [connection_id],
+        )?;
+        if deleted == 0 {
+            return Ok(serde_json::to_string(&ModelConfigAction {
+                accepted: false,
+                state: "failed",
+                reason: Some("invalid"),
+                inspection: Some(current),
+            })?);
+        }
+        transaction.commit()?;
+        let inspection = model_config_inspection(&self.connection)?;
+        Ok(serde_json::to_string(&ModelConfigAction {
+            accepted: true,
+            state: "saved",
+            reason: None,
+            inspection: Some(inspection),
+        })?)
+    }
+
+    pub(super) fn model_connection_json(&mut self, connection_id: &str) -> Result<String> {
+        validate_id("connection_id", connection_id)?;
+        let config = current_model_config(&self.connection)?.ok_or_else(|| {
+            PersistenceError::InvalidInput("model configuration is not set".to_owned())
+        })?;
+        let connection = config
+            .get("connections")
+            .and_then(Value::as_array)
+            .and_then(|connections| {
+                connections.iter().find(|connection| {
+                    connection.get("id").and_then(Value::as_str) == Some(connection_id)
+                })
+            })
+            .cloned()
+            .ok_or_else(|| {
+                PersistenceError::InvalidInput(format!(
+                    "model connection {connection_id} does not exist"
+                ))
+            })?;
+        let api_key: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT api_key FROM model_credentials WHERE connection_id = ?1",
+                [connection_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "connection": connection,
+            "apiKey": api_key,
+        }))?)
+    }
+
+    pub(super) fn model_profile_json(&mut self, profile_id: Option<&str>) -> Result<String> {
+        let config = current_model_config(&self.connection)?.ok_or_else(|| {
+            PersistenceError::InvalidInput("model configuration is not set".to_owned())
+        })?;
+        let selected_id = profile_id
+            .or_else(|| config.get("defaultProfileId").and_then(Value::as_str))
+            .ok_or_else(|| {
+                PersistenceError::InvalidInput("default model profile is missing".to_owned())
+            })?;
+        let profile = config
+            .get("profiles")
+            .and_then(Value::as_array)
+            .and_then(|profiles| {
+                profiles
+                    .iter()
+                    .find(|profile| profile.get("id").and_then(Value::as_str) == Some(selected_id))
+            })
+            .cloned()
+            .ok_or_else(|| {
+                PersistenceError::InvalidInput(format!(
+                    "model profile {selected_id} does not exist"
+                ))
+            })?;
+        let connection_id = profile
+            .get("connectionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                PersistenceError::InvalidInput("profile connection is missing".to_owned())
+            })?;
+        let connection: Value = config
+            .get("connections")
+            .and_then(Value::as_array)
+            .and_then(|connections| {
+                connections.iter().find(|connection| {
+                    connection.get("id").and_then(Value::as_str) == Some(connection_id)
+                })
+            })
+            .cloned()
+            .ok_or_else(|| {
+                PersistenceError::InvalidInput("profile connection does not exist".to_owned())
+            })?;
+        let api_key: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT api_key FROM model_credentials WHERE connection_id = ?1",
+                [connection_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "profile": profile,
+            "connection": connection,
+            "apiKey": api_key,
+        }))?)
+    }
+}
+
+#[cfg(unix)]
+fn restrict_database_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_database_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn validate_revision(value: &str) -> Result<()> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(PersistenceError::InvalidInput(
+            "model configuration revision is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn current_model_config(connection: &Connection) -> Result<Option<Value>> {
+    let config_json: Option<String> = connection
+        .query_row(
+            "SELECT config_json FROM model_config WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    config_json
+        .map(|value| serde_json::from_str(&value).map_err(PersistenceError::from))
+        .transpose()
+}
+
+fn model_connection_ids(config: &Value) -> Result<Vec<String>> {
+    let connections = config
+        .get("connections")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            PersistenceError::InvalidInput("model connections are invalid".to_owned())
+        })?;
+    let mut ids = connections
+        .iter()
+        .map(|connection| {
+            connection
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    PersistenceError::InvalidInput(
+                        "model connection identifier is invalid".to_owned(),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+fn model_config_inspection(connection: &Connection) -> Result<ModelConfigInspection> {
+    let config = current_model_config(connection)?;
+    let connection_ids = config
+        .as_ref()
+        .map(model_connection_ids)
+        .transpose()?
+        .unwrap_or_default();
+    let mut credential_statuses = Vec::with_capacity(connection_ids.len());
+    for connection_id in connection_ids {
+        let present: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM model_credentials WHERE connection_id = ?1)",
+            [&connection_id],
+            |row| row.get(0),
+        )?;
+        credential_statuses.push(ModelCredentialStatus {
+            connection_id,
+            status: if present { "present" } else { "notConfigured" },
+        });
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_vec(&config)?);
+    hasher.update(b"\n");
+    hasher.update(serde_json::to_vec(&credential_statuses)?);
+    Ok(ModelConfigInspection {
+        contract_version: 1,
+        revision: format!("{:x}", hasher.finalize()),
+        config,
+        credential_statuses,
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(
+    tag = "action",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum CredentialUpdate {
+    Preserve {
+        connection_id: String,
+    },
+    Set {
+        connection_id: String,
+        value: String,
+    },
+    Delete {
+        connection_id: String,
+    },
+}
+
+impl CredentialUpdate {
+    fn connection_id(&self) -> &str {
+        match self {
+            Self::Preserve { connection_id }
+            | Self::Set { connection_id, .. }
+            | Self::Delete { connection_id } => connection_id,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelConfigInspection {
+    contract_version: u8,
+    revision: String,
+    config: Option<Value>,
+    credential_statuses: Vec<ModelCredentialStatus>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelCredentialStatus {
+    connection_id: String,
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelConfigAction {
+    accepted: bool,
+    state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inspection: Option<ModelConfigInspection>,
 }
 
 fn validate_id(name: &str, value: &str) -> Result<()> {
@@ -462,7 +1081,7 @@ fn validate_json(value: &str) -> Result<()> {
 }
 
 fn migrate(connection: &mut Connection) -> Result<()> {
-    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let mut version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version > SCHEMA_VERSION {
         return Err(PersistenceError::InvalidInput(format!(
             "database schema {version} is newer than supported schema {SCHEMA_VERSION}"
@@ -471,8 +1090,9 @@ fn migrate(connection: &mut Connection) -> Result<()> {
     if version == SCHEMA_VERSION {
         return Ok(());
     }
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute_batch(
+    if version == 0 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
         "CREATE TABLE workspaces (\
            id TEXT PRIMARY KEY, canonical_root TEXT NOT NULL,\
            created_at INTEGER NOT NULL DEFAULT (unixepoch()),\
@@ -522,8 +1142,38 @@ fn migrate(connection: &mut Connection) -> Result<()> {
            updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
          ) STRICT;\
          PRAGMA user_version = 1;",
-    )?;
-    transaction.commit()?;
+        )?;
+        transaction.commit()?;
+        version = 1;
+    }
+    if version == 1 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE model_config (\
+               singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\
+               config_json TEXT NOT NULL,\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             CREATE TABLE model_credentials (\
+               connection_id TEXT PRIMARY KEY, api_key TEXT NOT NULL,\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             PRAGMA user_version = 2;",
+        )?;
+        transaction.commit()?;
+        version = 2;
+    }
+    if version == 2 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "ALTER TABLE threads ADD COLUMN archived_at INTEGER;
+             ALTER TABLE threads ADD COLUMN parent_thread_id TEXT REFERENCES threads(id);
+             CREATE INDEX threads_workspace_archive_updated
+               ON threads(workspace_id, archived_at, updated_at DESC);
+             PRAGMA user_version = 3;",
+        )?;
+        transaction.commit()?;
+    }
     Ok(())
 }
 
@@ -566,6 +1216,8 @@ struct ThreadRow {
     title: Option<String>,
     created_at: i64,
     updated_at: i64,
+    archived_at: Option<i64>,
+    parent_thread_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -589,4 +1241,32 @@ struct ItemRow {
     sequence: i64,
     kind: String,
     payload: Value,
+}
+
+fn thread_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadRow> {
+    Ok(ThreadRow {
+        id: row.get(0)?,
+        workspace_id: row.get(1)?,
+        title: row.get(2)?,
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
+        archived_at: row.get(5)?,
+        parent_thread_id: row.get(6)?,
+    })
+}
+
+fn validate_title(value: Option<&str>) -> Result<()> {
+    if value.is_some_and(|title| title.len() > 512 || title.chars().any(char::is_control)) {
+        return Err(PersistenceError::InvalidInput(
+            "thread title is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }

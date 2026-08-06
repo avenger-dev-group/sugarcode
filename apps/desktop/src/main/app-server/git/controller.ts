@@ -18,11 +18,28 @@ import type {
   GitStateSnapshot,
 } from '@/shared/git';
 
-import type { ConnectionSupervisor } from '../connection/supervisor';
 import type { WorkspaceController } from '../workspace/controller';
 
+type GitRuntimeBoundary = Readonly<{
+  gitStatus: () => Promise<WorkspaceGitStatusResponse>;
+  gitDiff: (params: {
+    expectedRevision: string;
+    path: string;
+    source: 'worktree' | 'index';
+  }) => Promise<import('@sugarcode/app-server-protocol').WorkspaceGitDiffResponse>;
+  gitStage: (params: { expectedRevision: string; paths: string[] }) => Promise<WorkspaceGitMutationResponse>;
+  gitUnstage: (params: { expectedRevision: string; paths: string[] }) => Promise<WorkspaceGitMutationResponse>;
+  gitCommit: (params: {
+    expectedRevision: string;
+    message: string;
+    authorName: string;
+    authorEmail: string;
+  }) => Promise<WorkspaceGitCommitResponse>;
+  beginGitTransaction: () => { release: () => void } | 'busy' | 'unavailable';
+}>;
+
 type GitControllerOptions = Readonly<{
-  supervisor: ConnectionSupervisor;
+  supervisor: GitRuntimeBoundary;
   workspace: WorkspaceController;
 }>;
 

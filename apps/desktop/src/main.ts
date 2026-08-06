@@ -12,7 +12,6 @@ import { GitController } from '@/main/app-server/git/controller';
 import { registerGitIpc } from '@/main/app-server/git/ipc';
 import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
 import { McpConfigController } from '@/main/app-server/mcp/config-controller';
-import { ModelConfigController } from '@/main/app-server/model-config/controller';
 import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
 import { ThreadRegistry } from '@/main/app-server/thread-registry';
 import { WorkspaceController } from '@/main/app-server/workspace/controller';
@@ -22,6 +21,10 @@ import { registerPreviewIpc } from '@/main/preview/ipc';
 import { TerminalController } from '@/main/terminal/controller';
 import { registerTerminalIpc } from '@/main/terminal/ipc';
 import { RuntimeSupervisor } from '@/main/runtime/supervisor';
+import { RuntimeModelConfigController } from '@/main/runtime/model-config-controller';
+import { RuntimeConversationController } from '@/main/runtime/conversation-controller';
+import { RuntimeApprovalController } from '@/main/runtime/approval-controller';
+import { RuntimeGitAdapter } from '@/main/runtime/git-adapter';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
@@ -38,6 +41,9 @@ let disposePreviewApprovalSubscriptions: (() => void) | null = null;
 let terminalController: TerminalController | null = null;
 let disposeTerminalIpc: (() => void) | null = null;
 let runtimeSupervisor: RuntimeSupervisor | null = null;
+let runtimeConversationController: RuntimeConversationController | null = null;
+let runtimeApprovalController: RuntimeApprovalController | null = null;
+let runtimeGitAdapter: RuntimeGitAdapter | null = null;
 let disposeRuntimeEvents: (() => void) | null = null;
 let disposeRuntimeWorkspaceEvents: (() => void) | null = null;
 
@@ -100,6 +106,7 @@ const createWindow = (): void => {
     (_event, _url, _isInPlace, isMainFrame) => {
       if (isMainFrame) {
         supervisor?.approvalSurfacesUnavailable();
+        runtimeApprovalController?.surfaceUnavailable();
         previewController?.shutdown();
         terminalController?.rendererUnavailable();
       }
@@ -107,11 +114,13 @@ const createWindow = (): void => {
   );
   window.webContents.on('render-process-gone', () => {
     supervisor?.approvalSurfacesUnavailable();
+    runtimeApprovalController?.surfaceUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
   });
   window.once('closed', () => {
     supervisor?.approvalSurfacesUnavailable();
+    runtimeApprovalController?.surfaceUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
     if (mainWindow === window) {
@@ -145,6 +154,11 @@ const startApplication = async (): Promise<void> => {
     }
   });
   runtimeSupervisor.start();
+  runtimeConversationController = new RuntimeConversationController(
+    runtimeSupervisor,
+  );
+  runtimeApprovalController = new RuntimeApprovalController(runtimeSupervisor);
+  runtimeGitAdapter = new RuntimeGitAdapter(runtimeSupervisor);
   const threadRegistry = new ThreadRegistry();
   supervisor = new ConnectionSupervisor({
     threadRegistry,
@@ -179,12 +193,23 @@ const startApplication = async (): Promise<void> => {
       return;
     }
     runtimeWorkspaceGeneration = snapshot.generation;
+    const runtimeWorkspaceId = createHash('sha256')
+      .update(workspace.path)
+      .digest('hex');
     runtimeSupervisor?.send({
       type: 'workspace.open',
       requestId: randomUUID(),
-      workspaceId: createHash('sha256').update(workspace.path).digest('hex'),
+      workspaceId: runtimeWorkspaceId,
       canonicalRoot: workspace.path,
     });
+    runtimeApprovalController?.openWorkspace(
+      runtimeWorkspaceId,
+      workspace.path,
+    );
+    runtimeGitAdapter?.openWorkspace(runtimeWorkspaceId);
+    void runtimeConversationController?.switchWorkspace(
+      runtimeWorkspaceId,
+    );
   });
   terminalController = new TerminalController({
     dialog,
@@ -193,7 +218,7 @@ const startApplication = async (): Promise<void> => {
     getResolvedCli: supervisor.getResolvedCli,
     getCliEnvironment: () => ({ ...process.env }),
     isApprovalPending: () =>
-      supervisor?.commandApprovals.getSnapshot().status === 'pending' ||
+      runtimeApprovalController?.getSnapshot().status === 'pending' ||
       supervisor?.mcpApprovals.getSnapshot().status === 'pending',
   });
   previewController = new PreviewController({
@@ -201,7 +226,7 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     getWorkspaceState: workspaceController.getSnapshot,
     isApprovalPending: () =>
-      supervisor?.commandApprovals.getSnapshot().status === 'pending' ||
+      runtimeApprovalController?.getSnapshot().status === 'pending' ||
       supervisor?.mcpApprovals.getSnapshot().status === 'pending',
   });
   disposeConnectionIpc = registerConnectionIpc({
@@ -210,12 +235,12 @@ const startApplication = async (): Promise<void> => {
     isAllowedUrl: isAllowedRendererUrl,
   });
   disposeCommandApprovalIpc = registerCommandApprovalIpc({
-    controller: supervisor.commandApprovals,
+    controller: runtimeApprovalController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
   disposeConversationIpc = registerConversationIpc({
-    controller: supervisor.conversation,
+    controller: runtimeConversationController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -227,7 +252,7 @@ const startApplication = async (): Promise<void> => {
     isAllowedUrl: isAllowedRendererUrl,
   });
   disposeModelConfigIpc = registerModelConfigIpc({
-    controller: new ModelConfigController({ supervisor }),
+    controller: new RuntimeModelConfigController(runtimeSupervisor),
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -238,7 +263,7 @@ const startApplication = async (): Promise<void> => {
   });
   disposeGitIpc = registerGitIpc({
     controller: new GitController({
-      supervisor,
+      supervisor: runtimeGitAdapter,
       workspace: workspaceController,
     }),
     getMainWindow: () => mainWindow,
@@ -256,7 +281,7 @@ const startApplication = async (): Promise<void> => {
   });
   const hidePreviewForApproval = (): void => {
     const approvalPending =
-      supervisor?.commandApprovals.getSnapshot().status === 'pending' ||
+      runtimeApprovalController?.getSnapshot().status === 'pending' ||
       supervisor?.mcpApprovals.getSnapshot().status === 'pending';
     if (!approvalPending) {
       terminalController?.resumeAfterApproval();
@@ -273,7 +298,7 @@ const startApplication = async (): Promise<void> => {
     }
   };
   const unsubscribeCommandApproval =
-    supervisor.commandApprovals.subscribe(hidePreviewForApproval);
+    runtimeApprovalController.subscribe(hidePreviewForApproval);
   const unsubscribeMcpApproval =
     supervisor.mcpApprovals.subscribe(hidePreviewForApproval);
   disposePreviewApprovalSubscriptions = () => {
@@ -311,6 +336,9 @@ if (started) {
   app.on('will-quit', () => {
     runtimeSupervisor?.shutdown();
     runtimeSupervisor = null;
+    runtimeConversationController = null;
+    runtimeApprovalController = null;
+    runtimeGitAdapter = null;
     disposeRuntimeEvents?.();
     disposeRuntimeEvents = null;
     disposeRuntimeWorkspaceEvents?.();

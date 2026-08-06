@@ -310,8 +310,10 @@ title; durable user text is never reused as a title fallback.
 The 3.0 utility runtime has an independent SQLite store at
 `~/.sugarcode/v3/sugarcode-v3.sqlite3`. It never reads or migrates rollout v1.
 Schema v1 records provider-neutral workspaces, Threads, Turns, ordered Turn
-items, operations, approvals and Agent tasks. The connection enables foreign
-keys, WAL mode and a bounded busy timeout.
+items, operations, approvals and Agent tasks. Schema v2 adds model profiles and
+separately stored credentials; schema v3 adds Thread archive and fork lineage.
+The connection enables foreign keys, WAL mode and a bounded busy timeout, and
+the database file is restricted to the owning user on Unix.
 
 Item IDs and `(turn_id, sequence)` are unique. Repeating an identical item,
 operation proposal, approval decision, terminal Turn result or operation result
@@ -321,7 +323,15 @@ running Turns become retryable `interrupted`, running/waiting Agent tasks become
 `interrupted`, and executing operations become retryable failures. Pending
 approvals remain pending and no operation is automatically executed.
 
-The TypeScript ADK session is still in-memory. The native store already exposes
-a provider-neutral Thread snapshot for reconstruction, but wiring that snapshot
-into Runner creation and replacing the old Desktop rollout projection remain
-required before 3.0 becomes authoritative for the Renderer.
+Renderer model configuration and conversation reads/writes now use the 3.0
+utility runtime behind the existing preload API. Approval proposals, atomic
+workspace patches and Git operations also persist or execute through that
+runtime and the native module.
+
+The TypeScript ADK session is still in-memory. SQLite reconstructs the visible
+provider-neutral transcript after restart, but the snapshot is not yet rebuilt
+into the next Runner model history. Attachment storage, pending-approval replay,
+sandboxed commands, PTY, MCP and dynamic multi-Agent state also remain migration
+gates. Workspace selection and app connection state therefore continue to use
+app-server during coexistence; neither app-server nor the CLI sidecar may be
+removed at this checkpoint.

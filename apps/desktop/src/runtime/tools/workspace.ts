@@ -52,11 +52,28 @@ const searchSchema = {
   required: ['path', 'query'],
 } satisfies Schema;
 
+const patchSchema = {
+  type: Type.OBJECT,
+  properties: {
+    patch: {
+      type: Type.STRING,
+      description:
+        'A complete SugarCode apply_patch document with Begin Patch and End Patch markers.',
+    },
+  },
+  required: ['patch'],
+} satisfies Schema;
+
 const parseNativeResult = (value: string): unknown => JSON.parse(value) as unknown;
 
 export const createWorkspaceTools = (
   nativeRuntime: NativeRuntimeBinding,
   workspaceId: string,
+  runPrivileged?: (
+    toolName: string,
+    argumentsValue: Readonly<Record<string, unknown>>,
+    execute: () => Promise<unknown>,
+  ) => Promise<unknown>,
 ): readonly FunctionTool<Schema>[] => [
   new FunctionTool({
     name: 'workspace_read',
@@ -87,6 +104,33 @@ export const createWorkspaceTools = (
       const { path, query } = searchArguments(input);
       return parseNativeResult(
         await nativeRuntime.workspaceSearch(workspaceId, path, query),
+      );
+    },
+  }),
+  new FunctionTool({
+    name: 'workspace_apply_patch',
+    description:
+      'Create, update, move, or delete workspace files with an atomic apply_patch document. User approval is required before commit.',
+    parameters: patchSchema,
+    execute: async (input) => {
+      if (
+        typeof input !== 'object' ||
+        input === null ||
+        !('patch' in input) ||
+        typeof input.patch !== 'string'
+      ) {
+        throw new Error('patch must be a string');
+      }
+      if (!runPrivileged) {
+        return { ok: false, error: 'approvalUnavailable' };
+      }
+      const patch = input.patch;
+      return runPrivileged(
+        'workspace_apply_patch',
+        { patch },
+        async () => parseNativeResult(
+          await nativeRuntime.workspaceApplyPatch(workspaceId, patch),
+        ),
       );
     },
   }),

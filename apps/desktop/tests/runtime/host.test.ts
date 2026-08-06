@@ -96,6 +96,49 @@ class ToolLoopLlm extends BaseLlm {
   }
 }
 
+class PatchLoopLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(request: LlmRequest): AsyncGenerator<LlmResponse, void> {
+    const hasToolResult = request.contents.some((content) =>
+      (content.parts ?? []).some((part) => part.functionResponse),
+    );
+    if (!hasToolResult) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-patch',
+              name: 'workspace_apply_patch',
+              args: {
+                patch: '*** Begin Patch\n*** Add File: fixture.txt\n+fixture\n*** End Patch',
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: { role: 'model', parts: [{ text: 'Patch complete' }] },
+      partial: true,
+    };
+    yield {
+      content: { role: 'model', parts: [{ text: 'Patch complete' }] },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events', async () => {
   const events: RuntimeEvent[] = [];
   let resolveCompleted: (() => void) | undefined;
@@ -146,6 +189,7 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
     [
       'runtime.ready',
       'turn.started',
+      'turn.userMessage',
       'turn.textDelta',
       'turn.usage',
       'turn.completed',
@@ -153,7 +197,7 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   );
   assert.deepEqual(
     events.map((event) => event.sequence),
-    [1, 2, 3, 4, 5],
+    [1, 2, 3, 4, 5, 6],
   );
   const text = events.find((event) => event.type === 'turn.textDelta');
   assert.equal(text?.delta, 'Fixture response');
@@ -174,12 +218,20 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   const native: NativeRuntimeBinding = {
     ensureWorkspace: () => undefined,
     ensureThread: () => undefined,
+    createThreadJson: () => '{}',
+    listThreadsJson: () => '[]',
+    setThreadArchivedJson: () => '{}',
+    deleteThread: () => true,
+    forkThreadJson: () => '{}',
     startTurn: () => undefined,
     appendItem: (_itemId, _turnId, _sequence, kind) => {
       persistedKinds.push(kind);
       return true;
     },
     finishTurn: () => true,
+    proposeOperation: () => true,
+    resolveApproval: () => true,
+    completeOperation: () => true,
     loadThreadJson: () => '{}',
     workspaceRead: async (_workspaceId, path) => {
       readPath = path;
@@ -187,6 +239,16 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     },
     workspaceList: async () => JSON.stringify({ ok: true, entries: [] }),
     workspaceSearch: async () => JSON.stringify({ ok: true, matches: [] }),
+    workspaceApplyPatch: async () => JSON.stringify({ ok: true, files: [] }),
+    gitStatusJson: () => '{}',
+    gitDiffJson: () => '{}',
+    gitMutateJson: () => '{}',
+    gitCommitJson: () => '{}',
+    inspectModelConfigJson: () => '{}',
+    saveModelConfigJson: () => '{}',
+    deleteModelApiKeyJson: () => '{}',
+    modelConnectionJson: () => '{}',
+    modelProfileJson: () => '{}',
   };
   const host = new RuntimeHost({
     createModel: () => new ToolLoopLlm({ model: 'fixture-model' }),
@@ -245,4 +307,102 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   );
   assert.ok(persistedKinds.includes('turn.toolCall'));
   assert.ok(persistedKinds.includes('turn.toolResult'));
+});
+
+test('RuntimeHost persists approval before committing a workspace patch', async () => {
+  const events: RuntimeEvent[] = [];
+  let applyCount = 0;
+  let proposalCount = 0;
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native: NativeRuntimeBinding = {
+    ensureWorkspace: () => undefined,
+    ensureThread: () => undefined,
+    createThreadJson: () => '{}',
+    listThreadsJson: () => '[]',
+    setThreadArchivedJson: () => '{}',
+    deleteThread: () => true,
+    forkThreadJson: () => '{}',
+    startTurn: () => undefined,
+    appendItem: () => true,
+    finishTurn: () => true,
+    proposeOperation: () => {
+      proposalCount += 1;
+      return true;
+    },
+    resolveApproval: () => true,
+    completeOperation: () => true,
+    loadThreadJson: () => '{}',
+    workspaceRead: async () => '{}',
+    workspaceList: async () => '{}',
+    workspaceSearch: async () => '{}',
+    workspaceApplyPatch: async () => {
+      applyCount += 1;
+      return JSON.stringify({ ok: true, files: [{ path: 'fixture.txt' }] });
+    },
+    gitStatusJson: () => '{}',
+    gitDiffJson: () => '{}',
+    gitMutateJson: () => '{}',
+    gitCommitJson: () => '{}',
+    inspectModelConfigJson: () => '{}',
+    saveModelConfigJson: () => '{}',
+    deleteModelApiKeyJson: () => '{}',
+    modelConnectionJson: () => '{}',
+    modelProfileJson: () => '{}',
+  };
+  const host = new RuntimeHost({
+    createModel: () => new PatchLoopLlm({ model: 'fixture-model' }),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize',
+    protocolVersion: 1,
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: 'Patch fixture.txt' }],
+  });
+  let approval: Extract<RuntimeEvent, { type: 'approval.requested' }> | undefined;
+  for (let attempt = 0; attempt < 20 && !approval; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    approval = events.find((event) => event.type === 'approval.requested');
+  }
+  assert.ok(approval);
+  assert.equal(proposalCount, 1);
+  assert.equal(applyCount, 0);
+  host.handle({
+    type: 'approval.resolve',
+    requestId: 'request-approval',
+    workspaceId: approval.workspaceId,
+    threadId: approval.threadId,
+    turnId: approval.turnId,
+    approvalId: approval.approvalId,
+    decision: 'approved',
+  });
+  await completed;
+  assert.equal(applyCount, 1);
+  assert.ok(events.some((event) => event.type === 'approval.resolved'));
+  assert.ok(events.some((event) => event.type === 'turn.toolResult'));
 });

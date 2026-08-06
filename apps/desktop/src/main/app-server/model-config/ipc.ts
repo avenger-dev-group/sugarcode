@@ -7,14 +7,27 @@ import {
   MODEL_CONFIG_SAVE_CHANNEL,
 } from '@/shared/model-config';
 
-import type { ModelConfigController } from './controller';
 import {
   isTrustedIpcSender,
   type IpcSenderValidationOptions,
 } from '../ipc/trusted-sender';
 
 type ModelConfigIpcOptions = IpcSenderValidationOptions &
-  Readonly<{ controller: ModelConfigController }>;
+  Readonly<{
+    controller: {
+      inspect: () => Promise<import('@/shared/model-config').ModelConfigInspection>;
+      save: (
+        request: unknown,
+      ) => Promise<import('@/shared/model-config').ModelConfigActionResult>;
+      discover: (
+        connectionId: unknown,
+      ) => Promise<import('@/shared/model-config').ModelDiscoveryResult>;
+      deleteApiKey: (
+        connectionId: unknown,
+        expectedRevision: unknown,
+      ) => Promise<import('@/shared/model-config').ModelConfigActionResult>;
+    };
+  }>;
 
 export const registerModelConfigIpc = (
   options: ModelConfigIpcOptions,

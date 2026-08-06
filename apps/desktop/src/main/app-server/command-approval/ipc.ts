@@ -8,7 +8,20 @@ import {
   COMMAND_APPROVAL_MODE_SET_CHANNEL,
 } from '@/shared/command-approval';
 
-import type { CommandApprovalController } from './controller';
+import type {
+  CommandApprovalActionResult,
+  CommandApprovalStateListener,
+  CommandApprovalStateSnapshot,
+} from '@/shared/command-approval';
+
+type CommandApprovalControllerBoundary = Readonly<{
+  markSurfaceReady: () => CommandApprovalStateSnapshot;
+  surfaceUnavailable: () => void;
+  subscribe: (listener: CommandApprovalStateListener) => () => void;
+  approve: (presentationId: unknown, mode: unknown) => Promise<CommandApprovalActionResult>;
+  deny: (presentationId: unknown) => Promise<CommandApprovalActionResult>;
+  setMode: (mode: unknown, threadId?: unknown) => CommandApprovalActionResult;
+}>;
 import {
   getTrustedMainWindow,
   isTrustedIpcSender,
@@ -17,7 +30,7 @@ import {
 
 type CommandApprovalIpcOptions = IpcSenderValidationOptions &
   Readonly<{
-    controller: CommandApprovalController;
+    controller: CommandApprovalControllerBoundary;
   }>;
 
 export const registerCommandApprovalIpc = (

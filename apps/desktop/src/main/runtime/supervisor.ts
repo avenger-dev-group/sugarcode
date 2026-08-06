@@ -10,6 +10,7 @@ import {
 
 const MAX_LOG_LENGTH = 4_096;
 const MAX_RESTART_DELAY_MS = 5_000;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 type RuntimeChild = Pick<
   UtilityProcess,
@@ -24,6 +25,7 @@ type RuntimeSupervisorOptions = Readonly<{
 }>;
 
 type RuntimeEventListener = (event: RuntimeEvent) => void;
+type RuntimeEventType = RuntimeEvent['type'];
 
 export class RuntimeSupervisor {
   private readonly options: RuntimeSupervisorOptions;
@@ -84,6 +86,45 @@ export class RuntimeSupervisor {
     }
     this.post(command);
   };
+
+  request = <TType extends RuntimeEventType>(
+    command: Exclude<RuntimeCommand, { type: 'initialize' | 'shutdown' }>,
+    expectedType: TType,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+  ): Promise<Extract<RuntimeEvent, { type: TType }>> =>
+    new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+      };
+      const unsubscribe = this.subscribe((event) => {
+        if (event.requestId !== command.requestId) {
+          return;
+        }
+        if (event.type === expectedType) {
+          finish();
+          resolve(event as Extract<RuntimeEvent, { type: TType }>);
+        } else if (event.type === 'runtime.log' && event.level === 'error') {
+          finish();
+          reject(new Error(event.message));
+        }
+      });
+      const timer = setTimeout(() => {
+        finish();
+        reject(new Error(`Runtime request ${command.type} timed out.`));
+      }, timeoutMs);
+      try {
+        this.send(command);
+      } catch (error) {
+        finish();
+        reject(error);
+      }
+    });
 
   shutdown = (requestId: string = randomUUID()): void => {
     if (this.stopped) {

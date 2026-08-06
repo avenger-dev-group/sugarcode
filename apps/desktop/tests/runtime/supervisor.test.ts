@@ -110,3 +110,39 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
   supervisor.shutdown('request-shutdown');
   assert.equal(children[1]?.killed, true);
 });
+
+test('RuntimeSupervisor correlates provider-neutral request responses', async () => {
+  const child = new FixtureChild();
+  const supervisor = new RuntimeSupervisor({
+    runtimePath: '/fixture/runtime.js',
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+    spawn: () => child as never,
+  });
+  supervisor.start();
+  child.emit('spawn');
+  child.emit('message', {
+    type: 'runtime.ready',
+    sequence: 1,
+    requestId: child.messages[0]?.requestId,
+    protocolVersion: 1,
+  });
+  const response = supervisor.request(
+    { type: 'model.inspect', requestId: 'request-model-inspect' },
+    'model.configInspection',
+  );
+  assert.equal(child.messages[1]?.type, 'model.inspect');
+  child.emit('message', {
+    type: 'model.configInspection',
+    sequence: 2,
+    requestId: 'request-model-inspect',
+    inspection: {
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      config: null,
+      credentialStatuses: [],
+    },
+  });
+  assert.equal((await response).inspection.config, null);
+  supervisor.shutdown();
+});

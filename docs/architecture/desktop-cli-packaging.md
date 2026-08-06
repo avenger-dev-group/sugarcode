@@ -210,9 +210,11 @@ package and is copied as a Forge extra resource. The four model/Agent packages
 remain external to the worker bundle so their Node-targeted exports retain
 their own module semantics inside the packaged application.
 
-This is a coexistence checkpoint, not the final packaging contract. The
-existing CLI sidecar hooks and app-server still serve the current Renderer
-projection while parity work continues. They must be removed, along with the
-CLI build in Desktop start/package scripts, only after the existing UI has been
-switched to the utility runtime and its remaining tools, approvals, navigation,
-MCP, terminal and multi-Agent behavior have passed native package smoke.
+This is a coexistence checkpoint, not the final packaging contract. Model
+configuration, conversation/thread projection, approval-backed atomic patches
+and Git operations now reach the utility runtime through the existing Renderer
+API. The CLI sidecar and app-server still own workspace/connection state,
+attachment import and terminal/PTY behavior, while sandboxed commands, MCP and
+dynamic multi-Agent parity remain incomplete. The sidecar, app-server and CLI
+build hooks may be removed only after those remaining paths migrate and pass
+native package smoke.

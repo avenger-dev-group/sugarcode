@@ -14,8 +14,10 @@ napi-derive = "3.3.0"
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sugarcode-tools = { path = "../tools" }
 tokio-util.workspace = true
+uuid.workspace = true
 
 [build-dependencies]
 napi-build = "2.2.3"

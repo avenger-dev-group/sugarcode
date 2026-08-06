@@ -14,7 +14,25 @@ import {
   CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
 } from '@/shared/conversation';
 
-import type { ConversationController } from './controller';
+import type {
+  ConversationActionResult,
+  ConversationStateListener,
+  ConversationStateSnapshot,
+} from '@/shared/conversation';
+
+type ConversationControllerBoundary = Readonly<{
+  getSnapshot: () => ConversationStateSnapshot;
+  subscribe: (listener: ConversationStateListener) => () => void;
+  startTurn: (input: unknown) => Promise<ConversationActionResult>;
+  stopTurn: (threadId: unknown) => Promise<ConversationActionResult>;
+  searchThreads: (query: unknown) => Promise<ConversationActionResult>;
+  selectThread: (threadId: unknown) => Promise<ConversationActionResult>;
+  startNewThread: () => ConversationActionResult;
+  forkThread: (threadId: unknown) => Promise<ConversationActionResult>;
+  archiveThread: (threadId: unknown) => Promise<ConversationActionResult>;
+  unarchiveThread: (threadId: unknown) => Promise<ConversationActionResult>;
+  deleteThread: (threadId: unknown) => Promise<ConversationActionResult>;
+}>;
 import {
   getTrustedMainWindow,
   isTrustedIpcSender,
@@ -23,7 +41,7 @@ import {
 
 type ConversationIpcOptions = IpcSenderValidationOptions &
   Readonly<{
-    controller: ConversationController;
+    controller: ConversationControllerBoundary;
   }>;
 
 export const registerConversationIpc = (

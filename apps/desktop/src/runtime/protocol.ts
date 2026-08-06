@@ -1,4 +1,26 @@
-import type { ModelWireApi } from '../shared/model-config.ts';
+import {
+  isModelConfigActionResult,
+  isModelConfigInspection,
+  isModelConfigSaveRequest,
+  isModelDiscoveryResult,
+  type ModelConfigActionResult,
+  type ModelConfigInspection,
+  type ModelConfigSaveRequest,
+  type ModelDiscoveryResult,
+  type ModelWireApi,
+} from '../shared/model-config.ts';
+import {
+  isGitCommitResponse,
+  isGitDiffResponse,
+  isGitMutationResponse,
+  isGitStatusResponse,
+} from '../shared/git.ts';
+import type {
+  WorkspaceGitCommitResponse,
+  WorkspaceGitDiffResponse,
+  WorkspaceGitMutationResponse,
+  WorkspaceGitStatusResponse,
+} from '@sugarcode/app-server-protocol';
 
 export const RUNTIME_PROTOCOL_VERSION = 1 as const;
 
@@ -21,6 +43,57 @@ export type RuntimeContentPart =
       name: string;
     }>;
 
+export type RuntimeThreadRecord = Readonly<{
+  id: string;
+  workspaceId: string;
+  title: string | null;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt: number | null;
+  parentThreadId: string | null;
+}>;
+
+export type RuntimeTurnRecord = Readonly<{
+  id: string;
+  requestId: string;
+  status: 'running' | 'completed' | 'interrupted' | 'failed';
+  providerWireApi: ModelWireApi;
+  model: string;
+  errorJson: string | null;
+  startedAt: number;
+  completedAt: number | null;
+}>;
+
+export type RuntimeTurnItemRecord = Readonly<{
+  id: string;
+  turnId: string;
+  sequence: number;
+  kind: string;
+  payload: Readonly<Record<string, unknown>>;
+}>;
+
+export type RuntimeThreadSnapshot = Readonly<{
+  thread: RuntimeThreadRecord;
+  turns: readonly RuntimeTurnRecord[];
+  items: readonly RuntimeTurnItemRecord[];
+}>;
+
+export type RuntimeModelSelection = Readonly<{
+  profileId: string;
+  providerFamily: 'openai' | 'anthropic';
+  wireApi: ModelWireApi;
+  modelId: string;
+  displayName: string;
+  contextWindowTokens: number;
+  effectiveCapabilities: Readonly<{
+    toolCalls: boolean;
+    strictTools: boolean;
+    parallelTools: boolean;
+    imageInput: boolean;
+    pdfInput: boolean;
+  }>;
+}>;
+
 export type RuntimeCommand =
   | Readonly<{
       type: 'initialize';
@@ -41,7 +114,8 @@ export type RuntimeCommand =
       workspaceId: string;
       threadId: string;
       turnId: string;
-      provider: RuntimeProviderConfig;
+      provider?: RuntimeProviderConfig;
+      modelProfileId?: string;
       content: readonly RuntimeContentPart[];
     }>
   | Readonly<{
@@ -59,6 +133,76 @@ export type RuntimeCommand =
       turnId: string;
       approvalId: string;
       decision: 'approved' | 'denied';
+    }>
+  | Readonly<{
+      type: 'thread.list';
+      requestId: string;
+      workspaceId: string;
+      query?: string;
+    }>
+  | Readonly<{
+      type: 'thread.load';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+    }>
+  | Readonly<{
+      type: 'thread.create';
+      requestId: string;
+      workspaceId: string;
+      title?: string;
+    }>
+  | Readonly<{
+      type: 'thread.fork' | 'thread.archive' | 'thread.unarchive' | 'thread.delete';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+    }>
+  | Readonly<{
+      type: 'git.status';
+      requestId: string;
+      workspaceId: string;
+    }>
+  | Readonly<{
+      type: 'git.diff';
+      requestId: string;
+      workspaceId: string;
+      expectedRevision: string;
+      path: string;
+      source: 'worktree' | 'index';
+    }>
+  | Readonly<{
+      type: 'git.stage' | 'git.unstage';
+      requestId: string;
+      workspaceId: string;
+      expectedRevision: string;
+      paths: readonly string[];
+    }>
+  | Readonly<{
+      type: 'git.commit';
+      requestId: string;
+      workspaceId: string;
+      expectedRevision: string;
+      message: string;
+      authorName: string;
+      authorEmail: string;
+    }>
+  | Readonly<{ type: 'model.inspect'; requestId: string }>
+  | Readonly<{
+      type: 'model.save';
+      requestId: string;
+      request: ModelConfigSaveRequest;
+    }>
+  | Readonly<{
+      type: 'model.deleteApiKey';
+      requestId: string;
+      connectionId: string;
+      expectedRevision: string;
+    }>
+  | Readonly<{
+      type: 'model.discover';
+      requestId: string;
+      connectionId: string;
     }>
   | Readonly<{ type: 'shutdown'; requestId: string }>;
 
@@ -112,6 +256,16 @@ export type RuntimeEvent =
         workspaceId: string;
         threadId: string;
         turnId: string;
+        model: RuntimeModelSelection;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'turn.userMessage';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        itemId: string;
+        content: readonly RuntimeContentPart[];
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -165,6 +319,16 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'approval.resolved';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        approvalId: string;
+        operationId: string;
+        decision: 'approved' | 'denied';
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'agent.task';
         workspaceId: string;
         threadId: string;
@@ -188,6 +352,53 @@ export type RuntimeEvent =
         turnId: string;
         status: 'completed' | 'interrupted' | 'failed';
         error?: RuntimeProviderError;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'model.configInspection';
+        inspection: ModelConfigInspection;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'model.configAction';
+        action: ModelConfigActionResult;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'model.discovery';
+        discovery: ModelDiscoveryResult;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'thread.listResult';
+        workspaceId: string;
+        query: string;
+        threads: readonly RuntimeThreadRecord[];
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'thread.loaded';
+        workspaceId: string;
+        snapshot: RuntimeThreadSnapshot;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'thread.mutated';
+        workspaceId: string;
+        operation: 'create' | 'fork' | 'archive' | 'unarchive' | 'delete';
+        threadId: string;
+        snapshot?: RuntimeThreadSnapshot;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'git.result';
+        workspaceId: string;
+        operation: 'status' | 'diff' | 'stage' | 'unstage' | 'commit';
+        result:
+          | WorkspaceGitStatusResponse
+          | WorkspaceGitDiffResponse
+          | WorkspaceGitMutationResponse
+          | WorkspaceGitCommitResponse;
       }>);
 
 type WithoutSequence<T> = T extends unknown ? Omit<T, 'sequence'> : never;
@@ -263,7 +474,13 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.workspaceId === 'string' &&
         typeof value.threadId === 'string' &&
         typeof value.turnId === 'string' &&
-        isProviderConfig(value.provider) &&
+        ((value.provider !== undefined &&
+          isProviderConfig(value.provider) &&
+          value.modelProfileId === undefined) ||
+          (value.provider === undefined &&
+            (value.modelProfileId === undefined ||
+              (typeof value.modelProfileId === 'string' &&
+                /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))))) &&
         Array.isArray(value.content) &&
         value.content.length > 0 &&
         value.content.every(isContentPart)
@@ -281,6 +498,66 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.turnId === 'string' &&
         typeof value.approvalId === 'string' &&
         ['approved', 'denied'].includes(String(value.decision))
+      );
+    case 'thread.list':
+      return (
+        typeof value.workspaceId === 'string' &&
+        (value.query === undefined || typeof value.query === 'string')
+      );
+    case 'thread.load':
+    case 'thread.fork':
+    case 'thread.archive':
+    case 'thread.unarchive':
+    case 'thread.delete':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string'
+      );
+    case 'thread.create':
+      return (
+        typeof value.workspaceId === 'string' &&
+        (value.title === undefined || typeof value.title === 'string')
+      );
+    case 'git.status':
+      return typeof value.workspaceId === 'string';
+    case 'git.diff':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.expectedRevision === 'string' &&
+        typeof value.path === 'string' &&
+        ['worktree', 'index'].includes(String(value.source))
+      );
+    case 'git.stage':
+    case 'git.unstage':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.expectedRevision === 'string' &&
+        Array.isArray(value.paths) &&
+        value.paths.every((path) => typeof path === 'string')
+      );
+    case 'git.commit':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.expectedRevision === 'string' &&
+        typeof value.message === 'string' &&
+        typeof value.authorName === 'string' &&
+        typeof value.authorEmail === 'string'
+      );
+    case 'model.inspect':
+      return true;
+    case 'model.save':
+      return isModelConfigSaveRequest(value.request);
+    case 'model.deleteApiKey':
+      return (
+        typeof value.connectionId === 'string' &&
+        /^[A-Za-z0-9_-]{1,64}$/u.test(value.connectionId) &&
+        typeof value.expectedRevision === 'string' &&
+        /^[0-9a-f]{64}$/u.test(value.expectedRevision)
+      );
+    case 'model.discover':
+      return (
+        typeof value.connectionId === 'string' &&
+        /^[A-Za-z0-9_-]{1,64}$/u.test(value.connectionId)
       );
     case 'shutdown':
       return true;
@@ -317,7 +594,14 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.message === 'string'
       );
     case 'turn.started':
-      return hasTurnCoordinates(value);
+      return hasTurnCoordinates(value) && isRecord(value.model);
+    case 'turn.userMessage':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.itemId === 'string' &&
+        Array.isArray(value.content) &&
+        value.content.every(isContentPart)
+      );
     case 'turn.textDelta':
       return (
         hasTurnCoordinates(value) &&
@@ -350,6 +634,13 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.toolName === 'string' &&
         typeof value.argumentsSummary === 'string'
       );
+    case 'approval.resolved':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.approvalId === 'string' &&
+        typeof value.operationId === 'string' &&
+        ['approved', 'denied'].includes(String(value.decision))
+      );
     case 'agent.task':
       return (
         hasTurnCoordinates(value) &&
@@ -372,7 +663,80 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         ['completed', 'interrupted', 'failed'].includes(String(value.status)) &&
         (value.error === undefined || isRecord(value.error))
       );
+    case 'model.configInspection':
+      return isModelConfigInspection(value.inspection);
+    case 'model.configAction':
+      return isModelConfigActionResult(value.action);
+    case 'model.discovery':
+      return isModelDiscoveryResult(value.discovery);
+    case 'thread.listResult':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.query === 'string' &&
+        Array.isArray(value.threads) &&
+        value.threads.every(isThreadRecord)
+      );
+    case 'thread.loaded':
+      return (
+        typeof value.workspaceId === 'string' &&
+        isThreadSnapshot(value.snapshot)
+      );
+    case 'thread.mutated':
+      return (
+        typeof value.workspaceId === 'string' &&
+        ['create', 'fork', 'archive', 'unarchive', 'delete'].includes(
+          String(value.operation),
+        ) &&
+        typeof value.threadId === 'string' &&
+        (value.snapshot === undefined || isThreadSnapshot(value.snapshot))
+      );
+    case 'git.result':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.operation === 'string' &&
+        ((value.operation === 'status' && isGitStatusResponse(value.result)) ||
+          (value.operation === 'diff' && isGitDiffResponse(value.result)) ||
+          (['stage', 'unstage'].includes(value.operation) &&
+            isGitMutationResponse(value.result)) ||
+          (value.operation === 'commit' && isGitCommitResponse(value.result)))
+      );
     default:
       return false;
   }
 };
+
+const isThreadRecord = (value: unknown): value is RuntimeThreadRecord =>
+  isRecord(value) &&
+  typeof value.id === 'string' &&
+  typeof value.workspaceId === 'string' &&
+  (value.title === null || typeof value.title === 'string') &&
+  Number.isInteger(value.createdAt) &&
+  Number.isInteger(value.updatedAt) &&
+  (value.archivedAt === null || Number.isInteger(value.archivedAt)) &&
+  (value.parentThreadId === null || typeof value.parentThreadId === 'string');
+
+const isThreadSnapshot = (value: unknown): value is RuntimeThreadSnapshot =>
+  isRecord(value) &&
+  isThreadRecord(value.thread) &&
+  Array.isArray(value.turns) &&
+  Array.isArray(value.items) &&
+  value.turns.every(
+    (turn) =>
+      isRecord(turn) &&
+      typeof turn.id === 'string' &&
+      typeof turn.requestId === 'string' &&
+      ['running', 'completed', 'interrupted', 'failed'].includes(
+        String(turn.status),
+      ) &&
+      typeof turn.providerWireApi === 'string' &&
+      typeof turn.model === 'string',
+  ) &&
+  value.items.every(
+    (item) =>
+      isRecord(item) &&
+      typeof item.id === 'string' &&
+      typeof item.turnId === 'string' &&
+      Number.isInteger(item.sequence) &&
+      typeof item.kind === 'string' &&
+      isRecord(item.payload),
+  );

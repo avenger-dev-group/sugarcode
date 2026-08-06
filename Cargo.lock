@@ -2882,9 +2882,11 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "sugarcode-tools",
  "tempfile",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
