@@ -238,6 +238,87 @@ fn approval_and_operation_ids_are_idempotent_but_cannot_be_reused() {
 }
 
 #[test]
+fn agent_task_dag_state_is_durable_and_restart_interrupts_unfinished_work() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    {
+        let mut store = seeded_store(&directory);
+        store
+            .start_turn(
+                "turn-agent",
+                "thread-1",
+                "request-agent",
+                "openaiResponses",
+                "fixture-model",
+            )
+            .expect("start Agent turn");
+        let queued = serde_json::json!({
+            "orchestrationId": "orch/thread-1/turn-agent",
+            "taskId": "task-worker",
+            "clientTaskKey": "worker",
+            "childThreadId": "child-worker",
+            "title": "Implement",
+            "role": "worker",
+            "access": "workspaceWrite",
+            "dependsOn": [],
+            "taskMarkdown": "Implement the change.",
+            "status": "queued",
+            "amendments": []
+        });
+        store
+            .create_agent_tasks_json(
+                "turn-agent",
+                &serde_json::to_string(&vec![serde_json::json!({
+                    "id": "task-worker",
+                    "parentTaskId": null,
+                    "title": "Implement",
+                    "status": "queued",
+                    "payload": queued
+                })])
+                .expect("task batch JSON"),
+            )
+            .expect("create task");
+        let mut running = queued.clone();
+        running["status"] = Value::String("running".to_owned());
+        assert!(
+            store
+                .update_agent_task(
+                    "task-worker",
+                    "running",
+                    &serde_json::to_string(&running).expect("running JSON"),
+                )
+                .expect("run task")
+        );
+        running["amendments"] = serde_json::json!([{
+            "id": "amendment-1",
+            "markdown": "Also add a regression test."
+        }]);
+        assert!(
+            store
+                .update_agent_task(
+                    "task-worker",
+                    "running",
+                    &serde_json::to_string(&running).expect("amendment JSON"),
+                )
+                .expect("persist amendment")
+        );
+    }
+
+    let mut reopened = Store::open(directory.path()).expect("recover store");
+    let snapshot: Value = serde_json::from_str(
+        &reopened
+            .load_thread_json("thread-1")
+            .expect("load recovered Thread"),
+    )
+    .expect("snapshot JSON");
+    assert_eq!(snapshot["turns"][0]["status"], "interrupted");
+    assert_eq!(snapshot["agentTasks"][0]["status"], "interrupted");
+    assert_eq!(
+        snapshot["agentTasks"][0]["payload"]["taskId"],
+        "task-worker"
+    );
+}
+
+#[test]
 fn reopening_marks_running_work_interrupted_without_resolving_pending_approval() {
     let directory = tempfile::tempdir().expect("tempdir");
     {
@@ -457,5 +538,5 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 }

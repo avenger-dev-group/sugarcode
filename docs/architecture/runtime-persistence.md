@@ -312,9 +312,10 @@ The 3.0 utility runtime has an independent SQLite store at
 Schema v1 records provider-neutral workspaces, Threads, Turns, ordered Turn
 items, operations, approvals and Agent tasks. Schema v2 adds model profiles and
 separately stored credentials; schema v3 adds Thread archive and fork lineage;
-schema v4 adds content-addressed asset metadata.
-Schema v5 adds the revisioned provider-neutral MCP server configuration; it does
-not copy the rollout-v1 config file.
+schema v4 adds content-addressed asset metadata; schema v5 adds the revisioned
+provider-neutral MCP server configuration; schema v6 formalizes dynamic Agent
+task status and payload persistence. None of these schemas copy rollout-v1
+state.
 The connection enables foreign keys, WAL mode and a bounded busy timeout, and
 the database file is restricted to the owning user on Unix.
 
@@ -322,8 +323,9 @@ Item IDs and `(turn_id, sequence)` are unique. Repeating an identical item,
 operation proposal, approval decision, terminal Turn result or operation result
 is a no-op; reusing the same ID for different content is a conflict. Operation
 proposal and approval creation are one immediate transaction. On process open,
-running Turns become retryable `interrupted`, running/waiting Agent tasks become
-`interrupted`, and executing operations become retryable failures. Pending
+running Turns become retryable `interrupted`, queued/running/waiting-approval
+Agent tasks become `interrupted`, and executing operations become retryable
+failures. Pending
 approvals remain pending and no operation is automatically executed.
 
 Renderer model configuration, attachment import and conversation reads/writes
@@ -380,7 +382,24 @@ resumed as completed history. SQLite stores SugarCode's own discriminated text,
 reasoning, media, tool-call and tool-result parts; serialized ADK `Event` objects
 and provider SDK response objects are not persistence formats.
 
-Pending-approval replay and dynamic multi-Agent state remain migration gates.
-Workspace selection and app connection state therefore continue to use
-app-server during coexistence; neither app-server nor the CLI sidecar may be
-removed at this checkpoint.
+Dynamic multi-Agent orchestration is now process-local in the utility runtime.
+A provider-neutral FunctionTool surface dispatches a bounded task DAG, sends or
+amends instructions, waits for selected or all tasks and interrupts descendants.
+Each task receives a separate `LlmAgent`/Runner invocation and temporary ADK
+session. The coordinator admits at most 12 tasks and two auditors per Turn,
+limits global child concurrency to four and uses a fair reader/single-writer
+workspace gate. Write tasks require a read-only auditor that depends on every
+writer; ordinary tasks start only after successful dependencies, while auditors
+run after every dependency becomes terminal so they can report failures.
+
+Every task transition and bounded terminal summary is stored in SQLite and
+published through the private `agent.task` event for projection into the
+existing Desktop orchestration UI. Amendments are persisted immediately and
+become model input at the child's next request boundary. Parent cancellation
+interrupts descendants, and the parent Turn does not close before its child
+tasks become terminal. After restart, active task rows are marked
+`interrupted`; temporary child sessions and side effects are never replayed.
+
+Pending-approval replay remains a migration gate. Workspace selection and app
+connection state also continue to use app-server during coexistence; neither
+app-server nor the CLI sidecar may be removed at this checkpoint.

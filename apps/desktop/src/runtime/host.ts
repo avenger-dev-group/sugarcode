@@ -10,6 +10,11 @@ import type { Content, Part } from '@google/genai';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { SUGARCODE_BASE_AGENT_PROMPT_V1 } from './agent-instructions.ts';
+import {
+  COLLABORATION_AGENT_INSTRUCTION,
+  CollaborationCoordinator,
+  type AgentTaskExecutionContext,
+} from './collaboration.ts';
 import { ProviderAdapterError } from './models/errors.ts';
 import { AnthropicLlm } from './models/anthropic-llm.ts';
 import { discoverModels } from './models/discovery.ts';
@@ -210,6 +215,7 @@ export class RuntimeHost {
   private readonly activeOperations = new Map<string, Set<string>>();
   private readonly terminals = new Map<string, ActiveTerminal>();
   private readonly mcp = new RuntimeMcpManager();
+  private readonly collaboration = new CollaborationCoordinator();
   private sequence = 0;
   private initialized = false;
   private shuttingDown = false;
@@ -269,6 +275,7 @@ export class RuntimeHost {
         break;
       case 'turn.cancel':
         this.activeTurns.get(command.turnId)?.abort();
+        this.collaboration.cancelTurn(command.turnId);
         this.cancelTurnApprovals(command.turnId);
         this.cancelTurnOperations(command.turnId);
         break;
@@ -611,6 +618,7 @@ export class RuntimeHost {
           controller.abort();
         }
         for (const turnId of this.activeTurns.keys()) {
+          this.collaboration.cancelTurn(turnId);
           this.cancelTurnApprovals(turnId);
           this.cancelTurnOperations(turnId);
         }
@@ -1285,10 +1293,51 @@ export class RuntimeHost {
         itemId: `${command.turnId}:user`,
         content: command.content,
       });
+      const collaborationTools = this.nativeRuntime
+        ? this.collaboration.toolsForTurn(
+            command,
+            {
+              createTasks: (tasks) => {
+                this.requireNative().createAgentTasksJson(
+                  command.turnId,
+                  JSON.stringify(
+                    tasks.map((task) => ({
+                      id: task.taskId,
+                      parentTaskId: null as string | null,
+                      title: task.title,
+                      status: task.status,
+                      payload: task,
+                    })),
+                  ),
+                );
+              },
+              updateTask: (task) => {
+                this.requireNative().updateAgentTask(
+                  task.taskId,
+                  task.status,
+                  JSON.stringify(task),
+                );
+              },
+              publishTask: (task) => {
+                this.emit({
+                  type: 'agent.task',
+                  requestId: command.requestId,
+                  workspaceId: command.workspaceId,
+                  threadId: command.threadId,
+                  turnId: command.turnId,
+                  task,
+                });
+              },
+              executeTask: (context) =>
+                this.executeAgentTask(command, resolved, context),
+            },
+            controller.signal,
+          )
+        : [];
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
-        instruction: SUGARCODE_BASE_AGENT_PROMPT_V1,
+        instruction: `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}`,
         model: this.createModel(resolved.provider),
         tools: this.nativeRuntime
           ? [
@@ -1318,6 +1367,7 @@ export class RuntimeHost {
               ...this.mcp.toolsForTurn((request) =>
                 this.runMcpTool(command, request),
               ),
+              ...collaborationTools,
             ]
           : [],
       });
@@ -1337,11 +1387,13 @@ export class RuntimeHost {
           this.persistModelHistory(command, event);
         }
       }
+      await this.collaboration.waitForTurn(command.turnId, controller.signal);
       this.emitCompleted(
         command,
         controller.signal.aborted ? 'interrupted' : 'completed',
       );
     } catch (error) {
+      this.collaboration.cancelTurn(command.turnId);
       const details = providerError(error);
       this.emitCompleted(
         command,
@@ -1349,7 +1401,156 @@ export class RuntimeHost {
         details,
       );
     } finally {
+      this.collaboration.releaseTurn(command.turnId);
       this.activeTurns.delete(command.turnId);
+    }
+  };
+
+  private executeAgentTask = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    resolved: ResolvedProfile,
+    context: AgentTaskExecutionContext,
+  ): Promise<{
+    status: 'completed' | 'failed' | 'interrupted';
+    summaryMarkdown: string;
+    durationMs: number;
+  }> => {
+    const startedAt = Date.now();
+    const sessionKey = {
+      appName: APPLICATION_NAME,
+      userId: command.workspaceId,
+      sessionId: context.task.childThreadId,
+    };
+    await this.sessions.createSession(sessionKey);
+    const dependencyContext = context.dependencyResults
+      .map(
+        (dependency) =>
+          `## Dependency result: ${dependency.title}\n\n` +
+          `Status: ${dependency.status}\n\n` +
+          (dependency.result?.summaryMarkdown ?? ''),
+      )
+      .join('\n\n');
+    let input = dependencyContext.length > 0
+      ? `${context.task.taskMarkdown}\n\n# Dependency results\n\n${dependencyContext}`
+      : context.task.taskMarkdown;
+    if (context.task.role === 'auditor') {
+      input += `\n\n# Mandatory audit report format\n\n` +
+        `Return only a Markdown report with these headings:\n\n` +
+        `## Verdict\n\n## Findings\n\n## Acceptance criteria\n\n## Residual risks\n\n` +
+        `Each finding must include severity, evidence, and a concrete remediation.`;
+    }
+    let streamedSummary = '';
+    let completedSummary = '';
+    try {
+      const runWithApprovalState = async <T>(operation: () => Promise<T>): Promise<T> => {
+        context.setWaitingApproval(true);
+        try {
+          return await operation();
+        } finally {
+          context.setWaitingApproval(false);
+        }
+      };
+      const tools = this.nativeRuntime
+        ? [
+            ...createWorkspaceTools(
+              this.nativeRuntime,
+              command.workspaceId,
+              (toolName, argumentsValue, execute) =>
+                runWithApprovalState(() =>
+                  this.runPrivilegedTool(
+                    command,
+                    toolName,
+                    argumentsValue,
+                    execute,
+                  ),
+                ),
+              (operationId, stream, delta) => {
+                this.emit({
+                  type: 'operation.output',
+                  requestId: command.requestId,
+                  workspaceId: command.workspaceId,
+                  threadId: command.threadId,
+                  turnId: command.turnId,
+                  operationId,
+                  stream,
+                  delta,
+                });
+              },
+              context.task.access,
+            ),
+            ...this.mcp.toolsForTurn((request) =>
+              runWithApprovalState(() => this.runMcpTool(command, request)),
+            ),
+          ]
+        : [];
+      const agent = new LlmAgent({
+        name: `sugarcode_${context.task.role}_agent`,
+        description: `${context.task.role} subagent for ${context.task.title}`,
+        instruction:
+          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n` +
+          `# Subagent boundary\n\n` +
+          `You are a ${context.task.role} subagent with ${context.task.access} access. ` +
+          `Complete only the assigned task. You cannot create subagents. Return a concise Markdown result for the parent Agent.`,
+        model: this.createModel(resolved.provider),
+        tools,
+        includeContents: 'none',
+        beforeModelCallback: ({ request }) => {
+          const amendments = context.takeAmendments();
+          if (amendments.length > 0) {
+            request.contents.push({
+              role: 'user',
+              parts: [{
+                text:
+                  `# Task amendments\n\n${amendments
+                    .map((amendment, index) => `${index + 1}. ${amendment}`)
+                    .join('\n\n')}`,
+              }],
+            });
+          }
+          return undefined;
+        },
+      });
+      const runner = new Runner({
+        appName: APPLICATION_NAME,
+        agent,
+        sessionService: this.sessions,
+      });
+      for await (const event of runner.runAsync({
+        userId: command.workspaceId,
+        sessionId: context.task.childThreadId,
+        newMessage: { role: 'user', parts: [{ text: input }] },
+        abortSignal: context.signal,
+      })) {
+        const text = (event.content?.parts ?? [])
+          .filter((part) => !part.thought && typeof part.text === 'string')
+          .map((part) => part.text ?? '')
+          .join('');
+        if (event.partial) {
+          streamedSummary += text;
+        } else if (text.length > 0) {
+          completedSummary = text;
+        }
+      }
+      return {
+        status: context.signal.aborted ? 'interrupted' : 'completed',
+        summaryMarkdown: (completedSummary || streamedSummary || 'Task completed.').slice(
+          0,
+          16 * 1024,
+        ),
+        durationMs: Date.now() - startedAt,
+      };
+    } catch (error) {
+      return {
+        status: context.signal.aborted ? 'interrupted' : 'failed',
+        summaryMarkdown: context.signal.aborted
+          ? 'Agent task interrupted.'
+          : error instanceof Error
+            ? error.message
+            : 'Agent task failed.',
+        durationMs: Date.now() - startedAt,
+      };
+    } finally {
+      await this.sessions.deleteSession(sessionKey);
     }
   };
 
@@ -1827,8 +2028,8 @@ export class RuntimeHost {
       const itemId =
         'itemId' in normalized
           ? normalized.itemId
-          : 'taskId' in normalized
-            ? normalized.taskId
+          : normalized.type === 'agent.task'
+            ? normalized.task.taskId
             : 'approvalId' in normalized
               ? normalized.approvalId
               : String(normalized.sequence);

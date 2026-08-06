@@ -66,6 +66,12 @@ export type NativeRuntimeBinding = Readonly<{
     status: string,
     errorJson?: string,
   ) => boolean;
+  createAgentTasksJson: (turnId: string, tasksJson: string) => string;
+  updateAgentTask: (
+    taskId: string,
+    status: string,
+    payloadJson: string,
+  ) => boolean;
   proposeOperation: (
     operationId: string,
     approvalId: string,

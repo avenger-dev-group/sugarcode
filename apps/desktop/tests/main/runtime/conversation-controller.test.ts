@@ -55,6 +55,7 @@ class FixtureRuntime {
           },
           turns: [],
           items: [],
+          agentTasks: [],
         },
       } as RuntimeEvent;
     }
@@ -151,10 +152,49 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     phase: 'final',
     delta: 'Done',
   });
+  const agentTask = {
+    orchestrationId: `orch/${THREAD_ID}/${started.turnId}`,
+    taskId: 'task-runtime',
+    clientTaskKey: 'audit',
+    childThreadId: '33333333-3333-4333-8333-333333333333',
+    title: 'Audit runtime',
+    role: 'auditor' as const,
+    access: 'readOnly' as const,
+    dependsOn: [] as string[],
+    taskMarkdown: 'Audit the runtime.',
+    status: 'queued' as const,
+    amendments: [] as Array<{ id: string; markdown: string }>,
+  };
+  fixture.emit({
+    type: 'agent.task',
+    requestId: started.requestId,
+    sequence: 5,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    task: agentTask,
+  });
+  fixture.emit({
+    type: 'agent.task',
+    requestId: started.requestId,
+    sequence: 6,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    task: {
+      ...agentTask,
+      status: 'completed',
+      result: {
+        id: 'result-runtime',
+        summaryMarkdown: 'Audit passed.',
+        durationMs: 12,
+      },
+    },
+  });
   fixture.emit({
     type: 'turn.completed',
     requestId: started.requestId,
-    sequence: 5,
+    sequence: 7,
     workspaceId: WORKSPACE_ID,
     threadId: THREAD_ID,
     turnId: started.turnId,
@@ -171,4 +211,15 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     snapshot.turns[0]?.messages[0]?.attachments?.[0]?.originalName,
     'fixture.txt',
   );
+  const orchestration = snapshot.turns[0]?.activities?.find(
+    (activity) => activity.type === 'orchestration',
+  );
+  assert.equal(orchestration?.type, 'orchestration');
+  if (orchestration?.type === 'orchestration') {
+    assert.equal(orchestration.activity.tasks[0]?.status, 'completed');
+    assert.equal(
+      orchestration.activity.tasks[0]?.result?.summaryMarkdown,
+      'Audit passed.',
+    );
+  }
 });

@@ -221,3 +221,11 @@ commit/result idempotency. MCP tools add a stable server prefix and bind the
 approval to the SHA-256 hash of both canonical arguments and the discovered
 inventory. Rust remains the authority for workspace, Git, command and PTY
 effects; MCP transport and tool invocation stay inside TypeScript ADK runtime.
+
+Dynamic child Agents receive an explicit `readOnly` or `workspaceWrite` access
+class. Read-only children are given only read/list/search workspace tools;
+write children may additionally request patch, Git and command tools through
+the same persisted approval path. A utility-runtime fair gate allows concurrent
+read-only children and only one workspace-write child at a time. Any dispatched
+writer must have a read-only auditor that depends on every writer, so the audit
+runs after all declared write dependencies reach a terminal state.

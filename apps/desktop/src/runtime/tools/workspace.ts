@@ -144,7 +144,9 @@ export const createWorkspaceTools = (
     stream: 'stdout' | 'stderr',
     delta: string,
   ) => void,
-): readonly FunctionTool<Schema>[] => [
+  access: 'readOnly' | 'workspaceWrite' = 'workspaceWrite',
+): readonly FunctionTool<Schema>[] => {
+  const tools: readonly FunctionTool<Schema>[] = [
   new FunctionTool({
     name: 'workspace_read',
     description:
@@ -293,4 +295,6 @@ export const createWorkspaceTools = (
       );
     },
   }),
-];
+  ];
+  return access === 'readOnly' ? tools.slice(0, 3) : tools;
+};

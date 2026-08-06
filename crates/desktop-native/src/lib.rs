@@ -432,6 +432,21 @@ impl NativeRuntime {
     }
 
     #[napi]
+    pub fn create_agent_tasks_json(&self, turn_id: String, tasks_json: String) -> Result<String> {
+        self.with_store(|store| store.create_agent_tasks_json(&turn_id, &tasks_json))
+    }
+
+    #[napi]
+    pub fn update_agent_task(
+        &self,
+        task_id: String,
+        status: String,
+        payload_json: String,
+    ) -> Result<bool> {
+        self.with_store(|store| store.update_agent_task(&task_id, &status, &payload_json))
+    }
+
+    #[napi]
     pub fn propose_operation(
         &self,
         operation_id: String,

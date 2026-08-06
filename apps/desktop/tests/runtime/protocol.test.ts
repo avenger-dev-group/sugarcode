@@ -110,3 +110,35 @@ test('private MCP protocol keeps configuration and approval events provider-neut
     inventorySha256: 'b'.repeat(64),
   }), true);
 });
+
+test('private Agent task events carry a complete provider-neutral DAG snapshot', () => {
+  const event = {
+    type: 'agent.task',
+    sequence: 5,
+    requestId: 'request-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-fixture',
+    task: {
+      orchestrationId: 'orch/thread-fixture/turn-fixture',
+      taskId: 'task-fixture',
+      clientTaskKey: 'implementation',
+      childThreadId: SESSION_ID,
+      title: 'Implement',
+      role: 'worker',
+      access: 'workspaceWrite',
+      dependsOn: [] as string[],
+      taskMarkdown: 'Implement the change.',
+      status: 'waitingApproval',
+      amendments: [{ id: 'amendment-fixture', markdown: 'Add tests.' }],
+    },
+  };
+  assert.equal(isRuntimeEvent(event), true);
+  assert.equal(
+    isRuntimeEvent({
+      ...event,
+      task: { ...event.task, status: 'waiting' },
+    }),
+    false,
+  );
+});

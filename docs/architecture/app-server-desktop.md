@@ -130,6 +130,8 @@ Electron Main owns:
 - attachment reads and `asset/import`;
 - MCP Renderer/preload projection, while configuration, ADK session state and
   operation proposals are delegated to the private utility runtime;
+- dynamic Agent-task projection, while DAG scheduling and child ADK invocations
+  are delegated to the private utility runtime;
 - command-approval policy and its current Thread/workspace scope;
 - Git and preview window;
 - terminal projection and confirmation, while PTY/ConPTY execution is delegated
@@ -507,10 +509,16 @@ disabled on application launch and is re-probed after a utility worker crash;
 pending calls are rejected rather than replayed. This path no longer invokes
 the CLI `config mcp` commands or restarts app-server.
 
-Workspace selection and connection state, pending-approval replay and dynamic
-multi-Agent behavior still depend on the old sidecar or have not
-reached parity. Those paths must migrate behind the same preload API before
-app-server is removed. The migration must not introduce a second
-Renderer-facing provider-specific API. If migration work touches the public
-app-server protocol while coexistence remains, Rust definitions, generated
-TypeScript and fixtures continue to change together.
+The existing Renderer orchestration view is now projected from private
+provider-neutral `agent.task` snapshots. The utility runtime owns bounded DAG
+dispatch, separate child `LlmAgent`/Runner invocations, dependency and auditor
+scheduling, instruction amendments, waits, interruption and persisted task
+recovery. Active children become interrupted after a worker restart and are not
+silently replayed.
+
+Workspace selection and connection state plus pending-approval replay still
+depend on the old sidecar or have not reached parity. Those paths must migrate
+behind the same preload API before app-server is removed. The migration must
+not introduce a second Renderer-facing provider-specific API. If migration
+work touches the public app-server protocol while coexistence remains, Rust
+definitions, generated TypeScript and fixtures continue to change together.

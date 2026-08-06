@@ -17,7 +17,10 @@ attachment import, conversation/thread, approval-backed patch, Git and bounded
 command requests to the utility runtime without exposing ADK or provider SDK
 types. The unchanged MCP settings, session and approval APIs are also backed by
 the utility runtime and ADK `MCPToolset`; enabling MCP no longer restarts the
-CLI sidecar.
+CLI sidecar. Dynamic Agent tasks use the same existing orchestration UI while a
+private provider-neutral tool surface drives persisted DAG scheduling, separate
+child ADK invocations, amendments, waits and interruption in the utility
+runtime.
 
 Electron Main owns both process lifecycles, the native file picker, workspace
 authority and validated projections. Preload exposes only fixed typed actions.

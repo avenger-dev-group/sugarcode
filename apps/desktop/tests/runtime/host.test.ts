@@ -26,6 +26,7 @@ const emptyThreadSnapshot = (threadId = 'thread-fixture'): string =>
     },
     turns: [],
     items: [],
+    agentTasks: [],
   });
 
 class FixtureLlm extends BaseLlm {
@@ -99,6 +100,101 @@ class ToolLoopLlm extends BaseLlm {
     };
     yield {
       content: { role: 'model', parts: [{ text: 'Tool loop complete' }] },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class CollaborationLoopLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(request: LlmRequest): AsyncGenerator<LlmResponse, void> {
+    const parent = Object.hasOwn(request.toolsDict, 'collaboration_dispatch');
+    if (!parent) {
+      const taskText = request.contents
+        .flatMap((content) => content.parts ?? [])
+        .map((part) => part.text ?? '')
+        .join('\n');
+      const summary = taskText.includes('Audit')
+        ? 'Audit passed.'
+        : 'Implementation completed.';
+      yield {
+        content: { role: 'model', parts: [{ text: summary }] },
+        partial: false,
+        turnComplete: true,
+        finishReason: FinishReason.STOP,
+      };
+      return;
+    }
+    const responses = request.contents
+      .flatMap((content) => content.parts ?? [])
+      .flatMap((part) => part.functionResponse?.name
+        ? [part.functionResponse.name]
+        : []);
+    if (!responses.includes('collaboration_dispatch')) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-dispatch',
+              name: 'collaboration_dispatch',
+              args: {
+                tasks: [
+                  {
+                    clientTaskKey: 'implementation',
+                    title: 'Implement fixture',
+                    role: 'worker',
+                    access: 'workspaceWrite',
+                    dependsOn: [],
+                    taskMarkdown: 'Implement the fixture.',
+                  },
+                  {
+                    clientTaskKey: 'audit',
+                    title: 'Audit fixture',
+                    role: 'auditor',
+                    access: 'readOnly',
+                    dependsOn: ['implementation'],
+                    taskMarkdown: 'Audit the fixture.',
+                  },
+                ],
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    if (!responses.includes('collaboration_wait')) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-wait',
+              name: 'collaboration_wait',
+              args: { clientTaskKeys: [] },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: { role: 'model', parts: [{ text: 'Collaboration complete' }] },
+      partial: true,
+    };
+    yield {
+      content: { role: 'model', parts: [{ text: 'Collaboration complete' }] },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -399,6 +495,92 @@ test('RuntimeHost streams and controls native PTY sessions without a CLI bridge'
   assert.equal(closeCount, 1);
 });
 
+test('RuntimeHost runs persisted child LlmAgent invocations through the collaboration DAG', async () => {
+  const events: RuntimeEvent[] = [];
+  const createdTasks: Array<Record<string, unknown>> = [];
+  const updatedStatuses: string[] = [];
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    ensureThread: (): void => undefined,
+    startTurn: (): void => undefined,
+    appendItem: () => true,
+    finishTurn: () => true,
+    createAgentTasksJson: (_turnId: string, tasksJson: string) => {
+      createdTasks.push(...JSON.parse(tasksJson) as Array<Record<string, unknown>>);
+      return JSON.stringify({ inserted: createdTasks.length });
+    },
+    updateAgentTask: (_taskId: string, status: string) => {
+      updatedStatuses.push(status);
+      return true;
+    },
+    loadThreadJson: () => emptyThreadSnapshot(),
+    workspaceRead: async () => '{}',
+    workspaceList: async () => '{}',
+    workspaceSearch: async () => '{}',
+    workspaceApplyPatch: async () => '{}',
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => new CollaborationLoopLlm({ model: 'fixture-model' }),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-collaboration',
+    protocolVersion: 1,
+    dataDirectory: '/tmp/sugarcode-v3-collaboration',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-collaboration',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-collaboration',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: true,
+    },
+    content: [{ type: 'text', text: 'Use collaboration.' }],
+  });
+  await completed;
+
+  assert.equal(createdTasks.length, 2);
+  assert.ok(updatedStatuses.includes('running'));
+  assert.equal(updatedStatuses.filter((status) => status === 'completed').length, 2);
+  const tasks = events.filter(
+    (event): event is Extract<RuntimeEvent, { type: 'agent.task' }> =>
+      event.type === 'agent.task',
+  );
+  const implementationCompleted = tasks.findIndex(
+    (event) =>
+      event.task.clientTaskKey === 'implementation' &&
+      event.task.status === 'completed',
+  );
+  const auditRunning = tasks.findIndex(
+    (event) => event.task.clientTaskKey === 'audit' && event.task.status === 'running',
+  );
+  assert.ok(implementationCompleted >= 0);
+  assert.ok(auditRunning > implementationCompleted);
+  assert.equal(events.at(-1)?.type, 'turn.completed');
+});
+
 test('RuntimeHost executes ADK workspace tools through the native boundary', async () => {
   const events: RuntimeEvent[] = [];
   const persistedKinds: string[] = [];
@@ -439,6 +621,8 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
       return true;
     },
     finishTurn: () => true,
+    createAgentTasksJson: () => '{"inserted":0}',
+    updateAgentTask: () => true,
     proposeOperation: () => true,
     resolveApproval: () => true,
     beginOperation: () => true,
@@ -557,6 +741,8 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     startTurn: () => undefined,
     appendItem: () => true,
     finishTurn: () => true,
+    createAgentTasksJson: () => '{"inserted":0}',
+    updateAgentTask: () => true,
     proposeOperation: () => {
       proposalCount += 1;
       return true;
@@ -679,6 +865,8 @@ test('RuntimeHost approves and persists command execution before native dispatch
     startTurn: () => undefined,
     appendItem: () => true,
     finishTurn: () => true,
+    createAgentTasksJson: () => '{"inserted":0}',
+    updateAgentTask: () => true,
     proposeOperation: () => true,
     resolveApproval: () => true,
     beginOperation: () => {
@@ -880,6 +1068,8 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     startTurn: () => undefined,
     appendItem: () => true,
     finishTurn: () => true,
+    createAgentTasksJson: () => '{"inserted":0}',
+    updateAgentTask: () => true,
     proposeOperation: () => true,
     resolveApproval: () => true,
     beginOperation: () => true,

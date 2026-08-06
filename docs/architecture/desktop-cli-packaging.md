@@ -236,7 +236,14 @@ enablement constructs ADK `MCPToolset` instances directly in the worker. Tool
 inventory probing, per-call approval, operation idempotency and crash-time
 selection restoration no longer restart or depend on the CLI sidecar.
 
-The CLI sidecar and app-server still own workspace/connection state, while
-pending-approval replay and dynamic multi-Agent parity remain incomplete.
-The sidecar, app-server and CLI build hooks may be removed only after those
-remaining paths migrate and pass native package smoke.
+Dynamic multi-Agent execution now also lives in the utility runtime. Bounded
+provider-neutral FunctionTools drive persisted task DAGs, separate child
+`LlmAgent`/Runner invocations, dependency and audit scheduling, amendments,
+waits, interruption and the existing orchestration UI. Child sessions remain
+process-local; restart marks active task rows interrupted instead of replaying
+them.
+
+The CLI sidecar and app-server still own workspace/connection state, and
+pending-approval replay remains incomplete. The sidecar, app-server and CLI
+build hooks may be removed only after those remaining paths migrate and pass
+native package smoke.

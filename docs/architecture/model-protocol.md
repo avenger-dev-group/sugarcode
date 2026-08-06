@@ -353,3 +353,10 @@ history in the provider-neutral SQLite Turn item envelope. A fresh utility
 process reconstructs completed ADK events from those snapshots before the next
 request. Local mock HTTP/SSE tests exercise all three declared wires without
 online provider calls.
+
+Dynamic collaboration uses provider-neutral ADK FunctionTools above these
+adapters. Each scheduled child has its own `LlmAgent`/Runner invocation and
+temporary session, while task identity, dependencies, access class, status,
+amendments and bounded summaries cross the private utility protocol. No
+provider response object or SDK type is exposed to Electron Main, preload or
+Renderer.

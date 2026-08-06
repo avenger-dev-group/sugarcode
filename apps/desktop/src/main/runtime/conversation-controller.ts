@@ -13,14 +13,16 @@ import {
   type ConversationTurn,
   type ConversationTurnError,
 } from '../../shared/conversation.ts';
-import type {
-  RuntimeEvent,
-  RuntimeContentPart,
-  RuntimeModelSelection,
-  RuntimeProviderError,
-  RuntimeThreadRecord,
-  RuntimeThreadSnapshot,
-  RuntimeTurnItemRecord,
+import {
+  isRuntimeAgentTask,
+  type RuntimeAgentTask,
+  type RuntimeContentPart,
+  type RuntimeEvent,
+  type RuntimeModelSelection,
+  type RuntimeProviderError,
+  type RuntimeThreadRecord,
+  type RuntimeThreadSnapshot,
+  type RuntimeTurnItemRecord,
 } from '../../runtime/protocol.ts';
 import { createUuidV7 } from './id.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
@@ -154,6 +156,41 @@ const attachmentFromPart = (
   kind: part.asset.kind,
 });
 
+const orchestrationActivity = (
+  tasks: readonly RuntimeAgentTask[],
+): ConversationActivity | undefined => {
+  if (tasks.length === 0) {
+    return undefined;
+  }
+  const orchestrationId = tasks[0]?.orchestrationId;
+  if (
+    !orchestrationId ||
+    tasks.some((task) => task.orchestrationId !== orchestrationId)
+  ) {
+    return undefined;
+  }
+  return {
+    type: 'orchestration',
+    activity: {
+      id: orchestrationId,
+      tasks: tasks.map((task) => ({
+        id: task.taskId,
+        taskId: task.taskId,
+        clientTaskKey: task.clientTaskKey,
+        childThreadId: task.childThreadId,
+        title: task.title,
+        role: task.role,
+        access: task.access,
+        dependsOn: [...task.dependsOn],
+        taskMarkdown: task.taskMarkdown,
+        status: task.status,
+        amendments: task.amendments.map((amendment) => ({ ...amendment })),
+        ...(task.result ? { result: { ...task.result } } : {}),
+      })),
+    },
+  };
+};
+
 const projectThread = (
   snapshot: RuntimeThreadSnapshot,
 ): readonly ConversationTurn[] =>
@@ -206,6 +243,26 @@ const projectThread = (
           },
         }),
       );
+    const durableTasks = snapshot.agentTasks
+      .filter((task) => task.turnId === record.id)
+      .map((task) => ({ ...task.payload, status: task.status }));
+    const itemTasks = new Map<string, RuntimeAgentTask>();
+    if (durableTasks.length === 0) {
+      for (const item of items) {
+        const task = item.kind === 'agent.task' ? item.payload.task : undefined;
+        if (isRuntimeAgentTask(task)) {
+          itemTasks.set(task.taskId, task);
+        }
+      }
+    }
+    const restoredTasks = durableTasks.length > 0
+      ? durableTasks
+      : [...itemTasks.values()];
+    const restoredOrchestration = orchestrationActivity(restoredTasks);
+    const activities = [
+      ...commentary,
+      ...(restoredOrchestration ? [restoredOrchestration] : []),
+    ];
     const messages = [
       ...(userText || attachments.length > 0
         ? [{
@@ -234,7 +291,7 @@ const projectThread = (
       status: record.status === 'running' ? 'interrupted' : record.status,
       model,
       messages,
-      ...(commentary.length > 0 ? { activities: commentary } : {}),
+      ...(activities.length > 0 ? { activities } : {}),
       ...(error ? { error } : {}),
     };
   });
@@ -562,6 +619,7 @@ export class RuntimeConversationController {
     }
     if (
       (!event.type.startsWith('turn.') &&
+        !event.type.startsWith('agent.') &&
         !event.type.startsWith('approval.') &&
         !event.type.startsWith('operation.')) ||
       !('threadId' in event) ||
@@ -624,6 +682,46 @@ export class RuntimeConversationController {
           },
         };
         break;
+      case 'agent.task': {
+        const activities = [...(turn.activities ?? [])];
+        const orchestrationIndex = activities.findIndex(
+          (activity) => activity.type === 'orchestration',
+        );
+        const projected = orchestrationActivity([event.task]);
+        if (!projected || projected.type !== 'orchestration') {
+          return;
+        }
+        const projectedTask = projected.activity.tasks[0];
+        if (!projectedTask) {
+          return;
+        }
+        if (orchestrationIndex < 0) {
+          activities.push(projected);
+        } else {
+          const activity = activities[orchestrationIndex];
+          if (
+            activity?.type !== 'orchestration' ||
+            activity.activity.id !== event.task.orchestrationId
+          ) {
+            return;
+          }
+          const tasks = [...activity.activity.tasks];
+          const taskIndex = tasks.findIndex(
+            (task) => task.taskId === event.task.taskId,
+          );
+          if (taskIndex >= 0) {
+            tasks[taskIndex] = projectedTask;
+          } else {
+            tasks.push(projectedTask);
+          }
+          activities[orchestrationIndex] = {
+            type: 'orchestration',
+            activity: { ...activity.activity, tasks },
+          };
+        }
+        turns[index] = { ...turn, activities };
+        break;
+      }
       case 'approval.requested': {
         const activities = [...(turn.activities ?? [])];
         activities.push({
@@ -736,11 +834,28 @@ export class RuntimeConversationController {
       }
       case 'turn.completed': {
         const messages = turn.messages.map((message) => ({ ...message, status: 'completed' as const }));
-        const activities = turn.activities?.map((activity) =>
-          activity.type === 'commentary'
-            ? { type: 'commentary' as const, activity: { ...activity.activity, status: 'completed' as const } }
-            : activity,
-        );
+        const activities = turn.activities?.map((activity) => {
+          if (activity.type === 'commentary') {
+            return {
+              type: 'commentary' as const,
+              activity: { ...activity.activity, status: 'completed' as const },
+            };
+          }
+          if (activity.type === 'orchestration' && event.status !== 'completed') {
+            return {
+              type: 'orchestration' as const,
+              activity: {
+                ...activity.activity,
+                tasks: activity.activity.tasks.map((task) =>
+                  ['queued', 'running', 'waitingApproval'].includes(task.status)
+                    ? { ...task, status: 'interrupted' as const }
+                    : task,
+                ),
+              },
+            };
+          }
+          return activity;
+        });
         turns[index] = {
           ...turn,
           status: event.status,

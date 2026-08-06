@@ -94,6 +94,46 @@ export type RuntimeThreadSnapshot = Readonly<{
   thread: RuntimeThreadRecord;
   turns: readonly RuntimeTurnRecord[];
   items: readonly RuntimeTurnItemRecord[];
+  agentTasks: readonly RuntimeAgentTaskRecord[];
+}>;
+
+export type RuntimeAgentTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'waitingApproval'
+  | 'completed'
+  | 'failed'
+  | 'interrupted'
+  | 'cancelled';
+
+export type RuntimeAgentTask = Readonly<{
+  orchestrationId: string;
+  taskId: string;
+  clientTaskKey: string;
+  childThreadId: string;
+  title: string;
+  role: 'explorer' | 'worker' | 'auditor';
+  access: 'readOnly' | 'workspaceWrite';
+  dependsOn: readonly string[];
+  taskMarkdown: string;
+  status: RuntimeAgentTaskStatus;
+  amendments: readonly Readonly<{ id: string; markdown: string }>[];
+  result?: Readonly<{
+    id: string;
+    summaryMarkdown: string;
+    durationMs: number;
+  }>;
+}>;
+
+export type RuntimeAgentTaskRecord = Readonly<{
+  id: string;
+  turnId: string;
+  parentTaskId: string | null;
+  title: string;
+  status: RuntimeAgentTaskStatus;
+  payload: RuntimeAgentTask;
+  createdAt: number;
+  updatedAt: number;
 }>;
 
 export type RuntimeModelSelection = Readonly<{
@@ -469,16 +509,7 @@ export type RuntimeEvent =
         workspaceId: string;
         threadId: string;
         turnId: string;
-        taskId: string;
-        parentTaskId?: string;
-        status:
-          | 'pending'
-          | 'running'
-          | 'waiting'
-          | 'completed'
-          | 'failed'
-          | 'interrupted';
-        title: string;
+        task: RuntimeAgentTask;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -859,6 +890,43 @@ const hasTurnCoordinates = (value: Record<string, unknown>): boolean =>
   typeof value.threadId === 'string' &&
   typeof value.turnId === 'string';
 
+const AGENT_TASK_STATUSES: readonly RuntimeAgentTaskStatus[] = [
+  'queued',
+  'running',
+  'waitingApproval',
+  'completed',
+  'failed',
+  'interrupted',
+  'cancelled',
+];
+
+export const isRuntimeAgentTask = (value: unknown): value is RuntimeAgentTask =>
+  isRecord(value) &&
+  typeof value.orchestrationId === 'string' &&
+  typeof value.taskId === 'string' &&
+  typeof value.clientTaskKey === 'string' &&
+  typeof value.childThreadId === 'string' &&
+  typeof value.title === 'string' &&
+  ['explorer', 'worker', 'auditor'].includes(String(value.role)) &&
+  ['readOnly', 'workspaceWrite'].includes(String(value.access)) &&
+  Array.isArray(value.dependsOn) &&
+  value.dependsOn.every((dependency) => typeof dependency === 'string') &&
+  typeof value.taskMarkdown === 'string' &&
+  AGENT_TASK_STATUSES.includes(value.status as RuntimeAgentTaskStatus) &&
+  Array.isArray(value.amendments) &&
+  value.amendments.every(
+    (amendment) =>
+      isRecord(amendment) &&
+      typeof amendment.id === 'string' &&
+      typeof amendment.markdown === 'string',
+  ) &&
+  (value.result === undefined ||
+    (isRecord(value.result) &&
+      typeof value.result.id === 'string' &&
+      typeof value.result.summaryMarkdown === 'string' &&
+      Number.isSafeInteger(value.result.durationMs) &&
+      Number(value.result.durationMs) >= 0));
+
 export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
   if (!isRecord(value) || !hasEventBase(value) || typeof value.type !== 'string') {
     return false;
@@ -966,21 +1034,7 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         isRecord(value.result)
       );
     case 'agent.task':
-      return (
-        hasTurnCoordinates(value) &&
-        typeof value.taskId === 'string' &&
-        (value.parentTaskId === undefined ||
-          typeof value.parentTaskId === 'string') &&
-        [
-          'pending',
-          'running',
-          'waiting',
-          'completed',
-          'failed',
-          'interrupted',
-        ].includes(String(value.status)) &&
-        typeof value.title === 'string'
-      );
+      return hasTurnCoordinates(value) && isRuntimeAgentTask(value.task);
     case 'turn.completed':
       return (
         hasTurnCoordinates(value) &&

@@ -13,7 +13,7 @@ use sugarcode_state::McpServerConfig;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
 
@@ -72,6 +72,16 @@ pub(super) struct AssetRow {
     pub(super) kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) pdf_pages: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AgentTaskCreate {
+    id: String,
+    parent_task_id: Option<String>,
+    title: String,
+    status: String,
+    payload: Value,
 }
 
 impl Store {
@@ -570,6 +580,131 @@ impl Store {
         Ok(updated == 1)
     }
 
+    pub(super) fn create_agent_tasks_json(
+        &mut self,
+        turn_id: &str,
+        tasks_json: &str,
+    ) -> Result<String> {
+        validate_id("turn_id", turn_id)?;
+        let tasks: Vec<AgentTaskCreate> = serde_json::from_str(tasks_json)?;
+        if tasks.is_empty() || tasks.len() > 12 {
+            return Err(PersistenceError::InvalidInput(
+                "an Agent task batch must contain 1 to 12 tasks".to_owned(),
+            ));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let turn_running: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns WHERE id = ?1 AND status = 'running')",
+            [turn_id],
+            |row| row.get(0),
+        )?;
+        if !turn_running {
+            return Err(PersistenceError::Conflict(format!(
+                "Turn {turn_id} is not running"
+            )));
+        }
+        let mut inserted_count = 0usize;
+        for task in tasks {
+            validate_agent_task_create(&task)?;
+            let payload_json = serde_json::to_string(&task.payload)?;
+            let inserted = transaction.execute(
+                "INSERT INTO agent_tasks \
+                 (id, turn_id, parent_task_id, title, status, payload_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(id) DO NOTHING",
+                params![
+                    task.id,
+                    turn_id,
+                    task.parent_task_id,
+                    task.title,
+                    task.status,
+                    payload_json
+                ],
+            )?;
+            if inserted == 0 {
+                let existing: (String, Option<String>, String, String, String) = transaction
+                    .query_row(
+                        "SELECT turn_id, parent_task_id, title, status, payload_json \
+                         FROM agent_tasks WHERE id = ?1",
+                        [&task.id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
+                    )?;
+                if existing
+                    != (
+                        turn_id.to_owned(),
+                        task.parent_task_id,
+                        task.title,
+                        task.status,
+                        payload_json,
+                    )
+                {
+                    return Err(PersistenceError::Conflict(format!(
+                        "Agent task {} was reused with different content",
+                        task.id
+                    )));
+                }
+            } else {
+                inserted_count += 1;
+            }
+        }
+        transaction.commit()?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "inserted": inserted_count
+        }))?)
+    }
+
+    pub(super) fn update_agent_task(
+        &mut self,
+        task_id: &str,
+        status: &str,
+        payload_json: &str,
+    ) -> Result<bool> {
+        validate_id("task_id", task_id)?;
+        validate_agent_task_status(status)?;
+        let payload: Value = serde_json::from_str(payload_json)?;
+        validate_agent_task_payload(task_id, status, &payload)?;
+        let canonical_payload = serde_json::to_string(&payload)?;
+        let existing: Option<(String, String)> = self
+            .connection
+            .query_row(
+                "SELECT status, payload_json FROM agent_tasks WHERE id = ?1",
+                [task_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((existing_status, existing_payload)) = existing else {
+            return Err(PersistenceError::InvalidInput(format!(
+                "Agent task {task_id} does not exist"
+            )));
+        };
+        if existing_status == status && existing_payload == canonical_payload {
+            return Ok(false);
+        }
+        if agent_task_terminal(&existing_status)
+            || (existing_status != status
+                && !agent_task_transition_allowed(&existing_status, status))
+        {
+            return Err(PersistenceError::Conflict(format!(
+                "Agent task {task_id} cannot transition from {existing_status} to {status}"
+            )));
+        }
+        self.connection.execute(
+            "UPDATE agent_tasks SET status = ?2, payload_json = ?3, updated_at = unixepoch() \
+             WHERE id = ?1",
+            params![task_id, status, canonical_payload],
+        )?;
+        Ok(true)
+    }
+
     pub(super) fn propose_operation(
         &mut self,
         operation_id: &str,
@@ -796,10 +931,45 @@ impl Store {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let mut tasks_statement = self.connection.prepare(
+            "SELECT id, turn_id, parent_task_id, title, status, payload_json, \
+             created_at, updated_at FROM agent_tasks \
+             WHERE turn_id IN (SELECT id FROM turns WHERE thread_id = ?1) \
+             ORDER BY created_at, id",
+        )?;
+        let agent_tasks = tasks_statement
+            .query_map([thread_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })?
+            .map(|row| {
+                let (id, turn_id, parent_task_id, title, status, payload, created_at, updated_at) =
+                    row?;
+                Ok(AgentTaskRow {
+                    id,
+                    turn_id,
+                    parent_task_id,
+                    title,
+                    status,
+                    payload: serde_json::from_str(&payload)?,
+                    created_at,
+                    updated_at,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(serde_json::to_string(&ThreadSnapshot {
             thread,
             turns,
             items,
+            agent_tasks,
         })?)
     }
 
@@ -1476,6 +1646,32 @@ fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version = 5;",
         )?;
         transaction.commit()?;
+        version = 5;
+    }
+    if version == 5 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "PRAGMA defer_foreign_keys = ON;
+             ALTER TABLE agent_tasks RENAME TO agent_tasks_v5;
+             CREATE TABLE agent_tasks (\
+               id TEXT PRIMARY KEY, turn_id TEXT NOT NULL REFERENCES turns(id),\
+               parent_task_id TEXT REFERENCES agent_tasks(id), title TEXT NOT NULL,\
+               status TEXT NOT NULL CHECK(status IN\
+                 ('queued','running','waitingApproval','completed','failed','interrupted','cancelled')),\
+               payload_json TEXT NOT NULL DEFAULT '{}',\
+               created_at INTEGER NOT NULL DEFAULT (unixepoch()),\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;
+             INSERT INTO agent_tasks
+               (id, turn_id, parent_task_id, title, status, payload_json, created_at, updated_at)
+             SELECT id, turn_id, parent_task_id, title,
+               CASE status WHEN 'pending' THEN 'queued' WHEN 'waiting' THEN 'waitingApproval'
+                 ELSE status END,
+               payload_json, created_at, updated_at FROM agent_tasks_v5;
+             DROP TABLE agent_tasks_v5;
+             PRAGMA user_version = 6;",
+        )?;
+        transaction.commit()?;
     }
     Ok(())
 }
@@ -1490,7 +1686,7 @@ fn recover_interrupted_work(connection: &mut Connection) -> Result<()> {
     )?;
     transaction.execute(
         "UPDATE agent_tasks SET status = 'interrupted', updated_at = unixepoch()\
-         WHERE status IN ('running', 'waiting')",
+         WHERE status IN ('queued', 'running', 'waitingApproval')",
         [],
     )?;
     transaction.execute(
@@ -1509,6 +1705,20 @@ struct ThreadSnapshot {
     thread: ThreadRow,
     turns: Vec<TurnRow>,
     items: Vec<ItemRow>,
+    agent_tasks: Vec<AgentTaskRow>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentTaskRow {
+    id: String,
+    turn_id: String,
+    parent_task_id: Option<String>,
+    title: String,
+    status: String,
+    payload: Value,
+    created_at: i64,
+    updated_at: i64,
 }
 
 #[derive(Serialize)]
@@ -1565,6 +1775,69 @@ fn validate_title(value: Option<&str>) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_agent_task_create(task: &AgentTaskCreate) -> Result<()> {
+    validate_id("task_id", &task.id)?;
+    if let Some(parent_task_id) = &task.parent_task_id {
+        validate_id("parent_task_id", parent_task_id)?;
+    }
+    if task.title.is_empty() || task.title.len() > 256 || task.status != "queued" {
+        return Err(PersistenceError::InvalidInput(
+            "new Agent tasks must have a bounded title and queued status".to_owned(),
+        ));
+    }
+    validate_agent_task_payload(&task.id, &task.status, &task.payload)
+}
+
+fn validate_agent_task_status(status: &str) -> Result<()> {
+    if matches!(
+        status,
+        "queued"
+            | "running"
+            | "waitingApproval"
+            | "completed"
+            | "failed"
+            | "interrupted"
+            | "cancelled"
+    ) {
+        Ok(())
+    } else {
+        Err(PersistenceError::InvalidInput(
+            "invalid Agent task status".to_owned(),
+        ))
+    }
+}
+
+fn validate_agent_task_payload(task_id: &str, status: &str, payload: &Value) -> Result<()> {
+    validate_agent_task_status(status)?;
+    let object = payload.as_object().ok_or_else(|| {
+        PersistenceError::InvalidInput("Agent task payload must be an object".to_owned())
+    })?;
+    if object.get("taskId").and_then(Value::as_str) != Some(task_id)
+        || object.get("status").and_then(Value::as_str) != Some(status)
+    {
+        return Err(PersistenceError::InvalidInput(
+            "Agent task payload identity or status does not match its row".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn agent_task_terminal(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "interrupted" | "cancelled")
+}
+
+fn agent_task_transition_allowed(from: &str, to: &str) -> bool {
+    match from {
+        "queued" => matches!(to, "running" | "failed" | "interrupted" | "cancelled"),
+        "running" => matches!(
+            to,
+            "waitingApproval" | "completed" | "failed" | "interrupted" | "cancelled"
+        ),
+        "waitingApproval" => matches!(to, "running" | "failed" | "interrupted" | "cancelled"),
+        _ => false,
+    }
 }
 
 fn escape_like(value: &str) -> String {
