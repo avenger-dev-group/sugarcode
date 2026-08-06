@@ -227,8 +227,8 @@ final process result is durable.
 Legacy app-server Command and MCP approvals enter one Main-owned FIFO queue.
 Migrated utility-runtime local-tool and MCP approvals enter one runtime-owned
 FIFO across every project and Thread, so only one approval kind is emitted to
-Main at a time. Only the head is presented, and its local countdown starts after the
-matching approval surface reports ready. Closing the UI or transport safely
+Main at a time. Only the head is presented, and its local countdown starts after
+the matching approval surface reports ready. Closing the UI or transport safely
 rejects pending and queued requests. The view model identifies the source
 project and conversation. Renderer opens the modal only while its owning Thread
 is selected; a background request instead marks that Thread as requiring
@@ -242,6 +242,16 @@ remain running until they become the head, so the navigator never claims that a
 non-actionable queued request can already be approved. Workspace-scoped automatic
 approval is checked against the request's recorded workspace, not the currently
 visible project.
+
+Utility-worker loss does not invent a denial for a durable pending request.
+SQLite v7 retains provider-neutral presentation metadata alongside the exact
+operation arguments and hashes. After restart, Runtime validates that record and
+re-emits the same approval ID as a transient request; Main and the existing UI
+deduplicate it and wait for the approval surface to become ready. Approval and
+the operation's `executing` claim commit atomically before dispatch. A crash
+after that claim records a failed operation and never replays the side effect.
+Recovered MCP execution additionally requires the same active inventory receipt
+and otherwise fails closed.
 
 Main persists a versioned multi-project session with canonical paths, opaque
 workspace bindings, per-project Thread IDs and title maps, isolated-chat
@@ -506,8 +516,9 @@ Session enablement validates the bounded selection, constructs ADK
 inventory hashes into the existing approval view, then uses the Rust operation
 ledger before transport execution. The selection is process-local, starts
 disabled on application launch and is re-probed after a utility worker crash;
-pending calls are rejected rather than replayed. This path no longer invokes
-the CLI `config mcp` commands or restarts app-server.
+executing calls are failed rather than replayed, while still-pending calls are
+re-presented for an explicit decision. This path no longer invokes the CLI
+`config mcp` commands or restarts app-server.
 
 The existing Renderer orchestration view is now projected from private
 provider-neutral `agent.task` snapshots. The utility runtime owns bounded DAG
@@ -516,9 +527,9 @@ scheduling, instruction amendments, waits, interruption and persisted task
 recovery. Active children become interrupted after a worker restart and are not
 silently replayed.
 
-Workspace selection and connection state plus pending-approval replay still
-depend on the old sidecar or have not reached parity. Those paths must migrate
-behind the same preload API before app-server is removed. The migration must
-not introduce a second Renderer-facing provider-specific API. If migration
-work touches the public app-server protocol while coexistence remains, Rust
-definitions, generated TypeScript and fixtures continue to change together.
+Workspace selection and connection state still depend on the old sidecar.
+Those paths must migrate behind the same preload API before app-server is
+removed. The migration must not introduce a second Renderer-facing
+provider-specific API. If migration work touches the public app-server protocol
+while coexistence remains, Rust definitions, generated TypeScript and fixtures
+continue to change together.

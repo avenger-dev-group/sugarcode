@@ -243,7 +243,12 @@ waits, interruption and the existing orchestration UI. Child sessions remain
 process-local; restart marks active task rows interrupted instead of replaying
 them.
 
-The CLI sidecar and app-server still own workspace/connection state, and
-pending-approval replay remains incomplete. The sidecar, app-server and CLI
-build hooks may be removed only after those remaining paths migrate and pass
-native package smoke.
+Pending local and MCP approvals now recover from the v3 operation ledger. The
+worker revalidates the stored arguments and presentation, republishes the same
+approval ID to the existing UI and executes only after a new explicit decision.
+Approval and the `executing` claim are atomic; a claimed operation interrupted
+by a crash becomes failed and is never replayed.
+
+The CLI sidecar and app-server still own workspace/connection state. The
+sidecar, app-server and CLI build hooks may be removed only after that remaining
+ownership migrates and passes native package smoke.

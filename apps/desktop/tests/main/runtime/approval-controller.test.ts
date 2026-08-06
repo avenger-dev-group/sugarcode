@@ -110,3 +110,32 @@ test('runtime Full Access approvals never inherit or create automatic approval',
   assert.equal(controller.getSnapshot().mode, 'workspace');
   assert.equal(controller.getSnapshot().modeThreadId, undefined);
 });
+
+test('recovered runtime approval waits for the existing UI surface and deduplicates replay', () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeApprovalController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  const event: RuntimeEvent = {
+    type: 'approval.requested',
+    sequence: 1,
+    requestId: 'request-recovered',
+    workspaceId: 'workspace-recovered',
+    threadId: 'thread-recovered',
+    turnId: 'turn-recovered',
+    approvalId: 'approval-recovered',
+    operationId: 'operation-recovered',
+    toolName: 'workspace_apply_patch',
+    argumentsSummary: 'workspace_apply_patch (64 bytes)',
+    fullAccess: false,
+    recovered: true,
+  };
+  fixture.emit(event);
+  fixture.emit({ ...event, sequence: 2 });
+  assert.equal(fixture.sent.length, 0);
+  assert.equal(controller.getSnapshot().request?.queueCount, 1);
+  controller.openWorkspace('workspace-recovered', '/fixture/recovered');
+  const pending = controller.markSurfaceReady();
+  assert.equal(pending.status, 'pending');
+  assert.equal(pending.request?.cwd, '/fixture/recovered');
+});

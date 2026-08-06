@@ -285,22 +285,6 @@ export class RuntimeSupervisor {
     this.child = null;
     this.ready = false;
     this.pendingMcpSessionCommands.clear();
-    for (const approval of this.pendingToolApprovals.values()) {
-      this.emit({
-        type: approval.type === 'mcp.approvalRequested'
-          ? 'mcp.approvalResolved'
-          : 'approval.resolved',
-        sequence: 0,
-        requestId: approval.requestId,
-        workspaceId: approval.workspaceId,
-        threadId: approval.threadId,
-        turnId: approval.turnId,
-        approvalId: approval.approvalId,
-        operationId: approval.operationId,
-        decision: 'denied',
-      });
-    }
-    this.pendingToolApprovals.clear();
     for (const turn of this.activeTurns.values()) {
       this.emit({
         type: 'turn.completed',

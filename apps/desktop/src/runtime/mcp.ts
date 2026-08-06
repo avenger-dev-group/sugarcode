@@ -185,6 +185,27 @@ export class RuntimeMcpManager {
       ),
     );
 
+  executeRecovered = async (
+    serverId: string,
+    name: string,
+    argumentsValue: Readonly<Record<string, unknown>>,
+    inventorySha256: string,
+    signal: AbortSignal,
+  ): Promise<unknown> => {
+    const server = this.active.find((candidate) => candidate.id === serverId);
+    if (!server || server.inventorySha256 !== inventorySha256) {
+      throw new Error('The recovered MCP inventory is no longer active.');
+    }
+    const tool = server.tools.find((candidate) => candidate.name === name);
+    if (!tool) {
+      throw new Error('The recovered MCP tool is no longer available.');
+    }
+    return tool.runAsync({
+      args: argumentsValue,
+      toolContext: { abortSignal: signal } as never,
+    });
+  };
+
   close = async (): Promise<void> => {
     const active = this.active;
     this.active = [];

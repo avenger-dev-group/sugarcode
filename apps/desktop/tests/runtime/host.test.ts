@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import {
@@ -403,6 +404,7 @@ test('RuntimeHost streams and controls native PTY sessions without a CLI bridge'
       revision: '0'.repeat(64),
       servers: [],
     }),
+    listPendingApprovalsJson: () => '[]',
     saveMcpConfigJson: () => '{}',
     createTerminalJson: () => JSON.stringify({ shell: '/bin/zsh' }),
     terminalInput: (_sessionId: string, data: string): void => {
@@ -509,6 +511,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
       revision: '0'.repeat(64),
       servers: [],
     }),
+    listPendingApprovalsJson: () => '[]',
     ensureThread: (): void => undefined,
     startTurn: (): void => undefined,
     appendItem: () => true,
@@ -595,6 +598,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
       revision: '0'.repeat(64),
       servers: [],
     }),
+    listPendingApprovalsJson: () => '[]',
     saveMcpConfigJson: () => '{}',
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
@@ -625,7 +629,6 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     updateAgentTask: () => true,
     proposeOperation: () => true,
     resolveApproval: () => true,
-    beginOperation: () => true,
     completeOperation: () => true,
     loadThreadJson: () => emptyThreadSnapshot(),
     workspaceRead: async (_workspaceId, path) => {
@@ -704,6 +707,104 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   assert.ok(persistedKinds.includes('turn.toolResult'));
 });
 
+test('RuntimeHost restores a pending approval without replay and executes only after approval', async () => {
+  const argumentsJson = JSON.stringify({
+    patch: '*** Begin Patch\n*** Add File: recovered.txt\n+fixture\n*** End Patch',
+  });
+  const requestHash = createHash('sha256').update(argumentsJson).digest('hex');
+  const events: RuntimeEvent[] = [];
+  const persistedKinds: string[] = [];
+  let applyCount = 0;
+  let approvalStatus = 'pending';
+  let operationStatus = 'proposed';
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    listPendingApprovalsJson: () => JSON.stringify([{
+      approvalId: 'approval-recovered',
+      operationId: 'operation-recovered',
+      turnId: 'turn-recovered',
+      requestId: 'request-recovered',
+      threadId: 'thread-recovered',
+      workspaceId: 'workspace-recovered',
+      toolName: 'workspace_apply_patch',
+      requestHash,
+      argumentsJson,
+      approval: {
+        kind: 'command',
+        argumentsSummary: `workspace_apply_patch (${Buffer.byteLength(argumentsJson, 'utf8')} bytes)`,
+        fullAccess: false,
+      },
+    }]),
+    appendItem: (_itemId: string, _turnId: string, _sequence: number, kind: string) => {
+      persistedKinds.push(kind);
+      return true;
+    },
+    resolveApproval: (_approvalId: string, decision: string) => {
+      approvalStatus = decision;
+      operationStatus = decision === 'approved' ? 'executing' : 'denied';
+      return true;
+    },
+    completeOperation: (_operationId: string, _result: string, succeeded: boolean) => {
+      assert.equal(operationStatus, 'executing');
+      operationStatus = succeeded ? 'completed' : 'failed';
+      return true;
+    },
+    workspaceApplyPatch: async () => {
+      applyCount += 1;
+      return JSON.stringify({ ok: true, files: [{ path: 'recovered.txt' }] });
+    },
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'operation.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize',
+    protocolVersion: 1,
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+  });
+  const approval = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'approval.requested' }> =>
+      event.type === 'approval.requested',
+  );
+  assert.ok(approval);
+  assert.equal(approval.recovered, true);
+  assert.equal(applyCount, 0);
+  assert.equal(approvalStatus, 'pending');
+  assert.ok(!persistedKinds.includes('approval.requested'));
+
+  host.handle({
+    type: 'approval.resolve',
+    requestId: 'request-recovered-decision',
+    workspaceId: approval.workspaceId,
+    threadId: approval.threadId,
+    turnId: approval.turnId,
+    approvalId: approval.approvalId,
+    decision: 'approved',
+  });
+  await completed;
+  assert.equal(approvalStatus, 'approved');
+  assert.equal(operationStatus, 'completed');
+  assert.equal(applyCount, 1);
+  assert.ok(persistedKinds.includes('approval.resolved'));
+  assert.ok(persistedKinds.includes('operation.completed'));
+});
+
 test('RuntimeHost persists approval before committing a workspace patch', async () => {
   const events: RuntimeEvent[] = [];
   let applyCount = 0;
@@ -718,6 +819,7 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
       revision: '0'.repeat(64),
       servers: [],
     }),
+    listPendingApprovalsJson: () => '[]',
     saveMcpConfigJson: () => '{}',
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
@@ -748,7 +850,6 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
       return true;
     },
     resolveApproval: () => true,
-    beginOperation: () => true,
     completeOperation: () => true,
     loadThreadJson: () => emptyThreadSnapshot(),
     workspaceRead: async () => '{}',
@@ -825,7 +926,7 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
 
 test('RuntimeHost approves and persists command execution before native dispatch', async () => {
   const events: RuntimeEvent[] = [];
-  let beginCount = 0;
+  let claimCount = 0;
   let executeCount = 0;
   let resolveCompleted: (() => void) | undefined;
   const completed = new Promise<void>((resolve) => {
@@ -837,6 +938,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
       revision: '0'.repeat(64),
       servers: [],
     }),
+    listPendingApprovalsJson: () => '[]',
     saveMcpConfigJson: () => '{}',
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
@@ -868,9 +970,10 @@ test('RuntimeHost approves and persists command execution before native dispatch
     createAgentTasksJson: () => '{"inserted":0}',
     updateAgentTask: () => true,
     proposeOperation: () => true,
-    resolveApproval: () => true,
-    beginOperation: () => {
-      beginCount += 1;
+    resolveApproval: (_approvalId, decision) => {
+      if (decision === 'approved') {
+        claimCount += 1;
+      }
       return true;
     },
     completeOperation: () => true,
@@ -930,7 +1033,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
   assert.equal(approval.toolName, 'shell_exec');
   assert.equal(approval.argumentsSummary, 'Sandboxed: /bin/pwd');
   assert.equal(approval.fullAccess, false);
-  assert.equal(beginCount, 0);
+  assert.equal(claimCount, 0);
   assert.equal(executeCount, 0);
   host.handle({
     type: 'approval.resolve',
@@ -942,7 +1045,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
     decision: 'approved',
   });
   await completed;
-  assert.equal(beginCount, 1);
+  assert.equal(claimCount, 1);
   assert.equal(executeCount, 1);
   assert.ok(events.some((event) => event.type === 'turn.toolResult'));
 });
@@ -1045,6 +1148,7 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
       revision: '0'.repeat(64),
       servers: [],
     }),
+    listPendingApprovalsJson: () => '[]',
     saveMcpConfigJson: () => '{}',
     importAssetJson: () => JSON.stringify(asset),
     readAssetJson: () => JSON.stringify({ asset, data: 'Zml4dHVyZQ==' }),
@@ -1072,7 +1176,6 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     updateAgentTask: () => true,
     proposeOperation: () => true,
     resolveApproval: () => true,
-    beginOperation: () => true,
     completeOperation: () => true,
     loadThreadJson: () => snapshot,
     workspaceRead: async () => '{}',

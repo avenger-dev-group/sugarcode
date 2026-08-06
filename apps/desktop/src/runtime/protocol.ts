@@ -439,6 +439,7 @@ export type RuntimeEvent =
         toolName: string;
         argumentsSummary: string;
         fullAccess: boolean;
+        recovered?: true;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -464,6 +465,7 @@ export type RuntimeEvent =
         argumentsBytes: number;
         argumentsSha256: string;
         inventorySha256: string;
+        recovered?: true;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -981,7 +983,8 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.operationId === 'string' &&
         typeof value.toolName === 'string' &&
         typeof value.argumentsSummary === 'string' &&
-        typeof value.fullAccess === 'boolean'
+        typeof value.fullAccess === 'boolean' &&
+        (value.recovered === undefined || value.recovered === true)
       );
     case 'approval.resolved':
       return (
@@ -1006,7 +1009,8 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.argumentsSha256 === 'string' &&
         /^[0-9a-f]{64}$/u.test(value.argumentsSha256) &&
         typeof value.inventorySha256 === 'string' &&
-        /^[0-9a-f]{64}$/u.test(value.inventorySha256)
+        /^[0-9a-f]{64}$/u.test(value.inventorySha256) &&
+        (value.recovered === undefined || value.recovered === true)
       );
     case 'mcp.approvalResolved':
       return (

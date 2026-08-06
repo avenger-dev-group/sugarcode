@@ -314,8 +314,9 @@ items, operations, approvals and Agent tasks. Schema v2 adds model profiles and
 separately stored credentials; schema v3 adds Thread archive and fork lineage;
 schema v4 adds content-addressed asset metadata; schema v5 adds the revisioned
 provider-neutral MCP server configuration; schema v6 formalizes dynamic Agent
-task status and payload persistence. None of these schemas copy rollout-v1
-state.
+task status and payload persistence; schema v7 stores the provider-neutral
+approval presentation required for restart recovery. None of these schemas copy
+rollout-v1 state.
 The connection enables foreign keys, WAL mode and a bounded busy timeout, and
 the database file is restricted to the owning user on Unix.
 
@@ -325,8 +326,12 @@ is a no-op; reusing the same ID for different content is a conflict. Operation
 proposal and approval creation are one immediate transaction. On process open,
 running Turns become retryable `interrupted`, queued/running/waiting-approval
 Agent tasks become `interrupted`, and executing operations become retryable
-failures. Pending
-approvals remain pending and no operation is automatically executed.
+failures. Pending approvals remain pending and no operation is automatically
+executed. Runtime
+re-emits those requests only after loading and hash-validating the stored
+operation and presentation. A recovered request waits for the existing approval
+surface instead of being denied merely because Renderer has not finished
+starting.
 
 Renderer model configuration, attachment import and conversation reads/writes
 now use the 3.0 utility runtime behind the existing preload API. Approval
@@ -334,11 +339,13 @@ proposals, atomic workspace patches and Git operations also persist or execute
 through that runtime and the native module. Attachment bytes live only in the
 v3 content-addressed store; SQLite retains their verified descriptors.
 
-Bounded `shell_exec` calls use the same operation ledger. Approval moves an
-operation from `proposed` to `approved`; the host must durably claim it as
-`executing` before native dispatch and records the terminal result as
-`completed` or `failed`. Duplicate `operationId` claims do not execute the side
-effect again. Sandboxed direct commands reuse the capability-bound,
+Bounded `shell_exec` calls use the same operation ledger. An approval decision
+and its operation claim are one immediate transaction: approval changes from
+`pending` to `approved` while the operation changes from `proposed` directly to
+`executing` before native dispatch. The terminal result is `completed` or
+`failed`. If the worker exits after the claim, recovery marks the operation
+failed and never dispatches it again. Sandboxed direct commands reuse the
+capability-bound,
 read-only/network-denied supervisor in the native module, while Full Access
 commands use the bounded shell path. Active native process trees are indexed by
 `operationId`, allowing Turn cancellation or worker shutdown to terminate them.
@@ -400,6 +407,16 @@ interrupts descendants, and the parent Turn does not close before its child
 tasks become terminal. After restart, active task rows are marked
 `interrupted`; temporary child sessions and side effects are never replayed.
 
-Pending-approval replay remains a migration gate. Workspace selection and app
-connection state also continue to use app-server during coexistence; neither
-app-server nor the CLI sidecar may be removed at this checkpoint.
+Pending local-tool and MCP approvals are now restart-recoverable. Their durable
+argument hash, display metadata and MCP inventory receipt are verified before a
+transient recovered request is projected into the existing UI. Recovered
+requests are deduplicated by approval ID and require a fresh explicit user
+decision. Approval starts the exact stored local operation; recovered MCP calls
+also require the same server, tool and inventory to be active, otherwise the
+claimed operation fails closed. Already claimed or executing effects are never
+requeued. The interrupted parent Turn is not resumed, and recovered request
+events are not appended as duplicate history items.
+
+Workspace selection and app connection state continue to use app-server during
+coexistence; neither app-server nor the CLI sidecar may be removed at this
+checkpoint.

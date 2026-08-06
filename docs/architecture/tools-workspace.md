@@ -222,6 +222,14 @@ approval to the SHA-256 hash of both canonical arguments and the discovered
 inventory. Rust remains the authority for workspace, Git, command and PTY
 effects; MCP transport and tool invocation stay inside TypeScript ADK runtime.
 
+SQLite v7 also stores a bounded provider-neutral approval presentation. Pending
+requests are hash-validated and re-presented with the same IDs after restart;
+they never execute before a new explicit decision. Approval and the transition
+from `proposed` to `executing` are atomic. Recovery converts any claimed or
+executing operation to `failed`, so a patch, command or MCP effect cannot be
+replayed after an ambiguous crash. Recovered MCP execution additionally checks
+the active tool inventory hash before transport dispatch.
+
 Dynamic child Agents receive an explicit `readOnly` or `workspaceWrite` access
 class. Read-only children are given only read/list/search workspace tools;
 write children may additionally request patch, Git and command tools through

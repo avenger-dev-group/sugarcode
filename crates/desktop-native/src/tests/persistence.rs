@@ -183,6 +183,7 @@ fn approval_and_operation_ids_are_idempotent_but_cannot_be_reused() {
                 "workspace_patch",
                 "sha256:fixture",
                 r#"{"patch":"fixture"}"#,
+                r#"{"kind":"command","argumentsSummary":"workspace patch","fullAccess":false}"#,
             )
             .expect("proposal")
     );
@@ -195,6 +196,7 @@ fn approval_and_operation_ids_are_idempotent_but_cannot_be_reused() {
                 "workspace_patch",
                 "sha256:fixture",
                 r#"{"patch":"fixture"}"#,
+                r#"{"kind":"command","argumentsSummary":"workspace patch","fullAccess":false}"#,
             )
             .expect("same proposal")
     );
@@ -207,22 +209,6 @@ fn approval_and_operation_ids_are_idempotent_but_cannot_be_reused() {
         !store
             .resolve_approval("approval-1", "approved")
             .expect("same approval")
-    );
-    assert!(
-        store
-            .complete_operation("operation-1", r#"{"changed":true}"#, true)
-            .is_err(),
-        "an approved operation cannot complete before native dispatch begins"
-    );
-    assert!(
-        store
-            .begin_operation("operation-1")
-            .expect("begin operation")
-    );
-    assert!(
-        !store
-            .begin_operation("operation-1")
-            .expect("same operation claim")
     );
     assert!(
         store
@@ -340,6 +326,7 @@ fn reopening_marks_running_work_interrupted_without_resolving_pending_approval()
                 "shell_command",
                 "sha256:fixture",
                 r#"{"command":"pwd"}"#,
+                r#"{"kind":"command","argumentsSummary":"pwd","fullAccess":false}"#,
             )
             .expect("proposal");
     }
@@ -359,6 +346,66 @@ fn reopening_marks_running_work_interrupted_without_resolving_pending_approval()
         )
         .expect("approval status");
     assert_eq!(approval_status, "pending");
+    let pending: Value = serde_json::from_str(
+        &reopened
+            .list_pending_approvals_json()
+            .expect("list pending approvals"),
+    )
+    .expect("pending approval JSON");
+    assert_eq!(pending.as_array().map(Vec::len), Some(1));
+    assert_eq!(pending[0]["approvalId"], "approval-1");
+    assert_eq!(pending[0]["workspaceId"], "workspace-1");
+    assert_eq!(pending[0]["approval"]["kind"], "command");
+}
+
+#[test]
+fn reopening_never_requeues_an_approved_operation_claim() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    {
+        let mut store = seeded_store(&directory);
+        store
+            .start_turn(
+                "turn-1",
+                "thread-1",
+                "request-1",
+                "openaiResponses",
+                "fixture-model",
+            )
+            .expect("start turn");
+        store
+            .propose_operation(
+                "operation-1",
+                "approval-1",
+                "turn-1",
+                "workspace_apply_patch",
+                "sha256:fixture",
+                r#"{"patch":"fixture"}"#,
+                r#"{"kind":"command","argumentsSummary":"patch","fullAccess":false}"#,
+            )
+            .expect("proposal");
+        store
+            .resolve_approval("approval-1", "approved")
+            .expect("atomically approve and claim operation");
+    }
+
+    let mut reopened = Store::open(directory.path()).expect("recover store");
+    let pending: Value = serde_json::from_str(
+        &reopened
+            .list_pending_approvals_json()
+            .expect("list pending approvals"),
+    )
+    .expect("pending JSON");
+    assert_eq!(pending.as_array().map(Vec::len), Some(0));
+    let connection = Connection::open(Store::database_path(directory.path())).expect("database");
+    let statuses: (String, String) = connection
+        .query_row(
+            "SELECT a.status, o.status FROM approvals a \
+             JOIN operations o ON o.id = a.operation_id WHERE a.id = 'approval-1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("approval and operation statuses");
+    assert_eq!(statuses, ("approved".to_owned(), "failed".to_owned()));
 }
 
 #[test]
@@ -510,6 +557,7 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
              DROP TABLE model_config;
              DROP TABLE content_assets;
              DROP TABLE mcp_config;
+             ALTER TABLE approvals DROP COLUMN payload_json;
              DROP INDEX threads_workspace_archive_updated;
              CREATE TABLE threads_v1 (
                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -538,5 +586,5 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
 }

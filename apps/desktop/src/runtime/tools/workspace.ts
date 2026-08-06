@@ -131,6 +131,96 @@ const optionalInteger = (value: unknown, fallback: number): number => {
   return value;
 };
 
+export const executePrivilegedWorkspaceTool = async (
+  nativeRuntime: NativeRuntimeBinding,
+  operationId: string,
+  workspaceId: string,
+  toolName: string,
+  argumentsValue: Readonly<Record<string, unknown>>,
+  onCommandOutput?: (
+    operationId: string,
+    stream: 'stdout' | 'stderr',
+    delta: string,
+  ) => void,
+): Promise<unknown> => {
+  if (toolName === 'workspace_apply_patch') {
+    if (typeof argumentsValue.patch !== 'string') {
+      throw new Error('workspace_apply_patch arguments are invalid');
+    }
+    return parseNativeResult(
+      await nativeRuntime.workspaceApplyPatch(
+        workspaceId,
+        argumentsValue.patch,
+      ),
+    );
+  }
+  if (
+    toolName !== 'shell_exec' ||
+    (argumentsValue.mode !== 'sandboxed' &&
+      argumentsValue.mode !== 'fullAccess') ||
+    typeof argumentsValue.command !== 'string'
+  ) {
+    throw new Error(`Privileged workspace tool ${toolName} is not recoverable`);
+  }
+  const mode = argumentsValue.mode;
+  const command = argumentsValue.command;
+  const commandArguments = optionalStringArray(argumentsValue.arguments);
+  const cwd = optionalString(argumentsValue.cwd, '.');
+  const timeoutMs = optionalInteger(argumentsValue.timeoutMs, 300_000);
+  if (
+    command.trim().length === 0 ||
+    timeoutMs < 1 ||
+    timeoutMs > 600_000 ||
+    (mode === 'sandboxed' && cwd !== '.') ||
+    (mode === 'fullAccess' && commandArguments.length > 0)
+  ) {
+    throw new Error('shell_exec arguments are invalid for the selected mode');
+  }
+  const flushOutput = (): void => {
+    const chunks = parseNativeResult(
+      nativeRuntime.drainCommandOutputJson(operationId),
+    );
+    if (!Array.isArray(chunks)) {
+      throw new Error('Native command output was invalid');
+    }
+    for (const chunk of chunks) {
+      if (
+        typeof chunk !== 'object' ||
+        chunk === null ||
+        !('stream' in chunk) ||
+        (chunk.stream !== 'stdout' && chunk.stream !== 'stderr') ||
+        !('delta' in chunk) ||
+        typeof chunk.delta !== 'string'
+      ) {
+        throw new Error('Native command output was invalid');
+      }
+      onCommandOutput?.(operationId, chunk.stream, chunk.delta);
+    }
+  };
+  const execution = nativeRuntime.executeCommandJson(
+    operationId,
+    workspaceId,
+    mode,
+    command,
+    JSON.stringify(commandArguments),
+    cwd,
+    timeoutMs,
+  );
+  const timer = setInterval(flushOutput, 16);
+  try {
+    const result = parseNativeResult(await execution);
+    flushOutput();
+    return result;
+  } finally {
+    clearInterval(timer);
+    try {
+      flushOutput();
+    } finally {
+      nativeRuntime.finishCommandOutput(operationId);
+    }
+  }
+};
+
 export const createWorkspaceTools = (
   nativeRuntime: NativeRuntimeBinding,
   workspaceId: string,
@@ -200,8 +290,13 @@ export const createWorkspaceTools = (
       return runPrivileged(
         'workspace_apply_patch',
         { patch },
-        async () => parseNativeResult(
-          await nativeRuntime.workspaceApplyPatch(workspaceId, patch),
+        async (operationId) => executePrivilegedWorkspaceTool(
+          nativeRuntime,
+          operationId,
+          workspaceId,
+          'workspace_apply_patch',
+          { patch },
+          onCommandOutput,
         ),
       );
     },
@@ -247,51 +342,14 @@ export const createWorkspaceTools = (
       return runPrivileged(
         'shell_exec',
         { mode, command, arguments: commandArguments, cwd, timeoutMs },
-        async (operationId) => {
-          const flushOutput = (): void => {
-            const chunks = parseNativeResult(
-              nativeRuntime.drainCommandOutputJson(operationId),
-            );
-            if (!Array.isArray(chunks)) {
-              throw new Error('Native command output was invalid');
-            }
-            for (const chunk of chunks) {
-              if (
-                typeof chunk !== 'object' ||
-                chunk === null ||
-                !('stream' in chunk) ||
-                (chunk.stream !== 'stdout' && chunk.stream !== 'stderr') ||
-                !('delta' in chunk) ||
-                typeof chunk.delta !== 'string'
-              ) {
-                throw new Error('Native command output was invalid');
-              }
-              onCommandOutput?.(operationId, chunk.stream, chunk.delta);
-            }
-          };
-          const execution = nativeRuntime.executeCommandJson(
-            operationId,
-            workspaceId,
-            mode,
-            command,
-            JSON.stringify(commandArguments),
-            cwd,
-            timeoutMs,
-          );
-          const timer = setInterval(flushOutput, 16);
-          try {
-            const result = parseNativeResult(await execution);
-            flushOutput();
-            return result;
-          } finally {
-            clearInterval(timer);
-            try {
-              flushOutput();
-            } finally {
-              nativeRuntime.finishCommandOutput(operationId);
-            }
-          }
-        },
+        async (operationId) => executePrivilegedWorkspaceTool(
+          nativeRuntime,
+          operationId,
+          workspaceId,
+          'shell_exec',
+          { mode, command, arguments: commandArguments, cwd, timeoutMs },
+          onCommandOutput,
+        ),
       );
     },
   }),

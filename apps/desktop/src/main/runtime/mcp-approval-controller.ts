@@ -14,7 +14,10 @@ const LOCAL_APPROVAL_WINDOW_MS = 120_000;
 type PendingApproval = Extract<
   RuntimeEvent,
   { type: 'mcp.approvalRequested' }
-> & { timer: NodeJS.Timeout; actionState: McpApprovalViewModel['actionState'] };
+> & {
+  timer: NodeJS.Timeout | null;
+  actionState: McpApprovalViewModel['actionState'];
+};
 // The UI deadline is captured once so rerenders cannot extend an approval.
 type PendingRuntimeApproval = PendingApproval & {
   localExpiresAtMs: number;
@@ -42,6 +45,9 @@ export class RuntimeMcpApprovalController {
 
   openWorkspace = (workspaceId: string, canonicalRoot: string): void => {
     this.workspaceRoots.set(workspaceId, canonicalRoot);
+    if (this.queue.some((pending) => pending.workspaceId === workspaceId)) {
+      this.publish();
+    }
   };
 
   getSnapshot = (): McpApprovalStateSnapshot => {
@@ -62,6 +68,9 @@ export class RuntimeMcpApprovalController {
 
   markSurfaceReady = (): McpApprovalStateSnapshot => {
     this.surfaceReady = true;
+    for (const pending of this.queue) {
+      this.startTimer(pending);
+    }
     return this.getSnapshot();
   };
 
@@ -73,7 +82,9 @@ export class RuntimeMcpApprovalController {
       }
       pending.responseCommitted = true;
       pending.actionState = 'submittingDenial';
-      clearTimeout(pending.timer);
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
       this.resolve(pending, 'denied');
     }
   };
@@ -102,7 +113,9 @@ export class RuntimeMcpApprovalController {
     pending.actionState = decision === 'approved'
       ? 'submittingApproval'
       : 'submittingDenial';
-    clearTimeout(pending.timer);
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
     this.publish();
     this.resolve(pending, decision);
     return action('accepted');
@@ -125,28 +138,23 @@ export class RuntimeMcpApprovalController {
 
   private handleRuntimeEvent = (event: RuntimeEvent): void => {
     if (event.type === 'mcp.approvalRequested') {
+      if (this.queue.some((pending) => pending.approvalId === event.approvalId)) {
+        return;
+      }
       const pending: PendingRuntimeApproval = {
         ...event,
         actionState: 'awaitingUser',
         localExpiresAtMs: Date.now() + LOCAL_APPROVAL_WINDOW_MS,
         responseCommitted: false,
-        timer: setTimeout(() => {
-          if (!this.queue.includes(pending)) {
-            return;
-          }
-          pending.responseCommitted = true;
-          pending.actionState = 'localWindowElapsed';
-          this.publish();
-          this.resolve(pending, 'denied');
-        }, LOCAL_APPROVAL_WINDOW_MS),
+        timer: null,
       };
       this.queue.push(pending);
-      if (!this.surfaceReady) {
+      if (!this.surfaceReady && event.recovered !== true) {
         pending.responseCommitted = true;
         pending.actionState = 'submittingDenial';
-        clearTimeout(pending.timer);
         this.resolve(pending, 'denied');
       } else {
+        this.startTimer(pending);
         this.publish();
       }
       return;
@@ -156,11 +164,31 @@ export class RuntimeMcpApprovalController {
         (pending) => pending.approvalId === event.approvalId,
       );
       if (index >= 0) {
-        clearTimeout(this.queue[index].timer);
+        const timer = this.queue[index].timer;
+        if (timer) {
+          clearTimeout(timer);
+        }
         this.queue.splice(index, 1);
         this.publish();
       }
     }
+  };
+
+  private startTimer = (pending: PendingRuntimeApproval): void => {
+    if (!this.surfaceReady || pending.timer || pending.responseCommitted) {
+      return;
+    }
+    pending.localExpiresAtMs = Date.now() + LOCAL_APPROVAL_WINDOW_MS;
+    pending.timer = setTimeout(() => {
+      if (!this.queue.includes(pending)) {
+        return;
+      }
+      pending.responseCommitted = true;
+      pending.actionState = 'localWindowElapsed';
+      pending.timer = null;
+      this.publish();
+      this.resolve(pending, 'denied');
+    }, LOCAL_APPROVAL_WINDOW_MS);
   };
 
   private viewModel = (pending: PendingRuntimeApproval): McpApprovalViewModel => {

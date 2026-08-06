@@ -37,6 +37,10 @@ MCP configuration is revisioned in the v3 SQLite store. MCP starts disabled,
 uses an explicitly selected compatible server set, hashes the discovered tool
 inventory and persists every call proposal before showing the existing
 approval UI.
+Pending local-tool and MCP approvals survive a utility-worker or application
+restart in SQLite. Runtime revalidates and re-presents the same approval ID; an
+explicit approval atomically claims the operation before execution, while a
+previously claimed side effect is failed and never replayed.
 
 The public app-server contract is generated from Rust in
 `crates/app-server-protocol`. Desktop validates every incoming v1 message at

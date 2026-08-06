@@ -93,7 +93,7 @@ test('private MCP protocol keeps configuration and approval events provider-neut
     requestId: 'request-session',
     serverIds: ['fixture', 'fixture'],
   }), false);
-  assert.equal(isRuntimeEvent({
+  const recoveredApproval = {
     type: 'mcp.approvalRequested',
     sequence: 4,
     requestId: 'request-turn',
@@ -108,7 +108,10 @@ test('private MCP protocol keeps configuration and approval events provider-neut
     argumentsBytes: 17,
     argumentsSha256: 'a'.repeat(64),
     inventorySha256: 'b'.repeat(64),
-  }), true);
+    recovered: true,
+  } as const;
+  assert.equal(isRuntimeEvent(recoveredApproval), true);
+  assert.equal(isRuntimeEvent({ ...recoveredApproval, recovered: false }), false);
 });
 
 test('private Agent task events carry a complete provider-neutral DAG snapshot', () => {

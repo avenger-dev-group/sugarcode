@@ -163,7 +163,7 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
   supervisor.shutdown();
 });
 
-test('RuntimeSupervisor restores an active MCP selection and cancels visible approval on crash', async () => {
+test('RuntimeSupervisor restores MCP selection without inventing an approval denial on crash', async () => {
   const children: FixtureChild[] = [];
   const events: RuntimeEvent[] = [];
   const supervisor = new RuntimeSupervisor({
@@ -215,11 +215,8 @@ test('RuntimeSupervisor restores an active MCP selection and cancels visible app
     inventorySha256: 'b'.repeat(64),
   });
   first.emit('exit', 9);
-  assert.ok(events.some(
-    (event) =>
-      event.type === 'mcp.approvalResolved' &&
-      event.approvalId === 'approval-fixture' &&
-      event.decision === 'denied',
+  assert.ok(!events.some(
+    (event) => event.type === 'mcp.approvalResolved',
   ));
 
   await new Promise((resolve) => setTimeout(resolve, 300));
@@ -237,6 +234,27 @@ test('RuntimeSupervisor restores an active MCP selection and cancels visible app
       ? second.messages[1].serverIds
       : [],
     ['fixture'],
+  );
+  second.emit('message', {
+    type: 'mcp.approvalRequested',
+    sequence: 2,
+    requestId: 'request-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-fixture',
+    approvalId: 'approval-fixture',
+    operationId: 'operation-fixture',
+    serverId: 'fixture',
+    name: 'mcp__fixture__echo',
+    argumentsJson: '{}',
+    argumentsBytes: 2,
+    argumentsSha256: 'a'.repeat(64),
+    inventorySha256: 'b'.repeat(64),
+    recovered: true,
+  });
+  assert.equal(
+    events.filter((event) => event.type === 'mcp.approvalRequested').length,
+    2,
   );
   supervisor.shutdown();
 });

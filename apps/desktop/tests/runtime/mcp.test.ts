@@ -50,6 +50,26 @@ test('RuntimeMcpManager discovers and invokes an ADK MCPToolset behind approval'
   assert.deepEqual(response, {
     content: [{ type: 'text', text: '{"value":"hello"}' }],
   });
+  assert.deepEqual(
+    await manager.executeRecovered(
+      'fixture',
+      'mcp__fixture__echo',
+      { value: 'recovered' },
+      approval?.inventorySha256 ?? '',
+      new AbortController().signal,
+    ),
+    { content: [{ type: 'text', text: '{"value":"recovered"}' }] },
+  );
+  await assert.rejects(
+    manager.executeRecovered(
+      'fixture',
+      'mcp__fixture__echo',
+      {},
+      'f'.repeat(64),
+      new AbortController().signal,
+    ),
+    /inventory is no longer active/u,
+  );
   await manager.close();
 });
 

@@ -192,9 +192,37 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     },
   });
   fixture.emit({
-    type: 'turn.completed',
+    type: 'approval.requested',
     requestId: started.requestId,
     sequence: 7,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    approvalId: 'approval-recovered',
+    operationId: 'operation-recovered',
+    toolName: 'workspace_apply_patch',
+    argumentsSummary: 'workspace_apply_patch (64 bytes)',
+    fullAccess: false,
+    recovered: true,
+  });
+  fixture.emit({
+    type: 'approval.requested',
+    requestId: started.requestId,
+    sequence: 8,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    approvalId: 'approval-recovered',
+    operationId: 'operation-recovered',
+    toolName: 'workspace_apply_patch',
+    argumentsSummary: 'workspace_apply_patch (64 bytes)',
+    fullAccess: false,
+    recovered: true,
+  });
+  fixture.emit({
+    type: 'turn.completed',
+    requestId: started.requestId,
+    sequence: 9,
     workspaceId: WORKSPACE_ID,
     threadId: THREAD_ID,
     turnId: started.turnId,
@@ -222,4 +250,10 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
       'Audit passed.',
     );
   }
+  assert.equal(
+    snapshot.turns[0]?.activities?.filter(
+      (activity) => activity.type === 'commandApproval',
+    ).length,
+    1,
+  );
 });

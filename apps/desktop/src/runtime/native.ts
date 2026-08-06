@@ -79,14 +79,15 @@ export type NativeRuntimeBinding = Readonly<{
     toolName: string,
     requestHash: string,
     argumentsJson: string,
+    approvalPayloadJson: string,
   ) => boolean;
+  listPendingApprovalsJson: () => string;
   resolveApproval: (approvalId: string, decision: 'approved' | 'denied') => boolean;
   completeOperation: (
     operationId: string,
     resultJson: string,
     succeeded: boolean,
   ) => boolean;
-  beginOperation: (operationId: string) => boolean;
   loadThreadJson: (threadId: string) => string;
   workspaceRead: (workspaceId: string, path: string) => Promise<string>;
   workspaceList: (workspaceId: string, path: string) => Promise<string>;

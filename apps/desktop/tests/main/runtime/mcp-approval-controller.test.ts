@@ -58,3 +58,51 @@ test('runtime MCP approval keeps the existing UI contract and resolves by stable
   });
   assert.equal(controller.getSnapshot().status, 'idle');
 });
+
+test('recovered MCP approval remains pending until the UI surface is ready', async () => {
+  const commands: RuntimeCommand[] = [];
+  let listener: ((event: RuntimeEvent) => void) | undefined;
+  const runtime = {
+    subscribe: (next: (event: RuntimeEvent) => void) => {
+      listener = next;
+      return (): void => undefined;
+    },
+    send: (command: RuntimeCommand) => commands.push(command),
+  } as unknown as RuntimeSupervisor;
+  const controller = new RuntimeMcpApprovalController(runtime);
+  const event: RuntimeEvent = {
+    type: 'mcp.approvalRequested',
+    sequence: 1,
+    requestId: 'request-recovered',
+    workspaceId: 'workspace-recovered',
+    threadId: 'thread-recovered',
+    turnId: 'turn-recovered',
+    approvalId: 'approval-recovered',
+    operationId: 'operation-recovered',
+    serverId: 'fixture',
+    name: 'mcp__fixture__echo',
+    argumentsJson: '{}',
+    argumentsBytes: 2,
+    argumentsSha256: 'a'.repeat(64),
+    inventorySha256: 'b'.repeat(64),
+    recovered: true,
+  };
+  listener?.(event);
+  listener?.({ ...event, sequence: 2 });
+  assert.equal(commands.length, 0);
+  assert.equal(controller.getSnapshot().request?.queueCount, 1);
+  controller.openWorkspace('workspace-recovered', '/fixture/recovered');
+  assert.equal(controller.markSurfaceReady().request?.projectTitle, 'recovered');
+  assert.equal((await controller.deny('approval-recovered')).accepted, true);
+  listener?.({
+    type: 'mcp.approvalResolved',
+    sequence: 3,
+    requestId: 'request-recovered-decision',
+    workspaceId: 'workspace-recovered',
+    threadId: 'thread-recovered',
+    turnId: 'turn-recovered',
+    approvalId: 'approval-recovered',
+    operationId: 'operation-recovered',
+    decision: 'denied',
+  });
+});

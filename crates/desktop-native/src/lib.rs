@@ -455,6 +455,7 @@ impl NativeRuntime {
         tool_name: String,
         request_hash: String,
         arguments_json: String,
+        approval_payload_json: String,
     ) -> Result<bool> {
         self.with_store(|store| {
             store.propose_operation(
@@ -464,8 +465,14 @@ impl NativeRuntime {
                 &tool_name,
                 &request_hash,
                 &arguments_json,
+                &approval_payload_json,
             )
         })
+    }
+
+    #[napi]
+    pub fn list_pending_approvals_json(&self) -> Result<String> {
+        self.with_store(Store::list_pending_approvals_json)
     }
 
     #[napi]
@@ -481,11 +488,6 @@ impl NativeRuntime {
         succeeded: bool,
     ) -> Result<bool> {
         self.with_store(|store| store.complete_operation(&operation_id, &result_json, succeeded))
-    }
-
-    #[napi]
-    pub fn begin_operation(&self, operation_id: String) -> Result<bool> {
-        self.with_store(|store| store.begin_operation(&operation_id))
     }
 
     #[napi]

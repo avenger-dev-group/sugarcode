@@ -44,6 +44,9 @@ export class RuntimeApprovalController {
 
   openWorkspace = (workspaceId: string, canonicalRoot: string): void => {
     this.workspaceRoots.set(workspaceId, canonicalRoot);
+    if (this.queue.some((pending) => pending.workspaceId === workspaceId)) {
+      this.publish();
+    }
   };
 
   getSnapshot = (): CommandApprovalStateSnapshot => {
@@ -125,6 +128,9 @@ export class RuntimeApprovalController {
 
   private handleRuntimeEvent = (event: RuntimeEvent): void => {
     if (event.type === 'approval.requested') {
+      if (this.queue.some((pending) => pending.approvalId === event.approvalId)) {
+        return;
+      }
       const pending: PendingApproval = {
         approvalId: event.approvalId,
         operationId: event.operationId,
@@ -142,7 +148,7 @@ export class RuntimeApprovalController {
           (this.mode === 'thread' && this.modeThreadId === pending.threadId))
       ) {
         this.resolve(pending, 'approved');
-      } else if (!this.surfaceReady) {
+      } else if (!this.surfaceReady && event.recovered !== true) {
         this.resolve(pending, 'denied');
       } else {
         this.publish();

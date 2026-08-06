@@ -38,7 +38,10 @@ import {
   type RuntimeThreadSnapshot,
   type RuntimeUsage,
 } from './protocol.ts';
-import { createWorkspaceTools } from './tools/workspace.ts';
+import {
+  createWorkspaceTools,
+  executePrivilegedWorkspaceTool,
+} from './tools/workspace.ts';
 import {
   RuntimeMcpManager,
   type McpToolApproval,
@@ -67,9 +70,38 @@ type PendingApproval = Readonly<{
   turnId: string;
   operationId: string;
   kind: 'command' | 'mcp';
+  recovered: boolean;
   publish: () => void;
   resolve: (decision: 'approved' | 'denied') => void;
 }>;
+
+type RecoveredApprovalRecord = Readonly<{
+  approvalId: string;
+  operationId: string;
+  turnId: string;
+  requestId: string;
+  threadId: string;
+  workspaceId: string;
+  toolName: string;
+  requestHash: string;
+  argumentsJson: string;
+  approval: unknown;
+}>;
+
+type RecoveredApprovalPresentation =
+  | Readonly<{
+      kind: 'command';
+      argumentsSummary: string;
+      fullAccess: boolean;
+    }>
+  | Readonly<{
+      kind: 'mcp';
+      serverId: string;
+      name: string;
+      argumentsBytes: number;
+      argumentsSha256: string;
+      inventorySha256: string;
+    }>;
 
 const defaultCreateModel = (provider: RuntimeProviderConfig): BaseLlm => {
   const common = {
@@ -240,6 +272,7 @@ export class RuntimeHost {
               this.nativeRuntime.inspectMcpConfigJson(),
             ),
           );
+          this.restorePendingApprovals();
         }
         this.initialized = true;
         this.emit({
@@ -247,6 +280,7 @@ export class RuntimeHost {
           requestId: command.requestId,
           protocolVersion: RUNTIME_PROTOCOL_VERSION,
         });
+        this.publishNextApproval();
         break;
       case 'workspace.open':
         this.requireReady(command.requestId);
@@ -1623,6 +1657,16 @@ export class RuntimeHost {
     const approvalId = randomUUID();
     const argumentsJson = JSON.stringify(argumentsValue);
     const requestHash = createHash('sha256').update(argumentsJson).digest('hex');
+    const approvalPresentation = {
+      kind: 'command' as const,
+      argumentsSummary: this.approvalArgumentsSummary(
+        toolName,
+        argumentsValue,
+        argumentsJson,
+      ),
+      fullAccess:
+        toolName === 'shell_exec' && argumentsValue.mode === 'fullAccess',
+    };
     this.requireNative().proposeOperation(
       operationId,
       approvalId,
@@ -1630,6 +1674,7 @@ export class RuntimeHost {
       toolName,
       requestHash,
       argumentsJson,
+      JSON.stringify(approvalPresentation),
     );
     const decision = await new Promise<'approved' | 'denied'>((resolve) => {
       this.pendingApprovals.set(approvalId, {
@@ -1639,6 +1684,7 @@ export class RuntimeHost {
         turnId: command.turnId,
         operationId,
         kind: 'command',
+        recovered: false,
         publish: () => {
           this.emit({
             type: 'approval.requested',
@@ -1649,13 +1695,8 @@ export class RuntimeHost {
             approvalId,
             operationId,
             toolName,
-            argumentsSummary: this.approvalArgumentsSummary(
-              toolName,
-              argumentsValue,
-              argumentsJson,
-            ),
-            fullAccess:
-              toolName === 'shell_exec' && argumentsValue.mode === 'fullAccess',
+            argumentsSummary: approvalPresentation.argumentsSummary,
+            fullAccess: approvalPresentation.fullAccess,
           });
         },
         resolve,
@@ -1668,12 +1709,7 @@ export class RuntimeHost {
     const operations = this.activeOperations.get(command.turnId) ?? new Set<string>();
     operations.add(operationId);
     this.activeOperations.set(command.turnId, operations);
-    let began = false;
     try {
-      began = this.requireNative().beginOperation(operationId);
-      if (!began) {
-        return { ok: false, error: 'operationAlreadyExecuting' };
-      }
       this.emit({
         type: 'operation.started',
         requestId: command.requestId,
@@ -1710,23 +1746,21 @@ export class RuntimeHost {
         ok: false,
         error: error instanceof Error ? error.message : 'privilegedToolFailed',
       };
-      if (began) {
-        this.requireNative().completeOperation(
-          operationId,
-          JSON.stringify(result),
-          false,
-        );
-        this.emit({
-          type: 'operation.completed',
-          requestId: command.requestId,
-          workspaceId: command.workspaceId,
-          threadId: command.threadId,
-          turnId: command.turnId,
-          operationId,
-          succeeded: false,
-          result,
-        });
-      }
+      this.requireNative().completeOperation(
+        operationId,
+        JSON.stringify(result),
+        false,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        succeeded: false,
+        result,
+      });
       return result;
     } finally {
       const active = this.activeOperations.get(command.turnId);
@@ -1740,9 +1774,12 @@ export class RuntimeHost {
   private setMcpSession = async (
     command: Extract<RuntimeCommand, { type: 'mcp.sessionSet' }>,
   ): Promise<void> => {
+    const hasBlockingApproval = [...this.pendingApprovals.values()].some(
+      (approval) => !approval.recovered || approval.kind !== 'mcp',
+    );
     const action = this.activeTurns.size > 0
       ? { accepted: false as const, reason: 'turnActive' as const }
-      : this.pendingApprovals.size > 0
+      : hasBlockingApproval
         ? { accepted: false as const, reason: 'approvalPending' as const }
         : await this.mcp.setActive(command.serverIds);
     this.emit({
@@ -1766,6 +1803,14 @@ export class RuntimeHost {
     const argumentsSha256 = createHash('sha256')
       .update(argumentsJson)
       .digest('hex');
+    const approvalPresentation = {
+      kind: 'mcp' as const,
+      serverId: request.serverId,
+      name: request.name,
+      argumentsBytes: Buffer.byteLength(argumentsJson, 'utf8'),
+      argumentsSha256,
+      inventorySha256: request.inventorySha256,
+    };
     this.requireNative().proposeOperation(
       operationId,
       approvalId,
@@ -1773,6 +1818,7 @@ export class RuntimeHost {
       request.name,
       argumentsSha256,
       argumentsJson,
+      JSON.stringify(approvalPresentation),
     );
     const decision = await new Promise<'approved' | 'denied'>((resolve) => {
       this.pendingApprovals.set(approvalId, {
@@ -1782,6 +1828,7 @@ export class RuntimeHost {
         turnId: command.turnId,
         operationId,
         kind: 'mcp',
+        recovered: false,
         publish: () => {
           this.emit({
             type: 'mcp.approvalRequested',
@@ -1794,7 +1841,7 @@ export class RuntimeHost {
             serverId: request.serverId,
             name: request.name,
             argumentsJson,
-            argumentsBytes: Buffer.byteLength(argumentsJson, 'utf8'),
+            argumentsBytes: approvalPresentation.argumentsBytes,
             argumentsSha256,
             inventorySha256: request.inventorySha256,
           });
@@ -1809,12 +1856,7 @@ export class RuntimeHost {
     const operations = this.activeOperations.get(command.turnId) ?? new Set<string>();
     operations.add(operationId);
     this.activeOperations.set(command.turnId, operations);
-    let began = false;
     try {
-      began = this.requireNative().beginOperation(operationId);
-      if (!began) {
-        return { ok: false, error: 'operationNotExecutable' };
-      }
       this.emit({
         type: 'operation.started',
         requestId: command.requestId,
@@ -1847,29 +1889,333 @@ export class RuntimeHost {
         ok: false,
         error: error instanceof Error ? error.message : 'mcpToolFailed',
       };
-      if (began) {
-        this.requireNative().completeOperation(
-          operationId,
-          JSON.stringify(result),
-          false,
-        );
-        this.emit({
-          type: 'operation.completed',
-          requestId: command.requestId,
-          workspaceId: command.workspaceId,
-          threadId: command.threadId,
-          turnId: command.turnId,
-          operationId,
-          succeeded: false,
-          result,
-        });
-      }
+      this.requireNative().completeOperation(
+        operationId,
+        JSON.stringify(result),
+        false,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        succeeded: false,
+        result,
+      });
       return result;
     } finally {
       const active = this.activeOperations.get(command.turnId);
       active?.delete(operationId);
       if (active?.size === 0) {
         this.activeOperations.delete(command.turnId);
+      }
+    }
+  };
+
+  private restorePendingApprovals = (): void => {
+    const value = this.parseNativeJson<unknown>(
+      this.requireNative().listPendingApprovalsJson(),
+    );
+    if (!Array.isArray(value)) {
+      throw new Error('Native pending approvals were invalid.');
+    }
+    for (const item of value) {
+      const record = this.recoveredApprovalRecord(item);
+      if (!record) {
+        throw new Error('Native pending approval coordinates were invalid.');
+      }
+      let argumentsValue: Readonly<Record<string, unknown>> | null = null;
+      try {
+        const parsed = JSON.parse(record.argumentsJson) as unknown;
+        if (isRecord(parsed)) {
+          argumentsValue = parsed;
+        }
+      } catch {
+        // Rejected below without exposing malformed persisted arguments.
+      }
+      const requestHash = createHash('sha256')
+        .update(record.argumentsJson)
+        .digest('hex');
+      const presentation = argumentsValue && requestHash === record.requestHash
+        ? this.recoveredApprovalPresentation(record, argumentsValue)
+        : null;
+      if (!argumentsValue || !presentation) {
+        this.rejectUnrecoverableApproval(record);
+        continue;
+      }
+      const pending: PendingApproval = {
+        requestId: record.requestId,
+        workspaceId: record.workspaceId,
+        threadId: record.threadId,
+        turnId: record.turnId,
+        operationId: record.operationId,
+        kind: presentation.kind,
+        recovered: true,
+        publish: () => {
+          if (presentation.kind === 'command') {
+            this.emitTransient({
+              type: 'approval.requested',
+              requestId: record.requestId,
+              workspaceId: record.workspaceId,
+              threadId: record.threadId,
+              turnId: record.turnId,
+              approvalId: record.approvalId,
+              operationId: record.operationId,
+              toolName: record.toolName,
+              argumentsSummary: presentation.argumentsSummary,
+              fullAccess: presentation.fullAccess,
+              recovered: true,
+            });
+          } else {
+            this.emitTransient({
+              type: 'mcp.approvalRequested',
+              requestId: record.requestId,
+              workspaceId: record.workspaceId,
+              threadId: record.threadId,
+              turnId: record.turnId,
+              approvalId: record.approvalId,
+              operationId: record.operationId,
+              serverId: presentation.serverId,
+              name: presentation.name,
+              argumentsJson: record.argumentsJson,
+              argumentsBytes: presentation.argumentsBytes,
+              argumentsSha256: presentation.argumentsSha256,
+              inventorySha256: presentation.inventorySha256,
+              recovered: true,
+            });
+          }
+        },
+        resolve: (decision) => {
+          if (decision === 'approved') {
+            void this.executeRecoveredApproval(
+              record,
+              argumentsValue,
+              presentation,
+            );
+          }
+        },
+      };
+      this.pendingApprovals.set(record.approvalId, pending);
+      this.approvalQueue.push(record.approvalId);
+    }
+  };
+
+  private recoveredApprovalRecord = (
+    value: unknown,
+  ): RecoveredApprovalRecord | null => {
+    if (!isRecord(value)) {
+      return null;
+    }
+    const stringField = (name: string): string | null =>
+      typeof value[name] === 'string' && value[name].length > 0
+        ? value[name]
+        : null;
+    const approvalId = stringField('approvalId');
+    const operationId = stringField('operationId');
+    const turnId = stringField('turnId');
+    const requestId = stringField('requestId');
+    const threadId = stringField('threadId');
+    const workspaceId = stringField('workspaceId');
+    const toolName = stringField('toolName');
+    const requestHash = stringField('requestHash');
+    const argumentsJson = stringField('argumentsJson');
+    if (
+      !approvalId ||
+      !operationId ||
+      !turnId ||
+      !requestId ||
+      !threadId ||
+      !workspaceId ||
+      !toolName ||
+      !requestHash ||
+      !argumentsJson ||
+      !/^[0-9a-f]{64}$/u.test(requestHash)
+    ) {
+      return null;
+    }
+    return {
+      approvalId,
+      operationId,
+      turnId,
+      requestId,
+      threadId,
+      workspaceId,
+      toolName,
+      requestHash,
+      argumentsJson,
+      approval: value.approval,
+    };
+  };
+
+  private recoveredApprovalPresentation = (
+    record: RecoveredApprovalRecord,
+    argumentsValue: Readonly<Record<string, unknown>>,
+  ): RecoveredApprovalPresentation | null => {
+    const payload = record.approval;
+    if (!record.toolName.startsWith('mcp__')) {
+      const fullAccess =
+        record.toolName === 'shell_exec' &&
+        argumentsValue.mode === 'fullAccess';
+      const computed: RecoveredApprovalPresentation = {
+        kind: 'command',
+        argumentsSummary: this.approvalArgumentsSummary(
+          record.toolName,
+          argumentsValue,
+          record.argumentsJson,
+        ),
+        fullAccess,
+      };
+      if (payload === null || payload === undefined) {
+        return computed;
+      }
+      return isRecord(payload) &&
+        payload.kind === 'command' &&
+        payload.argumentsSummary === computed.argumentsSummary &&
+        payload.fullAccess === computed.fullAccess
+        ? computed
+        : null;
+    }
+    if (
+      !isRecord(payload) ||
+      payload.kind !== 'mcp' ||
+      typeof payload.serverId !== 'string' ||
+      typeof payload.name !== 'string' ||
+      payload.name !== record.toolName ||
+      !record.toolName.startsWith(`mcp__${payload.serverId}__`) ||
+      typeof payload.argumentsBytes !== 'number' ||
+      payload.argumentsBytes !== Buffer.byteLength(record.argumentsJson, 'utf8') ||
+      payload.argumentsSha256 !== record.requestHash ||
+      typeof payload.inventorySha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(payload.inventorySha256)
+    ) {
+      return null;
+    }
+    return {
+      kind: 'mcp',
+      serverId: payload.serverId,
+      name: payload.name,
+      argumentsBytes: payload.argumentsBytes,
+      argumentsSha256: record.requestHash,
+      inventorySha256: payload.inventorySha256,
+    };
+  };
+
+  private rejectUnrecoverableApproval = (
+    record: RecoveredApprovalRecord,
+  ): void => {
+    this.requireNative().resolveApproval(record.approvalId, 'denied');
+    this.emit({
+      type: record.toolName.startsWith('mcp__')
+        ? 'mcp.approvalResolved'
+        : 'approval.resolved',
+      requestId: record.requestId,
+      workspaceId: record.workspaceId,
+      threadId: record.threadId,
+      turnId: record.turnId,
+      approvalId: record.approvalId,
+      operationId: record.operationId,
+      decision: 'denied',
+    });
+    this.emit({
+      type: 'runtime.log',
+      requestId: record.requestId,
+      level: 'warn',
+      message: `Rejected unrecoverable approval ${record.approvalId}.`,
+    });
+  };
+
+  private executeRecoveredApproval = async (
+    record: RecoveredApprovalRecord,
+    argumentsValue: Readonly<Record<string, unknown>>,
+    presentation: RecoveredApprovalPresentation,
+  ): Promise<void> => {
+    const operations = this.activeOperations.get(record.turnId) ?? new Set<string>();
+    operations.add(record.operationId);
+    this.activeOperations.set(record.turnId, operations);
+    this.emit({
+      type: 'operation.started',
+      requestId: record.requestId,
+      workspaceId: record.workspaceId,
+      threadId: record.threadId,
+      turnId: record.turnId,
+      operationId: record.operationId,
+    });
+    try {
+      const output = presentation.kind === 'command'
+        ? await executePrivilegedWorkspaceTool(
+            this.requireNative(),
+            record.operationId,
+            record.workspaceId,
+            record.toolName,
+            argumentsValue,
+            (operationId, stream, delta) => {
+              this.emit({
+                type: 'operation.output',
+                requestId: record.requestId,
+                workspaceId: record.workspaceId,
+                threadId: record.threadId,
+                turnId: record.turnId,
+                operationId,
+                stream,
+                delta,
+              });
+            },
+          )
+        : await this.mcp.executeRecovered(
+            presentation.serverId,
+            presentation.name,
+            argumentsValue,
+            presentation.inventorySha256,
+            new AbortController().signal,
+          );
+      const result = isRecord(output) ? output : { value: output };
+      const succeeded = presentation.kind === 'mcp'
+        ? result.isError !== true
+        : !(result.ok === false ||
+            result.status === 'error' ||
+            result.status === 'cancelled');
+      this.requireNative().completeOperation(
+        record.operationId,
+        JSON.stringify(result),
+        succeeded,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: record.requestId,
+        workspaceId: record.workspaceId,
+        threadId: record.threadId,
+        turnId: record.turnId,
+        operationId: record.operationId,
+        succeeded,
+        result,
+      });
+    } catch (error) {
+      const result = {
+        ok: false,
+        error: error instanceof Error ? error.message : 'recoveredOperationFailed',
+      };
+      this.requireNative().completeOperation(
+        record.operationId,
+        JSON.stringify(result),
+        false,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: record.requestId,
+        workspaceId: record.workspaceId,
+        threadId: record.threadId,
+        turnId: record.turnId,
+        operationId: record.operationId,
+        succeeded: false,
+        result,
+      });
+    } finally {
+      const active = this.activeOperations.get(record.turnId);
+      active?.delete(record.operationId);
+      if (active?.size === 0) {
+        this.activeOperations.delete(record.turnId);
       }
     }
   };
@@ -2042,5 +2388,10 @@ export class RuntimeHost {
       );
     }
     this.postEvent(normalized);
+  };
+
+  private emitTransient = (event: RuntimeEventInput): void => {
+    this.sequence += 1;
+    this.postEvent({ ...event, sequence: this.sequence } as RuntimeEvent);
   };
 }

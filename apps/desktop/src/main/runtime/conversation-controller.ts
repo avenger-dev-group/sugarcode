@@ -724,7 +724,7 @@ export class RuntimeConversationController {
       }
       case 'approval.requested': {
         const activities = [...(turn.activities ?? [])];
-        activities.push({
+        const nextActivity = {
           type: 'commandApproval',
           activity: {
             callItemId: event.operationId,
@@ -736,7 +736,17 @@ export class RuntimeConversationController {
             fullAccess: event.fullAccess,
             requestStatus: 'inProgress',
           },
-        });
+        } as const;
+        const existingIndex = activities.findIndex(
+          (activity) =>
+            activity.type === 'commandApproval' &&
+            activity.activity.approvalId === event.approvalId,
+        );
+        if (existingIndex >= 0) {
+          activities[existingIndex] = nextActivity;
+        } else {
+          activities.push(nextActivity);
+        }
         turns[index] = { ...turn, activities };
         break;
       }

@@ -13,7 +13,7 @@ use sugarcode_state::McpServerConfig;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
 
@@ -713,6 +713,7 @@ impl Store {
         tool_name: &str,
         request_hash: &str,
         arguments_json: &str,
+        approval_payload_json: &str,
     ) -> Result<bool> {
         for (name, value) in [
             ("operation_id", operation_id),
@@ -727,6 +728,7 @@ impl Store {
             ));
         }
         validate_json(arguments_json)?;
+        validate_json(approval_payload_json)?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -764,18 +766,24 @@ impl Store {
             }
         }
         let approval_inserted = transaction.execute(
-            "INSERT INTO approvals (id, operation_id, turn_id, status) \
-             VALUES (?1, ?2, ?3, 'pending') \
+            "INSERT INTO approvals (id, operation_id, turn_id, status, payload_json) \
+             VALUES (?1, ?2, ?3, 'pending', ?4) \
              ON CONFLICT(id) DO NOTHING",
-            params![approval_id, operation_id, turn_id],
+            params![approval_id, operation_id, turn_id, approval_payload_json],
         )?;
         if approval_inserted == 0 {
-            let existing: (String, String) = transaction.query_row(
-                "SELECT operation_id, turn_id FROM approvals WHERE id = ?1",
+            let existing: (String, String, Option<String>) = transaction.query_row(
+                "SELECT operation_id, turn_id, payload_json FROM approvals WHERE id = ?1",
                 [approval_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-            if existing != (operation_id.to_owned(), turn_id.to_owned()) {
+            if existing
+                != (
+                    operation_id.to_owned(),
+                    turn_id.to_owned(),
+                    Some(approval_payload_json.to_owned()),
+                )
+            {
                 return Err(PersistenceError::Conflict(format!(
                     "approval {approval_id} was reused for a different operation"
                 )));
@@ -783,6 +791,68 @@ impl Store {
         }
         transaction.commit()?;
         Ok(inserted == 1)
+    }
+
+    pub(super) fn list_pending_approvals_json(&mut self) -> Result<String> {
+        let mut statement = self.connection.prepare(
+            "SELECT a.id, a.operation_id, a.turn_id, t.request_id, th.id, th.workspace_id, \
+             o.tool_name, o.request_hash, o.arguments_json, a.payload_json \
+             FROM approvals a \
+             JOIN operations o ON o.id = a.operation_id \
+             JOIN turns t ON t.id = a.turn_id \
+             JOIN threads th ON th.id = t.thread_id \
+             WHERE a.status = 'pending' AND o.status = 'proposed' \
+             ORDER BY a.created_at, a.id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let records = rows
+            .into_iter()
+            .map(
+                |(
+                    approval_id,
+                    operation_id,
+                    turn_id,
+                    request_id,
+                    thread_id,
+                    workspace_id,
+                    tool_name,
+                    request_hash,
+                    arguments_json,
+                    approval_payload_json,
+                )| {
+                    Ok(serde_json::json!({
+                        "approvalId": approval_id,
+                        "operationId": operation_id,
+                        "turnId": turn_id,
+                        "requestId": request_id,
+                        "threadId": thread_id,
+                        "workspaceId": workspace_id,
+                        "toolName": tool_name,
+                        "requestHash": request_hash,
+                        "argumentsJson": arguments_json,
+                        "approval": approval_payload_json
+                            .map(|payload| serde_json::from_str::<Value>(&payload))
+                            .transpose()?,
+                    }))
+                },
+            )
+            .collect::<Result<Vec<_>>>()?;
+        Ok(serde_json::to_string(&records)?)
     }
 
     pub(super) fn resolve_approval(&mut self, approval_id: &str, decision: &str) -> Result<bool> {
@@ -811,11 +881,21 @@ impl Store {
             )));
         }
         if updated == 1 {
-            transaction.execute(
+            let operation_status = if decision == "approved" {
+                "executing"
+            } else {
+                "denied"
+            };
+            let claimed = transaction.execute(
                 "UPDATE operations SET status = ?2, updated_at = unixepoch() \
                  WHERE id = ?1 AND status = 'proposed'",
-                params![operation_id, decision],
+                params![operation_id, operation_status],
             )?;
+            if claimed != 1 {
+                return Err(PersistenceError::Conflict(format!(
+                    "approval {approval_id} does not own a proposed operation"
+                )));
+            }
         }
         transaction.commit()?;
         Ok(updated == 1)
@@ -847,31 +927,6 @@ impl Store {
             if existing.as_ref() != Some(&(status.to_owned(), Some(result_json.to_owned()))) {
                 return Err(PersistenceError::Conflict(format!(
                     "operation {operation_id} is not executing or has a different result"
-                )));
-            }
-        }
-        Ok(updated == 1)
-    }
-
-    pub(super) fn begin_operation(&mut self, operation_id: &str) -> Result<bool> {
-        validate_id("operation_id", operation_id)?;
-        let updated = self.connection.execute(
-            "UPDATE operations SET status = 'executing', updated_at = unixepoch() \
-             WHERE id = ?1 AND status = 'approved'",
-            [operation_id],
-        )?;
-        if updated == 0 {
-            let existing: Option<String> = self
-                .connection
-                .query_row(
-                    "SELECT status FROM operations WHERE id = ?1",
-                    [operation_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if existing.as_deref() != Some("executing") {
-                return Err(PersistenceError::Conflict(format!(
-                    "operation {operation_id} is not approved"
                 )));
             }
         }
@@ -1672,6 +1727,15 @@ fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version = 6;",
         )?;
         transaction.commit()?;
+        version = 6;
+    }
+    if version == 6 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "ALTER TABLE approvals ADD COLUMN payload_json TEXT;
+             PRAGMA user_version = 7;",
+        )?;
+        transaction.commit()?;
     }
     Ok(())
 }
@@ -1692,7 +1756,7 @@ fn recover_interrupted_work(connection: &mut Connection) -> Result<()> {
     transaction.execute(
         "UPDATE operations SET status = 'failed', updated_at = unixepoch(),\
          result_json = '{\"kind\":\"runtimeRestart\",\"retryable\":true}'\
-         WHERE status = 'executing'",
+         WHERE status IN ('approved', 'executing')",
         [],
     )?;
     transaction.commit()?;
