@@ -5,6 +5,8 @@
   "packageManager": "pnpm@10.30.2",
   "scripts": {
     "build:cli:dev": "cargo build --locked -p sugarcode-cli --target-dir target",
+    "build:native:dev": "node scripts/build-desktop-native.mjs",
+    "build:native:release": "node scripts/build-desktop-native.mjs --release",
     "dev": "pnpm --filter @sugarcode/desktop start",
     "desktop:start": "pnpm --filter @sugarcode/desktop start",
     "desktop:package": "pnpm --filter @sugarcode/desktop package",

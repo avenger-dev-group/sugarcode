@@ -202,3 +202,19 @@ system Git, hooks, filters, signing, credential helpers, remotes or network.
 MCP begins disabled and requires an explicit bounded selection plus inventory
 hashing and per-call approval. Desktop preview and terminal are user-owned
 capabilities, never Agent tools.
+
+## 3.0 native-tool checkpoint
+
+The 3.0 N-API addon reuses `WorkspaceTool` rather than reimplementing file
+authority in TypeScript. Opening a workspace creates the same exact-root,
+no-follow capability. The initial ADK tool set exposes provider-neutral
+`workspace_read`, `workspace_list` and `workspace_search`; TypeScript owns only
+their ADK schemas and JSON result mapping, while Rust owns validation, resource
+limits and filesystem access.
+
+Write, Git, command, PTY and MCP tools are not yet exposed by the 3.0 ADK host.
+They must enter through the native addon. Write and execution tools additionally
+must persist an operation proposal and pending approval before notifying the UI,
+then use the stable operation ID for commit/result idempotency. Until that path
+is complete, the legacy app-server remains the only path advertising those
+capabilities.

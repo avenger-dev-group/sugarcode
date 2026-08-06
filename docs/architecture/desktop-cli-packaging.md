@@ -194,3 +194,25 @@ Release engineering still owns:
 
 These concerns must preserve the existing invariant: Desktop and CLI are
 verified and replaced as one compatible release unit.
+
+## 11. 3.0 utility-runtime migration state
+
+Branch `3.0` now builds a second Electron Main target, `runtime.js`, and starts
+it with `utilityProcess`. Main sends an internal provider-neutral initialize
+command over the utility-process parent port; the worker loads the platform
+`sugarcode-desktop-native.node`, opens `~/.sugarcode/v3`, and reports a versioned
+ready event. Main owns restart backoff, converts active Turns to retryable
+interrupted events on a worker crash, and renumbers worker events onto one
+monotonic process-lifetime sequence.
+
+The native addon is built from `crates/desktop-native` before Desktop start or
+package and is copied as a Forge extra resource. The four model/Agent packages
+remain external to the worker bundle so their Node-targeted exports retain
+their own module semantics inside the packaged application.
+
+This is a coexistence checkpoint, not the final packaging contract. The
+existing CLI sidecar hooks and app-server still serve the current Renderer
+projection while parity work continues. They must be removed, along with the
+CLI build in Desktop start/package scripts, only after the existing UI has been
+switched to the utility runtime and its remaining tools, approvals, navigation,
+MCP, terminal and multi-Agent behavior have passed native package smoke.

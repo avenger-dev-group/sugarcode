@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog } from 'electron';
 import started from 'electron-squirrel-startup';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -20,6 +21,7 @@ import { PreviewController } from '@/main/preview/controller';
 import { registerPreviewIpc } from '@/main/preview/ipc';
 import { TerminalController } from '@/main/terminal/controller';
 import { registerTerminalIpc } from '@/main/terminal/ipc';
+import { RuntimeSupervisor } from '@/main/runtime/supervisor';
 
 let mainWindow: BrowserWindow | null = null;
 let supervisor: ConnectionSupervisor | null = null;
@@ -35,6 +37,9 @@ let disposePreviewIpc: (() => void) | null = null;
 let disposePreviewApprovalSubscriptions: (() => void) | null = null;
 let terminalController: TerminalController | null = null;
 let disposeTerminalIpc: (() => void) | null = null;
+let runtimeSupervisor: RuntimeSupervisor | null = null;
+let disposeRuntimeEvents: (() => void) | null = null;
+let disposeRuntimeWorkspaceEvents: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -124,6 +129,22 @@ const createWindow = (): void => {
 
 const startApplication = async (): Promise<void> => {
   await app.whenReady();
+  runtimeSupervisor = new RuntimeSupervisor({
+    runtimePath: path.join(__dirname, 'runtime.js'),
+    dataDirectory: path.join(app.getPath('home'), '.sugarcode', 'v3'),
+    nativeModulePath: app.isPackaged
+      ? path.join(process.resourcesPath, 'sugarcode-desktop-native.node')
+      : path.join(app.getAppPath(), 'native', 'sugarcode-desktop-native.node'),
+  });
+  disposeRuntimeEvents = runtimeSupervisor.subscribe((event) => {
+    if (event.type === 'runtime.log') {
+      const log = event.level === 'debug' ? console.debug : console[event.level];
+      log(`[runtime] ${event.message}`);
+    } else if (event.type === 'runtime.ready') {
+      console.info(`[runtime] protocol ${event.protocolVersion} ready`);
+    }
+  });
+  runtimeSupervisor.start();
   const threadRegistry = new ThreadRegistry();
   supervisor = new ConnectionSupervisor({
     threadRegistry,
@@ -145,6 +166,26 @@ const startApplication = async (): Promise<void> => {
     },
   });
   await workspaceController.restore();
+  let runtimeWorkspaceGeneration = -1;
+  disposeRuntimeWorkspaceEvents = workspaceController.subscribe((snapshot) => {
+    if (
+      snapshot.status !== 'ready' ||
+      snapshot.generation === runtimeWorkspaceGeneration
+    ) {
+      return;
+    }
+    const workspace = workspaceController.getLaunchContext();
+    if (!workspace) {
+      return;
+    }
+    runtimeWorkspaceGeneration = snapshot.generation;
+    runtimeSupervisor?.send({
+      type: 'workspace.open',
+      requestId: randomUUID(),
+      workspaceId: createHash('sha256').update(workspace.path).digest('hex'),
+      canonicalRoot: workspace.path,
+    });
+  });
   terminalController = new TerminalController({
     dialog,
     getMainWindow: () => mainWindow,
@@ -261,12 +302,19 @@ if (started) {
   });
 
   app.on('before-quit', () => {
+    runtimeSupervisor?.shutdown();
     terminalController?.shutdown();
     previewController?.shutdown();
     supervisor?.shutdown();
   });
 
   app.on('will-quit', () => {
+    runtimeSupervisor?.shutdown();
+    runtimeSupervisor = null;
+    disposeRuntimeEvents?.();
+    disposeRuntimeEvents = null;
+    disposeRuntimeWorkspaceEvents?.();
+    disposeRuntimeWorkspaceEvents = null;
     supervisor?.shutdown();
     disposeConnectionIpc?.();
     disposeConnectionIpc = null;

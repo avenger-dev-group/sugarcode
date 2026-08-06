@@ -304,3 +304,24 @@ rollout record and then projected by every read path; title generation failure
 never fails the owning Turn, and a later accepted Turn may retry while the
 Thread remains untitled. A Thread without an explicit title projects no display
 title; durable user text is never reused as a title fallback.
+
+## SugarCode 3.0 SQLite checkpoint
+
+The 3.0 utility runtime has an independent SQLite store at
+`~/.sugarcode/v3/sugarcode-v3.sqlite3`. It never reads or migrates rollout v1.
+Schema v1 records provider-neutral workspaces, Threads, Turns, ordered Turn
+items, operations, approvals and Agent tasks. The connection enables foreign
+keys, WAL mode and a bounded busy timeout.
+
+Item IDs and `(turn_id, sequence)` are unique. Repeating an identical item,
+operation proposal, approval decision, terminal Turn result or operation result
+is a no-op; reusing the same ID for different content is a conflict. Operation
+proposal and approval creation are one immediate transaction. On process open,
+running Turns become retryable `interrupted`, running/waiting Agent tasks become
+`interrupted`, and executing operations become retryable failures. Pending
+approvals remain pending and no operation is automatically executed.
+
+The TypeScript ADK session is still in-memory. The native store already exposes
+a provider-neutral Thread snapshot for reconstruction, but wiring that snapshot
+into Runner creation and replacing the old Desktop rollout projection remain
+required before 3.0 becomes authoritative for the Renderer.

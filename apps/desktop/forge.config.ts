@@ -17,7 +17,10 @@ const sidecarHooks = createPackagedSidecarHooks({
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    extraResource: appIconPngPath,
+    extraResource: [
+      appIconPngPath,
+      path.join(__dirname, 'native', 'sugarcode-desktop-native.node'),
+    ],
     icon: appIconBasePath,
   },
   rebuildConfig: {},
@@ -65,6 +68,11 @@ const config: ForgeConfig = {
           entry: 'src/preload.ts',
           config: 'vite.preload.config.ts',
           target: 'preload',
+        },
+        {
+          entry: 'src/runtime/entry.ts',
+          config: 'vite.runtime.config.ts',
+          target: 'main',
         },
       ],
       renderer: [

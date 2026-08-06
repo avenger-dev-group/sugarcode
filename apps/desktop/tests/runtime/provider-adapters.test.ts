@@ -1,0 +1,363 @@
+import assert from 'node:assert/strict';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import test from 'node:test';
+
+import type { LlmRequest, LlmResponse } from '@google/adk';
+
+import { AnthropicLlm } from '../../src/runtime/models/anthropic-llm.ts';
+import { OpenAiLlm } from '../../src/runtime/models/openai-llm.ts';
+
+const llmRequest = (): LlmRequest => ({
+  model: 'fixture-model',
+  contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+  config: {
+    systemInstruction: {
+      role: 'user',
+      parts: [{ text: 'You are SugarCode.' }],
+    },
+  },
+  liveConnectConfig: {},
+  toolsDict: {},
+});
+
+const collect = async (
+  stream: AsyncIterable<LlmResponse>,
+): Promise<readonly LlmResponse[]> => {
+  const events: LlmResponse[] = [];
+  for await (const event of stream) {
+    events.push(event);
+  }
+  return events;
+};
+
+const readBody = async (request: IncomingMessage): Promise<string> => {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+};
+
+const serve = async (
+  handler: (
+    request: IncomingMessage,
+    response: ServerResponse,
+  ) => Promise<void>,
+): Promise<Readonly<{ baseUrl: string; close: () => Promise<void> }>> => {
+  const server = createServer((request, response) => {
+    void handler(request, response).catch((error: unknown) => {
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : 'fixture error');
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  };
+};
+
+const writeSse = (
+  response: ServerResponse,
+  events: readonly Readonly<{ event?: string; data: unknown }>[],
+): void => {
+  response.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'x-request-id': 'request_fixture',
+  });
+  for (const item of events) {
+    if (item.event) {
+      response.write(`event: ${item.event}\n`);
+    }
+    response.write(
+      `data: ${typeof item.data === 'string' ? item.data : JSON.stringify(item.data)}\n\n`,
+    );
+  }
+  response.end();
+};
+
+test('OpenAI Chat Completions SDK streams text and usage into ADK responses', async (context) => {
+  let receivedBody: Record<string, unknown> | undefined;
+  const fixture = await serve(async (request, response) => {
+    assert.equal(request.url, '/v1/chat/completions');
+    receivedBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+    writeSse(response, [
+      {
+        data: {
+          id: 'chatcmpl_fixture',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [
+            { index: 0, delta: { content: 'Hello' }, finish_reason: null },
+          ],
+        },
+      },
+      {
+        data: {
+          id: 'chatcmpl_fixture',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+          usage: {
+            prompt_tokens: 4,
+            completion_tokens: 2,
+            total_tokens: 6,
+          },
+        },
+      },
+      { data: '[DONE]' },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiChatCompletions',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(llmRequest(), true));
+
+  assert.equal(receivedBody?.model, 'fixture-model');
+  assert.equal(receivedBody?.stream, true);
+  assert.equal(events[0]?.content?.parts?.[0]?.text, 'Hello');
+  assert.equal(events.at(-1)?.turnComplete, true);
+  assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 6);
+});
+
+test('OpenAI Responses SDK maps function calls back to the ADK tool name', async (context) => {
+  const fixture = await serve(async (request, response) => {
+    assert.equal(request.url, '/v1/responses');
+    await readBody(request);
+    writeSse(response, [
+      {
+        event: 'response.output_item.added',
+        data: {
+          type: 'response.output_item.added',
+          sequence_number: 1,
+          output_index: 0,
+          item: {
+            id: 'item_fixture',
+            type: 'function_call',
+            call_id: 'call_fixture',
+            name: 'workspace_read',
+            arguments: '',
+            status: 'in_progress',
+          },
+        },
+      },
+      {
+        event: 'response.function_call_arguments.done',
+        data: {
+          type: 'response.function_call_arguments.done',
+          sequence_number: 2,
+          output_index: 0,
+          item_id: 'item_fixture',
+          name: 'workspace_read',
+          arguments: '{"path":"README.md"}',
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 3,
+          response: {
+            id: 'resp_fixture',
+            object: 'response',
+            created_at: 1,
+            status: 'completed',
+            error: null,
+            incomplete_details: null,
+            instructions: null,
+            max_output_tokens: null,
+            model: 'fixture-model',
+            output: [],
+            parallel_tool_calls: false,
+            previous_response_id: null,
+            reasoning: null,
+            store: false,
+            temperature: 1,
+            text: { format: { type: 'text' } },
+            tool_choice: 'auto',
+            tools: [],
+            top_p: 1,
+            truncation: 'disabled',
+            usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.config = {
+    ...request.config,
+    tools: [
+      {
+        functionDeclarations: [
+          {
+            name: 'workspace/read',
+            description: 'Read a workspace file.',
+            parametersJsonSchema: {
+              type: 'object',
+              properties: { path: { type: 'string' } },
+              required: ['path'],
+              additionalProperties: false,
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(request, true));
+  const functionCall = events
+    .flatMap((event) => event.content?.parts ?? [])
+    .find((part) => part.functionCall)?.functionCall;
+
+  assert.equal(functionCall?.id, 'call_fixture');
+  assert.equal(functionCall?.name, 'workspace/read');
+  assert.deepEqual(functionCall?.args, { path: 'README.md' });
+  assert.equal(events.at(-1)?.turnComplete, true);
+});
+
+test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK responses', async (context) => {
+  const fixture = await serve(async (request, response) => {
+    assert.equal(request.url, '/v1/messages');
+    await readBody(request);
+    writeSse(response, [
+      {
+        event: 'message_start',
+        data: {
+          type: 'message_start',
+          message: {
+            id: 'msg_fixture',
+            type: 'message',
+            role: 'assistant',
+            model: 'fixture-model',
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 5,
+              output_tokens: 0,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          },
+        },
+      },
+      {
+        event: 'content_block_start',
+        data: {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '', signature: '' },
+        },
+      },
+      {
+        event: 'content_block_delta',
+        data: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: 'Check.' },
+        },
+      },
+      {
+        event: 'content_block_delta',
+        data: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'signature_delta', signature: 'signature' },
+        },
+      },
+      { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
+      {
+        event: 'content_block_start',
+        data: {
+          type: 'content_block_start',
+          index: 1,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_fixture',
+            name: 'workspace_read',
+            input: {},
+            caller: { type: 'direct' },
+          },
+        },
+      },
+      {
+        event: 'content_block_delta',
+        data: {
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'input_json_delta', partial_json: '{"path":"README.md"}' },
+        },
+      },
+      { event: 'content_block_stop', data: { type: 'content_block_stop', index: 1 } },
+      {
+        event: 'message_delta',
+        data: {
+          type: 'message_delta',
+          delta: {
+            stop_reason: 'tool_use',
+            stop_sequence: null,
+            stop_details: null,
+            container: null,
+          },
+          usage: { output_tokens: 3 },
+        },
+      },
+      { event: 'message_stop', data: { type: 'message_stop' } },
+    ]);
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.config = {
+    ...request.config,
+    tools: [
+      {
+        functionDeclarations: [
+          {
+            name: 'workspace/read',
+            description: 'Read a workspace file.',
+            parametersJsonSchema: {
+              type: 'object',
+              properties: { path: { type: 'string' } },
+              required: ['path'],
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const model = new AnthropicLlm({
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(request, true));
+  const parts = events.flatMap((event) => event.content?.parts ?? []);
+  const functionCall = parts.find((part) => part.functionCall)?.functionCall;
+
+  assert.equal(parts.find((part) => part.thought)?.text, 'Check.');
+  assert.equal(functionCall?.name, 'workspace/read');
+  assert.deepEqual(functionCall?.args, { path: 'README.md' });
+  assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 8);
+  assert.equal(events.at(-1)?.turnComplete, true);
+});

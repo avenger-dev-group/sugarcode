@@ -458,3 +458,19 @@ Ubuntu/Linux is not currently a supported CI or packaging acceptance target.
 The smoke verifies version pairing, handshake and isolated local capabilities
 without contacting a provider. See `desktop-cli-packaging.md` for package and
 release boundaries.
+
+## 3.0 transition boundary
+
+Electron Main now also supervises an internal TypeScript ADK utility process.
+Its `RuntimeCommand` and `RuntimeEvent` discriminated unions are a private
+Electron protocol and contain stable request, workspace, Thread, Turn,
+operation and sequence identifiers without SDK types. The utility runtime is
+currently started alongside app-server and has no Renderer IPC surface, so the
+existing UI behavior and Rust-source public app-server protocol remain
+unchanged during this checkpoint.
+
+Migration must replace the Main conversation/model/tool projections behind the
+existing preload API before app-server is removed. It must not introduce a
+second Renderer-facing provider-specific API. If migration work touches the
+public app-server protocol while coexistence remains, Rust definitions,
+generated TypeScript and fixtures continue to change together.

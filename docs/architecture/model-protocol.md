@@ -328,3 +328,25 @@ not accept units, signs, fractions, whitespace, zero or an out-of-range value.
 Structured final output is intentionally absent until a production consumer
 requires it. Audio, video, image generation, hosted file upload and file search
 are outside this contract.
+
+## TypeScript provider-adapter checkpoint
+
+The 3.0 utility runtime directly declares `@google/adk@1.6.0`,
+`@google/genai@2.9.0`, `openai@7.4.0` and
+`@anthropic-ai/sdk@0.115.0`. `@google/genai` supplies ADK content and schema
+types only; Gemini, Vertex and ADK Live are not enabled.
+
+`OpenAiLlm` and `AnthropicLlm` extend ADK `BaseLlm`. Provider SDK objects stay
+inside those adapter modules; utility commands, utility events, N-API and the
+Renderer remain provider-neutral. Both SDKs run with automatic retry disabled.
+SugarCode retries only a classified retryable failure that occurs before the
+first semantic stream event. OpenAI supports Responses and Chat Completions;
+Anthropic supports Messages. Both accept custom Base URLs and headers and map
+text, thought/reasoning, media, tools, usage, terminal reasons and provider
+errors into ADK responses.
+
+Streaming adapters emit partial deltas followed by one complete, non-partial
+ADK snapshot. This is required for ADK session persistence and tool-loop
+continuation; the host publishes only the partial text to the UI, while it uses
+the complete snapshot for usage, tool calls and history. Local mock HTTP/SSE
+tests exercise all three declared wires without online provider calls.
