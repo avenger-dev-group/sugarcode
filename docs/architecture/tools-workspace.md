@@ -8,6 +8,11 @@ deterministic workspace ID. Rust capabilities resolve every relative path
 beneath that root and reject traversal, symlink escape and cross-workspace IDs.
 Renderer and model output never choose a capability root.
 
+Multiple registered workspaces may execute Turns concurrently. Every runtime
+command, event, approval and operation retains its workspace identity; changing
+the visible project changes presentation only and does not revoke or replace a
+background Turn's capability root.
+
 ## Local tools
 
 Rust provides bounded file listing/inspection/search, content-addressed asset
@@ -38,5 +43,8 @@ to explicitly configured loopback endpoints.
 Dynamic child Agents run as separate ADK invocations over a bounded persisted
 task DAG. The coordinator enforces dependency, concurrency, interruption and
 workspace read/write scheduling. Child sessions are temporary; task status and
-bounded results are durable. Restart marks active tasks interrupted instead of
-replaying their work.
+bounded results are durable. While a task is active, the coordinator also
+publishes bounded provider-neutral progress for initial model wait, streamed
+public text and current tool execution; provider event objects and tool
+arguments are never exposed as progress. Restart marks active tasks interrupted
+instead of replaying their work.

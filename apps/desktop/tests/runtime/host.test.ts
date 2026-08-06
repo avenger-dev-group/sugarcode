@@ -30,6 +30,17 @@ const emptyThreadSnapshot = (threadId = 'thread-fixture'): string =>
     agentTasks: [],
   });
 
+const terminalParts = (
+  request: LlmRequest,
+  text: string,
+  callId: string,
+) => [
+  { text },
+  ...(Object.hasOwn(request.toolsDict, 'exit_loop')
+    ? [{ functionCall: { id: callId, name: 'exit_loop', args: {} } }]
+    : []),
+];
+
 class FixtureLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
@@ -66,6 +77,7 @@ class FixtureLlm extends BaseLlm {
 
 class ToolLoopLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
+  private invocations = 0;
 
   async *generateContentAsync(
     request: LlmRequest,
@@ -74,10 +86,32 @@ class ToolLoopLlm extends BaseLlm {
   ): AsyncGenerator<LlmResponse, void> {
     void _stream;
     void _abortSignal;
+    this.invocations += 1;
     const hasToolResult = request.contents.some((content) =>
       (content.parts ?? []).some((part) => part.functionResponse),
     );
     if (!hasToolResult) {
+      if (this.invocations === 1) {
+        const deferredText =
+          '好，.gitignore 已经正确配置了。现在让我读取 tsconfig 文件来检查路径映射。';
+        yield {
+          content: {
+            role: 'model',
+            parts: [{ text: deferredText }],
+          },
+          partial: true,
+        };
+        yield {
+          content: {
+            role: 'model',
+            parts: [{ text: deferredText }],
+          },
+          partial: false,
+          turnComplete: true,
+          finishReason: FinishReason.STOP,
+        };
+        return;
+      }
       yield {
         content: {
           role: 'model',
@@ -100,7 +134,10 @@ class ToolLoopLlm extends BaseLlm {
       partial: true,
     };
     yield {
-      content: { role: 'model', parts: [{ text: 'Tool loop complete' }] },
+      content: {
+        role: 'model',
+        parts: terminalParts(request, 'Tool loop complete', 'call-exit-tool'),
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -195,7 +232,14 @@ class CollaborationLoopLlm extends BaseLlm {
       partial: true,
     };
     yield {
-      content: { role: 'model', parts: [{ text: 'Collaboration complete' }] },
+      content: {
+        role: 'model',
+        parts: terminalParts(
+          request,
+          'Collaboration complete',
+          'call-exit-collaboration',
+        ),
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -238,7 +282,10 @@ class PatchLoopLlm extends BaseLlm {
       partial: true,
     };
     yield {
-      content: { role: 'model', parts: [{ text: 'Patch complete' }] },
+      content: {
+        role: 'model',
+        parts: terminalParts(request, 'Patch complete', 'call-exit-patch'),
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -283,7 +330,10 @@ class CommandLoopLlm extends BaseLlm {
       partial: true,
     };
     yield {
-      content: { role: 'model', parts: [{ text: 'Command complete' }] },
+      content: {
+        role: 'model',
+        parts: terminalParts(request, 'Command complete', 'call-exit-command'),
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -307,7 +357,10 @@ class CaptureLlm extends BaseLlm {
       partial: true,
     };
     yield {
-      content: { role: 'model', parts: [{ text: 'Current answer' }] },
+      content: {
+        role: 'model',
+        parts: terminalParts(request, 'Current answer', 'call-exit-capture'),
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -572,6 +625,13 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
     (event): event is Extract<RuntimeEvent, { type: 'agent.task' }> =>
       event.type === 'agent.task',
   );
+  assert.ok(
+    tasks.some(
+      (event) =>
+        event.task.clientTaskKey === 'implementation' &&
+        event.task.progress?.stage === 'waitingForModel',
+    ),
+  );
   const implementationCompleted = tasks.findIndex(
     (event) =>
       event.task.clientTaskKey === 'implementation' &&
@@ -585,7 +645,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
   assert.equal(events.at(-1)?.type, 'turn.completed');
 });
 
-test('RuntimeHost executes ADK workspace tools through the native boundary', async () => {
+test('RuntimeHost continues a deferred action and executes the workspace tool', async () => {
   const events: RuntimeEvent[] = [];
   const persistedKinds: string[] = [];
   let readPath = '';
@@ -730,6 +790,20 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   );
   assert.ok(events.some((event) => event.type === 'turn.toolCall'));
   assert.ok(events.some((event) => event.type === 'turn.toolResult'));
+  assert.equal(
+    events.some(
+      (event) => event.type === 'turn.toolCall' && event.name === 'exit_loop',
+    ),
+    false,
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === 'turn.textDelta' &&
+        event.delta ===
+          '好，.gitignore 已经正确配置了。现在让我读取 tsconfig 文件来检查路径映射。',
+    ),
+  );
   assert.ok(
     events.some(
       (event) =>

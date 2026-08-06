@@ -309,6 +309,11 @@ export type ConversationAgentTask = Readonly<{
     id: string;
     markdown: string;
   }>[];
+  progress?: Readonly<{
+    stage: 'waitingForModel' | 'streaming' | 'runningTool';
+    summaryMarkdown: string;
+    updatedAt: number;
+  }>;
   result?: Readonly<{
     id: string;
     summaryMarkdown: string;
@@ -592,6 +597,7 @@ const MESSAGE_STATUSES = new Set<ConversationMessageStatus>([
 
 const ERROR_KINDS = new Set<ConversationTurnError['kind']>([
   'authentication',
+  'contextWindowExceeded',
   'invalidRequest',
   'rateLimited',
   'timeout',
@@ -603,6 +609,8 @@ const ERROR_KINDS = new Set<ConversationTurnError['kind']>([
   'filtered',
   'unsupportedOutput',
   'unsupportedToolArguments',
+  'providerRequestTooLarge',
+  'providerResponseTooLarge',
   'outputTooLarge',
   'stateUnavailable',
 ]);
@@ -1528,9 +1536,13 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   }
 
   const hasError = Object.hasOwn(value, 'error');
-  return value.status === 'failed'
-    ? hasError && isTurnError(value.error)
-    : !hasError;
+  if (value.status === 'failed') {
+    return hasError && isTurnError(value.error);
+  }
+  if (value.status === 'interrupted') {
+    return !hasError || isTurnError(value.error);
+  }
+  return !hasError;
 };
 
 const isNotice = (value: unknown): value is ConversationNotice =>
@@ -1660,6 +1672,13 @@ export const isConversationStateSnapshot = (
   const activeTurnId = value.activeTurnId as string | undefined;
   const phaseHasActiveTurn =
     value.phase === 'inProgress' || value.phase === 'stopping';
+  if (value.phase === 'starting') {
+    return activeTurns.length === 0
+      ? activeTurnId === undefined
+      : activeTurns.length === 1 &&
+          activeTurnId === activeTurns[0]?.id &&
+          isId(value.threadId);
+  }
   if (phaseHasActiveTurn) {
     return (
       activeTurns.length === 1 &&

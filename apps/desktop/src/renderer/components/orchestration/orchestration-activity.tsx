@@ -101,9 +101,13 @@ const titleLineCount = (title: string): number => {
   return lines;
 };
 
-const agentNodeHeight = (title: string): number =>
+const agentNodeHeight = (task: AgentTaskViewModel): number =>
   AGENT_NODE_CHROME_HEIGHT +
-  titleLineCount(title) * AGENT_NODE_TITLE_LINE_HEIGHT;
+  titleLineCount(task.title) * AGENT_NODE_TITLE_LINE_HEIGHT +
+  (task.progress && !task.result ? 28 : 0);
+
+const compactProgress = (task: AgentTaskViewModel): string | undefined =>
+  task.progress?.summaryMarkdown.replace(/\s+/gu, ' ').trim();
 
 type AgentNodeData = {
   kind: 'agent';
@@ -207,7 +211,8 @@ const OrchestrationNodeView = ({
   }
 
   const { task } = data;
-  const height = agentNodeHeight(task.title);
+  const height = agentNodeHeight(task);
+  const progress = compactProgress(task);
   const dependencyLabel =
     task.dependsOn.length === 0
       ? 'Root'
@@ -257,6 +262,15 @@ const OrchestrationNodeView = ({
           {task.title}
         </span>
       </div>
+      {progress && !task.result ? (
+        <div
+          className="mt-1 w-full truncate px-3 text-[10px] leading-4 text-secondary"
+          aria-live="polite"
+          title={progress}
+        >
+          {progress}
+        </div>
+      ) : null}
       <div className="mt-auto flex h-7 w-full items-center gap-2 border-t px-3 font-mono text-[8px] uppercase tracking-[0.08em] text-tertiary">
         <span className="flex min-w-0 items-center gap-1">
           <LockKeyhole className="size-2.5 shrink-0" aria-hidden="true" />
@@ -345,7 +359,7 @@ const layoutGraph = (
     activity.tasks.map((task) => [task.clientTaskKey, task]),
   );
   const taskHeights = new Map(
-    activity.tasks.map((task) => [task.taskId, agentNodeHeight(task.title)]),
+    activity.tasks.map((task) => [task.taskId, agentNodeHeight(task)]),
   );
   for (const task of activity.tasks) {
     graph.setNode(task.taskId, {

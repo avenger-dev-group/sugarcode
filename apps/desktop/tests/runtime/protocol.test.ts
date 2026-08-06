@@ -168,6 +168,11 @@ test('private Agent task events carry a complete provider-neutral DAG snapshot',
       taskMarkdown: 'Implement the change.',
       status: 'waitingApproval',
       amendments: [{ id: 'amendment-fixture', markdown: 'Add tests.' }],
+      progress: {
+        stage: 'runningTool',
+        summaryMarkdown: 'Running `workspace_apply_patch`.',
+        updatedAt: 123,
+      },
     },
   };
   assert.equal(isRuntimeEvent(event), true);

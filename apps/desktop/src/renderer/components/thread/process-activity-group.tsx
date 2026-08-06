@@ -27,7 +27,7 @@ export const ProcessActivityGroup = ({
     <details
       open={store.expanded}
       onToggle={(event) => store.setExpanded(event.currentTarget.open)}
-      className="group/process-analysis min-w-0"
+      className="group/process-analysis block w-full min-w-0"
       aria-label={`${label}${visibleDuration ? ` in ${visibleDuration}` : ''} activity`}
     >
       <summary className="flex min-w-0 cursor-pointer list-none items-center gap-1.5 rounded-md py-0.5 pr-1 text-sm text-secondary outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
@@ -48,7 +48,7 @@ export const ProcessActivityGroup = ({
           aria-hidden="true"
         />
       </summary>
-      <div className="mt-1.5 space-y-2.5">{children}</div>
+      <div className="mt-1.5 w-full min-w-0 space-y-2.5">{children}</div>
     </details>
   );
 };

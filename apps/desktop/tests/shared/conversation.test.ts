@@ -40,6 +40,49 @@ test('conversation snapshots reject non-terminal unread states', () => {
   assert.equal(isConversationStateSnapshot(snapshot('inProgress')), false);
 });
 
+test('conversation snapshots accept an optimistic Turn while runtime startup is pending', () => {
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'starting',
+      threadId: THREAD_WEB,
+      activeTurnId: TURN_REVIEW,
+      turns: [
+        {
+          id: TURN_REVIEW,
+          status: 'inProgress',
+          messages: [
+            {
+              id: `${TURN_REVIEW}:user`,
+              role: 'user',
+              text: 'Review the startup lifecycle',
+              status: 'inProgress',
+            },
+          ],
+        },
+      ],
+    }),
+    true,
+  );
+});
+
+test('conversation snapshots retain a classified interruption reason after runtime restart', () => {
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('interrupted'),
+      phase: 'ready',
+      threadId: THREAD_WEB,
+      turns: [{
+        id: TURN_REVIEW,
+        status: 'interrupted',
+        messages: [],
+        error: { kind: 'incomplete', retryable: true },
+      }],
+    }),
+    true,
+  );
+});
+
 test('advanced search truncation may occur before the match limit', () => {
   assert.equal(
     isConversationStateSnapshot({

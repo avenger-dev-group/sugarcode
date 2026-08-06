@@ -46,6 +46,15 @@ ADK sessions are process-local caches. Before a new Turn, provider-neutral
 completed history is rebuilt from Rust SQLite. Worker loss interrupts active
 Turns and child tasks; it never resumes an incomplete tool call or side effect.
 
+The primary `LlmAgent` runs inside a bounded ADK `LoopAgent`. Public text never
+declares lifecycle completion: the model must call ADK's internal `exit_loop`
+tool after it has emitted the final outcome or genuine blocker. A normal model
+stop starts the next loop iteration in the same workspace, Thread and Turn. If
+four iterations finish without the structured exit event, the Turn fails with
+a retryable protocol error instead of being silently persisted as completed.
+The internal exit tool is retained in model history but is not projected as a
+user-visible workspace activity.
+
 ## UI compatibility
 
 Conversation, model configuration, attachments, approvals, MCP, Git, workspace,
@@ -53,3 +62,36 @@ terminal and orchestration keep their existing Renderer/preload surfaces.
 Private Main adapters translate these calls to the utility runtime. The old
 app-server public protocol, CLI supervisor and sidecar executable no longer
 exist.
+
+Conversation snapshots preserve the optimistic first-Turn projection while the
+runtime acknowledges startup: `starting` may contain the newly allocated active
+Turn and its user message. Preload validation must retain that state so the
+Renderer can show the transcript before the first model stream event arrives.
+Consecutive commentary deltas are coalesced into one process paragraph during
+live projection, and persisted commentary deltas are coalesced again on restore;
+provider chunk boundaries must never become visible paragraph spacing.
+Reselecting the foreground Thread is idempotent even while its Turn is active
+and republishes its current snapshot. Main tracks active Turns by workspace and
+Thread rather than as one global foreground Turn. Selecting another Thread,
+opening a new Thread or switching projects leaves every background Turn
+running, while the foreground snapshot derives its phase and `activeTurnId`
+from the selected Thread. Navigator `activeThreadIds` remains scoped to the
+visible workspace, while `runningThreadIds` and `unreadThreadStatuses` cover all
+open workspaces so a project switch cannot hide active or newly completed work.
+The short attachment/import and Thread-creation startup window is isolated per
+workspace and captures its original workspace authority, so another project may
+start independently even if the first startup has not returned. A background
+completion is retained until that Thread is selected, so navigation can replace
+its running marker with the terminal outcome.
+Optional navigator fields are omitted when cleared rather than serialized with
+`undefined`; every snapshot published by Main must pass the same preload
+validation used at the Renderer boundary.
+Recovered `runtimeRestart` records are projected as the public `incomplete`
+Turn error, and interrupted Turns may retain that classified error so a restored
+transcript remains valid and explains why work stopped.
+
+Child-Agent task snapshots include bounded live progress with an explicit stage
+(`waitingForModel`, `streaming` or `runningTool`), a public Markdown summary and
+an update timestamp. The graph shows a compact latest update and the Agent
+detail rail renders the live Markdown stream; the terminal task result remains
+the durable completion contract.

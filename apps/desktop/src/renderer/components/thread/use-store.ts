@@ -764,6 +764,9 @@ export const toThreadViewModel = (
                 amendments: task.amendments.map((amendment) => ({
                   ...amendment,
                 })),
+                ...(task.progress
+                  ? { progress: { ...task.progress } }
+                  : {}),
                 ...(task.result ? { result: { ...task.result } } : {}),
               })),
             },

@@ -104,6 +104,12 @@ export type RuntimeAgentTaskStatus =
   | 'interrupted'
   | 'cancelled';
 
+export type RuntimeAgentTaskProgress = Readonly<{
+  stage: 'waitingForModel' | 'streaming' | 'runningTool';
+  summaryMarkdown: string;
+  updatedAt: number;
+}>;
+
 export type RuntimeAgentTask = Readonly<{
   orchestrationId: string;
   taskId: string;
@@ -116,6 +122,7 @@ export type RuntimeAgentTask = Readonly<{
   taskMarkdown: string;
   status: RuntimeAgentTaskStatus;
   amendments: readonly Readonly<{ id: string; markdown: string }>[];
+  progress?: RuntimeAgentTaskProgress;
   result?: Readonly<{
     id: string;
     summaryMarkdown: string;
@@ -1029,6 +1036,15 @@ export const isRuntimeAgentTask = (value: unknown): value is RuntimeAgentTask =>
       typeof amendment.id === 'string' &&
       typeof amendment.markdown === 'string',
   ) &&
+  (value.progress === undefined ||
+    (isRecord(value.progress) &&
+      ['waitingForModel', 'streaming', 'runningTool'].includes(
+        String(value.progress.stage),
+      ) &&
+      typeof value.progress.summaryMarkdown === 'string' &&
+      value.progress.summaryMarkdown.length > 0 &&
+      Number.isSafeInteger(value.progress.updatedAt) &&
+      Number(value.progress.updatedAt) >= 0)) &&
   (value.result === undefined ||
     (isRecord(value.result) &&
       typeof value.result.id === 'string' &&

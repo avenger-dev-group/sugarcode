@@ -97,24 +97,54 @@ const emptyNavigator = (): ConversationThreadNavigatorSnapshot => ({
   },
 });
 
+type ClearableNavigatorField =
+  | 'pendingThreadId'
+  | 'pendingMutation'
+  | 'archivedUndoThreadId'
+  | 'selectionNotice'
+  | 'mutationNotice'
+  | 'unreadThreadStatuses';
+
+const withoutNavigatorFields = (
+  navigator: ConversationThreadNavigatorSnapshot,
+  fields: readonly ClearableNavigatorField[],
+): ConversationThreadNavigatorSnapshot => {
+  const next = { ...navigator };
+  for (const field of fields) {
+    delete next[field];
+  }
+  return next;
+};
+
 const titleFromInput = (input: string): string | undefined => {
   const title = input.trim().replace(/\s+/gu, ' ').slice(0, 80);
   return title || undefined;
 };
 
-const runtimeError = (error: RuntimeProviderError): ConversationTurnError => ({
-  kind:
-    error.kind === 'rateLimit'
-      ? 'rateLimited'
-      : error.kind === 'connection'
-        ? 'transport'
-        : error.kind === 'cancelled'
-          ? 'incomplete'
-          : error.kind === 'unknown'
-            ? 'server'
-            : error.kind,
-  retryable: error.retryable,
-});
+const runtimeError = (error: RuntimeProviderError): ConversationTurnError => {
+  const kind = String(error.kind);
+  return {
+    kind:
+      kind === 'rateLimit'
+        ? 'rateLimited'
+        : kind === 'connection'
+          ? 'transport'
+          : kind === 'cancelled' || kind === 'runtimeRestart'
+            ? 'incomplete'
+            : kind === 'unknown'
+              ? 'server'
+              : [
+                    'authentication',
+                    'invalidRequest',
+                    'timeout',
+                    'protocol',
+                    'server',
+                  ].includes(kind)
+                ? kind as ConversationTurnError['kind']
+                : 'stateUnavailable',
+    retryable: error.retryable === true,
+  };
+};
 
 const fallbackModel = (
   wireApi: RuntimeThreadSnapshot['turns'][number]['providerWireApi'],
@@ -185,6 +215,7 @@ const orchestrationActivity = (
         taskMarkdown: task.taskMarkdown,
         status: task.status,
         amendments: task.amendments.map((amendment) => ({ ...amendment })),
+        ...(task.progress ? { progress: { ...task.progress } } : {}),
         ...(task.result ? { result: { ...task.result } } : {}),
       })),
     },
@@ -228,21 +259,25 @@ const projectThread = (
       )
       .map((item) => String(item.payload.delta ?? ''))
       .join('');
-    const commentary = items
+    const commentaryText = items
       .filter(
         (item) =>
           item.kind === 'turn.textDelta' && item.payload.phase === 'commentary',
       )
-      .map(
-        (item): ConversationActivity => ({
+      .map((item) => String(item.payload.delta ?? ''))
+      .join('');
+    const commentary: ConversationActivity[] = commentaryText
+      ? [
+          {
           type: 'commentary',
           activity: {
-            id: item.id,
-            text: String(item.payload.delta ?? ''),
+            id: `${record.id}:commentary`,
+            text: commentaryText,
             status: 'completed',
           },
-        }),
-      );
+          },
+        ]
+      : [];
     const durableTasks = snapshot.agentTasks
       .filter((task) => task.turnId === record.id)
       .map((task) => ({ ...task.payload, status: task.status }));
@@ -301,11 +336,26 @@ export class RuntimeConversationController {
   private readonly listeners = new Set<ConversationStateListener>();
   private readonly threadRecords = new Map<string, RuntimeThreadRecord>();
   private readonly turnsByThread = new Map<string, ConversationTurn[]>();
+  private readonly unreadThreadStatuses = new Map<
+    string,
+    'completed' | 'failed' | 'interrupted'
+  >();
+  private readonly activeTurnsByThread = new Map<
+    string,
+    Readonly<{
+      workspaceId: string;
+      turnId: string;
+      phase: Extract<
+        ConversationStateSnapshot['phase'],
+        'starting' | 'inProgress' | 'stopping'
+      >;
+    }>
+  >();
+  private readonly pendingTurnStartWorkspaces = new Set<string>();
   private workspaceId: string | null = null;
   private revision = 0;
-  private phase: ConversationStateSnapshot['phase'] = 'unavailable';
+  private available = false;
   private threadId: string | null = null;
-  private activeTurnId: string | null = null;
   private navigator = emptyNavigator();
   private notice: ConversationStateSnapshot['notice'];
 
@@ -314,15 +364,25 @@ export class RuntimeConversationController {
     runtime.subscribe(this.handleRuntimeEvent);
   }
 
-  getSnapshot = (): ConversationStateSnapshot => ({
-    revision: this.revision,
-    phase: this.phase,
-    ...(this.threadId ? { threadId: this.threadId } : {}),
-    ...(this.activeTurnId ? { activeTurnId: this.activeTurnId } : {}),
-    turns: this.threadId ? this.turnsByThread.get(this.threadId) ?? [] : [],
-    navigator: this.navigator,
-    ...(this.notice ? { notice: this.notice } : {}),
-  });
+  getSnapshot = (): ConversationStateSnapshot => {
+    const activeTurn = this.threadId
+      ? this.activeTurnsByThread.get(this.threadId)
+      : undefined;
+    const phase: ConversationStateSnapshot['phase'] = !this.available
+      ? 'unavailable'
+      : this.workspaceId && this.pendingTurnStartWorkspaces.has(this.workspaceId)
+        ? 'starting'
+        : activeTurn?.phase ?? (this.threadId ? 'ready' : 'idle');
+    return {
+      revision: this.revision,
+      phase,
+      ...(this.threadId ? { threadId: this.threadId } : {}),
+      ...(activeTurn ? { activeTurnId: activeTurn.turnId } : {}),
+      turns: this.threadId ? this.turnsByThread.get(this.threadId) ?? [] : [],
+      navigator: this.navigator,
+      ...(this.notice ? { notice: this.notice } : {}),
+    };
+  };
 
   subscribe = (listener: ConversationStateListener): (() => void) => {
     this.listeners.add(listener);
@@ -332,11 +392,10 @@ export class RuntimeConversationController {
   switchWorkspace = async (workspaceId: string): Promise<boolean> => {
     this.workspaceId = workspaceId;
     this.threadId = null;
-    this.activeTurnId = null;
-    this.phase = 'unavailable';
-    this.threadRecords.clear();
-    this.turnsByThread.clear();
+    this.available = false;
     this.navigator = { ...emptyNavigator(), status: 'loading' };
+    this.notice = undefined;
+    this.refreshNavigator('loading');
     this.publish();
     try {
       const event = await this.runtime.request(
@@ -346,8 +405,8 @@ export class RuntimeConversationController {
       if (this.workspaceId !== workspaceId) {
         return true;
       }
-      this.applyThreadList(event.threads);
-      this.phase = 'idle';
+      this.available = true;
+      this.applyThreadList(workspaceId, event.threads);
       this.publish();
       return true;
     } catch {
@@ -364,15 +423,22 @@ export class RuntimeConversationController {
     if (!isConversationSendRequest(input)) {
       return rejected('invalidInput');
     }
-    if (!this.workspaceId || this.phase === 'unavailable') {
+    if (!this.workspaceId || !this.available) {
       return rejected('unavailable');
     }
-    if (this.activeTurnId || this.navigator.pendingMutation) {
+    const workspaceId = this.workspaceId;
+    let threadId = this.threadId;
+    if (
+      this.pendingTurnStartWorkspaces.has(workspaceId) ||
+      (threadId && this.activeTurnsByThread.has(threadId)) ||
+      this.navigator.pendingMutation
+    ) {
       return rejected('turnActive');
     }
-    this.phase = 'starting';
+    this.pendingTurnStartWorkspaces.add(workspaceId);
     this.notice = undefined;
     this.publish();
+    let optimisticTurn: Readonly<{ threadId: string; turnId: string }> | undefined;
     try {
       const content: RuntimeContentPart[] = input.input.length > 0
         ? [{ type: 'text', text: input.input }]
@@ -397,12 +463,12 @@ export class RuntimeConversationController {
             : {}),
         });
       }
-      if (!this.threadId) {
+      if (!threadId) {
         const created = await this.runtime.request(
           {
             type: 'thread.create',
             requestId: randomUUID(),
-            workspaceId: this.workspaceId,
+            workspaceId,
             ...(titleFromInput(input.input) ? { title: titleFromInput(input.input) } : {}),
           },
           'thread.mutated',
@@ -410,9 +476,12 @@ export class RuntimeConversationController {
         if (!created.snapshot) {
           throw new Error('The local runtime did not return the new Thread.');
         }
-        this.threadId = created.threadId;
+        threadId = created.threadId;
         this.threadRecords.set(created.threadId, created.snapshot.thread);
         this.turnsByThread.set(created.threadId, []);
+        if (this.workspaceId === workspaceId && !this.threadId) {
+          this.threadId = created.threadId;
+        }
         this.refreshNavigator();
       }
       const turnId = createUuidV7();
@@ -423,16 +492,24 @@ export class RuntimeConversationController {
         ...(attachments.length > 0 ? { attachments } : {}),
         status: 'inProgress' as const,
       };
-      this.turnsByThread.set(this.threadId, [
-        ...(this.turnsByThread.get(this.threadId) ?? []),
+      this.turnsByThread.set(threadId, [
+        ...(this.turnsByThread.get(threadId) ?? []),
         { id: turnId, status: 'inProgress', messages: [userMessage] },
       ]);
-      this.activeTurnId = turnId;
+      this.activeTurnsByThread.set(threadId, {
+        workspaceId,
+        turnId,
+        phase: 'starting',
+      });
+      this.unreadThreadStatuses.delete(threadId);
+      optimisticTurn = { threadId, turnId };
+      this.pendingTurnStartWorkspaces.delete(workspaceId);
+      this.refreshNavigator();
       this.runtime.send({
         type: 'turn.start',
         requestId: randomUUID(),
-        workspaceId: this.workspaceId,
-        threadId: this.threadId,
+        workspaceId,
+        threadId,
         turnId,
         ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
         content,
@@ -440,9 +517,24 @@ export class RuntimeConversationController {
       this.publish();
       return accepted();
     } catch {
-      this.phase = this.threadId ? 'ready' : 'idle';
-      this.activeTurnId = null;
-      this.notice = { kind: 'requestFailed', summary: 'The local Agent could not start this Turn.' };
+      this.pendingTurnStartWorkspaces.delete(workspaceId);
+      if (
+        optimisticTurn &&
+        this.activeTurnsByThread.get(optimisticTurn.threadId)?.turnId ===
+          optimisticTurn.turnId
+      ) {
+        this.activeTurnsByThread.delete(optimisticTurn.threadId);
+        this.turnsByThread.set(
+          optimisticTurn.threadId,
+          (this.turnsByThread.get(optimisticTurn.threadId) ?? []).filter(
+            (turn) => turn.id !== optimisticTurn.turnId,
+          ),
+        );
+        this.refreshNavigator();
+      }
+      if (this.workspaceId === workspaceId) {
+        this.notice = { kind: 'requestFailed', summary: 'The local Agent could not start this Turn.' };
+      }
       this.publish();
       return rejected('unavailable');
     }
@@ -452,16 +544,20 @@ export class RuntimeConversationController {
     if (typeof threadId !== 'string' || threadId !== this.threadId) {
       return rejected('unknownThread');
     }
-    if (!this.workspaceId || !this.activeTurnId) {
+    const activeTurn = this.activeTurnsByThread.get(threadId);
+    if (!this.workspaceId || !activeTurn) {
       return rejected('noActiveTurn');
     }
-    this.phase = 'stopping';
+    this.activeTurnsByThread.set(threadId, {
+      ...activeTurn,
+      phase: 'stopping',
+    });
     this.runtime.send({
       type: 'turn.cancel',
       requestId: randomUUID(),
-      workspaceId: this.workspaceId,
+      workspaceId: activeTurn.workspaceId,
       threadId,
-      turnId: this.activeTurnId,
+      turnId: activeTurn.turnId,
     });
     this.publish();
     return accepted();
@@ -507,11 +603,38 @@ export class RuntimeConversationController {
   };
 
   selectThread = async (threadId: unknown): Promise<ConversationActionResult> => {
-    if (typeof threadId !== 'string' || !this.threadRecords.has(threadId)) {
+    if (typeof threadId !== 'string') {
       return rejected('unknownThread');
     }
-    if (!this.workspaceId || this.activeTurnId) {
-      return rejected(this.activeTurnId ? 'turnActive' : 'unavailable');
+    const thread = this.threadRecords.get(threadId);
+    if (!thread || thread.workspaceId !== this.workspaceId) {
+      return rejected('unknownThread');
+    }
+    if (!this.workspaceId) {
+      return rejected('unavailable');
+    }
+    if (threadId === this.threadId) {
+      this.unreadThreadStatuses.delete(threadId);
+      this.refreshNavigator();
+      this.publish();
+      return accepted();
+    }
+    if (
+      this.workspaceId &&
+      this.pendingTurnStartWorkspaces.has(this.workspaceId)
+    ) {
+      return rejected('turnActive');
+    }
+    if (this.activeTurnsByThread.has(threadId) && this.turnsByThread.has(threadId)) {
+      this.threadId = threadId;
+      this.unreadThreadStatuses.delete(threadId);
+      this.refreshNavigator();
+      this.navigator = withoutNavigatorFields(this.navigator, [
+        'pendingThreadId',
+        'selectionNotice',
+      ]);
+      this.publish();
+      return accepted();
     }
     this.navigator = { ...this.navigator, pendingThreadId: threadId };
     this.publish();
@@ -525,24 +648,35 @@ export class RuntimeConversationController {
       }
       this.threadId = threadId;
       this.turnsByThread.set(threadId, [...projectThread(event.snapshot)]);
-      this.phase = 'ready';
-      this.navigator = { ...this.navigator, pendingThreadId: undefined, selectionNotice: undefined };
+      this.unreadThreadStatuses.delete(threadId);
+      this.refreshNavigator();
+      this.navigator = withoutNavigatorFields(this.navigator, [
+        'pendingThreadId',
+        'selectionNotice',
+      ]);
       this.publish();
       return accepted();
     } catch {
-      this.navigator = { ...this.navigator, pendingThreadId: undefined, selectionNotice: 'That Thread could not be restored safely.' };
+      this.navigator = {
+        ...withoutNavigatorFields(this.navigator, ['pendingThreadId']),
+        selectionNotice: 'That Thread could not be restored safely.',
+      };
       this.publish();
       return rejected('unavailable');
     }
   };
 
   startNewThread = (): ConversationActionResult => {
-    if (!this.workspaceId || this.activeTurnId) {
-      return rejected(this.activeTurnId ? 'turnActive' : 'unavailable');
+    const pendingTurnStart = this.workspaceId
+      ? this.pendingTurnStartWorkspaces.has(this.workspaceId)
+      : false;
+    if (!this.workspaceId || !this.available || pendingTurnStart) {
+      return rejected(pendingTurnStart ? 'turnActive' : 'unavailable');
     }
     this.threadId = null;
-    this.phase = 'idle';
-    this.navigator = { ...this.navigator, archivedUndoThreadId: undefined };
+    this.navigator = withoutNavigatorFields(this.navigator, [
+      'archivedUndoThreadId',
+    ]);
     this.publish();
     return accepted();
   };
@@ -570,8 +704,18 @@ export class RuntimeConversationController {
     if (typeof threadId !== 'string' || (!this.threadRecords.has(threadId) && operation !== 'unarchive')) {
       return rejected('unknownThread');
     }
-    if (!this.workspaceId || this.activeTurnId || this.navigator.pendingMutation) {
-      return rejected(this.activeTurnId ? 'turnActive' : 'unavailable');
+    if (
+      !this.workspaceId ||
+      this.pendingTurnStartWorkspaces.has(this.workspaceId) ||
+      this.activeTurnsByThread.has(threadId) ||
+      this.navigator.pendingMutation
+    ) {
+      return rejected(
+        this.pendingTurnStartWorkspaces.has(this.workspaceId) ||
+          this.activeTurnsByThread.has(threadId)
+          ? 'turnActive'
+          : 'unavailable',
+      );
     }
     this.navigator = { ...this.navigator, pendingMutation: { kind: operation, threadId } };
     this.publish();
@@ -584,39 +728,41 @@ export class RuntimeConversationController {
         this.threadRecords.set(event.threadId, event.snapshot.thread);
         this.turnsByThread.set(event.threadId, [...projectThread(event.snapshot)]);
         this.threadId = event.threadId;
-        this.phase = 'ready';
       } else if (operation === 'unarchive' && event.snapshot) {
         this.threadRecords.set(threadId, event.snapshot.thread);
         this.turnsByThread.set(threadId, [...projectThread(event.snapshot)]);
         this.threadId = threadId;
-        this.phase = 'ready';
       } else if (operation === 'archive' || operation === 'delete') {
         this.threadRecords.delete(threadId);
         this.turnsByThread.delete(threadId);
+        this.unreadThreadStatuses.delete(threadId);
         if (this.threadId === threadId) {
           this.threadId = null;
-          this.phase = 'idle';
         }
       }
       this.navigator = {
-        ...this.navigator,
-        pendingMutation: undefined,
-        archivedUndoThreadId: operation === 'archive' ? threadId : undefined,
+        ...withoutNavigatorFields(this.navigator, [
+          'pendingMutation',
+          'archivedUndoThreadId',
+        ]),
+        ...(operation === 'archive'
+          ? { archivedUndoThreadId: threadId }
+          : {}),
       };
       this.refreshNavigator();
       this.publish();
       return accepted();
     } catch {
-      this.navigator = { ...this.navigator, pendingMutation: undefined, mutationNotice: 'The Thread lifecycle change was rejected.' };
+      this.navigator = {
+        ...withoutNavigatorFields(this.navigator, ['pendingMutation']),
+        mutationNotice: 'The Thread lifecycle change was rejected.',
+      };
       this.publish();
       return rejected('unavailable');
     }
   };
 
   private handleRuntimeEvent = (event: RuntimeEvent): void => {
-    if (!('workspaceId' in event) || event.workspaceId !== this.workspaceId) {
-      return;
-    }
     if (
       (!event.type.startsWith('turn.') &&
         !event.type.startsWith('agent.') &&
@@ -624,6 +770,14 @@ export class RuntimeConversationController {
         !event.type.startsWith('operation.')) ||
       !('threadId' in event) ||
       !('turnId' in event)
+    ) {
+      return;
+    }
+    const activeTurn = this.activeTurnsByThread.get(event.threadId);
+    const thread = this.threadRecords.get(event.threadId);
+    if (
+      !('workspaceId' in event) ||
+      (activeTurn?.workspaceId ?? thread?.workspaceId) !== event.workspaceId
     ) {
       return;
     }
@@ -636,7 +790,14 @@ export class RuntimeConversationController {
     switch (event.type) {
       case 'turn.started':
         turns[index] = { ...turn, model: event.model };
-        this.phase = 'inProgress';
+        if (this.activeTurnsByThread.get(event.threadId)?.turnId === event.turnId) {
+          this.activeTurnsByThread.set(event.threadId, {
+            workspaceId: event.workspaceId,
+            turnId: event.turnId,
+            phase: 'inProgress',
+          });
+          this.refreshNavigator();
+        }
         break;
       case 'turn.userMessage':
         turns[index] = {
@@ -647,12 +808,16 @@ export class RuntimeConversationController {
       case 'turn.textDelta': {
         if (event.phase === 'commentary') {
           const activities = [...(turn.activities ?? [])];
-          const activityIndex = activities.findIndex(
-            (activity) => activity.type === 'commentary' && activity.activity.id === event.itemId,
-          );
-          if (activityIndex >= 0 && activities[activityIndex]?.type === 'commentary') {
-            const current = activities[activityIndex];
-            activities[activityIndex] = { type: 'commentary', activity: { ...current.activity, text: current.activity.text + event.delta } };
+          const activityIndex = activities.length - 1;
+          const current = activities[activityIndex];
+          if (current?.type === 'commentary') {
+            activities[activityIndex] = {
+              type: 'commentary',
+              activity: {
+                ...current.activity,
+                text: current.activity.text + event.delta,
+              },
+            };
           } else {
             activities.push({ type: 'commentary', activity: { id: event.itemId, text: event.delta, status: 'inProgress' } });
           }
@@ -873,10 +1038,15 @@ export class RuntimeConversationController {
           ...(activities ? { activities } : {}),
           ...(event.error ? { error: runtimeError(event.error) } : {}),
         };
-        if (this.activeTurnId === event.turnId) {
-          this.activeTurnId = null;
-          this.phase = 'ready';
+        if (this.activeTurnsByThread.get(event.threadId)?.turnId === event.turnId) {
+          this.activeTurnsByThread.delete(event.threadId);
         }
+        if (event.threadId === this.threadId) {
+          this.unreadThreadStatuses.delete(event.threadId);
+        } else {
+          this.unreadThreadStatuses.set(event.threadId, event.status);
+        }
+        this.refreshNavigator();
         break;
       }
       default:
@@ -886,27 +1056,51 @@ export class RuntimeConversationController {
     this.publish();
   };
 
-  private applyThreadList = (threads: readonly RuntimeThreadRecord[]): void => {
-    this.threadRecords.clear();
+  private applyThreadList = (
+    workspaceId: string,
+    threads: readonly RuntimeThreadRecord[],
+  ): void => {
+    for (const [threadId, thread] of this.threadRecords) {
+      if (
+        thread.workspaceId === workspaceId &&
+        !this.activeTurnsByThread.has(threadId)
+      ) {
+        this.threadRecords.delete(threadId);
+        this.turnsByThread.delete(threadId);
+      }
+    }
     for (const thread of threads) {
       this.threadRecords.set(thread.id, thread);
     }
     this.refreshNavigator();
   };
 
-  private refreshNavigator = (): void => {
-    const threads = [...this.threadRecords.values()].sort(
-      (left, right) => right.updatedAt - left.updatedAt || right.id.localeCompare(left.id),
-    );
+  private refreshNavigator = (
+    status: ConversationThreadNavigatorSnapshot['status'] =
+      this.available ? 'ready' : this.navigator.status,
+  ): void => {
+    const threads = [...this.threadRecords.values()]
+      .filter((thread) => thread.workspaceId === this.workspaceId)
+      .sort(
+        (left, right) =>
+          right.updatedAt - left.updatedAt || right.id.localeCompare(left.id),
+      );
     this.navigator = {
-      ...this.navigator,
-      status: 'ready',
+      ...withoutNavigatorFields(this.navigator, ['unreadThreadStatuses']),
+      status,
       activeThreadIds: threads.map((thread) => thread.id),
       activeThreadTitles: Object.fromEntries(
         threads.flatMap((thread) => thread.title ? [[thread.id, thread.title]] : []),
       ),
       activeTruncated: threads.length === 200,
-      runningThreadIds: this.activeTurnId && this.threadId ? [this.threadId] : [],
+      runningThreadIds: [...this.activeTurnsByThread.keys()],
+      ...(this.unreadThreadStatuses.size > 0
+        ? {
+            unreadThreadStatuses: Object.fromEntries(
+              this.unreadThreadStatuses,
+            ),
+          }
+        : {}),
     };
   };
 

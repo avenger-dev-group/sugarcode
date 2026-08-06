@@ -31,6 +31,15 @@ const STATUS_LABELS: Record<AgentTaskViewModel['status'], string> = {
   cancelled: 'Cancelled',
 };
 
+const PROGRESS_LABELS: Record<
+  NonNullable<AgentTaskViewModel['progress']>['stage'],
+  string
+> = {
+  waitingForModel: 'Waiting for model',
+  streaming: 'Streaming response',
+  runningTool: 'Running tool',
+};
+
 const RoleIcon = ({ role }: Readonly<{ role: AgentTaskRole }>) => {
   switch (role) {
     case 'explorer':
@@ -144,6 +153,20 @@ export const AgentDetail = ({
               </li>
             ))}
           </ul>
+        </DetailSection>
+      ) : null}
+
+      {task.progress && !task.result ? (
+        <DetailSection title={`Live progress · ${PROGRESS_LABELS[task.progress.stage]}`}>
+          <div
+            className="text-[14px] font-normal leading-[21px]"
+            aria-live="polite"
+          >
+            <AgentMarkdown
+              source={task.progress.summaryMarkdown}
+              isStreaming={task.progress.stage === 'streaming'}
+            />
+          </div>
         </DetailSection>
       ) : null}
 

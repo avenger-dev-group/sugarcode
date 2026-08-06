@@ -49,6 +49,7 @@ test('CollaborationCoordinator schedules a persisted DAG, delivers amendments, w
       executeTask: async (context) => {
         executions.push(context);
         if (context.task.clientTaskKey === 'write') {
+          context.publishProgress('runningTool', 'Running `workspace_apply_patch`.');
           await workerGate;
           const amendments = context.takeAmendments();
           return {
@@ -102,6 +103,10 @@ test('CollaborationCoordinator schedules a persisted DAG, delivers amendments, w
   assert.equal(created.length, 2);
   await nextTurn();
   assert.equal(executions[0]?.task.clientTaskKey, 'write');
+  assert.equal(
+    published.find((task) => task.progress)?.progress?.summaryMarkdown,
+    'Running `workspace_apply_patch`.',
+  );
 
   await callTool(tools, 'collaboration_send', {
     clientTaskKey: 'write',

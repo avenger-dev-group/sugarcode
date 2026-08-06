@@ -15,7 +15,7 @@ const MAX_TOTAL_AMENDMENT_BYTES = 64 * 1024;
 
 export const COLLABORATION_AGENT_INSTRUCTION = `# Multi-Agent coordination
 
-For complex work that materially benefits from independent exploration, implementation, or review, use the collaboration tools to create a bounded task DAG. Dispatch only genuinely independent work. Every workspace-writing wave must include a read-only auditor depending on every writer in that wave. Use collaboration_send or collaboration_amend to deliver new information, collaboration_wait to collect results before answering, and collaboration_interrupt when a task is no longer useful. Subagents cannot create more subagents.`;
+For complex work that materially benefits from independent exploration, implementation, or review, use the collaboration tools to create a bounded task DAG. Dispatch only genuinely independent work. Every task brief must name a concrete responsibility or evidence boundary; never delegate an instruction to read every file or explore an entire repository exhaustively. Every workspace-writing wave must include a read-only auditor depending on every writer in that wave. Use collaboration_send or collaboration_amend to deliver new information, collaboration_wait to collect results before answering, and collaboration_interrupt when a task is no longer useful. Subagents cannot create more subagents.`;
 
 type AgentTaskRole = RuntimeAgentTask['role'];
 type AgentTaskAccess = RuntimeAgentTask['access'];
@@ -41,6 +41,10 @@ export type AgentTaskExecutionContext = Readonly<{
   signal: AbortSignal;
   takeAmendments: () => readonly string[];
   setWaitingApproval: (waiting: boolean) => void;
+  publishProgress: (
+    stage: 'waitingForModel' | 'streaming' | 'runningTool',
+    summaryMarkdown: string,
+  ) => void;
 }>;
 
 export type CollaborationTurn = Readonly<{
@@ -641,6 +645,20 @@ export class CollaborationCoordinator {
             return;
           }
           this.setStatus(orchestration, task, waiting ? 'waitingApproval' : 'running');
+        },
+        publishProgress: (stage, summaryMarkdown) => {
+          if (terminal(task.snapshot.status) || summaryMarkdown.length === 0) {
+            return;
+          }
+          task.snapshot = {
+            ...task.snapshot,
+            progress: {
+              stage,
+              summaryMarkdown: summaryMarkdown.slice(0, 16 * 1024),
+              updatedAt: Date.now(),
+            },
+          };
+          this.persistAndPublish(orchestration, task);
         },
       });
       if (!terminal(task.snapshot.status)) {

@@ -1,7 +1,9 @@
 import {
   createEvent,
+  EXIT_LOOP,
   InMemorySessionService,
   LlmAgent,
+  LoopAgent,
   Runner,
   type BaseLlm,
   type Event,
@@ -58,6 +60,7 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
 const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
+const MAX_TURN_LOOP_ITERATIONS = 4;
 
 type RuntimeHostOptions = Readonly<{
   postEvent: (event: RuntimeEvent) => void;
@@ -1440,13 +1443,15 @@ export class RuntimeHost {
             controller.signal,
           )
         : [];
+      const completionProtocolEnabled = Boolean(this.nativeRuntime);
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
         instruction: `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}`,
         model: this.createModel(resolved.provider),
-        tools: this.nativeRuntime
-          ? [
+        tools: [
+          ...(this.nativeRuntime
+            ? [
               ...createWorkspaceTools(
                 this.nativeRuntime,
                 command.workspaceId,
@@ -1474,24 +1479,47 @@ export class RuntimeHost {
                 this.runMcpTool(command, request),
               ),
               ...collaborationTools,
+              EXIT_LOOP,
             ]
-          : [],
+            : []),
+        ],
       });
+      const turnAgent = completionProtocolEnabled
+        ? new LoopAgent({
+            name: 'sugarcode_turn_loop',
+            description:
+              'Continue the coding Turn until the worker explicitly declares it terminal.',
+            subAgents: [agent],
+            maxIterations: MAX_TURN_LOOP_ITERATIONS,
+          })
+        : agent;
       const runner = new Runner({
         appName: APPLICATION_NAME,
-        agent,
+        agent: turnAgent,
         sessionService: this.sessions,
       });
+      let completionDeclared = !completionProtocolEnabled;
       for await (const event of runner.runAsync({
         userId: command.workspaceId,
         sessionId: command.threadId,
         newMessage: this.contentFromParts(command.content, resolved.selection),
         abortSignal: controller.signal,
       })) {
+        if (event.actions.escalate === true) {
+          completionDeclared = true;
+        }
         this.publishAgentEvent(command, event);
         if (!event.partial) {
           this.persistModelHistory(command, event);
         }
+      }
+      if (!controller.signal.aborted && !completionDeclared) {
+        throw new ProviderAdapterError({
+          kind: 'protocol',
+          retryable: true,
+          message:
+            'The model exhausted the bounded Turn loop without declaring completion.',
+        });
       }
       await this.collaboration.waitForTurn(command.turnId, controller.signal);
       this.emitCompleted(
@@ -1527,6 +1555,10 @@ export class RuntimeHost {
       userId: command.workspaceId,
       sessionId: context.task.childThreadId,
     };
+    context.publishProgress(
+      'waitingForModel',
+      'Initializing the isolated subagent session.',
+    );
     await this.sessions.createSession(sessionKey);
     const dependencyContext = context.dependencyResults
       .map(
@@ -1547,7 +1579,36 @@ export class RuntimeHost {
     }
     let streamedSummary = '';
     let completedSummary = '';
+    let lastProgressAt = 0;
+    let lastProgressStage: 'waitingForModel' | 'streaming' | 'runningTool' | null = null;
+    let lastProgressSummary = '';
     try {
+      const publishProgress = (
+        stage: 'waitingForModel' | 'streaming' | 'runningTool',
+        summaryMarkdown: string,
+        force = false,
+      ): void => {
+        const now = Date.now();
+        if (
+          !force &&
+          stage === lastProgressStage &&
+          summaryMarkdown === lastProgressSummary
+        ) {
+          return;
+        }
+        if (!force && stage === 'streaming' && now - lastProgressAt < 250) {
+          return;
+        }
+        lastProgressAt = now;
+        lastProgressStage = stage;
+        lastProgressSummary = summaryMarkdown;
+        context.publishProgress(stage, summaryMarkdown);
+      };
+      publishProgress(
+        'waitingForModel',
+        'Subagent started and is waiting for the model response.',
+        true,
+      );
       const runWithApprovalState = async <T>(operation: () => Promise<T>): Promise<T> => {
         context.setWaitingApproval(true);
         try {
@@ -1596,11 +1657,18 @@ export class RuntimeHost {
           `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n` +
           `# Subagent boundary\n\n` +
           `You are a ${context.task.role} subagent with ${context.task.access} access. ` +
-          `Complete only the assigned task. You cannot create subagents. Return a concise Markdown result for the parent Agent.`,
+          `Complete only the assigned task. Use targeted search and representative entry points instead of exhaustive whole-repository reading; if the brief is overly broad, state the bounded coverage you chose. You cannot create subagents. Return a concise Markdown result for the parent Agent.`,
         model: this.createModel(resolved.provider),
         tools,
         includeContents: 'none',
         beforeModelCallback: ({ request }) => {
+          publishProgress(
+            'waitingForModel',
+            streamedSummary || completedSummary
+              ? 'The subagent is waiting for the model to continue after its latest work.'
+              : 'Subagent started and is waiting for the model response.',
+            true,
+          );
           const amendments = context.takeAmendments();
           if (amendments.length > 0) {
             request.contents.push({
@@ -1627,14 +1695,39 @@ export class RuntimeHost {
         newMessage: { role: 'user', parts: [{ text: input }] },
         abortSignal: context.signal,
       })) {
-        const text = (event.content?.parts ?? [])
+        const parts = event.content?.parts ?? [];
+        const text = parts
           .filter((part) => !part.thought && typeof part.text === 'string')
           .map((part) => part.text ?? '')
           .join('');
         if (event.partial) {
           streamedSummary += text;
+          if (streamedSummary.length > 0) {
+            publishProgress('streaming', streamedSummary.slice(-16 * 1024));
+          }
         } else if (text.length > 0) {
           completedSummary = text;
+          publishProgress('streaming', completedSummary.slice(-16 * 1024), true);
+        }
+        const calledTools = parts.flatMap((part) =>
+          part.functionCall?.name ? [part.functionCall.name] : [],
+        );
+        if (calledTools.length > 0) {
+          publishProgress(
+            'runningTool',
+            `Running tool: ${[...new Set(calledTools)].map((name) => `\`${name}\``).join(', ')}`,
+            true,
+          );
+        }
+        const completedTools = parts.flatMap((part) =>
+          part.functionResponse?.name ? [part.functionResponse.name] : [],
+        );
+        if (completedTools.length > 0) {
+          publishProgress(
+            'waitingForModel',
+            `Tool completed; waiting for the model: ${[...new Set(completedTools)].map((name) => `\`${name}\``).join(', ')}`,
+            true,
+          );
         }
       }
       return {
@@ -1680,7 +1773,7 @@ export class RuntimeHost {
           delta: part.text,
         });
       }
-      if (part.functionCall?.name) {
+      if (part.functionCall?.name && part.functionCall.name !== 'exit_loop') {
         this.emit({
           type: 'turn.toolCall',
           requestId: command.requestId,
@@ -1693,7 +1786,10 @@ export class RuntimeHost {
           arguments: part.functionCall.args ?? {},
         });
       }
-      if (part.functionResponse?.name) {
+      if (
+        part.functionResponse?.name &&
+        part.functionResponse.name !== 'exit_loop'
+      ) {
         this.emit({
           type: 'turn.toolResult',
           requestId: command.requestId,

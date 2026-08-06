@@ -14,6 +14,12 @@ export type AgentTaskResultViewModel = Readonly<{
   durationMs: number;
 }>;
 
+export type AgentTaskProgressViewModel = Readonly<{
+  stage: 'waitingForModel' | 'streaming' | 'runningTool';
+  summaryMarkdown: string;
+  updatedAt: number;
+}>;
+
 export type AgentTaskViewModel = Readonly<{
   id: string;
   taskId: string;
@@ -26,6 +32,7 @@ export type AgentTaskViewModel = Readonly<{
   taskMarkdown: string;
   status: ConversationAgentTaskStatus;
   amendments: readonly AgentTaskAmendmentViewModel[];
+  progress?: AgentTaskProgressViewModel;
   result?: AgentTaskResultViewModel;
 }>;
 

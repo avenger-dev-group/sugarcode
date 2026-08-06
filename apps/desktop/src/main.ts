@@ -212,19 +212,7 @@ const startApplication = async (): Promise<void> => {
     connection: runtimeConnectionController,
     conversation: runtimeConversationController,
     threadRegistry,
-    getWorkspaceSwitchBlock: () => {
-      const phase = runtimeConversationController?.getSnapshot().phase;
-      if (phase === 'starting' || phase === 'inProgress' || phase === 'stopping') {
-        return 'turnActive';
-      }
-      if (
-        runtimeApprovalController?.getSnapshot().status === 'pending' ||
-        runtimeMcpApprovalController?.getSnapshot().status === 'pending'
-      ) {
-        return 'approvalPending';
-      }
-      return null;
-    },
+    getWorkspaceSwitchBlock: () => null,
     onWorkspaceOpened: (workspaceId, canonicalRoot) => {
       activeRuntimeWorkspaceId = workspaceId;
       runtimeApprovalController?.openWorkspace(workspaceId, canonicalRoot);

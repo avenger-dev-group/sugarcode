@@ -16,6 +16,11 @@ model and MCP configuration, content-addressed asset metadata, operations,
 approvals and Agent tasks. Provider SDK responses and serialized ADK events are
 not persistence formats.
 
+Agent-task payloads may carry a bounded provider-neutral progress snapshot: its
+stage, public Markdown summary and last-update time. Progress replaces the
+previous snapshot and is diagnostic/UI state, while status plus the bounded
+terminal result remain the completion fact used by the parent Agent.
+
 IDs and `(turn_id, sequence)` positions are unique. Repeating an identical
 write is idempotent; reusing an identity for different content is a conflict.
 Rust SQLite is authoritative. The ADK session and enabled MCP transports are
@@ -28,6 +33,10 @@ Operations already claimed as `executing` become failed and are never replayed.
 Pending approvals retain their identity and presentation; after validation the
 worker may present them again, but execution still requires a fresh explicit
 decision.
+
+Rust records recovery as `runtimeRestart`; Main normalizes that private storage
+reason to the public provider-neutral `incomplete` error while retaining the
+interrupted Turn in the restored transcript.
 
 Approval resolution and the transition from `proposed` to `executing` occur in
 one immediate transaction. Completion is then persisted with the same
