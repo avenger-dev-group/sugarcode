@@ -1,31 +1,6 @@
 use super::*;
 
 #[test]
-fn unfinished_process_update_detection_is_narrow_and_structural() {
-    assert!(looks_like_unfinished_process_update(
-        "好的，现在开始逐一修复。\n\n**修复 1: emoji-picker-react 类型错误**"
-    ));
-    assert!(looks_like_unfinished_process_update(
-        "I will fix these now.\n\n## Fix 1: type errors"
-    ));
-    assert!(!looks_like_unfinished_process_update(
-        "修复已完成。\n\n**验证：116 项测试全部通过。**"
-    ));
-    assert!(!looks_like_unfinished_process_update(
-        "现在开始逐一说明已经完成的修复。"
-    ));
-}
-
-#[test]
-fn premature_final_recovery_is_bounded_to_one_extra_round() {
-    let mut state = AgentLoopState::default();
-
-    assert!(!state.record_premature_final());
-    assert!(state.needs_completion_recovery());
-    assert!(state.record_premature_final());
-}
-
-#[test]
 fn completed_text_replaces_a_different_streaming_preview() {
     let response = ModelResponse {
         output: vec![sugarcode_model_provider::ModelOutputItem {
@@ -45,106 +20,6 @@ fn completed_text_replaces_a_different_streaming_preview() {
         classify_model_response(response, &preview).expect("completed response"),
         CompletedRoundOutput::Final { text, .. } if text == "authoritative completed text"
     ));
-}
-
-#[tokio::test]
-async fn unfinished_process_update_after_tool_use_continues_before_finalizing() {
-    #[derive(Debug)]
-    struct ImmediateWorkspaceRead;
-
-    impl WorkspaceReadExecutor for ImmediateWorkspaceRead {
-        fn read<'a>(
-            &'a self,
-            _arguments: &'a WorkspaceReadArguments,
-            _cancellation: &'a CancellationToken,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = WorkspaceReadOutcome> + Send + 'a>>
-        {
-            Box::pin(async {
-                WorkspaceReadOutcome::Content {
-                    content: "fixture".to_owned(),
-                    bytes: 7,
-                }
-            })
-        }
-    }
-
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let provider = SequencedProvider {
-        rounds: Mutex::new(VecDeque::from([
-            vec![
-                Ok(model_event::tool_call(ModelToolCall {
-                    id: "call_inspect".to_owned(),
-                    name: "workspace/read".to_owned(),
-                    arguments: serde_json::json!({"path": "README.md"}),
-                })),
-                Ok(model_event::COMPLETED),
-            ],
-            vec![Ok(model_event::final_response(
-                "好的，现在开始逐一修复。\n\n**修复 1: 类型错误**",
-            ))],
-            vec![Ok(model_event::final_response(
-                "修复已完成，并已通过验证。",
-            ))],
-        ])),
-        requests: requests.clone(),
-    };
-    let mut core = Core::new();
-    let CoreEventKind::ThreadStarted { thread_id } = core
-        .start_thread(CoreRequestId::new(1))
-        .expect("start thread")
-        .kind
-    else {
-        panic!("thread event");
-    };
-    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
-        core,
-        Arc::new(provider),
-        "fixture-model".to_owned(),
-        Some(Arc::new(ImmediateWorkspaceRead)),
-        None,
-    );
-    runtime
-        .start_text_turn(
-            CoreRequestId::new(2),
-            thread_id.clone(),
-            Some("Fix the project".to_owned()),
-        )
-        .expect("start turn");
-
-    let mut lifecycle = Vec::new();
-    loop {
-        let event = events.recv().await.expect("core event");
-        let completed = matches!(event.kind, CoreEventKind::TurnCompleted { .. });
-        lifecycle.push(event);
-        if completed {
-            break;
-        }
-    }
-    assert!(
-        lifecycle
-            .iter()
-            .any(|event| matches!(event.kind, CoreEventKind::AgentOutputDiscarded { .. }))
-    );
-    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
-    assert!(snapshot.turns[0].items.iter().any(|item| matches!(
-        item,
-        sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
-            if text == "修复已完成，并已通过验证。"
-    )));
-    assert!(!snapshot.turns[0].items.iter().any(|item| matches!(
-        item,
-        sugarcode_state::DurableItemSnapshot::AgentMessage { text, .. }
-            if text.contains("现在开始逐一修复")
-    )));
-
-    let requests = requests.lock().expect("requests");
-    assert_eq!(requests.len(), 3);
-    assert!(!requests[1].instructions.iter().any(|instruction| {
-        instruction.source == ModelInstructionSource::SugarCodeCompletionRecoveryV1
-    }));
-    assert!(requests[2].instructions.iter().any(|instruction| {
-        instruction.source == ModelInstructionSource::SugarCodeCompletionRecoveryV1
-    }));
 }
 
 #[test]
@@ -247,6 +122,22 @@ fn alternating_tool_failures_share_one_total_non_progress_budget() {
 }
 
 #[test]
+fn successful_mutation_resets_the_total_non_progress_budget() {
+    let mut state = AgentLoopState::default();
+
+    assert!(!state.record_tool_argument_error("invalid-edit-1".to_owned()));
+    state.record_valid_tool_arguments(&[]);
+    assert!(!state.record_tool_execution_error("invalid-patch-1".to_owned()));
+    state.reset_tool_execution_errors();
+    assert!(!state.record_tool_argument_error("invalid-edit-2".to_owned()));
+    state.record_valid_tool_arguments(&[]);
+
+    state.record_progress();
+
+    assert!(!state.record_tool_execution_error("new-invalid-patch".to_owned()));
+}
+
+#[test]
 fn only_repeated_argument_error_signatures_use_the_consecutive_limit() {
     let mut state = AgentLoopState::default();
 
@@ -254,6 +145,21 @@ fn only_repeated_argument_error_signatures_use_the_consecutive_limit() {
     assert!(!state.record_tool_argument_error("invalid-path-type".to_owned()));
     assert!(!state.record_tool_argument_error("invalid-path-type".to_owned()));
     assert!(state.record_tool_argument_error("invalid-path-type".to_owned()));
+}
+
+#[test]
+fn any_valid_tool_continuation_clears_an_argument_recovery_gate() {
+    let mut state = AgentLoopState::default();
+    state.require_tool_argument_correction();
+
+    state.record_valid_tool_arguments(&[ModelToolCall {
+        id: "call_shell_fallback".to_owned(),
+        name: "shell/exec".to_owned(),
+        arguments: serde_json::json!({ "command": "true" }),
+    }]);
+
+    assert!(!state.needs_tool_argument_recovery());
+    assert!(!state.record_tool_argument_recovery_final());
 }
 
 #[tokio::test]
@@ -555,6 +461,80 @@ async fn retryable_stream_failure_is_retried_once_before_any_model_output() {
     assert_eq!(
         provider.compatibility_retry_calls.load(Ordering::Acquire),
         1
+    );
+}
+
+#[tokio::test]
+async fn two_empty_incomplete_responses_use_the_bounded_second_recovery() {
+    #[derive(Debug)]
+    struct IncompleteRecoveryProvider {
+        stream_calls: AtomicUsize,
+        compatibility_retry_calls: AtomicUsize,
+    }
+
+    impl ModelProvider for IncompleteRecoveryProvider {
+        fn stream(&self, _request: ModelRequest) -> BoxModelFuture<'_> {
+            self.stream_calls.fetch_add(1, Ordering::AcqRel);
+            async move {
+                Ok(
+                    stream::iter(vec![Err(ModelError::new(ModelErrorKind::Incomplete, true))])
+                        .boxed(),
+                )
+            }
+            .boxed()
+        }
+
+        fn retry_after_no_output(&self, _request: ModelRequest) -> BoxModelFuture<'_> {
+            let retry = self
+                .compatibility_retry_calls
+                .fetch_add(1, Ordering::AcqRel);
+            async move {
+                if retry == 0 {
+                    Ok(
+                        stream::iter(vec![Err(ModelError::new(ModelErrorKind::Incomplete, true))])
+                            .boxed(),
+                    )
+                } else {
+                    Ok(stream::iter(vec![Ok(model_event::final_response(
+                        "Recovered after two empty completions.",
+                    ))])
+                    .boxed())
+                }
+            }
+            .boxed()
+        }
+    }
+
+    let provider = Arc::new(IncompleteRecoveryProvider {
+        stream_calls: AtomicUsize::new(0),
+        compatibility_retry_calls: AtomicUsize::new(0),
+    });
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let (mut runtime, mut events) =
+        CoreRuntime::new(core, provider.clone(), "fixture-model".to_owned());
+    runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id,
+            Some("Continue".to_owned()),
+        )
+        .expect("start turn");
+    while !matches!(
+        events.recv().await.expect("terminal").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    assert_eq!(provider.stream_calls.load(Ordering::Acquire), 1);
+    assert_eq!(
+        provider.compatibility_retry_calls.load(Ordering::Acquire),
+        2
     );
 }
 

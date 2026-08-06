@@ -50,7 +50,6 @@ use url::Url;
 use zeroize::Zeroizing;
 
 const MODEL_STREAM_CAPACITY: usize = 16;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MODEL_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_ERROR_RESPONSE_BYTES: usize = 16 * 1024;
@@ -86,12 +85,24 @@ impl OpenAiChatCompletionsProvider {
         strict_tools: ModelStrictToolsMode,
         parallel_tools: bool,
     ) -> Result<Self, ModelError> {
+        let client = crate::transport::client()?;
+        Self::new_secret_with_client_and_capabilities(
+            client,
+            endpoint,
+            token,
+            strict_tools,
+            parallel_tools,
+        )
+    }
+
+    pub(crate) fn new_secret_with_client_and_capabilities(
+        client: reqwest::Client,
+        endpoint: Url,
+        token: Option<Zeroizing<String>>,
+        strict_tools: ModelStrictToolsMode,
+        parallel_tools: bool,
+    ) -> Result<Self, ModelError> {
         validate_endpoint(&endpoint)?;
-        let client = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| ModelError::new(ModelErrorKind::Transport, true))?;
         Ok(Self {
             client,
             endpoint,
@@ -830,7 +841,12 @@ async fn complete_chat_stream(
     let mut output = Vec::new();
     match finish {
         ChatFinish::Incomplete => {
-            send_error(sender, ModelError::new(ModelErrorKind::Incomplete, false)).await;
+            let retryable = output_text.is_empty();
+            send_error(
+                sender,
+                ModelError::new(ModelErrorKind::Incomplete, retryable),
+            )
+            .await;
             return;
         }
         ChatFinish::Filtered => {
@@ -850,7 +866,11 @@ async fn complete_chat_stream(
                 .chars()
                 .any(|character| !character.is_whitespace())
             {
-                send_error(sender, ModelError::new(ModelErrorKind::Incomplete, false)).await;
+                send_error(
+                    sender,
+                    ModelError::new(ModelErrorKind::Incomplete, output_text.is_empty()),
+                )
+                .await;
                 return;
             }
             output.push(ModelOutputItem {

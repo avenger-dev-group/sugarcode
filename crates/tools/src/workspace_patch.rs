@@ -582,7 +582,11 @@ impl WorkspaceTool {
                         base_sha256: sha256(content.as_bytes()),
                     });
                 }
-                FilePatch::Update { path, chunks } => {
+                FilePatch::Update {
+                    path,
+                    move_path,
+                    chunks,
+                } => {
                     let content = match self
                         .read(&WorkspaceReadArguments { path: path.clone() }, cancellation)
                         .await
@@ -614,13 +618,31 @@ impl WorkspaceTool {
                             };
                         }
                     };
-                    operations.push(WorkspaceChangeSetOperation::Update(
-                        WorkspaceEditArguments {
-                            path,
-                            base_sha256: sha256(content.as_bytes()),
-                            edits,
-                        },
-                    ));
+                    let base_sha256 = sha256(content.as_bytes());
+                    if let Some(move_path) = move_path {
+                        let moved_content = match apply_freeform_edits(&text, &edits) {
+                            Ok(content) => content,
+                            Err(kind) => {
+                                return WorkspaceChangeSetPrepareOutcome::Error {
+                                    operation_index: Some(operation_index),
+                                    kind,
+                                };
+                            }
+                        };
+                        operations.push(WorkspaceChangeSetOperation::Create {
+                            path: move_path,
+                            content: moved_content,
+                        });
+                        operations.push(WorkspaceChangeSetOperation::Delete { path, base_sha256 });
+                    } else {
+                        operations.push(WorkspaceChangeSetOperation::Update(
+                            WorkspaceEditArguments {
+                                path,
+                                base_sha256,
+                                edits,
+                            },
+                        ));
+                    }
                 }
             }
         }
@@ -1650,44 +1672,146 @@ fn freeform_chunks_to_edits(
     let mut edits = Vec::with_capacity(chunks.len());
     for (chunk_offset, chunk) in chunks.iter().enumerate() {
         if let Some(context) = &chunk.context {
-            let Some(context_offset) = lines[cursor..].iter().position(|line| line == context)
+            let Some(context_offset) =
+                seek_freeform_sequence(lines, std::slice::from_ref(context), cursor, false)
             else {
                 return Err(freeform_mismatch_diagnostic(chunk_offset, cursor));
             };
-            cursor += context_offset + 1;
+            cursor = context_offset + 1;
         }
-        let start = if chunk.old_lines.is_empty() {
+        let mut old_lines = chunk.old_lines.as_slice();
+        let mut new_lines = chunk.new_lines.as_slice();
+        let start = if old_lines.is_empty() {
             if chunk.end_of_file {
                 lines.len()
             } else {
                 cursor
             }
         } else {
-            let Some(relative) = lines[cursor..]
-                .windows(chunk.old_lines.len())
-                .position(|candidate| candidate == chunk.old_lines.as_slice())
-            else {
+            let mut found = seek_freeform_sequence(lines, old_lines, cursor, chunk.end_of_file);
+            if found.is_none() && old_lines.last().is_some_and(String::is_empty) {
+                old_lines = &old_lines[..old_lines.len() - 1];
+                if new_lines.last().is_some_and(String::is_empty) {
+                    new_lines = &new_lines[..new_lines.len() - 1];
+                }
+                found = seek_freeform_sequence(lines, old_lines, cursor, chunk.end_of_file);
+            }
+            let Some(start) = found else {
                 return Err(freeform_mismatch_diagnostic(chunk_offset, cursor));
             };
-            let start = cursor + relative;
-            if chunk.end_of_file && start + chunk.old_lines.len() != lines.len() {
+            if chunk.end_of_file && start + old_lines.len() != lines.len() {
                 return Err(freeform_mismatch_diagnostic(chunk_offset, start));
             }
             start
         };
         let start_line = u32::try_from(start + 1)
             .map_err(|_| freeform_mismatch_diagnostic(chunk_offset, start))?;
-        let delete_line_count = u32::try_from(chunk.old_lines.len())
-            .map_err(|_| freeform_mismatch_diagnostic(chunk_offset, start))?;
+        let mut replacement_lines = new_lines.to_vec();
+        for &(old_index, new_index) in &chunk.context_pairs {
+            if old_index < old_lines.len() && new_index < replacement_lines.len() {
+                replacement_lines[new_index] = lines[start + old_index].clone();
+            }
+        }
         edits.push(WorkspaceLineEdit {
             start_line,
-            delete_line_count,
-            expected: chunk.old_lines.join("\n"),
-            replacement: chunk.new_lines.join("\n"),
+            delete_line_count: u32::try_from(old_lines.len())
+                .map_err(|_| freeform_mismatch_diagnostic(chunk_offset, start))?,
+            expected: lines[start..start + old_lines.len()].join("\n"),
+            replacement: replacement_lines.join("\n"),
         });
-        cursor = start + chunk.old_lines.len();
+        cursor = start + old_lines.len();
     }
     Ok(edits)
+}
+
+fn seek_freeform_sequence(
+    lines: &[String],
+    pattern: &[String],
+    start: usize,
+    end_of_file: bool,
+) -> Option<usize> {
+    if pattern.is_empty() {
+        return Some(start.min(lines.len()));
+    }
+    if pattern.len() > lines.len() || start > lines.len().saturating_sub(pattern.len()) {
+        return None;
+    }
+    let final_start = lines.len() - pattern.len();
+    let find = |search_start: usize, matches: &dyn Fn(&str, &str) -> bool| {
+        (search_start..=final_start).find(|candidate| {
+            lines[*candidate..*candidate + pattern.len()]
+                .iter()
+                .zip(pattern)
+                .all(|(actual, expected)| matches(actual, expected))
+        })
+    };
+    let seek = |search_start| {
+        find(search_start, &|actual, expected| actual == expected)
+            .or_else(|| {
+                find(search_start, &|actual, expected| {
+                    actual.trim_end() == expected.trim_end()
+                })
+            })
+            .or_else(|| {
+                find(search_start, &|actual, expected| {
+                    actual.trim() == expected.trim()
+                })
+            })
+            .or_else(|| {
+                find(search_start, &|actual, expected| {
+                    normalize_freeform_context(actual) == normalize_freeform_context(expected)
+                })
+            })
+    };
+    if end_of_file {
+        seek(final_start).or_else(|| seek(start))
+    } else {
+        seek(start)
+    }
+}
+
+fn normalize_freeform_context(value: &str) -> String {
+    value
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
+            | '\u{2212}' => '-',
+            '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' => '\'',
+            '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' => '"',
+            '\u{00a0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}'
+            | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200a}' | '\u{202f}' | '\u{205f}'
+            | '\u{3000}' => ' ',
+            other => other,
+        })
+        .collect()
+}
+
+fn apply_freeform_edits(
+    text: &TextFile,
+    edits: &[WorkspaceLineEdit],
+) -> Result<String, WorkspacePatchErrorKind> {
+    let mut lines = text.lines.clone();
+    for edit in edits.iter().rev() {
+        let start = usize::try_from(edit.start_line)
+            .ok()
+            .and_then(|line| line.checked_sub(1))
+            .ok_or(WorkspacePatchErrorKind::RangeOutOfBounds)?;
+        let delete_count = usize::try_from(edit.delete_line_count)
+            .map_err(|_| WorkspacePatchErrorKind::RangeOutOfBounds)?;
+        let end = start
+            .checked_add(delete_count)
+            .filter(|end| *end <= lines.len())
+            .ok_or(WorkspacePatchErrorKind::RangeOutOfBounds)?;
+        let replacement = if edit.replacement.is_empty() {
+            Vec::new()
+        } else {
+            edit.replacement.split('\n').map(str::to_owned).collect()
+        };
+        lines.splice(start..end, replacement);
+    }
+    String::from_utf8(encode_text(&lines, text.newline, text.final_newline))
+        .map_err(|_| WorkspacePatchErrorKind::InvalidEncoding)
 }
 
 fn freeform_mismatch_diagnostic(chunk_offset: usize, cursor: usize) -> WorkspaceEditDiagnostic {

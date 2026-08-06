@@ -24,7 +24,6 @@ export type ModelConfigStore = Readonly<{
   selectedConnection: ModelConnectionValue;
   notice: string | null;
   deleteCredentialOpen: boolean;
-  contextInputs: Readonly<Record<string, string>>;
   credentialValue: string;
   setSelectedProfileId: (id: string) => void;
   setDeleteCredentialOpen: (open: boolean) => void;
@@ -33,7 +32,6 @@ export type ModelConfigStore = Readonly<{
   setProviderWire: (wireApi: ModelWireApi) => void;
   updateConnection: (patch: Partial<ModelConnectionValue>) => void;
   updateSelectedProfile: (patch: Partial<ModelProfileValue>) => void;
-  setContextInput: (value: string) => void;
   addConfiguration: () => void;
   deleteConfiguration: () => void;
   save: () => void;

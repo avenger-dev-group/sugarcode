@@ -115,9 +115,6 @@ export const useStore = ({
   const [credentialValue, setCredentialValue] = useState<string>('');
   const [deleteCredentialOpen, setDeleteCredentialOpen] =
     useState<boolean>(false);
-  const [contextInputs, setContextInputs] = useState<
-    Record<string, string>
-  >({ [INITIAL_PROFILE.id]: '' });
 
   useEffect(() => {
     if (!active) {
@@ -136,14 +133,6 @@ export const useStore = ({
         setInspection(next);
         setConfig(nextConfig);
         setSelectedProfileId(nextConfig.defaultProfileId);
-        setContextInputs(
-          Object.fromEntries(
-            nextConfig.profiles.map((profile) => [
-              profile.id,
-              profile.contextWindowTokens?.toString() ?? '',
-            ]),
-          ),
-        );
         setPhase('idle');
       })
       .catch(() => {
@@ -196,13 +185,6 @@ export const useStore = ({
     }));
   };
 
-  const setContextInput = (value: string): void => {
-    setContextInputs((current) => ({
-      ...current,
-      [selectedProfile.id]: value,
-    }));
-  };
-
   const addConfiguration = (): void => {
     if (config.connections.length >= 16) {
       setNotice('A model catalog can contain at most 16 connections.');
@@ -236,7 +218,6 @@ export const useStore = ({
       connections: [...current.connections, connection],
       profiles: [...current.profiles, profile],
     }));
-    setContextInputs((current) => ({ ...current, [profileId]: '' }));
     setSelectedProfileId(profileId);
     setCredentialValue('');
     setNotice(null);
@@ -285,14 +266,6 @@ export const useStore = ({
           ? current
           : nextConfig.defaultProfileId,
       );
-      setContextInputs(
-        Object.fromEntries(
-          nextConfig.profiles.map((profile) => [
-            profile.id,
-            profile.contextWindowTokens?.toString() ?? '',
-          ]),
-        ),
-      );
     }
     setCredentialValue('');
     setNotice(noticeFor(result));
@@ -313,34 +286,12 @@ export const useStore = ({
       setNotice('Configuration name and model ID are required.');
       return;
     }
-    const invalidContext = config.profiles.find((profile) => {
-      const raw = contextInputs[profile.id]?.trim() ?? '';
-      if (raw.length === 0) {
-        return false;
-      }
-      const value = Number(raw);
-      return (
-        !Number.isInteger(value) ||
-        value < 4_096 ||
-        value > 2_097_152
-      );
-    });
-    if (invalidContext) {
-      setNotice(
-        'Context window must be blank or an integer from 4,096 to 2,097,152.',
-      );
-      return;
-    }
     const savedConfig: ModelConfigValue = {
       ...config,
       profiles: config.profiles.map((profile) => {
-        const raw = contextInputs[profile.id]?.trim() ?? '';
-        if (raw.length === 0) {
-          const withoutContext = { ...profile };
-          delete withoutContext.contextWindowTokens;
-          return withoutContext;
-        }
-        return { ...profile, contextWindowTokens: Number(raw) };
+        const withoutContext = { ...profile };
+        delete withoutContext.contextWindowTokens;
+        return withoutContext;
       }),
     };
     setPhase('saving');
@@ -397,7 +348,6 @@ export const useStore = ({
     selectedConnection,
     notice,
     deleteCredentialOpen,
-    contextInputs,
     credentialValue,
     setSelectedProfileId: (id) => {
       setSelectedProfileId(id);
@@ -443,7 +393,6 @@ export const useStore = ({
     },
     updateConnection,
     updateSelectedProfile,
-    setContextInput,
     addConfiguration,
     deleteConfiguration,
     save,

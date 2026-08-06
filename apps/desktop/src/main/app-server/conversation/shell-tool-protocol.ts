@@ -32,34 +32,50 @@ export const parseShellToolCallPayload = (
   value: Record<string, unknown>,
 ): Readonly<{ command: string; arguments: readonly string[] }> => {
   const keys = Object.keys(value).sort().join(',');
-  const usesJsonArguments =
-    keys === 'argvJson,command,cwd,description';
-  const usesDirectKind =
-    keys === 'argvJson,command,cwd,description,kind';
-  const usesLegacyArguments =
-    keys === 'arguments,command,cwd,description';
+  const usesJsonArguments = keys === 'argvJson,command,cwd,description';
+  const usesDirectKind = keys === 'argvJson,command,cwd,description,kind';
+  const usesLegacyArguments = keys === 'arguments,command,cwd,description';
+  const fullAccessKeys = new Set([
+    'command',
+    'cwd',
+    'description',
+    'kind',
+    'timeoutMs',
+  ]);
   const usesShell =
-    (keys === 'command,cwd,description,kind' ||
-      keys === 'command,cwd,description,kind,timeoutMs') &&
-    value.kind === 'shell';
+    Object.hasOwn(value, 'command') &&
+    Object.keys(value).every((key) => fullAccessKeys.has(key)) &&
+    (value.kind === undefined || value.kind === 'shell');
+  const validDescription =
+    value.description === undefined ||
+    (typeof value.description === 'string' &&
+      value.description.length > 0 &&
+      utf8Bytes(value.description) <= MAX_DESCRIPTION_BYTES &&
+      !hasControlCharacters(value.description));
+  const validCwd =
+    value.cwd === undefined ||
+    (typeof value.cwd === 'string' && value.cwd.length > 0);
+  const normalizedTimeout =
+    typeof value.timeoutMs === 'string' && /^\d+$/u.test(value.timeoutMs)
+      ? Number(value.timeoutMs)
+      : value.timeoutMs;
+  const validTimeout =
+    normalizedTimeout === undefined ||
+    (typeof normalizedTimeout === 'number' &&
+      Number.isSafeInteger(normalizedTimeout) &&
+      normalizedTimeout >= 1 &&
+      normalizedTimeout <= 600_000);
   if (
     (!usesJsonArguments && !usesDirectKind && !usesLegacyArguments && !usesShell) ||
-    typeof value.cwd !== 'string' ||
-    typeof value.description !== 'string' ||
-    value.description.length === 0 ||
-    utf8Bytes(value.description) > MAX_DESCRIPTION_BYTES ||
-    hasControlCharacters(value.description) ||
+    !validCwd ||
+    !validDescription ||
     typeof value.command !== 'string' ||
     value.command.length === 0 ||
     utf8Bytes(value.command) > MAX_COMMAND_BYTES ||
     value.command.includes('\0') ||
     (!usesShell && (!path.isAbsolute(value.command) || hasControlCharacters(value.command))) ||
     (usesDirectKind && value.kind !== 'direct') ||
-    (usesShell &&
-      value.timeoutMs !== undefined &&
-      (!Number.isSafeInteger(value.timeoutMs) ||
-        (value.timeoutMs as number) < 1 ||
-        (value.timeoutMs as number) > 600_000))
+    (usesShell && !validTimeout)
   ) {
     throw new Error('Invalid shell/exec ToolCall Item.');
   }

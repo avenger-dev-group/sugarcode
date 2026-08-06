@@ -10,8 +10,8 @@ exec -----------------> AgentSurfaceRuntime -> Core
 TUI ------------------> AgentSurfaceRuntime -> Core
 ```
 
-Core owns Thread, Turn and Item lifecycle, tool continuation, compaction and
-durable-first ordering. `agent-runtime` owns process-local composition,
+Core owns Thread, Turn and Item lifecycle, tool continuation and durable-first
+ordering. `agent-runtime` owns process-local composition,
 configuration resolution, tools, provider construction and shutdown.
 App-server, exec and TUI are presentation/transport surfaces, not alternate
 state machines.
@@ -83,10 +83,9 @@ Thread absent from every legacy candidate Workspace is treated as a completed
 permanent deletion; if no Workspace deletes it and any app-server attempt fails,
 the local entry remains intact.
 
-Restart converts unfinished Turns and unfinished compaction checkpoints to
-Interrupted. It never retries an external call, reapplies a file change or
-fabricates a ToolResult. Fork copies completed history with fresh globally
-unique IDs and no shared future state.
+Restart converts unfinished Turns to Interrupted. It never retries an external
+call, reapplies a file change or fabricates a ToolResult. Fork copies completed
+history with fresh globally unique IDs and no shared future state.
 
 Rollout files remain `rollouts/v1/<thread-uuid>.jsonl`, and their internal
 `sequence` remains the append order inside one rollout rather than an identity
@@ -118,29 +117,28 @@ batch relationships.
 
 Runtime maintains two histories during an active Turn. Wire replay history
 retains native provider continuation in its exact block, signature and tool
-order; portable history retains only visible messages, tool calls, tool results
-and checkpoints. Compaction always reads portable history, so opaque provider
-continuation is neither summarized nor persisted. Private checkpoint text is
-rollout-only; the public `contextCompaction` Item contains byte counts, hashes
-and outcome. Tool receipts retain argument/result hashes rather than raw
-content when compacted.
+order; portable history retains visible messages, tool calls and tool results.
+Opaque provider continuation is neither interpreted nor persisted as portable
+history.
 
 Failed and interrupted Turns remain conversation context at Item granularity.
 Their completed user input and balanced ToolCall/ToolResult pairs are portable
 to the next Turn, including after a wire switch or sidecar restart. Partial
-assistant text, incomplete commentary, orphaned calls, provider-private context
-and unfinished compaction checkpoints are excluded. This lets a later
+assistant text, incomplete commentary, orphaned calls and provider-private
+context are excluded. This lets a later
 “continue” retain verified work without replaying an uncertain side effect.
 
 Within a Responses Turn, exact wire replay is selected only when an opaque
 reasoning Item is present. A text/tool-only response continues from normalized
 portable ToolCalls and ToolResults, avoiding response-only fields that some
 compatible gateways reject with a server error. This selection happens before
-the next request. Opening or consuming a provider stream may be retried once for
-transport, disconnect, timeout, 429 or 5xx failure only while no semantic
-output exists. Compatible Chat performs that one retry as a non-streaming JSON
-completion against the same endpoint, model and wire; other providers retain
-their declared transport. Failures after any delta and all request/protocol
+the next request. Opening or consuming a provider stream may be retried up to
+two times for transport, disconnect, timeout, 429, 5xx or empty incomplete
+failure only while no semantic output exists. Native Chat performs those
+recoveries as non-streaming JSON completions against the same endpoint, model
+and wire. A compatible Responses provider may instead use the same gateway's
+streaming Chat delivery with the existing HTTP client when no opaque Responses
+continuation is present. Failures after any delta and all request/protocol
 failures remain terminal for the current Turn.
 
 The Turn boundary is also the model-switch boundary. The next Turn reconstructs
@@ -160,51 +158,31 @@ that is absent from a ToolCall-only completed snapshot is explicitly discarded
 and never becomes a durable Item; this lifecycle close happens before the next
 model request starts.
 
-A completed model response may also be non-durable when it is an obvious
-unfinished process update after tool use. Detection is deliberately
-conjunctive and bounded: the response must be short, contain an explicit
-future/continuation cue and end in a heading with no body. Runtime emits
-`agentOutputDiscarded`, injects the completion-recovery instruction and
-continues the same Turn once. A repeated match terminates as `incomplete`;
-there is no recovery loop, and the rejected text never enters portable or
-durable assistant history.
+Runtime does not classify final prose with language-specific keywords. A
+provider-normalized final text item is persisted and completes the Turn; tool
+calls continue it. This matches the structural event boundary used by the model
+protocol and avoids heuristic completion or blocker dictionaries.
 
 The same discard boundary applies when a provisional preview reaches its local
 rendering budget. Core stops retaining further deltas for that output reference
 but continues parsing the provider stream; only the authoritative final text,
 tool arguments or tool result may produce an output-size Turn failure.
 
-The active Agent loop compacts from `estimated_context_tokens()`, never from
-cumulative Turn usage or continuation ciphertext bytes. The latest provider
-`input_tokens` is authoritative for observed requests; when usage is absent,
-visible messages, tool definitions and tool results use a conservative
-estimator, while private replay uses its recorded response output-token cost.
+The active Agent loop sends the complete available history on every locally
+replayed request. Provider-managed continuation may send only the new tail over
+the wire, but its opaque provider state represents the preceding response chain.
+Runtime neither estimates a local context-window admission limit nor replaces
+history with a summary. A provider may still reject a request according to its
+own hard context or transport limits; that error is mapped without local
+compaction or truncation.
 
 Tool correction has both category-specific consecutive limits and one Turn-wide
 non-progress budget. Argument rejection, execution validation failure and
 approval denial share that budget even when successful reads occur between
 them, so alternating failure categories cannot keep a Turn alive indefinitely.
-In addition to the normal output allowance, the loop preserves a separate
-recovery reserve so that a tool-producing response and its results cannot leave
-the following compaction request without context space. Provider requests that
-generate checkpoints remain within the normal input budget.
-
-An active-Turn checkpoint combines a bounded semantic execution summary with a
-separately derived, bounded verbatim anchor of the active user's original input.
-The anchor is retained independently of summary quality, while the semantic
-section records verified progress, remaining work and the next action. A final
-continuation directive requires the loop to resume the same task rather than
-answer generically or claim premature completion. The combined private
-checkpoint remains capped at 32 KiB; its recorded byte count and hash cover the
-exact combined content that will be replayed.
-
-The checkpoint keeps the original task anchor and two recent complete tool
-batches. If the model-generated summary cannot be obtained, Runtime creates a
-deterministic extractive checkpoint from portable history and continues the
-same Turn. Provider `context_length_exceeded` triggers the same recovery path;
-the compacted request must be both smaller than the rejected request and below
-the recovery target. A non-shrinking or still-oversized result fails the current
-Turn as a recoverable context-window error without another compaction loop.
+An applied workspace mutation is concrete progress and resets the Turn-wide
+budget; a later independent correction therefore receives its normal retry
+allowance instead of inheriting stale failures from before successful writes.
 
 Turn usage preserves billing semantics separately from context admission. It
 stores the last request, cumulative Turn total, maximum request input and
@@ -245,24 +223,24 @@ non-progress budget still bounds alternating failures. Workspace rejection
 identifies the field path, stable reason, expected shape, value-free actual JSON
 type and suggested action. Shell rejection identifies the violated safe shape
 with a bounded expected summary and suggested action. Neither path retains the
-rejected command or argument values; the absolute-executable, JSON-only
-`argvJson` and direct sandbox requirements remain unchanged. Both preferred schemas use the
-capability-advertised absolute workspace root as cwd; runtime/replay also accept
-the earlier direct dot and validated shell-relative forms. The model-facing
-direct and Full Access shell branches are mutually exclusive, so fields rejected
-by one authority are not advertised by that authority. A bounded ASCII-decimal
-string timeout is normalized as compatible shell syntax while the durable
-ToolCall retains its original arguments. Rollout execution-
-attempt validation branches on `kind`: sandbox receipts are mandatory for
-direct and forbidden for approved Full Access shell. A valid batch resets the
-consecutive signature counter. After an `invalidArguments` result, ordinary
-final text is discarded until a valid call for every rejected tool name has
-been observed; one repeated final attempt then fails as typed
-`unsupportedToolArguments`. A valid unrelated read does not clear a pending
-write correction. Provider transport/protocol errors, tool errors, Desktop protocol
-errors and durable-state failures remain distinct; each model failure
-terminates only its Turn and does not terminate the app-server process or
-another Thread.
+rejected command or argument values. On macOS and Windows the model-facing
+shape is one complete command with optional cwd and timeout; runtime defaults
+omitted cwd to the capability-owned root before approval. The exact-executable
+`argvJson` direct form remains an internal authority and is not advertised
+beside Full Access. A bounded ASCII-decimal string timeout is normalized as
+compatible shell syntax while the durable ToolCall retains its original
+arguments. Rollout execution-attempt validation infers the authority from the
+argument shape: sandbox receipts are mandatory for direct and forbidden for
+approved Full Access shell. A valid batch resets the consecutive signature
+counter. After an `invalidArguments` result, ordinary final text is discarded
+until the next model round produces a valid advertised tool call; one repeated
+final attempt then fails as typed `unsupportedToolArguments`. Any valid tool
+batch clears that immediate correction obligation because the model may
+deliberately continue through a different tool, and a stale rejected tool name
+must not invalidate a later final response after successful work. Provider
+transport/protocol errors, tool errors, Desktop protocol errors and durable-
+state failures remain distinct; each model failure terminates only its Turn and
+does not terminate the app-server process or another Thread.
 
 Model capability flags constrain outbound requests but do not constrain what a
 compatible gateway may return. A provider-emitted multi-call batch is therefore

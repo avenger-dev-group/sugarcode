@@ -3,24 +3,15 @@ use super::MAX_WORKSPACE_PATCH_BYTES;
 use super::MAX_WORKSPACE_PATCH_HUNKS;
 use super::MAX_WORKSPACE_PATCH_LINES;
 use std::collections::BTreeSet;
+use std::path::Component;
+use std::path::Path;
 
-pub const WORKSPACE_APPLY_PATCH_LARK_GRAMMAR: &str = r#"start: begin_patch hunk+ end_patch
-begin_patch: "*** Begin Patch" LF
-end_patch: "*** End Patch" LF?
-
-hunk: add_hunk | delete_hunk | update_hunk
-add_hunk: "*** Add File: " filename LF add_line+
-delete_hunk: "*** Delete File: " filename LF
-update_hunk: "*** Update File: " filename LF change+
-
-filename: /(.+)/
-add_line: "+" /(.*)/ LF -> line
-change: (change_context | change_line)+ eof_line?
-change_context: ("@@" | "@@ " /(.+)/) LF
-change_line: ("+" | "-" | " ") /(.*)/ LF
-eof_line: "*** End of File" LF
-
-%import common.LF
+// Keep the provider grammar deliberately shallow. OpenAI custom-tool grammars
+// lex regex terminals greedily before applying parser rules, so splitting the
+// arbitrary path and line text across many terminals can drive the model out
+// of distribution. The local parser below remains the semantic authority.
+pub const WORKSPACE_APPLY_PATCH_LARK_GRAMMAR: &str = r#"start: PATCH
+PATCH: /\*\*\* Begin Patch\r?\n(?s:.+)\r?\n\*\*\* End Patch\r?\n?/
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +40,7 @@ pub(super) enum FilePatch {
     },
     Update {
         path: String,
+        move_path: Option<String>,
         chunks: Vec<UpdateChunk>,
     },
 }
@@ -66,6 +58,7 @@ pub(super) struct UpdateChunk {
     pub(super) context: Option<String>,
     pub(super) old_lines: Vec<String>,
     pub(super) new_lines: Vec<String>,
+    pub(super) context_pairs: Vec<(usize, usize)>,
     pub(super) end_of_file: bool,
 }
 
@@ -78,67 +71,103 @@ pub fn validate_workspace_freeform_patch(
 pub(super) fn parse_workspace_freeform_patch(
     patch: &str,
 ) -> Result<ParsedPatch, WorkspaceFreeformPatchErrorKind> {
-    if patch.is_empty() {
+    if patch.trim().is_empty() {
         return Err(WorkspaceFreeformPatchErrorKind::Empty);
     }
     if patch.len() > MAX_WORKSPACE_PATCH_BYTES {
         return Err(WorkspaceFreeformPatchErrorKind::TooLarge);
     }
-    let lines = patch
+    let raw_lines = patch
+        .trim()
         .split_terminator('\n')
         .map(|line| line.strip_suffix('\r').unwrap_or(line))
         .collect::<Vec<_>>();
+    let lines = unwrap_heredoc(&raw_lines);
     if lines.len() > MAX_WORKSPACE_PATCH_LINES {
         return Err(WorkspaceFreeformPatchErrorKind::TooLarge);
     }
-    if lines.first() != Some(&"*** Begin Patch") || lines.last() != Some(&"*** End Patch") {
+    if lines.first().map(|line| line.trim()) != Some("*** Begin Patch")
+        || lines.last().map(|line| line.trim()) != Some("*** End Patch")
+    {
         return Err(WorkspaceFreeformPatchErrorKind::InvalidBoundary);
     }
 
     let mut files = Vec::new();
     let mut index = 1usize;
+    if let Some(environment_id) = lines
+        .get(index)
+        .and_then(|line| line.trim().strip_prefix("*** Environment ID:"))
+    {
+        if environment_id.trim().is_empty() {
+            return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
+        }
+        index += 1;
+    }
+    let mut file_sections = 0usize;
     while index + 1 < lines.len() {
-        if files.len() >= MAX_WORKSPACE_CHANGE_SET_FILES {
+        if file_sections >= MAX_WORKSPACE_CHANGE_SET_FILES {
             return Err(WorkspaceFreeformPatchErrorKind::TooManyFiles);
         }
-        let marker = lines[index];
+        file_sections += 1;
+        let marker = lines[index].trim();
         index += 1;
         if let Some(path) = marker.strip_prefix("*** Add File: ") {
+            let path = path.trim();
             validate_marker_path(path)?;
             let mut content = String::new();
-            let mut count = 0usize;
-            while index < lines.len() - 1 && !is_file_marker(lines[index]) {
+            while index < lines.len() - 1 && !is_file_marker(lines[index].trim()) {
                 let line = lines[index]
                     .strip_prefix('+')
                     .ok_or(WorkspaceFreeformPatchErrorKind::InvalidHunk)?;
                 content.push_str(line);
                 content.push('\n');
-                count += 1;
                 index += 1;
-            }
-            if count == 0 {
-                return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
             }
             files.push(FilePatch::Add {
                 path: path.to_owned(),
                 content,
             });
         } else if let Some(path) = marker.strip_prefix("*** Delete File: ") {
+            let path = path.trim();
             validate_marker_path(path)?;
             files.push(FilePatch::Delete {
                 path: path.to_owned(),
             });
         } else if let Some(path) = marker.strip_prefix("*** Update File: ") {
+            let path = path.trim();
             validate_marker_path(path)?;
-            let start = index;
-            while index < lines.len() - 1 && !is_file_marker(lines[index]) {
+            let move_path = lines
+                .get(index)
+                .and_then(|line| line.trim_end().strip_prefix("*** Move to: ").map(str::trim));
+            if let Some(move_path) = move_path {
+                validate_marker_path(move_path)?;
                 index += 1;
             }
-            let chunks = parse_update(&lines[start..index])?;
-            files.push(FilePatch::Update {
-                path: path.to_owned(),
-                chunks,
-            });
+            let start = index;
+            while index < lines.len() - 1 && !is_file_marker(lines[index].trim_end()) {
+                index += 1;
+            }
+            let chunks = if start == index && move_path.is_some() {
+                Vec::new()
+            } else {
+                parse_update(&lines[start..index])?
+            };
+            if move_path.is_none()
+                && let Some(FilePatch::Update {
+                    path: previous_path,
+                    move_path: None,
+                    chunks: previous_chunks,
+                }) = files.last_mut()
+                && previous_path == path
+            {
+                previous_chunks.extend(chunks);
+            } else {
+                files.push(FilePatch::Update {
+                    path: path.to_owned(),
+                    move_path: move_path.map(str::to_owned),
+                    chunks,
+                });
+            }
         } else {
             return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
         }
@@ -147,10 +176,36 @@ pub(super) fn parse_workspace_freeform_patch(
         return Err(WorkspaceFreeformPatchErrorKind::Empty);
     }
     let mut paths = BTreeSet::new();
-    if files.iter().any(|file| !paths.insert(file.path())) {
-        return Err(WorkspaceFreeformPatchErrorKind::DuplicatePath);
+    for file in &files {
+        if !paths.insert(file.path()) {
+            return Err(WorkspaceFreeformPatchErrorKind::DuplicatePath);
+        }
+        if let FilePatch::Update {
+            move_path: Some(move_path),
+            ..
+        } = file
+            && !paths.insert(move_path)
+        {
+            return Err(WorkspaceFreeformPatchErrorKind::DuplicatePath);
+        }
+    }
+    if paths.len() > MAX_WORKSPACE_CHANGE_SET_FILES {
+        return Err(WorkspaceFreeformPatchErrorKind::TooManyFiles);
     }
     Ok(ParsedPatch { files })
+}
+
+fn unwrap_heredoc<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
+    match lines {
+        [first, .., last]
+            if matches!(first.trim(), "<<EOF" | "<<'EOF'" | "<<\"EOF\"")
+                && last.trim() == "EOF"
+                && lines.len() >= 4 =>
+        {
+            &lines[1..lines.len() - 1]
+        }
+        _ => lines,
+    }
 }
 
 fn parse_update(lines: &[&str]) -> Result<Vec<UpdateChunk>, WorkspaceFreeformPatchErrorKind> {
@@ -162,43 +217,60 @@ fn parse_update(lines: &[&str]) -> Result<Vec<UpdateChunk>, WorkspaceFreeformPat
         context: None,
         old_lines: Vec::new(),
         new_lines: Vec::new(),
+        context_pairs: Vec::new(),
         end_of_file: false,
     };
     let mut has_change_line = false;
     let mut changed_lines = 0usize;
-    for (offset, line) in lines.iter().enumerate() {
-        if *line == "@@" || line.starts_with("@@ ") {
+    for line in lines {
+        let marker_line = line.trim_end();
+        if current.end_of_file {
+            if line.trim().is_empty() {
+                continue;
+            }
+            return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
+        }
+        if marker_line == "@@" || marker_line.starts_with("@@ ") {
             if has_change_line {
                 finish_chunk(&mut chunks, current)?;
                 current = UpdateChunk {
                     context: None,
                     old_lines: Vec::new(),
                     new_lines: Vec::new(),
+                    context_pairs: Vec::new(),
                     end_of_file: false,
                 };
                 has_change_line = false;
             } else if current.context.is_some() {
                 return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
             }
-            current.context = line.strip_prefix("@@ ").map(str::to_owned);
+            current.context = marker_line.strip_prefix("@@ ").map(str::to_owned);
             continue;
         }
-        if *line == "*** End of File" {
-            if !has_change_line || offset + 1 != lines.len() {
+        if marker_line == "*** End of File" {
+            if !has_change_line {
                 return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
             }
             current.end_of_file = true;
             continue;
         }
-        let Some(prefix) = line.as_bytes().first().copied() else {
-            return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
-        };
-        let text = match prefix {
-            b' ' | b'-' | b'+' => &line[1..],
-            _ => return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk),
+        // Codex apply_patch treats an empty line inside an update section as
+        // unchanged blank-line context. Models commonly omit the otherwise
+        // invisible single-space prefix, so normalize that harmless spelling
+        // before classifying the line.
+        let (prefix, text) = match line.as_bytes().first().copied() {
+            None => (b' ', ""),
+            Some(prefix @ (b' ' | b'-' | b'+')) => (prefix, &line[1..]),
+            // Compatible models frequently omit the otherwise invisible diff
+            // prefix on unchanged source lines. Treat an unprefixed line as
+            // context; file, chunk and EOF markers were handled above.
+            Some(_) => (b' ', *line),
         };
         match prefix {
             b' ' => {
+                current
+                    .context_pairs
+                    .push((current.old_lines.len(), current.new_lines.len()));
                 current.old_lines.push(text.to_owned());
                 current.new_lines.push(text.to_owned());
             }
@@ -239,7 +311,14 @@ fn finish_chunk(
 }
 
 fn validate_marker_path(path: &str) -> Result<(), WorkspaceFreeformPatchErrorKind> {
-    if path.is_empty() || path.contains(['\r', '\n', '\0']) {
+    let parsed = Path::new(path);
+    if path.is_empty()
+        || path.contains(['\r', '\n', '\0'])
+        || parsed.is_absolute()
+        || !parsed
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
         Err(WorkspaceFreeformPatchErrorKind::InvalidHunk)
     } else {
         Ok(())

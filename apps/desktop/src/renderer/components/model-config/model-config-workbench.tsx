@@ -34,24 +34,10 @@ import {
 import type { ModelConfigSettingsPanelProps } from './types';
 import { PROVIDER_PRESETS, useStore } from './use-store';
 
-const contextSummary = (raw: string): string | null => {
-  const value = Number(raw);
-  if (
-    !Number.isInteger(value) ||
-    value < 4_096 ||
-    value > 2_097_152
-  ) {
-    return null;
-  }
-  return `Approximately ${Math.round(value / 1024).toLocaleString()}K tokens`;
-};
-
 export const ModelConfigSettingsPanel = (
   props: ModelConfigSettingsPanelProps,
 ) => {
   const store = useStore(props);
-  const rawContext =
-    store.contextInputs[store.selectedProfile.id] ?? '';
   const credentialStatus = store.inspection?.credentialStatuses.find(
     (credential) =>
       credential.connectionId === store.selectedConnection.id,
@@ -256,50 +242,7 @@ export const ModelConfigSettingsPanel = (
                   />
                 </label>
 
-                <label className="grid gap-1 text-sm">
-                  <span className="text-secondary">
-                    Context window · default 128K
-                  </span>
-                  <Input
-                    type="number"
-                    inputMode="numeric"
-                    min={4096}
-                    max={2097152}
-                    placeholder="Default 131072"
-                    value={rawContext}
-                    aria-invalid={
-                      rawContext.trim().length > 0 &&
-                      contextSummary(rawContext) === null
-                    }
-                    onChange={(event) =>
-                      store.setContextInput(event.target.value)
-                    }
-                  />
-                  {rawContext.trim().length > 0 ? (
-                    <span
-                      className={
-                        contextSummary(rawContext) === null
-                          ? 'text-xs text-destructive'
-                          : 'text-xs text-tertiary'
-                      }
-                    >
-                      {contextSummary(rawContext) ??
-                        'Enter an integer from 4,096 to 2,097,152.'}
-                    </span>
-                  ) : null}
-                </label>
               </div>
-
-              <label className="grid gap-1 text-sm">
-                <span className="text-secondary">
-                  Automatic compaction · Runtime managed
-                </span>
-                <Input
-                  value="Managed automatically"
-                  readOnly
-                  className="text-secondary"
-                />
-              </label>
 
               <label className="grid gap-1 text-sm">
                 <span className="text-secondary">Base URL</span>

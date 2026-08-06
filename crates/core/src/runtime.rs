@@ -52,11 +52,10 @@ use sugarcode_model_provider::ModelToolDefinition;
 use sugarcode_model_provider::ModelToolGrammar;
 use sugarcode_model_provider::ModelToolGrammarSyntax;
 use sugarcode_model_provider::ModelToolResult;
+#[cfg(test)]
 use sugarcode_model_provider::ModelToolResultContent;
 use sugarcode_model_provider::ModelUsage;
 use sugarcode_protocol::CoreAgentOutputRef;
-use sugarcode_protocol::CoreContextCompactionOutcome;
-use sugarcode_protocol::CoreContextCompactionStrategy;
 use sugarcode_protocol::CoreEvent;
 use sugarcode_protocol::CoreEventKind;
 use sugarcode_protocol::CoreFileChangeKind;
@@ -143,7 +142,6 @@ mod thread_title;
 mod tool_dispatch;
 
 use agent_loop::AgentLoopState;
-use agent_loop::looks_like_unfinished_process_update;
 use collaboration::AgentAccess;
 use collaboration::CollaborationCoordinator;
 use terminal::Terminal;
@@ -175,20 +173,14 @@ use tool_dispatch::workspace_tool_argument_guidance;
 use tool_dispatch::workspace_tool_arguments;
 use tool_dispatch::workspace_tool_definitions;
 
-use crate::agent_instructions::sugarcode_active_turn_compaction_instruction_v1;
 use crate::agent_instructions::sugarcode_base_agent_instruction_v1;
-use crate::agent_instructions::sugarcode_completion_recovery_instruction_v1;
 use crate::agent_instructions::sugarcode_model_switch_instruction_v1;
 
 pub const MAX_SERIALIZED_TOOL_RESULT_BYTES: usize = 384 * 1024;
-const MAX_ACTIVE_TURN_COMPACTION_BYTES: usize = 32 * 1024;
 const SHELL_ENVIRONMENT_POLICY: &str = "hostInheritedV1";
-const MAX_ACTIVE_TURN_COMPACTION_SUMMARY_BYTES: usize = 23 * 1024;
-const MAX_ACTIVE_TURN_TASK_ANCHOR_BYTES: usize = 7 * 1024;
 pub(crate) const MAX_AGENT_PREVIEW_BYTES: usize = 512 * 1024;
 const READ_ONLY_TOOL_CONCURRENCY: usize = 4;
-const MAX_AMBIGUOUS_CONTEXT_RECOVERIES: usize = 1;
-const MAX_EXPLICIT_CONTEXT_RECOVERIES: usize = 2;
+const MAX_PRE_OUTPUT_RETRIES: u8 = 2;
 
 const CORE_EVENT_CAPACITY: usize = 64;
 
@@ -255,24 +247,6 @@ impl ModelCapabilities {
             image_input,
             pdf_input,
         }
-    }
-
-    pub fn input_compaction_target_tokens(self) -> u32 {
-        self.context_window_tokens
-            .saturating_sub(self.output_reserve_tokens)
-    }
-
-    fn input_compaction_target_bytes(self) -> usize {
-        usize::try_from(self.input_compaction_target_tokens())
-            .unwrap_or(usize::MAX)
-            .saturating_mul(3)
-            .min(crate::context::MAX_PROVIDER_CONTEXT_BYTES)
-    }
-
-    fn active_turn_compaction_target_tokens(self) -> u32 {
-        let input_target = self.input_compaction_target_tokens();
-        let recovery_reserve = self.output_reserve_tokens.min(input_target / 2);
-        input_target.saturating_sub(recovery_reserve)
     }
 }
 
@@ -787,18 +761,6 @@ impl CoreApi for CoreRuntime {
                 content,
             });
         }
-        let instruction_context_bytes = instructions
-            .iter()
-            .map(ModelInstruction::context_bytes)
-            .try_fold(0usize, usize::checked_add)
-            .ok_or(CoreError::ContextTooLarge)?;
-        let tool_context_bytes = AgentLoopState::default()
-            .tools_for_round(self, &thread_id)
-            .into_iter()
-            .filter(|_| model_gateway.capabilities.tool_calls)
-            .map(|tool| tool.context_bytes())
-            .try_fold(0usize, usize::checked_add)
-            .ok_or(CoreError::ContextTooLarge)?;
         let model_snapshot = DurableModelSelectionSnapshot {
             profile_id: model_gateway.profile_id.to_string(),
             provider_family: model_gateway.provider_family.to_string(),
@@ -820,10 +782,10 @@ impl CoreApi for CoreRuntime {
             input,
             workspace_instructions,
             workspace_skills,
-            instruction_context_bytes,
-            tool_context_bytes,
+            0,
+            0,
             Some(model_snapshot),
-            model_gateway.capabilities.input_compaction_target_bytes(),
+            usize::MAX,
         )?;
         prepared.instructions = instructions;
         let cancellation = CancellationToken::new();
@@ -1037,14 +999,10 @@ async fn run_turn(
         return;
     }
     let mut portable_messages = messages.clone();
-    let task_anchor = active_turn_task_anchor(&portable_messages);
     let mut usage = RuntimeUsage::default();
     let mut agent_loop = AgentLoopState::default();
-    let mut compaction_ordinal = 0u64;
     let mut response_ordinal = 0u64;
-    let mut context_recovery_attempts = 0usize;
-    let mut last_successful_request_tokens = None::<u64>;
-    let mut pre_output_retry_used = false;
+    let mut pre_output_retry_attempts = 0u8;
     let mut retry_after_no_output_pending = false;
     let terminal = 'rounds: loop {
         let amendments = runtime
@@ -1060,75 +1018,13 @@ async fn run_turn(
         } else {
             Vec::new()
         };
-        let mut instructions = prepared.instructions.clone();
-        if agent_loop.needs_completion_recovery() {
-            instructions.push(sugarcode_completion_recovery_instruction_v1());
-        }
-        let initial_request = ModelRequest {
-            model: model_gateway.model.to_string(),
-            instructions: instructions.clone(),
-            messages: messages.clone(),
-            tools: tools.clone(),
-        };
-        if initial_request.estimated_context_tokens()
-            > u64::from(
-                model_gateway
-                    .capabilities
-                    .active_turn_compaction_target_tokens(),
-            )
-        {
-            compaction_ordinal = match compaction_ordinal.checked_add(1) {
-                Some(value) => value,
-                None => {
-                    break Terminal::Failed(ModelError::new(ModelErrorKind::OutputTooLarge, false));
-                }
-            };
-            match compact_active_turn(
-                &runtime,
-                &prepared,
-                &model_gateway,
-                &portable_messages,
-                &tools,
-                task_anchor.as_deref(),
-                compaction_ordinal,
-                &cancellation,
-                &mut usage,
-            )
-            .await
-            {
-                Ok(compacted) => {
-                    messages = compacted.clone();
-                    portable_messages = compacted;
-                }
-                Err(terminal) => break terminal,
-            }
-        }
+        let instructions = prepared.instructions.clone();
         let request = ModelRequest {
             model: model_gateway.model.to_string(),
             instructions: instructions.clone(),
             messages: messages.clone(),
             tools: tools.clone(),
         };
-        if request.estimated_context_tokens()
-            > u64::from(
-                model_gateway
-                    .capabilities
-                    .active_turn_compaction_target_tokens(),
-            )
-        {
-            break Terminal::Failed(ModelError::new(
-                ModelErrorKind::ContextLengthExceeded,
-                false,
-            ));
-        }
-        if request.provider_context_bytes()
-            > sugarcode_model_provider::MAX_PROVIDER_CONTEXT_BYTES_PER_TURN
-        {
-            break Terminal::Failed(ModelError::new(
-                ModelErrorKind::ProviderResponseTooLarge,
-                false,
-            ));
-        }
         let request_context_tokens = request.estimated_context_tokens();
         let retry_after_no_output = retry_after_no_output_pending;
         retry_after_no_output_pending = false;
@@ -1144,68 +1040,16 @@ async fn run_turn(
             } => result,
         };
         let mut stream = match stream {
-            Err(error) if !pre_output_retry_used && retryable_before_semantic_output(&error) => {
-                pre_output_retry_used = true;
+            Err(error)
+                if pre_output_retry_attempts < MAX_PRE_OUTPUT_RETRIES
+                    && retryable_before_semantic_output(&error) =>
+            {
+                pre_output_retry_attempts = pre_output_retry_attempts.saturating_add(1);
                 retry_after_no_output_pending = true;
                 continue 'rounds;
             }
             Ok(stream) => stream,
-            Err(error) => {
-                let should_recover = match error.kind() {
-                    ModelErrorKind::ContextLengthExceeded => {
-                        context_recovery_attempts < MAX_EXPLICIT_CONTEXT_RECOVERIES
-                    }
-                    ModelErrorKind::InvalidRequest => {
-                        context_recovery_attempts < MAX_AMBIGUOUS_CONTEXT_RECOVERIES
-                            && last_successful_request_tokens
-                                .is_some_and(|tokens| request_context_tokens > tokens)
-                    }
-                    _ => false,
-                };
-                if !should_recover {
-                    break 'rounds Terminal::Failed(error);
-                }
-                compaction_ordinal = match compaction_ordinal.checked_add(1) {
-                    Some(value) => value,
-                    None => break 'rounds Terminal::Failed(output_too_large_error()),
-                };
-                match compact_active_turn(
-                    &runtime,
-                    &prepared,
-                    &model_gateway,
-                    &portable_messages,
-                    &tools,
-                    task_anchor.as_deref(),
-                    compaction_ordinal,
-                    &cancellation,
-                    &mut usage,
-                )
-                .await
-                {
-                    Ok(compacted) => {
-                        let compacted_tokens = ModelRequest {
-                            model: model_gateway.model.to_string(),
-                            instructions: instructions.clone(),
-                            messages: compacted.clone(),
-                            tools: tools.clone(),
-                        }
-                        .estimated_context_tokens();
-                        context_recovery_attempts += 1;
-                        if compacted_tokens >= request_context_tokens
-                            && context_recovery_attempts >= MAX_EXPLICIT_CONTEXT_RECOVERIES
-                        {
-                            break 'rounds Terminal::Failed(ModelError::new(
-                                ModelErrorKind::ContextLengthExceeded,
-                                false,
-                            ));
-                        }
-                        messages = compacted.clone();
-                        portable_messages = compacted;
-                        continue 'rounds;
-                    }
-                    Err(terminal) => break 'rounds terminal,
-                }
-            }
+            Err(error) => break 'rounds Terminal::Failed(error),
         };
         response_ordinal = match response_ordinal.checked_add(1) {
             Some(value) => value,
@@ -1296,7 +1140,7 @@ async fn run_turn(
                 }
                 Some(Ok(ModelEvent::Warning { .. })) => {}
                 Some(Ok(ModelEvent::ResponseCompleted(response))) => {
-                    pre_output_retry_used = false;
+                    pre_output_retry_attempts = 0;
                     let provider_context = response.provider_context.clone();
                     let trailing = tokio::select! {
                         biased;
@@ -1309,7 +1153,6 @@ async fn run_turn(
                             serde_json::json!({"completion": "response", "trailing": "event"}),
                         ));
                     }
-                    last_successful_request_tokens = Some(request_context_tokens);
                     if !usage.record(response.usage, request_context_tokens) {
                         break 'rounds Terminal::Failed(output_too_large_error());
                     }
@@ -1365,9 +1208,7 @@ async fn run_turn(
                         CompletedRoundOutput::Final { output_index, text } => {
                             let awaiting_argument_correction =
                                 agent_loop.needs_tool_argument_recovery();
-                            let unfinished_process_update = agent_loop.has_observed_tool_calls()
-                                && looks_like_unfinished_process_update(&text);
-                            if awaiting_argument_correction || unfinished_process_update {
+                            if awaiting_argument_correction {
                                 let durable_event = CancellationToken::new();
                                 if !send_event(
                                     &runtime,
@@ -1386,18 +1227,11 @@ async fn run_turn(
                                 {
                                     break 'rounds Terminal::StateUnavailable;
                                 }
-                                let recovery_exhausted = if awaiting_argument_correction {
-                                    agent_loop.record_tool_argument_recovery_final()
-                                } else {
-                                    agent_loop.record_premature_final()
-                                };
+                                let recovery_exhausted =
+                                    agent_loop.record_tool_argument_recovery_final();
                                 if recovery_exhausted {
                                     break 'rounds Terminal::Failed(ModelError::new(
-                                        if awaiting_argument_correction {
-                                            ModelErrorKind::UnsupportedToolArguments
-                                        } else {
-                                            ModelErrorKind::Incomplete
-                                        },
+                                        ModelErrorKind::UnsupportedToolArguments,
                                         false,
                                     ));
                                 }
@@ -1527,10 +1361,12 @@ async fn run_turn(
                             break 'rounds Terminal::Failed(error);
                         }
                         Err(ToolBatchValidationFailure::Rejected(rejection)) => {
-                            for (call, kind) in tool_calls.iter().zip(&rejection.kinds) {
-                                if *kind == Some(CoreToolErrorKind::InvalidArguments) {
-                                    agent_loop.require_tool_argument_correction(&call.name);
-                                }
+                            if rejection
+                                .kinds
+                                .iter()
+                                .any(|kind| *kind == Some(CoreToolErrorKind::InvalidArguments))
+                            {
+                                agent_loop.require_tool_argument_correction();
                             }
                             let repeated = agent_loop
                                 .record_tool_argument_error(rejection.fingerprint.clone());
@@ -2461,6 +2297,8 @@ async fn run_turn(
                                 }
                                 _ => None,
                             };
+                            let workspace_write_applied =
+                                matches!(&result, CoreToolResult::Success { .. });
                             if let CoreToolResult::Error { kind } = &result
                                 && validation_rejection_action(*kind).is_some()
                             {
@@ -2516,6 +2354,9 @@ async fn run_turn(
                                 }
                             } else {
                                 agent_loop.reset_tool_execution_errors();
+                                if workspace_write_applied {
+                                    agent_loop.record_progress();
+                                }
                             }
                             if interrupted_after_commit {
                                 break 'rounds Terminal::Interrupted;
@@ -2691,17 +2532,19 @@ async fn run_turn(
                 }
                 Some(Err(error))
                     if preview_text.is_empty()
-                        && !pre_output_retry_used
+                        && pre_output_retry_attempts < MAX_PRE_OUTPUT_RETRIES
                         && retryable_before_semantic_output(&error) =>
                 {
-                    pre_output_retry_used = true;
+                    pre_output_retry_attempts = pre_output_retry_attempts.saturating_add(1);
                     retry_after_no_output_pending = true;
                     continue 'rounds;
                 }
                 Some(Err(error)) => break 'rounds Terminal::Failed(error),
                 None => {
-                    if preview_text.is_empty() && !pre_output_retry_used {
-                        pre_output_retry_used = true;
+                    if preview_text.is_empty()
+                        && pre_output_retry_attempts < MAX_PRE_OUTPUT_RETRIES
+                    {
+                        pre_output_retry_attempts = pre_output_retry_attempts.saturating_add(1);
                         retry_after_no_output_pending = true;
                         continue 'rounds;
                     }
@@ -3452,739 +3295,12 @@ fn record_executed_tool_call(
     true
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn compact_active_turn(
-    runtime: &CoreRuntime,
-    prepared: &crate::PreparedTextTurn,
-    model_gateway: &ModelGateway,
-    messages: &[ModelMessage],
-    tools: &[ModelToolDefinition],
-    task_anchor: Option<&str>,
-    ordinal: u64,
-    cancellation: &CancellationToken,
-    usage: &mut RuntimeUsage,
-) -> Result<Vec<ModelMessage>, Terminal> {
-    let instruction_tokens = prepared
-        .instructions
-        .iter()
-        .map(ModelInstruction::estimated_context_tokens)
-        .fold(0u64, u64::saturating_add);
-    let tool_tokens = tools
-        .iter()
-        .map(ModelToolDefinition::estimated_context_tokens)
-        .fold(0u64, u64::saturating_add);
-    let checkpoint_tokens =
-        u64::try_from(MAX_ACTIVE_TURN_COMPACTION_BYTES.saturating_add(2) / 3).unwrap_or(u64::MAX);
-    let fixed_post_tokens = instruction_tokens
-        .saturating_add(tool_tokens)
-        .saturating_add(checkpoint_tokens);
-    let active_target_tokens = u64::from(
-        model_gateway
-            .capabilities
-            .active_turn_compaction_target_tokens(),
-    );
-    if fixed_post_tokens > active_target_tokens {
-        return Err(Terminal::Failed(ModelError::new(
-            ModelErrorKind::ContextLengthExceeded,
-            false,
-        )));
-    }
-
-    let mut tail_start = recent_complete_tool_pair_start(messages, 2);
-    while tail_start < messages.len() {
-        let tail_tokens = messages[tail_start..]
-            .iter()
-            .map(ModelMessage::estimated_context_tokens)
-            .fold(0u64, u64::saturating_add);
-        if fixed_post_tokens.saturating_add(tail_tokens) <= active_target_tokens {
-            break;
-        }
-        tail_start = drop_oldest_complete_tool_pair(messages, tail_start);
-    }
-    if tail_start == 0 {
-        return Err(Terminal::Failed(ModelError::new(
-            ModelErrorKind::ContextLengthExceeded,
-            false,
-        )));
-    }
-
-    let source = &messages[..tail_start];
-    let source_bytes = source
-        .iter()
-        .map(ModelMessage::context_bytes)
-        .try_fold(0usize, usize::checked_add)
-        .ok_or_else(output_too_large)?;
-    let source_sha256 = model_messages_sha256(source);
-    let pre_context_bytes = ModelRequest {
-        model: model_gateway.model.to_string(),
-        instructions: prepared.instructions.clone(),
-        messages: messages.to_vec(),
-        tools: tools.to_vec(),
-    }
-    .context_bytes();
-    let started = runtime
-        .lock_core()
-        .and_then(|mut core| {
-            core.append_completed_item(
-                &prepared.thread_id,
-                &prepared.turn_id,
-                CoreItemKind::ContextCompaction {
-                    strategy: CoreContextCompactionStrategy::ModelGeneratedActiveTurnV1,
-                    ordinal,
-                    pre_context_bytes: pre_context_bytes as u64,
-                    source_messages: source.len() as u64,
-                    source_bytes: source_bytes as u64,
-                    source_sha256: source_sha256.clone(),
-                    outcome: None,
-                },
-            )
-        })
-        .map_err(|_| Terminal::StateUnavailable)?;
-    if !send_event(
-        runtime,
-        &CancellationToken::new(),
-        prepared.request_id,
-        CoreEventKind::ItemStarted {
-            thread_id: prepared.thread_id.clone(),
-            turn_id: prepared.turn_id.clone(),
-            item: started.clone(),
-        },
-    )
-    .await
-    {
-        return Err(Terminal::StateUnavailable);
-    }
-
-    let mut compaction_instructions = prepared.instructions.clone();
-    compaction_instructions.push(sugarcode_active_turn_compaction_instruction_v1());
-    let compaction_request = ModelRequest {
-        model: model_gateway.model.to_string(),
-        instructions: compaction_instructions,
-        messages: source.to_vec(),
-        tools: Vec::new(),
-    };
-    let compaction_request_tokens = compaction_request.estimated_context_tokens();
-    if compaction_request.estimated_context_tokens()
-        > u64::from(model_gateway.capabilities.input_compaction_target_tokens())
-    {
-        complete_compaction_item(
-            runtime,
-            prepared,
-            &started,
-            CoreContextCompactionOutcome::Failed {
-                kind: "outputTooLarge".to_string(),
-            },
-            None,
-        )
-        .await?;
-        return Err(Terminal::Failed(ModelError::new(
-            ModelErrorKind::ContextLengthExceeded,
-            false,
-        )));
-    }
-
-    let stream = tokio::select! {
-        biased;
-        _ = cancellation.cancelled() => {
-            complete_compaction_item(
-                runtime,
-                prepared,
-                &started,
-                CoreContextCompactionOutcome::Interrupted,
-                None,
-            ).await?;
-            return Err(Terminal::Interrupted);
-        }
-        result = model_gateway.provider.stream(compaction_request) => result,
-    };
-    let mut used_deterministic_fallback = false;
-    let mut stream = match stream {
-        Ok(stream) => stream,
-        Err(_) => {
-            used_deterministic_fallback = true;
-            futures_util::stream::empty::<Result<ModelEvent, ModelError>>().boxed()
-        }
-    };
-    let mut preview_text = BTreeMap::<u32, String>::new();
-    let summary = if used_deterministic_fallback {
-        deterministic_active_turn_summary(source)
-    } else {
-        loop {
-            let event = tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => {
-                    complete_compaction_item(
-                        runtime,
-                        prepared,
-                        &started,
-                        CoreContextCompactionOutcome::Interrupted,
-                        None,
-                    ).await?;
-                    return Err(Terminal::Interrupted);
-                }
-                event = stream.next() => event,
-            };
-            match event {
-                Some(Ok(ModelEvent::OutputTextDelta {
-                    output_index,
-                    delta,
-                })) => {
-                    let preview = preview_text.entry(output_index).or_default();
-                    if preview
-                        .len()
-                        .checked_add(delta.len())
-                        .is_none_or(|bytes| bytes > MAX_ACTIVE_TURN_COMPACTION_SUMMARY_BYTES)
-                    {
-                        complete_compaction_item(
-                            runtime,
-                            prepared,
-                            &started,
-                            CoreContextCompactionOutcome::Failed {
-                                kind: "outputTooLarge".to_string(),
-                            },
-                            None,
-                        )
-                        .await?;
-                        return Err(output_too_large());
-                    }
-                    preview.push_str(&delta);
-                }
-                Some(Ok(ModelEvent::Warning {
-                    code: "providerManagedContinuationFallback",
-                })) => {
-                    if !send_event(
-                        runtime,
-                        cancellation,
-                        prepared.request_id,
-                        CoreEventKind::Warning {
-                            thread_id: prepared.thread_id.clone(),
-                            turn_id: prepared.turn_id.clone(),
-                            code: sugarcode_protocol::CoreWarningCode::ProviderManagedContinuationFallback,
-                        },
-                    )
-                    .await
-                    {
-                        return Err(Terminal::Interrupted);
-                    }
-                }
-                Some(Ok(ModelEvent::Warning { .. })) => {}
-                Some(Ok(ModelEvent::ResponseCompleted(response))) => {
-                    let trailing = tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => {
-                            complete_compaction_item(
-                                runtime,
-                                prepared,
-                                &started,
-                                CoreContextCompactionOutcome::Interrupted,
-                                None,
-                            ).await?;
-                            return Err(Terminal::Interrupted);
-                        }
-                        trailing = stream.next() => trailing,
-                    };
-                    if trailing.is_some() {
-                        let error = runtime_protocol_error(
-                            ModelProtocolCode::TerminalLifecycleViolation,
-                            serde_json::json!({"completion": "compaction", "trailing": "event"}),
-                        );
-                        complete_compaction_item(
-                            runtime,
-                            prepared,
-                            &started,
-                            CoreContextCompactionOutcome::Failed {
-                                kind: "protocol".to_string(),
-                            },
-                            None,
-                        )
-                        .await?;
-                        return Err(Terminal::Failed(error));
-                    }
-                    if !usage.record(response.usage, compaction_request_tokens) {
-                        complete_compaction_item(
-                            runtime,
-                            prepared,
-                            &started,
-                            CoreContextCompactionOutcome::Failed {
-                                kind: "outputTooLarge".to_string(),
-                            },
-                            None,
-                        )
-                        .await?;
-                        return Err(output_too_large());
-                    }
-                    if let Some(usage_snapshot) =
-                        usage.core_snapshot(model_gateway.capabilities.context_window_tokens)
-                        && !send_event(
-                            runtime,
-                            cancellation,
-                            prepared.request_id,
-                            CoreEventKind::TokenUsageUpdated {
-                                thread_id: prepared.thread_id.clone(),
-                                turn_id: prepared.turn_id.clone(),
-                                usage: usage_snapshot,
-                            },
-                        )
-                        .await
-                    {
-                        return Err(Terminal::Interrupted);
-                    }
-                    match classify_model_response(response, &preview_text) {
-                        Ok(CompletedRoundOutput::Final { text, .. })
-                            if text.len() <= MAX_ACTIVE_TURN_COMPACTION_SUMMARY_BYTES =>
-                        {
-                            break text;
-                        }
-                        Ok(CompletedRoundOutput::Final { .. }) => {
-                            complete_compaction_item(
-                                runtime,
-                                prepared,
-                                &started,
-                                CoreContextCompactionOutcome::Failed {
-                                    kind: "outputTooLarge".to_string(),
-                                },
-                                None,
-                            )
-                            .await?;
-                            return Err(output_too_large());
-                        }
-                        Ok(CompletedRoundOutput::ToolUse { .. }) => {
-                            let error = ModelError::new(ModelErrorKind::UnsupportedOutput, false);
-                            complete_compaction_item(
-                                runtime,
-                                prepared,
-                                &started,
-                                CoreContextCompactionOutcome::Failed {
-                                    kind: "unsupportedOutput".to_string(),
-                                },
-                                None,
-                            )
-                            .await?;
-                            return Err(Terminal::Failed(error));
-                        }
-                        Err(error) => {
-                            complete_compaction_item(
-                                runtime,
-                                prepared,
-                                &started,
-                                CoreContextCompactionOutcome::Failed {
-                                    kind: model_error_kind_name(error.kind()).to_string(),
-                                },
-                                None,
-                            )
-                            .await?;
-                            return Err(Terminal::Failed(error));
-                        }
-                    }
-                }
-                Some(Err(error)) => {
-                    complete_compaction_item(
-                        runtime,
-                        prepared,
-                        &started,
-                        CoreContextCompactionOutcome::Failed {
-                            kind: model_error_kind_name(error.kind()).to_string(),
-                        },
-                        None,
-                    )
-                    .await?;
-                    return Err(Terminal::Failed(error));
-                }
-                None => {
-                    complete_compaction_item(
-                        runtime,
-                        prepared,
-                        &started,
-                        CoreContextCompactionOutcome::Failed {
-                            kind: "disconnected".to_string(),
-                        },
-                        None,
-                    )
-                    .await?;
-                    return Err(Terminal::Failed(ModelError::new(
-                        ModelErrorKind::Disconnected,
-                        true,
-                    )));
-                }
-            }
-        }
-    };
-
-    let checkpoint = active_turn_checkpoint(&summary, task_anchor);
-    if checkpoint.len() > MAX_ACTIVE_TURN_COMPACTION_BYTES {
-        complete_compaction_item(
-            runtime,
-            prepared,
-            &started,
-            CoreContextCompactionOutcome::Failed {
-                kind: "outputTooLarge".to_string(),
-            },
-            None,
-        )
-        .await?;
-        return Err(output_too_large());
-    }
-    let summary_sha256 = sha256(checkpoint.as_bytes());
-    let mut compacted = Vec::with_capacity(1 + messages.len() - tail_start);
-    compacted.push(ModelMessage::context_compaction(checkpoint.clone()));
-    compacted.extend_from_slice(&messages[tail_start..]);
-    let post_request = ModelRequest {
-        model: model_gateway.model.to_string(),
-        instructions: prepared.instructions.clone(),
-        messages: compacted.clone(),
-        tools: tools.to_vec(),
-    };
-    let post_context_bytes = post_request.context_bytes();
-    if post_context_bytes >= pre_context_bytes
-        || post_request.estimated_context_tokens() > active_target_tokens
-    {
-        complete_compaction_item(
-            runtime,
-            prepared,
-            &started,
-            CoreContextCompactionOutcome::Failed {
-                kind: "outputTooLarge".to_string(),
-            },
-            None,
-        )
-        .await?;
-        return Err(Terminal::Failed(ModelError::new(
-            ModelErrorKind::ContextLengthExceeded,
-            false,
-        )));
-    }
-    complete_compaction_item(
-        runtime,
-        prepared,
-        &started,
-        CoreContextCompactionOutcome::Completed {
-            post_context_bytes: post_context_bytes as u64,
-            summary_bytes: checkpoint.len() as u64,
-            summary_sha256,
-        },
-        Some(checkpoint),
-    )
-    .await?;
-    Ok(compacted)
-}
-
-fn active_turn_task_anchor(messages: &[ModelMessage]) -> Option<String> {
-    let message = messages.iter().rev().find(|message| {
-        message.role == ModelRole::User
-            && message.content.iter().any(|part| {
-                matches!(
-                    part,
-                    ModelContentPart::Text { .. }
-                        | ModelContentPart::ImageAsset(_)
-                        | ModelContentPart::PdfDocument(_)
-                )
-            })
-    })?;
-    let mut content = String::from(
-        "# Active user task anchor\n\nThis is the original user input for the active Turn. Preserve its intent across compaction.\n\n",
-    );
-    for part in &message.content {
-        match part {
-            ModelContentPart::Text { text, .. } => content.push_str(text),
-            ModelContentPart::ImageAsset(asset) => content.push_str(&format!(
-                "\n[Image attachment: {}; media type: {}; asset: {}]\n",
-                asset.original_name, asset.media_type, asset.asset_id
-            )),
-            ModelContentPart::PdfDocument(asset) => content.push_str(&format!(
-                "\n[PDF attachment: {}; asset: {}]\n",
-                asset.original_name, asset.asset_id
-            )),
-            ModelContentPart::ContextCompaction { .. }
-            | ModelContentPart::ToolCall { .. }
-            | ModelContentPart::ToolResult { .. }
-            | ModelContentPart::ProviderContext(_) => {}
-        }
-    }
-    Some(truncate_utf8_middle(
-        &content,
-        MAX_ACTIVE_TURN_TASK_ANCHOR_BYTES,
-    ))
-}
-
-fn deterministic_active_turn_summary(messages: &[ModelMessage]) -> String {
-    const LIMIT: usize = MAX_ACTIVE_TURN_COMPACTION_SUMMARY_BYTES;
-    let mut summary = String::from(
-        "# Deterministic execution checkpoint\n\nThe model-generated summary was unavailable. Preserve the verified transcript facts below and continue the same task.\n",
-    );
-    for message in messages.iter().rev() {
-        let role = match message.role {
-            ModelRole::User => "User/tool",
-            ModelRole::Assistant => "Agent",
-        };
-        for part in message.content.iter().rev() {
-            let line = match part {
-                ModelContentPart::Text { text, .. } => format!("\n- {role} text: {text}"),
-                ModelContentPart::ContextCompaction { content } => {
-                    format!("\n- Prior checkpoint: {content}")
-                }
-                ModelContentPart::ToolCall { call } => format!(
-                    "\n- Tool called: {} (arguments sha256 {})",
-                    call.name,
-                    sha256(&serde_json::to_vec(&call.arguments).unwrap_or_default())
-                ),
-                ModelContentPart::ToolResult { result } => {
-                    let content = match &result.content {
-                        ModelToolResultContent::Json(value) => value.to_string(),
-                        ModelToolResultContent::Text(text) => text.clone(),
-                        ModelToolResultContent::Error { kind, message } => {
-                            format!("{kind}: {message}")
-                        }
-                    };
-                    format!("\n- Tool result for {}: {content}", result.call_id)
-                }
-                ModelContentPart::ImageAsset(asset) | ModelContentPart::PdfDocument(asset) => {
-                    format!(
-                        "\n- Preserved attachment: {} ({})",
-                        asset.original_name, asset.sha256
-                    )
-                }
-                ModelContentPart::ProviderContext(_) => continue,
-            };
-            if summary.len().saturating_add(line.len()) > LIMIT {
-                let remaining = LIMIT.saturating_sub(summary.len());
-                if remaining > 32 {
-                    let mut end = remaining.min(line.len());
-                    while end > 0 && !line.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    summary.push_str(&line[..end]);
-                }
-                return summary;
-            }
-            summary.push_str(&line);
-        }
-    }
-    summary
-}
-
-fn active_turn_checkpoint(summary: &str, task_anchor: Option<&str>) -> String {
-    let mut checkpoint = String::from("SugarCode active Turn checkpoint v2\n\n");
-    if let Some(task_anchor) = task_anchor {
-        checkpoint.push_str(task_anchor);
-        checkpoint.push_str("\n\n");
-    }
-    checkpoint.push_str("# Verified execution state and remaining work\n\n");
-    checkpoint.push_str(summary);
-    checkpoint.push_str(
-        "\n\n# Continuation directive\n\nContinue executing the same user task from this state. Do not replace it with a generic answer, restart completed work, or claim completion before the remaining work and verification are done.",
-    );
-    checkpoint
-}
-
-fn truncate_utf8_middle(value: &str, maximum_bytes: usize) -> String {
-    const OMISSION: &str = "\n…[middle omitted by context compaction]…\n";
-    if value.len() <= maximum_bytes {
-        return value.to_string();
-    }
-    let available = maximum_bytes.saturating_sub(OMISSION.len());
-    let mut prefix_end = available.saturating_mul(3) / 4;
-    while prefix_end > 0 && !value.is_char_boundary(prefix_end) {
-        prefix_end -= 1;
-    }
-    let suffix_bytes = available.saturating_sub(prefix_end);
-    let mut suffix_start = value.len().saturating_sub(suffix_bytes);
-    while suffix_start < value.len() && !value.is_char_boundary(suffix_start) {
-        suffix_start += 1;
-    }
-    format!(
-        "{}{}{}",
-        &value[..prefix_end],
-        OMISSION,
-        &value[suffix_start..]
-    )
-}
-
-async fn complete_compaction_item(
-    runtime: &CoreRuntime,
-    prepared: &crate::PreparedTextTurn,
-    started: &CoreItemSnapshot,
-    outcome: CoreContextCompactionOutcome,
-    summary: Option<String>,
-) -> Result<(), Terminal> {
-    let completed = runtime
-        .lock_core()
-        .and_then(|mut core| {
-            core.complete_context_compaction_item(
-                &prepared.thread_id,
-                &prepared.turn_id,
-                &started.id,
-                outcome,
-                summary,
-            )
-        })
-        .map_err(|_| Terminal::StateUnavailable)?;
-    if !send_event(
-        runtime,
-        &CancellationToken::new(),
-        prepared.request_id,
-        CoreEventKind::ItemCompleted {
-            thread_id: prepared.thread_id.clone(),
-            turn_id: prepared.turn_id.clone(),
-            item: completed,
-        },
-    )
-    .await
-    {
-        return Err(Terminal::StateUnavailable);
-    }
-    Ok(())
-}
-
-fn recent_complete_tool_pair_start(messages: &[ModelMessage], maximum_pairs: usize) -> usize {
-    let mut index = messages.len();
-    let mut pairs = 0usize;
-    while pairs < maximum_pairs && index >= 2 {
-        let Some(calls) = message_tool_calls(&messages[index - 2]) else {
-            break;
-        };
-        let Some(results) = message_tool_results(&messages[index - 1]) else {
-            break;
-        };
-        if calls.len() != results.len()
-            || calls
-                .iter()
-                .zip(results)
-                .any(|(call, result)| call.id != result.call_id)
-        {
-            break;
-        }
-        index -= 2;
-        pairs += 1;
-    }
-    index
-}
-
-fn drop_oldest_complete_tool_pair(messages: &[ModelMessage], tail_start: usize) -> usize {
-    if tail_start + 1 < messages.len()
-        && message_tool_calls(&messages[tail_start]).is_some()
-        && message_tool_results(&messages[tail_start + 1]).is_some()
-    {
-        tail_start + 2
-    } else {
-        messages.len()
-    }
-}
-
-fn model_messages_sha256(messages: &[ModelMessage]) -> String {
-    let mut hasher = Sha256::new();
-    for message in messages {
-        hasher.update(match message.role {
-            ModelRole::User => b"user".as_slice(),
-            ModelRole::Assistant => b"assistant".as_slice(),
-        });
-        for part in &message.content {
-            match part {
-                ModelContentPart::Text { phase, text } => {
-                    hasher.update(match phase {
-                        ModelTextPhase::Final => b"final".as_slice(),
-                        ModelTextPhase::Commentary => b"commentary".as_slice(),
-                    });
-                    hasher.update(text.as_bytes());
-                }
-                ModelContentPart::ContextCompaction { content } => {
-                    hasher.update(b"contextCompaction");
-                    hasher.update(content.as_bytes());
-                }
-                ModelContentPart::ToolCall { call } => {
-                    hasher.update(b"toolCall");
-                    hasher.update(call.id.as_bytes());
-                    hasher.update(call.name.as_bytes());
-                    if let Ok(arguments) = serde_json::to_vec(&call.arguments) {
-                        hasher.update(arguments);
-                    }
-                }
-                ModelContentPart::ToolResult { result } => {
-                    hasher.update(b"toolResult");
-                    hasher.update(result.call_id.as_bytes());
-                    match &result.content {
-                        ModelToolResultContent::Json(value) => {
-                            if let Ok(bytes) = serde_json::to_vec(value) {
-                                hasher.update(bytes);
-                            }
-                        }
-                        ModelToolResultContent::Text(text) => hasher.update(text.as_bytes()),
-                        ModelToolResultContent::Error { kind, message } => {
-                            hasher.update(kind.as_bytes());
-                            hasher.update(message.as_bytes());
-                        }
-                    }
-                }
-                ModelContentPart::ImageAsset(asset) | ModelContentPart::PdfDocument(asset) => {
-                    hasher.update(asset.asset_id.as_bytes());
-                    hasher.update(asset.sha256.as_bytes());
-                }
-                ModelContentPart::ProviderContext(context) => {
-                    hasher.update(b"providerContext");
-                    hasher.update(context.payload_sha256());
-                }
-            }
-            hasher.update(b"\0");
-        }
-        hasher.update(b"\n");
-    }
-    format!("{:x}", hasher.finalize())
-}
-
-fn message_tool_calls(message: &ModelMessage) -> Option<Vec<&ModelToolCall>> {
-    let calls = message
-        .content
-        .iter()
-        .map(|part| match part {
-            ModelContentPart::ToolCall { call } => Some(call),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>()?;
-    (!calls.is_empty() && message.role == ModelRole::Assistant).then_some(calls)
-}
-
-fn message_tool_results(message: &ModelMessage) -> Option<Vec<&ModelToolResult>> {
-    let results = message
-        .content
-        .iter()
-        .map(|part| match part {
-            ModelContentPart::ToolResult { result } => Some(result),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>()?;
-    (!results.is_empty() && message.role == ModelRole::User).then_some(results)
-}
-
 fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn output_too_large() -> Terminal {
-    Terminal::Failed(output_too_large_error())
-}
-
 fn output_too_large_error() -> ModelError {
     ModelError::new(ModelErrorKind::OutputTooLarge, false)
-}
-
-fn model_error_kind_name(kind: ModelErrorKind) -> &'static str {
-    match kind {
-        ModelErrorKind::Authentication => "authentication",
-        ModelErrorKind::ContextLengthExceeded => "contextLengthExceeded",
-        ModelErrorKind::InvalidRequest => "invalidRequest",
-        ModelErrorKind::RateLimited => "rateLimited",
-        ModelErrorKind::Timeout => "timeout",
-        ModelErrorKind::Transport => "transport",
-        ModelErrorKind::Disconnected => "disconnected",
-        ModelErrorKind::Server => "server",
-        ModelErrorKind::Protocol => "protocol",
-        ModelErrorKind::Incomplete => "incomplete",
-        ModelErrorKind::Filtered => "filtered",
-        ModelErrorKind::UnsupportedOutput => "unsupportedOutput",
-        ModelErrorKind::UnsupportedToolArguments => "unsupportedToolArguments",
-        ModelErrorKind::ProviderRequestTooLarge => "providerRequestTooLarge",
-        ModelErrorKind::ProviderResponseTooLarge => "providerResponseTooLarge",
-        ModelErrorKind::OutputTooLarge => "outputTooLarge",
-    }
 }
 
 fn retryable_before_semantic_output(error: &ModelError) -> bool {
@@ -4196,6 +3312,7 @@ fn retryable_before_semantic_output(error: &ModelError) -> bool {
                 | ModelErrorKind::Timeout
                 | ModelErrorKind::RateLimited
                 | ModelErrorKind::Server
+                | ModelErrorKind::Incomplete
         )
 }
 

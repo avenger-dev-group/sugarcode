@@ -137,6 +137,74 @@ async fn compatible_list_boolean_does_not_reject_a_read_only_batch() {
     )));
 }
 
+#[tokio::test]
+async fn valid_alternative_tool_clears_a_previous_argument_recovery_gate() {
+    let directory = tempfile::tempdir().expect("workspace");
+    std::fs::write(directory.path().join("package.json"), "fixture package")
+        .expect("package fixture");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = SequencedProvider {
+        rounds: Mutex::new(VecDeque::from([
+            vec![Ok(model_event::tool_call(ModelToolCall {
+                id: "call_invalid_read".to_string(),
+                name: "workspace/read".to_string(),
+                arguments: serde_json::json!({}),
+            }))],
+            vec![Ok(model_event::tool_call(ModelToolCall {
+                id: "call_valid_list".to_string(),
+                name: "workspace/list".to_string(),
+                arguments: serde_json::json!({"path": ".", "recursive": false}),
+            }))],
+            vec![Ok(model_event::final_response("Review completed."))],
+        ])),
+        requests: Arc::clone(&requests),
+    };
+    let mut core = Core::new();
+    let CoreEventKind::ThreadStarted { thread_id } = core
+        .start_thread(CoreRequestId::new(1))
+        .expect("start thread")
+        .kind
+    else {
+        panic!("thread event");
+    };
+    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
+    let workspace_read: Arc<dyn WorkspaceReadExecutor> = tool.clone();
+    let workspace_list: Arc<dyn WorkspaceListExecutor> = tool;
+    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
+        core,
+        Arc::new(provider),
+        "fixture-model".to_string(),
+        Some(workspace_read),
+        Some(workspace_list),
+    );
+    let TurnStartOutcome::Accepted { turn_id } = runtime
+        .start_text_turn(
+            CoreRequestId::new(2),
+            thread_id.clone(),
+            Some("Review the project".to_string()),
+        )
+        .expect("start turn")
+    else {
+        panic!("asynchronous turn");
+    };
+
+    while !matches!(
+        events.recv().await.expect("terminal event").kind,
+        CoreEventKind::TurnCompleted { .. }
+    ) {}
+
+    assert_eq!(requests.lock().expect("requests").len(), 3);
+    let turn = runtime
+        .resume_thread(&thread_id)
+        .expect("resume")
+        .turns
+        .into_iter()
+        .find(|turn| turn.id == turn_id)
+        .expect("turn");
+    assert_eq!(turn.status, DurableTurnStatus::Completed);
+    assert!(turn.error.is_none());
+}
+
 #[derive(Debug)]
 struct ConcurrentWorkspaceRead {
     barrier: Arc<tokio::sync::Barrier>,
@@ -1167,239 +1235,6 @@ async fn twenty_lightweight_local_calls_continue_in_one_turn_before_final_text()
 }
 
 #[tokio::test]
-async fn active_turn_context_compacts_without_tools_and_continues_the_same_turn() {
-    #[derive(Debug)]
-    struct CompactionAwareProvider {
-        calls: AtomicUsize,
-        requests: Arc<Mutex<Vec<ModelRequest>>>,
-    }
-    impl ModelProvider for CompactionAwareProvider {
-        fn stream(&self, request: ModelRequest) -> BoxModelFuture<'_> {
-            let compaction = request.tools.is_empty();
-            self.requests.lock().expect("requests").push(request);
-            let call = self.calls.load(Ordering::Acquire);
-            let events = if compaction {
-                let text = "The user asked to inspect large.txt. Prior reads succeeded; continue with the final answer.";
-                vec![
-                    Ok(model_event::text_delta(text.to_string())),
-                    Ok(ModelEvent::ResponseCompleted(ModelResponse {
-                        output: vec![sugarcode_model_provider::ModelOutputItem {
-                            output_index: 0,
-                            kind: ModelOutputItemKind::AssistantText {
-                                phase: ModelTextPhase::Final,
-                                text: text.to_string(),
-                            },
-                        }],
-                        usage: Some(ModelUsage {
-                            input_tokens: Some(10),
-                            cached_input_tokens: None,
-                            output_tokens: Some(5),
-                            reasoning_output_tokens: None,
-                            total_tokens: Some(15),
-                        }),
-                        terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
-                        provider_context: None,
-                    })),
-                ]
-            } else if call < 13 {
-                self.calls.fetch_add(1, Ordering::AcqRel);
-                vec![Ok(model_event::tool_call(ModelToolCall {
-                    id: format!("large_call_{call}"),
-                    name: "workspace/read".to_string(),
-                    arguments: serde_json::json!({ "path": "large.txt" }),
-                }))]
-            } else {
-                let text = "Large file inspection completed.";
-                vec![
-                    Ok(model_event::text_delta(text.to_string())),
-                    Ok(ModelEvent::ResponseCompleted(ModelResponse {
-                        output: vec![sugarcode_model_provider::ModelOutputItem {
-                            output_index: 0,
-                            kind: ModelOutputItemKind::AssistantText {
-                                phase: ModelTextPhase::Final,
-                                text: text.to_string(),
-                            },
-                        }],
-                        usage: None,
-                        terminal: ModelTerminalMetadata::completed(ModelContinuation::Complete),
-                        provider_context: None,
-                    })),
-                ]
-            };
-            async move { Ok(stream::iter(events).boxed()) }.boxed()
-        }
-    }
-    let directory = tempfile::tempdir().expect("workspace");
-    std::fs::write(
-        directory.path().join("large.txt"),
-        vec![b'a'; crate::context::COMPACTION_TARGET_BYTES / 12],
-    )
-    .expect("large workspace fixture");
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let provider = CompactionAwareProvider {
-        calls: AtomicUsize::new(0),
-        requests: requests.clone(),
-    };
-    let mut core = Core::new();
-    let started = core
-        .start_thread(CoreRequestId::new(1))
-        .expect("start thread");
-    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
-        panic!("thread event");
-    };
-    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
-    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
-        core,
-        Arc::new(provider),
-        "fixture-model".to_string(),
-        Some(tool),
-        None,
-    );
-    let TurnStartOutcome::Accepted { turn_id } = runtime
-        .start_text_turn(
-            CoreRequestId::new(2),
-            thread_id.clone(),
-            Some("Inspect the large file completely".to_string()),
-        )
-        .expect("start turn")
-    else {
-        panic!("asynchronous turn");
-    };
-    let mut compaction_started = 0;
-    let mut compaction_completed = 0;
-    loop {
-        match events.recv().await.expect("turn event").kind {
-            CoreEventKind::ItemStarted {
-                item:
-                    CoreItemSnapshot {
-                        kind: CoreItemKind::ContextCompaction { outcome: None, .. },
-                        ..
-                    },
-                ..
-            } => compaction_started += 1,
-            CoreEventKind::ItemCompleted {
-                item:
-                    CoreItemSnapshot {
-                        kind:
-                            CoreItemKind::ContextCompaction {
-                                outcome: Some(CoreContextCompactionOutcome::Completed { .. }),
-                                ..
-                            },
-                        ..
-                    },
-                ..
-            } => compaction_completed += 1,
-            CoreEventKind::TurnCompleted { .. } => break,
-            _ => {}
-        }
-    }
-    assert_eq!((compaction_started, compaction_completed), (1, 1));
-    {
-        let recorded_requests = requests.lock().expect("requests");
-        assert_eq!(recorded_requests.len(), 15);
-        assert!(
-            recorded_requests
-                .iter()
-                .filter(|request| !request.tools.is_empty())
-                .all(|request| {
-                    request.estimated_context_tokens()
-                        <= u64::from(
-                            ModelCapabilities::new(131_072, true, false, false, true, true)
-                                .active_turn_compaction_target_tokens(),
-                        )
-                })
-        );
-        let compaction_index = recorded_requests
-            .iter()
-            .position(|request| request.tools.is_empty())
-            .expect("compaction request");
-        let compaction_request = &recorded_requests[compaction_index];
-        assert!(compaction_request.tools.is_empty());
-        assert_eq!(
-            compaction_request
-                .instructions
-                .last()
-                .map(|item| item.source),
-            Some(ModelInstructionSource::SugarCodeActiveTurnCompactionV1)
-        );
-        assert!(
-            compaction_request.context_bytes()
-                <= ModelCapabilities::new(131_072, true, false, false, true, true)
-                    .input_compaction_target_bytes()
-        );
-        assert!(
-            recorded_requests[compaction_index + 1]
-                .tools
-                .iter()
-                .any(|tool| tool.name == "workspace/read")
-        );
-        assert!(
-            recorded_requests[compaction_index + 1]
-                .messages
-                .first()
-                .and_then(message_compaction)
-                .is_some_and(|checkpoint| {
-                    checkpoint.contains("Inspect the large file completely")
-                        && checkpoint.contains("Prior reads succeeded")
-                        && checkpoint.contains("Continue executing the same user task")
-                })
-        );
-    }
-    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
-    let turn = snapshot
-        .turns
-        .iter()
-        .find(|turn| turn.id == turn_id)
-        .expect("persisted turn");
-    assert!(
-        turn.items.iter().any(|item| matches!(
-            item,
-            sugarcode_state::DurableItemSnapshot::ContextCompaction {
-                summary: Some(summary),
-                outcome: Some(sugarcode_state::DurableActiveTurnCompactionOutcome::Completed { .. }),
-                ..
-            } if summary.contains("Prior reads succeeded")
-        )),
-        "{:?}",
-        turn.items
-    );
-    assert_eq!(
-        turn.usage.as_ref().and_then(|usage| usage.total_tokens),
-        Some(15)
-    );
-    let debug = format!("{turn:?}");
-    assert!(!debug.contains("Prior reads succeeded"));
-    assert!(debug.contains("DurableCompactionSummary"));
-    runtime
-        .start_text_turn(
-            CoreRequestId::new(3),
-            thread_id,
-            Some("Confirm the durable checkpoint is reused".to_string()),
-        )
-        .expect("start turn after compaction");
-    while !matches!(
-        events.recv().await.expect("next turn event").kind,
-        CoreEventKind::TurnCompleted { .. }
-    ) {}
-    let requests = requests.lock().expect("requests");
-    assert_eq!(requests.len(), 16);
-    assert!(
-        requests[15]
-            .messages
-            .first()
-            .and_then(message_compaction)
-            .is_some_and(|content| content.contains("Prior reads succeeded"))
-    );
-    assert!(
-        requests[15].estimated_context_tokens()
-            < u64::from(
-                ModelCapabilities::new(131_072, true, false, false, true, true)
-                    .active_turn_compaction_target_tokens(),
-            )
-    );
-}
-
-#[tokio::test]
 async fn large_private_continuation_and_cumulative_usage_do_not_fake_context_overflow() {
     #[derive(Debug)]
     struct ContinuationProvider {
@@ -1553,112 +1388,6 @@ async fn large_private_continuation_and_cumulative_usage_do_not_fake_context_ove
     );
     assert_eq!(usage.request_count, 2);
     assert_eq!(usage.context_window_tokens, Some(200_000));
-}
-
-#[tokio::test]
-async fn non_shrinking_context_compaction_fails_without_a_retry_loop() {
-    #[derive(Debug)]
-    struct ContextRejectingProvider {
-        calls: AtomicUsize,
-        requests: Arc<Mutex<Vec<ModelRequest>>>,
-    }
-
-    impl ModelProvider for ContextRejectingProvider {
-        fn stream(&self, request: ModelRequest) -> BoxModelFuture<'_> {
-            let call = self.calls.fetch_add(1, Ordering::AcqRel);
-            self.requests
-                .lock()
-                .expect("requests")
-                .push(request.clone());
-            async move {
-                match call {
-                    0 => Ok(stream::iter(vec![Ok(model_event::tool_call(ModelToolCall {
-                        id: "context_call".to_string(),
-                        name: "workspace/read".to_string(),
-                        arguments: serde_json::json!({ "path": "context.txt" }),
-                    }))])
-                    .boxed()),
-                    1 => Err(ModelError::new(ModelErrorKind::InvalidRequest, false)),
-                    2 => Ok(stream::iter(vec![Ok(model_event::final_response(
-                        "The task and successful read must be preserved.",
-                    ))])
-                    .boxed()),
-                    _ => panic!("unexpected provider request"),
-                }
-            }
-            .boxed()
-        }
-    }
-
-    let directory = tempfile::tempdir().expect("workspace");
-    std::fs::write(
-        directory.path().join("context.txt"),
-        "context that makes the follow-up request larger",
-    )
-    .expect("workspace fixture");
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let provider = ContextRejectingProvider {
-        calls: AtomicUsize::new(0),
-        requests: requests.clone(),
-    };
-    let mut core = Core::new();
-    let started = core
-        .start_thread(CoreRequestId::new(1))
-        .expect("start thread");
-    let CoreEventKind::ThreadStarted { thread_id } = started.kind else {
-        panic!("thread event");
-    };
-    let tool = Arc::new(WorkspaceTool::open(directory.path()).expect("workspace tool"));
-    let (mut runtime, mut events) = CoreRuntime::new_with_workspace(
-        core,
-        Arc::new(provider),
-        "fixture-model".to_string(),
-        Some(tool),
-        None,
-    );
-    let TurnStartOutcome::Accepted { turn_id } = runtime
-        .start_text_turn(
-            CoreRequestId::new(2),
-            thread_id.clone(),
-            Some("Read context.txt and finish the task".to_string()),
-        )
-        .expect("start turn")
-    else {
-        panic!("asynchronous turn");
-    };
-    while !matches!(
-        events.recv().await.expect("turn event").kind,
-        CoreEventKind::TurnFailed { .. }
-    ) {}
-
-    let recorded_requests = requests.lock().expect("requests");
-    assert_eq!(recorded_requests.len(), 3);
-    assert!(recorded_requests[1].context_bytes() > recorded_requests[0].context_bytes());
-    assert!(recorded_requests[2].tools.is_empty());
-    drop(recorded_requests);
-
-    let snapshot = runtime.resume_thread(&thread_id).expect("resume");
-    let turn = snapshot
-        .turns
-        .iter()
-        .find(|turn| turn.id == turn_id)
-        .expect("persisted turn");
-    assert_eq!(turn.status, DurableTurnStatus::Failed);
-    assert_eq!(
-        turn.error.as_ref().map(|error| error.kind),
-        Some(DurableTurnErrorKind::ContextWindowExceeded)
-    );
-    assert!(turn.items.iter().any(|item| matches!(
-        item,
-        sugarcode_state::DurableItemSnapshot::ContextCompaction {
-            outcome: Some(sugarcode_state::DurableActiveTurnCompactionOutcome::Failed { .. }),
-            ..
-        }
-    )));
-    assert!(!turn.items.iter().any(|item| matches!(
-        item,
-        sugarcode_state::DurableItemSnapshot::AgentMessage { .. }
-    )));
 }
 
 #[tokio::test]

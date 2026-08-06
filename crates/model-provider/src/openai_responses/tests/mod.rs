@@ -5,6 +5,9 @@ use crate::ModelToolGrammar;
 use crate::ModelToolGrammarSyntax;
 use crate::ModelToolResult;
 use crate::anthropic_messages::requests::anthropic_request;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
 
 fn tool_names() -> BTreeMap<String, String> {
     BTreeMap::from([("workspace_read".to_owned(), "workspace/read".to_owned())])
@@ -196,6 +199,34 @@ fn responses_normalizes_and_replays_custom_tool_calls_with_matching_outputs() {
     assert_eq!(body["input"][0]["type"], "custom_tool_call");
     assert_eq!(body["input"][0]["input"], raw_patch);
     assert_eq!(body["input"][1]["type"], "custom_tool_call_output");
+}
+
+#[test]
+fn responses_preserves_json_function_fallback_calls_for_freeform_tools() {
+    let raw_patch = "*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch";
+    let mut request = continuation_request(vec![
+        ModelMessage::tool_calls(vec![ModelToolCall {
+            id: "chatcmpl-tool-patch".to_owned(),
+            name: "workspace/apply-patch".to_owned(),
+            arguments: json!({"patch": raw_patch}),
+        }]),
+        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
+            "chatcmpl-tool-patch".to_owned(),
+            "invalid patch".to_owned(),
+        )]),
+    ]);
+    request.tools.push(freeform_tool());
+
+    let body =
+        openai_request(&request, ModelStrictToolsMode::Auto, false, 1024).expect("replay request");
+    assert_eq!(body["input"][0]["type"], "function_call");
+    assert_eq!(body["input"][0]["name"], "workspace/apply-patch");
+    assert_eq!(
+        body["input"][0]["arguments"],
+        serde_json::to_string(&json!({"patch": raw_patch})).expect("arguments")
+    );
+    assert_eq!(body["input"][1]["type"], "function_call_output");
+    assert_eq!(body["input"][1]["call_id"], "chatcmpl-tool-patch");
 }
 
 #[test]
@@ -996,6 +1027,99 @@ fn openai_completed_response_keeps_exact_replay_only_for_opaque_reasoning() {
     assert!(portable.provider_context.is_none());
 }
 
+#[tokio::test]
+async fn unqualified_incomplete_response_is_retryable_before_output() {
+    let (sender, _receiver) = mpsc::channel(1);
+    let mut state = OpenAiStreamState::default();
+    let result = state
+        .consume(
+            "response.incomplete",
+            json!({
+                "type": "response.incomplete",
+                "response": {"status": "incomplete", "output": []}
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await;
+    let Err(error) = result else {
+        panic!("unqualified incomplete response");
+    };
+
+    assert_eq!(error.kind(), ModelErrorKind::Incomplete);
+    assert!(error.retryable());
+}
+
+#[tokio::test]
+async fn empty_explicit_output_limit_is_retryable() {
+    let (sender, _receiver) = mpsc::channel(1);
+    let mut state = OpenAiStreamState::default();
+    let result = state
+        .consume(
+            "response.incomplete",
+            json!({
+                "type": "response.incomplete",
+                "response": {
+                    "status": "incomplete",
+                    "output": [],
+                    "incomplete_details": {"reason": "max_output_tokens"}
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await;
+    let Err(error) = result else {
+        panic!("explicit output limit");
+    };
+
+    assert_eq!(error.kind(), ModelErrorKind::Incomplete);
+    assert!(error.retryable());
+}
+
+#[tokio::test]
+async fn explicit_output_limit_after_semantic_output_is_not_retryable() {
+    let (sender, mut receiver) = mpsc::channel(2);
+    let mut state = OpenAiStreamState::default();
+    state
+        .consume(
+            "response.output_text.delta",
+            json!({
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "delta": "partial"
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await
+        .expect("semantic preview");
+    let result = state
+        .consume(
+            "response.incomplete",
+            json!({
+                "type": "response.incomplete",
+                "response": {
+                    "status": "incomplete",
+                    "output": [],
+                    "incomplete_details": {"reason": "max_output_tokens"}
+                }
+            }),
+            &sender,
+            &tool_names(),
+        )
+        .await;
+    let Err(error) = result else {
+        panic!("output-limited semantic response");
+    };
+    assert!(matches!(
+        receiver.recv().await,
+        Some(Ok(ModelEvent::OutputTextDelta { delta, .. })) if delta == "partial"
+    ));
+    assert_eq!(error.kind(), ModelErrorKind::Incomplete);
+    assert!(!error.retryable());
+}
+
 #[test]
 fn retained_requests_enable_streaming() {
     let request = ModelRequest {
@@ -1012,4 +1136,115 @@ fn retained_requests_enable_streaming() {
         anthropic_request(&request, ModelStrictToolsMode::Auto, 4096).expect("Anthropic request")["stream"],
         true
     );
+}
+
+#[test]
+fn compatible_responses_endpoints_prepare_chat_fallback() {
+    let compatible = OpenAiResponsesProvider::new(
+        Url::parse("https://gateway.example/v1").expect("compatible URL"),
+        None,
+        ModelStrictToolsMode::Auto,
+        false,
+        4096,
+    )
+    .expect("compatible provider");
+    assert!(compatible.compatible_chat_fallback.is_some());
+
+    let official = OpenAiResponsesProvider::new(
+        Url::parse("https://api.openai.com/v1").expect("official URL"),
+        None,
+        ModelStrictToolsMode::Auto,
+        false,
+        4096,
+    )
+    .expect("official provider");
+    assert!(official.compatible_chat_fallback.is_none());
+}
+
+#[tokio::test]
+async fn compatible_responses_no_output_retry_uses_streaming_chat() {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind compatible gateway");
+    let address = listener.local_addr().expect("compatible gateway address");
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept retry request");
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0u8; 8192];
+            let bytes = socket.read(&mut chunk).await.expect("read retry request");
+            assert!(bytes > 0, "retry request closed before its body completed");
+            request.extend_from_slice(&chunk[..bytes]);
+            let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                })
+                .expect("request content length");
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        let request = String::from_utf8_lossy(&request);
+        assert!(request.starts_with("POST /v1/chat/completions "));
+        assert!(request.contains("\"stream\":true"));
+
+        let body = concat!(
+            "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Recovered.\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write retry response headers");
+        socket
+            .write_all(body.as_bytes())
+            .await
+            .expect("write retry response");
+    });
+    let provider = OpenAiResponsesProvider::new(
+        Url::parse(&format!("http://{address}/v1")).expect("compatible URL"),
+        None,
+        ModelStrictToolsMode::Auto,
+        false,
+        4096,
+    )
+    .expect("compatible provider");
+    let events = provider
+        .retry_after_no_output(ModelRequest {
+            model: "fixture-model".to_owned(),
+            instructions: Vec::new(),
+            messages: vec![ModelMessage::user_text("Continue".to_owned())],
+            tools: Vec::new(),
+        })
+        .await
+        .expect("streaming Chat retry")
+        .collect::<Vec<_>>()
+        .await;
+    server.await.expect("compatible gateway");
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            Ok(ModelEvent::OutputTextDelta { delta, .. }),
+            Ok(ModelEvent::ResponseCompleted(ModelResponse { output, .. }))
+        ] if delta == "Recovered."
+            && matches!(output.as_slice(), [ModelOutputItem {
+                kind: ModelOutputItemKind::AssistantText { text, .. }, ..
+            }] if text == "Recovered.")
+    ));
 }

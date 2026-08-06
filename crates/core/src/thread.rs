@@ -47,7 +47,6 @@ use snapshots::{
 };
 
 const DETERMINISTIC_AGENT_MESSAGE: &str = "SugarCode deterministic response.";
-pub const MAX_PROVIDER_HISTORY_BYTES: usize = crate::context::MAX_PROVIDER_CONTEXT_BYTES;
 pub const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1330,7 +1329,7 @@ impl Core {
             instruction_context_bytes,
             tool_context_bytes,
             None,
-            crate::context::COMPACTION_TARGET_BYTES,
+            usize::MAX,
         )
     }
 
@@ -1368,10 +1367,10 @@ impl Core {
         input: Option<Vec<CoreUserContentPart>>,
         workspace_instructions: Option<DurableWorkspaceInstructionsAudit>,
         workspace_skills: Option<DurableWorkspaceSkillsAudit>,
-        instruction_context_bytes: usize,
-        tool_context_bytes: usize,
+        _instruction_context_bytes: usize,
+        _tool_context_bytes: usize,
         model: Option<DurableModelSelectionSnapshot>,
-        compaction_target_bytes: usize,
+        _compaction_target_bytes: usize,
     ) -> Result<PreparedTextTurn, CoreError> {
         if let Some(input) = input.as_ref() {
             validate_user_content(input)?;
@@ -1395,26 +1394,9 @@ impl Core {
             .values()
             .filter(|turn| turn.state != TurnState::InProgress)
             .collect::<Vec<_>>();
-        let latest_compaction = effective_turns
-            .iter()
-            .rev()
-            .find(|turn| turn.state == TurnState::Completed)
-            .and_then(|turn| turn.context_compaction.as_ref());
         let mut history = Vec::new();
-        if let Some(compaction) = latest_compaction {
-            history.push(PreparedMessage::ContextCompaction {
-                content: compaction.message.clone(),
-            });
-            for turn in effective_turns
-                .iter()
-                .filter(|turn| turn.id > compaction.through_turn_id)
-            {
-                append_effective_turn(&mut history, turn);
-            }
-        } else {
-            for turn in &effective_turns {
-                append_effective_turn(&mut history, turn);
-            }
+        for turn in &effective_turns {
+            append_effective_turn(&mut history, turn);
         }
         let current_input_index = input.as_ref().map(|_| history.len());
         if let Some(content) = input.as_ref() {
@@ -1424,52 +1406,7 @@ impl Core {
         } else if history.is_empty() {
             return Err(CoreError::InvalidInput);
         }
-        let fixed_context_bytes = instruction_context_bytes
-            .checked_add(tool_context_bytes)
-            .ok_or(CoreError::ContextTooLarge)?;
-        let pre_context_bytes = crate::context::prepared_history_bytes(&history)
-            .and_then(|bytes| bytes.checked_add(fixed_context_bytes))
-            .ok_or(CoreError::ContextTooLarge)?;
-        let mut context_compaction = None;
-        if pre_context_bytes > compaction_target_bytes {
-            let durable_effective_turns = effective_turns
-                .iter()
-                .map(|turn| durable_turn_snapshot(turn))
-                .collect::<Vec<_>>();
-            let provisional = sugarcode_state::build_context_compaction(
-                &durable_effective_turns,
-                u64::try_from(pre_context_bytes).map_err(|_| CoreError::ContextTooLarge)?,
-                0,
-            )
-            .ok_or(CoreError::ContextTooLarge)?;
-            let mut compacted_history = vec![PreparedMessage::ContextCompaction {
-                content: provisional.message,
-            }];
-            if let Some(content) = input.as_ref() {
-                compacted_history.push(PreparedMessage::UserContent {
-                    content: content.clone(),
-                });
-            }
-            let post_context_bytes = crate::context::prepared_history_bytes(&compacted_history)
-                .and_then(|bytes| bytes.checked_add(fixed_context_bytes))
-                .ok_or(CoreError::ContextTooLarge)?;
-            if post_context_bytes > compaction_target_bytes {
-                return Err(CoreError::ContextTooLarge);
-            }
-            let compaction = sugarcode_state::build_context_compaction(
-                &durable_effective_turns,
-                u64::try_from(pre_context_bytes).map_err(|_| CoreError::ContextTooLarge)?,
-                u64::try_from(post_context_bytes).map_err(|_| CoreError::ContextTooLarge)?,
-            )
-            .ok_or(CoreError::ContextTooLarge)?;
-            compacted_history[0] = PreparedMessage::ContextCompaction {
-                content: compaction.message.clone(),
-            };
-            history = compacted_history;
-            context_compaction = Some(compaction);
-        } else if pre_context_bytes > MAX_PROVIDER_HISTORY_BYTES {
-            return Err(CoreError::ContextTooLarge);
-        }
+        let context_compaction = None;
 
         let turn_id = TurnId::new_v7();
         let user_item_id = input.is_some().then(ItemId::new_v7);
@@ -2131,25 +2068,6 @@ fn core_content_asset(asset: &sugarcode_state::DurableContentAsset) -> CoreConte
         media_type: asset.media_type.clone(),
         original_name: asset.original_name.clone(),
         size_bytes: asset.size_bytes,
-    }
-}
-
-fn durable_turn_snapshot(turn: &Turn) -> DurableTurnSnapshot {
-    DurableTurnSnapshot {
-        id: turn.id.clone(),
-        status: match turn.state {
-            TurnState::InProgress => DurableTurnStatus::InProgress,
-            TurnState::Completed => DurableTurnStatus::Completed,
-            TurnState::Failed => DurableTurnStatus::Failed,
-            TurnState::Interrupted => DurableTurnStatus::Interrupted,
-        },
-        items: turn.items.values().map(durable_item_from_item).collect(),
-        model: turn.model.clone(),
-        context_compaction: turn.context_compaction.clone(),
-        workspace_instructions: turn.workspace_instructions.clone(),
-        workspace_skills: turn.workspace_skills.clone(),
-        error: turn.error.clone(),
-        usage: turn.usage.clone(),
     }
 }
 

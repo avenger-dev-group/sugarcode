@@ -167,6 +167,27 @@ test('advanced workspace/search calls and path-mode results remain supported lif
   );
 });
 
+test('compatible workspace/search boolean strings remain supported in live lifecycle', () => {
+  const call = lifecycleItem('item/started', {
+    type: 'toolCall',
+    id: '00000000-0003-7000-8000-000000000003',
+    callId: 'search-compatible-booleans',
+    name: 'workspace/search',
+    arguments: {
+      path: '.',
+      query: 'component',
+      regex: 'false',
+      caseSensitive: 'true',
+    },
+  });
+
+  assert.equal(call?.type, 'itemStarted');
+  assert.equal(
+    call?.type === 'itemStarted' ? call.params.item.type : undefined,
+    'workspaceSearchCall',
+  );
+});
+
 test('unknown workspace tool arguments still fail closed', () => {
   assert.throws(
     () =>

@@ -95,24 +95,23 @@ shared preview budget, but Core still classifies the authoritative completed
 text instead of failing the Turn solely because that final answer or commentary
 is long.
 
-After a Turn has executed at least one tool call, Core also rejects one narrow
-class of semantically premature final output: a short response that contains an
-explicit future/continuation cue and ends in a heading with no body. Core closes
-that provider-neutral output reference with `agentOutputDiscarded`, adds the
-`sugarCodeCompletionRecoveryV1` instruction, and requests one same-Turn
-continuation. The completed output is never persisted as assistant history. A
-second match fails as typed `incomplete` instead of creating an unbounded retry;
-ordinary final text, long responses and planning text without the trailing
-unfulfilled heading do not enter this recovery path.
+Core does not infer completion from prose keywords. A provider-normalized final
+text item is final; a tool-call item continues the Agent loop. This keeps the
+runtime provider-neutral and avoids language-specific promise, completion or
+blocker dictionaries. Task-completion quality remains an instruction and model
+responsibility unless a future provider exposes an explicit typed continuation
+signal.
 
 Argument correction has a separate deterministic gate. When Core returns an
-`invalidArguments` ToolResult, it records the rejected SugarCode tool name and
-will not accept final text in place of a retry. Such text is closed with
-`agentOutputDiscarded`; a valid call for that same tool name clears the pending
-correction after batch validation. One further final-only response fails as
-typed `unsupportedToolArguments`, so this recovery cannot loop indefinitely.
-This rule is structural and does not depend on recognizing promise wording in
-the model's prose.
+`invalidArguments` ToolResult, it requires the immediately following model
+round to continue with a valid advertised tool call instead of accepting final
+text in place of a correction. Such text is closed with
+`agentOutputDiscarded`; any valid tool batch clears the pending correction
+after validation, including a deliberate switch to another tool that can
+continue the task. One further final-only response fails as typed
+`unsupportedToolArguments`, so this recovery cannot loop indefinitely or
+remain attached to an abandoned tool choice. This rule is structural and does
+not depend on recognizing promise wording in the model's prose.
 
 Thread-title generation is a separate provider-neutral Core request with the
 `sugarCodeThreadTitleV1` instruction source. It reuses the Thread's currently
@@ -128,6 +127,21 @@ that accepts a request but never emits or closes cannot strand the Agent loop.
 Any valid SSE record resets that boundary, including private reasoning/progress
 records that are not rendered. A stall becomes a typed retryable timeout; an
 HTTP 408 returned by the provider maps to the same failure family.
+
+An unqualified Responses `response.incomplete` event received before any
+semantic output is a retryable empty continuation. An explicit
+`max_output_tokens` or compatible Chat `length` finish is retryable only when it
+also contains no semantic output; filtering and safety reasons remain terminal.
+Core permits at most two no-output recoveries without re-executing preceding
+tools, so repeated empty gateway completions cannot create an unbounded loop.
+For a non-OpenAI compatible Responses base URL, that no-output retry uses the
+same gateway's streaming Chat Completions endpoint when the portable request
+contains no provider-private continuation. It reuses the Responses provider's
+HTTP client and connection pool, so recovery does not require an unrelated new
+transport session after an idle Responses stream. Streaming preserves gateway
+progress records while retaining complete visible history and tool results.
+Official `api.openai.com` and opaque Responses continuation remain on the
+selected Responses wire.
 
 Terminal metadata normalizes:
 
@@ -161,8 +175,12 @@ schema correction feedback and never executes it.
 Responses custom-tool calls normalize `input` into the same ToolCall argument
 slot as a raw string. Their history uses `custom_tool_call` paired with
 `custom_tool_call_output`; function history continues to use the corresponding
-function pair. Opaque Responses continuation is scanned for custom call IDs so
-the following output always uses the matching wire item type.
+function pair. A compatible gateway may answer a custom-tool definition with a
+JSON `function_call`; its object arguments preserve that fallback shape during
+local replay, so argument-correction results remain `function_call_output`
+instead of being rewritten as native custom-tool history. Opaque Responses
+continuation is scanned for custom call IDs so the following output always uses
+the matching wire item type.
 
 Text deltas are provisional rendering hints and are not required to be
 byte-identical to the completed item. Known terminal events are handled
@@ -194,11 +212,12 @@ sparse tool indices and missing call IDs are normalized, while invalid argument
 JSON is retained for Core's recoverable schema feedback. Recognized
 `reasoning_content`, `reasoning`, `reasoning_details` and leading legacy
 `<think>` content remain private continuation context and do not become the
-durable final answer. If a streaming Chat request disconnects or times out
-before any semantic output, the single bounded retry uses the same endpoint,
-model, wire and request as a non-streaming Chat completion. The JSON completion
-passes through the same output, reasoning, tool-call, usage and size
-normalization; this delivery fallback is not a wire or model fallback.
+durable final answer. If a streaming Chat request disconnects, times out or
+finishes incomplete before any semantic output, up to two bounded recovery
+attempts use the same endpoint, model, wire and request as non-streaming Chat
+completions. JSON completions pass through the same output, reasoning,
+tool-call, usage and size normalization; this delivery fallback is not a model
+fallback.
 
 Protocol failures carry an optional provider-neutral diagnostic. Its stage is
 one of `streamEvent`, `responseAssembly`, `outputNormalization` or
@@ -216,13 +235,14 @@ real Chat/Responses mismatch therefore fails before SugarCode can duplicate
 provider charges or tool side effects; normalization is limited to differences
 that are unambiguous inside the profile's declared wire.
 
-Core may retry the same frozen model once when opening or consuming the stream
-fails with transport, disconnect, timeout, 429 or 5xx semantics and no semantic
-output has been observed. The provider selects the compatible delivery for that
-one retry: Chat uses a non-streaming completion, while providers without a
-distinct delivery mode repeat their declared transport. There is no retry after
-a delta, no retry for 4xx request/protocol failures and no cross-wire or
-cross-model fallback.
+Core may retry the same frozen model up to two times when opening or consuming
+the stream fails with transport, disconnect, timeout, 429, 5xx or empty
+incomplete semantics and no semantic output has been observed. The provider
+selects the compatible delivery for those recoveries: Chat uses a non-streaming
+completion, while a compatible Responses endpoint may use its streaming Chat
+delivery. Providers without a distinct delivery mode repeat their declared
+transport. There is no retry after a delta, no retry for 4xx request/protocol
+failures and no cross-model fallback.
 
 Responses local replay uses exact provider output only when the response
 contains an opaque reasoning Item that cannot be represented portably. Plain
@@ -249,7 +269,13 @@ selected wire behavior.
 Tool definitions retain a provider-neutral JSON fallback schema and may also
 carry a raw-text grammar. Responses encodes the latter as a native `custom`
 tool with a Lark grammar; Chat Completions and Anthropic expose the fallback as
-an ordinary function/input schema. Strictness is decided per JSON tool, and the
+an ordinary function/input schema. Apply-patch uses the request-local wire name
+`apply_patch`, which maps back to provider-neutral `workspace/apply-patch` in
+output and history. Its grammar is a single shallow envelope terminal; local
+bounded parsing, not a complex provider CFG, owns hunk semantics. The local
+parser intentionally follows Codex's non-strict whitespace, heredoc, move and
+context-matching behavior while retaining capability-relative path and resource
+limits. Strictness is decided per JSON tool, and the
 request fails before network I/O when forced strict mode cannot represent a
 schema. Provider-safe tool names are request-local aliases; history and public
 state keep SugarCode names.
@@ -281,19 +307,18 @@ they may normalize unambiguous syntax and naming differences, but never invent
 a tool, change its authority or execute malformed arguments.
 
 Core validation and Desktop live/durable projection accept the exact lowercase
-strings `"true"` and `"false"` for `workspace/list.recursive` as a narrow
-compatible-gateway normalization. The model-facing schema remains boolean, and
+strings `"true"` and `"false"` for `workspace/list.recursive` and the
+`workspace/search` fields `regex` / `caseSensitive` as a narrow
+compatible-gateway normalization. The model-facing schemas remain boolean, and
 other strings, numbers and null still fail validation before the read-only
 batch executes.
 
-On platforms that expose both `shell/exec` authorities, its provider-neutral
-schema uses a discriminated `oneOf`. The direct branch requires `argvJson` and
-does not expose a timeout, while the Full Access shell branch excludes
-`argvJson` and alone exposes the optional timeout. Provider adapters preserve
-that logical union; automatic strict-tool selection downgrades it when a strict
-dialect cannot represent `oneOf`. Core may normalize a shell timeout emitted as
-a bounded, digits-only decimal string; it does not accept units, signs,
-fractions, whitespace, zero or an out-of-range value.
+`shell/exec` exposes one provider-neutral shape per platform. On macOS and
+Windows the flat shape requires only a complete `command`, with optional cwd
+and timeout; direct argv fields and authority discriminators are absent. Other
+platforms advertise only the exact-executable `argvJson` shape. Core may
+normalize a timeout emitted as a bounded, digits-only decimal string; it does
+not accept units, signs, fractions, whitespace, zero or an out-of-range value.
 
 Structured final output is intentionally absent until a production consumer
 requires it. Audio, video, image generation, hosted file upload and file search

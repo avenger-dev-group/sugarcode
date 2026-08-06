@@ -27,3 +27,32 @@ test('legacy shell argument arrays remain readable', () => {
 
   assert.deepEqual(payload.arguments, ['--version']);
 });
+
+test('flat Full Access shell calls allow runtime-defaulted metadata', () => {
+  assert.deepEqual(
+    parseShellToolCallPayload({ command: 'rg --files src' }),
+    { command: 'rg --files src', arguments: [] },
+  );
+  assert.deepEqual(
+    parseShellToolCallPayload({
+      command: 'pnpm build',
+      cwd: 'apps/desktop',
+      timeoutMs: '120000',
+    }),
+    { command: 'pnpm build', arguments: [] },
+  );
+});
+
+test('flat Full Access shell calls reject mixed argv and invalid metadata', () => {
+  for (const value of [
+    { command: 'rg --files', argvJson: '[]' },
+    { command: 'rg --files', cwd: '' },
+    { command: 'rg --files', timeoutMs: '120s' },
+    { command: 'rg --files', kind: 'direct' },
+  ]) {
+    assert.throws(
+      () => parseShellToolCallPayload(value),
+      /Invalid shell\/exec ToolCall Item/u,
+    );
+  }
+});

@@ -56,10 +56,9 @@ export const formatTokenUsageHint = (usage: {
   lastRequest: { inputTokens?: number };
   turnTotal: { inputTokens?: number };
   requestCount: number;
-  contextWindowTokens: number;
   source: 'provider' | 'estimated';
 }): string =>
-  `${usage.source === 'estimated' ? '≈ ' : ''}${formatTokenCount(usage.lastRequest.inputTokens ?? 0)} / ${formatTokenCount(usage.contextWindowTokens)} current · ${formatTokenCount(usage.turnTotal.inputTokens ?? 0)} Turn total across ${usage.requestCount} request${usage.requestCount === 1 ? '' : 's'}`;
+  `${usage.source === 'estimated' ? '≈ ' : ''}${formatTokenCount(usage.lastRequest.inputTokens ?? 0)} current · ${formatTokenCount(usage.turnTotal.inputTokens ?? 0)} Turn total across ${usage.requestCount} request${usage.requestCount === 1 ? '' : 's'}`;
 
 export const latestTurnUsage = <Usage>(
   turns: readonly Readonly<{ usage?: Usage }>[],

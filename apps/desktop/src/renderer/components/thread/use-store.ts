@@ -69,7 +69,6 @@ import type {
 import {
   contextBudget,
   estimatedTokensFromContextBytes,
-  formatTokenCount,
   formatTokenUsageHint,
   latestTurnUsage,
 } from './context-budget';
@@ -1550,18 +1549,10 @@ export const useStore = (): ThreadStore => {
       : attachments.length > 0
         ? `${attachments.length} attachment${attachments.length === 1 ? '' : 's'} · ${Math.ceil(attachmentBytes / 1024)} KiB`
         : `${Math.ceil(bytes / 1024)} / 64 KiB`;
-  const selectedProfile = modelInspection?.config?.profiles.find(
-    (profile) => profile.id === selectedModelProfileId,
-  );
-  const selectedContextBudget = contextBudget(
-    selectedProfile?.contextWindowTokens ?? 131_072,
-  );
   const latestUsage = latestTurnUsage(snapshot.turns);
   const contextBudgetHint = latestUsage
     ? formatTokenUsageHint(latestUsage)
-    : selectedModelProfileId
-      ? `${formatTokenCount(selectedContextBudget.contextWindowTokens)} context · compacts near ${formatTokenCount(selectedContextBudget.compactionTargetTokens)}`
-      : null;
+    : null;
   const navigator = useMemo(
     () => toThreadNavigatorViewModel(snapshot),
     [snapshot],

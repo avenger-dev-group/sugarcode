@@ -34,6 +34,30 @@ test('JSON-only provider fallback uses the same patch projection', () => {
   );
 });
 
+test('Codex-compatible heredoc, whitespace, repeated updates and moves project paths', () => {
+  const compatiblePatch = [
+    "<<'EOF'",
+    '  *** Begin Patch  ',
+    '*** Update File: src/current.ts  ',
+    '@@',
+    '-export const current = false;',
+    '+export const current = true;',
+    '*** Update File: src/current.ts',
+    '@@',
+    '-export const next = false;',
+    '+export const next = true;',
+    '*** Update File: src/old.ts',
+    '*** Move to: src/new.ts',
+    '  *** End Patch  ',
+    'EOF',
+  ].join('\r\n');
+
+  assert.deepEqual(
+    parseWorkspaceApplyPatchPaths(compatiblePatch, isValidPath),
+    ['src/current.ts', 'src/old.ts', 'src/new.ts'],
+  );
+});
+
 test('malformed boundaries, duplicate paths and traversal fail recovery', () => {
   for (const invalidPatch of [
     patch.replace('*** Begin Patch\n', ''),

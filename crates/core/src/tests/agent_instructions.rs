@@ -22,15 +22,13 @@ fn base_agent_prompt_is_fixed_complete_and_provider_counted() {
         "one or more independent tool calls",
         "bounded concurrent scheduling",
         "collaboration/dispatch",
-        "automatically compact older active-Turn context",
         "one concise process update",
         "workspace/apply-patch",
         "without JSON wrapping",
         "only workspace write tool",
         "shell/exec",
-        "kind: \"direct\"",
-        "kind: \"shell\"",
-        "single-dot cwd and shell-relative subdirectories are runtime-only compatibility",
+        "exactly one model-facing shape",
+        "Never mix `argvJson`",
         "Never guess, translate or invent an absolute workspace path",
         "# Engineering workflow",
         "# Final response",
@@ -50,23 +48,6 @@ fn base_agent_prompt_is_fixed_complete_and_provider_counted() {
         !instruction
             .content
             .contains("Both are bounded writes to one existing file")
-    );
-}
-
-#[test]
-fn completion_recovery_prompt_requires_action_in_the_same_turn() {
-    let instruction = sugarcode_completion_recovery_instruction_v1();
-
-    assert_eq!(
-        instruction.source,
-        ModelInstructionSource::SugarCodeCompletionRecoveryV1
-    );
-    assert!(instruction.content.contains("short process update"));
-    assert!(instruction.content.contains("Use the available tools"));
-    assert!(
-        instruction
-            .content
-            .contains("complete or genuinely blocked")
     );
 }
 

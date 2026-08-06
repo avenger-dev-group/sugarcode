@@ -5,6 +5,29 @@ fn update_patch(before: &str, after: &str) -> String {
     format!("*** Begin Patch\n*** Update File: notes.txt\n@@\n-{before}\n+{after}\n*** End Patch")
 }
 
+#[test]
+fn invalid_apply_patch_guidance_reports_the_parser_failure_kind() {
+    let boundary = workspace_tool_argument_guidance(&ModelToolCall {
+        id: "call_boundary".to_string(),
+        name: "workspace/apply-patch".to_string(),
+        arguments: serde_json::Value::String("not a patch".to_string()),
+    })
+    .expect("boundary guidance");
+    assert_eq!(boundary.reason, "invalidBoundary");
+    assert_eq!(boundary.suggested_action, "correctPatchBoundaries");
+
+    let hunk = workspace_tool_argument_guidance(&ModelToolCall {
+        id: "call_hunk".to_string(),
+        name: "workspace/apply-patch".to_string(),
+        arguments: serde_json::Value::String(
+            "*** Begin Patch\n*** Update File: notes.txt\nold\n*** End Patch".to_string(),
+        ),
+    })
+    .expect("hunk guidance");
+    assert_eq!(hunk.reason, "invalidHunk");
+    assert_eq!(hunk.suggested_action, "correctPatchHunk");
+}
+
 async fn runtime_with_patch_rounds(
     directory: &std::path::Path,
     rounds: VecDeque<Vec<Result<ModelEvent, ModelError>>>,

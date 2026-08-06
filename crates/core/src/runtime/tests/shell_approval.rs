@@ -104,27 +104,9 @@ impl ShellCommandExecutor for RootedShell {
     }
 }
 
-fn shell_schema_branch<'a>(parameters: &'a serde_json::Value, kind: &str) -> &'a serde_json::Value {
-    parameters
-        .get("oneOf")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|branches| {
-            branches.iter().find(|branch| {
-                branch
-                    .pointer("/properties/kind/const")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(kind)
-            })
-        })
-        .unwrap_or_else(|| {
-            assert_eq!(kind, "direct", "single-branch schema must be direct");
-            parameters
-        })
-}
-
 #[cfg(any(target_os = "macos", windows))]
 #[test]
-fn shell_schema_advertises_and_validates_the_authoritative_absolute_root() {
+fn full_access_shell_schema_is_flat_and_defaults_to_the_authoritative_root() {
     let directory = tempfile::tempdir().expect("workspace");
     let root = directory.path().to_path_buf();
     let provider = SequencedProvider {
@@ -153,64 +135,61 @@ fn shell_schema_advertises_and_validates_the_authoritative_absolute_root() {
             .contains("Never guess, translate or invent")
     );
     assert!(
-        shell_schema_branch(&definition.parameters, "shell")
+        definition
+            .parameters
             .pointer("/properties/cwd/description")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|description| description.contains(&encoded_root)
                 && description.contains("process starts in cwd"))
     );
-    assert_eq!(
-        shell_schema_branch(&definition.parameters, "shell").pointer("/properties/cwd/const"),
-        Some(&serde_json::Value::String(
-            root.to_str().expect("UTF-8 root").to_string()
-        ))
+    assert!(
+        definition
+            .parameters
+            .pointer("/properties/cwd/const")
+            .is_none()
     );
-    let direct_schema = shell_schema_branch(&definition.parameters, "direct");
-    let shell_schema = shell_schema_branch(&definition.parameters, "shell");
-    assert!(direct_schema.pointer("/properties/argvJson").is_some());
-    assert!(direct_schema.pointer("/properties/timeoutMs").is_none());
-    assert!(shell_schema.pointer("/properties/argvJson").is_none());
-    assert!(shell_schema.pointer("/properties/timeoutMs").is_some());
-    assert_eq!(
-        direct_schema.get("required"),
-        Some(&serde_json::json!([
-            "description",
-            "kind",
-            "command",
-            "argvJson",
-            "cwd"
-        ]))
+    assert!(definition.parameters.get("oneOf").is_none());
+    assert!(definition.parameters.pointer("/properties/kind").is_none());
+    assert!(
+        definition
+            .parameters
+            .pointer("/properties/argvJson")
+            .is_none()
+    );
+    assert!(
+        definition
+            .parameters
+            .pointer("/properties/timeoutMs")
+            .is_some()
     );
     assert_eq!(
-        shell_schema.get("required"),
-        Some(&serde_json::json!([
-            "description",
-            "kind",
-            "command",
-            "cwd"
-        ]))
+        definition.parameters.get("required"),
+        Some(&serde_json::json!(["command"]))
     );
     let schema_validator = jsonschema::validator_for(&definition.parameters).expect("shell schema");
 
-    let call = |cwd: &str| ModelToolCall {
+    let call = |cwd: Option<&str>| ModelToolCall {
         id: "call_full_shell".to_string(),
         name: "shell/exec".to_string(),
-        arguments: serde_json::json!({
-            "description": "Inspect the active workspace.",
-            "kind": "shell",
-            "command": "git status --short",
-            "cwd": cwd
-        }),
+        arguments: cwd.map_or_else(
+            || serde_json::json!({"command": "git status --short"}),
+            |cwd| serde_json::json!({"command": "git status --short", "cwd": cwd}),
+        ),
     };
-    let preferred_shell_call = call(root.to_str().expect("UTF-8 root"));
+    let preferred_shell_call = call(None);
     assert!(schema_validator.is_valid(&preferred_shell_call.arguments));
-    assert!(shell_tool_arguments(&preferred_shell_call, Some(&root)).is_ok());
-    assert!(shell_tool_arguments(&call("/Users/sugar/workspace/guessed"), Some(&root)).is_err());
+    let normalized = shell_tool_arguments(&preferred_shell_call, Some(&root))
+        .expect("minimal full access shell call");
+    assert_eq!(normalized.kind, ShellToolKind::Shell);
+    assert_eq!(normalized.cwd, root.to_str().expect("UTF-8 root"));
+    assert_eq!(normalized.description, "Run a Full Access shell command.");
+    assert!(
+        shell_tool_arguments(&call(Some("/Users/sugar/workspace/guessed")), Some(&root)).is_err()
+    );
     let shell_call_with_direct_argv = ModelToolCall {
         id: "call_mixed_authority".to_string(),
         name: "shell/exec".to_string(),
         arguments: serde_json::json!({
-            "description": "Inspect the active workspace.",
             "kind": "shell",
             "command": "git status --short",
             "argvJson": "[]",
@@ -231,7 +210,7 @@ fn shell_schema_advertises_and_validates_the_authoritative_absolute_root() {
             "cwd": cwd
         }),
     };
-    assert!(schema_validator.is_valid(&direct_call(root.to_str().expect("UTF-8 root")).arguments));
+    assert!(!schema_validator.is_valid(&direct_call(root.to_str().expect("UTF-8 root")).arguments));
     assert!(
         shell_tool_arguments(
             &direct_call(root.to_str().expect("UTF-8 root")),
@@ -628,26 +607,26 @@ async fn approved_shell_command_is_audited_before_one_process_result() {
             .any(|tool| tool.name == "shell/exec")
     );
     assert!(requests[0].tools.iter().any(|tool| {
-        let direct_schema = shell_schema_branch(&tool.parameters, "direct");
-        tool.name == "shell/exec"
-            && tool
-                .description
-                .contains("writes inside the active workspace scope")
-            && tool.description.contains("network access is denied")
-            && direct_schema
-                .pointer("/properties/command/description")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|description| {
-                    description.contains("absolute executable path")
-                        && description.contains("Bare names")
-                })
-            && direct_schema
-                .pointer("/properties/argvJson/description")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|description| {
-                    description.contains("JSON-encoded array")
-                        && description.contains("never a shell command line")
-                })
+        if cfg!(any(target_os = "macos", windows)) {
+            tool.name == "shell/exec"
+                && tool.description.contains("Full Access approval")
+                && tool.parameters.get("oneOf").is_none()
+                && tool.parameters.pointer("/properties/argvJson").is_none()
+                && tool.parameters.get("required") == Some(&serde_json::json!(["command"]))
+        } else {
+            tool.name == "shell/exec"
+                && tool.description.contains("network-denied sandbox")
+                && tool
+                    .parameters
+                    .pointer("/properties/command/description")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|description| description.contains("absolute executable path"))
+                && tool
+                    .parameters
+                    .pointer("/properties/argvJson/description")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|description| description.contains("JSON-encoded array"))
+        }
     }));
     assert!(
         requests[1]
@@ -668,10 +647,7 @@ async fn full_access_shell_uses_unsandboxed_approval_and_streams_output() {
                     id: "call_full_shell".to_string(),
                     name: "shell/exec".to_string(),
                     arguments: serde_json::json!({
-                        "description": "Run the full shell fixture.",
-                        "kind": "shell",
                         "command": "printf 'live output\\n' | cat",
-                        "cwd": ".",
                         "timeoutMs": 5000
                     }),
                 })),

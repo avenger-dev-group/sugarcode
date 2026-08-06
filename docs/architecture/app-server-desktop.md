@@ -59,9 +59,14 @@ ToolCall contains call ID, SugarCode tool name and JSON arguments. Validation
 failure is its own `toolValidationRejected` Item. `FileChange`, approvals,
 execution attempts and results remain independent durable Items. Unknown fields
 or broken lifecycle correlation fail closed. Desktop mirrors Core's narrow
-compatible-gateway normalization for `workspace/list.recursive`: native JSON
-booleans and exact lowercase `"true"` / `"false"` strings project identically,
-while every other encoding still fails closed. A model response may declare
+compatible-gateway normalization for `workspace/list.recursive` and
+`workspace/search.regex` / `caseSensitive`: native JSON booleans and exact
+lowercase `"true"` / `"false"` strings project identically, while every other
+encoding still fails closed. Workspace patch projection mirrors Core's
+Codex-compatible envelope normalization, including CRLF, standard EOF heredoc
+wrappers, harmless boundary whitespace, adjacent repeated updates and
+`*** Move to:` destination paths; unsafe or conflicting paths still fail
+closed. A model response may declare
 multiple calls, including multiple workspace writes, before the runtime begins
 their sequential approval and execution. Main retains every declaration as an
 independent activity correlated by call ID; one pending call cannot overwrite or
@@ -204,7 +209,8 @@ does not relax the read-only/no-network command sandbox or authorize shell
 workspace writes. Normal terminal approval states close without a persistent
 completion toast.
 
-Full Access `shell/exec kind=shell` uses a separate Main-process approval scope;
+The Full Access `shell/exec` complete-command shape uses a separate Main-process
+approval scope;
 automatic approval learned from sandboxed direct commands can never answer it.
 The approval surface displays the complete command, cwd, selected platform
 shell and the network/outside-workspace risk. Its one-call/Thread/workspace

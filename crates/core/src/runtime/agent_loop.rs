@@ -5,7 +5,7 @@ pub(super) const MAX_CONSECUTIVE_APPROVAL_DENIALS: u8 = 3;
 pub(super) const MAX_CONSECUTIVE_TOOL_ARGUMENT_ERRORS: u8 = 3;
 pub(super) const MAX_CONSECUTIVE_TOOL_EXECUTION_ERRORS: u8 = 3;
 pub(super) const MAX_TOTAL_NON_PROGRESS_ROUNDS: u8 = 4;
-pub(super) const MAX_PREMATURE_FINAL_RECOVERIES: u8 = 1;
+pub(super) const MAX_TOOL_ARGUMENT_RECOVERY_FINAL_REJECTIONS: u8 = 1;
 
 #[derive(Debug, Default)]
 pub(super) struct AgentLoopState {
@@ -13,11 +13,10 @@ pub(super) struct AgentLoopState {
     consecutive_approval_denials: u8,
     last_tool_validation_signature: Option<String>,
     consecutive_tool_argument_errors: u8,
-    pending_tool_argument_corrections: BTreeSet<String>,
+    pending_tool_argument_correction: bool,
     last_tool_execution_signature: Option<String>,
     consecutive_tool_execution_errors: u8,
     total_non_progress_rounds: u8,
-    premature_final_recoveries: u8,
     tool_argument_recovery_final_rejections: u8,
 }
 
@@ -50,19 +49,6 @@ impl AgentLoopState {
         true
     }
 
-    pub(super) fn has_observed_tool_calls(&self) -> bool {
-        !self.call_ids.is_empty()
-    }
-
-    pub(super) fn needs_completion_recovery(&self) -> bool {
-        self.premature_final_recoveries > 0
-    }
-
-    pub(super) fn record_premature_final(&mut self) -> bool {
-        self.premature_final_recoveries = self.premature_final_recoveries.saturating_add(1);
-        self.premature_final_recoveries > MAX_PREMATURE_FINAL_RECOVERIES
-    }
-
     pub(super) fn record_approval_denied(&mut self) -> bool {
         self.consecutive_approval_denials = self.consecutive_approval_denials.saturating_add(1);
         self.consecutive_approval_denials >= MAX_CONSECUTIVE_APPROVAL_DENIALS
@@ -85,31 +71,28 @@ impl AgentLoopState {
             || self.record_non_progress()
     }
 
-    pub(super) fn require_tool_argument_correction(&mut self, tool_name: &str) {
-        self.pending_tool_argument_corrections
-            .insert(tool_name.to_string());
+    pub(super) fn require_tool_argument_correction(&mut self) {
+        self.pending_tool_argument_correction = true;
     }
 
     pub(super) fn record_valid_tool_arguments(&mut self, calls: &[ModelToolCall]) {
-        for call in calls {
-            self.pending_tool_argument_corrections.remove(&call.name);
+        if !calls.is_empty() {
+            self.pending_tool_argument_correction = false;
+            self.tool_argument_recovery_final_rejections = 0;
         }
         self.last_tool_validation_signature = None;
         self.consecutive_tool_argument_errors = 0;
-        if self.pending_tool_argument_corrections.is_empty() {
-            self.tool_argument_recovery_final_rejections = 0;
-        }
     }
 
     pub(super) fn needs_tool_argument_recovery(&self) -> bool {
-        !self.pending_tool_argument_corrections.is_empty()
+        self.pending_tool_argument_correction
     }
 
     pub(super) fn record_tool_argument_recovery_final(&mut self) -> bool {
         self.tool_argument_recovery_final_rejections = self
             .tool_argument_recovery_final_rejections
             .saturating_add(1);
-        self.tool_argument_recovery_final_rejections > MAX_PREMATURE_FINAL_RECOVERIES
+        self.tool_argument_recovery_final_rejections > MAX_TOOL_ARGUMENT_RECOVERY_FINAL_REJECTIONS
             || self.record_non_progress()
     }
 
@@ -130,45 +113,12 @@ impl AgentLoopState {
         self.consecutive_tool_execution_errors = 0;
     }
 
+    pub(super) fn record_progress(&mut self) {
+        self.total_non_progress_rounds = 0;
+    }
+
     fn record_non_progress(&mut self) -> bool {
         self.total_non_progress_rounds = self.total_non_progress_rounds.saturating_add(1);
         self.total_non_progress_rounds >= MAX_TOTAL_NON_PROGRESS_ROUNDS
     }
-}
-
-pub(super) fn looks_like_unfinished_process_update(text: &str) -> bool {
-    const MAX_CANDIDATE_BYTES: usize = 1_024;
-    const CONTINUATION_CUES: &[&str] = &[
-        "i will",
-        "i'll ",
-        "let me ",
-        "now start",
-        "now begin",
-        "现在开始",
-        "現在開始",
-        "接下来",
-        "接下來",
-        "下一步",
-        "将开始",
-        "將開始",
-    ];
-
-    let trimmed = text.trim();
-    if trimmed.is_empty() || trimmed.len() > MAX_CANDIDATE_BYTES {
-        return false;
-    }
-    let lowered = trimmed.to_lowercase();
-    if !CONTINUATION_CUES.iter().any(|cue| lowered.contains(cue)) {
-        return false;
-    }
-    let Some(last_line) = trimmed
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-    else {
-        return false;
-    };
-    last_line.starts_with('#')
-        || (last_line.len() > 4 && last_line.starts_with("**") && last_line.ends_with("**"))
 }

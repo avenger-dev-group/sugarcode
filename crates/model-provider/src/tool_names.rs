@@ -87,6 +87,13 @@ fn normalize_call(call: &mut ModelToolCall, names: &BTreeMap<String, String>) {
 }
 
 fn sanitized_tool_name(name: &str) -> String {
+    // `apply_patch` is the canonical coding-model wire name used by Codex.
+    // Keep the namespaced internal/public protocol name while presenting the
+    // familiar token to providers, then map responses back through
+    // `wire_to_internal` like every other normalized tool name.
+    if name == "workspace/apply-patch" {
+        return "apply_patch".to_owned();
+    }
     let mut value = name
         .bytes()
         .map(|byte| {
@@ -189,5 +196,35 @@ mod tests {
         };
         assert_eq!(call.id, result.call_id);
         assert!(call.id.starts_with("call_"));
+    }
+
+    #[test]
+    fn exposes_workspace_patch_with_the_codex_wire_name() {
+        let request = ModelRequest {
+            model: "fixture".to_owned(),
+            instructions: Vec::new(),
+            tools: vec![ModelToolDefinition {
+                name: "workspace/apply-patch".to_owned(),
+                description: "patch".to_owned(),
+                parameters: serde_json::json!({"type": "object"}),
+                freeform: None,
+            }],
+            messages: vec![ModelMessage::tool_calls(vec![ModelToolCall {
+                id: "call_patch".to_owned(),
+                name: "workspace/apply-patch".to_owned(),
+                arguments: serde_json::json!({"patch": "raw"}),
+            }])],
+        };
+
+        let normalized = normalize_request(request);
+        assert_eq!(normalized.request.tools[0].name, "apply_patch");
+        assert_eq!(
+            normalized.internal_tool_name("apply_patch"),
+            "workspace/apply-patch"
+        );
+        let ModelContentPart::ToolCall { call } = &normalized.request.messages[0].content[0] else {
+            panic!("tool call");
+        };
+        assert_eq!(call.name, "apply_patch");
     }
 }

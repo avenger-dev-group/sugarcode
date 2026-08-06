@@ -21,7 +21,10 @@ unsupported file types and observed identity changes.
 - `workspace/list` lists one directory level by default. `recursive: true`
   returns sorted relative `path`, `name` and entry `kind` values plus `scanned`
   and `truncated`; recursion never follows symlinks or reparse points. The
-  preferred schema uses a JSON boolean. Runtime and Desktop live/durable
+  recursive walker reports but does not descend into VCS metadata or standard
+  generated dependency/build roots such as `.git`, `node_modules`, `dist` and
+  `target`, preventing repository internals from consuming the bounded result.
+  The preferred schema uses a JSON boolean. Runtime and Desktop live/durable
   projection compatibility also accept the exact lowercase strings `"true"`
   and `"false"`; other strings, numbers and null remain invalid.
 - `workspace/search` owns both search modes. The default remains bounded,
@@ -29,7 +32,10 @@ unsupported file types and observed identity changes.
   additionally supports `regex`, `caseSensitive` and `filePattern`, returning
   a line number and at most 300 characters of excerpt. `mode: "path"` performs
   a default case-insensitive substring search over relative paths. Neither mode
-  invokes shell, Git, host `rg` or ignore-file authority.
+  invokes shell, Git, host `rg` or ignore-file authority. The preferred schema
+  uses JSON booleans; runtime and Desktop also accept exact lowercase
+  `"true"` / `"false"` for the two boolean fields because compatible Responses
+  gateways may stringify them.
 
 Read-only batches validate completely, run with bounded concurrency and return
 durable results in model order.
@@ -38,25 +44,47 @@ durable results in model order.
 
 `workspace/apply-patch` is the only model-facing workspace write tool. It
 accepts the bounded Codex-style envelope from `*** Begin Patch` through
-`*** End Patch`, with up to 64 unique `Add File`, `Update File` or `Delete File`
-markers. Update chunks use optional `@@` context and exact lines prefixed by
-space, `+` or `-`; move and rename markers are intentionally not supported in
-this slice.
+`*** End Patch`, with up to 64 unique affected paths across `Add File`,
+`Update File`, `Delete File` and optional `Move to` markers. Update chunks use
+optional `@@` context and lines prefixed by space, `+` or `-`. A move is
+compiled to an atomic destination create plus source delete in the same
+ChangeSet, so destination conflicts or any later failure leave the source
+untouched.
 
-OpenAI Responses receives this as a native custom tool constrained by the
-runtime-owned Lark grammar and returns raw patch text without JSON escaping.
-Chat Completions and Anthropic receive the same internal tool through the exact
-fallback schema `{patch: string}`. Core accepts either representation, runs the
-same bounded parser, and never attempts to heuristically repair malformed
-syntax.
+OpenAI Responses receives this through the native custom-tool wire name
+`apply_patch` and returns raw patch text without JSON escaping; internal and
+public state continue to use `workspace/apply-patch`. Its runtime-owned Lark
+grammar is intentionally one shallow terminal that constrains only the
+Begin/End envelope. It does not split arbitrary filenames and source lines
+across greedy terminals; the bounded local parser remains the semantic
+authority. Chat Completions and Anthropic receive the same internal tool through
+the exact fallback schema `{patch: string}`. Core accepts either representation
+and follows Codex's non-strict parse behavior: it trims harmless surrounding
+whitespace; accepts CRLF and the standard `<<EOF`, `<<'EOF'` and `<<"EOF"`
+wrappers; permits an omitted initial `@@`, unprefixed blank or non-empty
+unchanged context lines, trailing blank lines after `*** End of File`, empty
+added files and adjacent repeated updates for one path. Context lookup tries
+exact, trailing-whitespace, full-whitespace and Unicode-punctuation-normalized
+matching, with an end-of-file preference when requested. Once matched,
+unchanged context in the replacement is taken from the observed file rather
+than the normalized patch spelling, preventing fuzzy matching from changing
+indentation or typography. Unsafe paths, conflicting duplicate paths, unknown
+markers, oversized input and ambiguous or missing context still fail closed.
 
-Markers are the authoritative requested paths for this tool. Every path still
-passes the normal capability-relative traversal, symlink, reparse-point and
-identity checks. Updates and deletes are read through the opened workspace
-capability to bind them to the observed revision; exact context is compiled to
-revision-guarded line edits. Adds, updates and deletes then enter the existing
-atomic ChangeSet prepare, write-ahead-log and commit path. A stale context is a
-structured `expectedMismatch` and performs no mutation.
+Argument-recovery feedback classifies the local parser result as an empty,
+oversized, boundary, hunk, file-count or duplicate-path failure and tells the
+model the corresponding correction action. Raw rejected patch text remains
+absent from durable state; only its bounded byte count, hash and redacted
+failure class are retained.
+
+File and move markers are the authoritative requested paths for this tool.
+Every path still passes the normal capability-relative traversal, symlink,
+reparse-point and identity checks. Updates and deletes are read through the
+opened workspace capability to bind them to the observed revision; matched
+context is compiled against the actual observed lines into revision-guarded
+line edits. Adds, updates, moves and deletes then enter the existing atomic
+ChangeSet prepare, write-ahead-log and commit path. A stale or ambiguous context
+is a structured `expectedMismatch` and performs no mutation.
 
 ## Internal write pipeline
 
@@ -107,54 +135,47 @@ their commit or process lifetime. Different canonical roots use independent
 gates and may write concurrently. Read-only operations remain concurrent, and
 the gate still makes no claim about external processes or user edits.
 
-`shell/exec` is one tool with two distinct authorities. `kind: "direct"`
-requires an absolute executable, bounded JSON argv, the exact authoritative
-absolute workspace root as model-facing cwd, an app-server approval decision
-and platform sandbox support. The executor resolves that advertised path back
-to its capability-owned root rather than reopening arbitrary ambient paths. It
-retains the read-only/no-network default and never tokenizes a shell string. A
-single-dot cwd and calls without `kind` that contain `argvJson` remain
-runtime/replay compatibility only.
+`shell/exec` exposes exactly one model-facing argument shape per platform. On
+macOS and Windows that shape requires only one bounded complete `command`.
+Optional `cwd` defaults to the capability-owned workspace root and optional
+`timeoutMs` defaults to 300 seconds. It does not expose a discriminated union,
+`kind`, description metadata or argv fields, avoiding provider-generated
+hybrids that cannot be assigned a safe authority. The runtime still recognizes
+the exact-executable `argvJson` representation as an internal sandboxed-direct
+form, but it is not part of the model tool schema on these platforms.
 
-On macOS and Windows, `kind: "shell"` accepts one bounded complete command. Its
-preferred model-facing cwd is the same exact authoritative absolute root. The
-model-facing JSON Schema is a discriminated `oneOf`: the direct branch requires
-`argvJson` and does not advertise `timeoutMs`, while the Full Access shell branch
-may advertise `timeoutMs` and cannot contain `argvJson`. Runtime compatibility
-for historical direct argument arrays remains outside that preferred schema.
-This keeps provider-generated arguments aligned with the authority-specific
-runtime validator instead of exposing fields that the selected branch rejects.
-The runtime also accepts a single dot and validated workspace-relative
-subdirectories for compatibility, but any other absolute cwd is rejected
-before approval or execution. The process already starts in cwd, so the schema
-directs the model not to invent a host path or prepend `cd` merely to re-enter
-the workspace. The account login shell (`-lc`) or `%COMSPEC% /C` then gives
-pipes, redirections, conditionals, variables and globs their platform meaning.
+Any supplied cwd must be the authoritative absolute root or a validated
+workspace-relative subdirectory; another absolute path is rejected before
+approval or execution. The process already starts in cwd, so the schema directs
+the model not to invent a host path or prepend `cd` merely to re-enter the
+workspace. The account login shell (`-lc`) or `%COMSPEC% /C` gives pipes,
+redirections, conditionals, variables and globs their platform meaning.
 The default timeout is 300 seconds and the maximum is 600 seconds.
 The preferred schema keeps `timeoutMs` as an integer. Runtime compatibility
 also normalizes a bounded non-empty decimal string containing ASCII digits only;
 signs, units, whitespace, fractions, zero and values above the maximum remain
 invalid. This unambiguous normalization does not change shell authority.
-This mode is Full Access: it is not sandboxed, may use network and may read or
-write outside the workspace. It is denied by default and requires an explicit
-one-call, current-Thread or current-workspace Desktop authorization which is
-kept only in Main-process memory and cannot be inherited from direct sandbox
-auto-approval. Cancellation and timeout terminate the process tree. Output is
-streamed by call ID and the durable final stdout plus stderr is bounded to
-64 KiB.
+The complete-command shape is Full Access: it is not sandboxed, may use network
+and may read or write outside the workspace. It is denied by default and
+requires an explicit one-call, current-Thread or current-workspace Desktop
+authorization which is kept only in Main-process memory and cannot be inherited
+from direct sandbox auto-approval. Cancellation and timeout terminate the
+process tree. Output is streamed by call ID and the durable final stdout plus
+stderr is bounded to 64 KiB.
 
-Both modes use a filtered `hostInheritedV1` environment. It preserves
-non-sensitive host variables such as `PATH`, `HOME`, locale/temp locations and
-language-toolchain roots, while credential-like names are excluded. The
-trusted Desktop sidecar inherits the Desktop process environment; the command
-supervisor applies the credential filter again and bounds the resulting map.
+Both execution authorities use a filtered `hostInheritedV1` environment. It
+preserves non-sensitive host variables such as `PATH`, `HOME`, locale/temp
+locations and language-toolchain roots, while credential-like names are
+excluded. The trusted Desktop sidecar inherits the Desktop process environment;
+the command supervisor applies the credential filter again and bounds the map.
 Desktop may remember each mode's approval scope for the current Thread or
 workspace. Direct approval does not expand filesystem, network, executable or
 workspace-write authority. Attempt-without-result means writes may have
 occurred.
 
-The direct schema encodes flags and operands as one JSON string array in
-`argvJson`. Runtime also accepts the earlier array forms when replaying history.
+On platforms without Full Access shell support, the single advertised schema
+instead requires an absolute executable and encodes operands as one JSON string
+array in `argvJson`. Runtime also accepts the earlier array forms internally.
 A rejected call receives bounded field-specific guidance; durable diagnostics
 retain only that safe guidance plus argument byte count and SHA-256. SugarCode
 never repairs a bare direct command through `PATH`. An explicitly invoked

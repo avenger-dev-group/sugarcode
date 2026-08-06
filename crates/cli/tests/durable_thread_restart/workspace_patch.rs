@@ -111,7 +111,7 @@ fn resumes_forks_and_continues_patch_history_without_replaying_the_write() {
         .iter()
         .find_map(|message| message["tool_calls"].as_array()?.first())
         .expect("replayed tool call");
-    assert_eq!(replayed_call["function"]["name"], "workspace_apply-patch");
+    assert_eq!(replayed_call["function"]["name"], "apply_patch");
     let replayed_arguments: Value = serde_json::from_str(
         replayed_call["function"]["arguments"]
             .as_str()

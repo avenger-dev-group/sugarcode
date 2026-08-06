@@ -130,13 +130,6 @@ fn tool_result_serialized(result: &ModelToolResult) -> String {
     }
 }
 
-fn message_compaction(message: &ModelMessage) -> Option<&str> {
-    message.content.iter().find_map(|part| match part {
-        ModelContentPart::ContextCompaction { content } => Some(content.as_str()),
-        _ => None,
-    })
-}
-
 fn normalize_model_events(
     events: Vec<Result<ModelEvent, ModelError>>,
 ) -> Vec<Result<ModelEvent, ModelError>> {
@@ -362,57 +355,9 @@ fn runtime(provider: RecordedProvider) -> (CoreRuntime, mpsc::Receiver<CoreEvent
 fn model_capabilities_derive_token_reserves() {
     let default = ModelCapabilities::new(131_072, true, true, true, true, true);
     assert_eq!(default.output_reserve_tokens, 16_384);
-    assert_eq!(default.input_compaction_target_tokens(), 114_688);
-    assert_eq!(default.input_compaction_target_bytes(), 344_064);
-    assert_eq!(default.active_turn_compaction_target_tokens(), 98_304);
 
     let small = ModelCapabilities::new(8_192, true, false, false, true, false);
     assert_eq!(small.output_reserve_tokens, 4_096);
-    assert_eq!(small.input_compaction_target_tokens(), 4_096);
-    assert_eq!(small.active_turn_compaction_target_tokens(), 2_048);
-}
-
-#[test]
-fn active_turn_checkpoint_preserves_the_original_user_task() {
-    let messages = vec![
-        ModelMessage::context_compaction("older history".to_string()),
-        ModelMessage::user_text(
-            "Fix the sidebar, then run the focused tests before replying.".to_string(),
-        ),
-        ModelMessage::tool_calls(vec![ModelToolCall {
-            id: "call_1".to_string(),
-            name: "workspace/read".to_string(),
-            arguments: serde_json::json!({"path": "sidebar.tsx"}),
-        }]),
-        ModelMessage::tool_results(vec![ModelToolResult::from_serialized(
-            "call_1".to_string(),
-            "read complete".to_string(),
-        )]),
-    ];
-
-    let anchor = active_turn_task_anchor(&messages).expect("task anchor");
-    let checkpoint = active_turn_checkpoint(
-        "The sidebar source was inspected. The edit and tests remain.",
-        Some(&anchor),
-    );
-
-    assert!(checkpoint.contains("Fix the sidebar"));
-    assert!(checkpoint.contains("The edit and tests remain"));
-    assert!(checkpoint.contains("Continue executing the same user task"));
-    assert!(checkpoint.len() <= MAX_ACTIVE_TURN_COMPACTION_BYTES);
-}
-
-#[test]
-fn active_turn_task_anchor_is_utf8_safe_and_bounded() {
-    let task = format!("开始目标：{}：验收标准", "修复上下文连续性".repeat(1_000));
-    let messages = vec![ModelMessage::user_text(task)];
-
-    let anchor = active_turn_task_anchor(&messages).expect("task anchor");
-
-    assert!(anchor.len() <= MAX_ACTIVE_TURN_TASK_ANCHOR_BYTES);
-    assert!(anchor.starts_with("# Active user task anchor"));
-    assert!(anchor.contains("middle omitted by context compaction"));
-    assert!(anchor.ends_with("：验收标准"));
 }
 
 mod agent_instructions;

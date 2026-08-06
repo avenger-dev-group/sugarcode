@@ -93,6 +93,51 @@ async fn recursively_lists_relative_paths_in_stable_order() {
     );
 }
 
+#[tokio::test]
+async fn recursive_listing_reports_but_does_not_descend_into_generated_or_vcs_directories() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    for directory in [
+        ".git/objects",
+        "node_modules/pkg",
+        "dist/assets",
+        "src/nested",
+    ] {
+        fs::create_dir_all(workspace.path().join(directory)).expect("fixture directory");
+    }
+    fs::write(workspace.path().join(".git/objects/ignored"), "git").expect("git fixture");
+    fs::write(
+        workspace.path().join("node_modules/pkg/ignored.js"),
+        "module",
+    )
+    .expect("module fixture");
+    fs::write(workspace.path().join("dist/assets/ignored.js"), "dist").expect("dist fixture");
+    fs::write(workspace.path().join("src/nested/included.rs"), "source").expect("source fixture");
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
+
+    let WorkspaceRecursiveListOutcome::Entries { entries, .. } = tool
+        .list_recursive(
+            &WorkspaceListArguments {
+                path: ".".to_string(),
+            },
+            &CancellationToken::new(),
+        )
+        .await
+    else {
+        panic!("recursive listing");
+    };
+    let paths = entries
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&".git"));
+    assert!(paths.contains(&"node_modules"));
+    assert!(paths.contains(&"dist"));
+    assert!(paths.contains(&"src/nested/included.rs"));
+    assert!(!paths.iter().any(|path| path.starts_with(".git/")));
+    assert!(!paths.iter().any(|path| path.starts_with("node_modules/")));
+    assert!(!paths.iter().any(|path| path.starts_with("dist/")));
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn recursive_listing_reports_but_never_follows_symlinks() {

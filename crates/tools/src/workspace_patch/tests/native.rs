@@ -89,6 +89,104 @@ async fn workspace_freeform_patch_rejects_stale_context_without_mutation() {
 }
 
 #[tokio::test]
+async fn workspace_freeform_patch_matches_codex_whitespace_fuzz() {
+    let workspace = tempdir().expect("workspace");
+    fs::write(
+        workspace.path().join("notes.txt"),
+        "  heading  \nold value   \n",
+    )
+    .expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let patch = concat!(
+        "*** Begin Patch\n",
+        "*** Update File: notes.txt\n",
+        "@@ heading\n",
+        "-old value\n",
+        "+new value\n",
+        "*** End Patch",
+    );
+
+    let WorkspaceChangeSetPrepareOutcome::Prepared(prepared) =
+        tool.prepare_freeform_patch(patch, &cancellation()).await
+    else {
+        panic!("prepare fuzzy patch");
+    };
+    assert!(matches!(
+        tool.commit_change_set(prepared, &cancellation()).await,
+        WorkspaceChangeSetCommitOutcome::Applied { .. }
+    ));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("notes.txt")).expect("updated file"),
+        "  heading  \nnew value\n"
+    );
+}
+
+#[tokio::test]
+async fn compatible_context_does_not_rewrite_observed_indentation() {
+    let workspace = tempdir().expect("workspace");
+    fs::write(
+        workspace.path().join("package.json"),
+        "    node\n    remove\n    react\n",
+    )
+    .expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let patch = concat!(
+        "*** Begin Patch\n",
+        "*** Update File: package.json\n",
+        "    node\n",
+        "-   remove\n",
+        "    react\n",
+        "*** End Patch",
+    );
+
+    let WorkspaceChangeSetPrepareOutcome::Prepared(prepared) =
+        tool.prepare_freeform_patch(patch, &cancellation()).await
+    else {
+        panic!("prepare compatible patch");
+    };
+    assert!(matches!(
+        tool.commit_change_set(prepared, &cancellation()).await,
+        WorkspaceChangeSetCommitOutcome::Applied { .. }
+    ));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("package.json")).expect("updated file"),
+        "    node\n    react\n"
+    );
+}
+
+#[tokio::test]
+async fn workspace_freeform_patch_moves_and_updates_atomically() {
+    let workspace = tempdir().expect("workspace");
+    fs::write(workspace.path().join("old.txt"), "old\n").expect("seed file");
+    fs::create_dir(workspace.path().join("nested")).expect("destination directory");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let patch = concat!(
+        "*** Begin Patch\n",
+        "*** Update File: old.txt\n",
+        "*** Move to: nested/new.txt\n",
+        "-old\n",
+        "+new\n",
+        "*** End Patch",
+    );
+
+    let WorkspaceChangeSetPrepareOutcome::Prepared(prepared) =
+        tool.prepare_freeform_patch(patch, &cancellation()).await
+    else {
+        panic!("prepare move patch");
+    };
+    assert_eq!(prepared.changes().len(), 2);
+    assert!(matches!(
+        tool.commit_change_set(prepared, &cancellation()).await,
+        WorkspaceChangeSetCommitOutcome::Applied { receipts } if receipts.len() == 2
+    ));
+    assert!(!workspace.path().join("old.txt").exists());
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("nested/new.txt")).expect("moved file"),
+        "new\n"
+    );
+}
+
+#[tokio::test]
 async fn line_edit_engine_applies_multiple_original_revision_splices() {
     let workspace = tempdir().expect("workspace");
     let before = b"one\ntwo\nthree\nfour\n";

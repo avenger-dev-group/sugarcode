@@ -246,18 +246,19 @@ fn provider_history_preserves_balanced_tools_from_an_interrupted_turn() {
 }
 
 #[test]
-fn provider_history_compacts_deterministically_above_the_compatibility_target() {
+fn provider_history_remains_verbatim_above_the_previous_compaction_limit() {
     let mut core = Core::new();
     let thread_id = start_thread(&mut core, 1);
     let maximum_output = "x".repeat(LARGE_AGENT_OUTPUT_BYTES);
-    for request in 2..=7 {
+
+    for request in 2..=10 {
         let prepared = core
             .prepare_text_turn(
                 CoreRequestId::new(request),
                 thread_id.clone(),
-                Some("u".to_string()),
+                Some(format!("user-{request}")),
             )
-            .expect("history remains within limit before completion");
+            .expect("turn creation does not compact or reject full history");
         core.append_text_delta(&thread_id, &prepared.turn_id, &maximum_output)
             .expect("maximum output");
         core.finish_text_turn(
@@ -270,207 +271,27 @@ fn provider_history_compacts_deterministically_above_the_compatibility_target() 
         .expect("complete turn");
     }
 
-    let compacted = core
+    let prepared = core
         .prepare_text_turn(
-            CoreRequestId::new(8),
-            thread_id.clone(),
-            Some("after-compaction".to_string()),
-        )
-        .expect("compaction makes the prospective request fit");
-    assert_eq!(compacted.history.len(), 2);
-    let PreparedMessage::ContextCompaction { content } = &compacted.history[0] else {
-        panic!("expected persisted compaction first");
-    };
-    assert!(content.starts_with("SugarCode deterministic persisted compaction v1\n"));
-    assert_eq!(
-        compacted.history[1],
-        PreparedMessage::UserContent {
-            content: vec![sugarcode_protocol::CoreUserContentPart::Text {
-                text: "after-compaction".to_string(),
-            }],
-        }
-    );
-    core.start_agent_message(&thread_id, &compacted.turn_id)
-        .expect("start compacted response");
-    core.append_text_delta(&thread_id, &compacted.turn_id, "answer")
-        .expect("append response");
-    core.finish_text_turn(
-        &thread_id,
-        &compacted.turn_id,
-        DurableTurnStatus::Completed,
-        None,
-        None,
-    )
-    .expect("complete checkpoint turn");
-
-    let snapshot = core.resume_thread(&thread_id).expect("snapshot");
-    let checkpoint = snapshot.turns[6]
-        .context_compaction
-        .as_ref()
-        .expect("completed turn persists checkpoint");
-    assert_eq!(checkpoint.through_turn_id, snapshot.turns[5].id);
-    assert_eq!(checkpoint.source_turns, 6);
-    assert!(checkpoint.pre_context_bytes > crate::context::COMPACTION_TARGET_BYTES as u64);
-    assert!(checkpoint.post_context_bytes <= crate::context::COMPACTION_TARGET_BYTES as u64);
-
-    let continued = core
-        .prepare_text_turn(
-            CoreRequestId::new(9),
+            CoreRequestId::new(11),
             thread_id,
-            Some("continued".to_string()),
+            Some("continue-with-full-history".to_string()),
         )
-        .expect("completed checkpoint is effective");
-    assert_eq!(
-        continued.history[0],
-        PreparedMessage::ContextCompaction {
-            content: checkpoint.message.clone(),
-        }
-    );
-    assert_eq!(continued.history.len(), 4);
-}
+        .expect("history is not locally size-gated");
 
-#[test]
-fn interrupted_checkpoint_is_rebuilt_with_recoverable_input() {
-    let mut core = Core::new();
-    let thread_id = start_thread(&mut core, 1);
-    let maximum_output = "x".repeat(LARGE_AGENT_OUTPUT_BYTES);
-    for request in 2..=7 {
-        let prepared = core
-            .prepare_text_turn(
-                CoreRequestId::new(request),
-                thread_id.clone(),
-                Some("u".to_string()),
-            )
-            .expect("prepare history");
-        core.append_text_delta(&thread_id, &prepared.turn_id, &maximum_output)
-            .expect("maximum output");
-        core.finish_text_turn(
-            &thread_id,
-            &prepared.turn_id,
-            DurableTurnStatus::Completed,
-            None,
-            None,
-        )
-        .expect("complete history");
-    }
-    let interrupted = core
-        .prepare_text_turn(
-            CoreRequestId::new(8),
-            thread_id.clone(),
-            Some("retry".to_string()),
-        )
-        .expect("first checkpoint");
-    let PreparedMessage::ContextCompaction {
-        content: first_message,
-    } = &interrupted.history[0]
-    else {
-        panic!("checkpoint");
-    };
-    core.start_agent_message(&thread_id, &interrupted.turn_id)
-        .expect("start interrupted answer");
-    core.finish_text_turn(
-        &thread_id,
-        &interrupted.turn_id,
-        DurableTurnStatus::Interrupted,
-        None,
-        None,
-    )
-    .expect("interrupt checkpoint turn");
+    assert_eq!(prepared.history.len(), 19);
     assert!(
-        core.resume_thread(&thread_id).expect("snapshot").turns[6]
-            .context_compaction
-            .is_some()
-    );
-
-    let retried = core
-        .prepare_text_turn(CoreRequestId::new(9), thread_id, Some("retry".to_string()))
-        .expect("rebuild checkpoint with interrupted input");
-    let PreparedMessage::ContextCompaction { content } = &retried.history[0] else {
-        panic!("rebuilt checkpoint");
-    };
-    assert_ne!(content, first_message);
-    assert!(content.contains("coveredTurns:7"));
-    assert!(matches!(
-        retried.history.last(),
-        Some(PreparedMessage::UserContent { content })
-            if matches!(content.as_slice(), [sugarcode_protocol::CoreUserContentPart::Text { text }] if text == "retry")
-    ));
-}
-
-#[test]
-fn compaction_trigger_is_strictly_above_target_and_failure_is_atomic() {
-    let mut core = Core::new();
-    let thread_id = start_thread(&mut core, 1);
-    let first = core
-        .prepare_text_turn(
-            CoreRequestId::new(2),
-            thread_id.clone(),
-            Some("u".to_string()),
-        )
-        .expect("first turn");
-    core.append_text_delta(&thread_id, &first.turn_id, "a")
-        .expect("first answer");
-    core.finish_text_turn(
-        &thread_id,
-        &first.turn_id,
-        DurableTurnStatus::Completed,
-        None,
-        None,
-    )
-    .expect("complete first turn");
-
-    let fixed_at_target = crate::context::COMPACTION_TARGET_BYTES - 3;
-    let exact = core
-        .prepare_text_turn_with_workspace_instructions(
-            CoreRequestId::new(3),
-            thread_id.clone(),
-            Some("n".to_string()),
-            None,
-            fixed_at_target,
-            0,
-        )
-        .expect("exact target does not compact");
-    assert!(TurnId::parse(exact.turn_id.as_str()).is_ok());
-    assert!(
-        exact
+        prepared
             .history
             .iter()
             .all(|message| !matches!(message, PreparedMessage::ContextCompaction { .. }))
     );
-    core.start_agent_message(&thread_id, &exact.turn_id)
-        .expect("start interrupted exact-target answer");
-    core.finish_text_turn(
-        &thread_id,
-        &exact.turn_id,
-        DurableTurnStatus::Interrupted,
-        None,
-        None,
-    )
-    .expect("interrupt exact-target turn");
-
-    assert_eq!(
-        core.prepare_text_turn_with_workspace_instructions(
-            CoreRequestId::new(4),
-            thread_id.clone(),
-            Some("n".to_string()),
-            None,
-            fixed_at_target,
-            0,
-        ),
-        Err(CoreError::ContextTooLarge)
-    );
-    let after_failure = core
-        .prepare_text_turn_with_workspace_instructions(
-            CoreRequestId::new(5),
-            thread_id,
-            Some("n".to_string()),
-            None,
-            fixed_at_target - 1,
-            0,
-        )
-        .expect("failed compaction did not reserve a turn");
-    assert!(TurnId::parse(after_failure.turn_id.as_str()).is_ok());
-    assert_ne!(after_failure.turn_id, exact.turn_id);
+    assert!(matches!(
+        prepared.history.last(),
+        Some(PreparedMessage::UserContent { content })
+            if matches!(content.as_slice(), [CoreUserContentPart::Text { text }]
+                if text == "continue-with-full-history")
+    ));
 }
 
 #[test]

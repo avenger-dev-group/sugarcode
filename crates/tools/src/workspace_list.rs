@@ -231,7 +231,9 @@ impl WorkspaceTool {
                 name: entry.name.clone(),
                 kind: entry.kind,
             });
-            if entry.kind == WorkspaceListEntryKind::Directory {
+            if entry.kind == WorkspaceListEntryKind::Directory
+                && !is_recursive_noise_directory(&entry.name)
+            {
                 if frame.depth >= MAX_WORKSPACE_RECURSIVE_LIST_DEPTH {
                     truncated = true;
                     continue;
@@ -461,6 +463,13 @@ impl WorkspaceTool {
             name_bytes,
         }
     }
+}
+
+fn is_recursive_noise_directory(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".hg" | ".svn" | ".next" | ".turbo" | "build" | "dist" | "node_modules" | "target"
+    )
 }
 
 fn collect_directory_entries_now(

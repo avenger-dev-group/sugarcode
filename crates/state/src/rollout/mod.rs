@@ -776,7 +776,7 @@ pub(crate) fn valid_incremental_item(
     else {
         return Err("invalidCommandExecutionAttempt");
     };
-    let Some(call) = shell_call_execution_arguments(call_arguments) else {
+    let Some(call) = shell_call_execution_arguments(call_arguments, cwd) else {
         return Err("invalidCommandExecutionAttempt");
     };
     let policy_matches_mode = if call.full_access {
@@ -815,18 +815,22 @@ struct ShellCallExecutionArguments<'a> {
     full_access: bool,
 }
 
-fn shell_call_execution_arguments(
-    arguments: &serde_json::Value,
-) -> Option<ShellCallExecutionArguments<'_>> {
+fn shell_call_execution_arguments<'a>(
+    arguments: &'a serde_json::Value,
+    default_cwd: &'a str,
+) -> Option<ShellCallExecutionArguments<'a>> {
     let object = arguments.as_object()?;
     let command = object.get("command")?.as_str()?;
-    let cwd = object.get("cwd")?.as_str()?;
+    let cwd = match object.get("cwd") {
+        Some(value) => value.as_str()?,
+        None => default_cwd,
+    };
     let argument_source_count = ["argvJson", "argv", "arguments"]
         .into_iter()
         .filter(|key| object.contains_key(*key))
         .count();
     let kind = object.get("kind").and_then(serde_json::Value::as_str);
-    if kind == Some("shell") {
+    if kind == Some("shell") || (kind.is_none() && argument_source_count == 0) {
         if argument_source_count != 0 {
             return None;
         }

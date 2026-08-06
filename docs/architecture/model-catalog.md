@@ -62,9 +62,9 @@ explicitly enabled image declaration; turning it off returns image input to
 switch is changed; selecting Compatible Chat also returns an explicitly enabled
 PDF declaration to `auto` because that wire cannot represent PDF input.
 Advanced capability values remain available through the versioned CLI
-configuration contract. Automatic context compaction is shown as
-Runtime-managed because its trigger is derived from the saved context window
-and Runtime reserves rather than stored as another profile setting.
+configuration contract. Desktop does not expose a context-window or automatic
+compaction control because Runtime does not use catalog context metadata to
+truncate, summarize or reject conversation history.
 
 ## Discovery
 
@@ -155,11 +155,9 @@ type, byte size and SHA-256. Runtime emits at most one
 attachment that the current profile cannot accept still fails before provider
 I/O and is never silently downgraded.
 
-The default context window is 131,072 tokens. Core reserves at most 16,384
-tokens for output, estimates input conservatively at three UTF-8 bytes per
-token and separately caps one provider context at 4 MiB. Provider context
-rejection may trigger same-Turn compaction. The result is accepted only when it
-is smaller than the rejected request and under the recovery target.
+Catalog context metadata remains available for provider output sizing and usage
+display, but it is not an input-admission boundary. Core sends complete history
+and does not locally compact or reject a request based on that metadata.
 
 ## Tool schema and validation
 
@@ -173,24 +171,24 @@ The built-in local tool namespace has five provider-neutral names:
 `workspace/apply-patch` and `shell/exec`. List recursion, path/content search,
 multi-file create/update/delete and direct/full-shell execution remain inside
 those names rather than becoming extra tools. Apply-patch is native freeform on
-supported OpenAI Responses gateways and uses the exact `{patch: string}`
-fallback elsewhere. OpenAI Responses, Chat Completions and Anthropic receive
-the same logical tool through request-local safe-name mapping, and ordered
-multi-`FileChange` history retains the original call ID.
+supported OpenAI Responses gateways, is exposed there with the model-familiar
+request-local name `apply_patch`, and uses the exact `{patch: string}` fallback
+elsewhere. Its provider grammar constrains only the patch envelope while the
+local bounded parser owns semantic validation and follows Codex's non-strict
+whitespace, heredoc, move and context matching. OpenAI Responses, Chat
+Completions and Anthropic receive the same logical tool through request-local
+safe-name mapping, and ordered multi-`FileChange` history retains the original
+call ID.
 
 When native command execution is present, `shell/exec` is the one dynamic local
 schema: its description includes the capability-owned authoritative absolute
-workspace root and its preferred cwd schema fixes both direct and shell calls
-to that exact value. The platform-specific schema is a discriminated union:
-direct requires `argvJson` and excludes `timeoutMs`, while Full Access shell
-excludes `argvJson` and alone advertises the optional timeout. Auto strictness
-downgrades this union when a provider strict dialect cannot represent `oneOf`;
-explicitly forced strict mode fails before network I/O. A single dot, missing
-direct `kind`, shell-relative cwd and a bounded decimal-string shell timeout
-remain runtime/replay compatibility rather than model-preferred shapes. The
-base Agent instruction describes both branches and forbids guessing or
-translating the root; obsolete direct-only and single-file write instructions
-are not retained.
+workspace root. On macOS and Windows its flat model schema requires only a
+complete `command`; cwd and timeout are optional, and direct argv fields are not
+advertised. Platforms without Full Access shell support instead advertise the
+single exact-executable `argvJson` shape. Runtime-only direct compatibility does
+not add another model branch. The base Agent instruction tells the model to
+follow the one advertised shape and forbids mixing fields from another command
+protocol or guessing the root.
 
 Invalid tool arguments and schema mismatches produce bounded model-visible
 feedback and a public `toolValidationRejected` Item. The Item carries kind,

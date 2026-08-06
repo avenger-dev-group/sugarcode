@@ -35,7 +35,7 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
         definitions.push(ModelToolDefinition {
             name: "workspace/apply-patch".to_string(),
             description:
-                "Apply one atomic Codex-style patch across up to 64 workspace files. This is a FREEFORM tool on supported providers: send the patch directly from *** Begin Patch through *** End Patch without JSON wrapping. Use Add File, Update File or Delete File markers with workspace-relative paths; updates use @@ context and lines prefixed with space, + or -. On JSON-only providers pass the identical text in the patch field."
+                "Apply one atomic Codex-style patch across up to 64 workspace paths. Send raw patch text directly on a custom-tool wire; on a JSON-only wire put the identical text in patch. Use *** Begin Patch, then one or more *** Add File / *** Update File / *** Delete File sections with workspace-relative paths, then *** End Patch. Updates accept optional @@ context and *** Move to. The parser also accepts standard EOF heredoc wrappers, CRLF, harmless boundary whitespace, omitted initial @@, blank or unprefixed unchanged context lines, adjacent repeated updates, and Codex-style whitespace or Unicode punctuation context matching. Matched unchanged context retains the file's observed spelling and indentation. Prefer the canonical raw form. Do not send unified-diff ---/+++ headers, Markdown fences, prose, or JSON around a raw custom-tool call."
                     .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -65,9 +65,15 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
         let encoded_workspace_root = workspace_root
             .and_then(|root| serde_json::to_string(root).ok())
             .unwrap_or_else(|| "unavailable".to_string());
-        let description = format!(
-            "Execute either one exact absolute program (kind direct) in the sandbox, or on macOS/Windows one complete command string (kind shell) through the account login shell after explicit Full Access approval. Prefer direct whenever one executable plus argv is sufficient. Direct-mode network access is denied; writes inside the active workspace scope require the separately enabled workspace-write policy. Shell mode supports pipes, redirections, conditionals, variables and globs; it can access the network and paths outside the workspace. The authoritative active workspace root is {encoded_workspace_root}. Never guess, translate or invent another workspace path."
-        );
+        let description = if cfg!(any(target_os = "macos", windows)) {
+            format!(
+                "Execute one complete command string through the account login shell after explicit Full Access approval. Pass command only unless cwd or timeoutMs must be overridden; cwd defaults to the authoritative active workspace root {encoded_workspace_root}. The command may use pipes, redirections, conditionals, variables and globs, and can access the network and paths outside the workspace. Do not include kind, argvJson, argv or arguments. Never guess, translate or invent another workspace path."
+            )
+        } else {
+            format!(
+                "Execute one exact absolute program in the read-only, network-denied sandbox. Pass the executable in command and its argv as a JSON-encoded string array in argvJson. The authoritative active workspace root is {encoded_workspace_root}. Never guess, translate or invent another workspace path."
+            )
+        };
         let cwd_description = workspace_root.map_or_else(
             || {
                 "Use a single dot for the active workspace root. The process starts in cwd, so do not prepend a guessed absolute cd command."
@@ -76,9 +82,15 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
             |root| {
                 let encoded = serde_json::to_string(root)
                     .expect("UTF-8 workspace root must serialize as JSON");
-                format!(
-                    "For both direct and shell commands, use the exact authoritative absolute workspace root {encoded}. A single dot and shell-relative subdirectories are accepted only for runtime compatibility. The process starts in cwd, so do not prepend cd merely to enter the active workspace."
-                )
+                if cfg!(any(target_os = "macos", windows)) {
+                    format!(
+                        "Omit cwd to use the authoritative absolute workspace root {encoded}. If cwd is provided, use that exact root or one workspace-relative subdirectory. The process starts in cwd, so do not prepend cd merely to enter the active workspace."
+                    )
+                } else {
+                    format!(
+                        "Use the exact authoritative absolute workspace root {encoded}. A single dot is accepted only for internal compatibility. The process starts in cwd, so do not prepend cd merely to enter the active workspace."
+                    )
+                }
             },
         );
         let cwd_parameters = workspace_root.map_or_else(
@@ -122,34 +134,25 @@ pub(super) fn workspace_tool_definitions(runtime: &CoreRuntime) -> Vec<ModelTool
             "required": ["description", "kind", "command", "argvJson", "cwd"]
         });
         let parameters = if cfg!(any(target_os = "macos", windows)) {
-            let shell_parameters = serde_json::json!({
+            serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "description": {
-                        "type": "string",
-                        "description": "A short plain-language explanation shown in the approval UI. Describe the user-visible action without executable paths, argv, cwd, or policy names."
-                    },
-                    "kind": {
-                        "type": "string",
-                        "const": "shell"
-                    },
                     "command": {
                         "type": "string",
-                        "description": "One complete shell command string. Use this branch only when shell syntax such as pipes, redirections, conditionals, variables or globs is required."
+                        "description": "One complete command string interpreted by the account login shell after Full Access approval."
                     },
-                    "cwd": cwd_parameters,
+                    "cwd": {
+                        "type": "string",
+                        "description": cwd_description
+                    },
                     "timeoutMs": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": sugarcode_tools::MAX_FULL_ACCESS_SHELL_TIMEOUT_MS
                     }
                 },
-                "required": ["description", "kind", "command", "cwd"]
-            });
-            serde_json::json!({
-                "type": "object",
-                "oneOf": [direct_parameters, shell_parameters]
+                "required": ["command"]
             })
         } else {
             direct_parameters
@@ -321,7 +324,12 @@ pub(super) fn shell_tool_argument_guidance(
         .arguments
         .get("kind")
         .and_then(serde_json::Value::as_str)
-        == Some("shell");
+        == Some("shell")
+        || (cfg!(any(target_os = "macos", windows))
+            && call.arguments.get("kind").is_none()
+            && !["argvJson", "argv", "arguments"]
+                .iter()
+                .any(|name| call.arguments.get(*name).is_some()));
     if is_shell
         && call
             .arguments
@@ -335,7 +343,7 @@ pub(super) fn shell_tool_argument_guidance(
     }
     Some(if is_shell {
         ToolArgumentGuidance::generic(
-            "kind shell requires description, a complete bounded command string, the advertised authoritative absolute workspace root or a workspace-relative cwd, and optional timeoutMs; argvJson is not used",
+            "a complete bounded command string is required; cwd and timeoutMs are optional, while kind, description, argvJson, argv and arguments are not part of the model-facing Full Access shape",
             "useFullAccessShellSchema",
         )
     } else {
@@ -427,6 +435,9 @@ pub(super) fn shell_tool_arguments(
         return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
     }
     let kind = match arguments.get("kind").and_then(serde_json::Value::as_str) {
+        None if argv_sources == 0 && cfg!(any(target_os = "macos", windows)) => {
+            ShellToolKind::Shell
+        }
         None if argv_sources == 1 => ShellToolKind::Direct,
         Some("direct") => ShellToolKind::Direct,
         Some("shell") if cfg!(any(target_os = "macos", windows)) => ShellToolKind::Shell,
@@ -435,7 +446,14 @@ pub(super) fn shell_tool_arguments(
     let description = arguments
         .get("description")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            match kind {
+                ShellToolKind::Direct => "Run a sandboxed command.",
+                ShellToolKind::Shell => "Run a Full Access shell command.",
+            }
+            .to_string()
+        });
     let command = arguments
         .get("command")
         .and_then(serde_json::Value::as_str)
@@ -443,10 +461,16 @@ pub(super) fn shell_tool_arguments(
     let cwd = arguments
         .get("cwd")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))?;
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            workspace_root
+                .and_then(std::path::Path::to_str)
+                .unwrap_or(".")
+                .to_string()
+        });
     if description.is_empty()
         || description.len() > 512
-        || invalid_command_text(description)
+        || invalid_command_text(&description)
         || command.is_empty()
         || command.len() > sugarcode_tools::MAX_SHELL_COMMAND_BYTES
         || command.contains('\0')
@@ -462,25 +486,21 @@ pub(super) fn shell_tool_arguments(
         .transpose()?
         .unwrap_or(sugarcode_tools::DEFAULT_FULL_ACCESS_SHELL_TIMEOUT_MS);
     if kind == ShellToolKind::Shell {
-        if argv_sources != 0
-            || !shell_cwd_is_valid(cwd, workspace_root)
-            || arguments.len() < 4
-            || arguments.len() > 5
-        {
+        if argv_sources != 0 || !shell_cwd_is_valid(&cwd, workspace_root) {
             return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
         }
         return Ok(ShellToolArguments {
-            description: description.to_string(),
+            description,
             kind,
             command: command.to_string(),
             arguments: Vec::new(),
-            cwd: cwd.to_string(),
+            cwd,
             timeout_ms,
         });
     }
     let legacy = !arguments.contains_key("kind");
     if argv_sources != 1
-        || !direct_cwd_is_valid(cwd, workspace_root)
+        || !direct_cwd_is_valid(&cwd, workspace_root)
         || !std::path::Path::new(command).is_absolute()
         || invalid_command_path(command)
         || invalid_command_text(command)
@@ -509,11 +529,11 @@ pub(super) fn shell_tool_arguments(
         parsed.push(value);
     }
     Ok(ShellToolArguments {
-        description: description.to_string(),
+        description,
         kind,
         command: command.to_string(),
         arguments: parsed,
-        cwd: cwd.to_string(),
+        cwd,
         timeout_ms,
     })
 }
@@ -563,20 +583,56 @@ pub(super) fn workspace_tool_argument_guidance(
                 .and_then(|arguments| arguments.get("patch"))
                 .and_then(serde_json::Value::as_str)
         });
+        let failure =
+            patch.and_then(|patch| sugarcode_tools::validate_workspace_freeform_patch(patch).err());
+        let (code, expected, action) = match failure {
+            Some(sugarcode_tools::WorkspaceFreeformPatchErrorKind::Empty) => (
+                "emptyPatch",
+                "a non-empty patch with at least one Add File, Update File, or Delete File section",
+                "addPatchSection",
+            ),
+            Some(sugarcode_tools::WorkspaceFreeformPatchErrorKind::TooLarge) => (
+                "patchTooLarge",
+                "a patch within the advertised file, hunk, line, and byte limits",
+                "splitPatch",
+            ),
+            Some(sugarcode_tools::WorkspaceFreeformPatchErrorKind::InvalidBoundary) => (
+                "invalidBoundary",
+                "a Codex patch bounded by *** Begin Patch and *** End Patch; surrounding whitespace and standard EOF heredoc wrappers are accepted",
+                "correctPatchBoundaries",
+            ),
+            Some(sugarcode_tools::WorkspaceFreeformPatchErrorKind::InvalidHunk) => (
+                "invalidHunk",
+                "Codex patch sections using *** Add File, *** Update File, or *** Delete File; updates may include *** Move to and optional @@ context; unchanged lines may use the normal space prefix or the compatible unprefixed form",
+                "correctPatchHunk",
+            ),
+            Some(sugarcode_tools::WorkspaceFreeformPatchErrorKind::TooManyFiles) => (
+                "tooManyFiles",
+                "no more than 64 file sections in one patch",
+                "splitPatch",
+            ),
+            Some(sugarcode_tools::WorkspaceFreeformPatchErrorKind::DuplicatePath) => (
+                "duplicatePath",
+                "each affected workspace-relative path once per patch; adjacent Update File sections for the same path are combined automatically",
+                "combineFileHunks",
+            ),
+            None if patch.is_none() => (
+                "invalidType",
+                "one raw patch string, or on JSON-only wires exactly one string field named patch",
+                "correctPatchInput",
+            ),
+            None => unreachable!("invalid workspace patch must have a parser failure"),
+        };
         return Some(ToolArgumentGuidance::at(
             if call.arguments.is_string() {
                 "$"
             } else {
                 "$.patch"
             },
-            if patch.is_some() {
-                "invalidPatch"
-            } else {
-                "invalidType"
-            },
-            "a complete Codex-style patch from *** Begin Patch through *** End Patch",
+            code,
+            expected,
             Some(&call.arguments),
-            "correctPatch",
+            action,
         ));
     }
     let Some(arguments) = call.arguments.as_object() else {
@@ -692,7 +748,7 @@ fn diagnose_workspace_search(
     }
     for name in ["regex", "caseSensitive"] {
         if let Some(value) = arguments.get(name)
-            && !value.is_boolean()
+            && compatible_boolean(value).is_none()
         {
             return Some(ToolArgumentGuidance::at(
                 format!("$.{name}"),
@@ -817,8 +873,7 @@ pub(super) fn workspace_tool_arguments(
             arguments
                 .get(name)
                 .map(|value| {
-                    value
-                        .as_bool()
+                    compatible_boolean(value)
                         .ok_or_else(|| ModelError::new(ModelErrorKind::InvalidRequest, false))
                 })
                 .transpose()

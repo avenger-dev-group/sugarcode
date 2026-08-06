@@ -21,6 +21,7 @@ use crate::ModelTextPhase;
 use crate::ModelToolCall;
 use crate::ModelToolResultContent;
 use crate::ModelUsage;
+use crate::OpenAiChatCompletionsProvider;
 use crate::ProviderContextEnvelope;
 use crate::ProviderWireApi;
 use base64::Engine;
@@ -63,6 +64,7 @@ pub struct OpenAiResponsesProvider {
     parallel_tools: bool,
     max_output_tokens: u32,
     openai_continuation_mode: OpenAiContinuationMode,
+    compatible_chat_fallback: Option<OpenAiChatCompletionsProvider>,
 }
 
 impl OpenAiResponsesProvider {
@@ -77,6 +79,18 @@ impl OpenAiResponsesProvider {
             return Err(ModelError::new(ModelErrorKind::InvalidRequest, false));
         }
         let client = crate::transport::client()?;
+        let compatible_chat_fallback = (!is_official_openai_base(&base_url))
+            .then(|| {
+                let endpoint = crate::transport::append_path(&base_url, "chat/completions")?;
+                OpenAiChatCompletionsProvider::new_secret_with_client_and_capabilities(
+                    client.clone(),
+                    endpoint,
+                    token.clone(),
+                    strict_tools,
+                    parallel_tools,
+                )
+            })
+            .transpose()?;
         Ok(Self {
             client,
             base_url,
@@ -85,6 +99,7 @@ impl OpenAiResponsesProvider {
             parallel_tools,
             max_output_tokens,
             openai_continuation_mode: OpenAiContinuationMode::LocalReplay,
+            compatible_chat_fallback,
         })
     }
 
@@ -104,6 +119,10 @@ impl fmt::Debug for OpenAiResponsesProvider {
             .field("parallel_tools", &self.parallel_tools)
             .field("max_output_tokens", &self.max_output_tokens)
             .field("openai_continuation_mode", &self.openai_continuation_mode)
+            .field(
+                "compatible_chat_fallback",
+                &self.compatible_chat_fallback.is_some(),
+            )
             .finish()
     }
 }
@@ -180,6 +199,28 @@ impl ModelProvider for OpenAiResponsesProvider {
         }
         .boxed()
     }
+
+    fn retry_after_no_output(&self, request: ModelRequest) -> BoxModelFuture<'_> {
+        match &self.compatible_chat_fallback {
+            Some(provider)
+                if !request.messages.iter().any(|message| {
+                    message
+                        .content
+                        .iter()
+                        .any(|part| matches!(part, ModelContentPart::ProviderContext(_)))
+                }) =>
+            {
+                provider.stream(request)
+            }
+            _ => self.stream(request),
+        }
+    }
+}
+
+fn is_official_openai_base(base_url: &Url) -> bool {
+    base_url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
 }
 
 async fn process_openai_stream(

@@ -229,7 +229,9 @@ fn openai_input_items(
 }
 
 fn openai_tool_call(call: &ModelToolCall, fallback_argument: Option<&str>) -> Value {
-    if let Some(fallback_argument) = fallback_argument {
+    if let Some(fallback_argument) = fallback_argument
+        && call.arguments.is_string()
+    {
         json!({
             "type": "custom_tool_call",
             "call_id": call.id,
@@ -263,6 +265,7 @@ fn custom_call_ids(
         for part in &message.content {
             if let ModelContentPart::ToolCall { call } = part
                 && freeform_fallbacks.contains_key(call.name.as_str())
+                && call.arguments.is_string()
             {
                 ids.insert(call.id.clone());
             }

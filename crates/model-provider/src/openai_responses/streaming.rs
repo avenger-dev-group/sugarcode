@@ -116,14 +116,32 @@ impl OpenAiStreamState {
                 let response = map_response_tool_names(response, tool_names);
                 Ok(StreamProgress::Complete(Box::new(response)))
             }
-            "response.failed" | "response.incomplete" | "error" => Err(ModelError::new(
-                if kind == "response.incomplete" {
-                    ModelErrorKind::Incomplete
-                } else {
-                    ModelErrorKind::Server
-                },
-                false,
-            )),
+            "response.incomplete" => {
+                let has_semantic_output = !self.output_items.is_empty()
+                    || self.text_previews.values().any(|text| !text.is_empty())
+                    || value
+                        .pointer("/response/output")
+                        .and_then(Value::as_array)
+                        .is_some_and(|output| !output.is_empty());
+                let reason = value
+                    .pointer("/response/incomplete_details/reason")
+                    .or_else(|| value.pointer("/incomplete_details/reason"))
+                    .and_then(Value::as_str);
+                Err(match reason {
+                    Some("content_filter" | "safety") => {
+                        ModelError::new(ModelErrorKind::Filtered, false)
+                    }
+                    Some("max_output_tokens") => {
+                        ModelError::new(ModelErrorKind::Incomplete, !has_semantic_output)
+                    }
+                    // Several compatible Responses gateways occasionally end
+                    // an otherwise empty continuation with an unqualified
+                    // incomplete event. Core may safely replay that same
+                    // request once because no semantic output was observed.
+                    _ => ModelError::new(ModelErrorKind::Incomplete, !has_semantic_output),
+                })
+            }
+            "response.failed" | "error" => Err(ModelError::new(ModelErrorKind::Server, false)),
             "response.created"
             | "response.in_progress"
             | "response.output_item.added"

@@ -1505,9 +1505,9 @@ const parseConversationItem = (value: unknown): ConversationItem | null => {
         argumentsValue.mode !== 'content' &&
         argumentsValue.mode !== 'path') ||
       (Object.hasOwn(argumentsValue, 'regex') &&
-        typeof argumentsValue.regex !== 'boolean') ||
+        !isCompatibleBoolean(argumentsValue.regex)) ||
       (Object.hasOwn(argumentsValue, 'caseSensitive') &&
-        typeof argumentsValue.caseSensitive !== 'boolean') ||
+        !isCompatibleBoolean(argumentsValue.caseSensitive)) ||
       (Object.hasOwn(argumentsValue, 'filePattern') &&
         typeof argumentsValue.filePattern !== 'string')
     ) {

@@ -1108,7 +1108,7 @@ async fn repeated_identical_tool_id_and_stop_finish_are_normalized() {
 }
 
 #[tokio::test]
-async fn empty_completed_response_is_non_retryable_incomplete() {
+async fn empty_completed_response_is_retryable_incomplete() {
     let body = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
         "data: [DONE]\n\n"
@@ -1124,7 +1124,7 @@ async fn empty_completed_response_is_non_retryable_incomplete() {
         .expect_err("empty response must fail");
     server.await.expect("mock server");
     assert_eq!(error.kind(), ModelErrorKind::Incomplete);
-    assert!(!error.retryable());
+    assert!(error.retryable());
 }
 
 #[tokio::test]
@@ -1586,27 +1586,32 @@ async fn context_length_rejections_are_distinct_from_other_invalid_requests() {
 }
 
 #[tokio::test]
-async fn terminal_reason_matrix_maps_to_stable_non_retryable_errors() {
-    for (terminal, kind) in [
+async fn terminal_reason_matrix_maps_to_stable_errors() {
+    for (terminal, kind, retryable) in [
         (
             "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}",
             ModelErrorKind::Incomplete,
+            true,
         ),
         (
             "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"content_filter\"}]}",
             ModelErrorKind::Filtered,
+            false,
         ),
         (
             "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
             ModelErrorKind::UnsupportedOutput,
+            false,
         ),
         (
             "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[]},\"finish_reason\":null}]}",
             ModelErrorKind::Incomplete,
+            true,
         ),
         (
             "{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"fixture_unknown\"}]}",
             ModelErrorKind::Protocol,
+            false,
         ),
     ] {
         let body = format!("data: {terminal}\n\ndata: [DONE]\n\n");
@@ -1621,12 +1626,12 @@ async fn terminal_reason_matrix_maps_to_stable_non_retryable_errors() {
             .expect_err("terminal reason must fail");
         server.await.expect("mock server");
         assert_eq!(error.kind(), kind);
-        assert!(!error.retryable());
+        assert_eq!(error.retryable(), retryable);
     }
 }
 
 #[tokio::test]
-async fn done_without_finish_reason_is_a_non_retryable_incomplete_response() {
+async fn done_without_finish_reason_is_a_retryable_incomplete_response() {
     let (endpoint, server) = response_server(b"data: [DONE]\n\n".to_vec(), Vec::new()).await;
     let error = provider(endpoint)
         .stream(request())
@@ -1638,7 +1643,7 @@ async fn done_without_finish_reason_is_a_non_retryable_incomplete_response() {
         .expect_err("empty DONE response must fail");
     server.await.expect("mock server");
     assert_eq!(error.kind(), ModelErrorKind::Incomplete);
-    assert!(!error.retryable());
+    assert!(error.retryable());
 }
 
 #[tokio::test]

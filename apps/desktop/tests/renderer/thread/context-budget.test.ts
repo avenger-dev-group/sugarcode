@@ -38,20 +38,18 @@ test('current request stays distinct from cumulative Turn usage', () => {
       lastRequest: { inputTokens: 60_000 },
       turnTotal: { inputTokens: 175_318 },
       requestCount: 2,
-      contextWindowTokens: 200_000,
       source: 'provider',
     }),
-    '60K / 200K current · 175K Turn total across 2 requests',
+    '60K current · 175K Turn total across 2 requests',
   );
   assert.equal(
     formatTokenUsageHint({
       lastRequest: {},
       turnTotal: {},
       requestCount: 1,
-      contextWindowTokens: 128 * 1024,
       source: 'estimated',
     }),
-    '≈ 0 / 128K current · 0 Turn total across 1 request',
+    '≈ 0 current · 0 Turn total across 1 request',
   );
 });
 

@@ -94,7 +94,7 @@ async fn one_workspace_snapshot_is_reused_across_all_provider_rounds_and_audited
 }
 
 #[test]
-fn workspace_instruction_bytes_share_the_provider_history_budget() {
+fn workspace_instruction_bytes_do_not_gate_turn_creation() {
     let mut core = Core::new();
     let started = core
         .start_thread(CoreRequestId::new(1))
@@ -109,16 +109,16 @@ fn workspace_instruction_bytes_share_the_provider_history_budget() {
         sha256: Some("a".repeat(64)),
     };
 
-    assert_eq!(
+    assert!(
         core.prepare_text_turn_with_workspace_instructions(
             CoreRequestId::new(2),
             thread_id,
             Some("x".to_string()),
             Some(audit),
-            crate::thread::MAX_PROVIDER_HISTORY_BYTES,
+            usize::MAX,
             0,
-        ),
-        Err(CoreError::ContextTooLarge)
+        )
+        .is_ok()
     );
 }
 

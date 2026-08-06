@@ -94,6 +94,25 @@ fn workspace_search_arguments_are_exact_and_do_not_relax_read_or_list() {
     }
 }
 
+#[test]
+fn workspace_search_accepts_exact_lowercase_boolean_strings_from_compatible_gateways() {
+    let arguments = workspace_tool_arguments(&ModelToolCall {
+        id: "call_compatible_search".to_string(),
+        name: "workspace/search".to_string(),
+        arguments: serde_json::json!({
+            "path": "src",
+            "query": "needle",
+            "regex": "false",
+            "caseSensitive": "true"
+        }),
+    })
+    .expect("compatible search booleans");
+
+    let advanced = arguments.advanced_search.expect("advanced search");
+    assert!(!advanced.regex);
+    assert!(advanced.case_sensitive);
+}
+
 #[tokio::test]
 async fn workspace_search_persists_query_and_runs_one_bounded_tool_round() {
     let directory = tempfile::tempdir().expect("workspace");
