@@ -111,7 +111,12 @@ after validation, including a deliberate switch to another tool that can
 continue the task. One further final-only response fails as typed
 `unsupportedToolArguments`, so this recovery cannot loop indefinitely or
 remain attached to an abandoned tool choice. This rule is structural and does
-not depend on recognizing promise wording in the model's prose.
+not depend on recognizing promise wording in the model's prose. When
+`workspace/apply-patch` reaches the consecutive structural-error limit and the
+same round advertises `shell/exec`, Core removes only apply-patch from later
+rounds in that Turn and continues instead of terminating. The valid shell
+fallback then clears the immediate correction obligation; other tools and
+future Turns are unaffected.
 
 Thread-title generation is a separate provider-neutral Core request with the
 `sugarCodeThreadTitleV1` instruction source. It reuses the Thread's currently

@@ -10,6 +10,7 @@ pub(super) const MAX_TOOL_ARGUMENT_RECOVERY_FINAL_REJECTIONS: u8 = 1;
 #[derive(Debug, Default)]
 pub(super) struct AgentLoopState {
     call_ids: BTreeSet<String>,
+    suppressed_tools: BTreeSet<String>,
     consecutive_approval_denials: u8,
     last_tool_validation_signature: Option<String>,
     consecutive_tool_argument_errors: u8,
@@ -39,6 +40,7 @@ impl AgentLoopState {
         } else {
             tools.extend(runtime.collaboration.tool_definitions());
         }
+        tools.retain(|tool| !self.suppressed_tools.contains(&tool.name));
         tools
     }
 
@@ -69,6 +71,19 @@ impl AgentLoopState {
         }
         self.consecutive_tool_argument_errors >= MAX_CONSECUTIVE_TOOL_ARGUMENT_ERRORS
             || self.record_non_progress()
+    }
+
+    pub(super) fn repeated_tool_argument_error(&self) -> bool {
+        self.consecutive_tool_argument_errors >= MAX_CONSECUTIVE_TOOL_ARGUMENT_ERRORS
+    }
+
+    pub(super) fn suppress_tool(&mut self, tool_name: &str) {
+        self.suppressed_tools.insert(tool_name.to_owned());
+    }
+
+    #[cfg(test)]
+    pub(super) fn tool_is_suppressed(&self, tool_name: &str) -> bool {
+        self.suppressed_tools.contains(tool_name)
     }
 
     pub(super) fn require_tool_argument_correction(&mut self) {

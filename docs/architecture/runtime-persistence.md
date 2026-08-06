@@ -237,10 +237,15 @@ until the next model round produces a valid advertised tool call; one repeated
 final attempt then fails as typed `unsupportedToolArguments`. Any valid tool
 batch clears that immediate correction obligation because the model may
 deliberately continue through a different tool, and a stale rejected tool name
-must not invalidate a later final response after successful work. Provider
-transport/protocol errors, tool errors, Desktop protocol errors and durable-
-state failures remain distinct; each model failure terminates only its Turn and
-does not terminate the app-server process or another Thread.
+must not invalidate a later final response after successful work. Three
+consecutive structurally invalid apply-patch calls no longer terminate a Turn
+when Full Access shell is available: Runtime suppresses apply-patch for the
+remainder of that Turn, leaves shell advertised and requires the model to
+continue through a valid alternative. Without that alternative, the normal
+typed exhaustion remains. Provider transport/protocol errors, tool errors,
+Desktop protocol errors and durable-state failures remain distinct; each model
+failure terminates only its Turn and does not terminate the app-server process
+or another Thread.
 
 Model capability flags constrain outbound requests but do not constrain what a
 compatible gateway may return. A provider-emitted multi-call batch is therefore

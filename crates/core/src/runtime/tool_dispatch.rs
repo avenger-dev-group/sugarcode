@@ -603,7 +603,7 @@ pub(super) fn workspace_tool_argument_guidance(
             ),
             Some(sugarcode_tools::WorkspaceFreeformPatchErrorKind::InvalidHunk) => (
                 "invalidHunk",
-                "Codex patch sections using *** Add File, *** Update File, or *** Delete File; updates may include *** Move to and optional @@ context; unchanged lines may use the normal space prefix or the compatible unprefixed form",
+                "a Codex patch hunk such as: *** Begin Patch\n*** Update File: path/to/file\n@@\n-old line\n+new line\n*** End Patch; every update must contain at least one line beginning with - or +",
                 "correctPatchHunk",
             ),
             Some(sugarcode_tools::WorkspaceFreeformPatchErrorKind::TooManyFiles) => (

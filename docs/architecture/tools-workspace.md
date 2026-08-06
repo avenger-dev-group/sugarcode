@@ -73,9 +73,14 @@ markers, oversized input and ambiguous or missing context still fail closed.
 
 Argument-recovery feedback classifies the local parser result as an empty,
 oversized, boundary, hunk, file-count or duplicate-path failure and tells the
-model the corresponding correction action. Raw rejected patch text remains
+model the corresponding correction action. Hunk feedback includes a complete
+minimal update example and states that an update needs at least one `-` or `+`
+line, avoiding repeated context-only retries. Raw rejected patch text remains
 absent from durable state; only its bounded byte count, hash and redacted
-failure class are retained.
+failure class are retained. If the model still produces the same structural
+patch failure three consecutive times while `shell/exec` is available, Core
+withdraws apply-patch for the rest of that Turn and continues with shell as the
+write fallback. A later Turn advertises apply-patch normally again.
 
 File and move markers are the authoritative requested paths for this tool.
 Every path still passes the normal capability-relative traversal, symlink,
@@ -118,8 +123,8 @@ raw rejected arguments are not public.
 Schema rejection uses the same JSON result envelope before any execution. For
 workspace tools it adds a JSONPath-like `fieldPath`, stable `reason`, bounded
 `expected`, value-free actual JSON type and `suggestedAction`. The result also
-states that completion is not allowed until corrected arguments for that same
-tool name validate. The rejected argument values remain private; durable audit
+states that completion is not allowed until the next valid advertised tool call
+continues the task. The rejected argument values remain private; durable audit
 retains only the safe diagnosis, argument byte count and SHA-256.
 
 ## Workspace concurrency and shell

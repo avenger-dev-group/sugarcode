@@ -162,6 +162,20 @@ fn any_valid_tool_continuation_clears_an_argument_recovery_gate() {
     assert!(!state.record_tool_argument_recovery_final());
 }
 
+#[test]
+fn a_repeated_patch_argument_failure_can_quarantine_only_that_tool() {
+    let mut state = AgentLoopState::default();
+
+    assert!(!state.record_tool_argument_error("invalid-patch".to_owned()));
+    assert!(!state.record_tool_argument_error("invalid-patch".to_owned()));
+    assert!(state.record_tool_argument_error("invalid-patch".to_owned()));
+    assert!(state.repeated_tool_argument_error());
+
+    state.suppress_tool("workspace/apply-patch");
+    assert!(state.tool_is_suppressed("workspace/apply-patch"));
+    assert!(!state.tool_is_suppressed("shell/exec"));
+}
+
 #[tokio::test]
 async fn oversized_provisional_preview_is_discarded_without_failing_final_output() {
     #[derive(Debug)]

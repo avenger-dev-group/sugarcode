@@ -1383,6 +1383,16 @@ async fn run_turn(
                             {
                                 break 'rounds error;
                             }
+                            let can_fallback_from_repeated_patch = agent_loop
+                                .repeated_tool_argument_error()
+                                && tool_calls
+                                    .iter()
+                                    .all(|call| call.name == "workspace/apply-patch")
+                                && tools.iter().any(|tool| tool.name == "shell/exec");
+                            if can_fallback_from_repeated_patch {
+                                agent_loop.suppress_tool("workspace/apply-patch");
+                                continue 'rounds;
+                            }
                             if repeated {
                                 break 'rounds Terminal::Failed(ModelError::new(
                                     ModelErrorKind::UnsupportedToolArguments,
