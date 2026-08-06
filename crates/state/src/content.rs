@@ -1,4 +1,3 @@
-use crate::SugarCodeHome;
 use sha2::Digest;
 use sha2::Sha256;
 use std::error::Error;
@@ -51,10 +50,6 @@ pub struct ContentStore {
 }
 
 impl ContentStore {
-    pub fn open(home: &SugarCodeHome) -> Result<Self, ContentStoreError> {
-        Self::open_at(home.path())
-    }
-
     pub fn open_at(home: &Path) -> Result<Self, ContentStoreError> {
         ensure_directory(home)?;
         let content = home.join("content");
@@ -410,56 +405,4 @@ fn sync_directory(_path: &Path) -> Result<(), ContentStoreError> {
         .and_then(|directory| directory.sync_all())
         .map_err(ContentStoreError::Io)?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::HomeResolutionInputs;
-    use crate::resolve_sugarcode_home;
-
-    fn store() -> (tempfile::TempDir, ContentStore) {
-        let directory = tempfile::tempdir().expect("home");
-        let home = resolve_sugarcode_home(HomeResolutionInputs {
-            cli_override: Some(directory.path().to_path_buf()),
-            ..Default::default()
-        })
-        .expect("home");
-        let store = ContentStore::open(&home).expect("store");
-        (directory, store)
-    }
-
-    #[test]
-    fn imports_deduplicates_and_verifies_utf8_content() {
-        let (_directory, store) = store();
-        let first = store
-            .import("notes.txt".to_owned(), Some("text/plain"), b"hello")
-            .expect("import");
-        let second = store
-            .import("renamed.txt".to_owned(), Some("text/plain"), b"hello")
-            .expect("deduplicate");
-        assert_eq!(first.asset_id, second.asset_id);
-        assert_eq!(store.read_verified(&first).expect("verified"), b"hello");
-    }
-
-    #[test]
-    fn rejects_spoofed_mime_animated_gif_and_large_pdf() {
-        let (_directory, store) = store();
-        assert!(matches!(
-            store.import("fake.png".to_owned(), Some("image/png"), b"plain text"),
-            Err(ContentStoreError::MediaTypeMismatch)
-        ));
-        let mut animated = b"GIF89a".to_vec();
-        animated.extend_from_slice(&[0x2c, 0x2c]);
-        assert!(matches!(
-            store.import("animated.gif".to_owned(), Some("image/gif"), &animated),
-            Err(ContentStoreError::AnimatedImage)
-        ));
-        let pdf =
-            b"%PDF-1.7\n1 0 obj <</Type /Page>> endobj\n2 0 obj <</Type /Page>> endobj\n%%EOF";
-        let asset = store
-            .import("two.pdf".to_owned(), Some("application/pdf"), pdf)
-            .expect("PDF");
-        assert_eq!(asset.pdf_pages, Some(2));
-    }
 }

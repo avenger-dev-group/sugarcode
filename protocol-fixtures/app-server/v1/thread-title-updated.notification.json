@@ -1,9 +1,0 @@
-{
-  "jsonrpc": "2.0",
-  "method": "thread/title/updated",
-  "params": {
-    "workspaceId": "workspace-test",
-    "threadId": "00000000-0000-7000-8000-000000000001",
-    "title": "修复会话标题"
-  }
-}

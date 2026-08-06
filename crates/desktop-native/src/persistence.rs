@@ -9,7 +9,8 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sugarcode_state::McpServerConfig;
+use sugarcode_state::validate_mcp_loopback_streamable_http_server;
+use sugarcode_state::validate_mcp_stdio_server;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
@@ -705,6 +706,7 @@ impl Store {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn propose_operation(
         &mut self,
         operation_id: &str,
@@ -1398,23 +1400,23 @@ fn validated_mcp_servers(inputs: Vec<McpServerInput>) -> Result<Vec<McpServerInp
     let mut validated = inputs
         .into_iter()
         .map(|input| {
-            let config = match &input {
+            let validation = match &input {
                 McpServerInput::Stdio {
                     id,
                     executable,
                     argv,
                     cwd,
-                } => McpServerConfig::stdio(
-                    id.clone(),
-                    PathBuf::from(executable),
-                    argv.clone(),
-                    PathBuf::from(cwd),
+                } => validate_mcp_stdio_server(
+                    id,
+                    &PathBuf::from(executable),
+                    argv,
+                    &PathBuf::from(cwd),
                 ),
                 McpServerInput::LoopbackStreamableHttp { id, endpoint } => {
-                    McpServerConfig::loopback_streamable_http(id.clone(), endpoint)
+                    validate_mcp_loopback_streamable_http_server(id, endpoint)
                 }
             };
-            config.map(|_| input).map_err(|kind| {
+            validation.map(|()| input).map_err(|kind| {
                 PersistenceError::InvalidInput(format!("invalid MCP server: {kind}"))
             })
         })

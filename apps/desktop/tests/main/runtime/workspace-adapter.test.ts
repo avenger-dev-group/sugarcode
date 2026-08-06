@@ -25,7 +25,7 @@ registerHooks({
 });
 
 const { ThreadRegistry } = await import(
-  '../../../src/main/app-server/thread-registry.ts'
+  '../../../src/main/navigation/thread-registry.ts'
 );
 const { RuntimeWorkspaceAdapter } = await import(
   '../../../src/main/runtime/workspace-adapter.ts'
@@ -176,7 +176,7 @@ test('RuntimeWorkspaceAdapter binds, browses, restores, and routes inactive dele
   );
   const workspaceId = adapter.getWorkspaceBindingId();
   assert.ok(workspaceId);
-  registry.registerWorkspaceOwner(workspaceId, 'project:fixture', 'protocol');
+  registry.registerWorkspaceOwner(workspaceId, 'project:fixture', 'runtime');
   assert.deepEqual(registry.getOwnerView('project:fixture'), {
     threadIds: [THREAD_ID],
     threadTitles: { [THREAD_ID]: 'Runtime task' },

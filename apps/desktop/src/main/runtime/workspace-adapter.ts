@@ -6,8 +6,8 @@ import type {
   WorkspaceInspectDocument,
   WorkspaceKind,
 } from '../../shared/workspace.ts';
-import type { WorkspaceRuntimeBoundary } from '../app-server/workspace/controller.ts';
-import type { ThreadRegistry } from '../app-server/thread-registry.ts';
+import type { WorkspaceRuntimeBoundary } from '../workspace/controller.ts';
+import type { ThreadRegistry } from '../navigation/thread-registry.ts';
 import type { RuntimeConnectionController } from './connection-controller.ts';
 import type { RuntimeConversationController } from './conversation-controller.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';

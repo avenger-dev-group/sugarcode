@@ -1,8 +1,9 @@
 import type {
+  GitStateSnapshot,
   WorkspaceGitChangeKind,
   WorkspaceGitErrorKind,
   WorkspaceGitStatusResponse,
-} from '@sugarcode/app-server-protocol';
+} from '@/shared/git';
 import {
   useCallback,
   useEffect,
@@ -20,8 +21,6 @@ import {
   stageGitPaths,
   unstageGitPaths,
 } from '@/renderer/services/git';
-import type { GitStateSnapshot } from '@/shared/git';
-
 import type {
   GitChangeLabel,
   GitDiffLine,

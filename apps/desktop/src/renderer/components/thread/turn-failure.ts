@@ -68,7 +68,7 @@ export const toTurnFailureViewModel = (
       : error.kind === 'outputTooLarge'
         ? 'Reduce the visible output or tool result size before trying again.'
         : error.kind === 'contextWindowExceeded'
-          ? 'The provider rejected the complete conversation history because it exceeds that model’s context window. SugarCode did not truncate or compact it.'
+          ? 'The provider rejected the complete conversation history because it exceeds that model’s context window. SugarCode did not truncate or compact it; choose a model with a larger context window.'
           : error.kind === 'providerRequestTooLarge'
             ? 'Reduce large visible inputs or choose a provider endpoint with a larger request-body limit.'
           : error.kind === 'providerResponseTooLarge'

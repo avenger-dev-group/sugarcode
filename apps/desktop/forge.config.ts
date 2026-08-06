@@ -4,15 +4,8 @@ import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import path from 'node:path';
 
-import { createPackagedSidecarHooks } from './forge/packaged-sidecar';
-
 const appIconBasePath = path.join(__dirname, 'assets', 'icon');
 const appIconPngPath = `${appIconBasePath}.png`;
-
-const sidecarHooks = createPackagedSidecarHooks({
-  desktopRoot: __dirname,
-  workspaceRoot: path.resolve(__dirname, '..', '..'),
-});
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -24,10 +17,6 @@ const config: ForgeConfig = {
     icon: appIconBasePath,
   },
   rebuildConfig: {},
-  hooks: {
-    prePackage: sidecarHooks.prePackage,
-    postPackage: sidecarHooks.postPackage,
-  },
   makers: [
     {
       name: '@electron-forge/maker-squirrel',

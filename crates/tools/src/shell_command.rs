@@ -486,15 +486,14 @@ impl ShellCommandExecutor for EmbeddedShellCommandExecutor {
                         );
                     }
                 };
-                let request = SupervisorRequest {
+                SupervisorRequest {
                     command: arguments.command,
                     arguments: arguments.arguments,
                     environment: environment.0.clone(),
                     sandbox_policy,
                     workspace_root_fd: directory.into_raw_fd(),
                     workspace_root_identity: workspace_root.identity(),
-                };
-                request
+                }
             };
             #[cfg(windows)]
             {

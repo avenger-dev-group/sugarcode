@@ -131,6 +131,7 @@ impl NativeRuntime {
     }
 
     #[napi]
+    #[allow(clippy::too_many_arguments)]
     pub async fn execute_command_json(
         &self,
         operation_id: String,
@@ -450,6 +451,7 @@ impl NativeRuntime {
     }
 
     #[napi]
+    #[allow(clippy::too_many_arguments)]
     pub fn propose_operation(
         &self,
         operation_id: String,

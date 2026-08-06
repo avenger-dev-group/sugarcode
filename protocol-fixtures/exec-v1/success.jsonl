@@ -1,6 +1,0 @@
-{"type":"runStarted","version":1,"sequence":1,"threadId":"00000000-0000-7000-8000-000000000001","mode":"new"}
-{"type":"event","version":1,"sequence":2,"threadId":"00000000-0000-7000-8000-000000000001","turnId":null,"event":{"kind":"threadStarted"}}
-{"type":"event","version":1,"sequence":3,"threadId":"00000000-0000-7000-8000-000000000001","turnId":"00000000-0001-7000-8000-000000000001","event":{"kind":"turnStarted"}}
-{"type":"event","version":1,"sequence":4,"threadId":"00000000-0000-7000-8000-000000000001","turnId":"00000000-0001-7000-8000-000000000001","event":{"kind":"agentMessageDelta","itemId":"00000000-0002-7000-8000-000000000002","delta":"Hello, 世界"}}
-{"type":"event","version":1,"sequence":5,"threadId":"00000000-0000-7000-8000-000000000001","turnId":"00000000-0001-7000-8000-000000000001","event":{"kind":"turnCompleted"}}
-{"type":"runFinished","version":1,"sequence":6,"threadId":"00000000-0000-7000-8000-000000000001","turnId":"00000000-0001-7000-8000-000000000001","status":"completed"}

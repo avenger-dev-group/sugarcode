@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Dialog } from 'electron';
 
-import type { WorkspaceLaunchContext } from '@/main/app-server/workspace/controller';
+import type { WorkspaceLaunchContext } from '@/main/workspace/controller';
 import type { RuntimeSupervisor } from '@/main/runtime/supervisor';
 import {
   TERMINAL_OUTPUT_CHUNK_MAX_BYTES,

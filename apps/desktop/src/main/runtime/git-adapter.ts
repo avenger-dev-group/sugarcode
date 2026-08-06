@@ -4,7 +4,7 @@ import type {
   WorkspaceGitDiffResponse,
   WorkspaceGitMutationResponse,
   WorkspaceGitStatusResponse,
-} from '@sugarcode/app-server-protocol';
+} from '../../shared/git.ts';
 
 import type { RuntimeSupervisor } from './supervisor.ts';
 

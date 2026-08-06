@@ -14,13 +14,11 @@ import {
   isGitDiffResponse,
   isGitMutationResponse,
   isGitStatusResponse,
+  type WorkspaceGitCommitResponse,
+  type WorkspaceGitDiffResponse,
+  type WorkspaceGitMutationResponse,
+  type WorkspaceGitStatusResponse,
 } from '../shared/git.ts';
-import type {
-  WorkspaceGitCommitResponse,
-  WorkspaceGitDiffResponse,
-  WorkspaceGitMutationResponse,
-  WorkspaceGitStatusResponse,
-} from '@sugarcode/app-server-protocol';
 import {
   isMcpConfigActionResult,
   isMcpConfigInspection,
