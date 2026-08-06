@@ -341,6 +341,23 @@ commands use the bounded shell path. Active native process trees are indexed by
 Full Access remains an explicit per-operation decision and cannot consume a
 Thread or Workspace automatic-approval mode.
 
+Live Full Access stdout/stderr is process-local and bounded. The native module
+queues chunks by `operationId`; the TypeScript host drains them into private
+`operation.output` events, and Main projects them into the existing command
+activity. Only the bounded terminal process result is persisted. The output
+queue is removed after final drain and never reconstructed after restart.
+
+Interactive terminal sessions are intentionally not SQLite state. Main assigns
+a UUID session and workspace generation, the utility runtime owns its polling
+and flow state, and the Rust native module owns the PTY/ConPTY handle plus its
+process containment. Input and output are UTF-8 byte bounded. Private native
+input-accepted receipts keep Main's pending-input queue bounded. Renderer output
+acknowledgement drives Main's high/low-water pause, while native queues impose a
+hard overload boundary. Workspace replacement requests graceful termination;
+explicit close, owner loss, overload or runtime shutdown terminate the process
+tree. A utility-process crash is projected as the existing terminal failure
+rather than recreating or replaying a shell session.
+
 The TypeScript ADK session remains an in-process cache. Before the first new
 Turn on a Thread, Runtime rebuilds completed user/model events from SQLite into
 ADK, reopening and hash-verifying every referenced asset before provider I/O.
@@ -349,7 +366,7 @@ resumed as completed history. SQLite stores SugarCode's own discriminated text,
 reasoning, media, tool-call and tool-result parts; serialized ADK `Event` objects
 and provider SDK response objects are not persistence formats.
 
-Pending-approval replay, live command-output projection, PTY, MCP and dynamic
-multi-Agent state remain migration gates. Workspace selection and app connection
-state therefore continue to use app-server during coexistence; neither
-app-server nor the CLI sidecar may be removed at this checkpoint.
+Pending-approval replay, MCP and dynamic multi-Agent state remain migration
+gates. Workspace selection and app connection state therefore continue to use
+app-server during coexistence; neither app-server nor the CLI sidecar may be
+removed at this checkpoint.

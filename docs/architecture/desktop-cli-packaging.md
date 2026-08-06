@@ -164,7 +164,10 @@ Current smoke covers:
 - deterministic headless exec routing and configuration error contract;
 - non-TTY TUI routing;
 - workspace browser and exact-root Git behavior in an isolated repository;
-- Desktop terminal bridge and copied TUI launch in a real PTY/ConPTY.
+- legacy copied TUI and terminal-bridge launch in a real PTY/ConPTY while those
+  CLI package checks remain during coexistence;
+- v3 native-addon command streaming and in-process PTY/ConPTY input, resize,
+  output, exit and containment without launching the copied CLI.
 
 The smoke uses isolated SugarCode home and workspace directories. It does not
 contact an external model provider.
@@ -212,13 +215,16 @@ their own module semantics inside the packaged application.
 
 This is a coexistence checkpoint, not the final packaging contract. Model
 configuration, attachment import, conversation/thread projection,
-approval-backed atomic patches, Git operations and bounded command execution now
-reach the utility runtime through the existing Renderer API. The native module
-executes both read-only/network-denied direct commands and approved Full Access
-shell commands; it reuses the existing capability-root supervisor implementation
-in-process, so v3 command calls no longer launch the CLI's hidden command
-supervisor. The CLI sidecar and app-server still own workspace/connection state,
-live command output projection and terminal/PTY behavior, while MCP and dynamic
-multi-Agent parity remain incomplete. The sidecar, app-server and CLI build
-hooks may be removed only after those remaining paths migrate and pass native
-package smoke.
+approval-backed atomic patches, Git operations, bounded command execution and
+the existing terminal UI now reach the utility runtime through the existing
+Renderer API. The native module executes both read-only/network-denied direct
+commands and approved Full Access shell commands; it reuses the existing
+capability-root supervisor implementation in-process and forwards bounded live
+stdout/stderr. It also owns in-process PTY/ConPTY sessions with input, resize,
+termination and process containment. These v3 paths no longer launch the CLI's
+hidden command supervisor or `__desktop-terminal` bridge.
+
+The CLI sidecar and app-server still own workspace/connection state, while
+pending-approval replay, MCP and dynamic multi-Agent parity remain incomplete.
+The sidecar, app-server and CLI build hooks may be removed only after those
+remaining paths migrate and pass native package smoke.

@@ -127,6 +127,10 @@ impl WorkspaceTool {
         &self.binding_id
     }
 
+    pub fn canonical_root(&self) -> &Path {
+        &self.ambient_path
+    }
+
     pub fn command_workspace_root(
         &self,
     ) -> Result<crate::CommandWorkspaceRoot, WorkspaceReadErrorKind> {

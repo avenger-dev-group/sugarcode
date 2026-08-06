@@ -6,6 +6,7 @@ import {
   type ConversationActionResult,
   type ConversationActivity,
   type ConversationAttachment,
+  type ConversationCommandExecutionResultOutcome,
   type ConversationStateListener,
   type ConversationStateSnapshot,
   type ConversationThreadNavigatorSnapshot,
@@ -28,6 +29,56 @@ const accepted = (): ConversationActionResult => ({ accepted: true, reason: 'acc
 const rejected = (
   reason: Exclude<ConversationActionResult['reason'], 'accepted'>,
 ): ConversationActionResult => ({ accepted: false, reason });
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const commandOutcome = (
+  result: Readonly<Record<string, unknown>>,
+): ConversationCommandExecutionResultOutcome => {
+  const output = result.output;
+  if (
+    result.status !== 'completed' ||
+    !isRecord(output) ||
+    typeof output.stdoutBytes !== 'number' ||
+    typeof output.stderrBytes !== 'number' ||
+    typeof output.stdoutTruncated !== 'boolean' ||
+    typeof output.stderrTruncated !== 'boolean' ||
+    typeof output.durationMs !== 'number' ||
+    !isRecord(output.outcome) ||
+    typeof output.outcome.type !== 'string'
+  ) {
+    const kind = typeof result.kind === 'string'
+      ? result.kind
+      : typeof result.error === 'string'
+        ? result.error
+        : String(result.status ?? 'unavailable');
+    return { type: 'error', kind };
+  }
+  const processOutcome = output.outcome.type === 'exitCode' &&
+    typeof output.outcome.code === 'number'
+    ? { type: 'exitCode' as const, code: output.outcome.code }
+    : output.outcome.type === 'signal' &&
+        typeof output.outcome.signal === 'number'
+      ? { type: 'signal' as const, signal: output.outcome.signal }
+      : { type: 'timedOut' as const };
+  return {
+    type: 'process',
+    stdoutBytes: output.stdoutBytes,
+    stderrBytes: output.stderrBytes,
+    stdoutTruncated: output.stdoutTruncated,
+    stderrTruncated: output.stderrTruncated,
+    encoding: 'utf8Lossy',
+    durationMs: output.durationMs,
+    outcome: processOutcome,
+    ...(result.mode === 'sandboxed'
+      ? {
+          sandboxPolicy: 'filesystemReadOnlyV1' as const,
+          networkPolicy: 'networkDeniedV1' as const,
+        }
+      : {}),
+  };
+};
 
 const emptyNavigator = (): ConversationThreadNavigatorSnapshot => ({
   status: 'unavailable',
@@ -510,7 +561,9 @@ export class RuntimeConversationController {
       return;
     }
     if (
-      (!event.type.startsWith('turn.') && !event.type.startsWith('approval.')) ||
+      (!event.type.startsWith('turn.') &&
+        !event.type.startsWith('approval.') &&
+        !event.type.startsWith('operation.')) ||
       !('threadId' in event) ||
       !('turnId' in event)
     ) {
@@ -602,6 +655,77 @@ export class RuntimeConversationController {
                     id: `${event.approvalId}:decision`,
                     status: 'completed' as const,
                     value: event.decision,
+                  },
+                },
+              }
+            : activity,
+        );
+        turns[index] = { ...turn, ...(activities ? { activities } : {}) };
+        break;
+      }
+      case 'operation.started': {
+        const activities = turn.activities?.map((activity) =>
+          activity.type === 'commandApproval' &&
+          activity.activity.callId === event.operationId
+            ? {
+                type: 'commandApproval' as const,
+                activity: {
+                  ...activity.activity,
+                  executionAttempt: {
+                    id: `${event.operationId}:attempt`,
+                    status: 'inProgress' as const,
+                  },
+                },
+              }
+            : activity,
+        );
+        turns[index] = { ...turn, ...(activities ? { activities } : {}) };
+        break;
+      }
+      case 'operation.output': {
+        const activities = turn.activities?.map((activity) => {
+          if (
+            activity.type !== 'commandApproval' ||
+            activity.activity.callId !== event.operationId
+          ) {
+            return activity;
+          }
+          const liveOutput = activity.activity.liveOutput ?? {
+            stdout: '',
+            stderr: '',
+          };
+          return {
+            type: 'commandApproval' as const,
+            activity: {
+              ...activity.activity,
+              liveOutput: {
+                ...liveOutput,
+                [event.stream]: `${liveOutput[event.stream]}${event.delta}`.slice(
+                  -64 * 1024,
+                ),
+              },
+            },
+          };
+        });
+        turns[index] = { ...turn, ...(activities ? { activities } : {}) };
+        break;
+      }
+      case 'operation.completed': {
+        const activities = turn.activities?.map((activity) =>
+          activity.type === 'commandApproval' &&
+          activity.activity.callId === event.operationId
+            ? {
+                type: 'commandApproval' as const,
+                activity: {
+                  ...activity.activity,
+                  executionAttempt: {
+                    id: `${event.operationId}:attempt`,
+                    status: 'completed' as const,
+                  },
+                  executionResult: {
+                    id: `${event.operationId}:result`,
+                    status: 'completed' as const,
+                    outcome: commandOutcome(event.result),
                   },
                 },
               }

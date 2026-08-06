@@ -130,7 +130,9 @@ Electron Main owns:
 - attachment reads and `asset/import`;
 - MCP session replacement and approvals;
 - command-approval policy and its current Thread/workspace scope;
-- Git, preview window and PTY/ConPTY terminal.
+- Git and preview window;
+- terminal projection and confirmation, while PTY/ConPTY execution is delegated
+  through the private utility runtime to the Rust native module.
 
 Conversation state is one `ThreadRuntime` per Thread rather than one mutable
 global transcript. One Main-process `ThreadRegistry` is injected into the
@@ -479,10 +481,22 @@ event carries a provider-neutral `fullAccess` flag so the existing UI displays
 the elevated mode; Full Access requests never inherit Thread or Workspace
 automatic approval.
 
-Workspace selection and connection state, live command output projection,
-terminal/PTY, MCP and dynamic multi-Agent behavior still depend on the old
-sidecar or have not reached parity. Those paths must migrate behind the
-same preload API before app-server is removed. The migration must not introduce
-a second Renderer-facing provider-specific API. If migration work touches the
-public app-server protocol while coexistence remains, Rust definitions,
-generated TypeScript and fixtures continue to change together.
+Full Access command output now travels as bounded provider-neutral operation
+events and is correlated into the existing command activity by `operationId`.
+The existing Renderer/preload terminal contract also routes through Main to
+private `terminal.*` runtime commands and events. The worker calls the native
+module's in-process PTY/ConPTY session, while Main retains confirmation,
+workspace-generation checks, approval pause, output acknowledgement and
+high/low-water flow control. Private input-accepted receipts retain the prior
+bounded-input backpressure instead of allowing the utility-process queue to grow
+without limit. Terminal sessions are process-local: graceful
+workspace changes request termination, worker loss becomes the existing fatal
+terminal state, and shutdown drops Rust process containment.
+
+Workspace selection and connection state, pending-approval replay, MCP and
+dynamic multi-Agent behavior still depend on the old sidecar or have not
+reached parity. Those paths must migrate behind the same preload API before
+app-server is removed. The migration must not introduce a second
+Renderer-facing provider-specific API. If migration work touches the public
+app-server protocol while coexistence remains, Rust definitions, generated
+TypeScript and fixtures continue to change together.

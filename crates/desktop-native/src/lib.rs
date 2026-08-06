@@ -2,6 +2,7 @@ mod persistence;
 
 use base64::Engine;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -13,6 +14,7 @@ use serde_json::json;
 use sugarcode_state::ContentAsset;
 use sugarcode_state::ContentAssetKind;
 use sugarcode_state::ContentStore;
+use sugarcode_terminal::EmbeddedTerminal;
 use sugarcode_tools::EmbeddedShellCommandExecutor;
 use sugarcode_tools::FullAccessShellArguments;
 use sugarcode_tools::GitChangeKind;
@@ -25,6 +27,8 @@ use sugarcode_tools::GitRepositoryState;
 use sugarcode_tools::ShellCommandArguments;
 use sugarcode_tools::ShellCommandExecution;
 use sugarcode_tools::ShellCommandExecutor;
+use sugarcode_tools::ShellOutputChunk;
+use sugarcode_tools::ShellOutputStream;
 use sugarcode_tools::WorkspaceChangeSetCommitOutcome;
 use sugarcode_tools::WorkspaceChangeSetPrepareOutcome;
 use sugarcode_tools::WorkspaceListArguments;
@@ -46,6 +50,8 @@ pub struct NativeRuntime {
     content_store: ContentStore,
     workspaces: Mutex<HashMap<String, Arc<WorkspaceTool>>>,
     command_cancellations: Mutex<HashMap<String, CancellationToken>>,
+    command_output: Arc<Mutex<HashMap<String, VecDeque<ShellOutputChunk>>>>,
+    terminals: Mutex<HashMap<String, EmbeddedTerminal>>,
 }
 
 #[napi]
@@ -60,6 +66,8 @@ impl NativeRuntime {
             content_store,
             workspaces: Mutex::new(HashMap::new()),
             command_cancellations: Mutex::new(HashMap::new()),
+            command_output: Arc::new(Mutex::new(HashMap::new())),
+            terminals: Mutex::new(HashMap::new()),
         })
     }
 
@@ -136,6 +144,10 @@ impl NativeRuntime {
             }
             active.insert(operation_id.clone(), cancellation.clone());
         }
+        self.command_output
+            .lock()
+            .map_err(|_| Error::from_reason("Native command output lock was poisoned."))?
+            .insert(operation_id.clone(), VecDeque::new());
         let execution = match mode.as_str() {
             "sandboxed" if cwd == "." => {
                 executor
@@ -143,17 +155,31 @@ impl NativeRuntime {
                     .await
             }
             "fullAccess" if arguments.is_empty() => {
-                executor
+                let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
+                let output_store = Arc::clone(&self.command_output);
+                let output_operation_id = operation_id.clone();
+                let output_task = tokio::spawn(async move {
+                    while let Some(chunk) = output_rx.recv().await {
+                        if let Ok(mut outputs) = output_store.lock()
+                            && let Some(queue) = outputs.get_mut(&output_operation_id)
+                        {
+                            queue.push_back(chunk);
+                        }
+                    }
+                });
+                let result = executor
                     .execute_full_access(
                         FullAccessShellArguments {
                             command,
                             cwd,
                             timeout_ms: u64::from(timeout_ms),
-                            output_tx: None,
+                            output_tx: Some(output_tx),
                         },
                         cancellation,
                     )
-                    .await
+                    .await;
+                let _ = output_task.await;
+                result
             }
             _ => ShellCommandExecution::Error(
                 sugarcode_tools::ShellCommandErrorKind::InvalidArguments,
@@ -176,6 +202,99 @@ impl NativeRuntime {
             ShellCommandExecution::Cancelled => json!({ "status": "cancelled" }),
         };
         json_string(value)
+    }
+
+    #[napi]
+    pub fn drain_command_output_json(&self, operation_id: String) -> Result<String> {
+        let mut outputs = self
+            .command_output
+            .lock()
+            .map_err(|_| Error::from_reason("Native command output lock was poisoned."))?;
+        let Some(queue) = outputs.get_mut(&operation_id) else {
+            return json_string(json!([]));
+        };
+        let chunks = queue
+            .drain(..)
+            .map(|chunk| {
+                json!({
+                    "stream": match chunk.stream {
+                        ShellOutputStream::Stdout => "stdout",
+                        ShellOutputStream::Stderr => "stderr",
+                    },
+                    "delta": chunk.content,
+                })
+            })
+            .collect::<Vec<_>>();
+        json_string(json!(chunks))
+    }
+
+    #[napi]
+    pub fn finish_command_output(&self, operation_id: String) -> Result<()> {
+        self.command_output
+            .lock()
+            .map_err(|_| Error::from_reason("Native command output lock was poisoned."))?
+            .remove(&operation_id);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn create_terminal_json(
+        &self,
+        session_id: String,
+        workspace_id: String,
+        columns: u16,
+        rows: u16,
+    ) -> Result<String> {
+        let workspace = self.workspace(&workspace_id)?;
+        let mut terminals = self
+            .terminals
+            .lock()
+            .map_err(|_| Error::from_reason("Native terminal lock was poisoned."))?;
+        if terminals.contains_key(&session_id) {
+            return Err(Error::from_reason("Terminal session already exists."));
+        }
+        let terminal = EmbeddedTerminal::spawn(workspace.canonical_root(), columns, rows)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let encoded = serde_json::to_string(terminal.info())
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        terminals.insert(session_id, terminal);
+        Ok(encoded)
+    }
+
+    #[napi]
+    pub fn terminal_input(&self, session_id: String, data: String) -> Result<()> {
+        self.with_terminal(&session_id, |terminal| terminal.input(data))
+    }
+
+    #[napi]
+    pub fn terminal_resize(&self, session_id: String, columns: u16, rows: u16) -> Result<()> {
+        self.with_terminal(&session_id, |terminal| terminal.resize(columns, rows))
+    }
+
+    #[napi]
+    pub fn terminal_terminate(&self, session_id: String) -> Result<()> {
+        self.with_terminal(&session_id, EmbeddedTerminal::terminate)
+    }
+
+    #[napi]
+    pub fn drain_terminal_events_json(&self, session_id: String) -> Result<String> {
+        let events = self.with_terminal(&session_id, |terminal| terminal.drain_events(128))?;
+        serde_json::to_string(&events).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    #[napi]
+    pub fn close_terminal(&self, session_id: String) -> Result<bool> {
+        let terminal = self
+            .terminals
+            .lock()
+            .map_err(|_| Error::from_reason("Native terminal lock was poisoned."))?
+            .remove(&session_id);
+        if let Some(terminal) = terminal {
+            let _ = terminal.terminate();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     #[napi]
@@ -658,6 +777,23 @@ impl NativeRuntime {
             .get(workspace_id)
             .cloned()
             .ok_or_else(|| Error::from_reason(format!("Workspace {workspace_id} is not open.")))
+    }
+
+    fn with_terminal<T>(
+        &self,
+        session_id: &str,
+        operation: impl FnOnce(
+            &EmbeddedTerminal,
+        ) -> std::result::Result<T, sugarcode_terminal::BridgeError>,
+    ) -> Result<T> {
+        let terminals = self
+            .terminals
+            .lock()
+            .map_err(|_| Error::from_reason("Native terminal lock was poisoned."))?;
+        let terminal = terminals
+            .get(session_id)
+            .ok_or_else(|| Error::from_reason("Terminal session does not exist."))?;
+        operation(terminal).map_err(|error| Error::from_reason(error.to_string()))
     }
 
     fn with_store<T>(

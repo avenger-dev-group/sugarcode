@@ -181,10 +181,15 @@ const startApplication = async (): Promise<void> => {
   });
   await workspaceController.restore();
   let runtimeWorkspaceGeneration = -1;
+  let activeRuntimeWorkspaceId: string | null = null;
   disposeRuntimeWorkspaceEvents = workspaceController.subscribe((snapshot) => {
+    if (snapshot.status !== 'ready') {
+      activeRuntimeWorkspaceId = null;
+      return;
+    }
     if (
-      snapshot.status !== 'ready' ||
-      snapshot.generation === runtimeWorkspaceGeneration
+      snapshot.generation === runtimeWorkspaceGeneration &&
+      activeRuntimeWorkspaceId !== null
     ) {
       return;
     }
@@ -196,6 +201,7 @@ const startApplication = async (): Promise<void> => {
     const runtimeWorkspaceId = createHash('sha256')
       .update(workspace.path)
       .digest('hex');
+    activeRuntimeWorkspaceId = runtimeWorkspaceId;
     runtimeSupervisor?.send({
       type: 'workspace.open',
       requestId: randomUUID(),
@@ -213,10 +219,10 @@ const startApplication = async (): Promise<void> => {
   });
   terminalController = new TerminalController({
     dialog,
+    runtime: runtimeSupervisor,
     getMainWindow: () => mainWindow,
     getWorkspace: workspaceController.getLaunchContext,
-    getResolvedCli: supervisor.getResolvedCli,
-    getCliEnvironment: () => ({ ...process.env }),
+    getRuntimeWorkspaceId: () => activeRuntimeWorkspaceId,
     isApprovalPending: () =>
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
       supervisor?.mcpApprovals.getSnapshot().status === 'pending',

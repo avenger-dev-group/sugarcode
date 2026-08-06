@@ -141,6 +141,47 @@ export type RuntimeCommand =
       turnId: string;
     }>
   | Readonly<{
+      type: 'terminal.create';
+      requestId: string;
+      workspaceId: string;
+      generation: number;
+      sessionId: string;
+      columns: number;
+      rows: number;
+    }>
+  | Readonly<{
+      type: 'terminal.input';
+      requestId: string;
+      workspaceId: string;
+      generation: number;
+      sessionId: string;
+      data: string;
+    }>
+  | Readonly<{
+      type: 'terminal.resize';
+      requestId: string;
+      workspaceId: string;
+      generation: number;
+      sessionId: string;
+      columns: number;
+      rows: number;
+    }>
+  | Readonly<{
+      type: 'terminal.flow';
+      requestId: string;
+      workspaceId: string;
+      generation: number;
+      sessionId: string;
+      paused: boolean;
+    }>
+  | Readonly<{
+      type: 'terminal.terminate' | 'terminal.close';
+      requestId: string;
+      workspaceId: string;
+      generation: number;
+      sessionId: string;
+    }>
+  | Readonly<{
       type: 'approval.resolve';
       requestId: string;
       workspaceId: string;
@@ -350,6 +391,34 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'operation.started';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        operationId: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'operation.output';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        operationId: string;
+        stream: 'stdout' | 'stderr';
+        delta: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'operation.completed';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        operationId: string;
+        succeeded: boolean;
+        result: Readonly<Record<string, unknown>>;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'agent.task';
         workspaceId: string;
         threadId: string;
@@ -373,6 +442,50 @@ export type RuntimeEvent =
         turnId: string;
         status: 'completed' | 'interrupted' | 'failed';
         error?: RuntimeProviderError;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'terminal.started';
+        workspaceId: string;
+        generation: number;
+        sessionId: string;
+        shell: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'terminal.inputAccepted';
+        workspaceId: string;
+        generation: number;
+        sessionId: string;
+        inputBytes: number;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'terminal.output';
+        workspaceId: string;
+        generation: number;
+        sessionId: string;
+        outputSequence: number;
+        data: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'terminal.error';
+        workspaceId: string;
+        generation: number;
+        sessionId: string;
+        error: 'spawnFailed' | 'protocolInvalid' | 'bridgeCrashed' | 'outputOverload';
+        fatal: boolean;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'terminal.exited';
+        workspaceId: string;
+        generation: number;
+        sessionId: string;
+        exitCode: number;
+        signal?: string;
+        reason: 'natural' | 'requested' | 'ownerLost' | 'protocolError' | 'ioError';
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -427,6 +540,15 @@ export type RuntimeEventInput = WithoutSequence<RuntimeEvent>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const utf8ByteLength = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+
+const SESSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+const isSessionId = (value: unknown): value is string =>
+  typeof value === 'string' && SESSION_ID_PATTERN.test(value);
 
 const isStringRecord = (
   value: unknown,
@@ -535,6 +657,42 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.workspaceId === 'string' &&
         typeof value.threadId === 'string' &&
         typeof value.turnId === 'string'
+      );
+    case 'terminal.create':
+    case 'terminal.resize':
+      return (
+        typeof value.workspaceId === 'string' &&
+        Number.isSafeInteger(value.generation) &&
+        isSessionId(value.sessionId) &&
+        Number.isSafeInteger(value.columns) &&
+        Number(value.columns) >= 2 &&
+        Number(value.columns) <= 500 &&
+        Number.isSafeInteger(value.rows) &&
+        Number(value.rows) >= 2 &&
+        Number(value.rows) <= 300
+      );
+    case 'terminal.input':
+      return (
+        typeof value.workspaceId === 'string' &&
+        Number.isSafeInteger(value.generation) &&
+        isSessionId(value.sessionId) &&
+        typeof value.data === 'string' &&
+        value.data.length > 0 &&
+        utf8ByteLength(value.data) <= 65_536
+      );
+    case 'terminal.flow':
+      return (
+        typeof value.workspaceId === 'string' &&
+        Number.isSafeInteger(value.generation) &&
+        isSessionId(value.sessionId) &&
+        typeof value.paused === 'boolean'
+      );
+    case 'terminal.terminate':
+    case 'terminal.close':
+      return (
+        typeof value.workspaceId === 'string' &&
+        Number.isSafeInteger(value.generation) &&
+        isSessionId(value.sessionId)
       );
     case 'approval.resolve':
       return (
@@ -689,6 +847,24 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.operationId === 'string' &&
         ['approved', 'denied'].includes(String(value.decision))
       );
+    case 'operation.started':
+      return hasTurnCoordinates(value) && typeof value.operationId === 'string';
+    case 'operation.output':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.operationId === 'string' &&
+        (value.stream === 'stdout' || value.stream === 'stderr') &&
+        typeof value.delta === 'string' &&
+        value.delta.length > 0 &&
+        utf8ByteLength(value.delta) <= 32_768
+      );
+    case 'operation.completed':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.operationId === 'string' &&
+        typeof value.succeeded === 'boolean' &&
+        isRecord(value.result)
+      );
     case 'agent.task':
       return (
         hasTurnCoordinates(value) &&
@@ -710,6 +886,49 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         hasTurnCoordinates(value) &&
         ['completed', 'interrupted', 'failed'].includes(String(value.status)) &&
         (value.error === undefined || isRecord(value.error))
+      );
+    case 'terminal.started':
+      return (
+        typeof value.workspaceId === 'string' &&
+        Number.isSafeInteger(value.generation) &&
+        isSessionId(value.sessionId) &&
+        typeof value.shell === 'string'
+      );
+    case 'terminal.inputAccepted':
+      return (
+        typeof value.workspaceId === 'string' &&
+        Number.isSafeInteger(value.generation) &&
+        isSessionId(value.sessionId) &&
+        Number.isSafeInteger(value.inputBytes) &&
+        Number(value.inputBytes) > 0 &&
+        Number(value.inputBytes) <= 65_536
+      );
+    case 'terminal.output':
+      return (
+        typeof value.workspaceId === 'string' &&
+        Number.isSafeInteger(value.generation) &&
+        isSessionId(value.sessionId) &&
+        Number.isSafeInteger(value.outputSequence) &&
+        Number(value.outputSequence) > 0 &&
+        typeof value.data === 'string' &&
+        utf8ByteLength(value.data) <= 32_768
+      );
+    case 'terminal.error':
+      return (
+        typeof value.workspaceId === 'string' &&
+        Number.isSafeInteger(value.generation) &&
+        isSessionId(value.sessionId) &&
+        ['spawnFailed', 'protocolInvalid', 'bridgeCrashed', 'outputOverload'].includes(String(value.error)) &&
+        typeof value.fatal === 'boolean'
+      );
+    case 'terminal.exited':
+      return (
+        typeof value.workspaceId === 'string' &&
+        Number.isSafeInteger(value.generation) &&
+        isSessionId(value.sessionId) &&
+        Number.isSafeInteger(value.exitCode) &&
+        (value.signal === undefined || typeof value.signal === 'string') &&
+        ['natural', 'requested', 'ownerLost', 'protocolError', 'ioError'].includes(String(value.reason))
       );
     case 'model.configInspection':
       return isModelConfigInspection(value.inspection);

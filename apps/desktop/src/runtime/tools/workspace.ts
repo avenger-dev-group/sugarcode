@@ -139,6 +139,11 @@ export const createWorkspaceTools = (
     argumentsValue: Readonly<Record<string, unknown>>,
     execute: (operationId: string) => Promise<unknown>,
   ) => Promise<unknown>,
+  onCommandOutput?: (
+    operationId: string,
+    stream: 'stdout' | 'stderr',
+    delta: string,
+  ) => void,
 ): readonly FunctionTool<Schema>[] => [
   new FunctionTool({
     name: 'workspace_read',
@@ -240,8 +245,29 @@ export const createWorkspaceTools = (
       return runPrivileged(
         'shell_exec',
         { mode, command, arguments: commandArguments, cwd, timeoutMs },
-        async (operationId) => parseNativeResult(
-          await nativeRuntime.executeCommandJson(
+        async (operationId) => {
+          const flushOutput = (): void => {
+            const chunks = parseNativeResult(
+              nativeRuntime.drainCommandOutputJson(operationId),
+            );
+            if (!Array.isArray(chunks)) {
+              throw new Error('Native command output was invalid');
+            }
+            for (const chunk of chunks) {
+              if (
+                typeof chunk !== 'object' ||
+                chunk === null ||
+                !('stream' in chunk) ||
+                (chunk.stream !== 'stdout' && chunk.stream !== 'stderr') ||
+                !('delta' in chunk) ||
+                typeof chunk.delta !== 'string'
+              ) {
+                throw new Error('Native command output was invalid');
+              }
+              onCommandOutput?.(operationId, chunk.stream, chunk.delta);
+            }
+          };
+          const execution = nativeRuntime.executeCommandJson(
             operationId,
             workspaceId,
             mode,
@@ -249,8 +275,21 @@ export const createWorkspaceTools = (
             JSON.stringify(commandArguments),
             cwd,
             timeoutMs,
-          ),
-        ),
+          );
+          const timer = setInterval(flushOutput, 16);
+          try {
+            const result = parseNativeResult(await execution);
+            flushOutput();
+            return result;
+          } finally {
+            clearInterval(timer);
+            try {
+              flushOutput();
+            } finally {
+              nativeRuntime.finishCommandOutput(operationId);
+            }
+          }
+        },
       );
     },
   }),

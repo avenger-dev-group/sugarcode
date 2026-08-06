@@ -22,10 +22,12 @@ authority and validated projections. Preload exposes only fixed typed actions.
 Renderer supports text, file selection, drag-and-drop and image paste. The
 utility runtime imports those attachments into the v3 content-addressed store
 before `turn.start` references their descriptors. Workspace/connection state
-and terminal/PTY remain on app-server until their utility-runtime replacements
-reach parity. ADK command tools execute through the native module: sandboxed
-direct commands are read-only/network-denied, while Full Access shell commands
-require a persisted approval and both modes support Turn cancellation.
+remains on app-server during coexistence. ADK command tools execute through the
+native module: sandboxed direct commands are read-only/network-denied, while
+Full Access shell commands require a persisted approval, stream bounded output
+and support Turn cancellation. The unchanged terminal preload API now routes
+through the utility runtime to an in-process Rust PTY/ConPTY implementation;
+it no longer launches the CLI terminal bridge.
 
 The public app-server contract is generated from Rust in
 `crates/app-server-protocol`. Desktop validates every incoming v1 message at

@@ -39,6 +39,10 @@ export class RuntimeSupervisor {
     string,
     Extract<RuntimeCommand, { type: 'turn.start' }>
   >();
+  private readonly activeTerminals = new Map<
+    string,
+    Extract<RuntimeCommand, { type: 'terminal.create' }>
+  >();
   private child: RuntimeChild | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
   private restartAttempt = 0;
@@ -144,6 +148,7 @@ export class RuntimeSupervisor {
       this.child = null;
     }
     this.activeTurns.clear();
+    this.activeTerminals.clear();
   };
 
   private spawn = (): void => {
@@ -204,6 +209,9 @@ export class RuntimeSupervisor {
       }
     } else if (value.type === 'turn.completed') {
       this.activeTurns.delete(value.turnId);
+    } else if (value.type === 'terminal.exited' ||
+      (value.type === 'terminal.error' && value.fatal)) {
+      this.activeTerminals.delete(value.sessionId);
     }
     this.emit(value);
     if (value.type === 'runtime.ready') {
@@ -220,6 +228,10 @@ export class RuntimeSupervisor {
   private post = (command: RuntimeCommand): void => {
     if (command.type === 'turn.start') {
       this.activeTurns.set(command.turnId, command);
+    } else if (command.type === 'terminal.create') {
+      this.activeTerminals.set(command.sessionId, command);
+    } else if (command.type === 'terminal.close') {
+      this.activeTerminals.delete(command.sessionId);
     }
     this.child?.postMessage(command);
   };
@@ -247,6 +259,19 @@ export class RuntimeSupervisor {
       });
     }
     this.activeTurns.clear();
+    for (const terminal of this.activeTerminals.values()) {
+      this.emit({
+        type: 'terminal.error',
+        sequence: 0,
+        requestId: terminal.requestId,
+        workspaceId: terminal.workspaceId,
+        generation: terminal.generation,
+        sessionId: terminal.sessionId,
+        error: 'bridgeCrashed',
+        fatal: true,
+      });
+    }
+    this.activeTerminals.clear();
     if (this.stopped) {
       return;
     }

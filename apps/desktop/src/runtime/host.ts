@@ -152,6 +152,26 @@ type StoredModelHistory = Readonly<{
   parts: readonly StoredHistoryPart[];
 }>;
 
+type ActiveTerminal = {
+  requestId: string;
+  workspaceId: string;
+  generation: number;
+  sessionId: string;
+  nextOutputSequence: number;
+  paused: boolean;
+  timer?: NodeJS.Timeout;
+};
+
+type TerminalExitReason = Extract<
+  RuntimeEvent,
+  { type: 'terminal.exited' }
+>['reason'];
+
+const isTerminalExitReason = (value: unknown): value is TerminalExitReason =>
+  ['natural', 'requested', 'ownerLost', 'protocolError', 'ioError'].includes(
+    String(value),
+  );
+
 export class RuntimeHost {
   private readonly postEvent: RuntimeHostOptions['postEvent'];
   private readonly createModel: NonNullable<RuntimeHostOptions['createModel']>;
@@ -160,6 +180,7 @@ export class RuntimeHost {
   private readonly activeTurns = new Map<string, AbortController>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly activeOperations = new Map<string, Set<string>>();
+  private readonly terminals = new Map<string, ActiveTerminal>();
   private sequence = 0;
   private initialized = false;
   private shuttingDown = false;
@@ -216,6 +237,54 @@ export class RuntimeHost {
         this.activeTurns.get(command.turnId)?.abort();
         this.cancelTurnApprovals(command.turnId);
         this.cancelTurnOperations(command.turnId);
+        break;
+      case 'terminal.create':
+        this.requireReady(command.requestId);
+        this.createTerminal(command);
+        break;
+      case 'terminal.input':
+        this.requireReady(command.requestId);
+        if (
+          this.handleTerminalAction(command, () =>
+            this.requireNative().terminalInput(command.sessionId, command.data))
+        ) {
+          this.emit({
+            type: 'terminal.inputAccepted',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            generation: command.generation,
+            sessionId: command.sessionId,
+            inputBytes: Buffer.byteLength(command.data, 'utf8'),
+          });
+        }
+        break;
+      case 'terminal.resize':
+        this.requireReady(command.requestId);
+        this.handleTerminalAction(command, () =>
+          this.requireNative().terminalResize(
+            command.sessionId,
+            command.columns,
+            command.rows,
+          ));
+        break;
+      case 'terminal.flow': {
+        this.requireReady(command.requestId);
+        const terminal = this.terminals.get(command.sessionId);
+        if (terminal && this.matchesTerminal(terminal, command)) {
+          terminal.paused = command.paused;
+          if (!command.paused) {
+            this.scheduleTerminalPoll(terminal);
+          }
+        }
+        break;
+      }
+      case 'terminal.terminate':
+        this.requireReady(command.requestId);
+        this.handleTerminalAction(command, () =>
+          this.requireNative().terminalTerminate(command.sessionId));
+        break;
+      case 'terminal.close':
+        this.closeTerminal(command.sessionId);
         break;
       case 'approval.resolve': {
         const pending = this.pendingApprovals.get(command.approvalId);
@@ -458,6 +527,9 @@ export class RuntimeHost {
           this.cancelTurnOperations(turnId);
         }
         this.activeTurns.clear();
+        for (const sessionId of [...this.terminals.keys()]) {
+          this.closeTerminal(sessionId);
+        }
         break;
     }
   };
@@ -476,6 +548,193 @@ export class RuntimeHost {
   };
 
   private parseNativeJson = <T>(value: string): T => JSON.parse(value) as T;
+
+  private createTerminal = (
+    command: Extract<RuntimeCommand, { type: 'terminal.create' }>,
+  ): void => {
+    if (this.terminals.has(command.sessionId)) {
+      this.emitTerminalError(command, 'protocolInvalid', true);
+      return;
+    }
+    try {
+      const info = this.parseNativeJson<unknown>(
+        this.requireNative().createTerminalJson(
+          command.sessionId,
+          command.workspaceId,
+          command.columns,
+          command.rows,
+        ),
+      );
+      if (!isRecord(info) || typeof info.shell !== 'string') {
+        throw new Error('Native terminal metadata was invalid.');
+      }
+      const terminal: ActiveTerminal = {
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        generation: command.generation,
+        sessionId: command.sessionId,
+        nextOutputSequence: 1,
+        paused: false,
+      };
+      this.terminals.set(command.sessionId, terminal);
+      this.emit({
+        type: 'terminal.started',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        generation: command.generation,
+        sessionId: command.sessionId,
+        shell: info.shell,
+      });
+      this.scheduleTerminalPoll(terminal);
+    } catch {
+      this.emitTerminalError(command, 'spawnFailed', true);
+    }
+  };
+
+  private handleTerminalAction = (
+    command: Extract<RuntimeCommand, {
+      type: 'terminal.input' | 'terminal.resize';
+    }> | Extract<RuntimeCommand, {
+      type: 'terminal.terminate' | 'terminal.close';
+    }>,
+    action: () => void,
+  ): boolean => {
+    const terminal = this.terminals.get(command.sessionId);
+    if (!terminal || !this.matchesTerminal(terminal, command)) {
+      this.emitTerminalError(command, 'protocolInvalid', true);
+      return false;
+    }
+    try {
+      action();
+      return true;
+    } catch {
+      this.emitTerminalError(command, 'bridgeCrashed', true);
+      this.closeTerminal(command.sessionId);
+      return false;
+    }
+  };
+
+  private matchesTerminal = (
+    terminal: ActiveTerminal,
+    command: { workspaceId: string; generation: number; sessionId: string },
+  ): boolean =>
+    terminal.workspaceId === command.workspaceId &&
+    terminal.generation === command.generation &&
+    terminal.sessionId === command.sessionId;
+
+  private scheduleTerminalPoll = (terminal: ActiveTerminal): void => {
+    if (terminal.paused || terminal.timer || !this.terminals.has(terminal.sessionId)) {
+      return;
+    }
+    terminal.timer = setTimeout(() => {
+      terminal.timer = undefined;
+      this.pollTerminal(terminal);
+    }, 16);
+  };
+
+  private pollTerminal = (terminal: ActiveTerminal): void => {
+    if (terminal.paused || this.terminals.get(terminal.sessionId) !== terminal) {
+      return;
+    }
+    try {
+      const events = this.parseNativeJson<unknown>(
+        this.requireNative().drainTerminalEventsJson(terminal.sessionId),
+      );
+      if (!Array.isArray(events)) {
+        throw new Error('Native terminal events were invalid.');
+      }
+      for (const event of events) {
+        if (!isRecord(event) || typeof event.type !== 'string') {
+          throw new Error('Native terminal event was invalid.');
+        }
+        if (
+          event.type === 'output' &&
+          Number.isSafeInteger(event.sequence) &&
+          event.sequence === terminal.nextOutputSequence &&
+          typeof event.data === 'string' &&
+          Buffer.byteLength(event.data, 'utf8') <= 32_768
+        ) {
+          terminal.nextOutputSequence += 1;
+          this.emit({
+            type: 'terminal.output',
+            requestId: terminal.requestId,
+            workspaceId: terminal.workspaceId,
+            generation: terminal.generation,
+            sessionId: terminal.sessionId,
+            outputSequence: event.sequence,
+            data: event.data,
+          });
+        } else if (
+          event.type === 'error' &&
+          typeof event.fatal === 'boolean'
+        ) {
+          this.emitTerminalError(
+            terminal,
+            event.code === 'outputOverload' ? 'outputOverload' : 'bridgeCrashed',
+            event.fatal,
+          );
+          if (event.fatal) {
+            this.closeTerminal(terminal.sessionId);
+            return;
+          }
+        } else if (
+          event.type === 'exit' &&
+          typeof event.exitCode === 'number' &&
+          Number.isSafeInteger(event.exitCode) &&
+          isTerminalExitReason(event.reason) &&
+          (event.signal === undefined || typeof event.signal === 'string')
+        ) {
+          this.emit({
+            type: 'terminal.exited',
+            requestId: terminal.requestId,
+            workspaceId: terminal.workspaceId,
+            generation: terminal.generation,
+            sessionId: terminal.sessionId,
+            exitCode: event.exitCode,
+            ...(typeof event.signal === 'string' ? { signal: event.signal } : {}),
+            reason: event.reason,
+          });
+          this.closeTerminal(terminal.sessionId);
+          return;
+        } else {
+          throw new Error('Native terminal event was invalid.');
+        }
+      }
+      this.scheduleTerminalPoll(terminal);
+    } catch {
+      this.emitTerminalError(terminal, 'protocolInvalid', true);
+      this.closeTerminal(terminal.sessionId);
+    }
+  };
+
+  private emitTerminalError = (
+    terminal: { requestId: string; workspaceId: string; generation: number; sessionId: string },
+    error: 'spawnFailed' | 'protocolInvalid' | 'bridgeCrashed' | 'outputOverload',
+    fatal: boolean,
+  ): void => {
+    this.emit({
+      type: 'terminal.error',
+      requestId: terminal.requestId,
+      workspaceId: terminal.workspaceId,
+      generation: terminal.generation,
+      sessionId: terminal.sessionId,
+      error,
+      fatal,
+    });
+  };
+
+  private closeTerminal = (sessionId: string): void => {
+    const terminal = this.terminals.get(sessionId);
+    if (terminal?.timer) {
+      clearTimeout(terminal.timer);
+    }
+    this.terminals.delete(sessionId);
+    try {
+      this.nativeRuntime?.closeTerminal(sessionId);
+    } catch {
+      // Native terminal containment terminates the process tree on drop.
+    }
+  };
 
   private ensureSession = async (
     command: Extract<RuntimeCommand, { type: 'turn.start' }>,
@@ -954,6 +1213,18 @@ export class RuntimeHost {
                     argumentsValue,
                     execute,
                   ),
+                (operationId, stream, delta) => {
+                  this.emit({
+                    type: 'operation.output',
+                    requestId: command.requestId,
+                    workspaceId: command.workspaceId,
+                    threadId: command.threadId,
+                    turnId: command.turnId,
+                    operationId,
+                    stream,
+                    delta,
+                  });
+                },
               ),
             ]
           : [],
@@ -1105,6 +1376,14 @@ export class RuntimeHost {
       if (!began) {
         return { ok: false, error: 'operationAlreadyExecuting' };
       }
+      this.emit({
+        type: 'operation.started',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+      });
       const result = await execute(operationId);
       const succeeded = !(
         isRecord(result) &&
@@ -1117,6 +1396,16 @@ export class RuntimeHost {
         JSON.stringify(result),
         succeeded,
       );
+      this.emit({
+        type: 'operation.completed',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        succeeded,
+        result: isRecord(result) ? result : { value: result },
+      });
       return result;
     } catch (error) {
       const result = {
@@ -1129,6 +1418,16 @@ export class RuntimeHost {
           JSON.stringify(result),
           false,
         );
+        this.emit({
+          type: 'operation.completed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          operationId,
+          succeeded: false,
+          result,
+        });
       }
       return result;
     } finally {

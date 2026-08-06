@@ -1,6 +1,7 @@
 use super::bridge::Utf8StreamDecoder;
 #[cfg(windows)]
 use super::bridge::canonical_workspace_path_matches;
+use super::{EmbeddedTerminal, EmbeddedTerminalEvent};
 
 #[test]
 fn preserves_utf8_split_across_pty_reads() {
@@ -17,6 +18,50 @@ fn replaces_invalid_and_incomplete_utf8_deterministically() {
     assert_eq!(decoder.push(b"ok\xfftail\xe2"), "ok\u{fffd}tail");
     assert_eq!(decoder.finish().as_deref(), Some("\u{fffd}"));
     assert_eq!(decoder.finish(), None);
+}
+
+#[test]
+fn embedded_terminal_streams_output_and_exits_without_a_cli_bridge() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let canonical_workspace = workspace
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let terminal = EmbeddedTerminal::spawn(&canonical_workspace, 80, 24).expect("spawn terminal");
+    #[cfg(windows)]
+    terminal
+        .input("echo SUGARCODE_EMBEDDED_PTY\r\nexit\r\n".to_owned())
+        .expect("terminal input");
+    #[cfg(not(windows))]
+    terminal
+        .input("printf 'SUGARCODE_EMBEDDED_PTY\\n'\nexit\n".to_owned())
+        .expect("terminal input");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut transcript = String::new();
+    let mut exited = false;
+    while std::time::Instant::now() < deadline && !exited {
+        for event in terminal.drain_events(128).expect("drain terminal") {
+            match event {
+                EmbeddedTerminalEvent::Output { data, .. } => transcript.push_str(&data),
+                EmbeddedTerminalEvent::Exit { .. } => exited = true,
+                EmbeddedTerminalEvent::Error {
+                    fatal: true,
+                    message,
+                    ..
+                } => {
+                    panic!("terminal failed: {message}")
+                }
+                EmbeddedTerminalEvent::Error { fatal: false, .. } => {}
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(exited, "embedded terminal did not exit");
+    assert!(
+        transcript.contains("SUGARCODE_EMBEDDED_PTY"),
+        "missing terminal output: {transcript:?}"
+    );
 }
 
 #[test]

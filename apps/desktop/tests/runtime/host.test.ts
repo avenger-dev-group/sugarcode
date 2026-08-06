@@ -291,6 +291,108 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(terminal?.status, 'completed');
 });
 
+test('RuntimeHost streams and controls native PTY sessions without a CLI bridge', async () => {
+  const events: RuntimeEvent[] = [];
+  const inputs: string[] = [];
+  const sizes: Array<readonly [number, number]> = [];
+  let drainCount = 0;
+  let closeCount = 0;
+  let resolveExited: (() => void) | undefined;
+  const exited = new Promise<void>((resolve) => {
+    resolveExited = resolve;
+  });
+  const native = {
+    createTerminalJson: () => JSON.stringify({ shell: '/bin/zsh' }),
+    terminalInput: (_sessionId: string, data: string): void => {
+      inputs.push(data);
+    },
+    terminalResize: (_sessionId: string, columns: number, rows: number) => {
+      sizes.push([columns, rows]);
+    },
+    terminalTerminate: (): void => undefined,
+    drainTerminalEventsJson: () => {
+      drainCount += 1;
+      return drainCount === 1
+        ? JSON.stringify([{ type: 'output', sequence: 1, data: 'fixture\r\n' }])
+        : JSON.stringify([{
+            type: 'exit',
+            exitCode: 0,
+            reason: 'natural',
+          }]);
+    },
+    closeTerminal: () => {
+      closeCount += 1;
+      return true;
+    },
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'terminal.exited') {
+        resolveExited?.();
+      }
+    },
+  });
+  const sessionId = '22222222-2222-4222-8222-222222222222';
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize',
+    protocolVersion: 1,
+    dataDirectory: '/tmp/sugarcode-v3-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'terminal.create',
+    requestId: 'request-terminal',
+    workspaceId: 'workspace-fixture',
+    generation: 3,
+    sessionId,
+    columns: 80,
+    rows: 24,
+  });
+  host.handle({
+    type: 'terminal.input',
+    requestId: 'request-input',
+    workspaceId: 'workspace-fixture',
+    generation: 3,
+    sessionId,
+    data: 'pwd\n',
+  });
+  host.handle({
+    type: 'terminal.resize',
+    requestId: 'request-resize',
+    workspaceId: 'workspace-fixture',
+    generation: 3,
+    sessionId,
+    columns: 120,
+    rows: 40,
+  });
+
+  await Promise.race([
+    exited,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for terminal exit.')), 1_000),
+    ),
+  ]);
+
+  assert.deepEqual(inputs, ['pwd\n']);
+  assert.deepEqual(sizes, [[120, 40]]);
+  assert.deepEqual(
+    events
+      .filter((event) => event.type.startsWith('terminal.'))
+      .map((event) => event.type),
+    [
+      'terminal.started',
+      'terminal.inputAccepted',
+      'terminal.output',
+      'terminal.exited',
+    ],
+  );
+  assert.equal(closeCount, 1);
+});
+
 test('RuntimeHost executes ADK workspace tools through the native boundary', async () => {
   const events: RuntimeEvent[] = [];
   const persistedKinds: string[] = [];
@@ -303,6 +405,14 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
     executeCommandJson: async () => '{}',
+    drainCommandOutputJson: () => '[]',
+    finishCommandOutput: () => undefined,
+    createTerminalJson: () => '{}',
+    terminalInput: () => undefined,
+    terminalResize: () => undefined,
+    terminalTerminate: () => undefined,
+    drainTerminalEventsJson: () => '[]',
+    closeTerminal: () => false,
     cancelOperation: () => false,
     ensureWorkspace: () => undefined,
     ensureThread: () => undefined,
@@ -410,6 +520,14 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
     executeCommandJson: async () => '{}',
+    drainCommandOutputJson: () => '[]',
+    finishCommandOutput: () => undefined,
+    createTerminalJson: () => '{}',
+    terminalInput: () => undefined,
+    terminalResize: () => undefined,
+    terminalTerminate: () => undefined,
+    drainTerminalEventsJson: () => '[]',
+    closeTerminal: () => false,
     cancelOperation: () => false,
     ensureWorkspace: () => undefined,
     ensureThread: () => undefined,
@@ -518,6 +636,14 @@ test('RuntimeHost approves and persists command execution before native dispatch
       assert.equal(command, '/bin/pwd');
       return JSON.stringify({ status: 'completed', mode, output: { stdout: '/fixture' } });
     },
+    drainCommandOutputJson: () => '[]',
+    finishCommandOutput: () => undefined,
+    createTerminalJson: () => '{}',
+    terminalInput: () => undefined,
+    terminalResize: () => undefined,
+    terminalTerminate: () => undefined,
+    drainTerminalEventsJson: () => '[]',
+    closeTerminal: () => false,
     cancelOperation: () => false,
     ensureWorkspace: () => undefined,
     ensureThread: () => undefined,
@@ -705,6 +831,14 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     importAssetJson: () => JSON.stringify(asset),
     readAssetJson: () => JSON.stringify({ asset, data: 'Zml4dHVyZQ==' }),
     executeCommandJson: async () => '{}',
+    drainCommandOutputJson: () => '[]',
+    finishCommandOutput: () => undefined,
+    createTerminalJson: () => '{}',
+    terminalInput: () => undefined,
+    terminalResize: () => undefined,
+    terminalTerminate: () => undefined,
+    drainTerminalEventsJson: () => '[]',
+    closeTerminal: () => false,
     cancelOperation: () => false,
     ensureWorkspace: () => undefined,
     ensureThread: () => undefined,

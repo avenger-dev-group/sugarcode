@@ -60,6 +60,15 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     },
     content: [{ type: 'text', text: 'Hello' }],
   });
+  supervisor.send({
+    type: 'terminal.create',
+    requestId: 'request-terminal',
+    workspaceId: 'workspace-fixture',
+    generation: 1,
+    sessionId: '44444444-4444-4444-8444-444444444444',
+    columns: 80,
+    rows: 24,
+  });
 
   const first = children[0];
   first.emit('spawn');
@@ -79,11 +88,12 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
   });
   assert.equal(first.messages[1]?.type, 'workspace.open');
   assert.equal(first.messages[2]?.type, 'turn.start');
+  assert.equal(first.messages[3]?.type, 'terminal.create');
   first.emit('exit', 17);
 
   assert.deepEqual(
     events.map((event) => event.type),
-    ['runtime.ready', 'turn.completed'],
+    ['runtime.ready', 'turn.completed', 'terminal.error'],
   );
   const interrupted = events[1];
   assert.equal(interrupted?.type, 'turn.completed');
@@ -93,8 +103,14 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
   }
   assert.deepEqual(
     events.map((event) => event.sequence),
-    [1, 2],
+    [1, 2, 3],
   );
+  const terminalFailure = events[2];
+  assert.equal(terminalFailure?.type, 'terminal.error');
+  if (terminalFailure?.type === 'terminal.error') {
+    assert.equal(terminalFailure.error, 'bridgeCrashed');
+    assert.equal(terminalFailure.fatal, true);
+  }
 
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(children.length, 2);

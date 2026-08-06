@@ -16,6 +16,19 @@ export type NativeRuntimeBinding = Readonly<{
     cwd: string,
     timeoutMs: number,
   ) => Promise<string>;
+  drainCommandOutputJson: (operationId: string) => string;
+  finishCommandOutput: (operationId: string) => void;
+  createTerminalJson: (
+    sessionId: string,
+    workspaceId: string,
+    columns: number,
+    rows: number,
+  ) => string;
+  terminalInput: (sessionId: string, data: string) => void;
+  terminalResize: (sessionId: string, columns: number, rows: number) => void;
+  terminalTerminate: (sessionId: string) => void;
+  drainTerminalEventsJson: (sessionId: string) => string;
+  closeTerminal: (sessionId: string) => boolean;
   cancelOperation: (operationId: string) => boolean;
   ensureWorkspace: (workspaceId: string, canonicalRoot: string) => void;
   ensureThread: (

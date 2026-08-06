@@ -23,7 +23,7 @@ pub struct BridgeError {
 }
 
 impl BridgeError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -431,7 +431,7 @@ fn write_event(output: &mut impl Write, event: &OutputEvent<'_>) -> Result<(), B
         .map_err(|error| BridgeError::new(format!("terminal event write failed: {error}")))
 }
 
-fn validate_workspace(workspace: &Path) -> Result<(), BridgeError> {
+pub(crate) fn validate_workspace(workspace: &Path) -> Result<(), BridgeError> {
     if !workspace.is_absolute() {
         return Err(BridgeError::new("terminal workspace must be absolute"));
     }
@@ -475,7 +475,7 @@ pub(crate) fn canonical_workspace_path_matches(canonical: &Path, workspace: &Pat
     comparable(canonical).eq_ignore_ascii_case(&comparable(workspace))
 }
 
-fn validate_size(columns: u16, rows: u16) -> Result<(), BridgeError> {
+pub(crate) fn validate_size(columns: u16, rows: u16) -> Result<(), BridgeError> {
     if !(MIN_COLUMNS..=MAX_COLUMNS).contains(&columns) || !(MIN_ROWS..=MAX_ROWS).contains(&rows) {
         return Err(BridgeError::new(
             "terminal dimensions were outside the supported range",
@@ -484,7 +484,7 @@ fn validate_size(columns: u16, rows: u16) -> Result<(), BridgeError> {
     Ok(())
 }
 
-fn pty_size(columns: u16, rows: u16) -> PtySize {
+pub(crate) fn pty_size(columns: u16, rows: u16) -> PtySize {
     PtySize {
         rows,
         cols: columns,

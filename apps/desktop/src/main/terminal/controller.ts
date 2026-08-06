@@ -1,13 +1,8 @@
-import {
-  spawn,
-  type ChildProcessWithoutNullStreams,
-  type SpawnOptionsWithoutStdio,
-} from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Dialog } from 'electron';
 
-import type { ResolvedCli } from '@/main/app-server/cli/resolution';
 import type { WorkspaceLaunchContext } from '@/main/app-server/workspace/controller';
+import type { RuntimeSupervisor } from '@/main/runtime/supervisor';
 import {
   TERMINAL_OUTPUT_CHUNK_MAX_BYTES,
   type TerminalActionReason,
@@ -22,52 +17,41 @@ import {
   type TerminalSnapshotRequest,
   type TerminalStateSignal,
   type TerminalStateSnapshot,
-} from '@/shared/terminal';
+} from '../../shared/terminal.ts';
+import type { RuntimeEvent } from '@/runtime/protocol';
 
-const BRIDGE_PROTOCOL_VERSION = 1;
-const BRIDGE_EVENT_MAX_BYTES = 65_536;
 const OUTPUT_HIGH_WATER_BYTES = 768 * 1_024;
 const OUTPUT_LOW_WATER_BYTES = 384 * 1_024;
 const OUTPUT_HARD_LIMIT_BYTES = 1_024 * 1_024;
 const INPUT_QUEUE_MAX_BYTES = 256 * 1_024;
-const STDERR_TAIL_MAX_BYTES = 8 * 1_024;
 const GRACEFUL_CLOSE_TIMEOUT_MS = 2_750;
 
 type DialogBoundary = Pick<Dialog, 'showMessageBox'>;
 type Listener = (signal: TerminalStateSignal) => void;
-type SpawnProcess = (
-  command: string,
-  args: readonly string[],
-  options: SpawnOptionsWithoutStdio,
-) => ChildProcessWithoutNullStreams;
 
 type TerminalControllerOptions = Readonly<{
   dialog: DialogBoundary;
+  runtime: RuntimeSupervisor;
   getMainWindow: () => Electron.BrowserWindow | null;
   getWorkspace: () => WorkspaceLaunchContext | null;
-  getResolvedCli: () => ResolvedCli | null;
-  getCliEnvironment: () => NodeJS.ProcessEnv;
+  getRuntimeWorkspaceId: () => string | null;
   isApprovalPending: () => boolean;
-  spawnProcess?: SpawnProcess;
   createSessionId?: () => string;
 }>;
 
 type ActiveTerminal = {
   generation: number;
   sessionId: string;
+  workspaceId: string;
   workspaceName: string;
-  child: ChildProcessWithoutNullStreams | null;
   status: 'starting' | 'running' | 'paused' | 'exited' | 'failed';
   shell?: string;
-  processGroupId?: number;
-  bridgeSequence: number;
   expectedOutputSequence: number;
   acknowledgedThrough: number;
   output: TerminalOutputChunk[];
   outputBytes: number;
   pendingInputBytes: number;
-  stdoutBuffer: Buffer;
-  stderrTail: Buffer;
+  pendingInputs: Map<string, number>;
   approvalPaused: boolean;
   outputPaused: boolean;
   inputPaused: boolean;
@@ -77,68 +61,32 @@ type ActiveTerminal = {
     reason: TerminalExitReason;
   }>;
   error?: TerminalFailure;
-  exitEventSeen: boolean;
-  closingForOwner: boolean;
 };
 
-type BridgeReadyEvent = Readonly<{
-  type: 'ready';
-  version: number;
-  shell: string;
-  encoding: 'utf-8-replacement';
-  processGroupId: number | null;
-}>;
-
-type BridgeOutputEvent = Readonly<{
-  type: 'output';
-  sequence: number;
-  data: string;
-}>;
-
-type BridgeErrorEvent = Readonly<{
-  type: 'error';
-  code: string;
-  message: string;
-  fatal: boolean;
-}>;
-
-type BridgeExitEvent = Readonly<{
-  type: 'exit';
-  exitCode: number;
-  signal?: string;
-  reason: TerminalExitReason;
-}>;
-
-type BridgeEvent =
-  | BridgeReadyEvent
-  | BridgeOutputEvent
-  | BridgeErrorEvent
-  | BridgeExitEvent;
-
-const actionResult = (
-  reason: TerminalActionReason,
-): TerminalActionResult => ({
+const actionResult = (reason: TerminalActionReason): TerminalActionResult => ({
   accepted: reason === 'accepted',
   reason,
 });
 
-const byteLength = (value: string): number =>
-  Buffer.byteLength(value, 'utf8');
+const byteLength = (value: string): number => Buffer.byteLength(value, 'utf8');
 
 export class TerminalController {
+  private readonly options: TerminalControllerOptions;
   private readonly listeners = new Set<Listener>();
-  private readonly spawnProcess: SpawnProcess;
   private readonly createSessionId: () => string;
+  private readonly unsubscribeRuntime: () => void;
   private revision = 0;
   private operationActive = false;
   private active: ActiveTerminal | null = null;
   private notificationScheduled = false;
   private shuttingDown = false;
   private generation = 0;
+  private closeResolver: (() => void) | null = null;
 
-  constructor(private readonly options: TerminalControllerOptions) {
-    this.spawnProcess = options.spawnProcess ?? spawn;
+  constructor(options: TerminalControllerOptions) {
+    this.options = options;
     this.createSessionId = options.createSessionId ?? randomUUID;
+    this.unsubscribeRuntime = options.runtime.subscribe(this.handleRuntimeEvent);
   }
 
   subscribe = (listener: Listener): (() => void) => {
@@ -146,26 +94,15 @@ export class TerminalController {
     return () => this.listeners.delete(listener);
   };
 
-  getFailureDiagnostic = (): string | null => {
-    const active = this.active;
-    if (!active || active.status !== 'failed') {
-      return null;
-    }
-    const stderr = active.stderrTail.toString('utf8').trim();
-    return stderr.length > 0
-      ? `${active.error ?? 'bridgeCrashed'}: ${stderr}`
-      : (active.error ?? 'bridgeCrashed');
-  };
+  getFailureDiagnostic = (): string | null =>
+    this.active?.status === 'failed' ? this.active.error ?? 'bridgeCrashed' : null;
 
-  getSnapshot = (
-    request: TerminalSnapshotRequest,
-  ): TerminalStateSnapshot => {
+  getSnapshot = (request: TerminalSnapshotRequest): TerminalStateSnapshot => {
     const active = this.active;
     if (
       !active ||
       request.generation !== active.generation ||
-      (request.sessionId !== undefined &&
-        request.sessionId !== active.sessionId)
+      (request.sessionId !== undefined && request.sessionId !== active.sessionId)
     ) {
       return this.closedSnapshot();
     }
@@ -173,14 +110,13 @@ export class TerminalController {
     return this.sessionSnapshot(active);
   };
 
-  create = async (
-    request: TerminalCreateRequest,
-  ): Promise<TerminalActionResult> => {
-    if (this.operationActive || this.liveChild()) {
+  create = async (request: TerminalCreateRequest): Promise<TerminalActionResult> => {
+    if (this.operationActive || this.liveActive()) {
       return actionResult('busy');
     }
     const workspace = this.options.getWorkspace();
-    if (!workspace) {
+    const workspaceId = this.options.getRuntimeWorkspaceId();
+    if (!workspace || !workspaceId) {
       return actionResult('unavailable');
     }
     if (request.generation !== workspace.generation) {
@@ -190,34 +126,31 @@ export class TerminalController {
       return actionResult('busy');
     }
     const mainWindow = this.options.getMainWindow();
-    const cli = this.options.getResolvedCli();
-    if (!mainWindow || mainWindow.isDestroyed() || !cli) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       return actionResult('unavailable');
     }
-
     this.operationActive = true;
     try {
-      const confirmation = await this.options.dialog.showMessageBox(
-        mainWindow,
-        {
-          type: 'warning',
-          buttons: ['Open real shell', 'Cancel'],
-          defaultId: 1,
-          cancelId: 1,
-          noLink: true,
-          title: 'Open a real local shell?',
-          message: `Open an interactive shell in ${workspace.name}?`,
-          detail:
-            'This is a real shell running under your user account. It can read and write any files your account can access, use the network, and run arbitrary local programs. SugarCode does not sandbox or approve terminal commands.',
-        },
-      );
+      const confirmation = await this.options.dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        buttons: ['Open real shell', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+        title: 'Open a real local shell?',
+        message: `Open an interactive shell in ${workspace.name}?`,
+        detail:
+          'This is a real shell running under your user account. It can read and write any files your account can access, use the network, and run arbitrary local programs. SugarCode does not sandbox or approve terminal commands.',
+      });
       if (confirmation.response !== 0) {
         return actionResult('cancelled');
       }
-      const confirmedWorkspace = this.options.getWorkspace();
+      const confirmed = this.options.getWorkspace();
+      const confirmedId = this.options.getRuntimeWorkspaceId();
       if (
-        !confirmedWorkspace ||
-        confirmedWorkspace.generation !== request.generation
+        !confirmed ||
+        confirmed.generation !== request.generation ||
+        confirmedId !== workspaceId
       ) {
         return actionResult('stale');
       }
@@ -225,7 +158,40 @@ export class TerminalController {
         return actionResult('busy');
       }
       this.clearExitedSession();
-      return this.spawnTerminal(confirmedWorkspace, cli, request);
+      const active: ActiveTerminal = {
+        generation: confirmed.generation,
+        sessionId: this.createSessionId(),
+        workspaceId,
+        workspaceName: confirmed.name,
+        status: 'starting',
+        expectedOutputSequence: 1,
+        acknowledgedThrough: 0,
+        output: [],
+        outputBytes: 0,
+        pendingInputBytes: 0,
+        pendingInputs: new Map(),
+        approvalPaused: false,
+        outputPaused: false,
+        inputPaused: false,
+      };
+      this.active = active;
+      this.generation = active.generation;
+      this.publish();
+      try {
+        this.options.runtime.send({
+          type: 'terminal.create',
+          requestId: randomUUID(),
+          workspaceId,
+          generation: active.generation,
+          sessionId: active.sessionId,
+          columns: request.columns,
+          rows: request.rows,
+        });
+      } catch {
+        this.fail(active, 'spawnFailed');
+        return actionResult('failed');
+      }
+      return actionResult('accepted');
     } finally {
       this.operationActive = false;
     }
@@ -244,13 +210,31 @@ export class TerminalController {
     ) {
       return actionResult('busy');
     }
-    if (!this.writeBridgeCommand(active, {
-      type: 'input',
-      data: request.data,
-    })) {
+    const requestId = randomUUID();
+    const inputBytes = byteLength(request.data);
+    if (active.pendingInputBytes + inputBytes > INPUT_QUEUE_MAX_BYTES) {
+      active.inputPaused = true;
+      this.updatePauseState(active);
       return actionResult('busy');
     }
-    return actionResult('accepted');
+    active.pendingInputs.set(requestId, inputBytes);
+    active.pendingInputBytes += inputBytes;
+    const result = this.send(active, {
+      type: 'terminal.input',
+      requestId,
+      workspaceId: active.workspaceId,
+      generation: active.generation,
+      sessionId: active.sessionId,
+      data: request.data,
+    });
+    if (!result.accepted) {
+      active.pendingInputs.delete(requestId);
+      active.pendingInputBytes = Math.max(
+        0,
+        active.pendingInputBytes - inputBytes,
+      );
+    }
+    return result;
   };
 
   resize = (request: TerminalResizeRequest): TerminalActionResult => {
@@ -258,49 +242,42 @@ export class TerminalController {
     if (!active) {
       return actionResult(this.isStale(request) ? 'stale' : 'unavailable');
     }
-    if (
-      !this.writeBridgeCommand(active, {
-        type: 'resize',
-        columns: request.columns,
-        rows: request.rows,
-      })
-    ) {
-      return actionResult('busy');
-    }
-    return actionResult('accepted');
+    return this.send(active, {
+      type: 'terminal.resize',
+      requestId: randomUUID(),
+      workspaceId: active.workspaceId,
+      generation: active.generation,
+      sessionId: active.sessionId,
+      columns: request.columns,
+      rows: request.rows,
+    });
   };
 
-  terminate = (
-    request: TerminalSessionRequest,
-  ): TerminalActionResult => {
+  terminate = (request: TerminalSessionRequest): TerminalActionResult => {
     const active = this.matchLiveSession(request);
     if (!active) {
       return actionResult(this.isStale(request) ? 'stale' : 'unavailable');
     }
-    this.requestBridgeTermination(active);
-    return actionResult('accepted');
+    return this.requestTermination(active);
   };
 
   pauseForApproval = (): void => {
     const active = this.liveActive();
-    if (!active || active.approvalPaused) {
-      return;
+    if (active && !active.approvalPaused) {
+      active.approvalPaused = true;
+      this.updatePauseState(active);
     }
-    active.approvalPaused = true;
-    this.updatePauseState(active);
   };
 
   resumeAfterApproval = (): void => {
     const active = this.liveActive();
-    if (!active || !active.approvalPaused) {
-      return;
+    if (active?.approvalPaused) {
+      active.approvalPaused = false;
+      this.updatePauseState(active);
     }
-    active.approvalPaused = false;
-    this.updatePauseState(active);
   };
 
-  closeForWorkspaceChange = (): Promise<void> =>
-    this.closeOwnedSession(false);
+  closeForWorkspaceChange = (): Promise<void> => this.closeOwnedSession(false);
 
   rendererUnavailable = (): void => {
     void this.closeOwnedSession(true);
@@ -311,150 +288,73 @@ export class TerminalController {
       return;
     }
     this.shuttingDown = true;
-    const active = this.liveActive();
+    this.unsubscribeRuntime();
+    const active = this.active;
     if (active) {
-      active.closingForOwner = true;
-      this.killProcessTree(active);
+      this.sendClose(active);
     }
     this.active = null;
+    this.closeResolver?.();
+    this.closeResolver = null;
     this.publish();
   };
 
-  private spawnTerminal = (
-    workspace: WorkspaceLaunchContext,
-    cli: ResolvedCli,
-    request: TerminalCreateRequest,
-  ): TerminalActionResult => {
-    const active: ActiveTerminal = {
-      generation: workspace.generation,
-      sessionId: this.createSessionId(),
-      workspaceName: workspace.name,
-      child: null,
-      status: 'starting',
-      bridgeSequence: 0,
-      expectedOutputSequence: 1,
-      acknowledgedThrough: 0,
-      output: [],
-      outputBytes: 0,
-      pendingInputBytes: 0,
-      stdoutBuffer: Buffer.alloc(0),
-      stderrTail: Buffer.alloc(0),
-      approvalPaused: false,
-      outputPaused: false,
-      inputPaused: false,
-      exitEventSeen: false,
-      closingForOwner: false,
-    };
-    this.generation = workspace.generation;
-    this.active = active;
-    this.publish();
-
-    let child: ChildProcessWithoutNullStreams;
-    try {
-      child = this.spawnProcess(
-        cli.executablePath,
-        [
-          '__desktop-terminal',
-          '--workspace',
-          workspace.path,
-          '--columns',
-          String(request.columns),
-          '--rows',
-          String(request.rows),
-        ],
-        {
-          cwd: cli.workingDirectory,
-          env: this.options.getCliEnvironment(),
-          windowsHide: true,
-        },
-      );
-    } catch {
-      this.fail(active, 'spawnFailed');
-      return actionResult('failed');
-    }
-    active.child = child;
-    child.stdin.on('error', () => {
-      if (this.active === active && !active.closingForOwner) {
-        this.fail(active, 'bridgeCrashed');
-      }
-    });
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      this.consumeStdout(active, Buffer.from(chunk));
-    });
-    child.stdout.once('end', () => {
-      if (active.stdoutBuffer.length > 0 && this.active === active) {
-        this.fail(active, 'protocolInvalid');
-      }
-    });
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      this.captureStderr(active, Buffer.from(chunk));
-    });
-    child.once('error', () => {
-      if (this.active === active) {
-        this.fail(active, 'spawnFailed');
-      }
-    });
-    child.once('close', () => {
-      this.handleChildClose(active);
-    });
-    return actionResult('accepted');
-  };
-
-  private consumeStdout = (active: ActiveTerminal, chunk: Buffer): void => {
-    if (this.active !== active || active.status === 'failed') {
+  private handleRuntimeEvent = (event: RuntimeEvent): void => {
+    if (
+      event.type !== 'terminal.started' &&
+      event.type !== 'terminal.inputAccepted' &&
+      event.type !== 'terminal.output' &&
+      event.type !== 'terminal.error' &&
+      event.type !== 'terminal.exited'
+    ) {
       return;
     }
-    active.stdoutBuffer = Buffer.concat([active.stdoutBuffer, chunk]);
-    let newline = active.stdoutBuffer.indexOf(0x0a);
-    while (newline >= 0) {
-      const line = active.stdoutBuffer.subarray(0, newline);
-      active.stdoutBuffer = active.stdoutBuffer.subarray(newline + 1);
-      if (line.length === 0 || line.length > BRIDGE_EVENT_MAX_BYTES) {
-        this.fail(active, 'protocolInvalid');
-        return;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line.toString('utf8'));
-      } catch {
-        this.fail(active, 'protocolInvalid');
-        return;
-      }
-      const event = parseBridgeEvent(parsed);
-      if (!event || !this.acceptBridgeEvent(active, event)) {
-        this.fail(active, 'protocolInvalid');
-        return;
-      }
-      newline = active.stdoutBuffer.indexOf(0x0a);
+    const active = this.active;
+    if (
+      !active ||
+      event.workspaceId !== active.workspaceId ||
+      event.generation !== active.generation ||
+      event.sessionId !== active.sessionId
+    ) {
+      return;
     }
-    if (active.stdoutBuffer.length > BRIDGE_EVENT_MAX_BYTES) {
-      this.fail(active, 'protocolInvalid');
-    }
-  };
-
-  private acceptBridgeEvent = (
-    active: ActiveTerminal,
-    event: BridgeEvent,
-  ): boolean => {
-    if (event.type === 'ready') {
+    if (event.type === 'terminal.inputAccepted') {
+      const inputBytes = active.pendingInputs.get(event.requestId);
+      if (inputBytes === undefined || inputBytes !== event.inputBytes) {
+        this.fail(active, 'protocolInvalid');
+        return;
+      }
+      active.pendingInputs.delete(event.requestId);
+      active.pendingInputBytes = Math.max(
+        0,
+        active.pendingInputBytes - inputBytes,
+      );
       if (
-        active.status !== 'starting' ||
-        event.version !== BRIDGE_PROTOCOL_VERSION
+        active.inputPaused &&
+        active.pendingInputBytes <= INPUT_QUEUE_MAX_BYTES / 2
       ) {
-        return false;
+        active.inputPaused = false;
+        this.updatePauseState(active);
+      }
+      return;
+    }
+    if (event.type === 'terminal.started') {
+      if (active.status !== 'starting') {
+        this.fail(active, 'protocolInvalid');
+        return;
       }
       active.shell = event.shell;
-      active.processGroupId = event.processGroupId ?? undefined;
       active.status = this.isPaused(active) ? 'paused' : 'running';
       this.publish();
-      return true;
+      return;
     }
-    if (event.type === 'output') {
+    if (event.type === 'terminal.output') {
       if (
         active.status === 'starting' ||
-        event.sequence !== active.expectedOutputSequence
+        event.outputSequence !== active.expectedOutputSequence
       ) {
-        return false;
+        this.fail(active, 'protocolInvalid');
+        return;
       }
       active.expectedOutputSequence += 1;
       const bytes = byteLength(event.data);
@@ -463,37 +363,25 @@ export class TerminalController {
         active.outputBytes + bytes > OUTPUT_HARD_LIMIT_BYTES
       ) {
         this.fail(active, 'outputOverload');
-        return true;
+        return;
       }
-      active.output.push({
-        sequence: event.sequence,
-        data: event.data,
-      });
+      active.output.push({ sequence: event.outputSequence, data: event.data });
       active.outputBytes += bytes;
-      if (
-        active.outputBytes >= OUTPUT_HIGH_WATER_BYTES &&
-        !active.outputPaused
-      ) {
+      if (active.outputBytes >= OUTPUT_HIGH_WATER_BYTES && !active.outputPaused) {
         active.outputPaused = true;
-        active.child?.stdout.pause();
+        this.sendFlow(active, true);
         this.updatePauseState(active);
       } else {
         this.schedulePublish();
       }
-      return true;
+      return;
     }
-    if (event.type === 'error') {
+    if (event.type === 'terminal.error') {
       if (event.fatal) {
-        this.fail(active, 'bridgeCrashed');
-      } else {
-        this.schedulePublish();
+        this.fail(active, event.error);
       }
-      return true;
+      return;
     }
-    if (active.exitEventSeen || active.status === 'starting') {
-      return false;
-    }
-    active.exitEventSeen = true;
     active.exit = {
       exitCode: event.exitCode,
       ...(event.signal ? { signal: event.signal } : {}),
@@ -503,204 +391,163 @@ export class TerminalController {
     active.approvalPaused = false;
     active.outputPaused = false;
     active.inputPaused = false;
+    active.pendingInputs.clear();
+    active.pendingInputBytes = 0;
+    this.closeResolver?.();
+    this.closeResolver = null;
     this.publish();
-    return true;
   };
 
-  private acknowledgeOutput = (
+  private send = (
     active: ActiveTerminal,
-    acknowledgeThrough: number,
-  ): void => {
+    command: Parameters<RuntimeSupervisor['send']>[0],
+  ): TerminalActionResult => {
+    try {
+      this.options.runtime.send(command);
+      return actionResult('accepted');
+    } catch {
+      this.fail(active, 'bridgeCrashed');
+      return actionResult('failed');
+    }
+  };
+
+  private requestTermination = (active: ActiveTerminal): TerminalActionResult =>
+    this.send(active, {
+      type: 'terminal.terminate',
+      requestId: randomUUID(),
+      workspaceId: active.workspaceId,
+      generation: active.generation,
+      sessionId: active.sessionId,
+    });
+
+  private sendFlow = (active: ActiveTerminal, paused: boolean): void => {
+    try {
+      this.options.runtime.send({
+        type: 'terminal.flow',
+        requestId: randomUUID(),
+        workspaceId: active.workspaceId,
+        generation: active.generation,
+        sessionId: active.sessionId,
+        paused,
+      });
+    } catch {
+      this.fail(active, 'bridgeCrashed');
+    }
+  };
+
+  private sendClose = (active: ActiveTerminal): void => {
+    try {
+      this.options.runtime.send({
+        type: 'terminal.close',
+        requestId: randomUUID(),
+        workspaceId: active.workspaceId,
+        generation: active.generation,
+        sessionId: active.sessionId,
+      });
+    } catch {
+      // Runtime shutdown also drops native process containment.
+    }
+  };
+
+  private acknowledgeOutput = (active: ActiveTerminal, through: number): void => {
     const maximum = active.expectedOutputSequence - 1;
-    if (
-      acknowledgeThrough <= active.acknowledgedThrough ||
-      acknowledgeThrough > maximum
-    ) {
+    if (through <= active.acknowledgedThrough || through > maximum) {
       return;
     }
-    active.acknowledgedThrough = acknowledgeThrough;
-    while (
-      active.output.length > 0 &&
-      active.output[0].sequence <= acknowledgeThrough
-    ) {
-      const [removed] = active.output.splice(0, 1);
-      active.outputBytes -= byteLength(removed.data);
+    active.acknowledgedThrough = through;
+    while (active.output[0]?.sequence <= through) {
+      const removed = active.output.shift();
+      if (removed) {
+        active.outputBytes -= byteLength(removed.data);
+      }
     }
-    if (
-      active.outputPaused &&
-      active.outputBytes <= OUTPUT_LOW_WATER_BYTES
-    ) {
+    if (active.outputPaused && active.outputBytes <= OUTPUT_LOW_WATER_BYTES) {
       active.outputPaused = false;
-      active.child?.stdout.resume();
+      this.sendFlow(active, false);
       this.updatePauseState(active);
     }
   };
 
-  private writeBridgeCommand = (
-    active: ActiveTerminal,
-    command: Readonly<Record<string, unknown>>,
-  ): boolean => {
-    const child = active.child;
-    if (!child || child.exitCode !== null || child.killed) {
-      return false;
-    }
-    active.bridgeSequence += 1;
-    const encoded = `${JSON.stringify({
-      ...command,
-      sequence: active.bridgeSequence,
-    })}\n`;
-    const bytes = byteLength(encoded);
-    if (active.pendingInputBytes + bytes > INPUT_QUEUE_MAX_BYTES) {
-      active.bridgeSequence -= 1;
-      active.inputPaused = true;
-      this.updatePauseState(active);
-      return false;
-    }
-    active.pendingInputBytes += bytes;
-    const accepted = child.stdin.write(encoded, 'utf8', () => {
-      if (this.active !== active) {
-        return;
-      }
-      active.pendingInputBytes = Math.max(
-        0,
-        active.pendingInputBytes - bytes,
-      );
-      if (
-        active.inputPaused &&
-        active.pendingInputBytes <= INPUT_QUEUE_MAX_BYTES / 2
-      ) {
-        active.inputPaused = false;
-        this.updatePauseState(active);
-      }
-    });
-    if (!accepted) {
-      active.inputPaused = true;
-      this.updatePauseState(active);
-    }
-    return true;
-  };
-
-  private requestBridgeTermination = (active: ActiveTerminal): void => {
-    if (!this.writeBridgeCommand(active, { type: 'terminate' })) {
-      this.killProcessTree(active);
-    }
-  };
-
-  private closeOwnedSession = async (
-    rendererLost: boolean,
-  ): Promise<void> => {
-    const active = this.liveActive();
+  private closeOwnedSession = async (immediate: boolean): Promise<void> => {
+    const active = this.active;
     if (!active) {
-      this.active = null;
       this.publish();
       return;
     }
-    active.closingForOwner = true;
-    if (rendererLost) {
-      this.killProcessTree(active);
-    } else {
-      this.requestBridgeTermination(active);
-    }
-    await this.waitForClose(active);
-    if (this.active === active) {
-      this.killProcessTree(active);
-      this.active = null;
-      this.publish();
-    }
-  };
-
-  private waitForClose = (active: ActiveTerminal): Promise<void> => {
-    const child = active.child;
-    if (!child || child.exitCode !== null) {
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (): void => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timer);
-          resolve();
+    if (active.status === 'running' || active.status === 'paused' || active.status === 'starting') {
+      if (!immediate) {
+        const exited = new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, GRACEFUL_CLOSE_TIMEOUT_MS);
+          this.closeResolver = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+        const result = this.requestTermination(active);
+        if (!result.accepted) {
+          this.closeResolver?.();
         }
-      };
-      const timer = setTimeout(finish, GRACEFUL_CLOSE_TIMEOUT_MS);
-      child.once('close', finish);
-    });
-  };
-
-  private killProcessTree = (active: ActiveTerminal): void => {
-    if (
-      process.platform !== 'win32' &&
-      active.processGroupId !== undefined
-    ) {
-      try {
-        process.kill(-active.processGroupId, 'SIGKILL');
-      } catch {
-        // The bridge's Rust containment may already have reaped the tree.
+        await exited;
+        this.closeResolver = null;
       }
+      this.sendClose(active);
     }
-    const child = active.child;
-    if (child && child.exitCode === null && !child.killed) {
-      child.kill('SIGKILL');
-    }
-  };
-
-  private handleChildClose = (active: ActiveTerminal): void => {
-    active.child = null;
-    if (this.active !== active) {
-      return;
-    }
-    if (active.closingForOwner || this.shuttingDown) {
+    if (this.active === active) {
       this.active = null;
       this.publish();
-      return;
-    }
-    if (!active.exitEventSeen && active.status !== 'failed') {
-      this.fail(active, 'bridgeCrashed', false);
     }
   };
 
-  private fail = (
-    active: ActiveTerminal,
-    error: TerminalFailure,
-    kill = true,
-  ): void => {
+  private fail = (active: ActiveTerminal, error: TerminalFailure): void => {
     if (this.active !== active || active.status === 'failed') {
       return;
     }
     active.status = 'failed';
     active.error = error;
-    if (kill) {
-      this.killProcessTree(active);
-    }
+    active.inputPaused = false;
+    active.pendingInputs.clear();
+    active.pendingInputBytes = 0;
+    this.sendClose(active);
+    this.closeResolver?.();
+    this.closeResolver = null;
     this.publish();
   };
 
   private updatePauseState = (active: ActiveTerminal): void => {
-    if (active.status !== 'running' && active.status !== 'paused') {
-      return;
+    if (active.status === 'running' || active.status === 'paused') {
+      active.status = this.isPaused(active) ? 'paused' : 'running';
+      this.publish();
     }
-    active.status = this.isPaused(active) ? 'paused' : 'running';
-    this.publish();
   };
 
   private isPaused = (active: ActiveTerminal): boolean =>
     active.approvalPaused || active.outputPaused || active.inputPaused;
 
-  private captureStderr = (
-    active: ActiveTerminal,
-    chunk: Buffer,
-  ): void => {
-    const combined = Buffer.concat([active.stderrTail, chunk]);
-    active.stderrTail =
-      combined.length <= STDERR_TAIL_MAX_BYTES
-        ? combined
-        : combined.subarray(combined.length - STDERR_TAIL_MAX_BYTES);
+  private liveActive = (): ActiveTerminal | null =>
+    this.active && ['starting', 'running', 'paused'].includes(this.active.status)
+      ? this.active
+      : null;
+
+  private matchLiveSession = (request: TerminalSessionRequest): ActiveTerminal | null => {
+    const active = this.liveActive();
+    return active &&
+      active.generation === request.generation &&
+      active.sessionId === request.sessionId
+      ? active
+      : null;
   };
 
-  private sessionSnapshot = (
-    active: ActiveTerminal,
-  ): TerminalStateSnapshot => {
+  private isStale = (request: TerminalSessionRequest): boolean =>
+    request.generation !== (this.active?.generation ?? this.generation) ||
+    (this.active !== null && request.sessionId !== this.active.sessionId);
+
+  private clearExitedSession = (): void => {
+    if (this.active && ['exited', 'failed'].includes(this.active.status)) {
+      this.active = null;
+    }
+  };
+
+  private sessionSnapshot = (active: ActiveTerminal): TerminalStateSnapshot => {
     const base = {
       revision: this.revision,
       generation: active.generation,
@@ -711,36 +558,19 @@ export class TerminalController {
       output: [...active.output],
     };
     if (active.status === 'exited' && active.exit) {
-      return {
-        ...base,
-        status: 'exited',
-        exitCode: active.exit.exitCode,
-        ...(active.exit.signal ? { signal: active.exit.signal } : {}),
-        reason: active.exit.reason,
-      };
+      return { ...base, status: 'exited', ...active.exit };
     }
     if (active.status === 'failed' && active.error) {
-      return {
-        ...base,
-        status: 'failed',
-        error: active.error,
-      };
+      return { ...base, status: 'failed', error: active.error };
     }
     if (
       active.status === 'starting' ||
       active.status === 'running' ||
       active.status === 'paused'
     ) {
-      return {
-        ...base,
-        status: active.status,
-      };
+      return { ...base, status: active.status };
     }
-    return {
-      ...base,
-      status: 'failed',
-      error: active.error ?? 'bridgeCrashed',
-    };
+    return { ...base, status: 'failed', error: 'protocolInvalid' };
   };
 
   private closedSnapshot = (): TerminalStateSnapshot => ({
@@ -757,10 +587,7 @@ export class TerminalController {
     const active = this.active;
     const signal: TerminalStateSignal = {
       revision: this.revision,
-      generation:
-        active?.generation ??
-        this.options.getWorkspace()?.generation ??
-        this.generation,
+      generation: active?.generation ?? this.generation,
       status: active?.status ?? 'closed',
       ...(active ? { sessionId: active.sessionId } : {}),
     };
@@ -774,152 +601,6 @@ export class TerminalController {
       return;
     }
     this.notificationScheduled = true;
-    setImmediate(() => {
-      if (this.notificationScheduled) {
-        this.publish();
-      }
-    });
-  };
-
-  private matchLiveSession = (
-    request: TerminalSessionRequest,
-  ): ActiveTerminal | null => {
-    const active = this.liveActive();
-    return active &&
-      active.generation === request.generation &&
-      active.sessionId === request.sessionId
-      ? active
-      : null;
-  };
-
-  private liveActive = (): ActiveTerminal | null =>
-    this.active?.status === 'starting' ||
-    this.active?.status === 'running' ||
-    this.active?.status === 'paused'
-      ? this.active
-      : null;
-
-  private liveChild = (): boolean => this.liveActive() !== null;
-
-  private isStale = (request: TerminalSessionRequest): boolean =>
-    request.generation !==
-    (this.options.getWorkspace()?.generation ?? this.generation);
-
-  private clearExitedSession = (): void => {
-    if (
-      this.active?.status === 'exited' ||
-      this.active?.status === 'failed'
-    ) {
-      this.active = null;
-    }
+    setImmediate(this.publish);
   };
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const hasOnlyKeys = (
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[] = [],
-): boolean =>
-  required.every((key) => Object.hasOwn(value, key)) &&
-  Object.keys(value).every(
-    (key) => required.includes(key) || optional.includes(key),
-  );
-
-const isCount = (value: unknown): value is number =>
-  Number.isSafeInteger(value) && (value as number) >= 0;
-
-const isBoundedString = (
-  value: unknown,
-  maximumBytes: number,
-): value is string =>
-  typeof value === 'string' &&
-  value.length > 0 &&
-  byteLength(value) <= maximumBytes;
-
-const parseBridgeEvent = (value: unknown): BridgeEvent | null => {
-  if (!isRecord(value) || typeof value.type !== 'string') {
-    return null;
-  }
-  if (value.type === 'ready') {
-    return hasOnlyKeys(value, [
-      'type',
-      'version',
-      'shell',
-      'encoding',
-      'processGroupId',
-    ]) &&
-      value.version === BRIDGE_PROTOCOL_VERSION &&
-      isBoundedString(value.shell, 1_024) &&
-      value.encoding === 'utf-8-replacement' &&
-      (value.processGroupId === null ||
-        (isCount(value.processGroupId) && value.processGroupId > 1))
-      ? {
-          type: 'ready',
-          version: BRIDGE_PROTOCOL_VERSION,
-          shell: value.shell,
-          encoding: value.encoding,
-          processGroupId:
-            typeof value.processGroupId === 'number'
-              ? value.processGroupId
-              : null,
-        }
-      : null;
-  }
-  if (value.type === 'output') {
-    return hasOnlyKeys(value, ['type', 'sequence', 'data']) &&
-      isCount(value.sequence) &&
-      value.sequence > 0 &&
-      typeof value.data === 'string' &&
-      byteLength(value.data) <= TERMINAL_OUTPUT_CHUNK_MAX_BYTES
-      ? {
-          type: 'output',
-          sequence: value.sequence,
-          data: value.data,
-        }
-      : null;
-  }
-  if (value.type === 'error') {
-    return hasOnlyKeys(value, [
-      'type',
-      'code',
-      'message',
-      'fatal',
-    ]) &&
-      isBoundedString(value.code, 128) &&
-      isBoundedString(value.message, 2_048) &&
-      typeof value.fatal === 'boolean'
-      ? {
-          type: 'error',
-          code: value.code,
-          message: value.message,
-          fatal: value.fatal,
-        }
-      : null;
-  }
-  if (value.type === 'exit') {
-    return hasOnlyKeys(
-      value,
-      ['type', 'exitCode', 'reason'],
-      ['signal'],
-    ) &&
-      isCount(value.exitCode) &&
-      (value.signal === undefined ||
-        isBoundedString(value.signal, 128)) &&
-      ['natural', 'requested', 'ownerLost', 'protocolError', 'ioError'].includes(
-        value.reason as string,
-      )
-      ? {
-          type: 'exit',
-          exitCode: value.exitCode,
-          ...(typeof value.signal === 'string'
-            ? { signal: value.signal }
-            : {}),
-          reason: value.reason as TerminalExitReason,
-        }
-      : null;
-  }
-  return null;
-};

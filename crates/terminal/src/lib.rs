@@ -1,10 +1,15 @@
 mod bridge;
 mod containment;
+mod embedded;
 mod protocol;
 
 use std::path::Path;
 
 pub use bridge::BridgeError;
+pub use embedded::EmbeddedTerminal;
+pub use embedded::EmbeddedTerminalEvent;
+pub use embedded::EmbeddedTerminalExitReason;
+pub use embedded::EmbeddedTerminalInfo;
 
 pub const TERMINAL_BRIDGE_PROTOCOL_VERSION: u32 = 1;
 

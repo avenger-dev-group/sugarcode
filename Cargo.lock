@@ -2885,8 +2885,10 @@ dependencies = [
  "serde_json",
  "sha2",
  "sugarcode-state",
+ "sugarcode-terminal",
  "sugarcode-tools",
  "tempfile",
+ "tokio",
  "tokio-util",
  "uuid",
 ]
@@ -2987,6 +2989,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 
