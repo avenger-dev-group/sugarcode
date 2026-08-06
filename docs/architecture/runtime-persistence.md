@@ -311,7 +311,8 @@ The 3.0 utility runtime has an independent SQLite store at
 `~/.sugarcode/v3/sugarcode-v3.sqlite3`. It never reads or migrates rollout v1.
 Schema v1 records provider-neutral workspaces, Threads, Turns, ordered Turn
 items, operations, approvals and Agent tasks. Schema v2 adds model profiles and
-separately stored credentials; schema v3 adds Thread archive and fork lineage.
+separately stored credentials; schema v3 adds Thread archive and fork lineage;
+schema v4 adds content-addressed asset metadata.
 The connection enables foreign keys, WAL mode and a bounded busy timeout, and
 the database file is restricted to the owning user on Unix.
 
@@ -323,15 +324,32 @@ running Turns become retryable `interrupted`, running/waiting Agent tasks become
 `interrupted`, and executing operations become retryable failures. Pending
 approvals remain pending and no operation is automatically executed.
 
-Renderer model configuration and conversation reads/writes now use the 3.0
-utility runtime behind the existing preload API. Approval proposals, atomic
-workspace patches and Git operations also persist or execute through that
-runtime and the native module.
+Renderer model configuration, attachment import and conversation reads/writes
+now use the 3.0 utility runtime behind the existing preload API. Approval
+proposals, atomic workspace patches and Git operations also persist or execute
+through that runtime and the native module. Attachment bytes live only in the
+v3 content-addressed store; SQLite retains their verified descriptors.
 
-The TypeScript ADK session is still in-memory. SQLite reconstructs the visible
-provider-neutral transcript after restart, but the snapshot is not yet rebuilt
-into the next Runner model history. Attachment storage, pending-approval replay,
-sandboxed commands, PTY, MCP and dynamic multi-Agent state also remain migration
-gates. Workspace selection and app connection state therefore continue to use
-app-server during coexistence; neither app-server nor the CLI sidecar may be
-removed at this checkpoint.
+Bounded `shell_exec` calls use the same operation ledger. Approval moves an
+operation from `proposed` to `approved`; the host must durably claim it as
+`executing` before native dispatch and records the terminal result as
+`completed` or `failed`. Duplicate `operationId` claims do not execute the side
+effect again. Sandboxed direct commands reuse the capability-bound,
+read-only/network-denied supervisor in the native module, while Full Access
+commands use the bounded shell path. Active native process trees are indexed by
+`operationId`, allowing Turn cancellation or worker shutdown to terminate them.
+Full Access remains an explicit per-operation decision and cannot consume a
+Thread or Workspace automatic-approval mode.
+
+The TypeScript ADK session remains an in-process cache. Before the first new
+Turn on a Thread, Runtime rebuilds completed user/model events from SQLite into
+ADK, reopening and hash-verifying every referenced asset before provider I/O.
+Incomplete Turns are deliberately excluded so an interrupted tool call is never
+resumed as completed history. SQLite stores SugarCode's own discriminated text,
+reasoning, media, tool-call and tool-result parts; serialized ADK `Event` objects
+and provider SDK response objects are not persistence formats.
+
+Pending-approval replay, live command-output projection, PTY, MCP and dynamic
+multi-Agent state remain migration gates. Workspace selection and app connection
+state therefore continue to use app-server during coexistence; neither
+app-server nor the CLI sidecar may be removed at this checkpoint.

@@ -466,13 +466,22 @@ Its `RuntimeCommand` and `RuntimeEvent` discriminated unions are a private
 Electron protocol and contain stable request, workspace, Thread, Turn,
 operation and sequence identifiers without SDK types. The utility runtime is
 currently started alongside app-server. Existing Renderer/preload APIs for
-model configuration, conversations, approvals and Git are backed by private
-Main adapters to the utility runtime; they do not expose ADK or provider SDK
-types.
+model configuration, attachment import, conversations, approvals, Git and
+bounded command execution are backed by private Main adapters to the utility
+runtime; they do not expose ADK or provider SDK types. New ADK Turns expose a
+provider-neutral `shell_exec` tool. Every invocation first persists its
+operation and approval, transitions the operation to `executing`, then delegates
+to the native module. Sandboxed direct commands use the existing read-only,
+network-denied capability root without spawning the CLI supervisor; approved
+Full Access commands use the existing bounded shell executor. Turn cancellation
+is forwarded by `operationId` to the native process tree. The private approval
+event carries a provider-neutral `fullAccess` flag so the existing UI displays
+the elevated mode; Full Access requests never inherit Thread or Workspace
+automatic approval.
 
-Workspace selection and connection state, attachment import, sandboxed command
-execution, terminal/PTY, MCP and dynamic multi-Agent behavior still depend on
-the old sidecar or have not reached parity. Those paths must migrate behind the
+Workspace selection and connection state, live command output projection,
+terminal/PTY, MCP and dynamic multi-Agent behavior still depend on the old
+sidecar or have not reached parity. Those paths must migrate behind the
 same preload API before app-server is removed. The migration must not introduce
 a second Renderer-facing provider-specific API. If migration work touches the
 public app-server protocol while coexistence remains, Rust definitions,

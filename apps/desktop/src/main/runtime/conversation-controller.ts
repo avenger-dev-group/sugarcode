@@ -5,6 +5,7 @@ import {
   isValidThreadSearchInput,
   type ConversationActionResult,
   type ConversationActivity,
+  type ConversationAttachment,
   type ConversationStateListener,
   type ConversationStateSnapshot,
   type ConversationThreadNavigatorSnapshot,
@@ -13,6 +14,7 @@ import {
 } from '../../shared/conversation.ts';
 import type {
   RuntimeEvent,
+  RuntimeContentPart,
   RuntimeModelSelection,
   RuntimeProviderError,
   RuntimeThreadRecord,
@@ -90,6 +92,17 @@ const modelFromItems = (
     : fallback;
 };
 
+const attachmentFromPart = (
+  part: Extract<RuntimeContentPart, { type: 'asset' }>,
+): ConversationAttachment => ({
+  assetId: part.asset.assetId,
+  sha256: part.asset.sha256,
+  mediaType: part.asset.mediaType,
+  originalName: part.asset.originalName,
+  sizeBytes: part.asset.sizeBytes,
+  kind: part.asset.kind,
+});
+
 const projectThread = (
   snapshot: RuntimeThreadSnapshot,
 ): readonly ConversationTurn[] =>
@@ -100,8 +113,8 @@ const projectThread = (
       fallbackModel(record.providerWireApi, record.model),
     );
     const user = items.find((item) => item.kind === 'turn.userMessage')?.payload;
-    const userText = Array.isArray(user?.content)
-      ? user.content
+    const userContent = Array.isArray(user?.content) ? user.content : [];
+    const userText = userContent
           .filter(
             (part): part is { type: 'text'; text: string } =>
               typeof part === 'object' &&
@@ -110,8 +123,16 @@ const projectThread = (
               typeof (part as { text?: unknown }).text === 'string',
           )
           .map((part) => part.text)
-          .join('\n')
-      : '';
+          .join('\n');
+    const attachments = userContent.flatMap((part): readonly ConversationAttachment[] =>
+      typeof part === 'object' &&
+      part !== null &&
+      (part as { type?: unknown }).type === 'asset' &&
+      typeof (part as { asset?: unknown }).asset === 'object' &&
+      (part as { asset?: unknown }).asset !== null
+        ? [attachmentFromPart(part as Extract<RuntimeContentPart, { type: 'asset' }>)]
+        : [],
+    );
     const finalText = items
       .filter(
         (item) =>
@@ -135,8 +156,14 @@ const projectThread = (
         }),
       );
     const messages = [
-      ...(userText
-        ? [{ id: `${record.id}:user`, role: 'user' as const, text: userText, status: 'completed' as const }]
+      ...(userText || attachments.length > 0
+        ? [{
+            id: `${record.id}:user`,
+            role: 'user' as const,
+            text: userText,
+            ...(attachments.length > 0 ? { attachments } : {}),
+            status: 'completed' as const,
+          }]
         : []),
       ...(finalText
         ? [{ id: `${record.id}:agent`, role: 'agent' as const, text: finalText, status: 'completed' as const }]
@@ -226,7 +253,7 @@ export class RuntimeConversationController {
   };
 
   startTurn = async (input: unknown): Promise<ConversationActionResult> => {
-    if (!isConversationSendRequest(input) || (input.attachments?.length ?? 0) > 0) {
+    if (!isConversationSendRequest(input)) {
       return rejected('invalidInput');
     }
     if (!this.workspaceId || this.phase === 'unavailable') {
@@ -239,6 +266,29 @@ export class RuntimeConversationController {
     this.notice = undefined;
     this.publish();
     try {
+      const content: RuntimeContentPart[] = input.input.length > 0
+        ? [{ type: 'text', text: input.input }]
+        : [];
+      const attachments: ConversationAttachment[] = [];
+      for (const attachment of input.attachments ?? []) {
+        const imported = await this.runtime.request(
+          {
+            type: 'asset.import',
+            requestId: randomUUID(),
+            fileName: attachment.fileName,
+            ...(attachment.mediaType ? { mediaType: attachment.mediaType } : {}),
+            data: attachment.data,
+          },
+          'asset.imported',
+        );
+        content.push({ type: 'asset', asset: imported.asset });
+        attachments.push({
+          ...attachmentFromPart({ type: 'asset', asset: imported.asset }),
+          ...(imported.asset.kind === 'image'
+            ? { previewUrl: `data:${imported.asset.mediaType};base64,${attachment.data}` }
+            : {}),
+        });
+      }
       if (!this.threadId) {
         const created = await this.runtime.request(
           {
@@ -262,6 +312,7 @@ export class RuntimeConversationController {
         id: `${turnId}:user`,
         role: 'user' as const,
         text: input.input,
+        ...(attachments.length > 0 ? { attachments } : {}),
         status: 'inProgress' as const,
       };
       this.turnsByThread.set(this.threadId, [
@@ -276,7 +327,7 @@ export class RuntimeConversationController {
         threadId: this.threadId,
         turnId,
         ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
-        content: [{ type: 'text', text: input.input }],
+        content,
       });
       this.publish();
       return accepted();
@@ -531,7 +582,7 @@ export class RuntimeConversationController {
             approvalId: event.approvalId,
             command: event.argumentsSummary,
             argumentCount: 0,
-            fullAccess: false,
+            fullAccess: event.fullAccess,
             requestStatus: 'inProgress',
           },
         });

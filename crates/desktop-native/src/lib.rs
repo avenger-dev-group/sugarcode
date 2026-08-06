@@ -1,5 +1,6 @@
 mod persistence;
 
+use base64::Engine;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -9,6 +10,11 @@ use napi::Error;
 use napi::bindgen_prelude::Result;
 use napi_derive::napi;
 use serde_json::json;
+use sugarcode_state::ContentAsset;
+use sugarcode_state::ContentAssetKind;
+use sugarcode_state::ContentStore;
+use sugarcode_tools::EmbeddedShellCommandExecutor;
+use sugarcode_tools::FullAccessShellArguments;
 use sugarcode_tools::GitChangeKind;
 use sugarcode_tools::GitCommitArguments;
 use sugarcode_tools::GitDiffArguments;
@@ -16,6 +22,9 @@ use sugarcode_tools::GitDiffSource;
 use sugarcode_tools::GitErrorKind;
 use sugarcode_tools::GitMutationArguments;
 use sugarcode_tools::GitRepositoryState;
+use sugarcode_tools::ShellCommandArguments;
+use sugarcode_tools::ShellCommandExecution;
+use sugarcode_tools::ShellCommandExecutor;
 use sugarcode_tools::WorkspaceChangeSetCommitOutcome;
 use sugarcode_tools::WorkspaceChangeSetPrepareOutcome;
 use sugarcode_tools::WorkspaceListArguments;
@@ -28,23 +37,158 @@ use sugarcode_tools::WorkspaceSearchOutcome;
 use sugarcode_tools::WorkspaceTool;
 use tokio_util::sync::CancellationToken;
 
+use persistence::AssetRow;
 use persistence::Store;
 
 #[napi]
 pub struct NativeRuntime {
     store: Mutex<Store>,
+    content_store: ContentStore,
     workspaces: Mutex<HashMap<String, Arc<WorkspaceTool>>>,
+    command_cancellations: Mutex<HashMap<String, CancellationToken>>,
 }
 
 #[napi]
 impl NativeRuntime {
     #[napi(constructor)]
     pub fn open(data_directory: String) -> Result<Self> {
-        let store = Store::open(data_directory).map_err(native_error)?;
+        let store = Store::open(&data_directory).map_err(native_error)?;
+        let content_store = ContentStore::open_at(Path::new(&data_directory))
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         Ok(Self {
             store: Mutex::new(store),
+            content_store,
             workspaces: Mutex::new(HashMap::new()),
+            command_cancellations: Mutex::new(HashMap::new()),
         })
+    }
+
+    #[napi]
+    pub fn import_asset_json(
+        &self,
+        file_name: String,
+        media_type: Option<String>,
+        data: String,
+    ) -> Result<String> {
+        const MAX_BASE64_BYTES: usize = 27_962_032;
+        if data.is_empty() || data.len() > MAX_BASE64_BYTES {
+            return Err(Error::from_reason("Asset data is empty or too large."));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.as_bytes())
+            .map_err(|_| Error::from_reason("Asset data is not valid Base64."))?;
+        let asset = self
+            .content_store
+            .import(file_name, media_type.as_deref(), &bytes)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let row = asset_row(&asset);
+        self.with_store(|store| store.record_asset(&row))?;
+        serde_json::to_string(&row).map_err(|error| {
+            Error::from_reason(format!("Could not encode asset metadata: {error}"))
+        })
+    }
+
+    #[napi]
+    pub fn read_asset_json(&self, asset_id: String) -> Result<String> {
+        let row = self
+            .with_store(|store| store.asset(&asset_id))?
+            .ok_or_else(|| Error::from_reason("Content asset does not exist."))?;
+        let asset = content_asset(&row)?;
+        let bytes = self
+            .content_store
+            .read_verified(&asset)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        serde_json::to_string(&json!({
+            "asset": row,
+            "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+        }))
+        .map_err(|error| Error::from_reason(format!("Could not encode asset content: {error}")))
+    }
+
+    #[napi]
+    pub async fn execute_command_json(
+        &self,
+        operation_id: String,
+        workspace_id: String,
+        mode: String,
+        command: String,
+        arguments_json: String,
+        cwd: String,
+        timeout_ms: u32,
+    ) -> Result<String> {
+        let arguments: Vec<String> = serde_json::from_str(&arguments_json)
+            .map_err(|_| Error::from_reason("Command arguments must be a JSON string array."))?;
+        let workspace = self.workspace(&workspace_id)?;
+        let command_root = workspace.command_workspace_root().map_err(|kind| {
+            Error::from_reason(format!("Could not bind command workspace root: {kind:?}."))
+        })?;
+        let executor = EmbeddedShellCommandExecutor::new(command_root)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let cancellation = CancellationToken::new();
+        {
+            let mut active = self.command_cancellations.lock().map_err(|_| {
+                Error::from_reason("Native command cancellation lock was poisoned.")
+            })?;
+            if active.contains_key(&operation_id) {
+                return Err(Error::from_reason(
+                    "Command operation is already executing.",
+                ));
+            }
+            active.insert(operation_id.clone(), cancellation.clone());
+        }
+        let execution = match mode.as_str() {
+            "sandboxed" if cwd == "." => {
+                executor
+                    .execute(ShellCommandArguments { command, arguments }, cancellation)
+                    .await
+            }
+            "fullAccess" if arguments.is_empty() => {
+                executor
+                    .execute_full_access(
+                        FullAccessShellArguments {
+                            command,
+                            cwd,
+                            timeout_ms: u64::from(timeout_ms),
+                            output_tx: None,
+                        },
+                        cancellation,
+                    )
+                    .await
+            }
+            _ => ShellCommandExecution::Error(
+                sugarcode_tools::ShellCommandErrorKind::InvalidArguments,
+            ),
+        };
+        self.command_cancellations
+            .lock()
+            .map_err(|_| Error::from_reason("Native command cancellation lock was poisoned."))?
+            .remove(&operation_id);
+        let value = match execution {
+            ShellCommandExecution::Completed(output) => {
+                json!({ "status": "completed", "mode": "sandboxed", "output": output })
+            }
+            ShellCommandExecution::FullAccessCompleted(output) => {
+                json!({ "status": "completed", "mode": "fullAccess", "output": output })
+            }
+            ShellCommandExecution::Error(kind) => {
+                json!({ "status": "error", "kind": kind.to_string() })
+            }
+            ShellCommandExecution::Cancelled => json!({ "status": "cancelled" }),
+        };
+        json_string(value)
+    }
+
+    #[napi]
+    pub fn cancel_operation(&self, operation_id: String) -> Result<bool> {
+        let active = self
+            .command_cancellations
+            .lock()
+            .map_err(|_| Error::from_reason("Native command cancellation lock was poisoned."))?;
+        let Some(cancellation) = active.get(&operation_id) else {
+            return Ok(false);
+        };
+        cancellation.cancel();
+        Ok(true)
     }
 
     #[napi]
@@ -189,6 +333,11 @@ impl NativeRuntime {
         succeeded: bool,
     ) -> Result<bool> {
         self.with_store(|store| store.complete_operation(&operation_id, &result_json, succeeded))
+    }
+
+    #[napi]
+    pub fn begin_operation(&self, operation_id: String) -> Result<bool> {
+        self.with_store(|store| store.begin_operation(&operation_id))
     }
 
     #[napi]
@@ -540,6 +689,37 @@ const fn read_error_code(kind: WorkspaceReadErrorKind) -> &'static str {
 
 fn native_error(error: persistence::PersistenceError) -> Error {
     Error::from_reason(error.to_string())
+}
+
+fn asset_row(asset: &ContentAsset) -> AssetRow {
+    AssetRow {
+        asset_id: asset.asset_id.clone(),
+        sha256: asset.sha256.clone(),
+        media_type: asset.media_type.clone(),
+        original_name: asset.original_name.clone(),
+        size_bytes: i64::try_from(asset.size_bytes).expect("validated asset size fits i64"),
+        kind: asset.kind.as_str().to_owned(),
+        pdf_pages: asset.pdf_pages,
+    }
+}
+
+fn content_asset(row: &AssetRow) -> Result<ContentAsset> {
+    let kind = match row.kind.as_str() {
+        "image" => ContentAssetKind::Image,
+        "pdf" => ContentAssetKind::Pdf,
+        "text" => ContentAssetKind::Text,
+        _ => return Err(Error::from_reason("Content asset kind is invalid.")),
+    };
+    Ok(ContentAsset {
+        asset_id: row.asset_id.clone(),
+        sha256: row.sha256.clone(),
+        media_type: row.media_type.clone(),
+        original_name: row.original_name.clone(),
+        size_bytes: u64::try_from(row.size_bytes)
+            .map_err(|_| Error::from_reason("Content asset size is invalid."))?,
+        kind,
+        pdf_pages: row.pdf_pages,
+    })
 }
 
 fn json_string(value: serde_json::Value) -> Result<String> {

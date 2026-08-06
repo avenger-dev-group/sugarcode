@@ -58,6 +58,22 @@ class FixtureRuntime {
         },
       } as RuntimeEvent;
     }
+    if (command.type === 'asset.import') {
+      const sha256 = 'a'.repeat(64);
+      return {
+        type: 'asset.imported',
+        requestId: command.requestId,
+        sequence: 2,
+        asset: {
+          assetId: `ast_${sha256}`,
+          sha256,
+          mediaType: 'text/plain',
+          originalName: command.fileName,
+          sizeBytes: 7,
+          kind: 'text',
+        },
+      } as RuntimeEvent;
+    }
     throw new Error(`Unexpected fixture request ${command.type}.`);
   };
 
@@ -83,7 +99,15 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
   );
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
   assert.equal(
-    (await controller.startTurn({ input: 'Implement the runtime slice', modelProfileId: 'profile-1' })).accepted,
+    (await controller.startTurn({
+      input: 'Implement the runtime slice',
+      attachments: [{
+        fileName: 'fixture.txt',
+        mediaType: 'text/plain',
+        data: 'Zml4dHVyZQ==',
+      }],
+      modelProfileId: 'profile-1',
+    })).accepted,
     true,
   );
   const started = fixture.sent.find((command) => command.type === 'turn.start');
@@ -91,6 +115,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
   if (started?.type !== 'turn.start') {
     throw new Error('Turn was not sent.');
   }
+  assert.equal(started.content[1]?.type, 'asset');
   const model = {
     profileId: 'profile-1',
     providerFamily: 'openai' as const,
@@ -142,4 +167,8 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
   assert.equal(snapshot.threadId, THREAD_ID);
   assert.equal(snapshot.turns[0]?.model?.profileId, 'profile-1');
   assert.equal(snapshot.turns[0]?.messages[1]?.text, 'Done');
+  assert.equal(
+    snapshot.turns[0]?.messages[0]?.attachments?.[0]?.originalName,
+    'fixture.txt',
+  );
 });

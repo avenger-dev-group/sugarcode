@@ -1,6 +1,22 @@
 import { createRequire } from 'node:module';
 
 export type NativeRuntimeBinding = Readonly<{
+  importAssetJson: (
+    fileName: string,
+    mediaType: string | undefined,
+    data: string,
+  ) => string;
+  readAssetJson: (assetId: string) => string;
+  executeCommandJson: (
+    operationId: string,
+    workspaceId: string,
+    mode: 'sandboxed' | 'fullAccess',
+    command: string,
+    argumentsJson: string,
+    cwd: string,
+    timeoutMs: number,
+  ) => Promise<string>;
+  cancelOperation: (operationId: string) => boolean;
   ensureWorkspace: (workspaceId: string, canonicalRoot: string) => void;
   ensureThread: (
     threadId: string,
@@ -49,6 +65,7 @@ export type NativeRuntimeBinding = Readonly<{
     resultJson: string,
     succeeded: boolean,
   ) => boolean;
+  beginOperation: (operationId: string) => boolean;
   loadThreadJson: (threadId: string) => string;
   workspaceRead: (workspaceId: string, path: string) => Promise<string>;
   workspaceList: (workspaceId: string, path: string) => Promise<string>;

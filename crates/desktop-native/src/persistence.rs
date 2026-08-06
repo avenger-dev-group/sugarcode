@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
 
@@ -59,6 +59,19 @@ pub(super) struct Store {
     connection: Connection,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AssetRow {
+    pub(super) asset_id: String,
+    pub(super) sha256: String,
+    pub(super) media_type: String,
+    pub(super) original_name: String,
+    pub(super) size_bytes: i64,
+    pub(super) kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) pdf_pages: Option<u32>,
+}
+
 impl Store {
     pub(super) fn open(data_directory: impl AsRef<Path>) -> Result<Self> {
         let data_directory = data_directory.as_ref();
@@ -93,6 +106,66 @@ impl Store {
             params![workspace_id, root],
         )?;
         Ok(())
+    }
+
+    pub(super) fn record_asset(&mut self, asset: &AssetRow) -> Result<()> {
+        validate_id("asset_id", &asset.asset_id)?;
+        if asset.asset_id != format!("ast_{}", asset.sha256)
+            || asset.media_type.is_empty()
+            || asset.original_name.is_empty()
+            || asset.size_bytes == 0
+            || !matches!(asset.kind.as_str(), "image" | "pdf" | "text")
+        {
+            return Err(PersistenceError::InvalidInput(
+                "content asset descriptor is invalid".to_owned(),
+            ));
+        }
+        self.connection.execute(
+            "INSERT INTO content_assets \
+             (asset_id, sha256, media_type, original_name, size_bytes, kind, pdf_pages) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(asset_id) DO NOTHING",
+            params![
+                asset.asset_id,
+                asset.sha256,
+                asset.media_type,
+                asset.original_name,
+                asset.size_bytes,
+                asset.kind,
+                asset.pdf_pages
+            ],
+        )?;
+        let existing = self.asset(&asset.asset_id)?;
+        if existing.as_ref() != Some(asset) {
+            return Err(PersistenceError::Conflict(format!(
+                "asset {} was reused with different metadata",
+                asset.asset_id
+            )));
+        }
+        Ok(())
+    }
+
+    pub(super) fn asset(&mut self, asset_id: &str) -> Result<Option<AssetRow>> {
+        validate_id("asset_id", asset_id)?;
+        self.connection
+            .query_row(
+                "SELECT asset_id, sha256, media_type, original_name, size_bytes, kind, pdf_pages \
+                 FROM content_assets WHERE asset_id = ?1",
+                [asset_id],
+                |row| {
+                    Ok(AssetRow {
+                        asset_id: row.get(0)?,
+                        sha256: row.get(1)?,
+                        media_type: row.get(2)?,
+                        original_name: row.get(3)?,
+                        size_bytes: row.get(4)?,
+                        kind: row.get(5)?,
+                        pdf_pages: row.get(6)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(PersistenceError::from)
     }
 
     pub(super) fn ensure_thread(
@@ -622,7 +695,7 @@ impl Store {
         let status = if succeeded { "completed" } else { "failed" };
         let updated = self.connection.execute(
             "UPDATE operations SET status = ?2, result_json = ?3, updated_at = unixepoch() \
-             WHERE id = ?1 AND status = 'approved'",
+             WHERE id = ?1 AND status = 'executing'",
             params![operation_id, status, result_json],
         )?;
         if updated == 0 {
@@ -636,7 +709,32 @@ impl Store {
                 .optional()?;
             if existing.as_ref() != Some(&(status.to_owned(), Some(result_json.to_owned()))) {
                 return Err(PersistenceError::Conflict(format!(
-                    "operation {operation_id} is not approved or has a different result"
+                    "operation {operation_id} is not executing or has a different result"
+                )));
+            }
+        }
+        Ok(updated == 1)
+    }
+
+    pub(super) fn begin_operation(&mut self, operation_id: &str) -> Result<bool> {
+        validate_id("operation_id", operation_id)?;
+        let updated = self.connection.execute(
+            "UPDATE operations SET status = 'executing', updated_at = unixepoch() \
+             WHERE id = ?1 AND status = 'approved'",
+            [operation_id],
+        )?;
+        if updated == 0 {
+            let existing: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT status FROM operations WHERE id = ?1",
+                    [operation_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if existing.as_deref() != Some("executing") {
+                return Err(PersistenceError::Conflict(format!(
+                    "operation {operation_id} is not approved"
                 )));
             }
         }
@@ -1171,6 +1269,21 @@ fn migrate(connection: &mut Connection) -> Result<()> {
              CREATE INDEX threads_workspace_archive_updated
                ON threads(workspace_id, archived_at, updated_at DESC);
              PRAGMA user_version = 3;",
+        )?;
+        transaction.commit()?;
+        version = 3;
+    }
+    if version == 3 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE content_assets (\
+               asset_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL UNIQUE,\
+               media_type TEXT NOT NULL, original_name TEXT NOT NULL,\
+               size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),\
+               kind TEXT NOT NULL CHECK(kind IN ('image','pdf','text')),\
+               pdf_pages INTEGER, created_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             PRAGMA user_version = 4;",
         )?;
         transaction.commit()?;
     }

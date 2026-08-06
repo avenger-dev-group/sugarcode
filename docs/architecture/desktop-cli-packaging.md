@@ -211,10 +211,14 @@ remain external to the worker bundle so their Node-targeted exports retain
 their own module semantics inside the packaged application.
 
 This is a coexistence checkpoint, not the final packaging contract. Model
-configuration, conversation/thread projection, approval-backed atomic patches
-and Git operations now reach the utility runtime through the existing Renderer
-API. The CLI sidecar and app-server still own workspace/connection state,
-attachment import and terminal/PTY behavior, while sandboxed commands, MCP and
-dynamic multi-Agent parity remain incomplete. The sidecar, app-server and CLI
-build hooks may be removed only after those remaining paths migrate and pass
-native package smoke.
+configuration, attachment import, conversation/thread projection,
+approval-backed atomic patches, Git operations and bounded command execution now
+reach the utility runtime through the existing Renderer API. The native module
+executes both read-only/network-denied direct commands and approved Full Access
+shell commands; it reuses the existing capability-root supervisor implementation
+in-process, so v3 command calls no longer launch the CLI's hidden command
+supervisor. The CLI sidecar and app-server still own workspace/connection state,
+live command output projection and terminal/PTY behavior, while MCP and dynamic
+multi-Agent parity remain incomplete. The sidecar, app-server and CLI build
+hooks may be removed only after those remaining paths migrate and pass native
+package smoke.

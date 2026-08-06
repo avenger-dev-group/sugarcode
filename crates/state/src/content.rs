@@ -52,8 +52,12 @@ pub struct ContentStore {
 
 impl ContentStore {
     pub fn open(home: &SugarCodeHome) -> Result<Self, ContentStoreError> {
-        ensure_directory(home.path())?;
-        let content = home.path().join("content");
+        Self::open_at(home.path())
+    }
+
+    pub fn open_at(home: &Path) -> Result<Self, ContentStoreError> {
+        ensure_directory(home)?;
+        let content = home.join("content");
         ensure_directory(&content)?;
         let root = content.join("v1");
         ensure_directory(&root)?;

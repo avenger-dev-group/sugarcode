@@ -19,6 +19,7 @@ type PendingApproval = Readonly<{
   turnId: string;
   toolName: string;
   argumentsSummary: string;
+  fullAccess: boolean;
 }>;
 
 const result = (
@@ -89,8 +90,10 @@ export class RuntimeApprovalController {
     if (!['ask', 'thread', 'workspace'].includes(String(mode))) {
       return result(false, 'invalid');
     }
-    this.mode = mode as CommandApprovalMode;
-    this.modeThreadId = this.mode === 'thread' ? pending.threadId : undefined;
+    if (!pending.fullAccess) {
+      this.mode = mode as CommandApprovalMode;
+      this.modeThreadId = this.mode === 'thread' ? pending.threadId : undefined;
+    }
     this.resolve(pending, 'approved');
     return result(true, 'accepted');
   };
@@ -130,11 +133,13 @@ export class RuntimeApprovalController {
         turnId: event.turnId,
         toolName: event.toolName,
         argumentsSummary: event.argumentsSummary,
+        fullAccess: event.fullAccess,
       };
       this.queue.push(pending);
       if (
-        this.mode === 'workspace' ||
-        (this.mode === 'thread' && this.modeThreadId === pending.threadId)
+        !pending.fullAccess &&
+        (this.mode === 'workspace' ||
+          (this.mode === 'thread' && this.modeThreadId === pending.threadId))
       ) {
         this.resolve(pending, 'approved');
       } else if (!this.surfaceReady) {
@@ -177,10 +182,12 @@ export class RuntimeApprovalController {
       description:
         pending.toolName === 'workspace_apply_patch'
           ? 'Allow the Agent to modify workspace files?'
+          : pending.fullAccess
+            ? 'Allow this command to run with Full Access?'
           : `Allow ${pending.toolName}?`,
       command: pending.argumentsSummary,
       cwd: root,
-      fullAccess: false,
+      fullAccess: pending.fullAccess,
       threadId: pending.threadId,
       turnId: pending.turnId,
       queueCount: this.queue.length,

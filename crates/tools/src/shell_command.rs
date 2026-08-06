@@ -200,6 +200,41 @@ pub struct NativeShellCommandExecutor {
     environment: Arc<CommandEnvironment>,
 }
 
+#[derive(Debug, Clone)]
+pub struct EmbeddedShellCommandExecutor {
+    sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+    workspace_root: Arc<CommandWorkspaceRoot>,
+    environment: Arc<CommandEnvironment>,
+}
+
+impl EmbeddedShellCommandExecutor {
+    pub fn new(
+        workspace_root: CommandWorkspaceRoot,
+    ) -> Result<Self, sugarcode_sandbox::SandboxError> {
+        Self::new_with_policy(
+            workspace_root,
+            sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
+        )
+    }
+
+    pub fn new_with_policy(
+        workspace_root: CommandWorkspaceRoot,
+        sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+    ) -> Result<Self, sugarcode_sandbox::SandboxError> {
+        #[cfg(unix)]
+        sugarcode_sandbox::CommandSandboxAdapter::probe(sandbox_policy)?;
+        #[cfg(not(any(unix, windows)))]
+        return Err(sugarcode_sandbox::SandboxError::unavailable(
+            "native command execution is unavailable on this platform",
+        ));
+        Ok(Self {
+            sandbox_policy,
+            workspace_root: Arc::new(workspace_root),
+            environment: Arc::new(CommandEnvironment(host_command_environment())),
+        })
+    }
+}
+
 #[derive(Clone)]
 struct CommandEnvironment(Vec<(String, String)>);
 
@@ -402,6 +437,104 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
                 None
             };
             run_native(executable, request, workspace_root, cancellation).await
+        })
+    }
+
+    fn execute_full_access(
+        &self,
+        arguments: FullAccessShellArguments,
+        cancellation: CancellationToken,
+    ) -> ShellCommandFuture {
+        let workspace_root = Arc::clone(&self.workspace_root);
+        let environment = Arc::clone(&self.environment);
+        Box::pin(async move {
+            execute_full_access_shell(arguments, workspace_root, environment, cancellation).await
+        })
+    }
+}
+
+impl ShellCommandExecutor for EmbeddedShellCommandExecutor {
+    fn sandbox_policy(&self) -> sugarcode_sandbox::CommandSandboxPolicy {
+        self.sandbox_policy
+    }
+
+    fn workspace_root_path(&self) -> Option<&Path> {
+        Some(self.workspace_root.ambient_path())
+    }
+
+    fn execute(
+        &self,
+        arguments: ShellCommandArguments,
+        cancellation: CancellationToken,
+    ) -> ShellCommandFuture {
+        let sandbox_policy = self.sandbox_policy;
+        let workspace_root = Arc::clone(&self.workspace_root);
+        let environment = Arc::clone(&self.environment);
+        Box::pin(async move {
+            if validate_arguments(&arguments).is_err() {
+                return ShellCommandExecution::Error(ShellCommandErrorKind::InvalidArguments);
+            }
+            #[cfg(unix)]
+            let request = {
+                use std::os::fd::IntoRawFd;
+
+                let directory = match workspace_root.try_clone_directory() {
+                    Ok(directory) => directory,
+                    Err(_) => {
+                        return ShellCommandExecution::Error(
+                            ShellCommandErrorKind::SandboxUnavailable,
+                        );
+                    }
+                };
+                let request = SupervisorRequest {
+                    command: arguments.command,
+                    arguments: arguments.arguments,
+                    environment: environment.0.clone(),
+                    sandbox_policy,
+                    workspace_root_fd: directory.into_raw_fd(),
+                    workspace_root_identity: workspace_root.identity(),
+                };
+                request
+            };
+            #[cfg(windows)]
+            {
+                let _ = (
+                    arguments,
+                    sandbox_policy,
+                    workspace_root,
+                    environment,
+                    cancellation,
+                );
+                return ShellCommandExecution::Error(ShellCommandErrorKind::SandboxUnavailable);
+            }
+            #[cfg(unix)]
+            {
+                let _write_permit = if sandbox_policy
+                    == sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_COMMAND_WORKSPACE_WRITE_NETWORK_DENIED_V1
+                {
+                    Some(workspace_root.acquire_write().await)
+                } else {
+                    None
+                };
+                let (cancel_tx, cancel_rx) = std_mpsc::channel();
+                let cancellation_wait = cancellation.clone();
+                let cancel_task = tokio::spawn(async move {
+                    cancellation_wait.cancelled().await;
+                    let _ = cancel_tx.send(());
+                });
+                let execution =
+                    tokio::task::spawn_blocking(move || execute_supervised(request, cancel_rx))
+                        .await;
+                cancel_task.abort();
+                if cancellation.is_cancelled() {
+                    return ShellCommandExecution::Cancelled;
+                }
+                match execution {
+                    Ok(Ok(output)) => ShellCommandExecution::Completed(output),
+                    Ok(Err(kind)) => ShellCommandExecution::Error(kind),
+                    Err(_) => ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable),
+                }
+            }
         })
     }
 

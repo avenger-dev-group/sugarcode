@@ -34,13 +34,21 @@ export type RuntimeProviderConfig = Readonly<{
   parallelTools: boolean;
 }>;
 
+export type RuntimeAssetDescriptor = Readonly<{
+  assetId: string;
+  sha256: string;
+  mediaType: string;
+  originalName: string;
+  sizeBytes: number;
+  kind: 'image' | 'pdf' | 'text';
+  pdfPages?: number;
+}>;
+
 export type RuntimeContentPart =
   | Readonly<{ type: 'text'; text: string }>
   | Readonly<{
       type: 'asset';
-      assetId: string;
-      mediaType: string;
-      name: string;
+      asset: RuntimeAssetDescriptor;
     }>;
 
 export type RuntimeThreadRecord = Readonly<{
@@ -107,6 +115,13 @@ export type RuntimeCommand =
       requestId: string;
       workspaceId: string;
       canonicalRoot: string;
+    }>
+  | Readonly<{
+      type: 'asset.import';
+      requestId: string;
+      fileName: string;
+      mediaType?: string;
+      data: string;
     }>
   | Readonly<{
       type: 'turn.start';
@@ -252,6 +267,11 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'asset.imported';
+        asset: RuntimeAssetDescriptor;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'turn.started';
         workspaceId: string;
         threadId: string;
@@ -316,6 +336,7 @@ export type RuntimeEvent =
         operationId: string;
         toolName: string;
         argumentsSummary: string;
+        fullAccess: boolean;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -429,7 +450,7 @@ const isProviderConfig = (value: unknown): value is RuntimeProviderConfig =>
   value.timeoutMs <= 600_000 &&
   typeof value.parallelTools === 'boolean';
 
-const isContentPart = (value: unknown): value is RuntimeContentPart => {
+export const isRuntimeContentPart = (value: unknown): value is RuntimeContentPart => {
   if (!isRecord(value)) {
     return false;
   }
@@ -438,11 +459,25 @@ const isContentPart = (value: unknown): value is RuntimeContentPart => {
   }
   return (
     value.type === 'asset' &&
-    typeof value.assetId === 'string' &&
-    typeof value.mediaType === 'string' &&
-    typeof value.name === 'string'
+    isAssetDescriptor(value.asset)
   );
 };
+
+const isAssetDescriptor = (value: unknown): value is RuntimeAssetDescriptor =>
+  isRecord(value) &&
+  typeof value.assetId === 'string' &&
+  /^ast_[0-9a-f]{64}$/u.test(value.assetId) &&
+  typeof value.sha256 === 'string' &&
+  /^[0-9a-f]{64}$/u.test(value.sha256) &&
+  value.assetId === `ast_${value.sha256}` &&
+  typeof value.mediaType === 'string' &&
+  typeof value.originalName === 'string' &&
+  typeof value.sizeBytes === 'number' &&
+  Number.isSafeInteger(value.sizeBytes) &&
+  value.sizeBytes > 0 &&
+  ['image', 'pdf', 'text'].includes(String(value.kind)) &&
+  (value.pdfPages === undefined ||
+    (Number.isSafeInteger(value.pdfPages) && Number(value.pdfPages) > 0));
 
 const hasRequestId = (
   value: Record<string, unknown>,
@@ -469,6 +504,16 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.canonicalRoot === 'string' &&
         value.canonicalRoot.length > 0
       );
+    case 'asset.import':
+      return (
+        typeof value.fileName === 'string' &&
+        value.fileName.length > 0 &&
+        value.fileName.length <= 255 &&
+        (value.mediaType === undefined || typeof value.mediaType === 'string') &&
+        typeof value.data === 'string' &&
+        value.data.length > 0 &&
+        value.data.length <= 27_962_032
+      );
     case 'turn.start':
       return (
         typeof value.workspaceId === 'string' &&
@@ -483,7 +528,7 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
                 /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))))) &&
         Array.isArray(value.content) &&
         value.content.length > 0 &&
-        value.content.every(isContentPart)
+        value.content.every(isRuntimeContentPart)
       );
     case 'turn.cancel':
       return (
@@ -593,6 +638,8 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         ['debug', 'info', 'warn', 'error'].includes(String(value.level)) &&
         typeof value.message === 'string'
       );
+    case 'asset.imported':
+      return isAssetDescriptor(value.asset);
     case 'turn.started':
       return hasTurnCoordinates(value) && isRecord(value.model);
     case 'turn.userMessage':
@@ -600,7 +647,7 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         hasTurnCoordinates(value) &&
         typeof value.itemId === 'string' &&
         Array.isArray(value.content) &&
-        value.content.every(isContentPart)
+        value.content.every(isRuntimeContentPart)
       );
     case 'turn.textDelta':
       return (
@@ -632,7 +679,8 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.approvalId === 'string' &&
         typeof value.operationId === 'string' &&
         typeof value.toolName === 'string' &&
-        typeof value.argumentsSummary === 'string'
+        typeof value.argumentsSummary === 'string' &&
+        typeof value.fullAccess === 'boolean'
       );
     case 'approval.resolved':
       return (

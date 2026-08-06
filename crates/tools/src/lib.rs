@@ -12,6 +12,7 @@ mod workspace_skills;
 mod workspace_snapshot;
 
 pub use shell_command::DEFAULT_FULL_ACCESS_SHELL_TIMEOUT_MS;
+pub use shell_command::EmbeddedShellCommandExecutor;
 pub use shell_command::FullAccessShellArguments;
 pub use shell_command::MAX_FULL_ACCESS_SHELL_TIMEOUT_MS;
 pub use shell_command::MAX_SHELL_ARGUMENT_BYTES;

@@ -348,5 +348,8 @@ errors into ADK responses.
 Streaming adapters emit partial deltas followed by one complete, non-partial
 ADK snapshot. This is required for ADK session persistence and tool-loop
 continuation; the host publishes only the partial text to the UI, while it uses
-the complete snapshot for usage, tool calls and history. Local mock HTTP/SSE
-tests exercise all three declared wires without online provider calls.
+the complete snapshot for usage and tool calls and stores it as internal model
+history in the provider-neutral SQLite Turn item envelope. A fresh utility
+process reconstructs completed ADK events from those snapshots before the next
+request. Local mock HTTP/SSE tests exercise all three declared wires without
+online provider calls.

@@ -64,7 +64,72 @@ const patchSchema = {
   required: ['patch'],
 } satisfies Schema;
 
+const commandSchema = {
+  type: Type.OBJECT,
+  properties: {
+    mode: {
+      type: Type.STRING,
+      enum: ['sandboxed', 'fullAccess'],
+      description:
+        'sandboxed runs an absolute executable read-only without network; fullAccess runs shell syntax after explicit approval.',
+    },
+    command: {
+      type: Type.STRING,
+      description:
+        'Absolute executable path for sandboxed mode, or complete shell command for fullAccess mode.',
+    },
+    arguments: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: 'Argument array for sandboxed mode. Omit for fullAccess mode.',
+    },
+    cwd: {
+      type: Type.STRING,
+      description:
+        'Workspace-relative working directory for fullAccess mode. Sandboxed mode is fixed to the workspace root.',
+    },
+    timeoutMs: {
+      type: Type.INTEGER,
+      description: 'Full Access timeout in milliseconds, from 1 through 600000.',
+    },
+  },
+  required: ['mode', 'command'],
+} satisfies Schema;
+
 const parseNativeResult = (value: string): unknown => JSON.parse(value) as unknown;
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+const optionalStringArray = (value: unknown): string[] => {
+  if (value === undefined) {
+    return [];
+  }
+  if (!isStringArray(value)) {
+    throw new Error('shell_exec arguments are invalid');
+  }
+  return value;
+};
+
+const optionalString = (value: unknown, fallback: string): string => {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== 'string') {
+    throw new Error('shell_exec arguments are invalid');
+  }
+  return value;
+};
+
+const optionalInteger = (value: unknown, fallback: number): number => {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    throw new Error('shell_exec arguments are invalid');
+  }
+  return value;
+};
 
 export const createWorkspaceTools = (
   nativeRuntime: NativeRuntimeBinding,
@@ -72,7 +137,7 @@ export const createWorkspaceTools = (
   runPrivileged?: (
     toolName: string,
     argumentsValue: Readonly<Record<string, unknown>>,
-    execute: () => Promise<unknown>,
+    execute: (operationId: string) => Promise<unknown>,
   ) => Promise<unknown>,
 ): readonly FunctionTool<Schema>[] => [
   new FunctionTool({
@@ -130,6 +195,61 @@ export const createWorkspaceTools = (
         { patch },
         async () => parseNativeResult(
           await nativeRuntime.workspaceApplyPatch(workspaceId, patch),
+        ),
+      );
+    },
+  }),
+  new FunctionTool({
+    name: 'shell_exec',
+    description:
+      'Run a bounded command in the workspace. Sandboxed mode is filesystem-read-only and network-denied. Full Access supports shell syntax and can modify files. Every execution requires user approval.',
+    parameters: commandSchema,
+    execute: async (input) => {
+      if (
+        typeof input !== 'object' ||
+        input === null ||
+        !('mode' in input) ||
+        (input.mode !== 'sandboxed' && input.mode !== 'fullAccess') ||
+        !('command' in input) ||
+        typeof input.command !== 'string'
+      ) {
+        throw new Error('shell_exec arguments are invalid');
+      }
+      const commandArgumentsValue = 'arguments' in input
+        ? input.arguments
+        : undefined;
+      const cwdValue = 'cwd' in input ? input.cwd : undefined;
+      const timeoutValue = 'timeoutMs' in input ? input.timeoutMs : undefined;
+      const commandArguments = optionalStringArray(commandArgumentsValue);
+      const cwd = optionalString(cwdValue, '.');
+      const timeoutMs = optionalInteger(timeoutValue, 300_000);
+      if (!runPrivileged) {
+        return { ok: false, error: 'approvalUnavailable' };
+      }
+      const mode = input.mode;
+      const command = input.command;
+      if (
+        command.trim().length === 0 ||
+        timeoutMs < 1 ||
+        timeoutMs > 600_000 ||
+        (mode === 'sandboxed' && cwd !== '.') ||
+        (mode === 'fullAccess' && commandArguments.length > 0)
+      ) {
+        throw new Error('shell_exec arguments are invalid for the selected mode');
+      }
+      return runPrivileged(
+        'shell_exec',
+        { mode, command, arguments: commandArguments, cwd, timeoutMs },
+        async (operationId) => parseNativeResult(
+          await nativeRuntime.executeCommandJson(
+            operationId,
+            workspaceId,
+            mode,
+            command,
+            JSON.stringify(commandArguments),
+            cwd,
+            timeoutMs,
+          ),
         ),
       );
     },

@@ -1,4 +1,5 @@
 import {
+  createEvent,
   InMemorySessionService,
   LlmAgent,
   Runner,
@@ -17,23 +18,27 @@ import {
   loadNativeRuntime,
   type NativeRuntimeBinding,
 } from './native.ts';
-import type {
-  RuntimeCommand,
-  RuntimeEvent,
-  RuntimeEventInput,
-  RuntimeProviderConfig,
-  RuntimeProviderError,
-  RuntimeModelSelection,
-  RuntimeThreadRecord,
-  RuntimeThreadSnapshot,
-  RuntimeUsage,
+import {
+  isRuntimeContentPart,
+  RUNTIME_PROTOCOL_VERSION,
+  type RuntimeAssetDescriptor,
+  type RuntimeCommand,
+  type RuntimeContentPart,
+  type RuntimeEvent,
+  type RuntimeEventInput,
+  type RuntimeModelSelection,
+  type RuntimeProviderConfig,
+  type RuntimeProviderError,
+  type RuntimeThreadRecord,
+  type RuntimeThreadSnapshot,
+  type RuntimeUsage,
 } from './protocol.ts';
-import { RUNTIME_PROTOCOL_VERSION } from './protocol.ts';
 import { createWorkspaceTools } from './tools/workspace.ts';
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
+const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 type RuntimeHostOptions = Readonly<{
   postEvent: (event: RuntimeEvent) => void;
@@ -111,19 +116,41 @@ const usageFromEvent = (event: Event): RuntimeUsage | undefined => {
   };
 };
 
-const userContent = (command: Extract<RuntimeCommand, { type: 'turn.start' }>): Content => {
-  const parts: Part[] = command.content.flatMap((part): readonly Part[] => {
-    if (part.type === 'text') {
-      return [{ text: part.text }];
-    }
-    return [
-      {
-        text: `[Attached asset ${part.name} (${part.mediaType}, ${part.assetId}) is not loaded yet.]`,
-      },
-    ];
-  });
-  return { role: 'user', parts };
-};
+type StoredAssetContent = Readonly<{
+  asset: RuntimeAssetDescriptor;
+  data: string;
+}>;
+
+type StoredHistoryPart =
+  | Readonly<{
+      type: 'text';
+      text: string;
+      reasoning: boolean;
+      metadata?: Readonly<Record<string, unknown>>;
+    }>
+  | Readonly<{
+      type: 'media';
+      mediaType: string;
+      data: string;
+      name?: string;
+    }>
+  | Readonly<{
+      type: 'toolCall';
+      id: string;
+      name: string;
+      arguments: Readonly<Record<string, unknown>>;
+    }>
+  | Readonly<{
+      type: 'toolResult';
+      id: string;
+      name: string;
+      result: Readonly<Record<string, unknown>>;
+    }>;
+
+type StoredModelHistory = Readonly<{
+  role: 'assistant' | 'user';
+  parts: readonly StoredHistoryPart[];
+}>;
 
 export class RuntimeHost {
   private readonly postEvent: RuntimeHostOptions['postEvent'];
@@ -132,6 +159,7 @@ export class RuntimeHost {
   private readonly sessions = new InMemorySessionService();
   private readonly activeTurns = new Map<string, AbortController>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly activeOperations = new Map<string, Set<string>>();
   private sequence = 0;
   private initialized = false;
   private shuttingDown = false;
@@ -166,6 +194,20 @@ export class RuntimeHost {
           command.canonicalRoot,
         );
         break;
+      case 'asset.import':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'asset.imported',
+          requestId: command.requestId,
+          asset: this.parseNativeJson<RuntimeAssetDescriptor>(
+            this.requireNative().importAssetJson(
+              command.fileName,
+              command.mediaType,
+              command.data,
+            ),
+          ),
+        });
+        break;
       case 'turn.start':
         this.requireReady(command.requestId);
         void this.startTurn(command);
@@ -173,6 +215,7 @@ export class RuntimeHost {
       case 'turn.cancel':
         this.activeTurns.get(command.turnId)?.abort();
         this.cancelTurnApprovals(command.turnId);
+        this.cancelTurnOperations(command.turnId);
         break;
       case 'approval.resolve': {
         const pending = this.pendingApprovals.get(command.approvalId);
@@ -412,6 +455,7 @@ export class RuntimeHost {
         }
         for (const turnId of this.activeTurns.keys()) {
           this.cancelTurnApprovals(turnId);
+          this.cancelTurnOperations(turnId);
         }
         this.activeTurns.clear();
         break;
@@ -432,6 +476,318 @@ export class RuntimeHost {
   };
 
   private parseNativeJson = <T>(value: string): T => JSON.parse(value) as T;
+
+  private ensureSession = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    selection: RuntimeModelSelection,
+  ): Promise<void> => {
+    const key = {
+      appName: APPLICATION_NAME,
+      userId: command.workspaceId,
+      sessionId: command.threadId,
+    };
+    if (await this.sessions.getSession(key)) {
+      return;
+    }
+    const session = await this.sessions.createSession(key);
+    try {
+      if (!this.nativeRuntime) {
+        return;
+      }
+      const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+        this.nativeRuntime.loadThreadJson(command.threadId),
+      );
+      for (const turn of snapshot.turns) {
+        if (turn.status !== 'completed') {
+          continue;
+        }
+        const items = snapshot.items
+          .filter((item) => item.turnId === turn.id)
+          .sort((left, right) => left.sequence - right.sequence);
+        const user = items.find((item) => item.kind === 'turn.userMessage');
+        const content = user?.payload.content;
+        if (Array.isArray(content)) {
+          if (!content.every(isRuntimeContentPart)) {
+            throw new Error('Stored user content is invalid.');
+          }
+          await this.sessions.appendEvent({
+            session,
+            event: createEvent({
+              id: `${turn.id}:restored-user`,
+              invocationId: `restore:${turn.id}`,
+              author: 'user',
+              content: this.contentFromParts(content, selection),
+            }),
+          });
+        }
+        for (const item of items.filter(
+          (candidate) => candidate.kind === 'turn.modelHistory',
+        )) {
+          const restored = this.parseStoredModelHistory(item.payload.history);
+          await this.sessions.appendEvent({
+            session,
+            event: createEvent({
+              id: item.id,
+              invocationId: `restore:${turn.id}`,
+              author: 'sugarcode_agent',
+              content: this.contentFromHistory(restored),
+            }),
+          });
+        }
+      }
+    } catch (error) {
+      await this.sessions.deleteSession(key);
+      throw error;
+    }
+  };
+
+  private contentFromParts = (
+    content: readonly RuntimeContentPart[],
+    selection: RuntimeModelSelection,
+  ): Content => {
+    const attachmentBytes = content.reduce(
+      (total, part) => total + (part.type === 'asset' ? part.asset.sizeBytes : 0),
+      0,
+    );
+    if (attachmentBytes > MAX_TURN_ATTACHMENT_BYTES) {
+      throw new Error('Turn attachments exceed the 20 MiB limit.');
+    }
+    const parts: Part[] = content.flatMap((part): readonly Part[] => {
+      if (part.type === 'text') {
+        return [{ text: part.text }];
+      }
+      const stored = this.parseNativeJson<StoredAssetContent>(
+        this.requireNative().readAssetJson(part.asset.assetId),
+      );
+      if (!this.sameAsset(stored.asset, part.asset)) {
+        throw new Error('Stored content asset metadata does not match the Turn.');
+      }
+      if (
+        (part.asset.kind === 'image' &&
+          !selection.effectiveCapabilities.imageInput) ||
+        (part.asset.kind === 'pdf' &&
+          !selection.effectiveCapabilities.pdfInput)
+      ) {
+        throw new Error(`The selected model does not accept ${part.asset.kind} input.`);
+      }
+      if (part.asset.kind === 'text') {
+        return [{
+          text: `Attachment ${part.asset.originalName}:\n${Buffer.from(stored.data, 'base64').toString('utf8')}`,
+        }];
+      }
+      return [{
+        inlineData: {
+          mimeType: part.asset.mediaType,
+          data: stored.data,
+          displayName: part.asset.originalName,
+        },
+      }];
+    });
+    return { role: 'user', parts };
+  };
+
+  private sameAsset = (
+    left: RuntimeAssetDescriptor,
+    right: RuntimeAssetDescriptor,
+  ): boolean =>
+    left.assetId === right.assetId &&
+    left.sha256 === right.sha256 &&
+    left.mediaType === right.mediaType &&
+    left.originalName === right.originalName &&
+    left.sizeBytes === right.sizeBytes &&
+    left.kind === right.kind &&
+    left.pdfPages === right.pdfPages;
+
+  private persistModelHistory = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    event: Event,
+  ): void => {
+    if (!this.nativeRuntime || !event.content) {
+      return;
+    }
+    const history = this.storedModelHistory(event.content);
+    if (history.parts.length === 0) {
+      return;
+    }
+    this.sequence += 1;
+    this.nativeRuntime.appendItem(
+      `history:${command.turnId}:${event.id}`,
+      command.turnId,
+      this.sequence,
+      'turn.modelHistory',
+      JSON.stringify({ history }),
+    );
+  };
+
+  private storedModelHistory = (content: Content): StoredModelHistory => ({
+    role: content.role === 'model' ? 'assistant' : 'user',
+    parts: (content.parts ?? []).map((part): StoredHistoryPart => {
+      if (typeof part.text === 'string') {
+        return {
+          type: 'text',
+          text: part.text,
+          reasoning: part.thought === true,
+          ...(isRecord(part.partMetadata)
+            ? { metadata: part.partMetadata }
+            : {}),
+        };
+      }
+      if (part.inlineData?.mimeType && part.inlineData.data) {
+        return {
+          type: 'media',
+          mediaType: part.inlineData.mimeType,
+          data: part.inlineData.data,
+          ...(part.inlineData.displayName
+            ? { name: part.inlineData.displayName }
+            : {}),
+        };
+      }
+      if (part.functionCall?.id && part.functionCall.name) {
+        return {
+          type: 'toolCall',
+          id: part.functionCall.id,
+          name: part.functionCall.name,
+          arguments: part.functionCall.args ?? {},
+        };
+      }
+      if (part.functionResponse?.id && part.functionResponse.name) {
+        return {
+          type: 'toolResult',
+          id: part.functionResponse.id,
+          name: part.functionResponse.name,
+          result: part.functionResponse.response ?? {},
+        };
+      }
+      throw new Error('Model history contains an unsupported content part.');
+    }),
+  });
+
+  private parseStoredModelHistory = (value: unknown): StoredModelHistory => {
+    if (
+      !isRecord(value) ||
+      (value.role !== 'assistant' && value.role !== 'user') ||
+      !Array.isArray(value.parts)
+    ) {
+      throw new Error('Stored model history is invalid.');
+    }
+    const parts = value.parts.map((part): StoredHistoryPart => {
+      if (!isRecord(part) || typeof part.type !== 'string') {
+        throw new Error('Stored model history is invalid.');
+      }
+      if (
+        part.type === 'text' &&
+        typeof part.text === 'string' &&
+        typeof part.reasoning === 'boolean'
+      ) {
+        const metadata = part.metadata;
+        if (metadata === undefined) {
+          return {
+            type: 'text',
+            text: part.text,
+            reasoning: part.reasoning,
+          };
+        }
+        if (!isRecord(metadata)) {
+          throw new Error('Stored model history is invalid.');
+        }
+        return {
+          type: 'text',
+          text: part.text,
+          reasoning: part.reasoning,
+          metadata,
+        };
+      }
+      if (
+        part.type === 'media' &&
+        typeof part.mediaType === 'string' &&
+        typeof part.data === 'string'
+      ) {
+        const name = part.name;
+        if (name === undefined) {
+          return {
+            type: 'media',
+            mediaType: part.mediaType,
+            data: part.data,
+          };
+        }
+        if (typeof name !== 'string') {
+          throw new Error('Stored model history is invalid.');
+        }
+        return {
+          type: 'media',
+          mediaType: part.mediaType,
+          data: part.data,
+          name,
+        };
+      }
+      if (
+        part.type === 'toolCall' &&
+        typeof part.id === 'string' &&
+        typeof part.name === 'string' &&
+        isRecord(part.arguments)
+      ) {
+        return {
+          type: 'toolCall',
+          id: part.id,
+          name: part.name,
+          arguments: part.arguments,
+        };
+      }
+      if (
+        part.type === 'toolResult' &&
+        typeof part.id === 'string' &&
+        typeof part.name === 'string' &&
+        isRecord(part.result)
+      ) {
+        return {
+          type: 'toolResult',
+          id: part.id,
+          name: part.name,
+          result: part.result,
+        };
+      }
+      throw new Error('Stored model history is invalid.');
+    });
+    return { role: value.role, parts };
+  };
+
+  private contentFromHistory = (history: StoredModelHistory): Content => ({
+    role: history.role === 'assistant' ? 'model' : 'user',
+    parts: history.parts.map((part): Part => {
+      switch (part.type) {
+        case 'text':
+          return {
+            text: part.text,
+            thought: part.reasoning,
+            ...(part.metadata ? { partMetadata: part.metadata } : {}),
+          };
+        case 'media':
+          return {
+            inlineData: {
+              mimeType: part.mediaType,
+              data: part.data,
+              ...(part.name ? { displayName: part.name } : {}),
+            },
+          };
+        case 'toolCall':
+          return {
+            functionCall: {
+              id: part.id,
+              name: part.name,
+              args: part.arguments,
+            },
+          };
+        case 'toolResult':
+          return {
+            functionResponse: {
+              id: part.id,
+              name: part.name,
+              response: part.result,
+            },
+          };
+      }
+    }),
+  });
 
   private resolveProfile = (
     command: Extract<RuntimeCommand, { type: 'turn.start' }>,
@@ -556,6 +912,7 @@ export class RuntimeHost {
         command.threadId,
         command.workspaceId,
       );
+      await this.ensureSession(command, resolved.selection);
       this.nativeRuntime?.startTurn(
         command.turnId,
         command.threadId,
@@ -580,18 +937,6 @@ export class RuntimeHost {
         itemId: `${command.turnId}:user`,
         content: command.content,
       });
-      const session = await this.sessions.getSession({
-        appName: APPLICATION_NAME,
-        userId: command.workspaceId,
-        sessionId: command.threadId,
-      });
-      if (!session) {
-        await this.sessions.createSession({
-          appName: APPLICATION_NAME,
-          userId: command.workspaceId,
-          sessionId: command.threadId,
-        });
-      }
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
@@ -621,10 +966,13 @@ export class RuntimeHost {
       for await (const event of runner.runAsync({
         userId: command.workspaceId,
         sessionId: command.threadId,
-        newMessage: userContent(command),
+        newMessage: this.contentFromParts(command.content, resolved.selection),
         abortSignal: controller.signal,
       })) {
         this.publishAgentEvent(command, event);
+        if (!event.partial) {
+          this.persistModelHistory(command, event);
+        }
       }
       this.emitCompleted(
         command,
@@ -705,7 +1053,7 @@ export class RuntimeHost {
     command: Extract<RuntimeCommand, { type: 'turn.start' }>,
     toolName: string,
     argumentsValue: Readonly<Record<string, unknown>>,
-    execute: () => Promise<unknown>,
+    execute: (operationId: string) => Promise<unknown>,
   ): Promise<unknown> => {
     const operationId = randomUUID();
     const approvalId = randomUUID();
@@ -736,18 +1084,38 @@ export class RuntimeHost {
         approvalId,
         operationId,
         toolName,
-        argumentsSummary: `${toolName} (${Buffer.byteLength(argumentsJson, 'utf8')} bytes)`,
+        argumentsSummary: this.approvalArgumentsSummary(
+          toolName,
+          argumentsValue,
+          argumentsJson,
+        ),
+        fullAccess:
+          toolName === 'shell_exec' && argumentsValue.mode === 'fullAccess',
       });
     });
     if (decision === 'denied') {
       return { ok: false, error: 'userDenied' };
     }
+    const operations = this.activeOperations.get(command.turnId) ?? new Set<string>();
+    operations.add(operationId);
+    this.activeOperations.set(command.turnId, operations);
+    let began = false;
     try {
-      const result = await execute();
+      began = this.requireNative().beginOperation(operationId);
+      if (!began) {
+        return { ok: false, error: 'operationAlreadyExecuting' };
+      }
+      const result = await execute(operationId);
+      const succeeded = !(
+        isRecord(result) &&
+        (result.ok === false ||
+          result.status === 'error' ||
+          result.status === 'cancelled')
+      );
       this.requireNative().completeOperation(
         operationId,
         JSON.stringify(result),
-        true,
+        succeeded,
       );
       return result;
     } catch (error) {
@@ -755,12 +1123,20 @@ export class RuntimeHost {
         ok: false,
         error: error instanceof Error ? error.message : 'privilegedToolFailed',
       };
-      this.requireNative().completeOperation(
-        operationId,
-        JSON.stringify(result),
-        false,
-      );
+      if (began) {
+        this.requireNative().completeOperation(
+          operationId,
+          JSON.stringify(result),
+          false,
+        );
+      }
       return result;
+    } finally {
+      const active = this.activeOperations.get(command.turnId);
+      active?.delete(operationId);
+      if (active?.size === 0) {
+        this.activeOperations.delete(command.turnId);
+      }
     }
   };
 
@@ -777,6 +1153,44 @@ export class RuntimeHost {
       this.pendingApprovals.delete(approvalId);
       pending.resolve('denied');
     }
+  };
+
+  private cancelTurnOperations = (turnId: string): void => {
+    const operations = this.activeOperations.get(turnId);
+    if (!operations) {
+      return;
+    }
+    for (const operationId of operations) {
+      try {
+        this.nativeRuntime?.cancelOperation(operationId);
+      } catch {
+        // Native operation recovery marks unfinished execution retryable on restart.
+      }
+    }
+  };
+
+  private approvalArgumentsSummary = (
+    toolName: string,
+    argumentsValue: Readonly<Record<string, unknown>>,
+    argumentsJson: string,
+  ): string => {
+    if (toolName !== 'shell_exec' || typeof argumentsValue.command !== 'string') {
+      return `${toolName} (${Buffer.byteLength(argumentsJson, 'utf8')} bytes)`;
+    }
+    const commandArguments = Array.isArray(argumentsValue.arguments) &&
+      argumentsValue.arguments.every((argument) => typeof argument === 'string')
+      ? argumentsValue.arguments.map((argument) => JSON.stringify(argument)).join(' ')
+      : '';
+    const rendered = [argumentsValue.command, commandArguments]
+      .filter((part) => part.length > 0)
+      .join(' ');
+    const prefix = argumentsValue.mode === 'fullAccess'
+      ? 'Full Access'
+      : 'Sandboxed';
+    const summary = `${prefix}: ${rendered}`;
+    return summary.length <= 4_096
+      ? summary
+      : `${summary.slice(0, 4_093)}...`;
   };
 
   private emitCompleted = (

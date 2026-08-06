@@ -44,6 +44,7 @@ test('runtime approvals preserve the existing approval UI contract', async () =>
     operationId: 'operation-1',
     toolName: 'workspace_apply_patch',
     argumentsSummary: 'workspace_apply_patch (128 bytes)',
+    fullAccess: false,
   });
   const pending = controller.getSnapshot();
   assert.equal(isCommandApprovalStateSnapshot(pending), true);
@@ -72,4 +73,40 @@ test('runtime approvals preserve the existing approval UI contract', async () =>
   assert.equal(isCommandApprovalStateSnapshot(idle), true);
   assert.equal(idle.status, 'idle');
   assert.equal(idle.modeThreadId, 'thread-1');
+});
+
+test('runtime Full Access approvals never inherit or create automatic approval', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeApprovalController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  controller.openWorkspace('workspace-1', '/fixture/project');
+  controller.markSurfaceReady();
+  controller.setMode('workspace');
+  fixture.emit({
+    type: 'approval.requested',
+    sequence: 1,
+    requestId: 'request-turn',
+    workspaceId: 'workspace-1',
+    threadId: 'thread-1',
+    turnId: 'turn-1',
+    approvalId: 'approval-full',
+    operationId: 'operation-full',
+    toolName: 'shell_exec',
+    argumentsSummary: 'Full Access: touch fixture.txt',
+    fullAccess: true,
+  });
+
+  const pending = controller.getSnapshot();
+  assert.equal(fixture.sent.length, 0);
+  assert.equal(pending.status, 'pending');
+  assert.equal(pending.request?.fullAccess, true);
+  assert.equal(
+    pending.request?.description,
+    'Allow this command to run with Full Access?',
+  );
+
+  assert.equal((await controller.approve('approval-full', 'thread')).accepted, true);
+  assert.equal(controller.getSnapshot().mode, 'workspace');
+  assert.equal(controller.getSnapshot().modeThreadId, undefined);
 });

@@ -2876,6 +2876,7 @@ dependencies = [
 name = "sugarcode-desktop-native"
 version = "1.0.0"
 dependencies = [
+ "base64",
  "napi",
  "napi-build",
  "napi-derive",
@@ -2883,6 +2884,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sugarcode-state",
  "sugarcode-tools",
  "tempfile",
  "tokio-util",

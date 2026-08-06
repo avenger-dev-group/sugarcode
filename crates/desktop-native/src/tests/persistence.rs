@@ -1,6 +1,8 @@
+use base64::Engine;
 use rusqlite::Connection;
 use serde_json::Value;
 
+use super::NativeRuntime;
 use super::persistence::Store;
 
 fn seeded_store(directory: &tempfile::TempDir) -> Store {
@@ -12,6 +14,34 @@ fn seeded_store(directory: &tempfile::TempDir) -> Store {
         .ensure_thread("thread-1", "workspace-1", Some("Fixture"))
         .expect("thread");
     store
+}
+
+#[test]
+fn native_asset_store_persists_metadata_and_verifies_content() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let runtime = NativeRuntime::open(directory.path().to_string_lossy().into_owned())
+        .expect("native runtime");
+    let imported: Value = serde_json::from_str(
+        &runtime
+            .import_asset_json(
+                "fixture.txt".to_owned(),
+                Some("text/plain".to_owned()),
+                base64::engine::general_purpose::STANDARD.encode(b"fixture"),
+            )
+            .expect("import asset"),
+    )
+    .expect("asset JSON");
+    assert_eq!(imported["kind"], "text");
+    assert_eq!(imported["sizeBytes"], 7);
+    let asset_id = imported["assetId"].as_str().expect("asset id");
+    let loaded: Value = serde_json::from_str(
+        &runtime
+            .read_asset_json(asset_id.to_owned())
+            .expect("read asset"),
+    )
+    .expect("loaded asset JSON");
+    assert_eq!(loaded["asset"], imported);
+    assert_eq!(loaded["data"], "Zml4dHVyZQ==");
 }
 
 #[test]
@@ -181,6 +211,22 @@ fn approval_and_operation_ids_are_idempotent_but_cannot_be_reused() {
     assert!(
         store
             .complete_operation("operation-1", r#"{"changed":true}"#, true)
+            .is_err(),
+        "an approved operation cannot complete before native dispatch begins"
+    );
+    assert!(
+        store
+            .begin_operation("operation-1")
+            .expect("begin operation")
+    );
+    assert!(
+        !store
+            .begin_operation("operation-1")
+            .expect("same operation claim")
+    );
+    assert!(
+        store
+            .complete_operation("operation-1", r#"{"changed":true}"#, true)
             .expect("complete")
     );
     assert!(
@@ -327,6 +373,7 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
             "PRAGMA foreign_keys = OFF;
              DROP TABLE model_credentials;
              DROP TABLE model_config;
+             DROP TABLE content_assets;
              DROP INDEX threads_workspace_archive_updated;
              CREATE TABLE threads_v1 (
                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -355,5 +402,5 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 }
