@@ -14,13 +14,35 @@ export const toolActivityGroupSummary = (
   const readCount = countByType(activities, 'workspaceRead');
   const searchCount = countByType(activities, 'workspaceSearch');
   const editCount = countByType(activities, 'fileChange');
+  const patchFileCount = activities.reduce(
+    (total, entry) =>
+      entry.type === 'commandApproval' &&
+      entry.activity.executionResult?.outcome.type === 'workspacePatch'
+        ? total + entry.activity.executionResult.outcome.filesChanged
+        : total,
+    0,
+  );
+  const failedPatchCount = activities.filter(
+    (entry) =>
+      entry.type === 'commandApproval' &&
+      entry.activity.command.startsWith('workspace_apply_patch') &&
+      (entry.activity.executionResult?.outcome.type === 'error' ||
+        entry.activity.state === 'denied' ||
+        entry.activity.state === 'timedOut' ||
+        entry.activity.state === 'unsupported'),
+  ).length;
   const ranCommandCount = activities.filter(
     (entry) =>
       entry.type === 'commandApproval' &&
+      !entry.activity.command.startsWith('workspace_apply_patch') &&
       entry.activity.executionResult !== undefined,
   ).length;
-  const reviewedCommandCount =
-    countByType(activities, 'commandApproval') - ranCommandCount;
+  const reviewedCommandCount = activities.filter(
+    (entry) =>
+      entry.type === 'commandApproval' &&
+      !entry.activity.command.startsWith('workspace_apply_patch') &&
+      entry.activity.executionResult === undefined,
+  ).length;
   const calledMcpCount = activities.filter(
     (entry) => entry.type === 'mcp' && entry.activity.state !== 'denied',
   ).length;
@@ -37,6 +59,12 @@ export const toolActivityGroupSummary = (
     }
     if (editCount > 0) {
       parts.push(`编辑了 ${editCount} 个文件`);
+    }
+    if (patchFileCount > 0) {
+      parts.push(`已修改 ${patchFileCount} 个文件`);
+    }
+    if (failedPatchCount > 0) {
+      parts.push(`${failedPatchCount} 次修改失败`);
     }
     if (ranCommandCount > 0) {
       parts.push(`运行了 ${ranCommandCount} 条命令`);
@@ -71,6 +99,16 @@ export const toolActivityGroupSummary = (
   }
   if (editCount > 0) {
     parts.push(`edited ${editCount} ${editCount === 1 ? 'file' : 'files'}`);
+  }
+  if (patchFileCount > 0) {
+    parts.push(
+      `changed ${patchFileCount} ${patchFileCount === 1 ? 'file' : 'files'}`,
+    );
+  }
+  if (failedPatchCount > 0) {
+    parts.push(
+      `${failedPatchCount} failed ${failedPatchCount === 1 ? 'edit' : 'edits'}`,
+    );
   }
   if (ranCommandCount > 0) {
     parts.push(

@@ -91,6 +91,7 @@ export type CommandExecutionResultViewModel = Readonly<{
   state: CommandExecutionResultPresentationState;
   outcome:
     | Readonly<{ type: 'error'; kind: string }>
+    | Readonly<{ type: 'workspacePatch'; filesChanged: number }>
     | Readonly<{
         type: 'process';
         stdoutBytes: number;

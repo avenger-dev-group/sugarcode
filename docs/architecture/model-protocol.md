@@ -121,9 +121,12 @@ Patch arguments receive a separate deterministic preflight: every
 unless it is a move-only operation. An unprefixed whole-file body is rejected
 with the exact hunk spelling before approval; SugarCode does not infer a
 destructive whole-file replacement. The preflight also requires one outer
-Begin/End marker pair around all file operations and rejects a hunk whose
-removed and added text are identical, preventing malformed or no-op patches
-from entering the approval and native-execution lifecycle.
+Begin/End envelope around all file operations after deterministically unwrapping
+a heredoc and collapsing repeated unprefixed envelope markers. `Add File`
+accepts either one fully `+`-prefixed body or one fully unprefixed body, and the
+native parser tolerates unchanged file prelude before the first `@@`. A hunk
+whose removed and added text are identical remains rejected, preventing
+ambiguous whole-file replacement and no-op patches from entering approval.
 Compatible gateways that cannot supply the declared structured tool wire fail
 explicitly as `wireMismatch` or `unsupportedToolArguments`; SugarCode does not
 parse generic `<tool_call>` text.

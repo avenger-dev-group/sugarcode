@@ -84,6 +84,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const commandOutcome = (
   result: Readonly<Record<string, unknown>>,
 ): ConversationCommandExecutionResultOutcome => {
+  if (
+    result.ok === true &&
+    Array.isArray(result.files) &&
+    result.files.length >= 1
+  ) {
+    return { type: 'workspacePatch', filesChanged: result.files.length };
+  }
   const output = result.output;
   if (
     result.status !== 'completed' ||

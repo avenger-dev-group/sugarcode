@@ -119,7 +119,10 @@ This retry is structural and provider-neutral; it does not classify the public
 answer text, and a successful later tool result permits normal completion.
 Command results count as failed when their nested process outcome is a non-zero
 exit code, signal or timeout even though the durable operation status itself is
-`completed`.
+`completed`. Workspace patch operations have a distinct provider-neutral
+`workspacePatch` success outcome carrying the changed-file count; Main and the
+Renderer must not run successful patch receipts through the Shell-process
+classifier or label them as failed commands.
 
 ## UI compatibility
 

@@ -114,14 +114,26 @@ pub(super) fn parse_workspace_freeform_patch(
         if let Some(path) = marker.strip_prefix("*** Add File: ") {
             let path = path.trim();
             validate_marker_path(path)?;
-            let mut content = String::new();
+            let content_start = index;
             while index < lines.len() - 1 && !is_file_marker(lines[index].trim()) {
-                let line = lines[index]
-                    .strip_prefix('+')
-                    .ok_or(WorkspaceFreeformPatchErrorKind::InvalidHunk)?;
+                index += 1;
+            }
+            let content_lines = &lines[content_start..index];
+            // Canonical apply_patch prefixes every added line with `+`, while
+            // several compatible models emit the complete new-file body
+            // without diff prefixes. Decide once for the whole section so a
+            // literal leading `+` in an unprefixed body is never stripped.
+            let canonical = content_lines.iter().all(|line| line.starts_with('+'));
+            let mut content = String::new();
+            for line in content_lines {
+                let line = if canonical {
+                    line.strip_prefix('+')
+                        .ok_or(WorkspaceFreeformPatchErrorKind::InvalidHunk)?
+                } else {
+                    *line
+                };
                 content.push_str(line);
                 content.push('\n');
-                index += 1;
             }
             files.push(FilePatch::Add {
                 path: path.to_owned(),
@@ -220,7 +232,8 @@ fn parse_update(lines: &[&str]) -> Result<Vec<UpdateChunk>, WorkspaceFreeformPat
         context_pairs: Vec::new(),
         end_of_file: false,
     };
-    let mut has_change_line = false;
+    let mut has_line = false;
+    let mut has_edit_line = false;
     let mut changed_lines = 0usize;
     for line in lines {
         let marker_line = line.trim_end();
@@ -231,7 +244,7 @@ fn parse_update(lines: &[&str]) -> Result<Vec<UpdateChunk>, WorkspaceFreeformPat
             return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
         }
         if marker_line == "@@" || marker_line.starts_with("@@ ") {
-            if has_change_line {
+            if has_edit_line {
                 finish_chunk(&mut chunks, current)?;
                 current = UpdateChunk {
                     context: None,
@@ -240,15 +253,21 @@ fn parse_update(lines: &[&str]) -> Result<Vec<UpdateChunk>, WorkspaceFreeformPat
                     context_pairs: Vec::new(),
                     end_of_file: false,
                 };
-                has_change_line = false;
-            } else if current.context.is_some() {
+                has_line = false;
+                has_edit_line = false;
+            } else if current.context.is_some() && !has_line {
                 return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
             }
-            current.context = marker_line.strip_prefix("@@ ").map(str::to_owned);
+            // Some compatible models place unchanged file prelude before the
+            // first @@ marker. Keep that prelude in the pending hunk rather
+            // than finalizing a context-only chunk that can never be applied.
+            if !has_line {
+                current.context = marker_line.strip_prefix("@@ ").map(str::to_owned);
+            }
             continue;
         }
         if marker_line == "*** End of File" {
-            if !has_change_line {
+            if !has_edit_line {
                 return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
             }
             current.end_of_file = true;
@@ -273,23 +292,27 @@ fn parse_update(lines: &[&str]) -> Result<Vec<UpdateChunk>, WorkspaceFreeformPat
                     .push((current.old_lines.len(), current.new_lines.len()));
                 current.old_lines.push(text.to_owned());
                 current.new_lines.push(text.to_owned());
+                has_line = true;
             }
             b'-' => {
                 current.old_lines.push(text.to_owned());
+                has_line = true;
+                has_edit_line = true;
                 changed_lines += 1;
             }
             b'+' => {
                 current.new_lines.push(text.to_owned());
+                has_line = true;
+                has_edit_line = true;
                 changed_lines += 1;
             }
             _ => return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk),
         }
-        has_change_line = true;
         if changed_lines > MAX_WORKSPACE_PATCH_LINES {
             return Err(WorkspaceFreeformPatchErrorKind::TooLarge);
         }
     }
-    if !has_change_line {
+    if !has_edit_line {
         return Err(WorkspaceFreeformPatchErrorKind::InvalidHunk);
     }
     finish_chunk(&mut chunks, current)?;

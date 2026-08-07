@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
-import { createWorkspaceTools } from '../../src/runtime/tools/workspace.ts';
+import {
+  createWorkspaceTools,
+  executePrivilegedWorkspaceTool,
+} from '../../src/runtime/tools/workspace.ts';
 
 test('workspace_read accepts a bounded batch and preserves each path', async () => {
   const requestedPaths: string[] = [];
@@ -116,18 +119,20 @@ test('workspace_apply_patch rejects unsupported diff syntax before approval', as
     ok: false,
     error: 'invalidPatchFormat',
     message:
-      'Use exactly one outer `*** Begin Patch` / `*** End Patch` pair around one or more `*** Add File: path`, `*** Update File: path`, or `*** Delete File: path` operations. Do not put `*** End Patch` between file operations. GNU unified-diff headers are unsupported.',
+      'Use a SugarCode `*** Begin Patch` / file-operation / `*** End Patch` document containing at least one `*** Add File: path`, `*** Update File: path`, or `*** Delete File: path` operation. GNU unified-diff headers are unsupported.',
   });
   assert.equal(approvalRequests, 0);
 });
 
-test('workspace_apply_patch rejects an early End Patch before approval', async () => {
+test('workspace_apply_patch normalizes repeated file envelopes before approval', async () => {
   let approvalRequests = 0;
+  let approvedPatch = '';
   const tools = createWorkspaceTools(
     {} as NativeRuntimeBinding,
     'workspace-fixture',
-    async () => {
+    async (_toolName, argumentsValue) => {
       approvalRequests += 1;
+      approvedPatch = String(argumentsValue.patch);
       return { ok: true };
     },
   );
@@ -142,8 +147,41 @@ test('workspace_apply_patch rejects an early End Patch before approval', async (
     toolContext: {} as never,
   });
 
-  assert.equal((result as { error?: string }).error, 'invalidPatchFormat');
-  assert.equal(approvalRequests, 0);
+  assert.deepEqual(result, { ok: true });
+  assert.equal(approvalRequests, 1);
+  assert.equal(
+    approvedPatch,
+    '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** Update File: src/b.ts\n@@\n-old\n+new\n*** End Patch',
+  );
+});
+
+test('workspace_apply_patch explains the exact stale file without mutating any file', async () => {
+  const patch =
+    '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** Update File: src/b.ts\n@@\n-stale\n+fresh\n*** End Patch';
+  const result = await executePrivilegedWorkspaceTool(
+    {
+      workspaceApplyPatch: async () => JSON.stringify({
+        ok: false,
+        error: 'ExpectedMismatch',
+        operationIndex: 1,
+        diagnostic: { line: 42, suggestedAction: 'readFileAndRebase' },
+      }),
+    } as unknown as NativeRuntimeBinding,
+    'operation-fixture',
+    'workspace-fixture',
+    'workspace_apply_patch',
+    { patch },
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: 'ExpectedMismatch',
+    operationIndex: 1,
+    diagnostic: { line: 42, suggestedAction: 'readFileAndRebase' },
+    failedPath: 'src/b.ts',
+    message:
+      'Patch context for `src/b.ts` did not match the current workspace near line 42. No files were changed because the patch is atomic. Re-read `src/b.ts` and retry that file in a small patch.',
+  });
 });
 
 test('workspace_apply_patch rejects an unprefixed whole-file update before approval', async () => {
@@ -198,6 +236,31 @@ test('workspace_apply_patch sends a valid update hunk to approval', async () => 
 
   assert.deepEqual(result, { ok: true, argumentsValue: { patch } });
   assert.equal(approvalRequests, 1);
+});
+
+test('workspace_apply_patch does not treat raw Add File content as an update no-op', async () => {
+  let approvedPatch = '';
+  const tools = createWorkspaceTools(
+    {} as NativeRuntimeBinding,
+    'workspace-fixture',
+    async (_toolName, argumentsValue) => {
+      approvedPatch = String(argumentsValue.patch);
+      return { ok: true };
+    },
+  );
+  const patchTool = tools.find((tool) => tool.name === 'workspace_apply_patch');
+  assert.ok(patchTool);
+  const patch =
+    '*** Begin Patch\n*** Add File: fixture.txt\n-same\n+same\n*** End Patch';
+
+  assert.deepEqual(
+    await patchTool.runAsync({
+      args: { patch },
+      toolContext: {} as never,
+    }),
+    { ok: true },
+  );
+  assert.equal(approvedPatch, patch);
 });
 
 test('workspace_apply_patch rejects an identical replacement before approval', async () => {

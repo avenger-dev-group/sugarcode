@@ -180,6 +180,31 @@ test('conversation snapshots accept a completed Full Access shell result without
   );
 });
 
+test('conversation snapshots preserve a successful workspace patch result', () => {
+  const turn = fullAccessCommandTurn('completed', 'completed');
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'ready',
+      threadId: THREAD_WEB,
+      turns: [
+        {
+          ...turn,
+          commandApproval: {
+            ...turn.commandApproval,
+            command: 'workspace_apply_patch (324 bytes)',
+            executionResult: {
+              ...turn.commandApproval.executionResult,
+              outcome: { type: 'workspacePatch', filesChanged: 2 },
+            },
+          },
+        },
+      ],
+    }),
+    true,
+  );
+});
+
 test('conversation snapshots reject a process result with only one sandbox receipt', () => {
   const turn = fullAccessCommandTurn('completed', 'completed');
   assert.equal(

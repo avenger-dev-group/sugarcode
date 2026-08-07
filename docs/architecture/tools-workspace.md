@@ -67,12 +67,22 @@ failures remain execution failures after an approved operation and are returned
 to the Agent with actionable format guidance; they must never be presented as
 approval denial. An `*** Update File:` body is a patch hunk, not whole-file
 replacement text: removed lines use `-`, added lines use `+`, and unchanged
-context may follow `@@`. A marker-correct update with no changed-line prefix is
+context may appear around `@@`. A new file accepts either the canonical form
+where every body line starts with `+`, or one complete unprefixed body; the
+parser decides once for the whole section so a literal leading plus is not
+silently removed. Compatible unchanged prelude before a first hunk marker is
+retained as matching context rather than rejected as a context-only hunk. A
+marker-correct update with no changed-line prefix is
 rejected before approval with a concrete example so a compatible model can
-repair it without asking the user to approve an operation that cannot run. The
-same preflight requires exactly one outer Begin/End pair around every file
-operation and rejects a hunk that removes and re-adds identical text. These
-structural no-ops never become durable operations or approval requests.
+repair it without asking the user to approve an operation that cannot run.
+Preflight unwraps a bounded heredoc and collapses repeated unprefixed
+Begin/End envelope markers into one document before approval; malformed
+content markers and hunks remain rejected. A hunk that removes and re-adds
+identical text is also rejected. These structural no-ops never become durable
+operations or approval requests. If native matching finds stale context, the
+result identifies the affected path and line, confirms that the atomic patch
+changed no files, and directs the Agent to re-read and retry a small patch for
+that file.
 
 `workspace_read` declares either one `path` or a bounded `paths` batch of 1
 through 8 files. Batch reads execute through the same read-only workspace

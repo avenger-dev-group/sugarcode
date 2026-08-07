@@ -89,6 +89,25 @@ fn accepts_an_empty_add_file_like_codex_apply_patch() {
 }
 
 #[test]
+fn accepts_an_unprefixed_complete_add_file_body() {
+    let parsed = parse_workspace_freeform_patch(concat!(
+        "*** Begin Patch\n",
+        "*** Add File: added.ts\n",
+        "export const sum = left + right;\n",
+        "+literalLeadingPlus\n",
+        "*** End Patch",
+    ))
+    .expect("unprefixed add file");
+
+    assert!(matches!(
+        &parsed.files[0],
+        FilePatch::Add { path, content }
+            if path == "added.ts"
+                && content == "export const sum = left + right;\n+literalLeadingPlus\n"
+    ));
+}
+
+#[test]
 fn rejects_bad_boundaries_duplicate_paths_and_context_only_updates() {
     for (patch, kind) in [
         (
@@ -168,4 +187,26 @@ fn accepts_unprefixed_nonempty_context_from_compatible_models() {
     assert_eq!(chunks[0].old_lines, ["before", "old", "after"]);
     assert_eq!(chunks[0].new_lines, ["before", "new", "after"]);
     assert_eq!(chunks[0].context_pairs, [(0, 0), (2, 2)]);
+}
+
+#[test]
+fn accepts_unchanged_file_prelude_before_the_first_hunk_marker() {
+    let parsed = parse_workspace_freeform_patch(concat!(
+        "*** Begin Patch\n",
+        "*** Update File: notes.txt\n",
+        "import alpha\n",
+        "import beta\n",
+        "@@\n",
+        "-old\n",
+        "+new\n",
+        "*** End Patch",
+    ))
+    .expect("compatible prelude");
+
+    let FilePatch::Update { chunks, .. } = &parsed.files[0] else {
+        panic!("update patch");
+    };
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].old_lines, ["import alpha", "import beta", "old"]);
+    assert_eq!(chunks[0].new_lines, ["import alpha", "import beta", "new"]);
 }

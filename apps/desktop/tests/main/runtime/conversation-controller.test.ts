@@ -471,9 +471,43 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     recovered: true,
   });
   fixture.emit({
-    type: 'turn.completed',
+    type: 'approval.resolved',
     requestId: started.requestId,
     sequence: 11,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    approvalId: 'approval-recovered',
+    operationId: 'operation-recovered',
+    decision: 'approved',
+  });
+  fixture.emit({
+    type: 'operation.started',
+    requestId: started.requestId,
+    sequence: 12,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    operationId: 'operation-recovered',
+  });
+  fixture.emit({
+    type: 'operation.completed',
+    requestId: started.requestId,
+    sequence: 13,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    operationId: 'operation-recovered',
+    succeeded: true,
+    result: {
+      ok: true,
+      files: [{ path: 'src/example.ts', kind: 'update' }],
+    },
+  });
+  fixture.emit({
+    type: 'turn.completed',
+    requestId: started.requestId,
+    sequence: 14,
     workspaceId: WORKSPACE_ID,
     threadId: THREAD_ID,
     turnId: started.turnId,
@@ -505,12 +539,14 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
       'Audit passed.',
     );
   }
-  assert.equal(
-    snapshot.turns[0]?.activities?.filter(
-      (activity) => activity.type === 'commandApproval',
-    ).length,
-    1,
+  const commandActivities = snapshot.turns[0]?.activities?.filter(
+    (activity) => activity.type === 'commandApproval',
   );
+  assert.equal(commandActivities?.length, 1);
+  assert.deepEqual(commandActivities?.[0]?.activity.executionResult?.outcome, {
+    type: 'workspacePatch',
+    filesChanged: 1,
+  });
   const commentary = snapshot.turns[0]?.activities?.filter(
     (activity) => activity.type === 'commentary',
   );

@@ -104,7 +104,7 @@ const patchSchema = {
     patch: {
       type: Type.STRING,
       description:
-        'A complete SugarCode patch with exactly one outer `*** Begin Patch` / `*** End Patch` pair around all `*** Add File: path` / `*** Update File: path` / `*** Delete File: path` operations. Never close the patch between file operations. Every Update File body is a patch hunk with removed lines prefixed by `-` and added lines prefixed by `+`; optional context may follow `@@`. A replacement must remove the existing text and add different text. Never paste an unprefixed complete file body after Update File. GNU unified-diff `--- a/` and `+++ b/` headers are unsupported. Example: `*** Begin Patch\\n*** Update File: src/example.ts\\n@@\\n-old\\n+new\\n*** End Patch`.',
+        'A complete SugarCode patch with one outer `*** Begin Patch` / `*** End Patch` pair around all file operations. For Add File, provide the complete unprefixed body or prefix every body line with `+`; do not mix forms. Every Update File body is a patch hunk with removed lines prefixed by `-` and added lines prefixed by `+`; unchanged context may appear around `@@`. Never paste an unprefixed complete file body after Update File. Keep patches small; after a context mismatch, re-read and retry only the affected file. GNU unified-diff headers are unsupported. Example: `*** Begin Patch\\n*** Update File: src/example.ts\\n@@\\n-old\\n+new\\n*** End Patch`.',
     },
   },
   required: ['patch'],
@@ -152,11 +152,33 @@ const invalidPatchFormat = (): Readonly<Record<string, unknown>> => ({
   ok: false,
   error: 'invalidPatchFormat',
   message:
-    'Use exactly one outer `*** Begin Patch` / `*** End Patch` pair around one or more `*** Add File: path`, `*** Update File: path`, or `*** Delete File: path` operations. Do not put `*** End Patch` between file operations. GNU unified-diff headers are unsupported.',
+    'Use a SugarCode `*** Begin Patch` / file-operation / `*** End Patch` document containing at least one `*** Add File: path`, `*** Update File: path`, or `*** Delete File: path` operation. GNU unified-diff headers are unsupported.',
 });
 
+const normalizePatchDocument = (patch: string): string => {
+  let lines = patch.replace(/\r\n/gu, '\n').trim().split('\n');
+  if (
+    ["<<EOF", "<<'EOF'", '<<"EOF"'].includes(lines[0]?.trim() ?? '') &&
+    lines.at(-1)?.trim() === 'EOF' &&
+    lines.length >= 4
+  ) {
+    lines = lines.slice(1, -1);
+  }
+  const hasBegin = lines.some((line) => line.trim() === '*** Begin Patch');
+  const hasEnd = lines.some((line) => line.trim() === '*** End Patch');
+  if (!hasBegin || !hasEnd) {
+    return lines.join('\n');
+  }
+  const body = lines.filter(
+    (line) =>
+      line.trim() !== '*** Begin Patch' &&
+      line.trim() !== '*** End Patch',
+  );
+  return ['*** Begin Patch', ...body, '*** End Patch'].join('\n');
+};
+
 const validPatchDocument = (patch: string): boolean => {
-  const normalized = patch.replace(/\r\n/gu, '\n').trim();
+  const normalized = patch.trim();
   const lines = normalized.split('\n');
   return (
     lines[0] === '*** Begin Patch' &&
@@ -220,6 +242,7 @@ const updateSectionsHaveEffectiveChanges = (patch: string): boolean => {
   const lines = patch.replace(/\r\n/gu, '\n').trim().split('\n');
   let removed: string[] = [];
   let added: string[] = [];
+  let inUpdate = false;
   const flushHunk = (): boolean => {
     const identical =
       removed.length > 0 &&
@@ -232,12 +255,21 @@ const updateSectionsHaveEffectiveChanges = (patch: string): boolean => {
 
   for (const line of lines) {
     if (
-      line.startsWith('@@') ||
       line.startsWith('*** Add File: ') ||
       line.startsWith('*** Update File: ') ||
       line.startsWith('*** Delete File: ') ||
       line === '*** End Patch'
     ) {
+      if (inUpdate && !flushHunk()) {
+        return false;
+      }
+      inUpdate = line.startsWith('*** Update File: ');
+      continue;
+    }
+    if (!inUpdate) {
+      continue;
+    }
+    if (line.startsWith('@@')) {
       if (!flushHunk()) {
         return false;
       }
@@ -249,7 +281,7 @@ const updateSectionsHaveEffectiveChanges = (patch: string): boolean => {
       added.push(line.slice(1));
     }
   }
-  return flushHunk();
+  return !inUpdate || flushHunk();
 };
 
 const invalidPatchNoop = (): Readonly<Record<string, unknown>> => ({
@@ -259,7 +291,20 @@ const invalidPatchNoop = (): Readonly<Record<string, unknown>> => ({
     'A patch hunk removes and re-adds identical text, so it cannot change the file. To replace a line, prefix the existing workspace line with `-` and the different replacement line with `+`. Re-read the file first if the expected text has already changed.',
 });
 
-const explainPatchFailure = (result: unknown): unknown => {
+const patchPathAtOperation = (
+  patch: string,
+  operationIndex: number,
+): string | undefined =>
+  patch
+    .split('\n')
+    .flatMap((line) => {
+      const match = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/u.exec(
+        line.trim(),
+      );
+      return match?.[1] ? [match[1].trim()] : [];
+    })[operationIndex];
+
+const explainPatchFailure = (result: unknown, patch: string): unknown => {
   if (
     isRecord(result) &&
     result.ok === false &&
@@ -268,7 +313,39 @@ const explainPatchFailure = (result: unknown): unknown => {
     return {
       ...result,
       message:
-        'The patch used unsupported SugarCode syntax. Keep the exact `*** Begin Patch` / file-operation / `*** End Patch` markers. For `*** Update File:`, send a patch hunk with removed lines prefixed by `-` and added lines prefixed by `+`; never paste an unprefixed complete file body. Do not use GNU `--- a/` or `+++ b/` headers.',
+        'The patch used unsupported SugarCode syntax. For `*** Add File:`, provide the complete unprefixed body or prefix every body line with `+`. For `*** Update File:`, send a hunk with removed lines prefixed by `-` and added lines prefixed by `+`; unchanged context may appear around `@@`. Do not use GNU `--- a/` or `+++ b/` headers.',
+    };
+  }
+  if (
+    isRecord(result) &&
+    result.ok === false &&
+    result.error === 'ExpectedMismatch'
+  ) {
+    const operationIndex =
+      typeof result.operationIndex === 'number' &&
+      Number.isSafeInteger(result.operationIndex) &&
+      result.operationIndex >= 0
+        ? result.operationIndex
+        : undefined;
+    const failedPath = operationIndex === undefined
+      ? undefined
+      : patchPathAtOperation(patch, operationIndex);
+    const diagnostic = isRecord(result.diagnostic)
+      ? result.diagnostic
+      : undefined;
+    const line =
+      typeof diagnostic?.line === 'number' &&
+      Number.isSafeInteger(diagnostic.line)
+        ? diagnostic.line
+        : undefined;
+    const target = failedPath ? ` \`${failedPath}\`` : ' the affected file';
+    const location = line === undefined ? '' : ` near line ${line}`;
+    return {
+      ...result,
+      ...(failedPath ? { failedPath } : {}),
+      message:
+        `Patch context for${target} did not match the current workspace${location}. ` +
+        `No files were changed because the patch is atomic. Re-read${target} and retry that file in a small patch.`,
     };
   }
   return result;
@@ -359,12 +436,15 @@ export const executePrivilegedWorkspaceTool = async (
     if (typeof argumentsValue.patch !== 'string') {
       throw new Error('workspace_apply_patch arguments are invalid');
     }
-    return explainPatchFailure(parseNativeResult(
-      await nativeRuntime.workspaceApplyPatch(
-        workspaceId,
-        argumentsValue.patch,
+    return explainPatchFailure(
+      parseNativeResult(
+        await nativeRuntime.workspaceApplyPatch(
+          workspaceId,
+          argumentsValue.patch,
+        ),
       ),
-    ));
+      argumentsValue.patch,
+    );
   }
   if (
     toolName !== 'shell_exec' ||
@@ -528,7 +608,7 @@ export const createWorkspaceTools = (
       if (!runPrivileged) {
         return { ok: false, error: 'approvalUnavailable' };
       }
-      const patch = input.patch;
+      const patch = normalizePatchDocument(input.patch);
       if (!validPatchDocument(patch)) {
         return invalidPatchFormat();
       }

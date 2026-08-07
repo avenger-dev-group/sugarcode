@@ -15,6 +15,10 @@ import {
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 
 import type { CompactToolActivity, ProcessLanguage } from './types';
+import {
+  commandActivityAction,
+  commandActivityFailed,
+} from './tool-activity';
 import { toolActivityGroupSummary } from './tool-activity-copy';
 import { useActivityDisclosureStore } from './use-store';
 
@@ -223,75 +227,6 @@ const WorkspaceRow = ({
   );
 };
 
-const commandFailed = (entry: CommandActivity): boolean => {
-  const result = entry.activity.executionResult;
-  if (
-    entry.activity.state === 'denied' ||
-    entry.activity.state === 'timedOut' ||
-    entry.activity.state === 'unsupported'
-  ) {
-    return true;
-  }
-  if (!result) {
-    return false;
-  }
-  return (
-    result.outcome.type === 'error' ||
-    result.outcome.outcome.type !== 'exitCode' ||
-    result.outcome.outcome.code !== 0
-  );
-};
-
-const commandAction = (
-  entry: CommandActivity,
-  failed: boolean,
-  active: boolean,
-  language: ProcessLanguage,
-): string => {
-  if (language === 'zh') {
-    switch (entry.activity.state) {
-      case 'denied':
-        return '已拒绝';
-      case 'timedOut':
-        return '审批超时';
-      case 'unsupported':
-        return '不支持审批';
-      default:
-        if (failed) {
-          return '命令失败';
-        }
-        if (active) {
-          return '正在运行';
-        }
-        if (entry.activity.executionResult) {
-          return '已运行';
-        }
-        return entry.activity.state === 'approved' ? '已批准' : '命令已停止';
-    }
-  }
-  switch (entry.activity.state) {
-    case 'denied':
-      return 'Denied';
-    case 'timedOut':
-      return 'Approval timed out';
-    case 'unsupported':
-      return 'Approval unsupported';
-    default:
-      if (failed) {
-        return 'Command failed';
-      }
-      if (active) {
-        return 'Running';
-      }
-      if (entry.activity.executionResult) {
-        return 'Ran';
-      }
-      return entry.activity.state === 'approved'
-        ? 'Approved'
-        : 'Command stopped';
-  }
-};
-
 const CommandRow = ({
   entry,
   language,
@@ -299,16 +234,20 @@ const CommandRow = ({
   entry: CommandActivity;
   language: ProcessLanguage;
 }>) => {
-  const failed = commandFailed(entry);
+  const failed = commandActivityFailed(entry);
   const result = entry.activity.executionResult;
   const active =
     entry.activity.state === 'approved' &&
     entry.activity.executionAttempt !== undefined &&
     result === undefined;
-  const action = commandAction(entry, failed, active, language);
+  const action = commandActivityAction(entry, failed, active, language);
   const metadata =
     result?.outcome.type === 'process'
       ? `${result.outcome.durationMs.toLocaleString('en-US')} ms`
+      : result?.outcome.type === 'workspacePatch'
+        ? language === 'zh'
+          ? `${result.outcome.filesChanged} 个文件`
+          : `${result.outcome.filesChanged} file${result.outcome.filesChanged === 1 ? '' : 's'}`
       : null;
   const tone = failed
     ? 'text-destructive'

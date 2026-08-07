@@ -203,6 +203,7 @@ export type ConversationCommandApprovalDecision =
 
 export type ConversationCommandExecutionResultOutcome =
   | Readonly<{ type: 'error'; kind: string }>
+  | Readonly<{ type: 'workspacePatch'; filesChanged: number }>
   | Readonly<{
       type: 'process';
       stdoutBytes: number;
@@ -1177,6 +1178,14 @@ const isCommandExecutionResultOutcome = (
       Object.keys(value).length === 2 &&
       typeof value.kind === 'string' &&
       value.kind.length > 0
+    );
+  }
+  if (value.type === 'workspacePatch') {
+    return (
+      Object.keys(value).length === 2 &&
+      typeof value.filesChanged === 'number' &&
+      Number.isSafeInteger(value.filesChanged) &&
+      value.filesChanged >= 1
     );
   }
   if (
