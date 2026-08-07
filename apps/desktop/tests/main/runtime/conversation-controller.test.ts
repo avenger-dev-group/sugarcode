@@ -4,7 +4,11 @@ import test from 'node:test';
 import { RuntimeConversationController } from '../../../src/main/runtime/conversation-controller.ts';
 import { createUuidV7 } from '../../../src/main/runtime/id.ts';
 import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
-import type { RuntimeCommand, RuntimeEvent } from '../../../src/runtime/protocol.ts';
+import type {
+  RuntimeCommand,
+  RuntimeEvent,
+  RuntimeThreadSnapshot,
+} from '../../../src/runtime/protocol.ts';
 import {
   isConversationStateSnapshot,
   type ConversationStateSnapshot,
@@ -124,6 +128,47 @@ class FixtureRuntime {
   }
 }
 
+class SnapshotFixtureRuntime {
+  private readonly listeners = new Set<(event: RuntimeEvent) => void>();
+  private readonly snapshot: RuntimeThreadSnapshot;
+
+  constructor(snapshot: RuntimeThreadSnapshot) {
+    this.snapshot = snapshot;
+  }
+
+  subscribe = (listener: (event: RuntimeEvent) => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  send = (): void => undefined;
+
+  request = async (
+    command: Exclude<RuntimeCommand, { type: 'initialize' | 'shutdown' }>,
+  ): Promise<RuntimeEvent> => {
+    if (command.type === 'thread.list') {
+      return {
+        type: 'thread.listResult',
+        requestId: command.requestId,
+        sequence: 1,
+        workspaceId: command.workspaceId,
+        query: command.query ?? '',
+        threads: [this.snapshot.thread],
+      };
+    }
+    if (command.type === 'thread.load') {
+      return {
+        type: 'thread.loaded',
+        requestId: command.requestId,
+        sequence: 2,
+        workspaceId: command.workspaceId,
+        snapshot: this.snapshot,
+      };
+    }
+    throw new Error(`Unexpected snapshot fixture request ${command.type}.`);
+  };
+}
+
 test('UUIDv7 generator creates canonical time-ordered identifiers', () => {
   const id = createUuidV7(1_754_000_000_000, new Uint8Array(10).fill(0xab));
   assert.match(
@@ -240,6 +285,47 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     itemId: `${started.turnId}:commentary:1`,
     phase: 'commentary',
     delta: 'a project review.',
+  });
+  fixture.emit({
+    type: 'turn.toolCall',
+    requestId: started.requestId,
+    sequence: 7,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    itemId: `${started.turnId}:read`,
+    callId: 'call-read',
+    name: 'workspace_read',
+    arguments: { paths: ['package.json', 'src/main.ts'] },
+  });
+  fixture.emit({
+    type: 'turn.toolCall',
+    requestId: started.requestId,
+    sequence: 8,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    itemId: `${started.turnId}:read`,
+    callId: 'call-read',
+    name: 'workspace_read',
+    arguments: { paths: ['package.json', 'src/main.ts'] },
+  });
+  fixture.emit({
+    type: 'turn.toolResult',
+    requestId: started.requestId,
+    sequence: 9,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    itemId: `${started.turnId}:read-result`,
+    callId: 'call-read',
+    result: {
+      ok: true,
+      files: [
+        { path: 'package.json', ok: true, content: '{}', bytes: 2 },
+        { path: 'src/main.ts', ok: false, error: 'notFound' },
+      ],
+    },
   });
   const agentTask = {
     orchestrationId: `orch/${THREAD_ID}/${started.turnId}`,
@@ -359,10 +445,141 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
   );
   assert.equal(commentary?.length, 1);
   assert.equal(commentary?.[0]?.activity.text, 'The user wants a project review.');
+  const reads = snapshot.turns[0]?.activities?.filter(
+    (activity) => activity.type === 'workspaceRead',
+  );
+  assert.equal(reads?.length, 2);
+  assert.deepEqual(
+    reads?.map((activity) => activity.activity.result?.outcome),
+    [
+      { type: 'success', bytes: 2 },
+      { type: 'error', kind: 'notFound' },
+    ],
+  );
   assert.equal(
     publishedSnapshots.every(isConversationStateSnapshot),
     true,
   );
+});
+
+test('runtime conversation controller restores interleaved tool activity from durable Turn items', async () => {
+  const turnId = '0198f140-0000-7000-8000-000000000010';
+  const basePayload = {
+    requestId: 'request-restored',
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId,
+  };
+  const runtime = new SnapshotFixtureRuntime({
+    thread: {
+      id: THREAD_ID,
+      workspaceId: WORKSPACE_ID,
+      title: 'Restored review',
+      createdAt: 1,
+      updatedAt: 2,
+      archivedAt: null,
+      parentThreadId: null,
+    },
+    turns: [{
+      id: turnId,
+      requestId: 'request-restored',
+      status: 'completed',
+      providerWireApi: 'anthropicMessages',
+      model: 'claude-sonnet',
+      errorJson: null,
+      startedAt: 1,
+      completedAt: 2,
+    }],
+    items: [
+      {
+        id: 'user-item',
+        turnId,
+        sequence: 1,
+        kind: 'turn.userMessage',
+        payload: {
+          ...basePayload,
+          type: 'turn.userMessage',
+          content: [{ type: 'text', text: '检查项目' }],
+        },
+      },
+      {
+        id: 'commentary-item',
+        turnId,
+        sequence: 2,
+        kind: 'turn.textCompleted',
+        payload: {
+          ...basePayload,
+          type: 'turn.textCompleted',
+          itemId: 'commentary-1',
+          phase: 'commentary',
+          text: '我先查看关键文件。',
+        },
+      },
+      {
+        id: 'read-call-item',
+        turnId,
+        sequence: 3,
+        kind: 'turn.toolCall',
+        payload: {
+          ...basePayload,
+          type: 'turn.toolCall',
+          itemId: 'read-call',
+          callId: 'call-restored',
+          name: 'workspace_read',
+          arguments: { path: 'README.md' },
+        },
+      },
+      {
+        id: 'read-result-item',
+        turnId,
+        sequence: 4,
+        kind: 'turn.toolResult',
+        payload: {
+          ...basePayload,
+          type: 'turn.toolResult',
+          itemId: 'read-result',
+          callId: 'call-restored',
+          result: { ok: true, content: '# SugarCode', bytes: 11 },
+        },
+      },
+      {
+        id: 'final-item',
+        turnId,
+        sequence: 5,
+        kind: 'turn.textCompleted',
+        payload: {
+          ...basePayload,
+          type: 'turn.textCompleted',
+          itemId: 'final-1',
+          phase: 'final',
+          text: '检查完成。',
+        },
+      },
+    ],
+    agentTasks: [],
+  });
+  const controller = new RuntimeConversationController(
+    runtime as unknown as RuntimeSupervisor,
+  );
+
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+  assert.equal((await controller.selectThread(THREAD_ID)).accepted, true);
+
+  const restored = controller.getSnapshot().turns[0];
+  assert.deepEqual(
+    restored?.activities?.map((activity) => activity.type),
+    ['commentary', 'workspaceRead'],
+  );
+  const read = restored?.activities?.[1];
+  assert.equal(read?.type, 'workspaceRead');
+  if (read?.type === 'workspaceRead') {
+    assert.equal(read.activity.path, 'README.md');
+    assert.deepEqual(read.activity.result?.outcome, {
+      type: 'success',
+      bytes: 11,
+    });
+  }
+  assert.equal(restored?.messages[1]?.text, '检查完成。');
 });
 
 test('runtime conversation controller keeps active Turns running across Thread navigation', async () => {

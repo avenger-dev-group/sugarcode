@@ -16,12 +16,16 @@ export const modelItemMetadata = (
   options: Readonly<{
     phase?: ModelTextPhase;
     outcome?: ModelStepOutcome;
+    reasoningVisibility?: ModelItemMetadata['reasoningVisibility'];
   }> = {},
 ): Readonly<Record<string, unknown>> => ({
   [METADATA_KEY]: {
     itemId,
     ...(options.phase ? { phase: options.phase } : {}),
     ...(options.outcome ? { outcome: options.outcome } : {}),
+    ...(options.reasoningVisibility
+      ? { reasoningVisibility: options.reasoningVisibility }
+      : {}),
   } satisfies ModelItemMetadata,
 });
 
@@ -36,12 +40,16 @@ export const readModelItemMetadata = (
   }
   const phase = metadata.phase;
   const outcome = metadata.outcome;
+  const reasoningVisibility = metadata.reasoningVisibility;
   return {
     itemId: metadata.itemId,
     ...(phase === 'commentary' || phase === 'final' || phase === 'provisional'
       ? { phase }
       : {}),
     ...(isModelStepOutcome(outcome) ? { outcome } : {}),
+    ...(reasoningVisibility === 'internal' || reasoningVisibility === 'summary'
+      ? { reasoningVisibility }
+      : {}),
   };
 };
 

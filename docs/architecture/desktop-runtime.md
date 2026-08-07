@@ -44,10 +44,12 @@ events. Provider types remain inside those adapters.
 
 Raw provider reasoning and thinking remain available to the live model loop and
 portable completed history but are not projected as user-visible process text.
-Only explicit assistant commentary is public. The base Agent instruction keeps
-that commentary and the final answer in the original user's language, treats
-internal continuations as language-neutral, and discourages repeated process
-narration that carries no new decision, result or blocker.
+Explicit assistant commentary is public. A provider-declared reasoning summary
+may also be public only after the adapter marks it as `summary`; unclassified or
+`internal` reasoning is never promoted. The base Agent instruction keeps public
+commentary and the final answer in the original user's language, treats internal
+continuations as language-neutral, and discourages repeated process narration
+that carries no new decision, result or blocker.
 
 When a tool step has no non-whitespace public commentary, the runtime projects
 one bounded provider-neutral progress summary from the verified tool name and
@@ -81,6 +83,10 @@ non-empty final answer fails instead of receiving a fabricated completion
 summary. If the parent submits a final candidate before child results are
 consumed, the gate waits for bounded results, classifies that candidate as
 commentary, injects the results, and requires one new final answer.
+If the most recent tool result failed, the driver likewise demotes the first
+final candidate to commentary and grants one bounded recovery continuation.
+This retry is structural and provider-neutral; it does not classify the public
+answer text, and a successful later tool result permits normal completion.
 
 ## UI compatibility
 
@@ -100,6 +106,13 @@ provider chunk boundaries must never become visible paragraph spacing.
 Commentary uses the same streaming-safe GFM renderer as Agent responses, with
 the process-text tone, so headings, lists, emphasis and inline code have one
 consistent Markdown interpretation.
+Provider-neutral `turn.toolCall` and `turn.toolResult` events are projected by
+Main into ordered workspace read, list and search activities. Batched reads
+become one row per file, repeated delivery is idempotent by call and path, and
+the same ordered Items rebuild the activity timeline after a Thread is reopened.
+The process disclosure and compact tool copy derive Chinese or English from the
+original user message for that Turn; no provider-generated language guess is
+required.
 The private worker protocol is v2 and projects model text as
 `turn.textStarted`, `turn.textDelta`, and `turn.textCompleted`. Started and
 delta events are transient. A completed event carries the authoritative text,

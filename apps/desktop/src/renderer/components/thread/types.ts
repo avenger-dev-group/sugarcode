@@ -123,9 +123,12 @@ export type CompactToolActivity = Extract<
   }
 >;
 
+export type ProcessLanguage = 'en' | 'zh';
+
 export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
+  processLanguage: ProcessLanguage;
   durationLabel?: string;
   model?: TurnModelViewModel;
   messages: readonly TranscriptMessageViewModel[];
@@ -258,6 +261,7 @@ export type ProcessActivityGroupProps = Readonly<{
   groupId: string;
   status: ConversationTurnStatus;
   requiresAttention: boolean;
+  language: ProcessLanguage;
   durationLabel?: string;
   children: ReactNode;
 }>;

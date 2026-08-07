@@ -16,4 +16,12 @@ test('base Agent instructions localize visible output and reject repetitive proc
     SUGARCODE_BASE_AGENT_PROMPT_V1,
     /workspace_read, provide either one path string or one paths array/u,
   );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /future-action promise[\s\S]*is commentary, never a final answer/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /never present an intention to retry as a completed outcome/u,
+  );
 });

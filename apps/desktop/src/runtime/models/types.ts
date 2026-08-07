@@ -38,6 +38,7 @@ export type ModelItemMetadata = Readonly<{
   itemId: string;
   phase?: ModelTextPhase;
   outcome?: ModelStepOutcome;
+  reasoningVisibility?: 'internal' | 'summary';
 }>;
 
 export type NormalizedMediaPart = Readonly<{

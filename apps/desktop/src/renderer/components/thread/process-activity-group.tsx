@@ -11,6 +11,7 @@ export const ProcessActivityGroup = ({
   groupId,
   status,
   requiresAttention,
+  language,
   durationLabel,
   children,
 }: ProcessActivityGroupProps) => {
@@ -18,7 +19,7 @@ export const ProcessActivityGroup = ({
     groupId,
     shouldAutoExpandActivityGroup(status, requiresAttention),
   );
-  const label = processActivityLabel(status, requiresAttention);
+  const label = processActivityLabel(status, requiresAttention, language);
   const active = status === 'inProgress' && !requiresAttention;
   const visibleDuration =
     status === 'completed' && !requiresAttention ? durationLabel : undefined;
@@ -28,7 +29,11 @@ export const ProcessActivityGroup = ({
       open={store.expanded}
       onToggle={(event) => store.setExpanded(event.currentTarget.open)}
       className="group/process-analysis block w-full min-w-0"
-      aria-label={`${label}${visibleDuration ? ` in ${visibleDuration}` : ''} activity`}
+      aria-label={
+        language === 'zh'
+          ? `${label}${visibleDuration ? `，用时 ${visibleDuration}` : ''}`
+          : `${label}${visibleDuration ? ` in ${visibleDuration}` : ''} activity`
+      }
     >
       <summary className="flex min-w-0 cursor-pointer list-none items-center gap-1.5 rounded-md py-0.5 pr-1 text-sm text-secondary outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
         {active ? (

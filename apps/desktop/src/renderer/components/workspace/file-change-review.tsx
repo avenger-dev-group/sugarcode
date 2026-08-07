@@ -217,6 +217,7 @@ const DiffPanel = ({
 export const FileChangeReview = ({
   review,
   variant = 'card',
+  language = 'en',
 }: FileChangeReviewProps) => {
   const compact = variant === 'compact';
   const store = useStore(review.id, !compact);
@@ -231,8 +232,17 @@ export const FileChangeReview = ({
   const deletions = files.reduce((total, file) => total + file.deletions, 0);
 
   if (compact) {
-    const action =
-      review.state === 'applied'
+    const action = language === 'zh'
+      ? review.state === 'applied'
+        ? '已编辑'
+        : review.state === 'failed'
+          ? '编辑失败'
+          : review.state === 'preparing'
+            ? '正在准备'
+            : review.state === 'interrupted'
+              ? '编辑已停止'
+              : '正在编辑'
+      : review.state === 'applied'
         ? 'Edited'
         : review.state === 'failed'
           ? 'Failed to edit'
@@ -249,7 +259,11 @@ export const FileChangeReview = ({
             ? 'alert'
             : 'status'
         }
-        aria-label={`${copy.label}: ${review.path}`}
+        aria-label={
+          language === 'zh'
+            ? `${action}：${review.path}`
+            : `${copy.label}: ${review.path}`
+        }
         data-state={review.state}
       >
         <div className="flex min-w-0 items-start gap-2.5">
@@ -289,7 +303,9 @@ export const FileChangeReview = ({
                     ) : (
                       <ChevronRight aria-hidden="true" />
                     )}
-                    {store.expanded ? 'Hide diff' : 'Review diff'}
+                    {language === 'zh'
+                      ? store.expanded ? '隐藏差异' : '查看差异'
+                      : store.expanded ? 'Hide diff' : 'Review diff'}
                   </Button>
                 </>
               ) : null}

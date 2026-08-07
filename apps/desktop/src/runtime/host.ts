@@ -161,6 +161,7 @@ type TurnDriverOptions = Readonly<{
   onCompletedEvent?: (event: Event) => void;
   consumePendingResults?: () => Promise<string | null>;
   completionGate?: () => boolean;
+  retryFinalAfterToolFailure?: () => boolean;
   settleFinalCandidate?: (
     accepted: boolean,
     textItems: Map<string, TextItemState>,
@@ -172,10 +173,18 @@ type InvalidArgumentGuard = {
   repeats: Map<string, number>;
   calls: Map<string, string>;
   toolErrors: Map<string, number>;
+  lastToolResponseFailed: boolean;
+  finalRecoveryUsed: boolean;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isVisibleModelTextPart = (part: Part): boolean =>
+  typeof part.text === 'string' &&
+  part.text.trim().length > 0 &&
+  (!part.thought ||
+    readModelItemMetadata(part)?.reasoningVisibility === 'summary');
 
 const boundedProgressValue = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0
@@ -1553,6 +1562,7 @@ export class RuntimeHost {
           result.status === 'failed' ||
           typeof result.error === 'string' ||
           isRecord(result.error));
+      guard.lastToolResponseFailed = failed;
       if (!failed) {
         continue;
       }
@@ -1561,6 +1571,16 @@ export class RuntimeHost {
       const key = JSON.stringify({ call, error: stableJsonValue(result) });
       guard.toolErrors.set(key, (guard.toolErrors.get(key) ?? 0) + 1);
     }
+  };
+
+  private consumeToolFailureFinalRecovery = (
+    guard: InvalidArgumentGuard,
+  ): boolean => {
+    if (!guard.lastToolResponseFailed || guard.finalRecoveryUsed) {
+      return false;
+    }
+    guard.finalRecoveryUsed = true;
+    return true;
   };
 
   private fallbackOutcome = (event: Event): ModelStepOutcome | undefined => {
@@ -1652,6 +1672,23 @@ export class RuntimeHost {
                 'Consume these results and generate the single final answer. ' +
                 'Keep all visible text in the language of the original user request.\n\n' +
                 pendingResults,
+            }],
+          };
+          commentaryOnlyCount = 0;
+          truncationCount = 0;
+          continue;
+        }
+        if (options.retryFinalAfterToolFailure?.()) {
+          options.settleFinalCandidate?.(false, textItems);
+          message = {
+            role: 'user',
+            parts: [{
+              text:
+                '# Internal continuation after tool failure\n\n' +
+                'The most recent tool result failed, so the candidate answer was not accepted as completion. ' +
+                'Continue with a corrected tool call or another concrete approach. If recovery is genuinely impossible, ' +
+                'submit a final answer that names the specific blocker and the work that remains incomplete. ' +
+                'Keep all visible text in the language of the original user request.',
             }],
           };
           commentaryOnlyCount = 0;
@@ -1802,6 +1839,8 @@ export class RuntimeHost {
         repeats: new Map<string, number>(),
         calls: new Map<string, string>(),
         toolErrors: new Map<string, number>(),
+        lastToolResponseFailed: false,
+        finalRecoveryUsed: false,
       };
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
@@ -1874,6 +1913,8 @@ export class RuntimeHost {
             (approval) => approval.turnId === command.turnId,
           ) &&
           !(this.activeOperations.get(command.turnId)?.size),
+        retryFinalAfterToolFailure: () =>
+          this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
         settleFinalCandidate: (accepted, textItems) =>
           this.settleFinalCandidate(command, textItems, accepted),
         validateInvocation: () =>
@@ -2011,6 +2052,8 @@ export class RuntimeHost {
         repeats: new Map<string, number>(),
         calls: new Map<string, string>(),
         toolErrors: new Map<string, number>(),
+        lastToolResponseFailed: false,
+        finalRecoveryUsed: false,
       };
       const agent = new LlmAgent({
         name: `sugarcode_${context.task.role}_agent`,
@@ -2111,6 +2154,8 @@ export class RuntimeHost {
           }
         },
         completionGate: () => !context.signal.aborted,
+        retryFinalAfterToolFailure: () =>
+          this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
         validateInvocation: () =>
           this.assertInvalidArgumentProgress(invalidArgumentGuard),
       });
@@ -2147,18 +2192,9 @@ export class RuntimeHost {
     textItems: Map<string, TextItemState>,
   ): void => {
     const parts = event.content?.parts ?? [];
-    const hasVisibleModelText = parts.some(
-      (part) =>
-        !part.thought &&
-        typeof part.text === 'string' &&
-        part.text.trim().length > 0,
-    );
+    const hasVisibleModelText = parts.some(isVisibleModelTextPart);
     for (const [index, part] of parts.entries()) {
-      if (
-        !part.thought &&
-        typeof part.text === 'string' &&
-        part.text.trim().length > 0
-      ) {
+      if (isVisibleModelTextPart(part)) {
         const metadata = readModelItemMetadata(part);
         const initialPhase: ModelTextPhase = metadata?.phase ??
           (part.thought ? 'commentary' : 'provisional');

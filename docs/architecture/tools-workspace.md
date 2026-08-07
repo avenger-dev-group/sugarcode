@@ -51,7 +51,10 @@ approval denial.
 through 8 files. Batch reads execute through the same read-only workspace
 capability and return each result with its requested path. This gives compatible
 models a declared parallel-read shape without expanding authority or rewriting
-ambiguous tool intent.
+ambiguous tool intent. Before schema validation, the provider-neutral argument
+normalizer may unwrap a JSON-string-encoded `paths` array only when it contains
+1 through 8 non-empty strings. It never truncates an oversized batch or repairs
+other tools by analogy.
 
 ## MCP and collaboration
 

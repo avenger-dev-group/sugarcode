@@ -610,10 +610,21 @@ test('OpenAI Responses adapter never infers a tool call from reasoning text', as
   const fixture = await serve(async (_request, response) => {
     writeSse(response, [
       {
+        event: 'response.reasoning_summary_text.delta',
+        data: {
+          type: 'response.reasoning_summary_text.delta',
+          sequence_number: 1,
+          item_id: 'reasoning_summary_fixture',
+          output_index: 0,
+          summary_index: 0,
+          delta: 'I will inspect the workspace safely.',
+        },
+      },
+      {
         event: 'response.reasoning_text.delta',
         data: {
           type: 'response.reasoning_text.delta',
-          sequence_number: 1,
+          sequence_number: 2,
           item_id: 'reasoning_fixture',
           output_index: 0,
           content_index: 0,
@@ -624,7 +635,7 @@ test('OpenAI Responses adapter never infers a tool call from reasoning text', as
         event: 'response.reasoning_text.delta',
         data: {
           type: 'response.reasoning_text.delta',
-          sequence_number: 2,
+          sequence_number: 3,
           item_id: 'reasoning_fixture',
           output_index: 0,
           content_index: 0,
@@ -636,7 +647,7 @@ test('OpenAI Responses adapter never infers a tool call from reasoning text', as
         event: 'response.completed',
         data: {
           type: 'response.completed',
-          sequence_number: 3,
+          sequence_number: 4,
           response: {
             id: 'resp_text_tool_fixture',
             status: 'completed',
@@ -678,6 +689,18 @@ test('OpenAI Responses adapter never infers a tool call from reasoning text', as
   assert.equal(parts.some((part) => part.functionCall), false);
   assert.equal(parts.some((part) => part.thought), true);
   assert.equal(parts.some((part) => part.text?.includes('<tool_call>')), true);
+  const summary = parts.find(
+    (part) => part.text?.includes('inspect the workspace safely'),
+  );
+  const internal = parts.find((part) => part.text?.includes('<tool_call>'));
+  assert.equal(
+    readModelItemMetadata(summary ?? {})?.reasoningVisibility,
+    'summary',
+  );
+  assert.equal(
+    readModelItemMetadata(internal ?? {})?.reasoningVisibility,
+    'internal',
+  );
 });
 
 test('OpenAI SDK stops a continuously streaming response at the request deadline', async (context) => {
@@ -839,7 +862,12 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
   const parts = events.flatMap((event) => event.content?.parts ?? []);
   const functionCall = parts.find((part) => part.functionCall)?.functionCall;
 
-  assert.equal(parts.find((part) => part.thought)?.text, 'Check.');
+  const thinking = parts.find((part) => part.thought && part.text === 'Check.');
+  assert.equal(thinking?.text, 'Check.');
+  assert.equal(
+    readModelItemMetadata(thinking ?? {})?.reasoningVisibility,
+    'internal',
+  );
   assert.equal(functionCall?.name, 'workspace/read');
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
   assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 8);

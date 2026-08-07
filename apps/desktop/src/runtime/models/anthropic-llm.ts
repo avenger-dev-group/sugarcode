@@ -19,7 +19,7 @@ import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
 import { modelItemMetadata } from './step-outcome.ts';
-import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './types.ts';
+import { normalizeToolArguments } from './tool-arguments.ts';
 import type {
   ModelStepOutcome,
   NormalizedLlmRequest,
@@ -69,27 +69,6 @@ const validateBaseUrl = (value: string): string => {
   return withoutTrailingSlash.endsWith('/v1')
     ? withoutTrailingSlash.slice(0, -3)
     : withoutTrailingSlash;
-};
-
-const parseArguments = (
-  toolName: string,
-  value: string,
-): Readonly<{ name: string; args: Record<string, unknown> }> => {
-  try {
-    const parsed: unknown = JSON.parse(value || '{}');
-    if (isRecord(parsed)) {
-      return { name: toolName, args: parsed };
-    }
-  } catch {
-    // Report a wire-level tool argument failure before any tool or approval runs.
-  }
-  return {
-    name: INVALID_TOOL_ARGUMENTS_TOOL_NAME,
-    args: {
-      toolName,
-      argumentsText: value.slice(0, 4_096),
-    },
-  };
 };
 
 const mediaSource = (
@@ -436,6 +415,7 @@ export class AnthropicLlm extends BaseLlm {
                         thought: true,
                         partMetadata: modelItemMetadata(thinkingItemId, {
                           phase: 'commentary',
+                          reasoningVisibility: 'internal',
                         }),
                       },
                     ],
@@ -487,6 +467,7 @@ export class AnthropicLlm extends BaseLlm {
                     thought: true,
                     partMetadata: modelItemMetadata(thinkingItemId, {
                       phase: 'commentary',
+                      reasoningVisibility: 'internal',
                     }),
                   }],
                 },
@@ -543,16 +524,15 @@ export class AnthropicLlm extends BaseLlm {
               parts.push({
                 text: fullThinking,
                 thought: true,
-                partMetadata: modelItemMetadata(thinkingItemId, {
-                  phase: 'commentary',
-                }),
-                ...(thinkingSignature
-                  ? {
-                      partMetadata: {
-                        anthropicSignature: thinkingSignature,
-                      },
-                    }
-                  : {}),
+                partMetadata: {
+                  ...modelItemMetadata(thinkingItemId, {
+                    phase: 'commentary',
+                    reasoningVisibility: 'internal',
+                  }),
+                  ...(thinkingSignature
+                    ? { anthropicSignature: thinkingSignature }
+                    : {}),
+                },
               });
             }
             parts.push(
@@ -575,7 +555,7 @@ export class AnthropicLlm extends BaseLlm {
               ...completedToolCalls.map((call) => {
                 const name =
                   request.toolNameByProviderName.get(call.name) ?? call.name;
-                const parsed = parseArguments(name, call.arguments);
+                const parsed = normalizeToolArguments(name, call.arguments);
                 return {
                 functionCall: {
                   id: call.id,

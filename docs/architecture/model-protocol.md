@@ -14,7 +14,9 @@ error unions.
 Each terminal model step is normalized to `ModelStepOutcome`: structured tool
 calls, a final candidate, a continuation reason (`commentaryOnly`, `pauseTurn`,
 or `maxOutputTokens`), or a typed failure. Lifecycle decisions consume only
-this structure; prompts and public text do not decide completion.
+this structure; prompts and public text do not decide completion. When the most
+recent tool result failed, the shared Turn Driver rejects the first subsequent
+final candidate once and requests concrete recovery or an explicit blocker.
 
 ## Requests and streaming
 
@@ -43,6 +45,9 @@ the resolved phase. Chat Completions and Anthropic use one request-stable
 synthetic message ID where the provider has no Item ID and classify
 `finish_reason`/`stop_reason`; `tool_use`, `pause_turn`, token limits, incomplete
 responses, filters and refusals are never ordinary success.
+Agent instructions also forbid a future-action promise from serving as the
+final answer: the model must issue the concrete tool call in the same response,
+or report a specific blocker and the work that remains incomplete.
 
 Compatible Responses gateways may report different message IDs for
 `output_item.added`, `output_text.delta` and the terminal response. The adapter
@@ -53,11 +58,21 @@ indexes, one unique exact match between accumulated stream text and terminal
 text repairs the alias at this provider boundary. Ambiguous equal outputs remain
 separate rather than being guessed or deduplicated in the UI.
 
-Provider reasoning/thinking parts remain marked as internal reasoning. They may
-be retained for same-Turn continuity and completed portable history, but the
-runtime does not publish them as conversation commentary. Explicit
-`commentary` message output remains the only model-authored process text shown
-to the user.
+Reasoning parts carry a provider-neutral visibility classification at the model
+adapter boundary. OpenAI Responses `reasoning_summary_text` is classified as a
+public `summary` and may be projected as commentary; `reasoning_text`,
+OpenAI-compatible Chat reasoning fields and Anthropic thinking are classified
+as `internal`. Internal or unclassified reasoning may be retained for same-Turn
+continuity and completed portable history, but the runtime never publishes it
+to the Renderer. This classification is independent from the provider's SDK
+types and does not treat arbitrary model prose as a summary.
+
+The visible process timeline itself is provider-independent: every adapter
+normalizes structured tool calls/results into the same ADK parts and runtime
+events. OpenAI Responses, OpenAI-compatible Chat endpoints and Anthropic
+Messages therefore share tool activity projection. Gemini and Vertex remain
+disabled providers; adding either requires an adapter that supplies the same
+normalized lifecycle and explicitly classifies any safe summary surface.
 
 ## Tools
 
@@ -78,8 +93,12 @@ and error twice trips the Turn no-progress guard before another provider call
 and is classified as `unsupportedToolArguments`. One narrow compatibility
 repair is allowed for `workspace_read`: a bounded sequence of 2 through 8
 concatenated objects containing only one string `path` each is normalized to
-the declared `paths` batch argument. Other malformed or ambiguous arguments are
-never guessed.
+the declared `paths` batch argument. The same shared adapter boundary also
+repairs one JSON-string-encoded `paths` array when it contains 1 through 8
+non-empty strings; this covers compatible providers that double-encode an
+otherwise unambiguous array. Oversized, mixed, unrelated or ambiguous arguments
+are never truncated or guessed. OpenAI and Anthropic adapters use this same
+normalizer before ADK schema validation.
 Compatible gateways that cannot supply the declared structured tool wire fail
 explicitly as `wireMismatch` or `unsupportedToolArguments`; SugarCode does not
 parse generic `<tool_call>` text.

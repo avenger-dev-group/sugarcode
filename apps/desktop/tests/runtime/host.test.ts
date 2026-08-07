@@ -94,6 +94,55 @@ class CommentaryOnlyLlm extends BaseLlm {
   }
 }
 
+class ReasoningBoundaryLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+    const internal = {
+      text: 'Private chain of thought.',
+      thought: true,
+      partMetadata: modelItemMetadata('reasoning-internal', {
+        phase: 'commentary',
+        reasoningVisibility: 'internal',
+      }),
+    };
+    const summary = {
+      text: 'I checked the relevant project files.',
+      thought: true,
+      partMetadata: modelItemMetadata('reasoning-summary', {
+        phase: 'commentary',
+        reasoningVisibility: 'summary',
+      }),
+    };
+    yield { content: { role: 'model', parts: [internal] }, partial: true };
+    yield { content: { role: 'model', parts: [summary] }, partial: true };
+    yield {
+      content: {
+        role: 'model',
+        parts: [
+          internal,
+          summary,
+          {
+            text: 'Review complete.',
+            partMetadata: modelItemMetadata('final-answer', {
+              phase: 'final',
+              outcome: { kind: 'final' },
+            }),
+          },
+        ],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class OutputTruncatedLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
   private requestCount = 0;
@@ -208,6 +257,92 @@ class RepeatingToolErrorLlm extends BaseLlm {
     }
     yield {
       content: { role: 'model', parts: [{ text: 'Should not be reached' }] },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class RecoverAfterPrematureFinalLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    const parts = request.contents.flatMap((content) => content.parts ?? []);
+    const toolResults = parts.filter(
+      (part) => part.functionResponse?.name === 'workspace_read',
+    );
+    const recoveryRequested = parts.some(
+      (part) => part.text?.includes('Internal continuation after tool failure'),
+    );
+    if (toolResults.length === 0) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-failing-read',
+              name: 'workspace_read',
+              args: { path: 'missing.txt' },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    if (!recoveryRequested) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            text: '好的，让我继续读取项目文件。',
+            partMetadata: modelItemMetadata('premature-final', {
+              phase: 'final',
+              outcome: { kind: 'final' },
+            }),
+          }],
+        },
+        partial: false,
+        turnComplete: true,
+        finishReason: FinishReason.STOP,
+      };
+      return;
+    }
+    if (toolResults.length === 1) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-recovered-read',
+              name: 'workspace_read',
+              args: { path: 'fixture.txt' },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: {
+        role: 'model',
+        parts: [{
+          text: '项目文件读取完成。',
+          partMetadata: modelItemMetadata('recovered-final', {
+            phase: 'final',
+            outcome: { kind: 'final' },
+          }),
+        }],
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -565,6 +700,73 @@ test('RuntimeHost never completes a commentary-only model response', async () =>
   );
 });
 
+test('RuntimeHost publishes provider summaries but keeps internal reasoning private', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => new ReasoningBoundaryLlm({ model: 'fixture-model' }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveTerminal?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-reasoning-boundary',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-reasoning-boundary-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-reasoning-boundary',
+    workspaceId: 'workspace-reasoning-boundary',
+    threadId: 'thread-reasoning-boundary',
+    turnId: 'turn-reasoning-boundary',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: 'Review the project.' }],
+  });
+
+  await terminal;
+
+  const visibleText = events.flatMap((event) =>
+    event.type === 'turn.textDelta'
+      ? [event.delta]
+      : event.type === 'turn.textCompleted'
+        ? [event.text]
+        : [],
+  );
+  assert.equal(visibleText.some((text) => text.includes('Private chain')), false);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'commentary' &&
+        event.text === 'I checked the relevant project files.',
+    ),
+    true,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === 'Review complete.',
+    ),
+    true,
+  );
+});
+
 test('RuntimeHost fails after two output truncations without publishing success', async () => {
   const events: RuntimeEvent[] = [];
   let resolveTerminal: (() => void) | undefined;
@@ -688,6 +890,99 @@ test('RuntimeHost stops before a third identical tool error request', async () =
   assert.equal(
     events.some((event) => event.type === 'approval.requested'),
     false,
+  );
+});
+
+test('RuntimeHost retries one premature final after a failed tool result', async () => {
+  const events: RuntimeEvent[] = [];
+  let readCount = 0;
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    listPendingApprovalsJson: () => '[]',
+    ensureThread: (): void => undefined,
+    loadThreadJson: () => emptyThreadSnapshot('thread-final-recovery'),
+    startTurn: (): void => undefined,
+    appendItem: () => true,
+    finishTurn: () => true,
+    workspaceRead: async () => {
+      readCount += 1;
+      return readCount === 1
+        ? JSON.stringify({ ok: false, error: 'notFound' })
+        : JSON.stringify({ ok: true, content: 'fixture' });
+    },
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => new RecoverAfterPrematureFinalLlm({ model: 'fixture-model' }),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveTerminal?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-final-recovery',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-final-recovery-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-final-recovery',
+    workspaceId: 'workspace-final-recovery',
+    threadId: 'thread-final-recovery',
+    turnId: 'turn-final-recovery',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '读取并检查项目。' }],
+  });
+
+  await terminal;
+
+  const completed = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(readCount, 2);
+  assert.equal(completed?.status, 'completed');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '好的，让我继续读取项目文件。',
+    ),
+    false,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '项目文件读取完成。',
+    ),
+    true,
+    JSON.stringify(
+      events.filter(
+        (event) =>
+          event.type === 'turn.textCompleted' || event.type === 'turn.completed',
+      ),
+    ),
   );
 });
 

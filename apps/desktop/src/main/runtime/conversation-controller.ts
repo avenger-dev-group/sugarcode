@@ -24,6 +24,11 @@ import {
   type RuntimeThreadSnapshot,
   type RuntimeTurnItemRecord,
 } from '../../runtime/protocol.ts';
+import {
+  appendWorkspaceToolCall,
+  applyWorkspaceToolResult,
+  projectTurnActivities,
+} from './conversation-tool-activities.ts';
 import { createUuidV7 } from './id.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
 
@@ -270,38 +275,7 @@ const projectThread = (
           )
           .map((item) => String(item.payload.delta ?? ''))
           .join('');
-    const completedCommentaryItems = completedTextItems.filter(
-      (item) => item.payload.phase === 'commentary',
-    );
-    const commentary: ConversationActivity[] = completedCommentaryItems.length > 0
-      ? completedCommentaryItems.map((item) => ({
-          type: 'commentary' as const,
-          activity: {
-            id: String(item.payload.itemId ?? item.id),
-            text: String(item.payload.text ?? ''),
-            status: 'completed' as const,
-          },
-        }))
-      : (() => {
-          const commentaryText = items
-            .filter(
-              (item) =>
-                item.kind === 'turn.textDelta' &&
-                item.payload.phase === 'commentary',
-            )
-            .map((item) => String(item.payload.delta ?? ''))
-            .join('');
-          return commentaryText
-            ? [{
-                type: 'commentary' as const,
-                activity: {
-                  id: `${record.id}:commentary`,
-                  text: commentaryText,
-                  status: 'completed' as const,
-                },
-              }]
-            : [];
-        })();
+    const restoredActivities = projectTurnActivities(items);
     const durableTasks = snapshot.agentTasks
       .filter((task) => task.turnId === record.id)
       .map((task) => ({ ...task.payload, status: task.status }));
@@ -319,7 +293,7 @@ const projectThread = (
       : [...itemTasks.values()];
     const restoredOrchestration = orchestrationActivity(restoredTasks);
     const activities = [
-      ...commentary,
+      ...restoredActivities,
       ...(restoredOrchestration ? [restoredOrchestration] : []),
     ];
     const messages = [
@@ -956,6 +930,29 @@ export class RuntimeConversationController {
             ...(activities ? { activities } : {}),
           };
         }
+        break;
+      }
+      case 'turn.toolCall': {
+        const activities = [...(turn.activities ?? [])];
+        appendWorkspaceToolCall(
+          activities,
+          event.itemId,
+          event.callId,
+          event.name,
+          event.arguments,
+        );
+        turns[index] = { ...turn, activities };
+        break;
+      }
+      case 'turn.toolResult': {
+        const activities = [...(turn.activities ?? [])];
+        applyWorkspaceToolResult(
+          activities,
+          event.itemId,
+          event.callId,
+          event.result,
+        );
+        turns[index] = { ...turn, activities };
         break;
       }
       case 'turn.usage':

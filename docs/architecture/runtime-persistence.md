@@ -64,6 +64,13 @@ the visible process timeline. Synthesized progress has a stable Turn-and-call
 identity, is persisted as commentary for restore, and is not added to model
 history.
 
+Durable `turn.toolCall` and `turn.toolResult` Items also rebuild the visible
+provider-neutral process timeline. Main pairs them by `callId`, preserves Item
+sequence relative to completed commentary and expands a bounded
+`workspace_read.paths` batch into per-file activities. Tool result content is
+not copied into the conversation snapshot; only bounded presentation receipts
+such as byte, entry and match counts or an error kind cross to the Renderer.
+
 Restore prefers v2 `turn.textCompleted` Items. For databases created by the v3
 schema before protocol v2, a Turn with no completed text Items still coalesces
 legacy `turn.textDelta` records. No schema migration is required. Incomplete or

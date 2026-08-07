@@ -26,7 +26,7 @@ import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
 import { modelItemMetadata } from './step-outcome.ts';
-import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './types.ts';
+import { normalizeToolArguments } from './tool-arguments.ts';
 import type {
   ModelStepOutcome,
   ModelTextPhase,
@@ -101,104 +101,6 @@ const validateBaseUrl = (value: string): string => {
 
 const jsonText = (value: Readonly<Record<string, unknown>>): string =>
   JSON.stringify(value);
-
-const parseConcatenatedJsonObjects = (
-  value: string,
-): readonly Readonly<Record<string, unknown>>[] | undefined => {
-  const source = value.trim();
-  if (source.length === 0 || source.length > 4_096 || source[0] !== '{') {
-    return undefined;
-  }
-  const objects: Readonly<Record<string, unknown>>[] = [];
-  let start = -1;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (depth === 0) {
-      if (/\s/u.test(character ?? '')) {
-        continue;
-      }
-      if (character !== '{') {
-        return undefined;
-      }
-      start = index;
-      depth = 1;
-      continue;
-    }
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === '\\') {
-        escaped = true;
-      } else if (character === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-    } else if (character === '{') {
-      depth += 1;
-    } else if (character === '}') {
-      depth -= 1;
-      if (depth < 0) {
-        return undefined;
-      }
-      if (depth === 0) {
-        try {
-          const parsed: unknown = JSON.parse(source.slice(start, index + 1));
-          if (!isRecord(parsed)) {
-            return undefined;
-          }
-          objects.push(parsed);
-        } catch {
-          return undefined;
-        }
-      }
-    }
-  }
-  return depth === 0 && !inString && objects.length > 1 ? objects : undefined;
-};
-
-const parseToolArguments = (
-  toolName: string,
-  value: string,
-): Readonly<{ name: string; args: Record<string, unknown> }> => {
-  try {
-    const parsed: unknown = JSON.parse(value || '{}');
-    if (isRecord(parsed)) {
-      return { name: toolName, args: parsed };
-    }
-  } catch {
-    // Report a wire-level tool argument failure before any tool or approval runs.
-  }
-  const concatenated = parseConcatenatedJsonObjects(value);
-  if (
-    toolName === 'workspace_read' &&
-    concatenated &&
-    concatenated.length <= 8 &&
-    concatenated.every(
-      (entry) =>
-        Object.keys(entry).length === 1 &&
-        typeof entry.path === 'string' &&
-        entry.path.length > 0,
-    )
-  ) {
-    return {
-      name: toolName,
-      args: { paths: concatenated.map((entry) => entry.path as string) },
-    };
-  }
-  return {
-    name: INVALID_TOOL_ARGUMENTS_TOOL_NAME,
-    args: {
-      toolName,
-      argumentsText: value.slice(0, 4_096),
-    },
-  };
-};
 
 const finishReason = (value: string | null | undefined): FinishReason => {
   switch (value) {
@@ -645,8 +547,10 @@ export class OpenAiLlm extends BaseLlm {
         textItems.delete(output.id);
       }
     };
-    let thought = '';
-    let thoughtItemId = '';
+    let internalReasoning = '';
+    let internalReasoningItemId = '';
+    let reasoningSummary = '';
+    let reasoningSummaryItemId = '';
     let completed = false;
     const stream = streamWithPreOutputRetry<ResponseStreamEvent>({
       signal: abortSignal,
@@ -696,9 +600,8 @@ export class OpenAiLlm extends BaseLlm {
           break;
         }
         case 'response.reasoning_summary_text.delta':
-        case 'response.reasoning_text.delta':
-          thoughtItemId ||= event.item_id;
-          thought += event.delta;
+          reasoningSummaryItemId ||= event.item_id;
+          reasoningSummary += event.delta;
           yield {
             content: {
               role: 'model',
@@ -707,6 +610,25 @@ export class OpenAiLlm extends BaseLlm {
                 thought: true,
                 partMetadata: modelItemMetadata(event.item_id, {
                   phase: 'commentary',
+                  reasoningVisibility: 'summary',
+                }),
+              }],
+            },
+            partial: true,
+          };
+          break;
+        case 'response.reasoning_text.delta':
+          internalReasoningItemId ||= event.item_id;
+          internalReasoning += event.delta;
+          yield {
+            content: {
+              role: 'model',
+              parts: [{
+                text: event.delta,
+                thought: true,
+                partMetadata: modelItemMetadata(event.item_id, {
+                  phase: 'commentary',
+                  reasoningVisibility: 'internal',
                 }),
               }],
             },
@@ -780,13 +702,29 @@ export class OpenAiLlm extends BaseLlm {
               ? { kind: 'final' }
               : { kind: 'continue', reason: 'commentaryOnly' };
           const parts: Part[] = [];
-          if (thought) {
+          if (internalReasoning) {
             parts.push({
-              text: thought,
+              text: internalReasoning,
               thought: true,
               partMetadata: modelItemMetadata(
-                thoughtItemId || `reasoning_${event.response.id}`,
-                { phase: 'commentary' },
+                internalReasoningItemId || `reasoning_${event.response.id}`,
+                {
+                  phase: 'commentary',
+                  reasoningVisibility: 'internal',
+                },
+              ),
+            });
+          }
+          if (reasoningSummary) {
+            parts.push({
+              text: reasoningSummary,
+              thought: true,
+              partMetadata: modelItemMetadata(
+                reasoningSummaryItemId || `reasoning_summary_${event.response.id}`,
+                {
+                  phase: 'commentary',
+                  reasoningVisibility: 'summary',
+                },
               ),
             });
           }
@@ -803,7 +741,7 @@ export class OpenAiLlm extends BaseLlm {
             ...completedCalls.map((call) => {
               const name =
                 request.toolNameByProviderName.get(call.name) ?? call.name;
-              const parsed = parseToolArguments(name, call.arguments);
+              const parsed = normalizeToolArguments(name, call.arguments);
               return {
               functionCall: {
                 id: call.id,
@@ -851,13 +789,29 @@ export class OpenAiLlm extends BaseLlm {
             reconcileTextOutput(outputIndex, output, 'commentary');
           }
           const parts: Part[] = [];
-          if (thought) {
+          if (internalReasoning) {
             parts.push({
-              text: thought,
+              text: internalReasoning,
               thought: true,
               partMetadata: modelItemMetadata(
-                thoughtItemId || `reasoning_${event.response.id}`,
-                { phase: 'commentary' },
+                internalReasoningItemId || `reasoning_${event.response.id}`,
+                {
+                  phase: 'commentary',
+                  reasoningVisibility: 'internal',
+                },
+              ),
+            });
+          }
+          if (reasoningSummary) {
+            parts.push({
+              text: reasoningSummary,
+              thought: true,
+              partMetadata: modelItemMetadata(
+                reasoningSummaryItemId || `reasoning_summary_${event.response.id}`,
+                {
+                  phase: 'commentary',
+                  reasoningVisibility: 'summary',
+                },
               ),
             });
           }
@@ -963,6 +917,7 @@ export class OpenAiLlm extends BaseLlm {
                 thought: true,
                 partMetadata: modelItemMetadata(reasoningItemId, {
                   phase: 'commentary',
+                  reasoningVisibility: 'internal',
                 }),
               }],
             },
@@ -1033,6 +988,7 @@ export class OpenAiLlm extends BaseLlm {
         thought: true,
         partMetadata: modelItemMetadata(reasoningItemId, {
           phase: 'commentary',
+          reasoningVisibility: 'internal',
         }),
       });
     }
@@ -1047,7 +1003,7 @@ export class OpenAiLlm extends BaseLlm {
         .sort(([left], [right]) => left - right)
         .map(([, call]) => {
           const name = request.toolNameByProviderName.get(call.name) ?? call.name;
-          const parsed = parseToolArguments(name, call.arguments);
+          const parsed = normalizeToolArguments(name, call.arguments);
           return {
               functionCall: {
                 id: call.id,

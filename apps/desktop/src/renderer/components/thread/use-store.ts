@@ -78,7 +78,10 @@ import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
 } from './transcript-follow';
-import { completedProcessDurationLabel } from './activity-disclosure';
+import {
+  completedProcessDurationLabel,
+  processLanguageFromText,
+} from './activity-disclosure';
 import { toTurnFailureViewModel } from './turn-failure';
 import { toActiveTurnProgress } from './turn-progress';
 
@@ -329,6 +332,12 @@ export const toThreadViewModel = (
   );
   const turns = snapshot.turns.map((turn): TurnViewModel => {
     const previousTurn = previousTurns.get(turn.id);
+    const processLanguage = processLanguageFromText(
+      turn.messages
+        .filter((message) => message.role === 'user')
+        .map((message) => message.text)
+        .join('\n'),
+    );
     const model = turn.model
       ? {
           displayName: turn.model.displayName,
@@ -798,10 +807,12 @@ export const toThreadViewModel = (
     const durationLabel = completedProcessDurationLabel(
       turn.id,
       completedAgentMessageId,
+      processLanguage,
     );
     const isError = turn.status === 'failed';
     if (
       previousTurn?.status === turn.status &&
+      previousTurn.processLanguage === processLanguage &&
       previousTurn.durationLabel === durationLabel &&
       previousTurn.model?.displayName === model?.displayName &&
       previousTurn.model?.wireApi === model?.wireApi &&
@@ -823,6 +834,7 @@ export const toThreadViewModel = (
     return {
       id: turn.id,
       status: turn.status,
+      processLanguage,
       ...(durationLabel ? { durationLabel } : {}),
       ...(model ? { model } : {}),
       messages: stableMessages,

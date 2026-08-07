@@ -139,10 +139,12 @@ const TurnActivity = ({
 const TurnActivityTimeline = ({
   activities,
   turnStatus,
+  language,
   durationLabel,
 }: Readonly<{
   activities: readonly TurnActivityViewModel[];
   turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
+  language: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['processLanguage'];
   durationLabel?: string;
 }>) => {
   const requiresAttention = activities.some(
@@ -158,6 +160,7 @@ const TurnActivityTimeline = ({
       groupId={activities[0]?.activity.id ?? 'empty-process'}
       status={turnStatus}
       requiresAttention={requiresAttention}
+      language={language}
       durationLabel={durationLabel}
     >
       {activities.map((entry, index) => {
@@ -185,6 +188,7 @@ const TurnActivityTimeline = ({
           <ToolActivityGroup
             key={`toolActivities:${group[0].activity.id}`}
             activities={group}
+            language={language}
           />
         );
       })}
@@ -223,6 +227,7 @@ const TranscriptTurnView = ({
         <TurnActivityTimeline
           activities={turn.activities}
           turnStatus={turn.status}
+          language={turn.processLanguage}
           durationLabel={turn.durationLabel}
         />
       ) : null}
