@@ -7,14 +7,12 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useStore as useZustandStore } from 'zustand';
 
 import {
   archiveConversationThread,
   deleteConversationThread,
   forkConversationThread,
-  getConversationState,
-  onConversationStateChanged,
-  selectConversationThread,
   sendConversationMessage,
   startNewConversationThread,
   stopConversationTurn,
@@ -24,6 +22,12 @@ import {
   getModelConfig,
   MODEL_CONFIG_CHANGED_EVENT,
 } from '@/renderer/services/model-config';
+import { focusWorkspaceTask } from '@/renderer/services/workspace';
+import {
+  beginConversationSelection,
+  conversationProjectionStore,
+  failConversationSelection,
+} from '@/renderer/stores/conversation-projection-store';
 import {
   MAX_CONVERSATION_INPUT_BYTES,
   MAX_CONVERSATION_ATTACHMENTS,
@@ -96,25 +100,6 @@ export const useActivityDisclosureStore = (
   }, [groupId, initiallyExpanded]);
 
   return { expanded, setExpanded };
-};
-
-const INITIAL_SNAPSHOT: ConversationStateSnapshot = {
-  revision: 0,
-  phase: 'unavailable',
-  turns: [],
-  navigator: {
-    status: 'unavailable',
-    activeThreadIds: [],
-    activeThreadTitles: {},
-    activeTruncated: false,
-    search: {
-      query: '',
-      status: 'idle',
-      threadIds: [],
-      threadTitles: {},
-      truncated: false,
-    },
-  },
 };
 
 type ConversationProjectionSnapshot = Omit<
@@ -928,11 +913,6 @@ export const toThreadNavigatorViewModel = (
 const inputBytes = (value: string): number =>
   new TextEncoder().encode(value).byteLength;
 
-export const shouldAcceptSnapshot = (
-  currentRevision: number,
-  snapshot: ConversationStateSnapshot,
-): boolean => snapshot.revision > currentRevision;
-
 export const useTranscriptFollow = (
   thread: ThreadViewModel,
 ): TranscriptFollow => {
@@ -1064,8 +1044,14 @@ export const useTranscriptFollow = (
 };
 
 export const useStore = (): ThreadStore => {
-  const [snapshot, setSnapshot] =
-    useState<ConversationStateSnapshot>(INITIAL_SNAPSHOT);
+  const snapshot = useZustandStore(
+    conversationProjectionStore,
+    (projection) => projection.snapshot,
+  );
+  const projectionError = useZustandStore(
+    conversationProjectionStore,
+    (projection) => projection.loadError,
+  );
   const [draft, setDraft] = useState<string>('');
   const [attachments, setAttachments] = useState<DraftAttachmentViewModel[]>([]);
   const [expandedProjectIds, setExpandedProjectIds] =
@@ -1094,30 +1080,7 @@ export const useStore = (): ThreadStore => {
   );
   const draftKey = useRef<string>('new');
   const modelSelections = useRef(new Map<string, string>());
-  const revision = useRef<number>(-1);
   const previousThread = useRef<ThreadViewModel | undefined>(undefined);
-
-  useEffect(() => {
-    let active = true;
-    const acceptSnapshot = (next: ConversationStateSnapshot): void => {
-      if (active && shouldAcceptSnapshot(revision.current, next)) {
-        revision.current = next.revision;
-        setSnapshot(next);
-      }
-    };
-    const unsubscribe = onConversationStateChanged(acceptSnapshot);
-    void getConversationState()
-      .then(acceptSnapshot)
-      .catch(() => {
-        if (active) {
-          setActionError('Desktop could not read the current conversation.');
-        }
-      });
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1343,15 +1306,25 @@ export const useStore = (): ThreadStore => {
 
   const selectThread = async (threadId: string): Promise<void> => {
     setActionError(null);
+    beginConversationSelection(threadId);
     try {
-      const result = await selectConversationThread(threadId);
-      if (!result.accepted && result.reason === 'turnActive') {
-        setActionError('Stop the active Turn before switching Threads.');
+      const result = await focusWorkspaceTask(threadId);
+      if (!result.accepted && result.reason === 'busy') {
+        failConversationSelection(
+          threadId,
+          'Stop the active Turn before switching Threads.',
+        );
       } else if (!result.accepted) {
-        setActionError('That durable Thread could not be selected.');
+        failConversationSelection(
+          threadId,
+          'That durable Thread could not be selected. Select it to retry.',
+        );
       }
     } catch {
-      setActionError('Desktop could not switch Threads safely.');
+      failConversationSelection(
+        threadId,
+        'Desktop could not switch Threads safely. Select it to retry.',
+      );
     }
   };
 
@@ -1560,7 +1533,7 @@ export const useStore = (): ThreadStore => {
     canStop,
     activeTurnProgress,
     isSending,
-    actionError,
+    actionError: actionError ?? projectionError,
     modelOptions,
     selectedModelProfileId,
     modelSelectionDisabled:

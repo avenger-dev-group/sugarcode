@@ -25,7 +25,6 @@ const workspaceToolCallActivities = (
             (path): path is string =>
               typeof path === 'string' && path.length > 0,
           )
-          .slice(0, 8)
       : nonEmptyString(argumentsValue.path)
         ? [String(argumentsValue.path)]
         : [];

@@ -58,14 +58,18 @@ context may follow `@@`. A marker-correct update with no changed-line prefix is
 rejected before approval with a concrete example so a compatible model can
 repair it without asking the user to approve an operation that cannot run.
 
-`workspace_read` accepts either one `path` or a bounded `paths` batch of 1
+`workspace_read` declares either one `path` or a bounded `paths` batch of 1
 through 8 files. Batch reads execute through the same read-only workspace
 capability and return each result with its requested path. This gives compatible
 models a declared parallel-read shape without expanding authority or rewriting
 ambiguous tool intent. Before schema validation, the provider-neutral argument
 normalizer may unwrap a JSON-string-encoded `paths` array only when it contains
 1 through 8 non-empty strings. It never truncates an oversized batch or repairs
-other tools by analogy.
+other tools by analogy. As a bounded fallback for non-strict providers, a
+direct, unambiguous array of 9 through 16 paths is preserved and executed in
+waves of at most 8 native reads. Larger batches are rejected with instructions
+to split the request; the UI projects the actual requested path count rather
+than silently presenting only the first 8.
 
 ## MCP and collaboration
 

@@ -3,6 +3,10 @@ import type {
   ConversationStateListener,
   ConversationStateSnapshot,
   ConversationSendRequest,
+  ConversationProjectionDiagnostic,
+  ConversationThreadDeltaListener,
+  ConversationThreadProjectionListener,
+  ConversationThreadProjectionSnapshot,
 } from '@/shared/conversation';
 
 const desktopApi = (): Window['sugarcode'] => window.sugarcode;
@@ -14,6 +18,23 @@ export const getConversationState =
 export const onConversationStateChanged = (
   listener: ConversationStateListener,
 ): (() => void) => desktopApi().onConversationStateChanged(listener);
+
+export const getConversationThreadProjection = (
+  threadId: string,
+): Promise<ConversationThreadProjectionSnapshot> =>
+  desktopApi().getConversationThreadProjection(threadId);
+
+export const onConversationThreadProjectionChanged = (
+  listener: ConversationThreadProjectionListener,
+  onDiagnostic?: (diagnostic: ConversationProjectionDiagnostic) => void,
+): (() => void) =>
+  desktopApi().onConversationThreadProjectionChanged(listener, onDiagnostic);
+
+export const onConversationThreadDelta = (
+  listener: ConversationThreadDeltaListener,
+  onDiagnostic?: (diagnostic: ConversationProjectionDiagnostic) => void,
+): (() => void) =>
+  desktopApi().onConversationThreadDelta(listener, onDiagnostic);
 
 export const sendConversationMessage = (
   request: ConversationSendRequest,

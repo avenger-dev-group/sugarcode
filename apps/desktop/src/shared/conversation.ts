@@ -1,5 +1,11 @@
 export const CONVERSATION_STATE_GET_CHANNEL = 'conversation-state:get';
 export const CONVERSATION_STATE_CHANGED_CHANNEL = 'conversation-state:changed';
+export const CONVERSATION_THREAD_PROJECTION_GET_CHANNEL =
+  'conversation-thread-projection:get';
+export const CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL =
+  'conversation-thread-projection:changed';
+export const CONVERSATION_THREAD_DELTA_CHANNEL =
+  'conversation-thread-projection:delta';
 export const CONVERSATION_SEND_CHANNEL = 'conversation:send';
 export const CONVERSATION_STOP_CHANNEL = 'conversation:stop';
 export const CONVERSATION_THREAD_SEARCH_CHANNEL = 'conversation-thread:search';
@@ -517,6 +523,24 @@ export type ConversationStateSnapshot = Readonly<{
   notice?: ConversationNotice;
 }>;
 
+export type ConversationThreadProjectionSnapshot = Readonly<{
+  revision: number;
+  workspaceId: string;
+  threadId: string;
+  phase: Exclude<ConversationPhase, 'idle' | 'unavailable'>;
+  activeTurnId?: string;
+  turns: readonly ConversationTurn[];
+}>;
+
+export type ConversationThreadProjectionDelta = Readonly<{
+  revision: number;
+  workspaceId: string;
+  threadId: string;
+  phase: Exclude<ConversationPhase, 'idle' | 'unavailable'>;
+  activeTurnId?: string;
+  turn: ConversationTurn;
+}>;
+
 export type ConversationActionResult = Readonly<{
   accepted: boolean;
   reason:
@@ -533,10 +557,36 @@ export type ConversationStateListener = (
   snapshot: ConversationStateSnapshot,
 ) => void;
 
+export type ConversationThreadProjectionListener = (
+  snapshot: ConversationThreadProjectionSnapshot,
+) => void;
+
+export type ConversationThreadDeltaListener = (
+  delta: ConversationThreadProjectionDelta,
+) => void;
+
+export type ConversationProjectionDiagnostic = Readonly<{
+  kind: 'shapeInvalid';
+  projection: 'snapshot' | 'delta';
+  threadId?: string;
+  revision?: number;
+}>;
+
 export type ConversationApi = Readonly<{
   getConversationState: () => Promise<ConversationStateSnapshot>;
   onConversationStateChanged: (
     listener: ConversationStateListener,
+  ) => () => void;
+  getConversationThreadProjection: (
+    threadId: string,
+  ) => Promise<ConversationThreadProjectionSnapshot>;
+  onConversationThreadProjectionChanged: (
+    listener: ConversationThreadProjectionListener,
+    onDiagnostic?: (diagnostic: ConversationProjectionDiagnostic) => void,
+  ) => () => void;
+  onConversationThreadDelta: (
+    listener: ConversationThreadDeltaListener,
+    onDiagnostic?: (diagnostic: ConversationProjectionDiagnostic) => void,
   ) => () => void;
   sendConversationMessage: (
     request: ConversationSendRequest,
@@ -1647,6 +1697,85 @@ const isThreadTitleMap = (
   );
 };
 
+const hasValidActiveTurn = (
+  phase: ConversationPhase,
+  activeTurnId: unknown,
+  turns: readonly ConversationTurn[],
+  threadSelected: boolean,
+): boolean => {
+  const activeTurns = turns.filter((turn) => turn.status === 'inProgress');
+  const phaseHasActiveTurn = phase === 'inProgress' || phase === 'stopping';
+  if (phase === 'starting') {
+    return activeTurns.length === 0
+      ? activeTurnId === undefined
+      : activeTurns.length === 1 &&
+          activeTurnId === activeTurns[0]?.id &&
+          threadSelected;
+  }
+  if (phaseHasActiveTurn) {
+    return (
+      activeTurns.length === 1 &&
+      activeTurnId === activeTurns[0]?.id &&
+      threadSelected
+    );
+  }
+  if (phase === 'unavailable' && activeTurns.length === 1) {
+    return activeTurnId === activeTurns[0]?.id && threadSelected;
+  }
+  return activeTurns.length === 0 && activeTurnId === undefined;
+};
+
+export const isConversationThreadProjectionSnapshot = (
+  value: unknown,
+): value is ConversationThreadProjectionSnapshot =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['revision', 'workspaceId', 'threadId', 'phase', 'activeTurnId', 'turns'].includes(
+      key,
+    ),
+  ) &&
+  Number.isSafeInteger(value.revision) &&
+  Number(value.revision) >= 0 &&
+  isId(value.workspaceId) &&
+  isId(value.threadId) &&
+  ['starting', 'inProgress', 'stopping', 'ready'].includes(
+    String(value.phase),
+  ) &&
+  (!Object.hasOwn(value, 'activeTurnId') || isId(value.activeTurnId)) &&
+  Array.isArray(value.turns) &&
+  value.turns.every(isTurn) &&
+  hasValidActiveTurn(
+    value.phase as ConversationPhase,
+    value.activeTurnId,
+    value.turns,
+    true,
+  );
+
+export const isConversationThreadProjectionDelta = (
+  value: unknown,
+): value is ConversationThreadProjectionDelta =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['revision', 'workspaceId', 'threadId', 'phase', 'activeTurnId', 'turn'].includes(
+      key,
+    ),
+  ) &&
+  Number.isSafeInteger(value.revision) &&
+  Number(value.revision) >= 1 &&
+  isId(value.workspaceId) &&
+  isId(value.threadId) &&
+  ['starting', 'inProgress', 'stopping', 'ready'].includes(
+    String(value.phase),
+  ) &&
+  (!Object.hasOwn(value, 'activeTurnId') || isId(value.activeTurnId)) &&
+  isTurn(value.turn) &&
+  ((value.phase === 'inProgress' || value.phase === 'stopping')
+    ? value.activeTurnId === value.turn.id && value.turn.status === 'inProgress'
+    : value.phase === 'starting'
+      ? value.activeTurnId === undefined ||
+        (value.activeTurnId === value.turn.id && value.turn.status === 'inProgress')
+      : value.activeTurnId === undefined || value.activeTurnId !== value.turn.id);
+
 export const isConversationStateSnapshot = (
   value: unknown,
 ): value is ConversationStateSnapshot => {
@@ -1668,30 +1797,13 @@ export const isConversationStateSnapshot = (
     return false;
   }
 
-  const activeTurns = value.turns.filter(
-    (turn) => turn.status === 'inProgress',
-  );
   const activeTurnId = value.activeTurnId as string | undefined;
-  const phaseHasActiveTurn =
-    value.phase === 'inProgress' || value.phase === 'stopping';
-  if (value.phase === 'starting') {
-    return activeTurns.length === 0
-      ? activeTurnId === undefined
-      : activeTurns.length === 1 &&
-          activeTurnId === activeTurns[0]?.id &&
-          isId(value.threadId);
-  }
-  if (phaseHasActiveTurn) {
-    return (
-      activeTurns.length === 1 &&
-      activeTurnId === activeTurns[0]?.id &&
-      isId(value.threadId)
-    );
-  }
-  if (value.phase === 'unavailable' && activeTurns.length === 1) {
-    return activeTurnId === activeTurns[0]?.id && isId(value.threadId);
-  }
-  return activeTurns.length === 0 && activeTurnId === undefined;
+  return hasValidActiveTurn(
+    value.phase as ConversationPhase,
+    activeTurnId,
+    value.turns,
+    isId(value.threadId),
+  );
 };
 
 export const isConversationActionResult = (

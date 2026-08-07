@@ -9,7 +9,15 @@ import {
   resumeWorkspaceProject,
   selectWorkspace,
 } from '@/renderer/services/workspace';
-import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
+import {
+  acceptWorkspaceSnapshot,
+  workspaceProjectionStore,
+} from '@/renderer/stores/workspace-projection-store';
+import {
+  acceptForegroundCommit,
+  beginConversationSelection,
+  failConversationSelection,
+} from '@/renderer/stores/conversation-projection-store';
 
 import type { WorkspaceNavigationStore } from './types';
 
@@ -36,6 +44,10 @@ export const useStore = (): WorkspaceNavigationStore => {
     setError(null);
     try {
       const result = await action();
+      if (result.accepted && result.commit) {
+        acceptWorkspaceSnapshot(result.commit.workspace);
+        acceptForegroundCommit(result.commit);
+      }
       if (!result.accepted && result.reason !== 'cancelled') {
         setError(
           result.reason === 'busy'
@@ -66,11 +78,20 @@ export const useStore = (): WorkspaceNavigationStore => {
         () => activateWorkspaceProject(projectId),
         '无法打开所选项目。',
       ),
-    focusTask: (threadId: string) =>
-      runSelection(
+    focusTask: async (threadId: string) => {
+      beginConversationSelection(threadId);
+      const accepted = await runSelection(
         () => focusWorkspaceTask(threadId),
         '无法打开所选会话。',
-      ),
+      );
+      if (!accepted) {
+        failConversationSelection(
+          threadId,
+          '无法打开所选会话。请重试。',
+        );
+      }
+      return accepted;
+    },
     activateChat: async (threadId?: string) => {
       const accepted = await runSelection(
         () => activateWorkspaceChat(threadId),

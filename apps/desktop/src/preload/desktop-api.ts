@@ -48,16 +48,22 @@ import {
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
   CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+  CONVERSATION_THREAD_DELTA_CHANNEL,
   CONVERSATION_THREAD_DELETE_CHANNEL,
   CONVERSATION_THREAD_FORK_CHANNEL,
   CONVERSATION_THREAD_NEW_CHANNEL,
+  CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
+  CONVERSATION_THREAD_PROJECTION_GET_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
   CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
   isConversationActionResult,
   isConversationStateSnapshot,
+  isConversationThreadProjectionDelta,
+  isConversationThreadProjectionSnapshot,
   type ConversationActionResult,
   type ConversationStateSnapshot,
+  type ConversationThreadProjectionSnapshot,
 } from '@/shared/conversation';
 import {
   isMcpApprovalActionResult,
@@ -548,6 +554,91 @@ export const createDesktopApi = (
       ipcRenderer.removeListener(
         CONVERSATION_STATE_CHANGED_CHANNEL,
         handleStateChanged,
+      );
+    };
+  },
+  getConversationThreadProjection: async (
+    threadId: string,
+  ): Promise<ConversationThreadProjectionSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      CONVERSATION_THREAD_PROJECTION_GET_CHANNEL,
+      threadId,
+    );
+    if (!isConversationThreadProjectionSnapshot(snapshot)) {
+      throw new Error('Main returned an invalid Thread projection.');
+    }
+    return snapshot;
+  },
+  onConversationThreadProjectionChanged: (listener, onDiagnostic) => {
+    const handleProjectionChanged = (
+      _event: IpcRendererEvent,
+      snapshot: unknown,
+    ): void => {
+      if (isConversationThreadProjectionSnapshot(snapshot)) {
+        listener(snapshot);
+      } else {
+        const candidate =
+          typeof snapshot === 'object' && snapshot !== null
+            ? (snapshot as Record<string, unknown>)
+            : null;
+        onDiagnostic?.({
+          kind: 'shapeInvalid',
+          projection: 'snapshot',
+          ...(typeof candidate?.threadId === 'string' &&
+          candidate.threadId.length > 0 &&
+          candidate.threadId.length <= 128
+            ? { threadId: candidate.threadId }
+            : {}),
+          ...(Number.isSafeInteger(candidate?.revision) &&
+          Number(candidate?.revision) >= 0
+            ? { revision: Number(candidate?.revision) }
+            : {}),
+        });
+      }
+    };
+    ipcRenderer.on(
+      CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
+      handleProjectionChanged,
+    );
+    return () => {
+      ipcRenderer.removeListener(
+        CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
+        handleProjectionChanged,
+      );
+    };
+  },
+  onConversationThreadDelta: (listener, onDiagnostic) => {
+    const handleDelta = (
+      _event: IpcRendererEvent,
+      delta: unknown,
+    ): void => {
+      if (isConversationThreadProjectionDelta(delta)) {
+        listener(delta);
+      } else {
+        const candidate =
+          typeof delta === 'object' && delta !== null
+            ? (delta as Record<string, unknown>)
+            : null;
+        onDiagnostic?.({
+          kind: 'shapeInvalid',
+          projection: 'delta',
+          ...(typeof candidate?.threadId === 'string' &&
+          candidate.threadId.length > 0 &&
+          candidate.threadId.length <= 128
+            ? { threadId: candidate.threadId }
+            : {}),
+          ...(Number.isSafeInteger(candidate?.revision) &&
+          Number(candidate?.revision) >= 0
+            ? { revision: Number(candidate?.revision) }
+            : {}),
+        });
+      }
+    };
+    ipcRenderer.on(CONVERSATION_THREAD_DELTA_CHANNEL, handleDelta);
+    return () => {
+      ipcRenderer.removeListener(
+        CONVERSATION_THREAD_DELTA_CHANNEL,
+        handleDelta,
       );
     };
   },

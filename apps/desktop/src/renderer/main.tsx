@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import '@xyflow/react/dist/style.css';
 import { App } from '@/renderer/app';
+import { startConversationProjection } from '@/renderer/services/conversation-projection';
 import { startWorkspaceProjection } from '@/renderer/services/workspace-projection';
 import '@/renderer/styles/globals.css';
 
@@ -13,8 +14,12 @@ if (!rootElement) {
 }
 
 const stopWorkspaceProjection = startWorkspaceProjection();
+const stopConversationProjection = startConversationProjection();
 if (import.meta.hot) {
-  import.meta.hot.dispose(stopWorkspaceProjection);
+  import.meta.hot.dispose(() => {
+    stopConversationProjection();
+    stopWorkspaceProjection();
+  });
 }
 
 createRoot(rootElement).render(

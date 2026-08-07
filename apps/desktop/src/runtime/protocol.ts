@@ -389,6 +389,31 @@ export type RuntimeUsage = Readonly<{
   totalTokens: number;
 }>;
 
+const isRuntimeUsage = (value: unknown): value is RuntimeUsage => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const allowedFields = new Set([
+    'inputTokens',
+    'outputTokens',
+    'reasoningTokens',
+    'cachedInputTokens',
+    'totalTokens',
+  ]);
+  const isTokenCount = (token: unknown): boolean =>
+    Number.isSafeInteger(token) && Number(token) >= 0;
+  return (
+    Object.keys(value).every((field) => allowedFields.has(field)) &&
+    isTokenCount(value.inputTokens) &&
+    isTokenCount(value.outputTokens) &&
+    isTokenCount(value.totalTokens) &&
+    (!Object.hasOwn(value, 'reasoningTokens') ||
+      isTokenCount(value.reasoningTokens)) &&
+    (!Object.hasOwn(value, 'cachedInputTokens') ||
+      isTokenCount(value.cachedInputTokens))
+  );
+};
+
 export type RuntimeProviderError = Readonly<{
   kind:
     | 'authentication'
@@ -1175,7 +1200,7 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.text === 'string'
       );
     case 'turn.usage':
-      return hasTurnCoordinates(value) && isRecord(value.usage);
+      return hasTurnCoordinates(value) && isRuntimeUsage(value.usage);
     case 'turn.toolCall':
       return (
         hasTurnCoordinates(value) &&

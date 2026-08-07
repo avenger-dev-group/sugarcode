@@ -42,6 +42,46 @@ test('private runtime v2 validates stable text Item lifecycle events', () => {
   }), false);
 });
 
+test('private runtime validates complete non-negative usage samples', () => {
+  const coordinates = {
+    type: 'turn.usage' as const,
+    sequence: 1,
+    requestId: 'request-usage',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-fixture',
+  };
+  assert.equal(isRuntimeEvent({
+    ...coordinates,
+    usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 },
+  }), true);
+  assert.equal(isRuntimeEvent({
+    ...coordinates,
+    usage: {
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 1,
+      cachedInputTokens: 4,
+      totalTokens: 12,
+    },
+  }), true);
+  const invalidUsages: unknown[] = [
+    { inputTokens: 10, outputTokens: 2 },
+    { inputTokens: 10, outputTokens: -1, totalTokens: 12 },
+    { inputTokens: 10, outputTokens: 2, totalTokens: Number.NaN },
+    {
+      inputTokens: 10,
+      outputTokens: 2,
+      totalTokens: 12,
+      reasoningTokens: undefined,
+    },
+    { inputTokens: 10, outputTokens: 2, totalTokens: 12, provider: 'openai' },
+  ];
+  for (const usage of invalidUsages) {
+    assert.equal(isRuntimeEvent({ ...coordinates, usage }), false);
+  }
+});
+
 test('private Workspace protocol stays provider-neutral and bounds browser payloads', () => {
   assert.equal(isRuntimeCommand({
     type: 'workspace.list',

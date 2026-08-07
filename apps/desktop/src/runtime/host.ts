@@ -207,7 +207,6 @@ const progressPaths = (
     ? argumentsValue.paths
       .map(boundedProgressValue)
       .filter((entry): entry is string => Boolean(entry))
-      .slice(0, 8)
     : [];
 };
 

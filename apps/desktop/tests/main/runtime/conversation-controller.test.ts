@@ -7,11 +7,16 @@ import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts'
 import type {
   RuntimeCommand,
   RuntimeEvent,
+  RuntimeThreadRecord,
   RuntimeThreadSnapshot,
 } from '../../../src/runtime/protocol.ts';
 import {
   isConversationStateSnapshot,
+  isConversationThreadProjectionDelta,
+  isConversationThreadProjectionSnapshot,
   type ConversationStateSnapshot,
+  type ConversationThreadProjectionDelta,
+  type ConversationThreadProjectionSnapshot,
 } from '../../../src/shared/conversation.ts';
 
 const WORKSPACE_ID = 'workspace-runtime';
@@ -183,7 +188,13 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     fixture as unknown as RuntimeSupervisor,
   );
   const publishedSnapshots: ConversationStateSnapshot[] = [];
+  const publishedThreadProjections: ConversationThreadProjectionSnapshot[] = [];
+  const publishedThreadDeltas: ConversationThreadProjectionDelta[] = [];
   controller.subscribe((snapshot) => publishedSnapshots.push(snapshot));
+  controller.subscribeThreadProjection((snapshot) =>
+    publishedThreadProjections.push(snapshot),
+  );
+  controller.subscribeThreadDelta((delta) => publishedThreadDeltas.push(delta));
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
   assert.deepEqual(controller.startNewThread(), {
     accepted: true,
@@ -251,10 +262,65 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     phase: 'final',
     delta: 'Done',
   });
+  fixture.emit({
+    type: 'turn.usage',
+    requestId: started.requestId,
+    sequence: 5,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    usage: {
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+    },
+  });
+  fixture.emit({
+    type: 'turn.usage',
+    requestId: started.requestId,
+    sequence: 6,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    usage: {
+      inputTokens: 50,
+      outputTokens: 10,
+      reasoningTokens: 4,
+      cachedInputTokens: 30,
+      totalTokens: 60,
+    },
+  });
   const streamingSnapshot = controller.getSnapshot();
   assert.equal(isConversationStateSnapshot(streamingSnapshot), true);
   assert.equal(streamingSnapshot.phase, 'inProgress');
   assert.equal(streamingSnapshot.turns[0]?.messages[1]?.text, 'Done');
+  assert.deepEqual(streamingSnapshot.turns[0]?.usage, {
+    lastRequest: {
+      inputTokens: 50,
+      outputTokens: 10,
+      reasoningTokens: 4,
+      cachedInputTokens: 30,
+      totalTokens: 60,
+    },
+    turnTotal: {
+      inputTokens: 150,
+      outputTokens: 30,
+      reasoningTokens: 4,
+      cachedInputTokens: 30,
+      totalTokens: 180,
+    },
+    requestCount: 2,
+    contextWindowTokens: 128_000,
+    source: 'provider',
+  });
+  assert.equal(
+    isConversationStateSnapshot(structuredClone(streamingSnapshot)),
+    true,
+  );
+  assert.equal(
+    isConversationStateSnapshot(JSON.parse(JSON.stringify(streamingSnapshot))),
+    true,
+  );
   const streamingRevision = streamingSnapshot.revision;
   assert.deepEqual(await controller.selectThread(THREAD_ID), {
     accepted: true,
@@ -345,6 +411,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
       updatedAt: 12,
     },
   };
+  const globalSnapshotsBeforeAgentProgress = publishedSnapshots.length;
   fixture.emit({
     type: 'agent.task',
     requestId: started.requestId,
@@ -371,6 +438,10 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
       },
     },
   });
+  assert.equal(
+    publishedSnapshots.length,
+    globalSnapshotsBeforeAgentProgress,
+  );
   fixture.emit({
     type: 'approval.requested',
     requestId: started.requestId,
@@ -460,6 +531,93 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     publishedSnapshots.every(isConversationStateSnapshot),
     true,
   );
+  assert.equal(
+    publishedThreadProjections.every(isConversationThreadProjectionSnapshot),
+    true,
+  );
+  assert.equal(
+    publishedThreadDeltas.every(isConversationThreadProjectionDelta),
+    true,
+  );
+  assert.ok(publishedThreadDeltas.some((delta) => delta.turn.usage));
+});
+
+test('runtime conversation controller commits only the latest Thread selection', async () => {
+  const loadResolvers: Array<{
+    threadId: string;
+    resolve: (event: RuntimeEvent) => void;
+  }> = [];
+  const threadRecord = (threadId: string): RuntimeThreadRecord => ({
+    id: threadId,
+    workspaceId: WORKSPACE_ID,
+    title: threadId === THREAD_ID ? 'Thread A' : 'Thread B',
+    createdAt: 1,
+    updatedAt: 1,
+    archivedAt: null,
+    parentThreadId: null,
+  });
+  const runtime = {
+    subscribe: (): (() => void) => () => undefined,
+    send: (): void => undefined,
+    request: (
+      command: Exclude<RuntimeCommand, { type: 'initialize' | 'shutdown' }>,
+    ): Promise<RuntimeEvent> => {
+      if (command.type === 'thread.list') {
+        return Promise.resolve({
+          type: 'thread.listResult',
+          requestId: command.requestId,
+          sequence: 1,
+          workspaceId: WORKSPACE_ID,
+          query: '',
+          threads: [threadRecord(THREAD_ID), threadRecord(SECOND_THREAD_ID)],
+        });
+      }
+      if (command.type === 'thread.load') {
+        return new Promise((resolve) => {
+          loadResolvers.push({ threadId: command.threadId, resolve });
+        });
+      }
+      throw new Error(`Unexpected selection fixture request ${command.type}.`);
+    },
+  };
+  const controller = new RuntimeConversationController(
+    runtime as unknown as RuntimeSupervisor,
+  );
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+
+  const firstA = controller.selectThread(THREAD_ID);
+  const middleB = controller.selectThread(SECOND_THREAD_ID);
+  const lastA = controller.selectThread(THREAD_ID);
+  assert.deepEqual(
+    loadResolvers.map(({ threadId }) => threadId),
+    [THREAD_ID, SECOND_THREAD_ID, THREAD_ID],
+  );
+  const resolveLoad = (index: number): void => {
+    const pending = loadResolvers[index];
+    assert.ok(pending);
+    pending.resolve({
+      type: 'thread.loaded',
+      requestId: `load-${index}`,
+      sequence: index + 2,
+      workspaceId: WORKSPACE_ID,
+      snapshot: {
+        thread: threadRecord(pending.threadId),
+        turns: [],
+        items: [],
+        agentTasks: [],
+      },
+    });
+  };
+
+  resolveLoad(1);
+  assert.equal((await middleB).accepted, true);
+  assert.equal(controller.getSnapshot().threadId, undefined);
+  resolveLoad(0);
+  assert.equal((await firstA).accepted, true);
+  assert.equal(controller.getSnapshot().threadId, undefined);
+  resolveLoad(2);
+  assert.equal((await lastA).accepted, true);
+  assert.equal(controller.getSnapshot().threadId, THREAD_ID);
 });
 
 test('runtime conversation controller restores interleaved tool activity from durable Turn items', async () => {

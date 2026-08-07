@@ -14,7 +14,10 @@ import test from 'node:test';
 import type { BrowserWindow } from 'electron';
 
 import type { WorkspaceRuntimeBoundary } from '../../../src/main/workspace/controller.ts';
-import type { ConversationStateSnapshot } from '../../../src/shared/conversation.ts';
+import type {
+  ConversationStateSnapshot,
+  ConversationThreadProjectionSnapshot,
+} from '../../../src/shared/conversation.ts';
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -126,6 +129,38 @@ test('cold startup restores navigation without selecting or reordering projects'
     },
     getWorkspaceBindingId: (): string | null => bindingId,
     conversation: {
+      getSnapshot: (): ConversationStateSnapshot => ({
+        revision: 0,
+        ...(bindingId ? { workspaceId: bindingId } : {}),
+        phase: selectedThreadId ? 'ready' : 'idle',
+        ...(selectedThreadId ? { threadId: selectedThreadId } : {}),
+        turns: [],
+        navigator: {
+          status: 'ready',
+          activeThreadIds: selectedThreadId ? [selectedThreadId] : [],
+          activeThreadTitles: {},
+          activeTruncated: false,
+          search: {
+            query: '',
+            status: 'idle',
+            threadIds: [],
+            threadTitles: {},
+            truncated: false,
+          },
+        },
+      }),
+      getThreadProjection: (
+        threadId: string,
+      ): ConversationThreadProjectionSnapshot | null =>
+        bindingId && threadId === selectedThreadId
+          ? {
+              revision: 1,
+              workspaceId: bindingId,
+              threadId,
+              phase: 'ready' as const,
+              turns: [],
+            }
+          : null,
       selectThread: async (threadId: string) => {
         selectedThreadId = threadId;
         return { accepted: true, reason: 'accepted' as const };

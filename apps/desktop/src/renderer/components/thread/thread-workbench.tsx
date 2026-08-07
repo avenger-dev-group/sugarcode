@@ -327,6 +327,54 @@ const TranscriptTurnView = ({
 
 const TranscriptTurn = memo(TranscriptTurnView);
 
+const ThreadSelectionSkeleton = () => (
+  <div
+    className="space-y-8 py-3"
+    role="status"
+    aria-label="正在加载目标会话"
+  >
+    <div className="ml-auto w-2/3 space-y-2 rounded-2xl rounded-br-md bg-surface p-4">
+      <div className="h-3 w-11/12 animate-pulse rounded-full bg-border" />
+      <div className="h-3 w-7/12 animate-pulse rounded-full bg-border" />
+    </div>
+    <div className="w-4/5 space-y-3">
+      <div className="h-3 w-2/5 animate-pulse rounded-full bg-surface" />
+      <div className="h-3 w-full animate-pulse rounded-full bg-surface" />
+      <div className="h-3 w-10/12 animate-pulse rounded-full bg-surface" />
+      <div className="h-3 w-7/12 animate-pulse rounded-full bg-surface" />
+    </div>
+    <span className="sr-only">正在读取会话内容</span>
+  </div>
+);
+
+const ThreadSelectionError = ({
+  summary,
+  onRetry,
+}: Readonly<{ summary: string; onRetry: () => void }>) => (
+  <div
+    className="my-auto rounded-2xl border bg-surface p-6 text-center"
+    role="alert"
+  >
+    <CircleAlert
+      className="mx-auto size-5 text-destructive"
+      aria-hidden="true"
+    />
+    <p className="mt-3 text-sm font-medium">无法加载此会话</p>
+    <p className="mx-auto mt-1 max-w-md text-sm font-normal leading-normal text-secondary">
+      {summary}
+    </p>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="mt-4"
+      onClick={onRetry}
+    >
+      重试
+    </Button>
+  </div>
+);
+
 export const ThreadWorkbenchView = ({
   store,
   navigatorOpen = true,
@@ -361,6 +409,10 @@ export const ThreadWorkbenchView = ({
     workspace.state.kind === 'chat'
       ? '独立 Chat'
       : workspace.state.name ?? workspace.state.projectName ?? '项目对话';
+  const pendingThreadId = store.navigator.pendingThreadId;
+  const selectionError = pendingThreadId
+    ? store.navigator.selectionNotice
+    : undefined;
 
   return (
     <>
@@ -466,7 +518,14 @@ export const ThreadWorkbenchView = ({
             ref={transcriptContent}
             className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-8 pt-8 sm:px-10"
           >
-            {store.thread.isEmpty ? (
+            {pendingThreadId && selectionError ? (
+              <ThreadSelectionError
+                summary={selectionError}
+                onRetry={() => void store.selectThread(pendingThreadId)}
+              />
+            ) : pendingThreadId ? (
+              <ThreadSelectionSkeleton />
+            ) : store.thread.isEmpty ? (
               <div className="my-auto py-16 text-center">
                 <div className="mx-auto grid size-11 place-items-center rounded-2xl border bg-surface shadow-sm">
                   <span className="text-lg text-secondary" aria-hidden="true">

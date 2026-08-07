@@ -158,6 +158,10 @@ its running marker with the terminal outcome.
 Optional navigator fields are omitted when cleared rather than serialized with
 `undefined`; every snapshot published by Main must pass the same preload
 validation used at the Renderer boundary.
+The same rule applies to token usage: required provider counts are finite,
+non-negative safe integers, while absent optional reasoning and cache counts
+are omitted. Electron structured clone and JSON persistence must therefore
+produce the same valid projection shape.
 Recovered `runtimeRestart` records are projected as the public `incomplete`
 Turn error, and interrupted Turns may retain that classified error so a restored
 transcript remains valid and explains why work stopped.
@@ -168,6 +172,23 @@ workspace switching uses a monotonically increasing latest-wins generation.
 Late results may update only their owning workspace cache and cannot restore an
 older foreground selection. Runtime Thread indexes are replaced from the
 snapshot's workspace identity rather than a mutable adapter field.
+
+Foreground task selection is one Main-owned transaction. A successful focus
+returns a `ForegroundCommit` containing one generation, Workspace projection
+and Thread projection. Same-project, cross-project and standalone Chat tasks
+use this path. The Renderer marks the target immediately, hides the previous
+transcript behind a target-scoped skeleton, and applies only the latest commit.
+A failed target remains selected with a local retry surface; it never restores
+old transcript content under the target title.
+
+Conversation streaming is Thread-scoped after the initial full projection.
+Main retains projections and monotonic revisions per `threadId`; live runtime
+events publish a `ConversationThreadProjectionDelta` for only their owning
+Thread and changed Turn. Background deltas update the application-level
+Renderer cache but cannot replace the selected transcript. Global conversation
+snapshots are reserved for navigation or selection changes instead of being
+resent for every text, usage, tool or Agent-task event. A revision gap triggers
+one Thread-local reload, leaving every other active Thread untouched.
 
 Child-Agent task snapshots include bounded live progress with an explicit stage
 (`waitingForModel`, `streaming` or `runningTool`), a public Markdown summary and

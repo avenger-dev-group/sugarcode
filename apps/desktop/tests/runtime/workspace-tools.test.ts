@@ -33,6 +33,64 @@ test('workspace_read accepts a bounded batch and preserves each path', async () 
   });
 });
 
+test('workspace_read partitions one compatible oversized batch without hiding paths', async () => {
+  const requestedPaths: string[] = [];
+  let activeReads = 0;
+  let maximumActiveReads = 0;
+  const paths = Array.from({ length: 10 }, (_, index) => `file-${index}.txt`);
+  const tools = createWorkspaceTools(
+    {
+      workspaceRead: async (_workspaceId, path) => {
+        requestedPaths.push(path);
+        activeReads += 1;
+        maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+        await Promise.resolve();
+        activeReads -= 1;
+        return JSON.stringify({ ok: true, content: path, bytes: path.length });
+      },
+    } as NativeRuntimeBinding,
+    'workspace-fixture',
+  );
+  const readTool = tools.find((tool) => tool.name === 'workspace_read');
+  assert.ok(readTool);
+
+  const result = await readTool.runAsync({
+    args: { paths },
+    toolContext: {} as never,
+  });
+
+  assert.deepEqual(requestedPaths, paths);
+  assert.equal(maximumActiveReads, 8);
+  assert.equal(
+    Array.isArray((result as { files?: unknown }).files)
+      ? (result as { files: unknown[] }).files.length
+      : 0,
+    10,
+  );
+});
+
+test('workspace_read rejects a batch above the compatibility hard limit', async () => {
+  const tools = createWorkspaceTools(
+    {} as NativeRuntimeBinding,
+    'workspace-fixture',
+  );
+  const readTool = tools.find((tool) => tool.name === 'workspace_read');
+  assert.ok(readTool);
+
+  await assert.rejects(
+    readTool.runAsync({
+      args: {
+        paths: Array.from(
+          { length: 17 },
+          (_, index) => `file-${index}.txt`,
+        ),
+      },
+      toolContext: {} as never,
+    }),
+    /Requested 17 paths; the hard limit is 16/u,
+  );
+});
+
 test('workspace_apply_patch rejects unsupported diff syntax before approval', async () => {
   let approvalRequests = 0;
   const tools = createWorkspaceTools(

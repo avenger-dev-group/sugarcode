@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  isConversationThreadProjectionDelta,
+  isConversationThreadProjectionSnapshot,
+  isConversationStateSnapshot,
   isConversationSendRequest,
   isValidThreadSearchInput,
   type ConversationActionResult,
@@ -9,6 +12,11 @@ import {
   type ConversationCommandExecutionResultOutcome,
   type ConversationStateListener,
   type ConversationStateSnapshot,
+  type ConversationThreadDeltaListener,
+  type ConversationThreadProjectionDelta,
+  type ConversationThreadProjectionListener,
+  type ConversationThreadProjectionSnapshot,
+  type ConversationTokenUsage,
   type ConversationThreadNavigatorSnapshot,
   type ConversationTurn,
   type ConversationTurnError,
@@ -36,6 +44,39 @@ const accepted = (): ConversationActionResult => ({ accepted: true, reason: 'acc
 const rejected = (
   reason: Exclude<ConversationActionResult['reason'], 'accepted'>,
 ): ConversationActionResult => ({ accepted: false, reason });
+
+type TokenUsageSample = ConversationTokenUsage['lastRequest'];
+
+const addTokenUsage = (
+  previous: TokenUsageSample | undefined,
+  current: TokenUsageSample,
+): TokenUsageSample => {
+  const add = (
+    left: number | undefined,
+    right: number | undefined,
+  ): number | undefined =>
+    left === undefined && right === undefined
+      ? undefined
+      : (left ?? 0) + (right ?? 0);
+  const inputTokens = add(previous?.inputTokens, current.inputTokens);
+  const outputTokens = add(previous?.outputTokens, current.outputTokens);
+  const reasoningTokens = add(
+    previous?.reasoningTokens,
+    current.reasoningTokens,
+  );
+  const cachedInputTokens = add(
+    previous?.cachedInputTokens,
+    current.cachedInputTokens,
+  );
+  const totalTokens = add(previous?.totalTokens, current.totalTokens);
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+  };
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -332,6 +373,11 @@ const projectThread = (
 export class RuntimeConversationController {
   private readonly runtime: RuntimeSupervisor;
   private readonly listeners = new Set<ConversationStateListener>();
+  private readonly threadProjectionListeners =
+    new Set<ConversationThreadProjectionListener>();
+  private readonly threadDeltaListeners =
+    new Set<ConversationThreadDeltaListener>();
+  private readonly threadRevisions = new Map<string, number>();
   private readonly threadRecords = new Map<string, RuntimeThreadRecord>();
   private readonly turnsByThread = new Map<string, ConversationTurn[]>();
   private readonly unreadThreadStatuses = new Map<
@@ -352,6 +398,7 @@ export class RuntimeConversationController {
   private readonly pendingTurnStartWorkspaces = new Set<string>();
   private workspaceId: string | null = null;
   private workspaceGeneration = 0;
+  private threadSelectionGeneration = 0;
   private revision = 0;
   private available = false;
   private threadId: string | null = null;
@@ -389,8 +436,30 @@ export class RuntimeConversationController {
     return () => this.listeners.delete(listener);
   };
 
+  getThreadProjection = (
+    threadId: unknown,
+  ): ConversationThreadProjectionSnapshot | null =>
+    typeof threadId === 'string'
+      ? this.buildThreadProjection(threadId)
+      : null;
+
+  subscribeThreadProjection = (
+    listener: ConversationThreadProjectionListener,
+  ): (() => void) => {
+    this.threadProjectionListeners.add(listener);
+    return () => this.threadProjectionListeners.delete(listener);
+  };
+
+  subscribeThreadDelta = (
+    listener: ConversationThreadDeltaListener,
+  ): (() => void) => {
+    this.threadDeltaListeners.add(listener);
+    return () => this.threadDeltaListeners.delete(listener);
+  };
+
   switchWorkspace = async (workspaceId: string): Promise<boolean> => {
     const generation = ++this.workspaceGeneration;
+    this.threadSelectionGeneration += 1;
     this.workspaceId = workspaceId;
     this.threadId = null;
     this.available = false;
@@ -487,6 +556,7 @@ export class RuntimeConversationController {
         this.threadRecords.set(created.threadId, created.snapshot.thread);
         this.turnsByThread.set(created.threadId, []);
         if (this.workspaceId === workspaceId && !this.threadId) {
+          this.threadSelectionGeneration += 1;
           this.threadId = created.threadId;
         }
         this.refreshNavigator();
@@ -521,6 +591,7 @@ export class RuntimeConversationController {
         ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
         content,
       });
+      this.publishThreadProjection(threadId, true);
       this.publish();
       return accepted();
     } catch {
@@ -566,6 +637,7 @@ export class RuntimeConversationController {
       threadId,
       turnId: activeTurn.turnId,
     });
+    this.publishThreadDelta(threadId, activeTurn.turnId);
     this.publish();
     return accepted();
   };
@@ -634,11 +706,17 @@ export class RuntimeConversationController {
     if (!this.workspaceId) {
       return rejected('unavailable');
     }
+    const selectionGeneration = ++this.threadSelectionGeneration;
     const workspaceId = this.workspaceId;
     if (threadId === this.threadId) {
       this.unreadThreadStatuses.delete(threadId);
       this.refreshNavigator();
+      this.navigator = withoutNavigatorFields(this.navigator, [
+        'pendingThreadId',
+        'selectionNotice',
+      ]);
       this.publish();
+      this.publishThreadProjection(threadId);
       return accepted();
     }
     if (
@@ -656,9 +734,13 @@ export class RuntimeConversationController {
         'selectionNotice',
       ]);
       this.publish();
+      this.publishThreadProjection(threadId);
       return accepted();
     }
-    this.navigator = { ...this.navigator, pendingThreadId: threadId };
+    this.navigator = {
+      ...withoutNavigatorFields(this.navigator, ['selectionNotice']),
+      pendingThreadId: threadId,
+    };
     this.publish();
     try {
       const event = await this.runtime.request(
@@ -671,7 +753,10 @@ export class RuntimeConversationController {
       ) {
         throw new Error('Thread crossed workspace ownership.');
       }
-      if (this.workspaceId !== workspaceId) {
+      if (
+        this.workspaceId !== workspaceId ||
+        this.threadSelectionGeneration !== selectionGeneration
+      ) {
         return accepted();
       }
       this.threadId = threadId;
@@ -683,14 +768,20 @@ export class RuntimeConversationController {
         'selectionNotice',
       ]);
       this.publish();
+      this.publishThreadProjection(threadId, true);
       return accepted();
     } catch {
-      if (this.workspaceId !== workspaceId) {
+      if (
+        this.workspaceId !== workspaceId ||
+        this.threadSelectionGeneration !== selectionGeneration
+      ) {
         return accepted();
       }
       this.navigator = {
-        ...withoutNavigatorFields(this.navigator, ['pendingThreadId']),
-        selectionNotice: 'That Thread could not be restored safely.',
+        ...this.navigator,
+        pendingThreadId: threadId,
+        selectionNotice:
+          'That Thread could not be restored safely. Select it to retry.',
       };
       this.publish();
       return rejected('unavailable');
@@ -704,9 +795,12 @@ export class RuntimeConversationController {
     if (!this.workspaceId || !this.available || pendingTurnStart) {
       return rejected(pendingTurnStart ? 'turnActive' : 'unavailable');
     }
+    this.threadSelectionGeneration += 1;
     this.threadId = null;
     this.navigator = withoutNavigatorFields(this.navigator, [
       'archivedUndoThreadId',
+      'pendingThreadId',
+      'selectionNotice',
     ]);
     this.publish();
     return accepted();
@@ -765,16 +859,22 @@ export class RuntimeConversationController {
       if (operation === 'fork' && event.snapshot) {
         this.threadRecords.set(event.threadId, event.snapshot.thread);
         this.turnsByThread.set(event.threadId, [...projectThread(event.snapshot)]);
+        this.threadSelectionGeneration += 1;
         this.threadId = event.threadId;
+        this.publishThreadProjection(event.threadId, true);
       } else if (operation === 'unarchive' && event.snapshot) {
         this.threadRecords.set(threadId, event.snapshot.thread);
         this.turnsByThread.set(threadId, [...projectThread(event.snapshot)]);
+        this.threadSelectionGeneration += 1;
         this.threadId = threadId;
+        this.publishThreadProjection(threadId, true);
       } else if (operation === 'archive' || operation === 'delete') {
         this.threadRecords.delete(threadId);
         this.turnsByThread.delete(threadId);
+        this.threadRevisions.delete(threadId);
         this.unreadThreadStatuses.delete(threadId);
         if (this.threadId === threadId) {
+          this.threadSelectionGeneration += 1;
           this.threadId = null;
         }
       }
@@ -955,38 +1055,9 @@ export class RuntimeConversationController {
         turns[index] = { ...turn, activities };
         break;
       }
-      case 'turn.usage':
-        {
-          const previous = turn.usage;
-          const add = (
-            left: number | undefined,
-            right: number | undefined,
-          ): number | undefined =>
-            left === undefined && right === undefined
-              ? undefined
-              : (left ?? 0) + (right ?? 0);
-          const turnTotal = {
-            inputTokens: add(
-              previous?.turnTotal.inputTokens,
-              event.usage.inputTokens,
-            ),
-            outputTokens: add(
-              previous?.turnTotal.outputTokens,
-              event.usage.outputTokens,
-            ),
-            reasoningTokens: add(
-              previous?.turnTotal.reasoningTokens,
-              event.usage.reasoningTokens,
-            ),
-            cachedInputTokens: add(
-              previous?.turnTotal.cachedInputTokens,
-              event.usage.cachedInputTokens,
-            ),
-            totalTokens: add(
-              previous?.turnTotal.totalTokens,
-              event.usage.totalTokens,
-            ),
-          };
+      case 'turn.usage': {
+        const previous = turn.usage;
+        const turnTotal = addTokenUsage(previous?.turnTotal, event.usage);
         turns[index] = {
           ...turn,
           usage: {
@@ -998,7 +1069,7 @@ export class RuntimeConversationController {
           },
         };
         break;
-        }
+      }
       case 'agent.task': {
         const activities = [...(turn.activities ?? [])];
         const orchestrationIndex = activities.findIndex(
@@ -1205,7 +1276,10 @@ export class RuntimeConversationController {
         return;
     }
     this.turnsByThread.set(event.threadId, turns);
-    this.publish();
+    this.publishThreadDelta(event.threadId, event.turnId);
+    if (event.type === 'turn.completed') {
+      this.publish();
+    }
   };
 
   private applyThreadList = (
@@ -1219,6 +1293,7 @@ export class RuntimeConversationController {
       ) {
         this.threadRecords.delete(threadId);
         this.turnsByThread.delete(threadId);
+        this.threadRevisions.delete(threadId);
       }
     }
     for (const thread of threads) {
@@ -1256,9 +1331,87 @@ export class RuntimeConversationController {
     };
   };
 
+  private buildThreadProjection = (
+    threadId: string,
+  ): ConversationThreadProjectionSnapshot | null => {
+    const thread = this.threadRecords.get(threadId);
+    const turns = this.turnsByThread.get(threadId);
+    if (!thread || !turns) {
+      return null;
+    }
+    const activeTurn = this.activeTurnsByThread.get(threadId);
+    return {
+      revision: this.threadRevisions.get(threadId) ?? 0,
+      workspaceId: thread.workspaceId,
+      threadId,
+      phase: activeTurn?.phase ?? 'ready',
+      ...(activeTurn ? { activeTurnId: activeTurn.turnId } : {}),
+      turns,
+    };
+  };
+
+  private publishThreadProjection = (
+    threadId: string,
+    changed = false,
+  ): void => {
+    if (changed) {
+      this.threadRevisions.set(
+        threadId,
+        (this.threadRevisions.get(threadId) ?? 0) + 1,
+      );
+    }
+    const snapshot = this.buildThreadProjection(threadId);
+    if (!snapshot) {
+      return;
+    }
+    const revision = snapshot.revision;
+    if (!isConversationThreadProjectionSnapshot(snapshot)) {
+      throw new Error(
+        `Thread projection invariant failed for ${threadId} at revision ${revision}.`,
+      );
+    }
+    for (const listener of this.threadProjectionListeners) {
+      listener(snapshot);
+    }
+  };
+
+  private publishThreadDelta = (threadId: string, turnId: string): void => {
+    const projection = this.buildThreadProjection(threadId);
+    const turn = projection?.turns.find((candidate) => candidate.id === turnId);
+    if (!projection || !turn) {
+      return;
+    }
+    const revision = (this.threadRevisions.get(threadId) ?? 0) + 1;
+    this.threadRevisions.set(threadId, revision);
+    const delta: ConversationThreadProjectionDelta = {
+      revision,
+      workspaceId: projection.workspaceId,
+      threadId,
+      phase: projection.phase,
+      ...(projection.activeTurnId
+        ? { activeTurnId: projection.activeTurnId }
+        : {}),
+      turn,
+    };
+    if (!isConversationThreadProjectionDelta(delta)) {
+      throw new Error(
+        `Thread delta invariant failed for ${threadId} at revision ${revision}.`,
+      );
+    }
+    for (const listener of this.threadDeltaListeners) {
+      listener(delta);
+    }
+  };
+
   private publish = (): void => {
     this.revision += 1;
     const snapshot = this.getSnapshot();
+    const revision = snapshot.revision;
+    if (!isConversationStateSnapshot(snapshot)) {
+      throw new Error(
+        `Conversation projection invariant failed at revision ${revision}.`,
+      );
+    }
     for (const listener of this.listeners) {
       listener(snapshot);
     }

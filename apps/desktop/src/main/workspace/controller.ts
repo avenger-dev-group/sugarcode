@@ -10,6 +10,7 @@ import type {
   WorkspaceListResult,
   WorkspaceSelectResult,
   WorkspaceStateSnapshot,
+  ForegroundCommit,
 } from '@/shared/workspace';
 import type { BrowserWindow, Dialog, OpenDialogOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
@@ -51,6 +52,9 @@ export type WorkspaceRuntimeBoundary = Readonly<{
     selectThread: (
       threadId: string,
     ) => Promise<import('@/shared/conversation').ConversationActionResult>;
+    getThreadProjection: (
+      threadId: unknown,
+    ) => import('@/shared/conversation').ConversationThreadProjectionSnapshot | null;
   }>;
 }>;
 
@@ -137,6 +141,7 @@ export class WorkspaceController {
   private persistedActive: StoredSession['active'] | null = null;
   private revision = 0;
   private generation = 0;
+  private foregroundGeneration = 0;
   private projectPath: string | null = null;
   private activeProjectId: string | null = null;
   private readonly projects = new Map<string, ProjectRecord>();
@@ -346,6 +351,7 @@ export class WorkspaceController {
   };
 
   focusTask = async (threadId: string): Promise<WorkspaceSelectResult> => {
+    const foregroundGeneration = ++this.foregroundGeneration;
     const ownerKey = this.options.threadRegistry.getOwnerKey(threadId);
     const project = ownerKey
       ? [...this.projects.values()].find(
@@ -357,20 +363,54 @@ export class WorkspaceController {
       if (!activated.accepted) {
         return activated;
       }
+      if (
+        this.options.supervisor.conversation.getSnapshot().threadId ===
+        threadId
+      ) {
+        return this.focusResult(threadId, foregroundGeneration);
+      }
       const selected = await this.options.supervisor.conversation.selectThread(
         threadId,
       );
       return selected.accepted
-        ? { accepted: true }
+        ? this.focusResult(threadId, foregroundGeneration)
         : {
             accepted: false,
             reason: selected.reason === 'turnActive' ? 'busy' : 'failed',
           };
     }
     if (ownerKey && this.chatOwners.has(ownerKey)) {
-      return this.activateChat({ threadId });
+      const activated = await this.activateChat({ threadId });
+      return activated.accepted
+        ? this.focusResult(threadId, foregroundGeneration)
+        : activated;
     }
     return { accepted: false, reason: 'invalid' };
+  };
+
+  private focusResult = (
+    threadId: string,
+    generation: number,
+  ): WorkspaceSelectResult => {
+    if (generation !== this.foregroundGeneration) {
+      return { accepted: true };
+    }
+    const thread = this.options.supervisor.conversation.getThreadProjection(
+      threadId,
+    );
+    if (!thread || thread.workspaceId !== this.workspaceId) {
+      return { accepted: false, reason: 'failed' };
+    }
+    const commit: ForegroundCommit = {
+      selection: {
+        generation,
+        workspaceId: thread.workspaceId,
+        threadId,
+      },
+      workspace: this.snapshot,
+      thread,
+    };
+    return { accepted: true, commit };
   };
 
   deleteTask = async (threadId: string): Promise<WorkspaceSelectResult> => {

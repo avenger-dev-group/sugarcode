@@ -6,9 +6,12 @@ import {
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
   CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+  CONVERSATION_THREAD_DELTA_CHANNEL,
   CONVERSATION_THREAD_DELETE_CHANNEL,
   CONVERSATION_THREAD_FORK_CHANNEL,
   CONVERSATION_THREAD_NEW_CHANNEL,
+  CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
+  CONVERSATION_THREAD_PROJECTION_GET_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
   CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
@@ -18,11 +21,23 @@ import type {
   ConversationActionResult,
   ConversationStateListener,
   ConversationStateSnapshot,
+  ConversationThreadDeltaListener,
+  ConversationThreadProjectionListener,
+  ConversationThreadProjectionSnapshot,
 } from '@/shared/conversation';
 
 type ConversationControllerBoundary = Readonly<{
   getSnapshot: () => ConversationStateSnapshot;
   subscribe: (listener: ConversationStateListener) => () => void;
+  getThreadProjection: (
+    threadId: unknown,
+  ) => ConversationThreadProjectionSnapshot | null;
+  subscribeThreadProjection: (
+    listener: ConversationThreadProjectionListener,
+  ) => () => void;
+  subscribeThreadDelta: (
+    listener: ConversationThreadDeltaListener,
+  ) => () => void;
   startTurn: (input: unknown) => Promise<ConversationActionResult>;
   stopTurn: (threadId: unknown) => Promise<ConversationActionResult>;
   searchThreads: (query: unknown) => Promise<ConversationActionResult>;
@@ -55,6 +70,22 @@ export const registerConversationIpc = (
     }
     return options.controller.getSnapshot();
   });
+
+  ipcMain.handle(
+    CONVERSATION_THREAD_PROJECTION_GET_CHANNEL,
+    (event, threadId: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error(
+          'Thread projection request came from an untrusted frame.',
+        );
+      }
+      const projection = options.controller.getThreadProjection(threadId);
+      if (!projection) {
+        throw new Error('The requested Thread projection is unavailable.');
+      }
+      return projection;
+    },
+  );
 
   ipcMain.handle(
     CONVERSATION_SEND_CHANNEL,
@@ -121,10 +152,27 @@ export const registerConversationIpc = (
     const window = getTrustedMainWindow(options);
     window?.webContents.send(CONVERSATION_STATE_CHANGED_CHANNEL, snapshot);
   });
+  const unsubscribeThreadProjection =
+    options.controller.subscribeThreadProjection((snapshot) => {
+      const window = getTrustedMainWindow(options);
+      window?.webContents.send(
+        CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
+        snapshot,
+      );
+    });
+  const unsubscribeThreadDelta = options.controller.subscribeThreadDelta(
+    (delta) => {
+      const window = getTrustedMainWindow(options);
+      window?.webContents.send(CONVERSATION_THREAD_DELTA_CHANNEL, delta);
+    },
+  );
 
   return () => {
     unsubscribe();
+    unsubscribeThreadProjection();
+    unsubscribeThreadDelta();
     ipcMain.removeHandler(CONVERSATION_STATE_GET_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_THREAD_PROJECTION_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_SEND_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_STOP_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SEARCH_CHANNEL);

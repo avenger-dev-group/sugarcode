@@ -41,6 +41,18 @@ export type WorkspaceStateSnapshot = Readonly<{
   error?: string;
 }>;
 
+export type ForegroundSelection = Readonly<{
+  generation: number;
+  workspaceId: string;
+  threadId: string | null;
+}>;
+
+export type ForegroundCommit = Readonly<{
+  selection: ForegroundSelection;
+  workspace: WorkspaceStateSnapshot;
+  thread: ConversationThreadProjectionSnapshot | null;
+}>;
+
 export type WorkspaceChatRequest = Readonly<{
   threadId?: string;
 }>;
@@ -128,6 +140,7 @@ export type WorkspaceInspectResult =
 export type WorkspaceSelectResult = Readonly<{
   accepted: boolean;
   reason?: 'cancelled' | 'busy' | 'invalid' | 'failed';
+  commit?: ForegroundCommit;
 }>;
 
 export type WorkspaceApi = Readonly<{
@@ -302,16 +315,53 @@ export const isWorkspaceInspectRequest = (
   (value.generation as number) >= 0 &&
   isSafeRelativePath(value.path, false);
 
+const isForegroundCommit = (value: unknown): value is ForegroundCommit => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['selection', 'workspace', 'thread']) ||
+    !isRecord(value.selection) ||
+    !hasOnlyKeys(value.selection, [
+      'generation',
+      'workspaceId',
+      'threadId',
+    ]) ||
+    !Number.isSafeInteger(value.selection.generation) ||
+    Number(value.selection.generation) < 1 ||
+    typeof value.selection.workspaceId !== 'string' ||
+    value.selection.workspaceId.length === 0 ||
+    (value.selection.threadId !== null &&
+      !isThreadId(value.selection.threadId)) ||
+    !isWorkspaceStateSnapshot(value.workspace)
+  ) {
+    return false;
+  }
+  const thread = value.thread;
+  if (thread !== null && !isConversationThreadProjectionSnapshot(thread)) {
+    return false;
+  }
+  if (thread === null) {
+    return value.selection.threadId === null;
+  }
+  const validThread = thread as ConversationThreadProjectionSnapshot;
+  return (
+    value.selection.threadId === validThread.threadId &&
+    value.selection.workspaceId === validThread.workspaceId
+  );
+};
+
 export const isWorkspaceSelectResult = (
   value: unknown,
 ): value is WorkspaceSelectResult =>
   isRecord(value) &&
-  hasOnlyKeys(value, ['accepted', 'reason']) &&
+  hasOnlyKeys(value, ['accepted', 'reason', 'commit']) &&
   typeof value.accepted === 'boolean' &&
-  (value.reason === undefined ||
-    ['cancelled', 'busy', 'invalid', 'failed'].includes(
-      value.reason as string,
-    ));
+  (value.accepted
+    ? value.reason === undefined &&
+      (value.commit === undefined || isForegroundCommit(value.commit))
+    : value.commit === undefined &&
+      ['cancelled', 'busy', 'invalid', 'failed'].includes(
+        value.reason as string,
+      ));
 
 const ENTRY_KINDS = ['file', 'directory', 'link', 'other'];
 
@@ -428,3 +478,7 @@ export const isWorkspaceInspectResult = (
     typeof document.hasUtf8Bom === 'boolean'
   );
 };
+import {
+  isConversationThreadProjectionSnapshot,
+  type ConversationThreadProjectionSnapshot,
+} from './conversation';

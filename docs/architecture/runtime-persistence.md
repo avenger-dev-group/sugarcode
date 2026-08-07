@@ -33,6 +33,13 @@ stored by its stable Item identity. Commentary and the gate-approved final
 answer therefore survive duplicate delivery without content-level text
 deduplication.
 
+Desktop Thread projections and their monotonic live revisions are process-local
+delivery state, not a persistence format. SQLite continues to store the same
+provider-neutral Threads, Turns and ordered Items. A Renderer revision gap is
+recovered by rebuilding only that Thread projection from the current Main cache
+or its durable snapshot; no schema migration or global foreground reload is
+required.
+
 ## Recovery
 
 On open, unfinished Turns and active Agent tasks become `interrupted`.
@@ -66,8 +73,8 @@ history.
 
 Durable `turn.toolCall` and `turn.toolResult` Items also rebuild the visible
 provider-neutral process timeline. Main pairs them by `callId`, preserves Item
-sequence relative to completed commentary and expands a bounded
-`workspace_read.paths` batch into per-file activities. Tool result content is
+sequence relative to completed commentary and expands every retained
+`workspace_read.paths` entry into a per-file activity. Tool result content is
 not copied into the conversation snapshot; only bounded presentation receipts
 such as byte, entry and match counts or an error kind cross to the Renderer.
 

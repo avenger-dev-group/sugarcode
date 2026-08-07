@@ -84,6 +84,11 @@ ADK FunctionTools expose provider-neutral schemas. Arguments are validated
 before privileged execution. Read-only tools may run concurrently when their
 workspace authority allows it; writes, commands, Git mutations and MCP calls
 pass through persisted operations and approval where required.
+Google ADK `Schema` values are normalized recursively at the provider boundary
+before they are sent to OpenAI or Anthropic: Google enum-style type names become
+lowercase JSON Schema types, and string-encoded integer limits such as
+`maxItems: "8"` become JSON numbers. Provider adapters therefore never leak the
+Google schema representation onto a non-Google wire.
 
 Tool and provider failures are distinct typed Turn outcomes. Cancellation
 propagates through the SDK AbortSignal and by `operationId` to active native
@@ -105,9 +110,12 @@ concatenated objects containing only one string `path` each is normalized to
 the declared `paths` batch argument. The same shared adapter boundary also
 repairs one JSON-string-encoded `paths` array when it contains 1 through 8
 non-empty strings; this covers compatible providers that double-encode an
-otherwise unambiguous array. Oversized, mixed, unrelated or ambiguous arguments
-are never truncated or guessed. OpenAI and Anthropic adapters use this same
-normalizer before ADK schema validation.
+otherwise unambiguous array. Encoded, mixed, unrelated or ambiguous arguments
+are never truncated or guessed. A direct, otherwise valid `paths` array of 9
+through 16 entries from a non-strict provider is retained and executed in
+native read waves of at most 8 paths; more than 16 is rejected with explicit
+split guidance. OpenAI and Anthropic adapters use this same normalizer before
+ADK schema validation.
 Patch arguments receive a separate deterministic preflight: every
 `*** Update File:` section must contain at least one `-` or `+` change line
 unless it is a move-only operation. An unprefixed whole-file body is rejected

@@ -4,6 +4,9 @@ import { isAbsolute } from 'node:path';
 
 import type { NativeRuntimeBinding } from '../native.ts';
 
+const MAX_DECLARED_WORKSPACE_READ_PATHS = 8;
+const MAX_COMPATIBLE_WORKSPACE_READ_PATHS = 16;
+
 const pathProperty = {
   type: Type.STRING,
   description: 'Workspace-relative path. Use . for the workspace root.',
@@ -23,9 +26,9 @@ const readSchema = {
       type: Type.ARRAY,
       items: pathProperty,
       minItems: '1',
-      maxItems: '8',
+      maxItems: String(MAX_DECLARED_WORKSPACE_READ_PATHS),
       description:
-        'Read 1 through 8 workspace-relative files in one call. Use either path or paths, never both.',
+        `Read 1 through ${MAX_DECLARED_WORKSPACE_READ_PATHS} workspace-relative files in one call. Use either path or paths, never both.`,
     },
   },
   description: 'Provide exactly one of path or paths.',
@@ -56,12 +59,17 @@ const readPathArguments = (input: unknown): readonly string[] => {
     path === undefined &&
     Array.isArray(paths) &&
     paths.length >= 1 &&
-    paths.length <= 8 &&
+    paths.length <= MAX_COMPATIBLE_WORKSPACE_READ_PATHS &&
     paths.every((entry) => typeof entry === 'string')
   ) {
     return paths;
   }
-  throw new Error('Provide either one path or 1 through 8 paths');
+  const requested = Array.isArray(paths) ? paths.length : undefined;
+  throw new Error(
+    requested !== undefined && requested > MAX_COMPATIBLE_WORKSPACE_READ_PATHS
+      ? `Requested ${requested} paths; the hard limit is ${MAX_COMPATIBLE_WORKSPACE_READ_PATHS}. Split them across multiple workspace_read calls.`
+      : `Provide either one path or a paths array. Use no more than ${MAX_DECLARED_WORKSPACE_READ_PATHS} paths per call.`,
+  );
 };
 
 const searchArguments = (input: unknown): { path: string; query: string } => {
@@ -396,7 +404,7 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'workspace_read',
     description:
-      'Read one UTF-8 text file, or up to 8 files with paths, inside the open workspace without following symlinks.',
+      `Read one UTF-8 text file, or up to ${MAX_DECLARED_WORKSPACE_READ_PATHS} files with paths, inside the open workspace without following symlinks.`,
     parameters: readSchema,
     execute: async (input) => {
       const paths = readPathArguments(input);
@@ -405,16 +413,27 @@ export const createWorkspaceTools = (
           await nativeRuntime.workspaceRead(workspaceId, paths[0] ?? ''),
         );
       }
-      const files: Readonly<Record<string, unknown>>[] = await Promise.all(
-        paths.map(async (path) => {
-          const result = parseNativeResult(
-            await nativeRuntime.workspaceRead(workspaceId, path),
-          );
-          return isRecord(result)
-            ? { ...result, path }
-            : { path, result };
-        }),
-      );
+      const files: Readonly<Record<string, unknown>>[] = [];
+      for (
+        let offset = 0;
+        offset < paths.length;
+        offset += MAX_DECLARED_WORKSPACE_READ_PATHS
+      ) {
+        const batch = paths.slice(
+          offset,
+          offset + MAX_DECLARED_WORKSPACE_READ_PATHS,
+        );
+        files.push(...await Promise.all(
+          batch.map(async (path) => {
+            const result = parseNativeResult(
+              await nativeRuntime.workspaceRead(workspaceId, path),
+            );
+            return isRecord(result)
+              ? { ...result, path }
+              : { path, result };
+          }),
+        ));
+      }
       return {
         ok: files.every((file) => file.ok !== false),
         files,

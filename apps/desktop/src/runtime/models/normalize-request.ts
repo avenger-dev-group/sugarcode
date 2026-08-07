@@ -144,14 +144,65 @@ const functionDeclarations = (
       : [],
   );
 
+const GOOGLE_SCHEMA_TYPES = new Set([
+  'STRING',
+  'NUMBER',
+  'INTEGER',
+  'BOOLEAN',
+  'ARRAY',
+  'OBJECT',
+  'NULL',
+]);
+
+const STRING_INTEGER_SCHEMA_FIELDS = new Set([
+  'minItems',
+  'maxItems',
+  'minLength',
+  'maxLength',
+  'minProperties',
+  'maxProperties',
+]);
+
+const normalizeSchemaValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(normalizeSchemaValue);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => {
+      if (
+        key === 'type' &&
+        typeof entry === 'string' &&
+        GOOGLE_SCHEMA_TYPES.has(entry)
+      ) {
+        return [key, entry.toLowerCase()];
+      }
+      if (
+        STRING_INTEGER_SCHEMA_FIELDS.has(key) &&
+        typeof entry === 'string' &&
+        /^\d+$/u.test(entry)
+      ) {
+        return [key, Number(entry)];
+      }
+      return [key, normalizeSchemaValue(entry)];
+    }),
+  );
+};
+
 const normalizedParameters = (
   declaration: FunctionDeclaration,
 ): Readonly<Record<string, unknown>> => {
   if (isRecord(declaration.parametersJsonSchema)) {
-    return declaration.parametersJsonSchema;
+    return normalizeSchemaValue(declaration.parametersJsonSchema) as Readonly<
+      Record<string, unknown>
+    >;
   }
   if (isRecord(declaration.parameters)) {
-    return declaration.parameters;
+    return normalizeSchemaValue(declaration.parameters) as Readonly<
+      Record<string, unknown>
+    >;
   }
   return { type: 'object', properties: {}, additionalProperties: false };
 };

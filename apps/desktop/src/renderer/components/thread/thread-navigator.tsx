@@ -192,21 +192,14 @@ export const ThreadNavigator = ({
   };
 
   const selectProjectThread = async (
-    projectId: string,
+    _projectId: string,
     threadId: string,
   ): Promise<void> => {
-    if (
-      !projectActive ||
-      workspace.state.activeProjectId !== projectId
-    ) {
-      await workspace.focusTask(threadId);
-      return;
-    }
-    await store.selectThread(threadId);
+    await workspace.focusTask(threadId);
   };
 
   const selectChatThread = async (threadId: string): Promise<void> => {
-    await activateChat(threadId);
+    await workspace.focusTask(threadId);
   };
 
   const renderThreadList = (
