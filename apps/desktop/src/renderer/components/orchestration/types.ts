@@ -1,5 +1,7 @@
 import type { ConversationAgentTaskStatus } from '@/shared/conversation';
 
+import type { FileChangeReviewFile } from '../workspace/types';
+
 export type AgentTaskRole = 'explorer' | 'worker' | 'auditor';
 export type AgentTaskAccess = 'readOnly' | 'workspaceWrite';
 
@@ -40,3 +42,14 @@ export type OrchestrationActivityViewModel = Readonly<{
   id: string;
   tasks: readonly AgentTaskViewModel[];
 }>;
+
+export type ContextRailResource =
+  | Readonly<{
+      kind: 'file';
+      path: string;
+    }>
+  | Readonly<{
+      kind: 'diff';
+      path: string;
+      changes: readonly FileChangeReviewFile[];
+    }>;

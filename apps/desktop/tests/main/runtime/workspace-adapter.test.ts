@@ -187,6 +187,12 @@ test('RuntimeWorkspaceAdapter binds, browses, restores, and routes inactive dele
     path: '',
     entries: [{ name: 'src', path: 'src', kind: 'directory' }],
   });
+  assert.deepEqual(runtime.commands.at(-1), {
+    type: 'workspace.list',
+    requestId: runtime.commands.at(-1)?.requestId,
+    workspaceId,
+    path: '',
+  });
   assert.equal((await adapter.inspectWorkspace('README.md')).status, 'complete');
   assert.equal(
     await adapter.deleteThread('inactive-workspace', THREAD_ID),

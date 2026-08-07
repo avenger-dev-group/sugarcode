@@ -61,7 +61,7 @@ export const toolActivityGroupSummary = (
       parts.push(`编辑了 ${editCount} 个文件`);
     }
     if (patchFileCount > 0) {
-      parts.push(`已修改 ${patchFileCount} 个文件`);
+      parts.push(`已编辑 ${patchFileCount} 个文件`);
     }
     if (failedPatchCount > 0) {
       parts.push(`${failedPatchCount} 次修改失败`);
@@ -102,7 +102,7 @@ export const toolActivityGroupSummary = (
   }
   if (patchFileCount > 0) {
     parts.push(
-      `changed ${patchFileCount} ${patchFileCount === 1 ? 'file' : 'files'}`,
+      `edited ${patchFileCount} ${patchFileCount === 1 ? 'file' : 'files'}`,
     );
   }
   if (failedPatchCount > 0) {

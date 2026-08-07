@@ -1514,6 +1514,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
 test('RuntimeHost executes ADK workspace tools through the native boundary', async () => {
   const events: RuntimeEvent[] = [];
   const persistedKinds: string[] = [];
+  let listPath = '';
   let readPath = '';
   let resolveCompleted: (() => void) | undefined;
   const completed = new Promise<void>((resolve) => {
@@ -1562,10 +1563,13 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
       readPath = path;
       return JSON.stringify({ ok: true, content: 'fixture', bytes: 7 });
     },
-    workspaceList: async () => JSON.stringify({
-      ok: true,
-      entries: [{ name: 'src', kind: 'directory' }],
-    }),
+    workspaceList: async (_workspaceId, path) => {
+      listPath = path;
+      return JSON.stringify({
+        ok: true,
+        entries: [{ name: 'src', kind: 'directory' }],
+      });
+    },
     workspaceInspectJson: () => JSON.stringify({
       status: 'complete',
       path: 'fixture.txt',
@@ -1645,6 +1649,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   ]);
 
   assert.equal(readPath, 'fixture.txt');
+  assert.equal(listPath, '.');
   assert.ok(events.some((event) => event.type === 'workspace.opened'));
   assert.deepEqual(
     events.find((event) => event.type === 'workspace.listResult')?.entries,

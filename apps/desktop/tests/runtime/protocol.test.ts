@@ -90,6 +90,18 @@ test('private Workspace protocol stays provider-neutral and bounds browser paylo
     path: 'src',
   }), true);
   assert.equal(isRuntimeCommand({
+    type: 'workspace.list',
+    requestId: 'request-root-list',
+    workspaceId: 'workspace-fixture',
+    path: '',
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'workspace.list',
+    requestId: 'request-invalid-root-list',
+    workspaceId: 'workspace-fixture',
+    path: '.',
+  }), false);
+  assert.equal(isRuntimeCommand({
     type: 'workspace.inspect',
     requestId: 'request-inspect',
     workspaceId: 'workspace-fixture',

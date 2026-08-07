@@ -19,6 +19,11 @@ Rust provides bounded file listing/inspection/search, content-addressed asset
 import, atomic multi-file patches, Git status/diff/stage/unstage/commit,
 sandboxed commands and PTY/ConPTY. Git uses libgit2 and does not invoke system
 Git, hooks, filters, signing, remotes, credentials or network access.
+The Desktop private runtime protocol preserves the explorer's empty root key.
+Only the runtime host's native-list boundary maps that key to the tool's
+canonical `.` path, then projects returned children without a `./` prefix;
+every tool path still passes the same component, traversal and no-follow
+validation.
 
 Sandboxed direct commands run against the capability root with the platform
 read-only and network-denied boundary. Full Access shell commands require an
@@ -93,7 +98,10 @@ immediately before quotes, but does not normalize regular expression, path or
 other unrelated backslashes. A successful native receipt retains the bounded
 review diff, newline metadata and revision hashes for every changed file so the
 Desktop can disclose the exact change after execution without rereading a
-mutable workspace.
+mutable workspace. Renderer review tabs consume only that frozen receipt;
+ordinary file tabs use the separately bounded workspace-inspection operation
+against the active generation and therefore cannot be confused with the
+historical review.
 
 `workspace_read` declares either one `path` or a bounded `paths` batch of 1
 through 8 files. Batch reads execute through the same read-only workspace

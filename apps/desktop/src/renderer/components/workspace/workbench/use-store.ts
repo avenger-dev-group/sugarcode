@@ -14,7 +14,9 @@ import type {
 
 import type { WorkspaceWorkbenchStore } from './types';
 
-export const useStore = (): WorkspaceWorkbenchStore => {
+export const useStore = (
+  onOpenFile?: (path: string) => void,
+): WorkspaceWorkbenchStore => {
   const [open, setOpen] = useState(false);
   const state = useZustandStore(
     workspaceProjectionStore,
@@ -111,6 +113,10 @@ export const useStore = (): WorkspaceWorkbenchStore => {
     setSelectedPath(path);
     setDocument(null);
     setError(null);
+    if (onOpenFile) {
+      onOpenFile(path);
+      return;
+    }
     const result = await inspectWorkspace({
       generation: state.generation,
       path,

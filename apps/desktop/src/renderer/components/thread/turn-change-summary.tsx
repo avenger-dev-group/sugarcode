@@ -1,6 +1,7 @@
 import { ChevronDown, FileDiff } from 'lucide-react';
 
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
+import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
 
 import { collectTurnChangeSummaryFiles } from './turn-change-summary-data';
 import type { TurnChangeSummaryProps } from './types';
@@ -11,6 +12,7 @@ export const TurnChangeSummary = ({
   activities,
   language,
 }: TurnChangeSummaryProps) => {
+  const { openFile } = useOrchestrationStore();
   const files = collectTurnChangeSummaryFiles(activities);
   const store = useActivityDisclosureStore(`turn-changes:${turnId}`, true);
   if (files.length === 0) {
@@ -83,11 +85,16 @@ export const TurnChangeSummary = ({
               className="flex min-w-0 items-center gap-2.5 py-2 text-sm text-secondary"
             >
               <FileDiff className="size-3.5 shrink-0 text-tertiary" aria-hidden="true" />
-              <code className="min-w-0 flex-1 truncate font-mono text-xs">
+              <button
+                type="button"
+                className="min-w-0 flex-1 truncate text-left font-mono text-xs underline decoration-border underline-offset-2 hover:text-primary focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => openFile(entry.file.path)}
+                title={entry.file.path}
+              >
                 {entry.file.path}
-              </code>
+              </button>
               <span className="text-xs text-tertiary">
-                {language === 'zh' ? '已修改' : 'Changed'}
+                {language === 'zh' ? '已编辑' : 'Edited'}
               </span>
             </div>
           ),

@@ -181,10 +181,23 @@ Turn language instead of exposing one fixed English status for Chinese Turns.
 Compact tool groups are independently collapsible and have a bounded internal
 scroll region. Each command row is a keyboard-operable disclosure of the full
 command, retained stdout/stderr and structured result. Successful workspace
-patch receipts also produce one end-of-Turn change summary with unique file
-paths, addition/deletion counts and inline review diffs; this summary remains
+patch receipts are not presented as generic command invocations: the process
+timeline projects one concise edited-file row per receipt with its
+addition/deletion counts. The same receipts also produce one end-of-Turn change
+summary with unique file paths and aggregate counts; this summary remains
 visible for failed Turns that already changed files, so partial work is never
-hidden behind the terminal error.
+hidden behind the terminal error. Selecting a receipt row opens its immutable
+review diff in the context rail, while selecting a safe relative file reference
+from workspace reads, Agent Markdown or the project tree opens a fresh bounded
+workspace inspection. The Renderer never fabricates a diff by rereading mutable
+workspace content.
+
+The context rail owns one persistent project explorer tab plus transient file,
+diff and child-Agent detail tabs. Activating a saved project group binds that
+project before merely expanding its Thread list, so a project with no selected
+Thread still exposes its capability-scoped file tree. Switching the foreground
+Thread clears transient context tabs rather than carrying file or review state
+across workspace identities.
 The private worker protocol is v2 and projects model text as
 `turn.textStarted`, `turn.textDelta`, and `turn.textCompleted`. Started and
 delta events are transient. A completed event carries the authoritative text,
@@ -242,8 +255,12 @@ one Thread-local reload, leaving every other active Thread untouched.
 
 Child-Agent task snapshots include bounded live progress with an explicit stage
 (`waitingForModel`, `streaming` or `runningTool`), a public Markdown summary and
-an update timestamp. The orchestration workbench groups tasks into active,
-dependency-blocked next and terminal sections, exposes progress and dependency
-counts without requiring graph navigation, and opens the selected task in a
-detail rail with its live Markdown stream or terminal failure reason. The
-terminal task result remains the durable completion contract.
+an update timestamp. The orchestration workbench uses compact task rows grouped
+as needs-attention, active, dependency-blocked next and finished work. Approval
+requests plus failed or interrupted results are routed to the attention group,
+while aggregate completion and attention counts stay visible above the list.
+Selecting a task opens a detail rail that renders the
+durable public execution trace in order: frozen task brief, amendments, latest
+live progress and terminal result. Dependency and access metadata remain
+visible without exposing an internal graph or provider log. The terminal task
+result remains the durable completion contract.

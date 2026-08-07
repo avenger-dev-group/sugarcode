@@ -9,6 +9,8 @@ import {
 } from 'react';
 
 import { AgentCodeBlock } from './code-block/code-block';
+import { useOrchestrationStore } from '../orchestration/use-store';
+import { toWorkspaceFileReference } from '../workspace/file-reference';
 import {
   projectAgentMarkdownTokens,
   type AgentMarkdownTokenCache,
@@ -33,13 +35,14 @@ const tableAlignmentClass = (
 const renderTokens = (
   tokens: readonly Token[],
   keyPrefix: string,
+  openFile: (path: string) => void,
 ): ReactNode[] => {
   let offset = 0;
   return tokens.flatMap((token, index): ReactNode[] => {
     const key = `${keyPrefix}:${offset}:${token.type}:${index}`;
     offset += token.raw.length;
     const children = (nested: readonly Token[]): ReactNode[] =>
-      renderTokens(nested, key);
+      renderTokens(nested, key, openFile);
 
     switch (token.type) {
       case 'space':
@@ -227,6 +230,20 @@ const renderTokens = (
       case 'em':
         return [<em key={key}>{children(token.tokens)}</em>];
       case 'codespan':
+        if (toWorkspaceFileReference(token.text)) {
+          const path = toWorkspaceFileReference(token.text) as string;
+          return [
+            <button
+              key={key}
+              type="button"
+              className="rounded-md bg-surface px-1.5 py-px font-mono text-[0.92em] font-normal text-primary underline decoration-border underline-offset-2 transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => openFile(path)}
+              title={`在右侧打开 ${path}`}
+            >
+              {token.text}
+            </button>,
+          ];
+        }
         return [
           <code
             key={key}
@@ -238,6 +255,24 @@ const renderTokens = (
       case 'br':
         return [<br key={key} />];
       case 'link':
+        {
+          const path =
+            toWorkspaceFileReference(token.href) ??
+            toWorkspaceFileReference(token.text);
+          if (path) {
+            return [
+              <button
+                key={key}
+                type="button"
+                className="text-primary underline decoration-border underline-offset-2 transition-colors hover:text-secondary focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => openFile(path)}
+                title={`在右侧打开 ${path}`}
+              >
+                {children(token.tokens)}
+              </button>,
+            ];
+          }
+        }
         return [
           <span
             key={key}
@@ -295,6 +330,7 @@ const AgentMarkdownView = ({
   source,
   isStreaming,
 }: AgentMarkdownProps): ReactElement => {
+  const { openFile } = useOrchestrationStore();
   const cache = useRef<AgentMarkdownTokenCache | undefined>(undefined);
   const projection = useMemo(() => {
     const next = projectAgentMarkdownTokens(
@@ -308,7 +344,7 @@ const AgentMarkdownView = ({
 
   return (
     <div className="min-w-0 max-w-full font-normal text-foreground">
-      {renderTokens(projection.tokens, 'root')}
+      {renderTokens(projection.tokens, 'root', openFile)}
     </div>
   );
 };

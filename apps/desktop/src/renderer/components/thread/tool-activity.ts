@@ -53,7 +53,7 @@ export const commandActivityAction = (
           return workspacePatch ? '正在修改' : '正在运行';
         }
         if (entry.activity.executionResult) {
-          return workspacePatch ? '已修改' : '已运行';
+          return workspacePatch ? '已编辑' : '已运行';
         }
         return entry.activity.state === 'approved' ? '已批准' : '命令已停止';
     }
@@ -73,7 +73,7 @@ export const commandActivityAction = (
         return workspacePatch ? 'Editing' : 'Running';
       }
       if (entry.activity.executionResult) {
-        return workspacePatch ? 'Changed' : 'Ran';
+        return workspacePatch ? 'Edited' : 'Ran';
       }
       return entry.activity.state === 'approved'
         ? 'Approved'

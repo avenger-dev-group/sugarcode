@@ -63,12 +63,12 @@ test('successful workspace patches are presented as edits, not failed commands',
   assert.equal(commandActivityFailed(patchActivity), false);
   assert.equal(
     commandActivityAction(patchActivity, false, false, 'zh'),
-    '已修改',
+    '已编辑',
   );
   assert.equal(
     commandActivityAction(patchActivity, false, false, 'en'),
-    'Changed',
+    'Edited',
   );
-  assert.equal(toolActivityGroupSummary([patchActivity], 'zh'), '已修改 3 个文件');
-  assert.equal(toolActivityGroupSummary([patchActivity], 'en'), 'Changed 3 files');
+  assert.equal(toolActivityGroupSummary([patchActivity], 'zh'), '已编辑 3 个文件');
+  assert.equal(toolActivityGroupSummary([patchActivity], 'en'), 'Edited 3 files');
 });

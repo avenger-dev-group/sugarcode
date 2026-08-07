@@ -1,3 +1,25 @@
+import type { ConversationAgentTaskStatus } from '@/shared/conversation';
+
+export type AgentTaskGroupId = 'attention' | 'active' | 'queued' | 'finished';
+
+export const agentTaskGroupForStatus = (
+  status: ConversationAgentTaskStatus,
+): AgentTaskGroupId => {
+  switch (status) {
+    case 'waitingApproval':
+    case 'failed':
+    case 'interrupted':
+      return 'attention';
+    case 'running':
+      return 'active';
+    case 'queued':
+      return 'queued';
+    case 'completed':
+    case 'cancelled':
+      return 'finished';
+  }
+};
+
 export const formatAgentTaskDuration = (durationMs: number): string => {
   if (durationMs < 1_000) {
     return `${durationMs} ms`;

@@ -848,6 +848,7 @@ export class RuntimeHost {
     command: Extract<RuntimeCommand, { type: 'workspace.list' }>,
   ): Promise<void> => {
     try {
+      const nativePath = command.path || '.';
       const result = this.parseNativeJson<{
         ok: boolean;
         entries?: readonly Readonly<{
@@ -857,7 +858,7 @@ export class RuntimeHost {
       }>(
         await this.requireNative().workspaceList(
           command.workspaceId,
-          command.path,
+          nativePath,
         ),
       );
       if (!result.ok || !result.entries) {

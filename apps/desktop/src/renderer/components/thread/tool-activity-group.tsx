@@ -12,8 +12,10 @@ import {
   X,
 } from 'lucide-react';
 
-import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 import { CommandExecutionResult } from '@/renderer/components/agent/command-execution-result';
+import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
+import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
+import { toWorkspacePatchReviewFile } from '@/renderer/components/workspace/unified-diff';
 
 import type { CompactToolActivity, ProcessLanguage } from './types';
 import {
@@ -185,6 +187,7 @@ const WorkspaceRow = ({
   entry: WorkspaceActivity;
   language: ProcessLanguage;
 }>) => {
+  const { openFile } = useOrchestrationStore();
   const detail =
     entry.type === 'workspaceSearch'
       ? language === 'zh'
@@ -210,9 +213,19 @@ const WorkspaceRow = ({
         <span className={stateTone(entry.activity.state)}>
           {actionCopy(entry, language)}
         </span>
-        <code className="min-w-0 break-all font-mono text-[12px] text-secondary underline decoration-border underline-offset-2">
-          {detail}
-        </code>
+        {entry.type === 'workspaceRead' ? (
+          <button
+            type="button"
+            className="min-w-0 break-all text-left font-mono text-[12px] text-secondary underline decoration-border underline-offset-2 hover:text-primary focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => openFile(entry.activity.path)}
+          >
+            {detail}
+          </button>
+        ) : (
+          <code className="min-w-0 break-all font-mono text-[12px] text-secondary">
+            {detail}
+          </code>
+        )}
         {meta ? (
           <span className="ml-auto whitespace-nowrap font-mono text-[10px] text-tertiary">
             {meta}
@@ -260,6 +273,36 @@ const CommandRow = ({
   const workspacePatch = entry.activity.command.startsWith(
     'workspace_apply_patch',
   );
+  if (
+    workspacePatch &&
+    result?.outcome.type === 'workspacePatch' &&
+    result.outcome.files &&
+    result.outcome.files.length > 0
+  ) {
+    return (
+      <div className="space-y-0.5" role="status" aria-label={action}>
+        {result.outcome.files.map((file, index) => {
+          const change = toWorkspacePatchReviewFile(
+            `${entry.activity.id}:${index}:${file.path}`,
+            file,
+          );
+          return (
+            <FileChangeReview
+              key={`${file.path}:${index}`}
+              review={{
+                id: `${entry.activity.id}:${index}`,
+                path: file.path,
+                state: 'applied',
+                ...(change ? { change, files: [change] } : {}),
+              }}
+              variant="compact"
+              language={language}
+            />
+          );
+        })}
+      </div>
+    );
+  }
   return (
     <details
       className="group/command min-w-0"
