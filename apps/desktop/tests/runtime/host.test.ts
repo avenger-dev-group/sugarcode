@@ -11,6 +11,7 @@ import {
 import { FinishReason } from '@google/genai';
 
 import { RuntimeHost } from '../../src/runtime/host.ts';
+import { modelItemMetadata } from '../../src/runtime/models/step-outcome.ts';
 import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
 import type { RuntimeEvent } from '../../src/runtime/protocol.ts';
 
@@ -64,6 +65,64 @@ class FixtureLlm extends BaseLlm {
   }
 }
 
+class CommentaryOnlyLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+    const commentary = 'I should inspect the workspace before answering.';
+    yield {
+      content: {
+        role: 'model',
+        parts: [{ text: commentary, thought: true }],
+      },
+      partial: true,
+    };
+    yield {
+      content: {
+        role: 'model',
+        parts: [{ text: commentary, thought: true }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class OutputTruncatedLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  private requestCount = 0;
+
+  async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+    this.requestCount += 1;
+    yield {
+      content: {
+        role: 'model',
+        parts: [{
+          text: `Long partial ${this.requestCount}`,
+          partMetadata: modelItemMetadata(`truncated-${this.requestCount}`, {
+            phase: 'commentary',
+            outcome: { kind: 'continue', reason: 'maxOutputTokens' },
+          }),
+        }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class ToolLoopLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
@@ -104,6 +163,46 @@ class ToolLoopLlm extends BaseLlm {
         role: 'model',
         parts: [{ text: 'Tool loop complete' }],
       },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class RepeatingToolErrorLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    const failures = request.contents
+      .flatMap((content) => content.parts ?? [])
+      .filter((part) => part.functionResponse?.name === 'workspace_read')
+      .length;
+    if (failures < 2) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: `call-repeat-${failures}`,
+              name: 'workspace_read',
+              args: { path: 'missing.txt' },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: { role: 'model', parts: [{ text: 'Should not be reached' }] },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -354,7 +453,7 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 1,
+    protocolVersion: 2,
     dataDirectory: '/tmp/sugarcode-v3-fixture',
   });
   host.handle({
@@ -386,14 +485,16 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
       'runtime.ready',
       'turn.started',
       'turn.userMessage',
+      'turn.textStarted',
       'turn.textDelta',
+      'turn.textCompleted',
       'turn.usage',
       'turn.completed',
     ],
   );
   assert.deepEqual(
     events.map((event) => event.sequence),
-    [1, 2, 3, 4, 5, 6],
+    [1, 2, 3, 4, 5, 6, 7, 8],
   );
   const text = events.find((event) => event.type === 'turn.textDelta');
   assert.equal(text?.delta, 'Fixture response');
@@ -401,6 +502,180 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
   assert.equal(terminal?.status, 'completed');
+});
+
+test('RuntimeHost never completes a commentary-only model response', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => new CommentaryOnlyLlm({ model: 'fixture-model' }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveTerminal?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-commentary',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-commentary-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-commentary',
+    workspaceId: 'workspace-commentary',
+    threadId: 'thread-commentary',
+    turnId: 'turn-commentary',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: 'Inspect the project.' }],
+  });
+
+  await terminal;
+
+  const completed = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(completed?.status, 'failed');
+  assert.equal(completed?.error?.kind, 'protocol');
+  assert.match(completed?.error?.message ?? '', /three times/u);
+});
+
+test('RuntimeHost fails after two output truncations without publishing success', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => new OutputTruncatedLlm({ model: 'fixture-model' }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveTerminal?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-truncated',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-truncated-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-truncated',
+    workspaceId: 'workspace-truncated',
+    threadId: 'thread-truncated',
+    turnId: 'turn-truncated',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: 'Produce a long answer.' }],
+  });
+
+  await terminal;
+
+  const completed = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(completed?.status, 'failed');
+  assert.equal(completed?.error?.kind, 'outputTooLarge');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' && event.phase === 'final',
+    ),
+    false,
+  );
+});
+
+test('RuntimeHost stops before a third identical tool error request', async () => {
+  const events: RuntimeEvent[] = [];
+  let readCount = 0;
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    listPendingApprovalsJson: () => '[]',
+    ensureThread: (): void => undefined,
+    loadThreadJson: () => emptyThreadSnapshot('thread-tool-error'),
+    startTurn: (): void => undefined,
+    appendItem: () => true,
+    finishTurn: () => true,
+    workspaceRead: async () => {
+      readCount += 1;
+      return JSON.stringify({ ok: false, error: 'notFound' });
+    },
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => new RepeatingToolErrorLlm({ model: 'fixture-model' }),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveTerminal?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-tool-error',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-tool-error-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-tool-error',
+    workspaceId: 'workspace-tool-error',
+    threadId: 'thread-tool-error',
+    turnId: 'turn-tool-error',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: 'Read the missing file.' }],
+  });
+
+  await terminal;
+
+  const completed = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(readCount, 2);
+  assert.equal(completed?.status, 'failed');
+  assert.equal(completed?.error?.kind, 'protocol');
+  assert.equal(
+    events.some((event) => event.type === 'approval.requested'),
+    false,
+  );
 });
 
 test('RuntimeHost streams and controls native PTY sessions without a CLI bridge', async () => {
@@ -458,7 +733,7 @@ test('RuntimeHost streams and controls native PTY sessions without a CLI bridge'
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 1,
+    protocolVersion: 2,
     dataDirectory: '/tmp/sugarcode-v3-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -559,7 +834,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-collaboration',
-    protocolVersion: 1,
+    protocolVersion: 2,
     dataDirectory: '/tmp/sugarcode-v3-collaboration',
     nativeModulePath: '/fixture/native.node',
   });
@@ -695,7 +970,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 1,
+    protocolVersion: 2,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -760,6 +1035,12 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   );
   assert.ok(persistedKinds.includes('turn.toolCall'));
   assert.ok(persistedKinds.includes('turn.toolResult'));
+  assert.equal(persistedKinds.includes('turn.textStarted'), false);
+  assert.equal(persistedKinds.includes('turn.textDelta'), false);
+  assert.equal(
+    persistedKinds.filter((kind) => kind === 'turn.textCompleted').length,
+    1,
+  );
 });
 
 test('RuntimeHost restores a pending approval without replay and executes only after approval', async () => {
@@ -829,7 +1110,7 @@ test('RuntimeHost restores a pending approval without replay and executes only a
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 1,
+    protocolVersion: 2,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -938,7 +1219,7 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 1,
+    protocolVersion: 2,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -1062,7 +1343,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 1,
+    protocolVersion: 2,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -1267,7 +1548,7 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 1,
+    protocolVersion: 2,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });

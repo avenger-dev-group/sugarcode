@@ -13,6 +13,33 @@ export type ProviderAdapterOptions = Readonly<{
   maxRetries?: number;
 }>;
 
+export const INVALID_TOOL_ARGUMENTS_TOOL_NAME =
+  'sugarcode_invalid_tool_arguments';
+
+export type ModelTextPhase = 'commentary' | 'final' | 'provisional';
+
+export type ModelStepOutcome =
+  | Readonly<{ kind: 'toolCalls' }>
+  | Readonly<{ kind: 'final' }>
+  | Readonly<{
+      kind: 'continue';
+      reason: 'commentaryOnly' | 'pauseTurn' | 'maxOutputTokens';
+    }>
+  | Readonly<{
+      kind: 'failed';
+      errorKind:
+        | 'protocol'
+        | 'filtered'
+        | 'unsupportedToolArguments';
+      message: string;
+    }>;
+
+export type ModelItemMetadata = Readonly<{
+  itemId: string;
+  phase?: ModelTextPhase;
+  outcome?: ModelStepOutcome;
+}>;
+
 export type NormalizedMediaPart = Readonly<{
   type: 'media';
   mimeType: string;
@@ -40,6 +67,7 @@ export type NormalizedMessagePart =
       type: 'text';
       text: string;
       thought: boolean;
+      phase?: ModelTextPhase;
       metadata?: Readonly<Record<string, unknown>>;
     }>
   | NormalizedMediaPart

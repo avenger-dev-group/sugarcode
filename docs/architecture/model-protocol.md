@@ -11,6 +11,11 @@ Provider SDK values remain inside `apps/desktop/src/runtime/models`. All other
 layers use SugarCode text, reasoning, media, tool-call, tool-result, usage and
 error unions.
 
+Each terminal model step is normalized to `ModelStepOutcome`: structured tool
+calls, a final candidate, a continuation reason (`commentaryOnly`, `pauseTurn`,
+or `maxOutputTokens`), or a typed failure. Lifecycle decisions consume only
+this structure; prompts and public text do not decide completion.
+
 ## Requests and streaming
 
 OpenAI supports Responses, Chat Completions, the official endpoint and bounded
@@ -30,6 +35,15 @@ inside the live Turn. Portable cross-Turn history contains only verified
 provider-neutral content. Anthropic thinking/tool-use/tool-result blocks follow
 the same separation.
 
+OpenAI Responses preserves `ResponseOutputMessage.phase` and provider Item IDs.
+`commentary` and `final_answer` map directly; a missing phase remains
+provisional while streaming and resolves to commentary when the same response
+has tools or final when it does not. Stored assistant message history resends
+the resolved phase. Chat Completions and Anthropic use one request-stable
+synthetic message ID where the provider has no Item ID and classify
+`finish_reason`/`stop_reason`; `tool_use`, `pause_turn`, token limits, incomplete
+responses, filters and refusals are never ordinary success.
+
 ## Tools
 
 ADK FunctionTools expose provider-neutral schemas. Arguments are validated
@@ -41,3 +55,11 @@ Tool and provider failures are distinct typed Turn outcomes. Cancellation
 propagates through the SDK AbortSignal and by `operationId` to active native
 processes. A malformed provider event or failed request terminates the affected
 Turn without converting it into a durable storage failure.
+
+Tool arguments must parse as a JSON object. Malformed JSON is converted to a
+bounded internal error tool that cannot request approval or execute the target
+tool, allowing one repair attempt. Repeating the identical malformed arguments
+and error twice trips the Turn no-progress guard before another provider call.
+Compatible gateways that cannot supply the declared structured tool wire fail
+explicitly as `wireMismatch` or `unsupportedToolArguments`; SugarCode does not
+parse generic `<tool_call>` text.

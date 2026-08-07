@@ -8,6 +8,40 @@ import {
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
+test('private runtime v2 validates stable text Item lifecycle events', () => {
+  const coordinates = {
+    sequence: 1,
+    requestId: 'request-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-fixture',
+    itemId: 'message-fixture',
+  };
+  assert.equal(isRuntimeEvent({
+    ...coordinates,
+    type: 'turn.textStarted',
+    phase: 'provisional',
+  }), true);
+  assert.equal(isRuntimeEvent({
+    ...coordinates,
+    type: 'turn.textDelta',
+    phase: 'provisional',
+    delta: 'Working',
+  }), true);
+  assert.equal(isRuntimeEvent({
+    ...coordinates,
+    type: 'turn.textCompleted',
+    phase: 'final',
+    text: 'Done',
+  }), true);
+  assert.equal(isRuntimeEvent({
+    ...coordinates,
+    type: 'turn.textCompleted',
+    phase: 'provisional',
+    text: 'Not authoritative',
+  }), false);
+});
+
 test('private Workspace protocol stays provider-neutral and bounds browser payloads', () => {
   assert.equal(isRuntimeCommand({
     type: 'workspace.list',

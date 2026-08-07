@@ -74,6 +74,7 @@ type Orchestration = {
   callbacks: CollaborationCallbacks;
   tasks: Map<string, TaskRecord>;
   waiters: Set<() => void>;
+  resultsConsumed: boolean;
 };
 
 type Release = () => void;
@@ -393,11 +394,16 @@ export class CollaborationCoordinator {
       parameters: waitSchema,
       execute: async (input) => {
         const argumentsValue = record(input);
-        return this.wait(
+        const result = await this.wait(
           turn.turnId,
           stringArray(argumentsValue.clientTaskKeys),
           signal,
         );
+        const orchestration = this.orchestrations.get(turn.turnId);
+        if (orchestration) {
+          orchestration.resultsConsumed = true;
+        }
+        return result;
       },
     }),
     new FunctionTool({
@@ -419,6 +425,19 @@ export class CollaborationCoordinator {
       return;
     }
     await this.wait(turnId, [], signal);
+  };
+
+  consumePendingResults = async (
+    turnId: string,
+    signal: AbortSignal,
+  ): Promise<string | null> => {
+    const orchestration = this.orchestrations.get(turnId);
+    if (!orchestration || orchestration.resultsConsumed) {
+      return null;
+    }
+    const result = await this.wait(turnId, [], signal);
+    orchestration.resultsConsumed = true;
+    return JSON.stringify(result).slice(0, 32 * 1024);
   };
 
   cancelTurn = (turnId: string): void => {
@@ -457,6 +476,7 @@ export class CollaborationCoordinator {
       callbacks,
       tasks: new Map<string, TaskRecord>(),
       waiters: new Set<() => void>(),
+      resultsConsumed: false,
     };
     if (
       existing &&
@@ -491,6 +511,7 @@ export class CollaborationCoordinator {
       orchestration.tasks.set(task.snapshot.clientTaskKey, task);
       callbacks.publishTask(task.snapshot);
     }
+    orchestration.resultsConsumed = false;
     this.schedule(orchestration);
     return {
       orchestrationId: orchestration.id,

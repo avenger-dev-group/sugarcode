@@ -1,12 +1,13 @@
 import {
   createEvent,
+  FunctionTool,
   InMemorySessionService,
   LlmAgent,
   Runner,
   type BaseLlm,
   type Event,
 } from '@google/adk';
-import type { Content, Part } from '@google/genai';
+import { Type, type Content, type Part, type Schema } from '@google/genai';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { SUGARCODE_BASE_AGENT_PROMPT_V1 } from './agent-instructions.ts';
@@ -19,6 +20,15 @@ import { ProviderAdapterError } from './models/errors.ts';
 import { AnthropicLlm } from './models/anthropic-llm.ts';
 import { discoverModels } from './models/discovery.ts';
 import { OpenAiLlm } from './models/openai-llm.ts';
+import {
+  readModelItemMetadata,
+  readModelStepOutcome,
+} from './models/step-outcome.ts';
+import type {
+  ModelStepOutcome,
+  ModelTextPhase,
+} from './models/types.ts';
+import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './models/types.ts';
 import {
   loadNativeRuntime,
   type NativeRuntimeBinding,
@@ -58,6 +68,15 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
 const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
+
+const INVALID_TOOL_ARGUMENTS_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    toolName: { type: Type.STRING },
+    argumentsText: { type: Type.STRING },
+  },
+  required: ['toolName', 'argumentsText'],
+} satisfies Schema;
 
 type RuntimeHostOptions = Readonly<{
   postEvent: (event: RuntimeEvent) => void;
@@ -123,6 +142,36 @@ type ResolvedProfile = Readonly<{
   provider: RuntimeProviderConfig;
   selection: RuntimeModelSelection;
 }>;
+
+type TextItemState = {
+  phase: ModelTextPhase;
+  text: string;
+  started: boolean;
+  completed: boolean;
+  pendingFinal: boolean;
+};
+
+type TurnDriverOptions = Readonly<{
+  runner: Runner;
+  userId: string;
+  sessionId: string;
+  initialMessage: Content;
+  signal: AbortSignal;
+  onEvent: (event: Event, textItems: Map<string, TextItemState>) => void;
+  onCompletedEvent?: (event: Event) => void;
+  consumePendingResults?: () => Promise<string | null>;
+  completionGate?: () => boolean;
+  settleFinalCandidate?: (
+    accepted: boolean,
+    textItems: Map<string, TextItemState>,
+  ) => void;
+}>;
+
+type InvalidArgumentGuard = {
+  repeats: Map<string, number>;
+  calls: Map<string, string>;
+  toolErrors: Map<string, number>;
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -1355,6 +1404,234 @@ export class RuntimeHost {
     }
   };
 
+  private invalidArgumentsTool = (
+    guard: InvalidArgumentGuard,
+  ): FunctionTool<Schema> =>
+    new FunctionTool({
+      name: INVALID_TOOL_ARGUMENTS_TOOL_NAME,
+      description:
+        'Internal bounded error tool used only when a provider returns malformed JSON tool arguments.',
+      parameters: INVALID_TOOL_ARGUMENTS_SCHEMA,
+      execute: async (input) => {
+        const argumentsValue = isRecord(input) ? input : {};
+        const toolName = typeof argumentsValue.toolName === 'string'
+          ? argumentsValue.toolName
+          : 'unknown';
+        const argumentsText = typeof argumentsValue.argumentsText === 'string'
+          ? argumentsValue.argumentsText.slice(0, 4_096)
+          : '';
+        const key = JSON.stringify({ toolName, argumentsText });
+        guard.repeats.set(key, (guard.repeats.get(key) ?? 0) + 1);
+        return {
+          ok: false,
+          error: {
+            kind: 'unsupportedToolArguments',
+            message:
+              `Tool ${toolName} arguments must be a JSON object. ` +
+              'Repair the arguments and issue a new structured tool call.',
+          },
+        };
+      },
+    });
+
+  private assertInvalidArgumentProgress = (
+    guard: InvalidArgumentGuard,
+  ): void => {
+    if (
+      [...guard.repeats.values()].some((count) => count >= 2) ||
+      [...guard.toolErrors.values()].some((count) => count >= 2)
+    ) {
+      throw new ProviderAdapterError({
+        kind: 'protocol',
+        retryable: false,
+        message:
+          'The model repeated the same tool arguments and error twice.',
+      });
+    }
+  };
+
+  private observeToolProgress = (
+    guard: InvalidArgumentGuard,
+    event: Event,
+  ): void => {
+    for (const part of event.content?.parts ?? []) {
+      if (part.functionCall?.name) {
+        const callId = part.functionCall.id ?? part.functionCall.name;
+        guard.calls.set(
+          callId,
+          JSON.stringify({
+            name: part.functionCall.name,
+            arguments: stableJsonValue(part.functionCall.args ?? {}),
+          }),
+        );
+      }
+      if (!part.functionResponse?.name) {
+        continue;
+      }
+      const result = part.functionResponse.response ?? {};
+      const failed = isRecord(result) &&
+        (result.ok === false ||
+          result.status === 'error' ||
+          result.status === 'failed' ||
+          typeof result.error === 'string' ||
+          isRecord(result.error));
+      if (!failed) {
+        continue;
+      }
+      const callId = part.functionResponse.id ?? part.functionResponse.name;
+      const call = guard.calls.get(callId) ?? part.functionResponse.name;
+      const key = JSON.stringify({ call, error: stableJsonValue(result) });
+      guard.toolErrors.set(key, (guard.toolErrors.get(key) ?? 0) + 1);
+    }
+  };
+
+  private fallbackOutcome = (event: Event): ModelStepOutcome | undefined => {
+    if (event.partial !== false) {
+      return undefined;
+    }
+    const parts = event.content?.parts ?? [];
+    if (parts.some((part) => part.functionCall)) {
+      return { kind: 'toolCalls' };
+    }
+    if (
+      parts.some(
+        (part) =>
+          !part.thought &&
+          typeof part.text === 'string' &&
+          part.text.trim().length > 0,
+      )
+    ) {
+      return { kind: 'final' };
+    }
+    if (
+      parts.some(
+        (part) =>
+          part.thought &&
+          typeof part.text === 'string' &&
+          part.text.trim().length > 0,
+      )
+    ) {
+      return { kind: 'continue', reason: 'commentaryOnly' };
+    }
+    return undefined;
+  };
+
+  private runTurnDriver = async (
+    options: TurnDriverOptions,
+  ): Promise<void> => {
+    let message = options.initialMessage;
+    let invocation = 0;
+    let commentaryOnlyCount = 0;
+    let truncationCount = 0;
+    const textItems = new Map<string, TextItemState>();
+    while (!options.signal.aborted) {
+      invocation += 1;
+      let outcome: ModelStepOutcome | undefined;
+      for await (const event of options.runner.runAsync({
+        userId: options.userId,
+        sessionId: options.sessionId,
+        newMessage: message,
+        abortSignal: options.signal,
+      })) {
+        options.onEvent(event, textItems);
+        if (event.partial === false) {
+          const nextOutcome = readModelStepOutcome(event.content?.parts ?? []) ??
+            this.fallbackOutcome(event);
+          if (nextOutcome) {
+            outcome = nextOutcome;
+          }
+          options.onCompletedEvent?.(event);
+        }
+      }
+      if (options.signal.aborted) {
+        return;
+      }
+      if (!outcome) {
+        throw new ProviderAdapterError({
+          kind: 'protocol',
+          retryable: false,
+          message: 'The model invocation ended without a structured outcome.',
+        });
+      }
+      if (outcome.kind === 'failed') {
+        throw new ProviderAdapterError({
+          kind: outcome.errorKind,
+          retryable: false,
+          message: outcome.message,
+        });
+      }
+      if (outcome.kind === 'final') {
+        const pendingResults = await options.consumePendingResults?.() ?? null;
+        if (pendingResults) {
+          options.settleFinalCandidate?.(false, textItems);
+          message = {
+            role: 'user',
+            parts: [{
+              text:
+                '# Internal continuation\n\n' +
+                'Child Agent results completed after your candidate answer. ' +
+                'Consume these results and generate the single final answer.\n\n' +
+                pendingResults,
+            }],
+          };
+          commentaryOnlyCount = 0;
+          truncationCount = 0;
+          continue;
+        }
+        if (options.completionGate && !options.completionGate()) {
+          throw new ProviderAdapterError({
+            kind: 'protocol',
+            retryable: false,
+            message: 'The model submitted a final answer while Turn work remained pending.',
+          });
+        }
+        options.settleFinalCandidate?.(true, textItems);
+        return;
+      }
+      if (outcome.kind === 'toolCalls') {
+        throw new ProviderAdapterError({
+          kind: 'protocol',
+          retryable: false,
+          message: 'ADK ended an invocation with unprocessed tool calls.',
+        });
+      }
+      if (outcome.reason === 'commentaryOnly') {
+        commentaryOnlyCount += 1;
+        if (commentaryOnlyCount >= 3) {
+          throw new ProviderAdapterError({
+            kind: 'protocol',
+            retryable: false,
+            message: 'The model produced commentary without progress three times.',
+          });
+        }
+      } else {
+        commentaryOnlyCount = 0;
+      }
+      if (outcome.reason === 'maxOutputTokens') {
+        truncationCount += 1;
+        if (truncationCount >= 2) {
+          throw new ProviderAdapterError({
+            kind: 'outputTooLarge',
+            retryable: false,
+            message: 'The model output was truncated twice without a final answer.',
+          });
+        }
+      }
+      message = {
+        role: 'user',
+        parts: [{
+          text:
+            `# Internal continuation ${invocation}\n\n` +
+            (outcome.reason === 'maxOutputTokens'
+              ? 'Continue after the output truncation and submit a concise final answer when complete.'
+              : outcome.reason === 'pauseTurn'
+                ? 'Resume the paused Turn. Continue tool work or submit the final answer.'
+                : 'Continue the same Turn. Perform the next concrete action or submit the final answer.'),
+        }],
+      };
+    }
+  };
+
   private startTurn = async (
     command: Extract<RuntimeCommand, { type: 'turn.start' }>,
   ): Promise<void> => {
@@ -1440,12 +1717,22 @@ export class RuntimeHost {
             controller.signal,
           )
         : [];
+      const invalidArgumentGuard: InvalidArgumentGuard = {
+        repeats: new Map<string, number>(),
+        calls: new Map<string, string>(),
+        toolErrors: new Map<string, number>(),
+      };
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
         instruction: `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}`,
         model: this.createModel(resolved.provider),
+        beforeModelCallback: () => {
+          this.assertInvalidArgumentProgress(invalidArgumentGuard);
+          return undefined;
+        },
         tools: [
+          this.invalidArgumentsTool(invalidArgumentGuard),
           ...(this.nativeRuntime
             ? [
               ...createWorkspaceTools(
@@ -1484,18 +1771,31 @@ export class RuntimeHost {
         agent,
         sessionService: this.sessions,
       });
-      for await (const event of runner.runAsync({
+      await this.runTurnDriver({
+        runner,
         userId: command.workspaceId,
         sessionId: command.threadId,
-        newMessage: this.contentFromParts(command.content, resolved.selection),
-        abortSignal: controller.signal,
-      })) {
-        this.publishAgentEvent(command, event);
-        if (!event.partial) {
-          this.persistModelHistory(command, event);
-        }
-      }
-      await this.collaboration.waitForTurn(command.turnId, controller.signal);
+        initialMessage: this.contentFromParts(command.content, resolved.selection),
+        signal: controller.signal,
+        onEvent: (event, textItems) => {
+          this.observeToolProgress(invalidArgumentGuard, event);
+          this.publishAgentEvent(command, event, textItems);
+        },
+        onCompletedEvent: (event) => this.persistModelHistory(command, event),
+        consumePendingResults: () =>
+          this.collaboration.consumePendingResults(
+            command.turnId,
+            controller.signal,
+          ),
+        completionGate: () =>
+          !controller.signal.aborted &&
+          ![...this.pendingApprovals.values()].some(
+            (approval) => approval.turnId === command.turnId,
+          ) &&
+          !(this.activeOperations.get(command.turnId)?.size),
+        settleFinalCandidate: (accepted, textItems) =>
+          this.settleFinalCandidate(command, textItems, accepted),
+      });
       this.emitCompleted(
         command,
         controller.signal.aborted ? 'interrupted' : 'completed',
@@ -1624,6 +1924,11 @@ export class RuntimeHost {
             ),
           ]
         : [];
+      const invalidArgumentGuard: InvalidArgumentGuard = {
+        repeats: new Map<string, number>(),
+        calls: new Map<string, string>(),
+        toolErrors: new Map<string, number>(),
+      };
       const agent = new LlmAgent({
         name: `sugarcode_${context.task.role}_agent`,
         description: `${context.task.role} subagent for ${context.task.title}`,
@@ -1633,9 +1938,10 @@ export class RuntimeHost {
           `You are a ${context.task.role} subagent with ${context.task.access} access. ` +
           `Complete only the assigned task. Use targeted search and representative entry points instead of exhaustive whole-repository reading; if the brief is overly broad, state the bounded coverage you chose. You cannot create subagents. Return a concise Markdown result for the parent Agent.`,
         model: this.createModel(resolved.provider),
-        tools,
+        tools: [this.invalidArgumentsTool(invalidArgumentGuard), ...tools],
         includeContents: 'none',
         beforeModelCallback: ({ request }) => {
+          this.assertInvalidArgumentProgress(invalidArgumentGuard);
           publishProgress(
             'waitingForModel',
             streamedSummary || completedSummary
@@ -1663,53 +1969,74 @@ export class RuntimeHost {
         agent,
         sessionService: this.sessions,
       });
-      for await (const event of runner.runAsync({
+      await this.runTurnDriver({
+        runner,
         userId: command.workspaceId,
         sessionId: context.task.childThreadId,
-        newMessage: { role: 'user', parts: [{ text: input }] },
-        abortSignal: context.signal,
-      })) {
-        const parts = event.content?.parts ?? [];
-        const text = parts
-          .filter((part) => !part.thought && typeof part.text === 'string')
-          .map((part) => part.text ?? '')
-          .join('');
-        if (event.partial) {
-          streamedSummary += text;
-          if (streamedSummary.length > 0) {
+        initialMessage: { role: 'user', parts: [{ text: input }] },
+        signal: context.signal,
+        onEvent: (event) => {
+          this.observeToolProgress(invalidArgumentGuard, event);
+          const parts = event.content?.parts ?? [];
+          const text = parts
+            .filter((part) => typeof part.text === 'string')
+            .map((part) => part.text ?? '')
+            .join('');
+          if (event.partial && text.length > 0) {
+            streamedSummary += text;
             publishProgress('streaming', streamedSummary.slice(-16 * 1024));
+          } else if (event.partial === false && text.length > 0) {
+            const outcome = readModelStepOutcome(parts) ??
+              this.fallbackOutcome(event);
+            if (outcome?.kind === 'final') {
+              completedSummary = parts
+                .filter((part) => {
+                  const metadata = readModelItemMetadata(part);
+                  return !part.thought && metadata?.phase !== 'commentary' &&
+                    typeof part.text === 'string';
+                })
+                .map((part) => part.text ?? '')
+                .join('');
+            }
+            publishProgress(
+              'streaming',
+              (completedSummary || streamedSummary).slice(-16 * 1024),
+              true,
+            );
           }
-        } else if (text.length > 0) {
-          completedSummary = text;
-          publishProgress('streaming', completedSummary.slice(-16 * 1024), true);
-        }
-        const calledTools = parts.flatMap((part) =>
-          part.functionCall?.name ? [part.functionCall.name] : [],
-        );
-        if (calledTools.length > 0) {
-          publishProgress(
-            'runningTool',
-            `Running tool: ${[...new Set(calledTools)].map((name) => `\`${name}\``).join(', ')}`,
-            true,
+          const calledTools = parts.flatMap((part) =>
+            part.functionCall?.name ? [part.functionCall.name] : [],
           );
-        }
-        const completedTools = parts.flatMap((part) =>
-          part.functionResponse?.name ? [part.functionResponse.name] : [],
-        );
-        if (completedTools.length > 0) {
-          publishProgress(
-            'waitingForModel',
-            `Tool completed; waiting for the model: ${[...new Set(completedTools)].map((name) => `\`${name}\``).join(', ')}`,
-            true,
+          if (calledTools.length > 0) {
+            publishProgress(
+              'runningTool',
+              `Running tool: ${[...new Set(calledTools)].map((name) => `\`${name}\``).join(', ')}`,
+              true,
+            );
+          }
+          const completedTools = parts.flatMap((part) =>
+            part.functionResponse?.name ? [part.functionResponse.name] : [],
           );
-        }
+          if (completedTools.length > 0) {
+            publishProgress(
+              'waitingForModel',
+              `Tool completed; waiting for the model: ${[...new Set(completedTools)].map((name) => `\`${name}\``).join(', ')}`,
+              true,
+            );
+          }
+        },
+        completionGate: () => !context.signal.aborted,
+      });
+      if (!completedSummary.trim()) {
+        throw new ProviderAdapterError({
+          kind: 'protocol',
+          retryable: false,
+          message: 'The subagent ended without a non-empty final answer.',
+        });
       }
       return {
         status: context.signal.aborted ? 'interrupted' : 'completed',
-        summaryMarkdown: (completedSummary || streamedSummary || 'Task completed.').slice(
-          0,
-          16 * 1024,
-        ),
+        summaryMarkdown: completedSummary.slice(0, 16 * 1024),
         durationMs: Date.now() - startedAt,
       };
     } catch (error) {
@@ -1730,44 +2057,107 @@ export class RuntimeHost {
   private publishAgentEvent = (
     command: Extract<RuntimeCommand, { type: 'turn.start' }>,
     event: Event,
+    textItems: Map<string, TextItemState>,
   ): void => {
     for (const [index, part] of (event.content?.parts ?? []).entries()) {
       if (typeof part.text === 'string' && part.text.length > 0) {
-        if (event.partial === false) {
-          continue;
+        const metadata = readModelItemMetadata(part);
+        const initialPhase: ModelTextPhase = metadata?.phase ??
+          (part.thought ? 'commentary' : 'provisional');
+        const existingItem = [...textItems.entries()].find(
+          ([, item]) => !item.completed && item.phase === initialPhase,
+        );
+        const itemId = metadata?.itemId ?? existingItem?.[0] ??
+          `${command.turnId}:text:${textItems.size}`;
+        const state = textItems.get(itemId) ?? {
+          phase: initialPhase,
+          text: '',
+          started: false,
+          completed: false,
+          pendingFinal: false,
+        };
+        if (!state.started) {
+          state.started = true;
+          this.emitTransient({
+            type: 'turn.textStarted',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            itemId,
+            phase: initialPhase,
+          });
         }
-        this.emit({
-          type: 'turn.textDelta',
-          requestId: command.requestId,
-          workspaceId: command.workspaceId,
-          threadId: command.threadId,
-          turnId: command.turnId,
-          itemId: `${event.id}:${index}`,
-          phase: part.thought ? 'commentary' : 'final',
-          delta: part.text,
-        });
+        if (event.partial === false) {
+          const outcome = metadata?.outcome ??
+            readModelStepOutcome(event.content?.parts ?? []);
+          const completedPhase = part.thought ||
+              initialPhase === 'commentary' ||
+              outcome?.kind !== 'final'
+            ? 'commentary' as const
+            : 'final' as const;
+          if (
+            state.completed &&
+            state.phase === completedPhase &&
+            state.text === part.text
+          ) {
+            continue;
+          }
+          state.phase = completedPhase;
+          state.text = part.text;
+          if (completedPhase === 'final') {
+            state.pendingFinal = true;
+          } else {
+            state.completed = true;
+            this.emit({
+              type: 'turn.textCompleted',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              itemId,
+              phase: completedPhase,
+              text: part.text,
+            });
+          }
+        } else {
+          state.text += part.text;
+          this.emitTransient({
+            type: 'turn.textDelta',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            itemId,
+            phase: initialPhase,
+            delta: part.text,
+          });
+        }
+        textItems.set(itemId, state);
       }
       if (part.functionCall?.name) {
+        const metadata = readModelItemMetadata(part);
         this.emit({
           type: 'turn.toolCall',
           requestId: command.requestId,
           workspaceId: command.workspaceId,
           threadId: command.threadId,
           turnId: command.turnId,
-          itemId: `${event.id}:${index}`,
+          itemId: metadata?.itemId ?? part.functionCall.id ?? `${event.id}:${index}`,
           callId: part.functionCall.id ?? `${event.id}:${index}`,
           name: part.functionCall.name,
           arguments: part.functionCall.args ?? {},
         });
       }
       if (part.functionResponse?.name) {
+        const metadata = readModelItemMetadata(part);
         this.emit({
           type: 'turn.toolResult',
           requestId: command.requestId,
           workspaceId: command.workspaceId,
           threadId: command.threadId,
           turnId: command.turnId,
-          itemId: `${event.id}:${index}`,
+          itemId: metadata?.itemId ?? part.functionResponse.id ?? `${event.id}:${index}`,
           callId: part.functionResponse.id ?? `${event.id}:${index}`,
           result: part.functionResponse.response ?? {},
         });
@@ -1782,6 +2172,31 @@ export class RuntimeHost {
         threadId: command.threadId,
         turnId: command.turnId,
         usage,
+      });
+    }
+  };
+
+  private settleFinalCandidate = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    textItems: Map<string, TextItemState>,
+    accepted: boolean,
+  ): void => {
+    for (const [itemId, state] of textItems) {
+      if (!state.pendingFinal) {
+        continue;
+      }
+      state.phase = accepted ? 'final' : 'commentary';
+      state.pendingFinal = false;
+      state.completed = true;
+      this.emit({
+        type: 'turn.textCompleted',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        itemId,
+        phase: state.phase,
+        text: state.text,
       });
     }
   };
@@ -2519,7 +2934,9 @@ export class RuntimeHost {
               ? normalized.approvalId
               : String(normalized.sequence);
       this.nativeRuntime.appendItem(
-        `${normalized.type}:${itemId}:${normalized.sequence}`,
+        normalized.type === 'turn.textCompleted'
+          ? `${normalized.type}:${normalized.turnId}:${itemId}`
+          : `${normalized.type}:${itemId}:${normalized.sequence}`,
         normalized.turnId,
         normalized.sequence,
         normalized.type,

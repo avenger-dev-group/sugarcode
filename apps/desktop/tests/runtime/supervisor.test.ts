@@ -85,7 +85,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 1,
+    protocolVersion: 2,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(first.messages[1]?.type, 'workspace.open');
@@ -124,7 +124,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 1,
+    protocolVersion: 2,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(second?.messages[1]?.type, 'workspace.open');
@@ -147,7 +147,7 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 1,
+    protocolVersion: 2,
   });
   const response = supervisor.request(
     { type: 'model.inspect', requestId: 'request-model-inspect' },
@@ -190,7 +190,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 1,
+    protocolVersion: 2,
   });
   supervisor.send({
     type: 'mcp.sessionSet',
@@ -232,7 +232,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 1,
+    protocolVersion: 2,
   });
   assert.equal(second.messages[1]?.type, 'mcp.sessionSet');
   assert.deepEqual(

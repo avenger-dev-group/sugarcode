@@ -46,13 +46,28 @@ ADK sessions are process-local caches. Before a new Turn, provider-neutral
 completed history is rebuilt from Rust SQLite. Worker loss interrupts active
 Turns and child tasks; it never resumes an incomplete tool call or side effect.
 
-The primary `LlmAgent` follows ADK's structured tool loop. Function-call Items
-continue the same Turn through execution and a subsequent model request; a
-terminal model response completes the Turn once. Public text is never parsed to
-infer lifecycle state, and the runtime does not repeat terminal responses while
-waiting for a provider-specific completion marker. Each individual provider
-request has a bounded output budget and wall-clock deadline so a continuously
-streaming model cannot keep a Turn alive indefinitely.
+The primary `LlmAgent` follows ADK's structured tool loop. SugarCode Turn
+Driver outside ADK consumes the provider-normalized `ModelStepOutcome`
+(`toolCalls`, `final`, structured continuation, or failure) and may start
+another ADK invocation in the same Turn. A Turn completes only when its last
+outcome is a non-empty `final`, no tool, operation, approval or child task
+remains pending, all child results have been consumed, and the Turn was not
+cancelled. Commentary-only, `pause_turn`, and output truncation inject an
+internal continuation that is never projected as a user message.
+
+Commentary or reasoning alone can never produce a successful Turn. Three
+consecutive commentary-only responses fail as a protocol stall; two output
+truncations without a final fail as `outputTooLarge`; and the same malformed
+tool arguments producing the same error twice fail before a third model
+request. Each provider request retains its own deadline, but a Turn has no
+wall-clock or tool-count success threshold. Provider adapters never infer tools
+from ordinary prose, reasoning, language, or generic markup.
+
+The same Turn Driver and completion gate run child Agents. A child without a
+non-empty final answer fails instead of receiving a fabricated completion
+summary. If the parent submits a final candidate before child results are
+consumed, the gate waits for bounded results, classifies that candidate as
+commentary, injects the results, and requires one new final answer.
 
 ## UI compatibility
 
@@ -72,6 +87,13 @@ provider chunk boundaries must never become visible paragraph spacing.
 Commentary uses the same streaming-safe GFM renderer as Agent responses, with
 the process-text tone, so headings, lists, emphasis and inline code have one
 consistent Markdown interpretation.
+The private worker protocol is v2 and projects model text as
+`turn.textStarted`, `turn.textDelta`, and `turn.textCompleted`. Started and
+delta events are transient. A completed event carries the authoritative text,
+a stable provider Item ID (or one request-stable synthetic ID), and a resolved
+`commentary` or `final` phase. Main updates the Item by
+`workspaceId + threadId + turnId + itemId`; a final candidate is not promoted
+to the unique Agent answer until the completion gate accepts it.
 Reselecting the foreground Thread is idempotent even while its Turn is active
 and republishes its current snapshot. Main tracks active Turns by workspace and
 Thread rather than as one global foreground Turn. Selecting another Thread,
@@ -91,6 +113,13 @@ validation used at the Renderer boundary.
 Recovered `runtimeRestart` records are projected as the public `incomplete`
 Turn error, and interrupted Turns may retain that classified error so a restored
 transcript remains valid and explains why work stopped.
+
+Every `ConversationStateSnapshot` identifies its own workspace. Workspace and
+Thread list/load/select requests capture that identity at dispatch time, while
+workspace switching uses a monotonically increasing latest-wins generation.
+Late results may update only their owning workspace cache and cannot restore an
+older foreground selection. Runtime Thread indexes are replaced from the
+snapshot's workspace identity rather than a mutable adapter field.
 
 Child-Agent task snapshots include bounded live progress with an explicit stage
 (`waitingForModel`, `streaming` or `runningTool`), a public Markdown summary and

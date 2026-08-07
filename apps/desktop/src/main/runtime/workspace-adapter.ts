@@ -28,12 +28,13 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
   private canonicalRoot: string | null = null;
   private switchingRequestId: string | null = null;
   private recovering = false;
+  private switchGeneration = 0;
 
   constructor(options: RuntimeWorkspaceAdapterOptions) {
     this.options = options;
     this.conversation = options.conversation;
     options.conversation.subscribe((snapshot) => {
-      const workspaceId = this.workspaceId;
+      const workspaceId = snapshot.workspaceId;
       if (!workspaceId || snapshot.navigator.status !== 'ready') {
         return;
       }
@@ -75,6 +76,7 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
     _kind: WorkspaceKind,
     preferredThreadId?: string,
   ): Promise<boolean> => {
+    const generation = ++this.switchGeneration;
     const previousWorkspaceId = this.workspaceId;
     const previousRoot = this.canonicalRoot;
     const workspaceId = createHash('sha256').update(workspacePath).digest('hex');
@@ -92,6 +94,9 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
         },
         'workspace.opened',
       );
+      if (generation !== this.switchGeneration) {
+        return true;
+      }
       if (
         opened.workspaceId !== workspaceId ||
         opened.canonicalRoot !== workspacePath
@@ -100,6 +105,9 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
       }
       if (!(await this.conversation.switchWorkspace(workspaceId))) {
         throw new Error('Threads could not be restored for the workspace.');
+      }
+      if (generation !== this.switchGeneration) {
+        return true;
       }
       if (preferredThreadId) {
         const selected = await this.conversation.selectThread(preferredThreadId);
@@ -110,8 +118,10 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
       this.options.onWorkspaceOpened(workspaceId, workspacePath);
       return true;
     } catch {
-      this.workspaceId = previousWorkspaceId;
-      this.canonicalRoot = previousRoot;
+      if (generation === this.switchGeneration) {
+        this.workspaceId = previousWorkspaceId;
+        this.canonicalRoot = previousRoot;
+      }
       return false;
     } finally {
       if (this.switchingRequestId === requestId) {
@@ -159,16 +169,17 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
     if (!this.workspaceId) {
       throw new Error('Workspace unavailable.');
     }
+    const workspaceId = this.workspaceId;
     const event = await this.options.runtime.request(
       {
         type: 'workspace.list',
         requestId: randomUUID(),
-        workspaceId: this.workspaceId,
+        workspaceId,
         path,
       },
       'workspace.listResult',
     );
-    if (event.workspaceId !== this.workspaceId || event.path !== path) {
+    if (event.workspaceId !== workspaceId || event.path !== path) {
       throw new Error('The runtime returned a mismatched Workspace listing.');
     }
     return { path: event.path, entries: event.entries };
@@ -178,17 +189,18 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
     if (!this.workspaceId) {
       throw new Error('Workspace unavailable.');
     }
+    const workspaceId = this.workspaceId;
     const event = await this.options.runtime.request(
       {
         type: 'workspace.inspect',
         requestId: randomUUID(),
-        workspaceId: this.workspaceId,
+        workspaceId,
         path,
       },
       'workspace.inspected',
     );
     if (
-      event.workspaceId !== this.workspaceId ||
+      event.workspaceId !== workspaceId ||
       event.document.path !== path
     ) {
       throw new Error('The runtime returned a mismatched Workspace document.');
@@ -201,9 +213,16 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
       return;
     }
     this.recovering = true;
+    const workspaceId = this.workspaceId;
+    const canonicalRoot = this.canonicalRoot;
     try {
-      await this.conversation.switchWorkspace(this.workspaceId);
-      this.options.onWorkspaceOpened(this.workspaceId, this.canonicalRoot);
+      await this.conversation.switchWorkspace(workspaceId);
+      if (
+        this.workspaceId === workspaceId &&
+        this.canonicalRoot === canonicalRoot
+      ) {
+        this.options.onWorkspaceOpened(workspaceId, canonicalRoot);
+      }
     } finally {
       this.recovering = false;
     }

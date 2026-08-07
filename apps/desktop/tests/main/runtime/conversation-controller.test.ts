@@ -237,7 +237,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     workspaceId: WORKSPACE_ID,
     threadId: THREAD_ID,
     turnId: started.turnId,
-    itemId: `${started.turnId}:commentary:2`,
+    itemId: `${started.turnId}:commentary:1`,
     phase: 'commentary',
     delta: 'a project review.',
   });
@@ -608,4 +608,65 @@ test('runtime conversation controller isolates concurrent Turn startup by worksp
     THREAD_ID,
     SECOND_THREAD_ID,
   ]);
+});
+
+test('runtime conversation controller ignores a stale Workspace list result', async () => {
+  let resolveFirst: ((event: RuntimeEvent) => void) | undefined;
+  const runtime = {
+    subscribe: (): (() => void) => () => undefined,
+    send: (): void => undefined,
+    request: (
+      command: Extract<RuntimeCommand, { type: 'thread.list' }>,
+    ): Promise<RuntimeEvent> => {
+      const result = (threadId: string): RuntimeEvent => ({
+        type: 'thread.listResult',
+        requestId: command.requestId,
+        sequence: 1,
+        workspaceId: command.workspaceId,
+        query: '',
+        threads: [{
+          id: threadId,
+          workspaceId: command.workspaceId,
+          title: command.workspaceId,
+          createdAt: 1,
+          updatedAt: 1,
+          archivedAt: null,
+          parentThreadId: null,
+        }],
+      });
+      if (command.workspaceId === WORKSPACE_ID) {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve(result(SECOND_THREAD_ID));
+    },
+  };
+  const controller = new RuntimeConversationController(
+    runtime as unknown as RuntimeSupervisor,
+  );
+
+  const first = controller.switchWorkspace(WORKSPACE_ID);
+  assert.equal(await controller.switchWorkspace(SECOND_WORKSPACE_ID), true);
+  resolveFirst?.({
+    type: 'thread.listResult',
+    requestId: 'stale-list',
+    sequence: 2,
+    workspaceId: WORKSPACE_ID,
+    query: '',
+    threads: [{
+      id: THREAD_ID,
+      workspaceId: WORKSPACE_ID,
+      title: 'Stale task',
+      createdAt: 1,
+      updatedAt: 2,
+      archivedAt: null,
+      parentThreadId: null,
+    }],
+  });
+  assert.equal(await first, true);
+
+  const snapshot = controller.getSnapshot();
+  assert.equal(snapshot.workspaceId, SECOND_WORKSPACE_ID);
+  assert.deepEqual(snapshot.navigator.activeThreadIds, [SECOND_THREAD_ID]);
 });

@@ -26,6 +26,13 @@ write is idempotent; reusing an identity for different content is a conflict.
 Rust SQLite is authoritative. The ADK session and enabled MCP transports are
 temporary process state rebuilt from durable records.
 
+Runtime protocol v2 text streaming separates transient rendering from durable
+Items. `turn.textStarted` and `turn.textDelta` are never written per token.
+`turn.textCompleted` carries the authoritative full text and is idempotently
+stored by its stable Item identity. Commentary and the gate-approved final
+answer therefore survive duplicate delivery without content-level text
+deduplication.
+
 ## Recovery
 
 On open, unfinished Turns and active Agent tasks become `interrupted`.
@@ -48,6 +55,11 @@ tool-result items are used to rebuild model history. Incomplete Turns, orphaned
 calls and uncertain results are excluded. OpenAI Responses continuation data
 needed inside a live Turn remains exact and process-local; it is never flattened
 into misleading text or treated as portable history.
+
+Restore prefers v2 `turn.textCompleted` Items. For databases created by the v3
+schema before protocol v2, a Turn with no completed text Items still coalesces
+legacy `turn.textDelta` records. No schema migration is required. Incomplete or
+interrupted provisional streams are not promoted or persisted as final text.
 
 ## Assets and terminals
 

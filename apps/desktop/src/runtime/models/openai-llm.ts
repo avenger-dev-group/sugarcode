@@ -16,6 +16,7 @@ import type {
   ResponseFunctionToolCall,
   ResponseInput,
   ResponseInputContent,
+  ResponseOutputMessage,
   ResponseStreamEvent,
   Tool as OpenAiResponseTool,
 } from 'openai/resources/responses/responses';
@@ -24,7 +25,11 @@ import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
+import { modelItemMetadata } from './step-outcome.ts';
+import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './types.ts';
 import type {
+  ModelStepOutcome,
+  ModelTextPhase,
   NormalizedLlmRequest,
   NormalizedMediaPart,
   NormalizedMessage,
@@ -40,9 +45,16 @@ export type OpenAiLlmOptions = ProviderAdapterOptions &
   Readonly<{ wireApi: OpenAiWireApi }>;
 
 type ToolCallAccumulator = {
+  itemId: string;
   id: string;
   name: string;
   arguments: string;
+};
+
+type TextItemAccumulator = {
+  id: string;
+  phase: ModelTextPhase;
+  text: string;
 };
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
@@ -90,16 +102,25 @@ const validateBaseUrl = (value: string): string => {
 const jsonText = (value: Readonly<Record<string, unknown>>): string =>
   JSON.stringify(value);
 
-const parseToolArguments = (value: string): Record<string, unknown> => {
+const parseToolArguments = (
+  toolName: string,
+  value: string,
+): Readonly<{ name: string; args: Record<string, unknown> }> => {
   try {
     const parsed: unknown = JSON.parse(value || '{}');
     if (isRecord(parsed)) {
-      return parsed;
+      return { name: toolName, args: parsed };
     }
   } catch {
-    // ADK performs the user-visible schema validation after this response.
+    // Report a wire-level tool argument failure before any tool or approval runs.
   }
-  return { _sugarcodeInvalidArguments: value };
+  return {
+    name: INVALID_TOOL_ARGUMENTS_TOOL_NAME,
+    args: {
+      toolName,
+      argumentsText: value.slice(0, 4_096),
+    },
+  };
 };
 
 const finishReason = (value: string | null | undefined): FinishReason => {
@@ -191,10 +212,23 @@ const responseInput = (request: NormalizedLlmRequest): ResponseInput => {
   for (const message of request.messages) {
     const content = responseMessageContent(message);
     if (content.length > 0) {
+      const phase = message.role === 'assistant'
+        ? message.parts.find(
+            (
+              part,
+            ): part is Extract<typeof part, { type: 'text' }> =>
+              part.type === 'text' && part.phase !== undefined,
+          )?.phase
+        : undefined;
       const inputMessage: EasyInputMessage = {
         type: 'message',
         role: message.role,
         content: [...content],
+        ...(phase === 'commentary'
+          ? { phase: 'commentary' as const }
+          : phase === 'final'
+            ? { phase: 'final_answer' as const }
+            : {}),
       };
       result.push(inputMessage);
     }
@@ -481,8 +515,9 @@ export class OpenAiLlm extends BaseLlm {
   ): AsyncGenerator<LlmResponse, void> {
     const callIds = new Map<string, string>();
     const completedCalls: ToolCallAccumulator[] = [];
-    let text = '';
+    const textItems = new Map<string, TextItemAccumulator>();
     let thought = '';
+    let thoughtItemId = '';
     let completed = false;
     const stream = streamWithPreOutputRetry<ResponseStreamEvent>({
       signal: abortSignal,
@@ -505,20 +540,42 @@ export class OpenAiLlm extends BaseLlm {
     });
     for await (const event of stream) {
       switch (event.type) {
-        case 'response.output_text.delta':
-          text += event.delta;
+        case 'response.output_text.delta': {
+          const current = textItems.get(event.item_id) ?? {
+            id: event.item_id,
+            phase: 'provisional' as const,
+            text: '',
+          };
+          current.text += event.delta;
+          textItems.set(event.item_id, current);
           yield {
-            content: { role: 'model', parts: [{ text: event.delta }] },
+            content: {
+              role: 'model',
+              parts: [{
+                text: event.delta,
+                partMetadata: modelItemMetadata(current.id, {
+                  phase: current.phase,
+                }),
+              }],
+            },
             partial: true,
           };
           break;
+        }
         case 'response.reasoning_summary_text.delta':
         case 'response.reasoning_text.delta':
+          thoughtItemId ||= event.item_id;
           thought += event.delta;
           yield {
             content: {
               role: 'model',
-              parts: [{ text: event.delta, thought: true }],
+              parts: [{
+                text: event.delta,
+                thought: true,
+                partMetadata: modelItemMetadata(event.item_id, {
+                  phase: 'commentary',
+                }),
+              }],
             },
             partial: true,
           };
@@ -526,10 +583,22 @@ export class OpenAiLlm extends BaseLlm {
         case 'response.output_item.added':
           if (event.item.type === 'function_call') {
             callIds.set(event.item.id, event.item.call_id);
+          } else if (event.item.type === 'message') {
+            const item = event.item as ResponseOutputMessage;
+            textItems.set(item.id, {
+              id: item.id,
+              phase: item.phase === 'commentary'
+                ? 'commentary'
+                : item.phase === 'final_answer'
+                  ? 'final'
+                  : 'provisional',
+              text: textItems.get(item.id)?.text ?? '',
+            });
           }
           break;
         case 'response.function_call_arguments.done': {
           completedCalls.push({
+            itemId: event.item_id,
             id: callIds.get(event.item_id) ?? event.item_id,
             name: event.name,
             arguments: event.arguments,
@@ -538,23 +607,95 @@ export class OpenAiLlm extends BaseLlm {
         }
         case 'response.completed': {
           completed = true;
+          for (const output of event.response.output ?? []) {
+            if (output.type !== 'message') {
+              continue;
+            }
+            const existing = textItems.get(output.id);
+            const authoritativeText = output.content
+              .flatMap((content) =>
+                content.type === 'output_text' ? [content.text] : [],
+              )
+              .join('');
+            textItems.set(output.id, {
+              id: output.id,
+              phase: output.phase === 'commentary'
+                ? 'commentary'
+                : output.phase === 'final_answer'
+                  ? 'final'
+                  : 'provisional',
+              text: authoritativeText || existing?.text || '',
+            });
+          }
+          const hasTools = completedCalls.length > 0;
+          const resolvedTextItems = [...textItems.values()].map((item) => ({
+            ...item,
+            phase: item.phase === 'provisional'
+              ? hasTools ? 'commentary' as const : 'final' as const
+              : item.phase,
+          }));
+          const hasFinal = resolvedTextItems.some(
+            (item) => item.phase === 'final' && item.text.trim().length > 0,
+          );
+          const refused = (event.response.output ?? []).some(
+            (output) =>
+              output.type === 'message' &&
+              output.content.some((content) => content.type === 'refusal'),
+          );
+          const outcome: ModelStepOutcome = refused
+            ? {
+                kind: 'failed',
+                errorKind: 'filtered',
+                message: 'The provider refused the model response.',
+              }
+            : hasTools
+            ? { kind: 'toolCalls' }
+            : hasFinal
+              ? { kind: 'final' }
+              : { kind: 'continue', reason: 'commentaryOnly' };
           const parts: Part[] = [];
           if (thought) {
-            parts.push({ text: thought, thought: true });
+            parts.push({
+              text: thought,
+              thought: true,
+              partMetadata: modelItemMetadata(
+                thoughtItemId || `reasoning_${event.response.id}`,
+                { phase: 'commentary' },
+              ),
+            });
           }
-          if (text) {
-            parts.push({ text });
-          }
+          parts.push(...resolvedTextItems
+            .filter((item) => item.text.length > 0)
+            .map((item) => ({
+              text: item.text,
+              partMetadata: modelItemMetadata(item.id, {
+                phase: item.phase,
+                outcome,
+              }),
+            })));
           parts.push(
-            ...completedCalls.map((call) => ({
+            ...completedCalls.map((call) => {
+              const name =
+                request.toolNameByProviderName.get(call.name) ?? call.name;
+              const parsed = parseToolArguments(name, call.arguments);
+              return {
               functionCall: {
                 id: call.id,
-                name:
-                  request.toolNameByProviderName.get(call.name) ?? call.name,
-                args: parseToolArguments(call.arguments),
+                name: parsed.name,
+                args: parsed.args,
               },
-            })),
+              partMetadata: modelItemMetadata(call.itemId, { outcome }),
+              };
+            }),
           );
+          if (parts.length === 0) {
+            parts.push({
+              text: '',
+              partMetadata: modelItemMetadata(`message_${event.response.id}`, {
+                outcome,
+              }),
+            });
+          }
           yield {
             content: { role: 'model', parts },
             partial: false,
@@ -569,8 +710,69 @@ export class OpenAiLlm extends BaseLlm {
           };
           break;
         }
+        case 'response.incomplete': {
+          completed = true;
+          const outcome: ModelStepOutcome = {
+            kind: 'continue',
+            reason: 'maxOutputTokens',
+          };
+          for (const output of event.response.output ?? []) {
+            if (output.type !== 'message') {
+              continue;
+            }
+            const existing = textItems.get(output.id);
+            const authoritativeText = output.content
+              .flatMap((content) =>
+                content.type === 'output_text' ? [content.text] : [],
+              )
+              .join('');
+            textItems.set(output.id, {
+              id: output.id,
+              phase: 'commentary',
+              text: authoritativeText || existing?.text || '',
+            });
+          }
+          const parts: Part[] = [];
+          if (thought) {
+            parts.push({
+              text: thought,
+              thought: true,
+              partMetadata: modelItemMetadata(
+                thoughtItemId || `reasoning_${event.response.id}`,
+                { phase: 'commentary' },
+              ),
+            });
+          }
+          parts.push(
+            ...[...textItems.values()]
+              .filter((item) => item.text.length > 0)
+              .map((item) => ({
+                text: item.text,
+                partMetadata: modelItemMetadata(item.id, {
+                  phase: 'commentary',
+                  outcome,
+                }),
+              })),
+          );
+          if (parts.length === 0) {
+            parts.push({
+              text: '',
+              partMetadata: modelItemMetadata(
+                `incomplete_${event.response.id}`,
+                { outcome },
+              ),
+            });
+          }
+          yield {
+            content: { role: 'model', parts },
+            partial: false,
+            turnComplete: true,
+            finishReason: FinishReason.STOP,
+            usageMetadata: openAiUsage(event.response.usage),
+          };
+          break;
+        }
         case 'response.failed':
-        case 'response.incomplete':
           throw new ProviderAdapterError({
             kind: 'protocol',
             retryable: false,
@@ -604,6 +806,8 @@ export class OpenAiLlm extends BaseLlm {
     abortSignal?: AbortSignal,
   ): AsyncGenerator<LlmResponse, void> {
     const calls = new Map<number, ToolCallAccumulator>();
+    const textItemId = `message_${crypto.randomUUID()}`;
+    const reasoningItemId = `reasoning_${crypto.randomUUID()}`;
     let text = '';
     let thought = '';
     let terminalReason: string | null | undefined;
@@ -636,7 +840,13 @@ export class OpenAiLlm extends BaseLlm {
           yield {
             content: {
               role: 'model',
-              parts: [{ text: reasoning, thought: true }],
+              parts: [{
+                text: reasoning,
+                thought: true,
+                partMetadata: modelItemMetadata(reasoningItemId, {
+                  phase: 'commentary',
+                }),
+              }],
             },
             partial: true,
           };
@@ -646,13 +856,19 @@ export class OpenAiLlm extends BaseLlm {
           yield {
             content: {
               role: 'model',
-              parts: [{ text: choice.delta.content }],
+              parts: [{
+                text: choice.delta.content,
+                partMetadata: modelItemMetadata(textItemId, {
+                  phase: 'provisional',
+                }),
+              }],
             },
             partial: true,
           };
         }
         for (const delta of choice.delta.tool_calls ?? []) {
           const current = calls.get(delta.index) ?? {
+            itemId: delta.id ?? `tool_${crypto.randomUUID()}`,
             id: delta.id ?? `call_${crypto.randomUUID()}`,
             name: '',
             arguments: '',
@@ -674,25 +890,62 @@ export class OpenAiLlm extends BaseLlm {
         message: 'OpenAI Chat Completions stream ended without a finish reason.',
       });
     }
+    const hasTools = calls.size > 0;
+    const outcome: ModelStepOutcome = terminalReason === 'length' ||
+        terminalReason === 'max_output_tokens'
+      ? { kind: 'continue', reason: 'maxOutputTokens' }
+      : terminalReason === 'content_filter'
+        ? {
+            kind: 'failed',
+            errorKind: 'filtered',
+            message: 'The provider filtered the model response.',
+          }
+        : hasTools
+          ? { kind: 'toolCalls' }
+          : text.trim().length > 0
+            ? { kind: 'final' }
+            : { kind: 'continue', reason: 'commentaryOnly' };
+    const phase: ModelTextPhase = outcome.kind === 'final'
+      ? 'final'
+      : 'commentary';
     const parts: Part[] = [];
     if (thought) {
-      parts.push({ text: thought, thought: true });
+      parts.push({
+        text: thought,
+        thought: true,
+        partMetadata: modelItemMetadata(reasoningItemId, {
+          phase: 'commentary',
+        }),
+      });
     }
     if (text) {
-      parts.push({ text });
+      parts.push({
+        text,
+        partMetadata: modelItemMetadata(textItemId, { phase, outcome }),
+      });
     }
     parts.push(
       ...[...calls.entries()]
         .sort(([left], [right]) => left - right)
-        .map(([, call]) => ({
+        .map(([, call]) => {
+          const name = request.toolNameByProviderName.get(call.name) ?? call.name;
+          const parsed = parseToolArguments(name, call.arguments);
+          return {
               functionCall: {
                 id: call.id,
-                name:
-                  request.toolNameByProviderName.get(call.name) ?? call.name,
-                args: parseToolArguments(call.arguments),
+                name: parsed.name,
+                args: parsed.args,
               },
-        })),
+              partMetadata: modelItemMetadata(call.itemId, { outcome }),
+          };
+        }),
     );
+    if (parts.length === 0) {
+      parts.push({
+        text: '',
+        partMetadata: modelItemMetadata(textItemId, { outcome }),
+      });
+    }
     yield {
       content: { role: 'model', parts },
       partial: false,

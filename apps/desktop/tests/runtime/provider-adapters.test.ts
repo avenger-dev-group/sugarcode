@@ -6,6 +6,12 @@ import type { LlmRequest, LlmResponse } from '@google/adk';
 
 import { AnthropicLlm } from '../../src/runtime/models/anthropic-llm.ts';
 import { OpenAiLlm } from '../../src/runtime/models/openai-llm.ts';
+import {
+  modelItemMetadata,
+  readModelItemMetadata,
+  readModelStepOutcome,
+} from '../../src/runtime/models/step-outcome.ts';
+import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from '../../src/runtime/models/types.ts';
 
 const llmRequest = (): LlmRequest => ({
   model: 'fixture-model',
@@ -236,6 +242,237 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
   assert.equal(receivedBody?.max_output_tokens, 8_192);
   assert.equal(events.at(-1)?.turnComplete, true);
+});
+
+test('OpenAI Responses preserves commentary phase, Item ID, and phased history', async (context) => {
+  let receivedBody: Record<string, unknown> | undefined;
+  const fixture = await serve(async (request, response) => {
+    receivedBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+    writeSse(response, [
+      {
+        event: 'response.output_item.added',
+        data: {
+          type: 'response.output_item.added',
+          sequence_number: 1,
+          output_index: 0,
+          item: {
+            id: 'message_commentary_fixture',
+            type: 'message',
+            role: 'assistant',
+            status: 'in_progress',
+            phase: 'commentary',
+            content: [],
+          },
+        },
+      },
+      {
+        event: 'response.output_text.delta',
+        data: {
+          type: 'response.output_text.delta',
+          sequence_number: 2,
+          item_id: 'message_commentary_fixture',
+          output_index: 0,
+          content_index: 0,
+          delta: 'Still working',
+          logprobs: [],
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 3,
+          response: {
+            id: 'resp_commentary_fixture',
+            status: 'completed',
+            output: [{
+              id: 'message_commentary_fixture',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              phase: 'commentary',
+              content: [{
+                type: 'output_text',
+                text: 'Still working',
+                annotations: [],
+                logprobs: [],
+              }],
+            }],
+            usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.contents.push({
+    role: 'model',
+    parts: [{
+      text: 'Earlier commentary',
+      partMetadata: modelItemMetadata('message_history_fixture', {
+        phase: 'commentary',
+      }),
+    }],
+  });
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(request, true));
+  const finalParts = events.at(-1)?.content?.parts ?? [];
+  const metadata = readModelItemMetadata(finalParts[0] ?? {});
+  const input = receivedBody?.input as Array<Record<string, unknown>>;
+
+  assert.equal(metadata?.itemId, 'message_commentary_fixture');
+  assert.equal(metadata?.phase, 'commentary');
+  assert.deepEqual(readModelStepOutcome(finalParts), {
+    kind: 'continue',
+    reason: 'commentaryOnly',
+  });
+  assert.equal(input.at(-1)?.phase, 'commentary');
+});
+
+test('OpenAI Chat maps malformed tool JSON to a bounded internal error tool', async (context) => {
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        data: {
+          id: 'chatcmpl_bad_tool',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: 'call_bad_tool',
+                type: 'function',
+                function: { name: 'workspace_read', arguments: '{' },
+              }],
+            },
+            finish_reason: null,
+          }],
+        },
+      },
+      {
+        data: {
+          id: 'chatcmpl_bad_tool',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        },
+      },
+      { data: '[DONE]' },
+    ]);
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.config = {
+    ...request.config,
+    tools: [{
+      functionDeclarations: [{
+        name: 'workspace_read',
+        parametersJsonSchema: { type: 'object' },
+      }],
+    }],
+  };
+  const model = new OpenAiLlm({
+    wireApi: 'openaiChatCompletions',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(request, true));
+  const call = events.at(-1)?.content?.parts?.find(
+    (part) => part.functionCall,
+  )?.functionCall;
+
+  assert.equal(call?.name, INVALID_TOOL_ARGUMENTS_TOOL_NAME);
+  assert.deepEqual(call?.args, {
+    toolName: 'workspace_read',
+    argumentsText: '{',
+  });
+});
+
+test('OpenAI Responses adapter never infers a tool call from reasoning text', async (context) => {
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        event: 'response.reasoning_text.delta',
+        data: {
+          type: 'response.reasoning_text.delta',
+          sequence_number: 1,
+          item_id: 'reasoning_fixture',
+          output_index: 0,
+          content_index: 0,
+          delta: '<tool_call>\n<function=workspace_list>',
+        },
+      },
+      {
+        event: 'response.reasoning_text.delta',
+        data: {
+          type: 'response.reasoning_text.delta',
+          sequence_number: 2,
+          item_id: 'reasoning_fixture',
+          output_index: 0,
+          content_index: 0,
+          delta:
+            '\n<parameter=path>\n.\n</parameter>\n</function>\n</tool_call>',
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 3,
+          response: {
+            id: 'resp_text_tool_fixture',
+            status: 'completed',
+            usage: { input_tokens: 4, output_tokens: 8, total_tokens: 12 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.config = {
+    ...request.config,
+    tools: [
+      {
+        functionDeclarations: [
+          {
+            name: 'workspace_list',
+            description: 'List a workspace directory.',
+            parametersJsonSchema: {
+              type: 'object',
+              properties: { path: { type: 'string' } },
+              required: ['path'],
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(request, true));
+  const parts = events.flatMap((event) => event.content?.parts ?? []);
+  assert.equal(parts.some((part) => part.functionCall), false);
+  assert.equal(parts.some((part) => part.thought), true);
+  assert.equal(parts.some((part) => part.text?.includes('<tool_call>')), true);
 });
 
 test('OpenAI SDK stops a continuously streaming response at the request deadline', async (context) => {

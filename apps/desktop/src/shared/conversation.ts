@@ -508,6 +508,7 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
 
 export type ConversationStateSnapshot = Readonly<{
   revision: number;
+  workspaceId?: string;
   phase: ConversationPhase;
   threadId?: string;
   activeTurnId?: string;
@@ -1654,6 +1655,7 @@ export const isConversationStateSnapshot = (
     typeof value.revision !== 'number' ||
     !Number.isSafeInteger(value.revision) ||
     value.revision < 0 ||
+    (Object.hasOwn(value, 'workspaceId') && !isId(value.workspaceId)) ||
     typeof value.phase !== 'string' ||
     !PHASES.has(value.phase as ConversationPhase) ||
     !Array.isArray(value.turns) ||

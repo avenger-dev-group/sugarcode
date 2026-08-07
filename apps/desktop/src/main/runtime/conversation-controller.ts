@@ -139,6 +139,9 @@ const runtimeError = (error: RuntimeProviderError): ConversationTurnError => {
                     'timeout',
                     'protocol',
                     'server',
+                    'filtered',
+                    'unsupportedToolArguments',
+                    'outputTooLarge',
                   ].includes(kind)
                 ? kind as ConversationTurnError['kind']
                 : 'stateUnavailable',
@@ -252,32 +255,53 @@ const projectThread = (
         ? [attachmentFromPart(part as Extract<RuntimeContentPart, { type: 'asset' }>)]
         : [],
     );
-    const finalText = items
-      .filter(
-        (item) =>
-          item.kind === 'turn.textDelta' && item.payload.phase === 'final',
-      )
-      .map((item) => String(item.payload.delta ?? ''))
-      .join('');
-    const commentaryText = items
-      .filter(
-        (item) =>
-          item.kind === 'turn.textDelta' && item.payload.phase === 'commentary',
-      )
-      .map((item) => String(item.payload.delta ?? ''))
-      .join('');
-    const commentary: ConversationActivity[] = commentaryText
-      ? [
-          {
-          type: 'commentary',
+    const completedTextItems = items.filter(
+      (item) => item.kind === 'turn.textCompleted',
+    );
+    const completedFinalItems = completedTextItems.filter(
+      (item) => item.payload.phase === 'final',
+    );
+    const finalText = completedFinalItems.length > 0
+      ? completedFinalItems.map((item) => String(item.payload.text ?? '')).join('')
+      : items
+          .filter(
+            (item) =>
+              item.kind === 'turn.textDelta' && item.payload.phase === 'final',
+          )
+          .map((item) => String(item.payload.delta ?? ''))
+          .join('');
+    const completedCommentaryItems = completedTextItems.filter(
+      (item) => item.payload.phase === 'commentary',
+    );
+    const commentary: ConversationActivity[] = completedCommentaryItems.length > 0
+      ? completedCommentaryItems.map((item) => ({
+          type: 'commentary' as const,
           activity: {
-            id: `${record.id}:commentary`,
-            text: commentaryText,
-            status: 'completed',
+            id: String(item.payload.itemId ?? item.id),
+            text: String(item.payload.text ?? ''),
+            status: 'completed' as const,
           },
-          },
-        ]
-      : [];
+        }))
+      : (() => {
+          const commentaryText = items
+            .filter(
+              (item) =>
+                item.kind === 'turn.textDelta' &&
+                item.payload.phase === 'commentary',
+            )
+            .map((item) => String(item.payload.delta ?? ''))
+            .join('');
+          return commentaryText
+            ? [{
+                type: 'commentary' as const,
+                activity: {
+                  id: `${record.id}:commentary`,
+                  text: commentaryText,
+                  status: 'completed' as const,
+                },
+              }]
+            : [];
+        })();
     const durableTasks = snapshot.agentTasks
       .filter((task) => task.turnId === record.id)
       .map((task) => ({ ...task.payload, status: task.status }));
@@ -353,6 +377,7 @@ export class RuntimeConversationController {
   >();
   private readonly pendingTurnStartWorkspaces = new Set<string>();
   private workspaceId: string | null = null;
+  private workspaceGeneration = 0;
   private revision = 0;
   private available = false;
   private threadId: string | null = null;
@@ -375,6 +400,7 @@ export class RuntimeConversationController {
         : activeTurn?.phase ?? (this.threadId ? 'ready' : 'idle');
     return {
       revision: this.revision,
+      ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
       phase,
       ...(this.threadId ? { threadId: this.threadId } : {}),
       ...(activeTurn ? { activeTurnId: activeTurn.turnId } : {}),
@@ -390,6 +416,7 @@ export class RuntimeConversationController {
   };
 
   switchWorkspace = async (workspaceId: string): Promise<boolean> => {
+    const generation = ++this.workspaceGeneration;
     this.workspaceId = workspaceId;
     this.threadId = null;
     this.available = false;
@@ -402,7 +429,10 @@ export class RuntimeConversationController {
         { type: 'thread.list', requestId: randomUUID(), workspaceId },
         'thread.listResult',
       );
-      if (this.workspaceId !== workspaceId) {
+      if (
+        this.workspaceGeneration !== generation ||
+        this.workspaceId !== workspaceId
+      ) {
         return true;
       }
       this.available = true;
@@ -410,7 +440,10 @@ export class RuntimeConversationController {
       this.publish();
       return true;
     } catch {
-      if (this.workspaceId === workspaceId) {
+      if (
+        this.workspaceGeneration === generation &&
+        this.workspaceId === workspaceId
+      ) {
         this.navigator = { ...this.navigator, status: 'error' };
         this.notice = { kind: 'requestFailed', summary: 'Threads could not be loaded from local storage.' };
         this.publish();
@@ -570,23 +603,31 @@ export class RuntimeConversationController {
     if (!this.workspaceId) {
       return rejected('unavailable');
     }
+    const workspaceId = this.workspaceId;
+    const normalizedQuery = query.trim();
     this.navigator = {
       ...this.navigator,
-      search: { ...this.navigator.search, query: query.trim(), status: 'loading' },
+      search: { ...this.navigator.search, query: normalizedQuery, status: 'loading' },
     };
     this.publish();
     try {
       const event = await this.runtime.request(
-        { type: 'thread.list', requestId: randomUUID(), workspaceId: this.workspaceId, query: query.trim() },
+        { type: 'thread.list', requestId: randomUUID(), workspaceId, query: normalizedQuery },
         'thread.listResult',
       );
+      if (
+        this.workspaceId !== workspaceId ||
+        this.navigator.search.query !== normalizedQuery
+      ) {
+        return accepted();
+      }
       const titles = Object.fromEntries(
         event.threads.flatMap((thread) => thread.title ? [[thread.id, thread.title]] : []),
       );
       this.navigator = {
         ...this.navigator,
         search: {
-          query: query.trim(),
+          query: normalizedQuery,
           status: event.threads.length > 0 ? 'ready' : 'empty',
           threadIds: event.threads.map((thread) => thread.id),
           threadTitles: titles,
@@ -596,6 +637,12 @@ export class RuntimeConversationController {
       this.publish();
       return accepted();
     } catch {
+      if (
+        this.workspaceId !== workspaceId ||
+        this.navigator.search.query !== normalizedQuery
+      ) {
+        return accepted();
+      }
       this.navigator = { ...this.navigator, search: { ...this.navigator.search, status: 'error' } };
       this.publish();
       return rejected('unavailable');
@@ -613,6 +660,7 @@ export class RuntimeConversationController {
     if (!this.workspaceId) {
       return rejected('unavailable');
     }
+    const workspaceId = this.workspaceId;
     if (threadId === this.threadId) {
       this.unreadThreadStatuses.delete(threadId);
       this.refreshNavigator();
@@ -640,11 +688,17 @@ export class RuntimeConversationController {
     this.publish();
     try {
       const event = await this.runtime.request(
-        { type: 'thread.load', requestId: randomUUID(), workspaceId: this.workspaceId, threadId },
+        { type: 'thread.load', requestId: randomUUID(), workspaceId, threadId },
         'thread.loaded',
       );
-      if (event.snapshot.thread.workspaceId !== this.workspaceId) {
+      if (
+        event.workspaceId !== workspaceId ||
+        event.snapshot.thread.workspaceId !== workspaceId
+      ) {
         throw new Error('Thread crossed workspace ownership.');
+      }
+      if (this.workspaceId !== workspaceId) {
+        return accepted();
       }
       this.threadId = threadId;
       this.turnsByThread.set(threadId, [...projectThread(event.snapshot)]);
@@ -657,6 +711,9 @@ export class RuntimeConversationController {
       this.publish();
       return accepted();
     } catch {
+      if (this.workspaceId !== workspaceId) {
+        return accepted();
+      }
       this.navigator = {
         ...withoutNavigatorFields(this.navigator, ['pendingThreadId']),
         selectionNotice: 'That Thread could not be restored safely.',
@@ -717,13 +774,20 @@ export class RuntimeConversationController {
           : 'unavailable',
       );
     }
+    const workspaceId = this.workspaceId;
     this.navigator = { ...this.navigator, pendingMutation: { kind: operation, threadId } };
     this.publish();
     try {
       const event = await this.runtime.request(
-        { type: `thread.${operation}`, requestId: randomUUID(), workspaceId: this.workspaceId, threadId } as const,
+        { type: `thread.${operation}`, requestId: randomUUID(), workspaceId, threadId } as const,
         'thread.mutated',
       );
+      if (event.workspaceId !== workspaceId) {
+        throw new Error('Thread mutation crossed workspace ownership.');
+      }
+      if (this.workspaceId !== workspaceId) {
+        return accepted();
+      }
       if (operation === 'fork' && event.snapshot) {
         this.threadRecords.set(event.threadId, event.snapshot.thread);
         this.turnsByThread.set(event.threadId, [...projectThread(event.snapshot)]);
@@ -753,6 +817,9 @@ export class RuntimeConversationController {
       this.publish();
       return accepted();
     } catch {
+      if (this.workspaceId !== workspaceId) {
+        return accepted();
+      }
       this.navigator = {
         ...withoutNavigatorFields(this.navigator, ['pendingMutation']),
         mutationNotice: 'The Thread lifecycle change was rejected.',
@@ -805,12 +872,18 @@ export class RuntimeConversationController {
           messages: turn.messages.map((message) => message.role === 'user' ? { ...message, status: 'completed' } : message),
         };
         break;
+      case 'turn.textStarted':
+        break;
       case 'turn.textDelta': {
         if (event.phase === 'commentary') {
           const activities = [...(turn.activities ?? [])];
-          const activityIndex = activities.length - 1;
+          const activityIndex = activities.findIndex(
+            (activity) =>
+              activity.type === 'commentary' &&
+              activity.activity.id === event.itemId,
+          );
           const current = activities[activityIndex];
-          if (current?.type === 'commentary') {
+          if (activityIndex >= 0 && current?.type === 'commentary') {
             activities[activityIndex] = {
               type: 'commentary',
               activity: {
@@ -824,29 +897,111 @@ export class RuntimeConversationController {
           turns[index] = { ...turn, activities };
         } else {
           const messages = [...turn.messages];
-          const agentIndex = messages.findIndex((message) => message.role === 'agent');
+          const agentIndex = messages.findIndex(
+            (message) => message.role === 'agent' && message.id === event.itemId,
+          );
           if (agentIndex >= 0) {
             const current = messages[agentIndex];
             messages[agentIndex] = { ...current, text: current.text + event.delta };
           } else {
-            messages.push({ id: `${event.turnId}:agent`, role: 'agent', text: event.delta, status: 'inProgress' });
+            messages.push({ id: event.itemId, role: 'agent', text: event.delta, status: 'inProgress' });
           }
           turns[index] = { ...turn, messages };
         }
         break;
       }
+      case 'turn.textCompleted': {
+        if (event.phase === 'commentary') {
+          const messages = turn.messages.filter(
+            (message) => message.role !== 'agent' || message.id !== event.itemId,
+          );
+          const activities = [...(turn.activities ?? [])];
+          const activityIndex = activities.findIndex(
+            (activity) =>
+              activity.type === 'commentary' &&
+              activity.activity.id === event.itemId,
+          );
+          const completed = {
+            type: 'commentary' as const,
+            activity: {
+              id: event.itemId,
+              text: event.text,
+              status: 'completed' as const,
+            },
+          };
+          if (activityIndex >= 0) {
+            activities[activityIndex] = completed;
+          } else {
+            activities.push(completed);
+          }
+          turns[index] = { ...turn, messages, activities };
+        } else {
+          const messages = [
+            ...turn.messages.filter((message) => message.role === 'user'),
+            {
+              id: event.itemId,
+              role: 'agent' as const,
+              text: event.text,
+              status: 'completed' as const,
+            },
+          ];
+          const activities = turn.activities?.filter(
+            (activity) =>
+              activity.type !== 'commentary' ||
+              activity.activity.id !== event.itemId,
+          );
+          turns[index] = {
+            ...turn,
+            messages,
+            ...(activities ? { activities } : {}),
+          };
+        }
+        break;
+      }
       case 'turn.usage':
+        {
+          const previous = turn.usage;
+          const add = (
+            left: number | undefined,
+            right: number | undefined,
+          ): number | undefined =>
+            left === undefined && right === undefined
+              ? undefined
+              : (left ?? 0) + (right ?? 0);
+          const turnTotal = {
+            inputTokens: add(
+              previous?.turnTotal.inputTokens,
+              event.usage.inputTokens,
+            ),
+            outputTokens: add(
+              previous?.turnTotal.outputTokens,
+              event.usage.outputTokens,
+            ),
+            reasoningTokens: add(
+              previous?.turnTotal.reasoningTokens,
+              event.usage.reasoningTokens,
+            ),
+            cachedInputTokens: add(
+              previous?.turnTotal.cachedInputTokens,
+              event.usage.cachedInputTokens,
+            ),
+            totalTokens: add(
+              previous?.turnTotal.totalTokens,
+              event.usage.totalTokens,
+            ),
+          };
         turns[index] = {
           ...turn,
           usage: {
             lastRequest: event.usage,
-            turnTotal: event.usage,
-            requestCount: 1,
+            turnTotal,
+            requestCount: (previous?.requestCount ?? 0) + 1,
             contextWindowTokens: turn.model?.contextWindowTokens ?? 128_000,
             source: 'provider',
           },
         };
         break;
+        }
       case 'agent.task': {
         const activities = [...(turn.activities ?? [])];
         const orchestrationIndex = activities.findIndex(

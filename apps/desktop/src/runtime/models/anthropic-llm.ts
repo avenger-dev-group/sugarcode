@@ -18,7 +18,10 @@ import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
+import { modelItemMetadata } from './step-outcome.ts';
+import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './types.ts';
 import type {
+  ModelStepOutcome,
   NormalizedLlmRequest,
   NormalizedMediaPart,
   NormalizedMessage,
@@ -68,16 +71,25 @@ const validateBaseUrl = (value: string): string => {
     : withoutTrailingSlash;
 };
 
-const parseArguments = (value: string): Record<string, unknown> => {
+const parseArguments = (
+  toolName: string,
+  value: string,
+): Readonly<{ name: string; args: Record<string, unknown> }> => {
   try {
     const parsed: unknown = JSON.parse(value || '{}');
     if (isRecord(parsed)) {
-      return parsed;
+      return { name: toolName, args: parsed };
     }
   } catch {
-    // ADK validates the final arguments and publishes a bounded tool error.
+    // Report a wire-level tool argument failure before any tool or approval runs.
   }
-  return { _sugarcodeInvalidArguments: value };
+  return {
+    name: INVALID_TOOL_ARGUMENTS_TOOL_NAME,
+    args: {
+      toolName,
+      argumentsText: value.slice(0, 4_096),
+    },
+  };
 };
 
 const mediaSource = (
@@ -360,6 +372,8 @@ export class AnthropicLlm extends BaseLlm {
     let cacheReadTokens: number | undefined;
     let stopReason: StopReason | null | undefined;
     let completed = false;
+    const textItemId = `message_${crypto.randomUUID()}`;
+    const thinkingItemId = `reasoning_${crypto.randomUUID()}`;
     try {
       const stream = streamWithPreOutputRetry<RawMessageStreamEvent>({
         signal: deadline.signal,
@@ -396,7 +410,12 @@ export class AnthropicLlm extends BaseLlm {
               yield {
                 content: {
                   role: 'model',
-                  parts: [{ text: event.content_block.text }],
+                  parts: [{
+                    text: event.content_block.text,
+                    partMetadata: modelItemMetadata(textItemId, {
+                      phase: 'provisional',
+                    }),
+                  }],
                 },
                 partial: true,
               };
@@ -412,7 +431,13 @@ export class AnthropicLlm extends BaseLlm {
                   content: {
                     role: 'model',
                     parts: [
-                      { text: event.content_block.thinking, thought: true },
+                      {
+                        text: event.content_block.thinking,
+                        thought: true,
+                        partMetadata: modelItemMetadata(thinkingItemId, {
+                          phase: 'commentary',
+                        }),
+                      },
                     ],
                   },
                   partial: true,
@@ -440,7 +465,12 @@ export class AnthropicLlm extends BaseLlm {
               yield {
                 content: {
                   role: 'model',
-                  parts: [{ text: event.delta.text }],
+                  parts: [{
+                    text: event.delta.text,
+                    partMetadata: modelItemMetadata(textItemId, {
+                      phase: 'provisional',
+                    }),
+                  }],
                 },
                 partial: true,
               };
@@ -452,7 +482,13 @@ export class AnthropicLlm extends BaseLlm {
               yield {
                 content: {
                   role: 'model',
-                  parts: [{ text: event.delta.thinking, thought: true }],
+                  parts: [{
+                    text: event.delta.thinking,
+                    thought: true,
+                    partMetadata: modelItemMetadata(thinkingItemId, {
+                      phase: 'commentary',
+                    }),
+                  }],
                 },
                 partial: true,
               };
@@ -485,11 +521,31 @@ export class AnthropicLlm extends BaseLlm {
             break;
           case 'message_stop': {
             completed = true;
+            const hasTools = completedToolCalls.length > 0;
+            const outcome: ModelStepOutcome = stopReason === 'pause_turn'
+              ? { kind: 'continue', reason: 'pauseTurn' }
+              : stopReason === 'max_tokens' ||
+                  stopReason === 'model_context_window_exceeded'
+                ? { kind: 'continue', reason: 'maxOutputTokens' }
+                : stopReason === 'refusal'
+                  ? {
+                      kind: 'failed',
+                      errorKind: 'filtered',
+                      message: 'The provider refused the model response.',
+                    }
+                  : hasTools
+                    ? { kind: 'toolCalls' }
+                    : fullText.trim().length > 0
+                      ? { kind: 'final' }
+                      : { kind: 'continue', reason: 'commentaryOnly' };
             const parts: Part[] = [];
             if (fullThinking || thinkingSignature) {
               parts.push({
                 text: fullThinking,
                 thought: true,
+                partMetadata: modelItemMetadata(thinkingItemId, {
+                  phase: 'commentary',
+                }),
                 ...(thinkingSignature
                   ? {
                       partMetadata: {
@@ -507,18 +563,35 @@ export class AnthropicLlm extends BaseLlm {
               })),
             );
             if (fullText) {
-              parts.push({ text: fullText });
+              parts.push({
+                text: fullText,
+                partMetadata: modelItemMetadata(textItemId, {
+                  phase: outcome.kind === 'final' ? 'final' : 'commentary',
+                  outcome,
+                }),
+              });
             }
             parts.push(
-              ...completedToolCalls.map((call) => ({
+              ...completedToolCalls.map((call) => {
+                const name =
+                  request.toolNameByProviderName.get(call.name) ?? call.name;
+                const parsed = parseArguments(name, call.arguments);
+                return {
                 functionCall: {
                   id: call.id,
-                  name:
-                    request.toolNameByProviderName.get(call.name) ?? call.name,
-                  args: parseArguments(call.arguments),
+                  name: parsed.name,
+                  args: parsed.args,
                 },
-              })),
+                partMetadata: modelItemMetadata(call.id, { outcome }),
+                };
+              }),
             );
+            if (parts.length === 0) {
+              parts.push({
+                text: '',
+                partMetadata: modelItemMetadata(textItemId, { outcome }),
+              });
+            }
             yield {
               content: { role: 'model', parts },
               partial: false,

@@ -30,7 +30,7 @@ import {
   type McpSessionActionResult,
 } from '../shared/mcp.ts';
 
-export const RUNTIME_PROTOCOL_VERSION = 1 as const;
+export const RUNTIME_PROTOCOL_VERSION = 2 as const;
 
 export type RuntimeProviderConfig = Readonly<{
   wireApi: ModelWireApi;
@@ -397,6 +397,9 @@ export type RuntimeProviderError = Readonly<{
     | 'timeout'
     | 'connection'
     | 'protocol'
+    | 'filtered'
+    | 'unsupportedToolArguments'
+    | 'outputTooLarge'
     | 'server'
     | 'cancelled'
     | 'unknown';
@@ -468,13 +471,32 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'turn.textStarted';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        itemId: string;
+        phase: 'commentary' | 'final' | 'provisional';
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'turn.textDelta';
         workspaceId: string;
         threadId: string;
         turnId: string;
         itemId: string;
-        phase: 'commentary' | 'final';
+        phase: 'commentary' | 'final' | 'provisional';
         delta: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'turn.textCompleted';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        itemId: string;
+        phase: 'commentary' | 'final';
+        text: string;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -1132,12 +1154,25 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         Array.isArray(value.content) &&
         value.content.every(isRuntimeContentPart)
       );
+    case 'turn.textStarted':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.itemId === 'string' &&
+        ['commentary', 'final', 'provisional'].includes(String(value.phase))
+      );
     case 'turn.textDelta':
       return (
         hasTurnCoordinates(value) &&
         typeof value.itemId === 'string' &&
-        ['commentary', 'final'].includes(String(value.phase)) &&
+        ['commentary', 'final', 'provisional'].includes(String(value.phase)) &&
         typeof value.delta === 'string'
+      );
+    case 'turn.textCompleted':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.itemId === 'string' &&
+        ['commentary', 'final'].includes(String(value.phase)) &&
+        typeof value.text === 'string'
       );
     case 'turn.usage':
       return hasTurnCoordinates(value) && isRecord(value.usage);

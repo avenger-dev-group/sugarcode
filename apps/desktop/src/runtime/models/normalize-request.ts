@@ -11,6 +11,7 @@ import type {
   NormalizedMessagePart,
   NormalizedTool,
 } from './types.ts';
+import { readModelItemMetadata } from './step-outcome.ts';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -57,10 +58,12 @@ const textFromUnknownContent = (value: unknown): string => {
 
 const normalizePart = (part: Part): NormalizedMessagePart | null => {
   if (typeof part.text === 'string') {
+    const modelMetadata = readModelItemMetadata(part);
     return {
       type: 'text',
       text: part.text,
       thought: part.thought === true,
+      ...(modelMetadata?.phase ? { phase: modelMetadata.phase } : {}),
       ...(part.partMetadata ? { metadata: part.partMetadata } : {}),
     };
   }

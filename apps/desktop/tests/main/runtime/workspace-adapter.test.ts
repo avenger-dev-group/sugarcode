@@ -119,6 +119,7 @@ class FixtureConversation {
     this.switched.push(workspaceId);
     const snapshot: ConversationStateSnapshot = {
       revision: this.switched.length,
+      workspaceId,
       phase: 'idle',
       turns: [],
       navigator: {
