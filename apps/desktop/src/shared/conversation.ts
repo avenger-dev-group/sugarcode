@@ -255,6 +255,7 @@ export type ConversationCommandApprovalActivity = Readonly<{
     id: string;
     status: ConversationMessageStatus;
     value: ConversationCommandApprovalDecision;
+    source?: 'user' | 'policy' | 'system';
   }>;
   executionAttempt?: Readonly<{
     id: string;
@@ -1343,7 +1344,9 @@ const isCommandApprovalActivity = (
     typeof value.decision.value === 'string' &&
     COMMAND_APPROVAL_DECISIONS.has(
       value.decision.value as ConversationCommandApprovalDecision,
-    )
+    ) &&
+    (value.decision.source === undefined ||
+      ['user', 'policy', 'system'].includes(String(value.decision.source)))
   )) {
     return false;
   }

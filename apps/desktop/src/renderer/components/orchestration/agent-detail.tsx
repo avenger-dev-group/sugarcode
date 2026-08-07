@@ -23,8 +23,8 @@ const ROLE_LABELS: Record<AgentTaskRole, string> = {
 
 const STATUS_LABELS: Record<AgentTaskViewModel['status'], string> = {
   queued: 'Queued',
-  running: 'Running',
-  waitingApproval: 'Waiting for approval',
+  running: 'Working',
+  waitingApproval: 'Needs approval',
   completed: 'Completed',
   failed: 'Failed',
   interrupted: 'Interrupted',
@@ -172,9 +172,21 @@ export const AgentDetail = ({
 
       {task.result ? (
         <DetailSection
-          title={task.role === 'auditor' ? 'Auditor findings' : 'Final summary'}
+          title={
+            task.status === 'failed'
+              ? 'Failure details'
+              : task.status === 'interrupted' || task.status === 'cancelled'
+                ? 'Last recorded result'
+                : task.role === 'auditor'
+                  ? 'Auditor findings'
+                  : 'Final summary'
+          }
         >
-          <div className="text-[14px] font-normal leading-[21px]">
+          <div
+            className={`text-[14px] font-normal leading-[21px] ${
+              task.status === 'failed' ? 'text-destructive' : ''
+            }`}
+          >
             <AgentMarkdown
               source={task.result.summaryMarkdown}
               isStreaming={false}
@@ -188,7 +200,7 @@ export const AgentDetail = ({
             {task.status === 'queued'
               ? 'Waiting for dependencies.'
               : task.status === 'waitingApproval'
-                ? 'A tool action is waiting for approval.'
+                ? 'A tool action needs your approval before this Agent can continue.'
                 : task.status === 'running'
                   ? 'Agent is working. Its final public summary will appear here.'
                   : 'No public result was recorded.'}

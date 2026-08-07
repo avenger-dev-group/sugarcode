@@ -1211,6 +1211,7 @@ export class RuntimeConversationController {
                     id: `${event.approvalId}:decision`,
                     status: 'completed' as const,
                     value: event.decision,
+                    ...(event.source ? { source: event.source } : {}),
                   },
                 },
               }

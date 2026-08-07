@@ -53,7 +53,10 @@ with one registered `workspaceId`. Renderer labels and selection state are
 derived by resolving the visible conversation against those identities, while
 Main independently resolves every incoming command or MCP proposal before it
 can bypass presentation. This keeps project grants valid for every conversation
-in that project without leaking them to another project.
+in that project without leaking them to another project. Every resolution also
+carries provider-neutral provenance (`user`, `policy` or `system`). The audit
+timeline can therefore distinguish an inherited project/conversation grant
+from a fresh user interaction instead of presenting both as another prompt.
 
 ## Agent and provider boundary
 
@@ -100,9 +103,13 @@ Commentary or reasoning alone can never produce a successful Turn. Three
 consecutive commentary-only responses fail as a protocol stall; two output
 truncations without a final fail as `outputTooLarge`; and the same malformed
 tool arguments producing the same error twice fail before a third model
-request. Each provider request retains its own deadline, but a Turn has no
-wall-clock or tool-count success threshold. Provider adapters never infer tools
-from ordinary prose, reasoning, language, or generic markup.
+request. An ordinary tool execution error is different: after two identical
+failures the driver injects one concrete recovery continuation, and only a
+third unchanged failure without intervening success terminates the Turn as a
+protocol stall. Each provider request retains its own deadline; the Desktop
+profile defaults that deadline to five minutes, while a Turn has no wall-clock
+or tool-count success threshold. Provider adapters never infer tools from
+ordinary prose, reasoning, language, or generic markup.
 
 The same Turn Driver and completion gate run child Agents. A child without a
 non-empty final answer fails instead of receiving a fabricated completion
@@ -141,7 +148,10 @@ than an unlabeled compact menu. It names the access boundary, explains each
 mode, and shows the effective mode for the visible Thread and workspace. The
 approval dialog uses the same three labels and scope rules so choosing a mode
 while accepting a pending operation has exactly the same effect as changing it
-from the composer.
+from the composer. Child tasks delay their `waitingApproval` projection briefly;
+an immediately inherited policy decision therefore stays in the running state,
+while a real unresolved prompt still becomes visible. Resolved policy activity
+is labeled as inherited access in the command audit.
 
 Conversation snapshots preserve the optimistic first-Turn projection while the
 runtime acknowledges startup: `starting` may contain the newly allocated active
@@ -232,6 +242,8 @@ one Thread-local reload, leaving every other active Thread untouched.
 
 Child-Agent task snapshots include bounded live progress with an explicit stage
 (`waitingForModel`, `streaming` or `runningTool`), a public Markdown summary and
-an update timestamp. The graph shows a compact latest update and the Agent
-detail rail renders the live Markdown stream; the terminal task result remains
-the durable completion contract.
+an update timestamp. The orchestration workbench groups tasks into active,
+dependency-blocked next and terminal sections, exposes progress and dependency
+counts without requiring graph navigation, and opens the selected task in a
+detail rail with its live Markdown stream or terminal failure reason. The
+terminal task result remains the durable completion contract.

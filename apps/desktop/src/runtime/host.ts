@@ -72,7 +72,8 @@ import type {
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
-const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
+const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
+const AGENT_APPROVAL_STATUS_DELAY_MS = 250;
 const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
 
@@ -180,7 +181,12 @@ type TurnDriverOptions = Readonly<{
 type InvalidArgumentGuard = {
   repeats: Map<string, number>;
   calls: Map<string, string>;
-  toolErrors: Map<string, number>;
+  repeatedToolFailure?: Readonly<{
+    key: string;
+    count: number;
+    recoveryMarkdown: string;
+    recoveryDelivered: boolean;
+  }>;
   lastToolResponseRequiresRecovery: boolean;
   finalRecoveryUsed: boolean;
 };
@@ -552,6 +558,7 @@ export class RuntimeHost {
           pending,
           command.decision,
           command.requestId,
+          command.source,
         );
         break;
       }
@@ -1531,17 +1538,39 @@ export class RuntimeHost {
   private assertInvalidArgumentProgress = (
     guard: InvalidArgumentGuard,
   ): void => {
-    if (
-      [...guard.repeats.values()].some((count) => count >= 2) ||
-      [...guard.toolErrors.values()].some((count) => count >= 2)
-    ) {
+    if ([...guard.repeats.values()].some((count) => count >= 2)) {
       throw new ProviderAdapterError({
         kind: 'unsupportedToolArguments',
         retryable: false,
-        message:
-          'The model repeated the same tool arguments and error twice.',
+        message: 'The model repeated the same malformed tool arguments twice.',
       });
     }
+    if ((guard.repeatedToolFailure?.count ?? 0) >= 3) {
+      throw new ProviderAdapterError({
+        kind: 'protocol',
+        retryable: false,
+        message:
+          'The model repeated the same failed tool call three times without making recovery progress.',
+      });
+    }
+  };
+
+  private takeRepeatedToolFailureRecovery = (
+    guard: InvalidArgumentGuard,
+  ): string | undefined => {
+    const repeated = guard.repeatedToolFailure;
+    if (
+      !repeated ||
+      repeated.count < 2 ||
+      repeated.recoveryDelivered
+    ) {
+      return undefined;
+    }
+    guard.repeatedToolFailure = {
+      ...repeated,
+      recoveryDelivered: true,
+    };
+    return repeated.recoveryMarkdown;
   };
 
   private observeToolProgress = (
@@ -1567,12 +1596,35 @@ export class RuntimeHost {
       guard.lastToolResponseRequiresRecovery =
         toolResultRequiresFinalRecovery(part.functionResponse.name, result);
       if (!failed) {
+        guard.repeatedToolFailure = undefined;
+        guard.finalRecoveryUsed = false;
         continue;
       }
       const callId = part.functionResponse.id ?? part.functionResponse.name;
       const call = guard.calls.get(callId) ?? part.functionResponse.name;
       const key = JSON.stringify({ call, error: stableJsonValue(result) });
-      guard.toolErrors.set(key, (guard.toolErrors.get(key) ?? 0) + 1);
+      const previous = guard.repeatedToolFailure;
+      const count = previous?.key === key ? previous.count + 1 : 1;
+      const resultRecord = isRecord(result) ? result : {};
+      const failedPath = typeof resultRecord.failedPath === 'string'
+        ? resultRecord.failedPath
+        : undefined;
+      const errorKind = typeof resultRecord.error === 'string'
+        ? resultRecord.error
+        : 'toolFailure';
+      guard.repeatedToolFailure = {
+        key,
+        count,
+        recoveryDelivered:
+          previous?.key === key ? previous.recoveryDelivered : false,
+        recoveryMarkdown:
+          '# Internal recovery after repeated tool failure\n\n' +
+          `The same ${part.functionResponse.name} call failed twice with ${errorKind}. ` +
+          'Do not submit it unchanged again. Choose a different concrete recovery step. ' +
+          (errorKind === 'ExpectedMismatch'
+            ? `Re-read ${failedPath ? `\`${failedPath}\`` : 'the reported file'} and build a new small patch from the current content.`
+            : 'Inspect the returned error, change the arguments or approach, and then retry.'),
+      };
     }
   };
 
@@ -1845,7 +1897,6 @@ export class RuntimeHost {
       const invalidArgumentGuard: InvalidArgumentGuard = {
         repeats: new Map<string, number>(),
         calls: new Map<string, string>(),
-        toolErrors: new Map<string, number>(),
         lastToolResponseRequiresRecovery: false,
         finalRecoveryUsed: false,
       };
@@ -1854,8 +1905,16 @@ export class RuntimeHost {
         description: 'SugarCode local coding agent',
         instruction: `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}`,
         model: this.createModel(resolved.provider),
-        beforeModelCallback: () => {
+        beforeModelCallback: ({ request }) => {
           this.assertInvalidArgumentProgress(invalidArgumentGuard);
+          const repeatedFailureRecovery =
+            this.takeRepeatedToolFailureRecovery(invalidArgumentGuard);
+          if (repeatedFailureRecovery) {
+            request.contents.push({
+              role: 'user',
+              parts: [{ text: repeatedFailureRecovery }],
+            });
+          }
           return undefined;
         },
         tools: [
@@ -2018,11 +2077,19 @@ export class RuntimeHost {
         true,
       );
       const runWithApprovalState = async <T>(operation: () => Promise<T>): Promise<T> => {
-        context.setWaitingApproval(true);
+        let waitingVisible = false;
+        const timer = setTimeout(() => {
+          waitingVisible = true;
+          context.setWaitingApproval(true);
+        }, AGENT_APPROVAL_STATUS_DELAY_MS);
+        timer.unref();
         try {
           return await operation();
         } finally {
-          context.setWaitingApproval(false);
+          clearTimeout(timer);
+          if (waitingVisible) {
+            context.setWaitingApproval(false);
+          }
         }
       };
       const tools = this.nativeRuntime
@@ -2061,7 +2128,6 @@ export class RuntimeHost {
       const invalidArgumentGuard: InvalidArgumentGuard = {
         repeats: new Map<string, number>(),
         calls: new Map<string, string>(),
-        toolErrors: new Map<string, number>(),
         lastToolResponseRequiresRecovery: false,
         finalRecoveryUsed: false,
       };
@@ -2078,6 +2144,14 @@ export class RuntimeHost {
         includeContents: 'none',
         beforeModelCallback: ({ request }) => {
           this.assertInvalidArgumentProgress(invalidArgumentGuard);
+          const repeatedFailureRecovery =
+            this.takeRepeatedToolFailureRecovery(invalidArgumentGuard);
+          if (repeatedFailureRecovery) {
+            request.contents.push({
+              role: 'user',
+              parts: [{ text: repeatedFailureRecovery }],
+            });
+          }
           publishProgress(
             'waitingForModel',
             streamedSummary || completedSummary
@@ -2852,6 +2926,7 @@ export class RuntimeHost {
       approvalId: record.approvalId,
       operationId: record.operationId,
       decision: 'denied',
+      source: 'system',
     });
     this.emit({
       type: 'runtime.log',
@@ -2982,6 +3057,7 @@ export class RuntimeHost {
     pending: PendingApproval,
     decision: 'approved' | 'denied',
     requestId: string,
+    source: 'user' | 'policy' | 'system',
   ): void => {
     let effectiveDecision = decision;
     try {
@@ -3008,6 +3084,7 @@ export class RuntimeHost {
         approvalId,
         operationId: pending.operationId,
         decision: effectiveDecision,
+        source,
       });
     }
     pending.resolve(effectiveDecision);
@@ -3019,7 +3096,13 @@ export class RuntimeHost {
       if (pending.turnId !== turnId) {
         continue;
       }
-      this.finishApproval(approvalId, pending, 'denied', pending.requestId);
+      this.finishApproval(
+        approvalId,
+        pending,
+        'denied',
+        pending.requestId,
+        'system',
+      );
     }
   };
 

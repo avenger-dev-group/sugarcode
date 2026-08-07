@@ -94,7 +94,7 @@ export class RuntimeMcpApprovalController {
       if (pending.timer) {
         clearTimeout(pending.timer);
       }
-      this.resolve(pending, 'denied');
+      this.resolve(pending, 'denied', 'system');
     }
   };
 
@@ -126,13 +126,14 @@ export class RuntimeMcpApprovalController {
       clearTimeout(pending.timer);
     }
     this.publish();
-    this.resolve(pending, decision);
+    this.resolve(pending, decision, 'user');
     return action('accepted');
   };
 
   private resolve = (
     pending: PendingRuntimeApproval,
     decision: 'approved' | 'denied',
+    source: 'user' | 'policy' | 'system',
   ): void => {
     this.runtime.send({
       type: 'approval.resolve',
@@ -142,6 +143,7 @@ export class RuntimeMcpApprovalController {
       turnId: pending.turnId,
       approvalId: pending.approvalId,
       decision,
+      source,
     });
   };
 
@@ -161,11 +163,11 @@ export class RuntimeMcpApprovalController {
       if (this.shouldAutoApprove(pending.workspaceId, pending.threadId)) {
         pending.responseCommitted = true;
         pending.actionState = 'submittingApproval';
-        this.resolve(pending, 'approved');
+        this.resolve(pending, 'approved', 'policy');
       } else if (!this.surfaceReady && event.recovered !== true) {
         pending.responseCommitted = true;
         pending.actionState = 'submittingDenial';
-        this.resolve(pending, 'denied');
+        this.resolve(pending, 'denied', 'system');
       } else {
         this.startTimer(pending);
         this.publish();
@@ -200,7 +202,7 @@ export class RuntimeMcpApprovalController {
       pending.actionState = 'localWindowElapsed';
       pending.timer = null;
       this.publish();
-      this.resolve(pending, 'denied');
+      this.resolve(pending, 'denied', 'system');
     }, LOCAL_APPROVAL_WINDOW_MS);
   };
 

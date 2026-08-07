@@ -288,6 +288,41 @@ class RepeatingToolErrorLlm extends BaseLlm {
   }
 }
 
+class PersistentToolErrorLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    const failures = request.contents
+      .flatMap((content) => content.parts ?? [])
+      .filter((part) => part.functionResponse?.name === 'workspace_read')
+      .length;
+    yield {
+      content: {
+        role: 'model',
+        parts: failures < 3
+          ? [{
+            functionCall: {
+              id: `call-persistent-${failures}`,
+              name: 'workspace_read',
+              args: { path: 'missing.txt' },
+            },
+          }]
+          : [{ text: 'The no-progress guard should stop before this response.' }],
+      },
+      partial: false,
+      turnComplete: failures >= 3,
+      finishReason: failures >= 3 ? FinishReason.STOP : undefined,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class RecoverAfterPrematureFinalLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
@@ -945,7 +980,7 @@ test('RuntimeHost fails after two output truncations without publishing success'
   );
 });
 
-test('RuntimeHost stops before a third identical tool error request', async () => {
+test('RuntimeHost gives repeated execution failures one guided recovery attempt', async () => {
   const events: RuntimeEvent[] = [];
   let readCount = 0;
   let resolveTerminal: (() => void) | undefined;
@@ -1009,12 +1044,81 @@ test('RuntimeHost stops before a third identical tool error request', async () =
       event.type === 'turn.completed',
   );
   assert.equal(readCount, 2);
-  assert.equal(completed?.status, 'failed');
-  assert.equal(completed?.error?.kind, 'unsupportedToolArguments');
+  assert.equal(completed?.status, 'completed');
+  assert.equal(completed?.error, undefined);
   assert.equal(
     events.some((event) => event.type === 'approval.requested'),
     false,
   );
+});
+
+test('RuntimeHost stops a third identical execution failure without progress', async () => {
+  const events: RuntimeEvent[] = [];
+  let readCount = 0;
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    listPendingApprovalsJson: () => '[]',
+    ensureThread: (): void => undefined,
+    loadThreadJson: () => emptyThreadSnapshot('thread-persistent-tool-error'),
+    startTurn: (): void => undefined,
+    appendItem: () => true,
+    finishTurn: () => true,
+    workspaceRead: async () => {
+      readCount += 1;
+      return JSON.stringify({ ok: false, error: 'notFound' });
+    },
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => new PersistentToolErrorLlm({ model: 'fixture-model' }),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveTerminal?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-persistent-tool-error',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-persistent-tool-error-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-persistent-tool-error',
+    workspaceId: 'workspace-persistent-tool-error',
+    threadId: 'thread-persistent-tool-error',
+    turnId: 'turn-persistent-tool-error',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: 'Keep retrying the missing file.' }],
+  });
+
+  await terminal;
+
+  const completed = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(readCount, 3);
+  assert.equal(completed?.status, 'failed');
+  assert.equal(completed?.error?.kind, 'protocol');
+  assert.match(completed?.error?.message ?? '', /three times/u);
 });
 
 test('RuntimeHost retries one premature final after a failed tool result', async () => {
@@ -1672,6 +1776,7 @@ test('RuntimeHost restores a pending approval without replay and executes only a
     turnId: approval.turnId,
     approvalId: approval.approvalId,
     decision: 'approved',
+    source: 'user',
   });
   await completed;
   assert.equal(approvalStatus, 'approved');
@@ -1794,6 +1899,7 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     turnId: approval.turnId,
     approvalId: approval.approvalId,
     decision: 'approved',
+    source: 'user',
   });
   await completed;
   assert.equal(applyCount, 1);
@@ -1921,6 +2027,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
     turnId: approval.turnId,
     approvalId: approval.approvalId,
     decision: 'approved',
+    source: 'user',
   });
   await completed;
   assert.equal(claimCount, 1);

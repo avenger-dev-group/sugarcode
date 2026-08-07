@@ -52,7 +52,11 @@ Resolved approval records remain durable audit facts, but the current
 `ask`/Thread/project automatic-approval mode is intentionally process-local and
 is not restored after application restart. Its Thread or workspace scope is
 held by Main only; a restart therefore returns to `ask` and cannot silently
-recreate broad file or network authority from historical approval rows.
+recreate broad file or network authority from historical approval rows. New
+live approval-resolution events identify whether the decision came from the
+user, the active scoped policy or a runtime safety path. That presentation
+provenance is not authority and is optional when Main rebuilds historical
+activity from older durable records.
 
 Rust records recovery as `runtimeRestart`; Main normalizes that private storage
 reason to the public provider-neutral `incomplete` error while retaining the

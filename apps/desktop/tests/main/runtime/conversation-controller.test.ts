@@ -480,6 +480,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     approvalId: 'approval-recovered',
     operationId: 'operation-recovered',
     decision: 'approved',
+    source: 'policy',
   });
   fixture.emit({
     type: 'operation.started',
@@ -553,6 +554,10 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     (activity) => activity.type === 'commandApproval',
   );
   assert.equal(commandActivities?.length, 1);
+  assert.equal(
+    commandActivities?.[0]?.activity.decision?.source,
+    'policy',
+  );
   assert.deepEqual(commandActivities?.[0]?.activity.executionResult?.outcome, {
     type: 'workspacePatch',
     filesChanged: 1,

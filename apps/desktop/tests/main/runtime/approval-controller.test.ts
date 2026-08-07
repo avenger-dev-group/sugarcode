@@ -141,6 +141,7 @@ test('thread Full Access automatically approves later operations only in that th
   }
   assert.equal(automaticDecision.approvalId, 'approval-later');
   assert.equal(automaticDecision.decision, 'approved');
+  assert.equal(automaticDecision.source, 'policy');
 
   fixture.emit({
     type: 'approval.resolved',
@@ -205,7 +206,14 @@ test('workspace Full Access automatically approves every thread only in that wor
     argumentsSummary: 'Full Access: pnpm test',
     fullAccess: true,
   });
-  assert.equal(fixture.sent.at(-1)?.type, 'approval.resolve');
+  const automaticDecision = fixture.sent.at(-1);
+  assert.equal(automaticDecision?.type, 'approval.resolve');
+  assert.equal(
+    automaticDecision?.type === 'approval.resolve'
+      ? automaticDecision.source
+      : undefined,
+    'policy',
+  );
   fixture.emit({
     type: 'approval.resolved',
     sequence: 2,

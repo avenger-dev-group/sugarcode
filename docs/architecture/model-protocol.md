@@ -118,7 +118,12 @@ are never truncated or guessed. A direct, otherwise valid `paths` array of 9
 through 16 entries from a non-strict provider is retained and executed in
 native read waves of at most 8 paths; more than 16 is rejected with explicit
 split guidance. OpenAI and Anthropic adapters use this same normalizer before
-ADK schema validation.
+ADK schema validation. A valid structured call whose execution returns an error
+is not an argument-wire failure. Two identical execution failures inject one
+provider-neutral recovery continuation, including a re-read-and-small-patch
+instruction for stale patch context; a third identical failure without any
+successful tool progress terminates as a `protocol` stall rather than
+`unsupportedToolArguments`.
 Patch arguments receive a separate deterministic preflight: every
 `*** Update File:` section must contain at least one `-` or `+` change line
 unless it is a move-only operation. An unprefixed whole-file body is rejected

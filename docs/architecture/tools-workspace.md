@@ -59,6 +59,12 @@ so selecting either automatic mode does not leave a second approval path that
 continues prompting. Switching back to `ask` clears the active scoped grant.
 The Renderer may show another workspace or Thread, but that presentation change
 does not broaden a grant because Main matches the immutable request identities.
+Automatic resolutions retain the same durable approval audit boundary, while
+their live resolution event carries `policy` provenance. The Renderer labels
+them as inherited access and does not imply that the user answered a new
+prompt. A child task publishes a waiting-for-approval state only
+when the proposal remains unresolved beyond a short presentation delay, so an
+immediate scoped decision does not flash as a blocked child.
 
 Workspace patches use the SugarCode `*** Begin Patch` / operation-marker /
 `*** End Patch` grammar. The runtime rejects malformed or GNU unified-diff

@@ -99,6 +99,7 @@ export type CommandApprovalActivityViewModel = Readonly<{
   command: string;
   argumentCount: number;
   fullAccess?: boolean;
+  approvalSource?: 'user' | 'policy' | 'system';
   liveOutput?: Readonly<{ stdout: string; stderr: string }>;
   state: CommandApprovalPresentationState;
   executionAttempt?: Readonly<{

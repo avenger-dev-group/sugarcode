@@ -284,6 +284,11 @@ const CommandRow = ({
         </span>
         <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm leading-5">
           <span className={tone}>{action}</span>
+          {entry.activity.approvalSource === 'policy' ? (
+            <span className="rounded-full border px-1.5 font-mono text-[9px] text-tertiary">
+              {language === 'zh' ? '继承项目授权' : 'Inherited access'}
+            </span>
+          ) : null}
           <code className="min-w-0 flex-1 truncate font-mono text-[12px] text-secondary underline decoration-border underline-offset-2">
             {entry.activity.command}
           </code>

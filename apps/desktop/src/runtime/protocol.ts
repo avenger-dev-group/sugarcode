@@ -42,6 +42,8 @@ export type RuntimeProviderConfig = Readonly<{
   parallelTools: boolean;
 }>;
 
+export type RuntimeApprovalDecisionSource = 'user' | 'policy' | 'system';
+
 export type RuntimeAssetDescriptor = Readonly<{
   assetId: string;
   sha256: string;
@@ -297,6 +299,7 @@ export type RuntimeCommand =
       turnId: string;
       approvalId: string;
       decision: 'approved' | 'denied';
+      source: RuntimeApprovalDecisionSource;
     }>
   | Readonly<{
       type: 'thread.list';
@@ -574,6 +577,7 @@ export type RuntimeEvent =
         approvalId: string;
         operationId: string;
         decision: 'approved' | 'denied';
+        source?: RuntimeApprovalDecisionSource;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -600,6 +604,7 @@ export type RuntimeEvent =
         approvalId: string;
         operationId: string;
         decision: 'approved' | 'denied';
+        source?: RuntimeApprovalDecisionSource;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -956,7 +961,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.threadId === 'string' &&
         typeof value.turnId === 'string' &&
         typeof value.approvalId === 'string' &&
-        ['approved', 'denied'].includes(String(value.decision))
+        ['approved', 'denied'].includes(String(value.decision)) &&
+        ['user', 'policy', 'system'].includes(String(value.source))
       );
     case 'thread.list':
       return (
@@ -1231,7 +1237,9 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         hasTurnCoordinates(value) &&
         typeof value.approvalId === 'string' &&
         typeof value.operationId === 'string' &&
-        ['approved', 'denied'].includes(String(value.decision))
+        ['approved', 'denied'].includes(String(value.decision)) &&
+        (value.source === undefined ||
+          ['user', 'policy', 'system'].includes(String(value.source)))
       );
     case 'mcp.approvalRequested':
       return (
@@ -1257,7 +1265,9 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         hasTurnCoordinates(value) &&
         typeof value.approvalId === 'string' &&
         typeof value.operationId === 'string' &&
-        ['approved', 'denied'].includes(String(value.decision))
+        ['approved', 'denied'].includes(String(value.decision)) &&
+        (value.source === undefined ||
+          ['user', 'policy', 'system'].includes(String(value.source)))
       );
     case 'operation.started':
       return hasTurnCoordinates(value) && typeof value.operationId === 'string';

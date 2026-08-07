@@ -74,7 +74,7 @@ export class RuntimeApprovalController {
   surfaceUnavailable = (): void => {
     this.surfaceReady = false;
     for (const pending of [...this.queue]) {
-      this.resolve(pending, 'denied');
+      this.resolve(pending, 'denied', 'system');
     }
   };
 
@@ -106,7 +106,7 @@ export class RuntimeApprovalController {
     ) {
       return result(false, 'invalid');
     }
-    this.resolve(pending, 'approved');
+    this.resolve(pending, 'approved', 'user');
     return result(true, 'accepted');
   };
 
@@ -118,7 +118,7 @@ export class RuntimeApprovalController {
     if (presentationId !== pending.approvalId) {
       return result(false, 'stale');
     }
-    this.resolve(pending, 'denied');
+    this.resolve(pending, 'denied', 'user');
     return result(true, 'accepted');
   };
 
@@ -160,9 +160,9 @@ export class RuntimeApprovalController {
       };
       this.queue.push(pending);
       if (this.isAutoApproved(pending.workspaceId, pending.threadId)) {
-        this.resolve(pending, 'approved');
+        this.resolve(pending, 'approved', 'policy');
       } else if (!this.surfaceReady && event.recovered !== true) {
-        this.resolve(pending, 'denied');
+        this.resolve(pending, 'denied', 'system');
       } else {
         this.publish();
       }
@@ -182,6 +182,7 @@ export class RuntimeApprovalController {
   private resolve = (
     pending: PendingApproval,
     decision: 'approved' | 'denied',
+    source: 'user' | 'policy' | 'system',
   ): void => {
     this.runtime.send({
       type: 'approval.resolve',
@@ -191,6 +192,7 @@ export class RuntimeApprovalController {
       turnId: pending.turnId,
       approvalId: pending.approvalId,
       decision,
+      source,
     });
   };
 
