@@ -102,6 +102,66 @@ const validateBaseUrl = (value: string): string => {
 const jsonText = (value: Readonly<Record<string, unknown>>): string =>
   JSON.stringify(value);
 
+const parseConcatenatedJsonObjects = (
+  value: string,
+): readonly Readonly<Record<string, unknown>>[] | undefined => {
+  const source = value.trim();
+  if (source.length === 0 || source.length > 4_096 || source[0] !== '{') {
+    return undefined;
+  }
+  const objects: Readonly<Record<string, unknown>>[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (depth === 0) {
+      if (/\s/u.test(character ?? '')) {
+        continue;
+      }
+      if (character !== '{') {
+        return undefined;
+      }
+      start = index;
+      depth = 1;
+      continue;
+    }
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+    } else if (character === '{') {
+      depth += 1;
+    } else if (character === '}') {
+      depth -= 1;
+      if (depth < 0) {
+        return undefined;
+      }
+      if (depth === 0) {
+        try {
+          const parsed: unknown = JSON.parse(source.slice(start, index + 1));
+          if (!isRecord(parsed)) {
+            return undefined;
+          }
+          objects.push(parsed);
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return depth === 0 && !inString && objects.length > 1 ? objects : undefined;
+};
+
 const parseToolArguments = (
   toolName: string,
   value: string,
@@ -113,6 +173,23 @@ const parseToolArguments = (
     }
   } catch {
     // Report a wire-level tool argument failure before any tool or approval runs.
+  }
+  const concatenated = parseConcatenatedJsonObjects(value);
+  if (
+    toolName === 'workspace_read' &&
+    concatenated &&
+    concatenated.length <= 8 &&
+    concatenated.every(
+      (entry) =>
+        Object.keys(entry).length === 1 &&
+        typeof entry.path === 'string' &&
+        entry.path.length > 0,
+    )
+  ) {
+    return {
+      name: toolName,
+      args: { paths: concatenated.map((entry) => entry.path as string) },
+    };
   }
   return {
     name: INVALID_TOOL_ARGUMENTS_TOOL_NAME,
@@ -516,6 +593,58 @@ export class OpenAiLlm extends BaseLlm {
     const callIds = new Map<string, string>();
     const completedCalls: ToolCallAccumulator[] = [];
     const textItems = new Map<string, TextItemAccumulator>();
+    const textItemIdsByOutputIndex = new Map<number, string>();
+    const reconciledTextItemIds = new Set<string>();
+    const canonicalTextItemId = (
+      outputIndex: number,
+      observedItemId: string,
+    ): string => {
+      const itemId = textItemIdsByOutputIndex.get(outputIndex) ?? observedItemId;
+      textItemIdsByOutputIndex.set(outputIndex, itemId);
+      return itemId;
+    };
+    const reconcileTextOutput = (
+      outputIndex: number,
+      output: ResponseOutputMessage,
+      forcedPhase?: ModelTextPhase,
+    ): void => {
+      const authoritativeText = output.content
+        .flatMap((content) =>
+          content.type === 'output_text' ? [content.text] : [],
+        )
+        .join('');
+      const indexedItemId = textItemIdsByOutputIndex.get(outputIndex);
+      const exactCandidates = authoritativeText.length > 0
+        ? [...textItems.values()].filter(
+            (item) =>
+              !reconciledTextItemIds.has(item.id) &&
+              item.text === authoritativeText,
+          )
+        : [];
+      const itemId = textItems.get(output.id)?.text === authoritativeText
+        ? output.id
+        : indexedItemId &&
+            textItems.get(indexedItemId)?.text === authoritativeText
+          ? indexedItemId
+          : exactCandidates.length === 1
+            ? exactCandidates[0]?.id ?? output.id
+            : indexedItemId ?? output.id;
+      textItemIdsByOutputIndex.set(outputIndex, itemId);
+      reconciledTextItemIds.add(itemId);
+      const existing = textItems.get(itemId) ?? textItems.get(output.id);
+      textItems.set(itemId, {
+        id: itemId,
+        phase: forcedPhase ?? (output.phase === 'commentary'
+          ? 'commentary'
+          : output.phase === 'final_answer'
+            ? 'final'
+            : 'provisional'),
+        text: authoritativeText || existing?.text || '',
+      });
+      if (itemId !== output.id) {
+        textItems.delete(output.id);
+      }
+    };
     let thought = '';
     let thoughtItemId = '';
     let completed = false;
@@ -541,13 +670,17 @@ export class OpenAiLlm extends BaseLlm {
     for await (const event of stream) {
       switch (event.type) {
         case 'response.output_text.delta': {
-          const current = textItems.get(event.item_id) ?? {
-            id: event.item_id,
+          const itemId = canonicalTextItemId(
+            event.output_index,
+            event.item_id,
+          );
+          const current = textItems.get(itemId) ?? {
+            id: itemId,
             phase: 'provisional' as const,
             text: '',
           };
           current.text += event.delta;
-          textItems.set(event.item_id, current);
+          textItems.set(itemId, current);
           yield {
             content: {
               role: 'model',
@@ -585,15 +718,20 @@ export class OpenAiLlm extends BaseLlm {
             callIds.set(event.item.id, event.item.call_id);
           } else if (event.item.type === 'message') {
             const item = event.item as ResponseOutputMessage;
-            textItems.set(item.id, {
-              id: item.id,
+            const itemId = canonicalTextItemId(event.output_index, item.id);
+            const existing = textItems.get(itemId) ?? textItems.get(item.id);
+            textItems.set(itemId, {
+              id: itemId,
               phase: item.phase === 'commentary'
                 ? 'commentary'
                 : item.phase === 'final_answer'
                   ? 'final'
                   : 'provisional',
-              text: textItems.get(item.id)?.text ?? '',
+              text: existing?.text ?? '',
             });
+            if (itemId !== item.id) {
+              textItems.delete(item.id);
+            }
           }
           break;
         case 'response.function_call_arguments.done': {
@@ -607,25 +745,13 @@ export class OpenAiLlm extends BaseLlm {
         }
         case 'response.completed': {
           completed = true;
-          for (const output of event.response.output ?? []) {
+          for (const [outputIndex, output] of (
+            event.response.output ?? []
+          ).entries()) {
             if (output.type !== 'message') {
               continue;
             }
-            const existing = textItems.get(output.id);
-            const authoritativeText = output.content
-              .flatMap((content) =>
-                content.type === 'output_text' ? [content.text] : [],
-              )
-              .join('');
-            textItems.set(output.id, {
-              id: output.id,
-              phase: output.phase === 'commentary'
-                ? 'commentary'
-                : output.phase === 'final_answer'
-                  ? 'final'
-                  : 'provisional',
-              text: authoritativeText || existing?.text || '',
-            });
+            reconcileTextOutput(outputIndex, output);
           }
           const hasTools = completedCalls.length > 0;
           const resolvedTextItems = [...textItems.values()].map((item) => ({
@@ -716,21 +842,13 @@ export class OpenAiLlm extends BaseLlm {
             kind: 'continue',
             reason: 'maxOutputTokens',
           };
-          for (const output of event.response.output ?? []) {
+          for (const [outputIndex, output] of (
+            event.response.output ?? []
+          ).entries()) {
             if (output.type !== 'message') {
               continue;
             }
-            const existing = textItems.get(output.id);
-            const authoritativeText = output.content
-              .flatMap((content) =>
-                content.type === 'output_text' ? [content.text] : [],
-              )
-              .join('');
-            textItems.set(output.id, {
-              id: output.id,
-              phase: 'commentary',
-              text: authoritativeText || existing?.text || '',
-            });
+            reconcileTextOutput(outputIndex, output, 'commentary');
           }
           const parts: Part[] = [];
           if (thought) {

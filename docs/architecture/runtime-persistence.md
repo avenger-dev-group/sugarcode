@@ -56,6 +56,14 @@ calls and uncertain results are excluded. OpenAI Responses continuation data
 needed inside a live Turn remains exact and process-local; it is never flattened
 into misleading text or treated as portable history.
 
+Completed reasoning may therefore exist inside `turn.modelHistory` without a
+corresponding public `turn.textCompleted` Item. Public text lifecycle Items are
+reserved for explicit commentary, bounded tool-lifecycle progress summaries and
+final answer content; restoring a Thread never promotes private reasoning into
+the visible process timeline. Synthesized progress has a stable Turn-and-call
+identity, is persisted as commentary for restore, and is not added to model
+history.
+
 Restore prefers v2 `turn.textCompleted` Items. For databases created by the v3
 schema before protocol v2, a Turn with no completed text Items still coalesces
 legacy `turn.textDelta` records. No schema migration is required. Incomplete or

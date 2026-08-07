@@ -26,6 +26,14 @@ explicit persisted approval and use a separate bounded executor. Active process
 trees are keyed by `operationId`, so Turn cancellation and worker shutdown can
 terminate them.
 
+The sandboxed command wire accepts exactly one absolute executable path plus a
+separate string argument array; its working directory is always the workspace
+root. Pipes, redirects, command chaining and other shell expressions belong to
+Full Access mode. The runtime validates these mode-specific arguments before it
+creates an operation or requests approval and returns actionable repair guidance
+to the Agent. Native validation repeats the absolute-path and bounded-argument
+checks as a defense-in-depth boundary.
+
 Writes, Git mutations, Full Access commands and MCP calls first create a durable
 operation and approval proposal. Approval atomically claims the operation
 before native dispatch. A crash after the claim records failure and never
@@ -38,6 +46,12 @@ documents before creating an operation or asking for approval. Native parser
 failures remain execution failures after an approved operation and are returned
 to the Agent with actionable format guidance; they must never be presented as
 approval denial.
+
+`workspace_read` accepts either one `path` or a bounded `paths` batch of 1
+through 8 files. Batch reads execute through the same read-only workspace
+capability and return each result with its requested path. This gives compatible
+models a declared parallel-read shape without expanding authority or rewriting
+ambiguous tool intent.
 
 ## MCP and collaboration
 

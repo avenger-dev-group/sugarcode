@@ -44,6 +44,21 @@ synthetic message ID where the provider has no Item ID and classify
 `finish_reason`/`stop_reason`; `tool_use`, `pause_turn`, token limits, incomplete
 responses, filters and refusals are never ordinary success.
 
+Compatible Responses gateways may report different message IDs for
+`output_item.added`, `output_text.delta` and the terminal response. The adapter
+uses `output_index` to choose one request-stable canonical text Item identity;
+later aliases update that Item instead of creating duplicate commentary, final
+text or model history. If a gateway omits the added event or drifts its output
+indexes, one unique exact match between accumulated stream text and terminal
+text repairs the alias at this provider boundary. Ambiguous equal outputs remain
+separate rather than being guessed or deduplicated in the UI.
+
+Provider reasoning/thinking parts remain marked as internal reasoning. They may
+be retained for same-Turn continuity and completed portable history, but the
+runtime does not publish them as conversation commentary. Explicit
+`commentary` message output remains the only model-authored process text shown
+to the user.
+
 ## Tools
 
 ADK FunctionTools expose provider-neutral schemas. Arguments are validated
@@ -59,7 +74,12 @@ Turn without converting it into a durable storage failure.
 Tool arguments must parse as a JSON object. Malformed JSON is converted to a
 bounded internal error tool that cannot request approval or execute the target
 tool, allowing one repair attempt. Repeating the identical malformed arguments
-and error twice trips the Turn no-progress guard before another provider call.
+and error twice trips the Turn no-progress guard before another provider call
+and is classified as `unsupportedToolArguments`. One narrow compatibility
+repair is allowed for `workspace_read`: a bounded sequence of 2 through 8
+concatenated objects containing only one string `path` each is normalized to
+the declared `paths` batch argument. Other malformed or ambiguous arguments are
+never guessed.
 Compatible gateways that cannot supply the declared structured tool wire fail
 explicitly as `wireMismatch` or `unsupportedToolArguments`; SugarCode does not
 parse generic `<tool_call>` text.

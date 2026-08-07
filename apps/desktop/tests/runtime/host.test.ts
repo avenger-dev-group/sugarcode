@@ -142,6 +142,11 @@ class ToolLoopLlm extends BaseLlm {
           role: 'model',
           parts: [
             {
+              text: 'I should read the requested file before answering.',
+              thought: true,
+            },
+            { text: '\n\n' },
+            {
               functionCall: {
                 id: 'call-read',
                 name: 'workspace_read',
@@ -550,6 +555,14 @@ test('RuntimeHost never completes a commentary-only model response', async () =>
   assert.equal(completed?.status, 'failed');
   assert.equal(completed?.error?.kind, 'protocol');
   assert.match(completed?.error?.message ?? '', /three times/u);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textDelta' ||
+        event.type === 'turn.textCompleted',
+    ),
+    false,
+  );
 });
 
 test('RuntimeHost fails after two output truncations without publishing success', async () => {
@@ -671,7 +684,7 @@ test('RuntimeHost stops before a third identical tool error request', async () =
   );
   assert.equal(readCount, 2);
   assert.equal(completed?.status, 'failed');
-  assert.equal(completed?.error?.kind, 'protocol');
+  assert.equal(completed?.error?.kind, 'unsupportedToolArguments');
   assert.equal(
     events.some((event) => event.type === 'approval.requested'),
     false,
@@ -1005,7 +1018,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
       timeoutMs: 5_000,
       parallelTools: false,
     },
-    content: [{ type: 'text', text: 'Read fixture.txt' }],
+    content: [{ type: 'text', text: '请读取 fixture.txt' }],
   });
 
   await Promise.race([
@@ -1030,6 +1043,21 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   assert.ok(
     events.some(
       (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'commentary' &&
+        event.text === '正在读取 fixture.txt。',
+    ),
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' && event.text.trim().length === 0,
+    ),
+    false,
+  );
+  assert.ok(
+    events.some(
+      (event) =>
         event.type === 'turn.textDelta' && event.delta === 'Tool loop complete',
     ),
   );
@@ -1039,7 +1067,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   assert.equal(persistedKinds.includes('turn.textDelta'), false);
   assert.equal(
     persistedKinds.filter((kind) => kind === 'turn.textCompleted').length,
-    1,
+    2,
   );
 });
 

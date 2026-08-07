@@ -1,0 +1,19 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { SUGARCODE_BASE_AGENT_PROMPT_V1 } from '../../src/runtime/agent-instructions.ts';
+
+test('base Agent instructions localize visible output and reject repetitive process narration', () => {
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /original user request for every user-visible progress update/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /do not restate the user's request, narrate every file read, repeat an earlier update/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /workspace_read, provide either one path string or one paths array/u,
+  );
+});

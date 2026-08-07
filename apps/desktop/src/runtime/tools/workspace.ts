@@ -1,5 +1,6 @@
 import { FunctionTool } from '@google/adk';
 import { Type, type Schema } from '@google/genai';
+import { isAbsolute } from 'node:path';
 
 import type { NativeRuntimeBinding } from '../native.ts';
 
@@ -14,6 +15,22 @@ const pathSchema = {
   required: ['path'],
 } satisfies Schema;
 
+const readSchema = {
+  type: Type.OBJECT,
+  properties: {
+    path: pathProperty,
+    paths: {
+      type: Type.ARRAY,
+      items: pathProperty,
+      minItems: '1',
+      maxItems: '8',
+      description:
+        'Read 1 through 8 workspace-relative files in one call. Use either path or paths, never both.',
+    },
+  },
+  description: 'Provide exactly one of path or paths.',
+} satisfies Schema;
+
 const pathArgument = (input: unknown): string => {
   if (
     typeof input !== 'object' ||
@@ -24,6 +41,27 @@ const pathArgument = (input: unknown): string => {
     throw new Error('path must be a string');
   }
   return input.path;
+};
+
+const readPathArguments = (input: unknown): readonly string[] => {
+  if (typeof input !== 'object' || input === null) {
+    throw new Error('path or paths must be provided');
+  }
+  const path = 'path' in input ? input.path : undefined;
+  const paths = 'paths' in input ? input.paths : undefined;
+  if (typeof path === 'string' && paths === undefined) {
+    return [path];
+  }
+  if (
+    path === undefined &&
+    Array.isArray(paths) &&
+    paths.length >= 1 &&
+    paths.length <= 8 &&
+    paths.every((entry) => typeof entry === 'string')
+  ) {
+    return paths;
+  }
+  throw new Error('Provide either one path or 1 through 8 paths');
 };
 
 const searchArguments = (input: unknown): { path: string; query: string } => {
@@ -71,17 +109,18 @@ const commandSchema = {
       type: Type.STRING,
       enum: ['sandboxed', 'fullAccess'],
       description:
-        'sandboxed runs an absolute executable read-only without network; fullAccess runs shell syntax after explicit approval.',
+        'Use sandboxed for one direct absolute executable with no shell syntax; use fullAccess for pipelines, redirects, command chaining, or workspace writes.',
     },
     command: {
       type: Type.STRING,
       description:
-        'Absolute executable path for sandboxed mode, or complete shell command for fullAccess mode.',
+        'For sandboxed mode, an absolute executable path such as /usr/bin/find. Never include arguments, pipes, redirects, or && here. For fullAccess mode, the complete shell command.',
     },
     arguments: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
-      description: 'Argument array for sandboxed mode. Omit for fullAccess mode.',
+      description:
+        'Each sandboxed executable argument as a separate string, for example ["src", "-type", "f"]. Omit for fullAccess mode.',
     },
     cwd: {
       type: Type.STRING,
@@ -165,6 +204,39 @@ const optionalInteger = (value: unknown, fallback: number): number => {
   return value;
 };
 
+const shellExecArgumentError = (
+  mode: 'sandboxed' | 'fullAccess',
+  command: string,
+  commandArguments: readonly string[],
+  cwd: string,
+  timeoutMs: number,
+): string | undefined => {
+  if (command.trim().length === 0) {
+    return 'shell_exec command must not be empty.';
+  }
+  if (timeoutMs < 1 || timeoutMs > 600_000) {
+    return 'shell_exec timeoutMs must be an integer from 1 through 600000.';
+  }
+  if (mode === 'sandboxed' && cwd !== '.') {
+    return 'Sandboxed shell_exec always runs at the workspace root; omit cwd or use ".".';
+  }
+  if (mode === 'sandboxed' && !isAbsolute(command)) {
+    return 'Sandboxed shell_exec requires command to be one absolute executable path and accepts its arguments only through the arguments array. Use fullAccess for pipes, redirects, command chaining, or other shell syntax.';
+  }
+  if (mode === 'fullAccess' && commandArguments.length > 0) {
+    return 'Full Access shell_exec requires the complete shell expression in command and does not accept an arguments array.';
+  }
+  return undefined;
+};
+
+const invalidShellExecArguments = (
+  message: string,
+): Readonly<Record<string, unknown>> => ({
+  ok: false,
+  error: 'invalidArguments',
+  message,
+});
+
 export const executePrivilegedWorkspaceTool = async (
   nativeRuntime: NativeRuntimeBinding,
   operationId: string,
@@ -201,14 +273,15 @@ export const executePrivilegedWorkspaceTool = async (
   const commandArguments = optionalStringArray(argumentsValue.arguments);
   const cwd = optionalString(argumentsValue.cwd, '.');
   const timeoutMs = optionalInteger(argumentsValue.timeoutMs, 300_000);
-  if (
-    command.trim().length === 0 ||
-    timeoutMs < 1 ||
-    timeoutMs > 600_000 ||
-    (mode === 'sandboxed' && cwd !== '.') ||
-    (mode === 'fullAccess' && commandArguments.length > 0)
-  ) {
-    throw new Error('shell_exec arguments are invalid for the selected mode');
+  const argumentError = shellExecArgumentError(
+    mode,
+    command,
+    commandArguments,
+    cwd,
+    timeoutMs,
+  );
+  if (argumentError) {
+    throw new Error(argumentError);
   }
   const flushOutput = (): void => {
     const chunks = parseNativeResult(
@@ -274,12 +347,30 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'workspace_read',
     description:
-      'Read a UTF-8 text file inside the open workspace without following symlinks.',
-    parameters: pathSchema,
-    execute: async (input) =>
-      parseNativeResult(
-        await nativeRuntime.workspaceRead(workspaceId, pathArgument(input)),
-      ),
+      'Read one UTF-8 text file, or up to 8 files with paths, inside the open workspace without following symlinks.',
+    parameters: readSchema,
+    execute: async (input) => {
+      const paths = readPathArguments(input);
+      if (paths.length === 1) {
+        return parseNativeResult(
+          await nativeRuntime.workspaceRead(workspaceId, paths[0] ?? ''),
+        );
+      }
+      const files: Readonly<Record<string, unknown>>[] = await Promise.all(
+        paths.map(async (path) => {
+          const result = parseNativeResult(
+            await nativeRuntime.workspaceRead(workspaceId, path),
+          );
+          return isRecord(result)
+            ? { ...result, path }
+            : { path, result };
+        }),
+      );
+      return {
+        ok: files.every((file) => file.ok !== false),
+        files,
+      };
+    },
   }),
   new FunctionTool({
     name: 'workspace_list',
@@ -341,7 +432,7 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'shell_exec',
     description:
-      'Run a bounded command in the workspace. Sandboxed mode is filesystem-read-only and network-denied. Full Access supports shell syntax and can modify files. Every execution requires user approval.',
+      'Run a bounded command in the workspace. Prefer sandboxed for a single absolute executable plus a separate arguments array; it is filesystem-read-only and network-denied. Use fullAccess only when shell syntax or writes are required. Every valid execution requires user approval.',
     parameters: commandSchema,
     execute: async (input) => {
       if (
@@ -362,19 +453,20 @@ export const createWorkspaceTools = (
       const commandArguments = optionalStringArray(commandArgumentsValue);
       const cwd = optionalString(cwdValue, '.');
       const timeoutMs = optionalInteger(timeoutValue, 300_000);
-      if (!runPrivileged) {
-        return { ok: false, error: 'approvalUnavailable' };
-      }
       const mode = input.mode;
       const command = input.command;
-      if (
-        command.trim().length === 0 ||
-        timeoutMs < 1 ||
-        timeoutMs > 600_000 ||
-        (mode === 'sandboxed' && cwd !== '.') ||
-        (mode === 'fullAccess' && commandArguments.length > 0)
-      ) {
-        throw new Error('shell_exec arguments are invalid for the selected mode');
+      const argumentError = shellExecArgumentError(
+        mode,
+        command,
+        commandArguments,
+        cwd,
+        timeoutMs,
+      );
+      if (argumentError) {
+        return invalidShellExecArguments(argumentError);
+      }
+      if (!runPrivileged) {
+        return { ok: false, error: 'approvalUnavailable' };
       }
       return runPrivileged(
         'shell_exec',

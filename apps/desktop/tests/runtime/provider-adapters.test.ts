@@ -336,6 +336,143 @@ test('OpenAI Responses preserves commentary phase, Item ID, and phased history',
   assert.equal(input.at(-1)?.phase, 'commentary');
 });
 
+test('OpenAI Responses reconciles compatible gateway text IDs by output index', async (context) => {
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        event: 'response.output_item.added',
+        data: {
+          type: 'response.output_item.added',
+          sequence_number: 1,
+          output_index: 0,
+          item: {
+            id: 'message_authoritative_fixture',
+            type: 'message',
+            role: 'assistant',
+            status: 'in_progress',
+            phase: 'final_answer',
+            content: [],
+          },
+        },
+      },
+      {
+        event: 'response.output_text.delta',
+        data: {
+          type: 'response.output_text.delta',
+          sequence_number: 2,
+          item_id: 'message_temporary_fixture',
+          output_index: 0,
+          content_index: 0,
+          delta: 'One answer',
+          logprobs: [],
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 3,
+          response: {
+            id: 'resp_mismatched_item_fixture',
+            status: 'completed',
+            output: [{
+              id: 'message_authoritative_fixture',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              phase: 'final_answer',
+              content: [{
+                type: 'output_text',
+                text: 'One answer',
+                annotations: [],
+                logprobs: [],
+              }],
+            }],
+            usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(llmRequest(), true));
+  const streamedPart = events.find((event) => event.partial)?.content?.parts?.[0];
+  const finalParts = events.at(-1)?.content?.parts ?? [];
+
+  assert.equal(readModelItemMetadata(streamedPart ?? {})?.itemId,
+    'message_authoritative_fixture');
+  assert.deepEqual(finalParts.map((part) => part.text), ['One answer']);
+  assert.equal(readModelItemMetadata(finalParts[0] ?? {})?.itemId,
+    'message_authoritative_fixture');
+  assert.deepEqual(readModelStepOutcome(finalParts), { kind: 'final' });
+});
+
+test('OpenAI Responses reconciles a streamed alias when gateway output indexes drift', async (context) => {
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        event: 'response.output_text.delta',
+        data: {
+          type: 'response.output_text.delta',
+          sequence_number: 1,
+          item_id: 'message_streamed_fixture',
+          output_index: 1,
+          content_index: 0,
+          delta: 'One answer',
+          logprobs: [],
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 2,
+          response: {
+            id: 'resp_drifted_index_fixture',
+            status: 'completed',
+            output: [{
+              id: 'message_terminal_fixture',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              phase: 'final_answer',
+              content: [{
+                type: 'output_text',
+                text: 'One answer',
+                annotations: [],
+                logprobs: [],
+              }],
+            }],
+            usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(llmRequest(), true));
+  const finalParts = events.at(-1)?.content?.parts ?? [];
+
+  assert.deepEqual(finalParts.map((part) => part.text), ['One answer']);
+  assert.equal(readModelItemMetadata(finalParts[0] ?? {})?.itemId,
+    'message_streamed_fixture');
+  assert.deepEqual(readModelStepOutcome(finalParts), { kind: 'final' });
+});
+
 test('OpenAI Chat maps malformed tool JSON to a bounded internal error tool', async (context) => {
   const fixture = await serve(async (_request, response) => {
     writeSse(response, [
@@ -398,6 +535,74 @@ test('OpenAI Chat maps malformed tool JSON to a bounded internal error tool', as
   assert.deepEqual(call?.args, {
     toolName: 'workspace_read',
     argumentsText: '{',
+  });
+});
+
+test('OpenAI repairs an unambiguous concatenated workspace_read batch', async (context) => {
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        data: {
+          id: 'chatcmpl_batch_read',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: 'call_batch_read',
+                type: 'function',
+                function: {
+                  name: 'workspace_read',
+                  arguments:
+                    '{"path":"README.md"}{"path":"package.json"}',
+                },
+              }],
+            },
+            finish_reason: null,
+          }],
+        },
+      },
+      {
+        data: {
+          id: 'chatcmpl_batch_read',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        },
+      },
+      { data: '[DONE]' },
+    ]);
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.config = {
+    ...request.config,
+    tools: [{
+      functionDeclarations: [{
+        name: 'workspace_read',
+        parametersJsonSchema: { type: 'object' },
+      }],
+    }],
+  };
+  const model = new OpenAiLlm({
+    wireApi: 'openaiChatCompletions',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(request, true));
+  const call = events.at(-1)?.content?.parts?.find(
+    (part) => part.functionCall,
+  )?.functionCall;
+
+  assert.equal(call?.name, 'workspace_read');
+  assert.deepEqual(call?.args, {
+    paths: ['README.md', 'package.json'],
   });
 });
 

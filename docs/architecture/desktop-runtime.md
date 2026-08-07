@@ -42,6 +42,19 @@ OpenAI and Anthropic TypeScript SDKs. The adapters normalize text, reasoning,
 media, tool calls, usage, request IDs, stop reasons and errors into SugarCode
 events. Provider types remain inside those adapters.
 
+Raw provider reasoning and thinking remain available to the live model loop and
+portable completed history but are not projected as user-visible process text.
+Only explicit assistant commentary is public. The base Agent instruction keeps
+that commentary and the final answer in the original user's language, treats
+internal continuations as language-neutral, and discourages repeated process
+narration that carries no new decision, result or blocker.
+
+When a tool step has no non-whitespace public commentary, the runtime projects
+one bounded provider-neutral progress summary from the verified tool name and
+safe arguments. The summary follows the original user's Chinese or English
+language and never copies private reasoning. Whitespace-only model messages are
+discarded, and identical synthesized summaries are not repeated.
+
 ADK sessions are process-local caches. Before a new Turn, provider-neutral
 completed history is rebuilt from Rust SQLite. Worker loss interrupts active
 Turns and child tasks; it never resumes an incomplete tool call or side effect.

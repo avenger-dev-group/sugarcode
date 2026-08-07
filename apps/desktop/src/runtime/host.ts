@@ -165,6 +165,7 @@ type TurnDriverOptions = Readonly<{
     accepted: boolean,
     textItems: Map<string, TextItemState>,
   ) => void;
+  validateInvocation?: () => void;
 }>;
 
 type InvalidArgumentGuard = {
@@ -175,6 +176,83 @@ type InvalidArgumentGuard = {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const boundedProgressValue = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim().length > 0
+    ? value.trim().slice(0, 120)
+    : undefined;
+
+const progressPaths = (
+  argumentsValue: Readonly<Record<string, unknown>>,
+): readonly string[] => {
+  const path = boundedProgressValue(argumentsValue.path);
+  if (path) {
+    return [path];
+  }
+  return Array.isArray(argumentsValue.paths)
+    ? argumentsValue.paths
+      .map(boundedProgressValue)
+      .filter((entry): entry is string => Boolean(entry))
+      .slice(0, 8)
+    : [];
+};
+
+const toolProgressSummary = (
+  command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+  toolName: string,
+  argumentsValue: Readonly<Record<string, unknown>>,
+): string | undefined => {
+  const userText = command.content
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n');
+  const chinese = /\p{Script=Han}/u.test(userText);
+  const paths = progressPaths(argumentsValue);
+  const pathSummary = paths.length > 0
+    ? paths.slice(0, 3).join(chinese ? '、' : ', ') +
+      (paths.length > 3
+        ? chinese ? ` 等 ${paths.length} 个文件` : ` and ${paths.length - 3} more`
+        : '')
+    : undefined;
+  if (chinese) {
+    switch (toolName) {
+      case 'workspace_list':
+        return `正在查看${paths[0] && paths[0] !== '.' ? ` ${paths[0]}` : '项目根目录'}的目录结构。`;
+      case 'workspace_read':
+        return pathSummary ? `正在读取 ${pathSummary}。` : '正在读取项目文件。';
+      case 'workspace_search': {
+        const query = boundedProgressValue(argumentsValue.query);
+        return query ? `正在项目中搜索“${query}”。` : '正在搜索项目代码。';
+      }
+      case 'workspace_apply_patch':
+        return '正在更新项目文件。';
+      case 'shell_exec':
+        return '正在运行项目命令。';
+      case INVALID_TOOL_ARGUMENTS_TOOL_NAME:
+        return '工具参数格式不正确，正在调整调用方式。';
+      default:
+        return undefined;
+    }
+  }
+  switch (toolName) {
+    case 'workspace_list':
+      return `Inspecting the ${paths[0] && paths[0] !== '.' ? `${paths[0]} directory` : 'project root'}.`;
+    case 'workspace_read':
+      return pathSummary ? `Reading ${pathSummary}.` : 'Reading project files.';
+    case 'workspace_search': {
+      const query = boundedProgressValue(argumentsValue.query);
+      return query ? `Searching the project for “${query}”.` : 'Searching the project code.';
+    }
+    case 'workspace_apply_patch':
+      return 'Updating project files.';
+    case 'shell_exec':
+      return 'Running a project command.';
+    case INVALID_TOOL_ARGUMENTS_TOOL_NAME:
+      return 'Adjusting an invalid tool argument format.';
+    default:
+      return undefined;
+  }
+};
 
 const stableJsonValue = (value: unknown): unknown => {
   if (Array.isArray(value)) {
@@ -1442,7 +1520,7 @@ export class RuntimeHost {
       [...guard.toolErrors.values()].some((count) => count >= 2)
     ) {
       throw new ProviderAdapterError({
-        kind: 'protocol',
+        kind: 'unsupportedToolArguments',
         retryable: false,
         message:
           'The model repeated the same tool arguments and error twice.',
@@ -1546,6 +1624,7 @@ export class RuntimeHost {
       if (options.signal.aborted) {
         return;
       }
+      options.validateInvocation?.();
       if (!outcome) {
         throw new ProviderAdapterError({
           kind: 'protocol',
@@ -1570,7 +1649,8 @@ export class RuntimeHost {
               text:
                 '# Internal continuation\n\n' +
                 'Child Agent results completed after your candidate answer. ' +
-                'Consume these results and generate the single final answer.\n\n' +
+                'Consume these results and generate the single final answer. ' +
+                'Keep all visible text in the language of the original user request.\n\n' +
                 pendingResults,
             }],
           };
@@ -1622,6 +1702,7 @@ export class RuntimeHost {
         parts: [{
           text:
             `# Internal continuation ${invocation}\n\n` +
+            'Keep all visible text in the language of the original user request. ' +
             (outcome.reason === 'maxOutputTokens'
               ? 'Continue after the output truncation and submit a concise final answer when complete.'
               : outcome.reason === 'pauseTurn'
@@ -1795,6 +1876,8 @@ export class RuntimeHost {
           !(this.activeOperations.get(command.turnId)?.size),
         settleFinalCandidate: (accepted, textItems) =>
           this.settleFinalCandidate(command, textItems, accepted),
+        validateInvocation: () =>
+          this.assertInvalidArgumentProgress(invalidArgumentGuard),
       });
       this.emitCompleted(
         command,
@@ -1979,7 +2062,9 @@ export class RuntimeHost {
           this.observeToolProgress(invalidArgumentGuard, event);
           const parts = event.content?.parts ?? [];
           const text = parts
-            .filter((part) => typeof part.text === 'string')
+            .filter(
+              (part) => !part.thought && typeof part.text === 'string',
+            )
             .map((part) => part.text ?? '')
             .join('');
           if (event.partial && text.length > 0) {
@@ -2026,6 +2111,8 @@ export class RuntimeHost {
           }
         },
         completionGate: () => !context.signal.aborted,
+        validateInvocation: () =>
+          this.assertInvalidArgumentProgress(invalidArgumentGuard),
       });
       if (!completedSummary.trim()) {
         throw new ProviderAdapterError({
@@ -2059,8 +2146,19 @@ export class RuntimeHost {
     event: Event,
     textItems: Map<string, TextItemState>,
   ): void => {
-    for (const [index, part] of (event.content?.parts ?? []).entries()) {
-      if (typeof part.text === 'string' && part.text.length > 0) {
+    const parts = event.content?.parts ?? [];
+    const hasVisibleModelText = parts.some(
+      (part) =>
+        !part.thought &&
+        typeof part.text === 'string' &&
+        part.text.trim().length > 0,
+    );
+    for (const [index, part] of parts.entries()) {
+      if (
+        !part.thought &&
+        typeof part.text === 'string' &&
+        part.text.trim().length > 0
+      ) {
         const metadata = readModelItemMetadata(part);
         const initialPhase: ModelTextPhase = metadata?.phase ??
           (part.thought ? 'commentary' : 'provisional');
@@ -2137,6 +2235,40 @@ export class RuntimeHost {
       }
       if (part.functionCall?.name) {
         const metadata = readModelItemMetadata(part);
+        const callId = part.functionCall.id ?? `${event.id}:${index}`;
+        if (event.partial === false && !hasVisibleModelText) {
+          const progress = toolProgressSummary(
+            command,
+            part.functionCall.name,
+            part.functionCall.args ?? {},
+          );
+          const duplicate = progress && [...textItems.values()].some(
+            (item) =>
+              item.completed &&
+              item.phase === 'commentary' &&
+              item.text === progress,
+          );
+          if (progress && !duplicate) {
+            const progressItemId = `${command.turnId}:progress:${callId}`;
+            textItems.set(progressItemId, {
+              phase: 'commentary',
+              text: progress,
+              started: true,
+              completed: true,
+              pendingFinal: false,
+            });
+            this.emit({
+              type: 'turn.textCompleted',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              itemId: progressItemId,
+              phase: 'commentary',
+              text: progress,
+            });
+          }
+        }
         this.emit({
           type: 'turn.toolCall',
           requestId: command.requestId,
@@ -2144,7 +2276,7 @@ export class RuntimeHost {
           threadId: command.threadId,
           turnId: command.turnId,
           itemId: metadata?.itemId ?? part.functionCall.id ?? `${event.id}:${index}`,
-          callId: part.functionCall.id ?? `${event.id}:${index}`,
+          callId,
           name: part.functionCall.name,
           arguments: part.functionCall.args ?? {},
         });

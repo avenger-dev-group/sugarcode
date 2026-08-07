@@ -4,6 +4,35 @@ import test from 'node:test';
 import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
 import { createWorkspaceTools } from '../../src/runtime/tools/workspace.ts';
 
+test('workspace_read accepts a bounded batch and preserves each path', async () => {
+  const requestedPaths: string[] = [];
+  const tools = createWorkspaceTools(
+    {
+      workspaceRead: async (_workspaceId, path) => {
+        requestedPaths.push(path);
+        return JSON.stringify({ ok: true, content: `content:${path}` });
+      },
+    } as NativeRuntimeBinding,
+    'workspace-fixture',
+  );
+  const readTool = tools.find((tool) => tool.name === 'workspace_read');
+  assert.ok(readTool);
+
+  const result = await readTool.runAsync({
+    args: { paths: ['README.md', 'package.json'] },
+    toolContext: {} as never,
+  });
+
+  assert.deepEqual(requestedPaths, ['README.md', 'package.json']);
+  assert.deepEqual(result, {
+    ok: true,
+    files: [
+      { ok: true, content: 'content:README.md', path: 'README.md' },
+      { ok: true, content: 'content:package.json', path: 'package.json' },
+    ],
+  });
+});
+
 test('workspace_apply_patch rejects unsupported diff syntax before approval', async () => {
   let approvalRequests = 0;
   const tools = createWorkspaceTools(
@@ -30,6 +59,37 @@ test('workspace_apply_patch rejects unsupported diff syntax before approval', as
     error: 'invalidPatchFormat',
     message:
       'Use the SugarCode patch format: `*** Begin Patch`, one or more `*** Add File: path`, `*** Update File: path`, or `*** Delete File: path` operations, then `*** End Patch`. GNU unified-diff headers are unsupported.',
+  });
+  assert.equal(approvalRequests, 0);
+});
+
+test('shell_exec rejects sandboxed shell syntax with repair guidance before approval', async () => {
+  let approvalRequests = 0;
+  const tools = createWorkspaceTools(
+    {} as NativeRuntimeBinding,
+    'workspace-fixture',
+    async () => {
+      approvalRequests += 1;
+      return { ok: true };
+    },
+  );
+  const shellTool = tools.find((tool) => tool.name === 'shell_exec');
+  assert.ok(shellTool);
+
+  const result = await shellTool.runAsync({
+    args: {
+      mode: 'sandboxed',
+      command: 'find src -type f | head -100',
+      arguments: [],
+    },
+    toolContext: {} as never,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: 'invalidArguments',
+    message:
+      'Sandboxed shell_exec requires command to be one absolute executable path and accepts its arguments only through the arguments array. Use fullAccess for pipes, redirects, command chaining, or other shell syntax.',
   });
   assert.equal(approvalRequests, 0);
 });
