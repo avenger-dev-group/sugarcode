@@ -15,7 +15,7 @@ const MAX_TOTAL_AMENDMENT_BYTES = 64 * 1024;
 
 export const COLLABORATION_AGENT_INSTRUCTION = `# Multi-Agent coordination
 
-For complex work that materially benefits from independent exploration, implementation, or review, use the collaboration tools to create a bounded task DAG. Dispatch only genuinely independent work. Every task brief must name a concrete responsibility or evidence boundary; never delegate an instruction to read every file or explore an entire repository exhaustively. Every workspace-writing wave must include a read-only auditor depending on every writer in that wave. Use collaboration_send or collaboration_amend to deliver new information, collaboration_wait to collect results before answering, and collaboration_interrupt when a task is no longer useful. Subagents cannot create more subagents.`;
+For complex work that materially benefits from independent exploration, implementation, or review, use the collaboration tools to create a bounded task DAG. Dispatch only genuinely independent work. Every task brief must name a concrete responsibility or evidence boundary; never delegate an instruction to read every file or explore an entire repository exhaustively. Every workspace-writing wave is followed by a read-only auditor depending on every writer in that wave; include a tailored auditor when useful, otherwise the runtime adds one automatically. Use collaboration_send or collaboration_amend to deliver new information, collaboration_wait to collect results before answering, and collaboration_interrupt when a task is no longer useful. Subagents cannot create more subagents.`;
 
 type AgentTaskRole = RuntimeAgentTask['role'];
 type AgentTaskAccess = RuntimeAgentTask['access'];
@@ -227,12 +227,33 @@ class WorkspaceAccessGate {
 const taskSchema = {
   type: Type.OBJECT,
   properties: {
-    clientTaskKey: { type: Type.STRING },
-    title: { type: Type.STRING },
-    role: { type: Type.STRING, enum: ['explorer', 'worker', 'auditor'] },
-    access: { type: Type.STRING, enum: ['readOnly', 'workspaceWrite'] },
-    dependsOn: { type: Type.ARRAY, items: { type: Type.STRING } },
-    taskMarkdown: { type: Type.STRING },
+    clientTaskKey: {
+      type: Type.STRING,
+      description: 'Unique stable key for this task inside the current Turn.',
+    },
+    title: { type: Type.STRING, description: 'Short user-visible task title.' },
+    role: {
+      type: Type.STRING,
+      enum: ['explorer', 'worker', 'auditor'],
+      description:
+        'Use explorer for bounded read-only investigation, worker for implementation, and auditor for independent review.',
+    },
+    access: {
+      type: Type.STRING,
+      enum: ['readOnly', 'workspaceWrite'],
+      description:
+        'Use workspaceWrite only when this task must modify files or run privileged workspace tools.',
+    },
+    dependsOn: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description:
+        'Keys that must finish first. A tailored auditor should depend on every workspaceWrite task in the same dispatch.',
+    },
+    taskMarkdown: {
+      type: Type.STRING,
+      description: 'Concrete bounded responsibility and acceptance criteria.',
+    },
   },
   required: [
     'clientTaskKey',
@@ -343,7 +364,7 @@ export class CollaborationCoordinator {
     new FunctionTool({
       name: 'collaboration_dispatch',
       description:
-        "Create or extend this Turn's bounded subagent DAG. Workspace-writing tasks require a read-only auditor that depends on every writer in the dispatch.",
+        "Create or extend this Turn's bounded subagent DAG. If workspace-writing tasks do not include a read-only auditor depending on every writer in this dispatch, the runtime adds that auditor automatically.",
       parameters: dispatchSchema,
       execute: async (input) => this.dispatch(turn, callbacks, parseDispatch(input)),
     }),
@@ -485,8 +506,9 @@ export class CollaborationCoordinator {
     ) {
       throw new Error('A Turn cannot cross collaboration ownership.');
     }
-    this.validateDispatch(orchestration, tasks);
-    const created = tasks.map((task): TaskRecord => ({
+    const completeTasks = this.withRuntimeAuditor(orchestration, tasks);
+    this.validateDispatch(orchestration, completeTasks);
+    const created = completeTasks.map((task): TaskRecord => ({
       snapshot: {
         orchestrationId: orchestration.id,
         taskId: randomUUID(),
@@ -796,6 +818,49 @@ export class CollaborationCoordinator {
       throw new Error(`Unknown Agent task: ${clientTaskKey}.`);
     }
     return { orchestration, task };
+  };
+
+  private withRuntimeAuditor = (
+    orchestration: Orchestration,
+    tasks: readonly DispatchTask[],
+  ): readonly DispatchTask[] => {
+    const writers = tasks
+      .filter((task) => task.access === 'workspaceWrite')
+      .map((task) => task.clientTaskKey);
+    if (
+      writers.length === 0 ||
+      tasks.some(
+        (task) =>
+          task.role === 'auditor' &&
+          task.access === 'readOnly' &&
+          writers.every((writer) => task.dependsOn.includes(writer)),
+      )
+    ) {
+      return tasks;
+    }
+
+    const keys = new Set([
+      ...orchestration.tasks.keys(),
+      ...tasks.map((task) => task.clientTaskKey),
+    ]);
+    let suffix = 1;
+    let clientTaskKey = 'runtime-audit';
+    while (keys.has(clientTaskKey)) {
+      suffix += 1;
+      clientTaskKey = `runtime-audit-${suffix}`;
+    }
+    return [
+      ...tasks,
+      {
+        clientTaskKey,
+        title: 'Audit workspace changes',
+        role: 'auditor',
+        access: 'readOnly',
+        dependsOn: writers,
+        taskMarkdown:
+          'Audit the completed writer tasks against their stated acceptance criteria. Inspect the resulting workspace changes, report concrete defects or missing verification, and do not modify files.',
+      },
+    ];
   };
 
   private validateDispatch = (

@@ -47,6 +47,14 @@ snapshot and reject confirmation if that identity changed. A Git transaction
 likewise freezes its starting `workspaceId`, so a later foreground switch
 cannot redirect its follow-up status or reconciliation request.
 
+Main also owns the process-local approval mode and its scope identity. A
+conversation grant is paired with one `threadId`; a project grant is paired
+with one registered `workspaceId`. Renderer labels and selection state are
+derived by resolving the visible conversation against those identities, while
+Main independently resolves every incoming command or MCP proposal before it
+can bypass presentation. This keeps project grants valid for every conversation
+in that project without leaking them to another project.
+
 ## Agent and provider boundary
 
 The primary loop and every child task use ADK `LlmAgent`/`Runner` invocations.
@@ -101,6 +109,10 @@ non-empty final answer fails instead of receiving a fabricated completion
 summary. If the parent submits a final candidate before child results are
 consumed, the gate waits for bounded results, classifies that candidate as
 commentary, injects the results, and requires one new final answer.
+Workspace-writing child waves always end in a dependent read-only audit. The
+parent may describe that auditor explicitly; otherwise the collaboration
+coordinator creates one bounded runtime auditor before the DAG is persisted and
+scheduled, avoiding repeated dispatch failures and repeated large task briefs.
 If the most recent tool result failed, the driver likewise demotes the first
 final candidate to commentary and grants one bounded recovery continuation.
 This retry is structural and provider-neutral; it does not classify the public
@@ -116,6 +128,13 @@ terminal and orchestration keep their existing Renderer/preload surfaces.
 Private Main adapters translate these calls to the utility runtime. The old
 app-server public protocol, CLI supervisor and sidecar executable no longer
 exist.
+
+The composer exposes the approval mode as a descriptive permission panel rather
+than an unlabeled compact menu. It names the access boundary, explains each
+mode, and shows the effective mode for the visible Thread and workspace. The
+approval dialog uses the same three labels and scope rules so choosing a mode
+while accepting a pending operation has exactly the same effect as changing it
+from the composer.
 
 Conversation snapshots preserve the optimistic first-Turn projection while the
 runtime acknowledges startup: `starting` may contain the newly allocated active

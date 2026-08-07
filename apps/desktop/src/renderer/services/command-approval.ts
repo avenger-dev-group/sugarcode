@@ -27,5 +27,6 @@ export const denyCommand = (
 export const setCommandApprovalMode = (
   mode: CommandApprovalMode,
   threadId?: string,
+  workspaceId?: string,
 ): Promise<CommandApprovalActionResult> =>
-  window.sugarcode.setCommandApprovalMode(mode, threadId);
+  window.sugarcode.setCommandApprovalMode(mode, threadId, workspaceId);

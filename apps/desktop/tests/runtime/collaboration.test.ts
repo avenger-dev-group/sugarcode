@@ -161,12 +161,13 @@ test('CollaborationCoordinator schedules a persisted DAG, delivers amendments, w
   assert.ok(published.some((task) => task.status === 'completed'));
 });
 
-test('CollaborationCoordinator rejects cycles and unaudited workspace writers', async () => {
+test('CollaborationCoordinator adds a runtime auditor and still rejects cycles', async () => {
   const coordinator = new CollaborationCoordinator();
+  const created: RuntimeAgentTask[] = [];
   const tools = coordinator.toolsForTurn(
     turn,
     {
-      createTasks: () => undefined,
+      createTasks: (tasks) => created.push(...tasks),
       updateTask: () => undefined,
       publishTask: () => undefined,
       executeTask: async () => ({
@@ -177,19 +178,20 @@ test('CollaborationCoordinator rejects cycles and unaudited workspace writers', 
     },
     new AbortController().signal,
   );
-  await assert.rejects(
-    callTool(tools, 'collaboration_dispatch', {
-      tasks: [{
-        clientTaskKey: 'write',
-        title: 'Write',
-        role: 'worker',
-        access: 'workspaceWrite',
-        dependsOn: [],
-        taskMarkdown: 'Write files.',
-      }],
-    }),
-    /auditor/u,
-  );
+  const dispatched = await callTool(tools, 'collaboration_dispatch', {
+    tasks: [{
+      clientTaskKey: 'write',
+      title: 'Write',
+      role: 'worker',
+      access: 'workspaceWrite',
+      dependsOn: [],
+      taskMarkdown: 'Write files.',
+    }],
+  }) as { accepted: string[] };
+  assert.deepEqual(dispatched.accepted, ['write', 'runtime-audit']);
+  assert.equal(created[1]?.role, 'auditor');
+  assert.equal(created[1]?.access, 'readOnly');
+  assert.deepEqual(created[1]?.dependsOn, ['write']);
   await assert.rejects(
     callTool(tools, 'collaboration_dispatch', {
       tasks: [

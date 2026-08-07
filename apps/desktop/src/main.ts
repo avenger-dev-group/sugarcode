@@ -163,7 +163,11 @@ const startApplication = async (): Promise<void> => {
     runtimeSupervisor,
   );
   runtimeApprovalController = new RuntimeApprovalController(runtimeSupervisor);
-  runtimeMcpApprovalController = new RuntimeMcpApprovalController(runtimeSupervisor);
+  runtimeMcpApprovalController = new RuntimeMcpApprovalController(
+    runtimeSupervisor,
+    (workspaceId, threadId) =>
+      runtimeApprovalController?.isAutoApproved(workspaceId, threadId) === true,
+  );
   runtimeMcpSessionController = new McpSessionController({
     getRestartBlock: () => {
       const phase = runtimeConversationController?.getSnapshot().phase;

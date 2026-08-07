@@ -106,3 +106,77 @@ test('recovered MCP approval remains pending until the UI surface is ready', asy
     decision: 'denied',
   });
 });
+
+test('MCP approval follows the shared thread and workspace Full Access policy', () => {
+  const commands: RuntimeCommand[] = [];
+  let listener: ((event: RuntimeEvent) => void) | undefined;
+  const runtime = {
+    subscribe: (next: (event: RuntimeEvent) => void) => {
+      listener = next;
+      return (): void => undefined;
+    },
+    send: (command: RuntimeCommand) => commands.push(command),
+  } as unknown as RuntimeSupervisor;
+  const controller = new RuntimeMcpApprovalController(
+    runtime,
+    (workspaceId, threadId) =>
+      workspaceId === 'workspace-trusted' && threadId === 'thread-trusted',
+  );
+
+  listener?.({
+    type: 'mcp.approvalRequested',
+    sequence: 1,
+    requestId: 'request-trusted',
+    workspaceId: 'workspace-trusted',
+    threadId: 'thread-trusted',
+    turnId: 'turn-trusted',
+    approvalId: 'approval-trusted',
+    operationId: 'operation-trusted',
+    serverId: 'fixture',
+    name: 'mcp__fixture__echo',
+    argumentsJson: '{}',
+    argumentsBytes: 2,
+    argumentsSha256: 'a'.repeat(64),
+    inventorySha256: 'b'.repeat(64),
+  });
+  const automaticDecision = commands.at(-1);
+  assert.equal(automaticDecision?.type, 'approval.resolve');
+  if (automaticDecision?.type !== 'approval.resolve') {
+    throw new Error('Automatic MCP approval decision was not sent.');
+  }
+  assert.equal(automaticDecision.approvalId, 'approval-trusted');
+  assert.equal(automaticDecision.decision, 'approved');
+
+  listener?.({
+    type: 'mcp.approvalResolved',
+    sequence: 2,
+    requestId: automaticDecision.requestId,
+    workspaceId: 'workspace-trusted',
+    threadId: 'thread-trusted',
+    turnId: 'turn-trusted',
+    approvalId: 'approval-trusted',
+    operationId: 'operation-trusted',
+    decision: 'approved',
+  });
+  const decisionCount = commands.length;
+  controller.markSurfaceReady();
+  listener?.({
+    type: 'mcp.approvalRequested',
+    sequence: 3,
+    requestId: 'request-untrusted',
+    workspaceId: 'workspace-other',
+    threadId: 'thread-trusted',
+    turnId: 'turn-other',
+    approvalId: 'approval-untrusted',
+    operationId: 'operation-untrusted',
+    serverId: 'fixture',
+    name: 'mcp__fixture__echo',
+    argumentsJson: '{}',
+    argumentsBytes: 2,
+    argumentsSha256: 'a'.repeat(64),
+    inventorySha256: 'b'.repeat(64),
+  });
+  assert.equal(commands.length, decisionCount);
+  assert.equal(controller.getSnapshot().status, 'pending');
+  controller.surfaceUnavailable();
+});

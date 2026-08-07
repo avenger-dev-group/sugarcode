@@ -7,9 +7,10 @@ import {
   onCommandApprovalStateChanged,
   setCommandApprovalMode,
 } from '@/renderer/services/command-approval';
-import type {
-  CommandApprovalMode,
-  CommandApprovalStateSnapshot,
+import {
+  resolveCommandApprovalMode,
+  type CommandApprovalMode,
+  type CommandApprovalStateSnapshot,
 } from '@/shared/command-approval';
 
 import type { CommandApprovalStore } from './types';
@@ -38,7 +39,15 @@ export const useStore = (): CommandApprovalStore => {
       }
       revisionRef.current = nextSnapshot.revision;
       setSnapshot(nextSnapshot);
-      setSelectedMode(nextSnapshot.mode);
+      setSelectedMode(
+        nextSnapshot.request
+          ? resolveCommandApprovalMode(
+              nextSnapshot,
+              nextSnapshot.request.threadId,
+              nextSnapshot.request.workspaceId,
+            )
+          : nextSnapshot.mode,
+      );
       setActionPending(false);
       setModePending(false);
       setActionError(null);
@@ -111,14 +120,22 @@ export const useStore = (): CommandApprovalStore => {
   );
 
   const changeMode = useCallback(
-    async (mode: CommandApprovalMode, threadId?: string): Promise<void> => {
+    async (
+      mode: CommandApprovalMode,
+      threadId?: string,
+      workspaceId?: string,
+    ): Promise<void> => {
       if (modePending || snapshot.status === 'pending') {
         return;
       }
       setModePending(true);
       setActionError(null);
       try {
-        const result = await setCommandApprovalMode(mode, threadId);
+        const result = await setCommandApprovalMode(
+          mode,
+          threadId,
+          workspaceId,
+        );
         if (!result.accepted) {
           setActionError('Permission mode could not be changed.');
           setModePending(false);

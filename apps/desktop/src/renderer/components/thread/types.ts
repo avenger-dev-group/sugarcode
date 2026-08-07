@@ -147,6 +147,7 @@ export type TurnViewModel = Readonly<{
 
 export type ThreadViewModel = Readonly<{
   phase: ConversationPhase;
+  workspaceIdentity: string | null;
   threadIdentity: string | null;
   turns: readonly TurnViewModel[];
   isEmpty: boolean;

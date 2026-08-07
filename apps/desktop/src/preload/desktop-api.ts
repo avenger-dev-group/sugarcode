@@ -517,11 +517,13 @@ export const createDesktopApi = (
   setCommandApprovalMode: async (
     mode: CommandApprovalMode,
     threadId?: string,
+    workspaceId?: string,
   ): Promise<CommandApprovalActionResult> => {
     const result: unknown = await ipcRenderer.invoke(
       COMMAND_APPROVAL_MODE_SET_CHANNEL,
       mode,
       threadId,
+      workspaceId,
     );
     if (!isCommandApprovalActionResult(result)) {
       throw new Error('Main returned an invalid command approval mode result.');

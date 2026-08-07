@@ -48,6 +48,12 @@ Pending approvals retain their identity and presentation; after validation the
 worker may present them again, but execution still requires a fresh explicit
 decision.
 
+Resolved approval records remain durable audit facts, but the current
+`ask`/Thread/project automatic-approval mode is intentionally process-local and
+is not restored after application restart. Its Thread or workspace scope is
+held by Main only; a restart therefore returns to `ask` and cannot silently
+recreate broad file or network authority from historical approval rows.
+
 Rust records recovery as `runtimeRestart`; Main normalizes that private storage
 reason to the public provider-neutral `incomplete` error while retaining the
 interrupted Turn in the restored transcript.

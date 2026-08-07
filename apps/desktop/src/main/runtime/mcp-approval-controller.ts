@@ -37,9 +37,18 @@ export class RuntimeMcpApprovalController {
   private revision = 0;
   private surfaceReady = false;
   private readonly runtime: RuntimeSupervisor;
+  private readonly shouldAutoApprove: (
+    workspaceId: string,
+    threadId: string,
+  ) => boolean;
 
-  constructor(runtime: RuntimeSupervisor) {
+  constructor(
+    runtime: RuntimeSupervisor,
+    shouldAutoApprove: (workspaceId: string, threadId: string) => boolean =
+      () => false,
+  ) {
     this.runtime = runtime;
+    this.shouldAutoApprove = shouldAutoApprove;
     runtime.subscribe(this.handleRuntimeEvent);
   }
 
@@ -149,7 +158,11 @@ export class RuntimeMcpApprovalController {
         timer: null,
       };
       this.queue.push(pending);
-      if (!this.surfaceReady && event.recovered !== true) {
+      if (this.shouldAutoApprove(pending.workspaceId, pending.threadId)) {
+        pending.responseCommitted = true;
+        pending.actionState = 'submittingApproval';
+        this.resolve(pending, 'approved');
+      } else if (!this.surfaceReady && event.recovered !== true) {
         pending.responseCommitted = true;
         pending.actionState = 'submittingDenial';
         this.resolve(pending, 'denied');

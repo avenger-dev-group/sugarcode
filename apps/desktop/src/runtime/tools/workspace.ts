@@ -104,7 +104,7 @@ const patchSchema = {
     patch: {
       type: Type.STRING,
       description:
-        'A complete SugarCode patch using exact `*** Begin Patch`, `*** Add File: path` / `*** Update File: path` / `*** Delete File: path`, and `*** End Patch` markers. Every Update File body is a patch hunk with removed lines prefixed by `-` and added lines prefixed by `+`; optional context may follow `@@`. Never paste an unprefixed complete file body after Update File. GNU unified-diff `--- a/` and `+++ b/` headers are unsupported. Example: `*** Begin Patch\\n*** Update File: src/example.ts\\n@@\\n-old\\n+new\\n*** End Patch`.',
+        'A complete SugarCode patch with exactly one outer `*** Begin Patch` / `*** End Patch` pair around all `*** Add File: path` / `*** Update File: path` / `*** Delete File: path` operations. Never close the patch between file operations. Every Update File body is a patch hunk with removed lines prefixed by `-` and added lines prefixed by `+`; optional context may follow `@@`. A replacement must remove the existing text and add different text. Never paste an unprefixed complete file body after Update File. GNU unified-diff `--- a/` and `+++ b/` headers are unsupported. Example: `*** Begin Patch\\n*** Update File: src/example.ts\\n@@\\n-old\\n+new\\n*** End Patch`.',
     },
   },
   required: ['patch'],
@@ -152,14 +152,17 @@ const invalidPatchFormat = (): Readonly<Record<string, unknown>> => ({
   ok: false,
   error: 'invalidPatchFormat',
   message:
-    'Use the SugarCode patch format: `*** Begin Patch`, one or more `*** Add File: path`, `*** Update File: path`, or `*** Delete File: path` operations, then `*** End Patch`. GNU unified-diff headers are unsupported.',
+    'Use exactly one outer `*** Begin Patch` / `*** End Patch` pair around one or more `*** Add File: path`, `*** Update File: path`, or `*** Delete File: path` operations. Do not put `*** End Patch` between file operations. GNU unified-diff headers are unsupported.',
 });
 
 const validPatchDocument = (patch: string): boolean => {
   const normalized = patch.replace(/\r\n/gu, '\n').trim();
+  const lines = normalized.split('\n');
   return (
-    normalized.startsWith('*** Begin Patch\n') &&
-    normalized.endsWith('\n*** End Patch') &&
+    lines[0] === '*** Begin Patch' &&
+    lines.at(-1) === '*** End Patch' &&
+    lines.filter((line) => line === '*** Begin Patch').length === 1 &&
+    lines.filter((line) => line === '*** End Patch').length === 1 &&
     /^\*\*\* (?:Add|Update|Delete) File: .+$/mu.test(normalized)
   );
 };
@@ -211,6 +214,49 @@ const invalidPatchUpdate = (): Readonly<Record<string, unknown>> => ({
   error: 'invalidPatchUpdate',
   message:
     'Each `*** Update File:` body must contain changed lines: prefix removed lines with `-` and added lines with `+` (an optional `@@` context marker may come first). Do not paste the complete file body without diff prefixes. Example: `*** Begin Patch\\n*** Update File: src/example.ts\\n@@\\n-old\\n+new\\n*** End Patch`.',
+});
+
+const updateSectionsHaveEffectiveChanges = (patch: string): boolean => {
+  const lines = patch.replace(/\r\n/gu, '\n').trim().split('\n');
+  let removed: string[] = [];
+  let added: string[] = [];
+  const flushHunk = (): boolean => {
+    const identical =
+      removed.length > 0 &&
+      removed.length === added.length &&
+      removed.every((line, index) => line === added[index]);
+    removed = [];
+    added = [];
+    return !identical;
+  };
+
+  for (const line of lines) {
+    if (
+      line.startsWith('@@') ||
+      line.startsWith('*** Add File: ') ||
+      line.startsWith('*** Update File: ') ||
+      line.startsWith('*** Delete File: ') ||
+      line === '*** End Patch'
+    ) {
+      if (!flushHunk()) {
+        return false;
+      }
+      continue;
+    }
+    if (line.startsWith('-')) {
+      removed.push(line.slice(1));
+    } else if (line.startsWith('+')) {
+      added.push(line.slice(1));
+    }
+  }
+  return flushHunk();
+};
+
+const invalidPatchNoop = (): Readonly<Record<string, unknown>> => ({
+  ok: false,
+  error: 'invalidPatchNoop',
+  message:
+    'A patch hunk removes and re-adds identical text, so it cannot change the file. To replace a line, prefix the existing workspace line with `-` and the different replacement line with `+`. Re-read the file first if the expected text has already changed.',
 });
 
 const explainPatchFailure = (result: unknown): unknown => {
@@ -282,6 +328,9 @@ const shellExecArgumentError = (
   }
   if (mode === 'fullAccess' && commandArguments.length > 0) {
     return 'Full Access shell_exec requires the complete shell expression in command and does not accept an arguments array.';
+  }
+  if (mode === 'fullAccess' && /^\s*cd\s+(?:--\s+)?["']?\//u.test(command)) {
+    return 'Full Access shell_exec already starts at the selected workspace root. Remove the leading absolute-path `cd`; use the workspace-relative cwd field for a real subdirectory.';
   }
   return undefined;
 };
@@ -485,6 +534,9 @@ export const createWorkspaceTools = (
       }
       if (!updateSectionsHaveChanges(patch)) {
         return invalidPatchUpdate();
+      }
+      if (!updateSectionsHaveEffectiveChanges(patch)) {
+        return invalidPatchNoop();
       }
       return runPrivileged(
         'workspace_apply_patch',

@@ -35,6 +35,7 @@ export class RuntimeApprovalController {
   private revision = 0;
   private mode: CommandApprovalMode = 'ask';
   private modeThreadId: string | undefined;
+  private modeWorkspaceId: string | undefined;
   private surfaceReady = false;
 
   constructor(runtime: RuntimeSupervisor) {
@@ -57,6 +58,9 @@ export class RuntimeApprovalController {
       mode: this.mode,
       ...(this.mode === 'thread' && this.modeThreadId
         ? { modeThreadId: this.modeThreadId }
+        : {}),
+      ...(this.mode === 'workspace' && this.modeWorkspaceId
+        ? { modeWorkspaceId: this.modeWorkspaceId }
         : {}),
       ...(pending ? { request: this.viewModel(pending) } : {}),
     };
@@ -93,9 +97,14 @@ export class RuntimeApprovalController {
     if (!['ask', 'thread', 'workspace'].includes(String(mode))) {
       return result(false, 'invalid');
     }
-    if (!pending.fullAccess) {
-      this.mode = mode as CommandApprovalMode;
-      this.modeThreadId = this.mode === 'thread' ? pending.threadId : undefined;
+    if (
+      !this.assignMode(
+        mode as CommandApprovalMode,
+        pending.threadId,
+        pending.workspaceId,
+      )
+    ) {
+      return result(false, 'invalid');
     }
     this.resolve(pending, 'approved');
     return result(true, 'accepted');
@@ -113,15 +122,23 @@ export class RuntimeApprovalController {
     return result(true, 'accepted');
   };
 
-  setMode = (mode: unknown, threadId?: unknown): CommandApprovalActionResult => {
+  setMode = (
+    mode: unknown,
+    threadId?: unknown,
+    workspaceId?: unknown,
+  ): CommandApprovalActionResult => {
     if (!['ask', 'thread', 'workspace'].includes(String(mode))) {
       return result(false, 'invalid');
     }
-    if (mode === 'thread' && (typeof threadId !== 'string' || threadId.length === 0)) {
+    if (
+      !this.assignMode(
+        mode as CommandApprovalMode,
+        threadId,
+        workspaceId,
+      )
+    ) {
       return result(false, 'invalid');
     }
-    this.mode = mode as CommandApprovalMode;
-    this.modeThreadId = mode === 'thread' ? threadId as string : undefined;
     this.publish();
     return result(true, 'accepted');
   };
@@ -142,11 +159,7 @@ export class RuntimeApprovalController {
         fullAccess: event.fullAccess,
       };
       this.queue.push(pending);
-      if (
-        !pending.fullAccess &&
-        (this.mode === 'workspace' ||
-          (this.mode === 'thread' && this.modeThreadId === pending.threadId))
-      ) {
+      if (this.isAutoApproved(pending.workspaceId, pending.threadId)) {
         this.resolve(pending, 'approved');
       } else if (!this.surfaceReady && event.recovered !== true) {
         this.resolve(pending, 'denied');
@@ -181,6 +194,37 @@ export class RuntimeApprovalController {
     });
   };
 
+  private assignMode = (
+    mode: CommandApprovalMode,
+    threadId?: unknown,
+    workspaceId?: unknown,
+  ): boolean => {
+    if (
+      mode === 'thread' &&
+      (typeof threadId !== 'string' || threadId.length === 0)
+    ) {
+      return false;
+    }
+    if (
+      mode === 'workspace' &&
+      (typeof workspaceId !== 'string' ||
+        workspaceId.length === 0 ||
+        !this.workspaceRoots.has(workspaceId))
+    ) {
+      return false;
+    }
+    this.mode = mode;
+    this.modeThreadId = mode === 'thread' ? threadId as string : undefined;
+    this.modeWorkspaceId =
+      mode === 'workspace' ? workspaceId as string : undefined;
+    return true;
+  };
+
+  isAutoApproved = (workspaceId: string, threadId: string): boolean =>
+    (this.mode === 'thread' && this.modeThreadId === threadId) ||
+    (this.mode === 'workspace' &&
+      this.modeWorkspaceId === workspaceId);
+
   private viewModel = (pending: PendingApproval): CommandApprovalViewModel => {
     const root = this.workspaceRoots.get(pending.workspaceId) ?? 'Local workspace';
     return {
@@ -194,6 +238,7 @@ export class RuntimeApprovalController {
       command: pending.argumentsSummary,
       cwd: root,
       fullAccess: pending.fullAccess,
+      workspaceId: pending.workspaceId,
       threadId: pending.threadId,
       turnId: pending.turnId,
       queueCount: this.queue.length,

@@ -22,6 +22,10 @@ test('base Agent instructions localize visible output and reject repetitive proc
   );
   assert.match(
     SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /exactly one outer `\*\*\* Begin Patch` and `\*\*\* End Patch` pair/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
     /Never paste an unprefixed complete file body/u,
   );
   assert.match(

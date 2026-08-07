@@ -20,7 +20,11 @@ type CommandApprovalControllerBoundary = Readonly<{
   subscribe: (listener: CommandApprovalStateListener) => () => void;
   approve: (presentationId: unknown, mode: unknown) => Promise<CommandApprovalActionResult>;
   deny: (presentationId: unknown) => Promise<CommandApprovalActionResult>;
-  setMode: (mode: unknown, threadId?: unknown) => CommandApprovalActionResult;
+  setMode: (
+    mode: unknown,
+    threadId?: unknown,
+    workspaceId?: unknown,
+  ) => CommandApprovalActionResult;
 }>;
 import {
   getTrustedMainWindow,
@@ -59,13 +63,13 @@ export const registerCommandApprovalIpc = (
 
   ipcMain.handle(
     COMMAND_APPROVAL_MODE_SET_CHANNEL,
-    (event, mode: unknown, threadId?: unknown) => {
+    (event, mode: unknown, threadId?: unknown, workspaceId?: unknown) => {
       if (!isTrustedIpcSender(event, options)) {
         throw new Error(
           'Command approval mode change came from an untrusted frame.',
         );
       }
-      return options.controller.setMode(mode, threadId);
+      return options.controller.setMode(mode, threadId, workspaceId);
     },
   );
 

@@ -862,6 +862,7 @@ export const toThreadViewModel = (
 
   return {
     phase: snapshot.phase,
+    workspaceIdentity: snapshot.workspaceId ?? null,
     threadIdentity: snapshot.threadId ?? null,
     turns: stableTurns,
     isEmpty: stableTurns.length === 0,

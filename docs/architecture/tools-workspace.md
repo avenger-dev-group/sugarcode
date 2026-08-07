@@ -35,6 +35,9 @@ to the Agent. Native validation repeats the absolute-path and bounded-argument
 checks as a defense-in-depth boundary. Full Access also starts at the selected
 workspace root unless its `cwd` names a real workspace-relative subdirectory;
 the Agent must not invent an absolute project path or prepend a redundant `cd`.
+The runtime rejects a Full Access command beginning with an absolute-path `cd`
+before it creates an operation or requests approval, and directs the Agent to
+omit it or use the workspace-relative `cwd` field.
 
 A completed command operation means its process outcome was durably observed,
 not that the command succeeded. Only `exitCode: 0` is successful; a non-zero
@@ -47,6 +50,16 @@ before native dispatch. A crash after the claim records failure and never
 replays the effect. Pending proposals may be re-presented after their stored
 arguments and approval metadata are validated.
 
+The Main-owned approval policy has three process-local modes. `ask` presents
+every privileged operation; `thread` automatically approves later privileged
+operations only when the request carries the granted Thread ID; and `workspace`
+automatically approves requests from every Thread carrying the granted
+workspace ID. Full Access commands and MCP calls use the same scope resolver,
+so selecting either automatic mode does not leave a second approval path that
+continues prompting. Switching back to `ask` clears the active scoped grant.
+The Renderer may show another workspace or Thread, but that presentation change
+does not broaden a grant because Main matches the immutable request identities.
+
 Workspace patches use the SugarCode `*** Begin Patch` / operation-marker /
 `*** End Patch` grammar. The runtime rejects malformed or GNU unified-diff
 documents before creating an operation or asking for approval. Native parser
@@ -56,7 +69,10 @@ approval denial. An `*** Update File:` body is a patch hunk, not whole-file
 replacement text: removed lines use `-`, added lines use `+`, and unchanged
 context may follow `@@`. A marker-correct update with no changed-line prefix is
 rejected before approval with a concrete example so a compatible model can
-repair it without asking the user to approve an operation that cannot run.
+repair it without asking the user to approve an operation that cannot run. The
+same preflight requires exactly one outer Begin/End pair around every file
+operation and rejects a hunk that removes and re-adds identical text. These
+structural no-ops never become durable operations or approval requests.
 
 `workspace_read` declares either one `path` or a bounded `paths` batch of 1
 through 8 files. Batch reads execute through the same read-only workspace
@@ -76,8 +92,9 @@ than silently presenting only the first 8.
 MCP uses ADK `MCPToolset`. Configuration is durable, but enabled selections,
 inventories and transports are process-local. Tool names are namespaced by
 server; every call records the frozen inventory receipt and passes through the
-same approval/audit boundary as local privileged tools. HTTP servers are limited
-to explicitly configured loopback endpoints.
+same approval/audit boundary and scoped automatic-approval policy as local
+privileged tools. HTTP servers are limited to explicitly configured loopback
+endpoints.
 
 Dynamic child Agents run as separate ADK invocations over a bounded persisted
 task DAG. The coordinator enforces dependency, concurrency, interruption and
@@ -86,4 +103,8 @@ bounded results are durable. While a task is active, the coordinator also
 publishes bounded provider-neutral progress for initial model wait, streamed
 public text and current tool execution; provider event objects and tool
 arguments are never exposed as progress. Restart marks active tasks interrupted
-instead of replaying their work.
+instead of replaying their work. A workspace-writing dispatch may provide a
+tailored read-only auditor depending on every writer. When it does not, the
+coordinator adds a bounded runtime auditor with those dependencies before it
+validates, persists or schedules the wave, so a missing auditor cannot force the
+model to resend every writer brief.

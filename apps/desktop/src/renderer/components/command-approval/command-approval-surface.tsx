@@ -2,9 +2,10 @@ import {
   Check,
   Clock3,
   FolderCheck,
-  MessagesSquare,
-  ShieldQuestion,
+  Hand,
+  ShieldCheck,
   SquareTerminal,
+  type LucideIcon,
 } from 'lucide-react';
 import { useRef } from 'react';
 
@@ -26,9 +27,11 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from '@/renderer/components/ui/select';
-import type { CommandApprovalMode } from '@/shared/command-approval';
+import {
+  resolveCommandApprovalMode,
+  type CommandApprovalMode,
+} from '@/shared/command-approval';
 
 import type {
   CommandApprovalModeControlProps,
@@ -40,22 +43,22 @@ const MODE_COPY: Record<
   Readonly<{
     label: string;
     description: string;
-    icon: typeof ShieldQuestion;
+    icon: LucideIcon;
   }>
 > = {
   ask: {
     label: '请求批准',
-    description: '每条需要授权的命令都会先询问你。',
-    icon: ShieldQuestion,
+    description: '写入项目文件或访问网络前，先征求你的同意',
+    icon: Hand,
   },
   thread: {
-    label: '本次任务自动批准',
-    description: '仅当前任务后续的沙箱命令不再重复询问。',
-    icon: MessagesSquare,
+    label: '本次会话完全访问',
+    description: '仅此对话可自动访问网络及本机文件',
+    icon: ShieldCheck,
   },
   workspace: {
-    label: '当前工作区自动批准',
-    description: '此工作区后续的沙箱命令自动执行，直到你切回请求批准。',
+    label: '当前项目完全访问',
+    description: '该项目下的操作将自动执行，直到你切回请求批准',
     icon: FolderCheck,
   },
 };
@@ -69,11 +72,9 @@ const MODES: readonly CommandApprovalMode[] = [
 const PermissionModeOptions = ({
   selectedMode,
   onSelect,
-  fullAccess,
 }: Readonly<{
   selectedMode: CommandApprovalMode;
   onSelect: (mode: CommandApprovalMode) => void;
-  fullAccess: boolean;
 }>) => (
   <div className="space-y-1.5" role="radiogroup" aria-label="后续授权模式">
     {MODES.map((mode) => {
@@ -99,11 +100,7 @@ const PermissionModeOptions = ({
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-medium">{copy.label}</span>
             <span className="mt-0.5 block text-xs leading-5 text-tertiary">
-              {fullAccess && mode !== 'ask'
-                ? mode === 'thread'
-                  ? '仅当前任务后续的 Full Access Shell 命令自动批准。'
-                  : '仅此工作区后续的 Full Access Shell 命令自动批准，应用退出后清除。'
-                : copy.description}
+              {copy.description}
             </span>
           </span>
           {selected ? (
@@ -212,13 +209,12 @@ export const CommandApprovalView = ({
                 <PermissionModeOptions
                   selectedMode={store.selectedMode}
                   onSelect={store.setSelectedMode}
-                  fullAccess={request.fullAccess}
                 />
               </div>
               <p className="mt-3 text-xs leading-5 text-tertiary">
                 {request.fullAccess
-                  ? 'Full Access 允许联网及工作区外读写。授权只保存在当前应用会话中，可随时切回请求批准。'
-                  : '自动批准只减少重复确认；命令仍受 SugarCode 的只读文件与禁网沙箱约束。'}
+                  ? 'Full Access 可访问网络及工作区外文件。完全访问授权仅保存在当前应用会话中，可随时切回请求批准。'
+                  : '完全访问模式会自动批准后续受控操作；切回请求批准即可恢复逐次确认。'}
               </p>
             </div>
 
@@ -268,33 +264,80 @@ export const CommandApprovalView = ({
 export const CommandApprovalModeControl = ({
   store,
   threadId,
+  workspaceId,
   disabled,
 }: CommandApprovalModeControlProps) => {
-  const effectiveMode =
-    store.snapshot.mode === 'thread' &&
-    store.snapshot.modeThreadId &&
-    store.snapshot.modeThreadId !== threadId
-      ? 'ask'
-      : store.snapshot.mode;
+  const effectiveMode = resolveCommandApprovalMode(
+    store.snapshot,
+    threadId,
+    workspaceId,
+  );
+  const ActiveIcon = MODE_COPY[effectiveMode].icon;
   return (
     <Select
       value={effectiveMode}
       disabled={disabled || store.modePending || store.isOpen}
       onValueChange={(value) =>
-        void store.changeMode(value as CommandApprovalMode, threadId ?? undefined)
+        void store.changeMode(
+          value as CommandApprovalMode,
+          threadId ?? undefined,
+          workspaceId ?? undefined,
+        )
       }
     >
       <SelectTrigger
-        className="h-7 w-auto max-w-56 border-0 bg-transparent px-1.5 text-xs shadow-none"
-        aria-label="后续命令授权模式"
+        className="group h-7 w-auto max-w-56 border-0 bg-transparent px-1.5 text-xs shadow-none data-[state=open]:bg-surface [&>svg:last-child]:size-3.5 [&>svg:last-child]:transition-transform data-[state=open]:[&>svg:last-child]:rotate-180"
+        aria-label="当前会话权限"
       >
-        <ShieldQuestion className="size-3.5" aria-hidden="true" />
-        <SelectValue />
+        <ActiveIcon className="size-3.5" aria-hidden="true" />
+        <span className="truncate">{MODE_COPY[effectiveMode].label}</span>
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent
+        side="top"
+        align="start"
+        sideOffset={8}
+        className="max-h-none w-[22.5rem] max-w-[calc(100vw-2rem)] rounded-2xl border bg-background shadow-[0_16px_48px_var(--shadow-soft)]"
+      >
+        <div className="flex items-start justify-between gap-4 px-3.5 pt-3.5 pb-2.5">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">
+              SugarCode 如何执行操作？
+            </p>
+            <p className="mt-0.5 text-xs font-normal text-tertiary">
+              为当前对话设置访问边界
+            </p>
+          </div>
+          <span className="shrink-0 rounded-full border bg-surface px-2 py-0.5 text-[11px] font-normal text-tertiary">
+            权限
+          </span>
+        </div>
         {MODES.map((mode) => (
-          <SelectItem key={mode} value={mode}>
-            {MODE_COPY[mode].label}
+          <SelectItem
+            key={mode}
+            value={mode}
+            textValue={MODE_COPY[mode].label}
+            disabled={
+              (mode === 'thread' && !threadId) ||
+              (mode === 'workspace' && !workspaceId)
+            }
+            className="my-0.5 min-h-14 p-0 pr-9 text-foreground data-[state=checked]:bg-surface [&>span:first-child]:w-full [&>span:last-child]:top-4 [&>span:last-child]:right-3"
+          >
+            <span className="flex w-full items-start gap-3 px-2.5 py-2.5">
+              <span className="grid size-7 shrink-0 place-items-center rounded-full border bg-background shadow-sm">
+                {(() => {
+                  const Icon = MODE_COPY[mode].icon;
+                  return <Icon className="size-3.5" aria-hidden="true" />;
+                })()}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium leading-5">
+                  {MODE_COPY[mode].label}
+                </span>
+                <span className="block text-xs font-normal leading-5 text-tertiary">
+                  {MODE_COPY[mode].description}
+                </span>
+              </span>
+            </span>
           </SelectItem>
         ))}
       </SelectContent>

@@ -56,6 +56,7 @@ export const FoundationScreen = () => {
               <CommandApprovalModeControl
                 store={commandApprovalStore}
                 threadId={threadStore.thread.threadIdentity}
+                workspaceId={threadStore.thread.workspaceIdentity}
                 disabled={turnBusy}
               />
             }
