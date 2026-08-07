@@ -56,6 +56,7 @@ import { ProcessActivityGroup } from './process-activity-group';
 import { ThreadNavigator } from './thread-navigator';
 import { isCompactToolActivity } from './tool-activity';
 import { ToolActivityGroup } from './tool-activity-group';
+import { TurnChangeSummary } from './turn-change-summary';
 import { toTranscriptTurnBoundary } from './turn-boundary';
 import { useStore, useTranscriptFollow } from './use-store';
 
@@ -260,6 +261,13 @@ const TranscriptTurnView = ({
         .map((entry) => (
           <TranscriptMessage key={entry.message.id} entry={entry} />
         ))}
+      {turn.activities && turn.status !== 'inProgress' ? (
+        <TurnChangeSummary
+          turnId={turn.id}
+          activities={turn.activities}
+          language={turn.processLanguage}
+        />
+      ) : null}
       {turn.status === 'inProgress' &&
       !turn.pendingAgentOutputs?.length ? (
         <div

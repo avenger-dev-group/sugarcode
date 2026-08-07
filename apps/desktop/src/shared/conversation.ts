@@ -201,9 +201,30 @@ export type ConversationCommandApprovalDecision =
   | 'cancelled'
   | 'clientDisconnected';
 
+export type ConversationWorkspacePatchFile = Readonly<{
+  path: string;
+  kind: 'create' | 'update' | 'delete';
+  beforeSha256: string;
+  afterSha256: string;
+  beforeBytes: number;
+  afterBytes: number;
+  diff?: string;
+  newlineStyle?: 'lf' | 'crLf';
+  finalNewline?: boolean;
+}>;
+
 export type ConversationCommandExecutionResultOutcome =
-  | Readonly<{ type: 'error'; kind: string }>
-  | Readonly<{ type: 'workspacePatch'; filesChanged: number }>
+  | Readonly<{
+      type: 'error';
+      kind: string;
+      message?: string;
+      failedPath?: string;
+    }>
+  | Readonly<{
+      type: 'workspacePatch';
+      filesChanged: number;
+      files?: readonly ConversationWorkspacePatchFile[];
+    }>
   | Readonly<{
       type: 'process';
       stdoutBytes: number;
@@ -1175,17 +1196,53 @@ const isCommandExecutionResultOutcome = (
   }
   if (value.type === 'error') {
     return (
-      Object.keys(value).length === 2 &&
+      Object.keys(value).length >= 2 &&
+      Object.keys(value).length <= 4 &&
       typeof value.kind === 'string' &&
-      value.kind.length > 0
+      value.kind.length > 0 &&
+      (!Object.hasOwn(value, 'message') ||
+        (typeof value.message === 'string' && value.message.length > 0)) &&
+      (!Object.hasOwn(value, 'failedPath') ||
+        (typeof value.failedPath === 'string' && value.failedPath.length > 0))
     );
   }
   if (value.type === 'workspacePatch') {
+    const files = value.files;
     return (
-      Object.keys(value).length === 2 &&
+      [2, 3].includes(Object.keys(value).length) &&
       typeof value.filesChanged === 'number' &&
       Number.isSafeInteger(value.filesChanged) &&
-      value.filesChanged >= 1
+      value.filesChanged >= 1 &&
+      (!Object.hasOwn(value, 'files') ||
+        (Array.isArray(files) &&
+          files.length === value.filesChanged &&
+          files.every((file) => {
+            if (
+              !isRecord(file) ||
+              ![6, 9].includes(Object.keys(file).length) ||
+              typeof file.path !== 'string' ||
+              file.path.length === 0 ||
+              !['create', 'update', 'delete'].includes(String(file.kind)) ||
+              typeof file.beforeSha256 !== 'string' ||
+              typeof file.afterSha256 !== 'string' ||
+              !Number.isSafeInteger(file.beforeBytes) ||
+              (file.beforeBytes as number) < 0 ||
+              !Number.isSafeInteger(file.afterBytes) ||
+              (file.afterBytes as number) < 0
+            ) {
+              return false;
+            }
+            const hasReview = Object.hasOwn(file, 'diff');
+            return (
+              hasReview === Object.hasOwn(file, 'newlineStyle') &&
+              hasReview === Object.hasOwn(file, 'finalNewline') &&
+              (!hasReview ||
+                (typeof file.diff === 'string' &&
+                  (file.newlineStyle === 'lf' ||
+                    file.newlineStyle === 'crLf') &&
+                  typeof file.finalNewline === 'boolean'))
+            );
+          })))
     );
   }
   if (

@@ -44,6 +44,49 @@ fn native_asset_store_persists_metadata_and_verifies_content() {
     assert_eq!(loaded["data"], "Zml4dHVyZQ==");
 }
 
+#[tokio::test]
+async fn native_workspace_patch_receipt_retains_reviewable_diff_metadata() {
+    let directory = tempfile::tempdir().expect("data directory");
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("notes.txt"), "before\n").expect("seed file");
+    let runtime = NativeRuntime::open(directory.path().to_string_lossy().into_owned())
+        .expect("native runtime");
+    runtime
+        .ensure_workspace(
+            "workspace-1".to_owned(),
+            workspace.path().to_string_lossy().into_owned(),
+        )
+        .expect("register workspace");
+
+    let result: Value = serde_json::from_str(
+        &runtime
+            .workspace_apply_patch(
+                "workspace-1".to_owned(),
+                concat!(
+                    "*** Begin Patch\n",
+                    "*** Update File: notes.txt\n",
+                    "-before\n",
+                    "+after\n",
+                    "*** End Patch",
+                )
+                .to_owned(),
+            )
+            .await
+            .expect("apply patch"),
+    )
+    .expect("patch result JSON");
+
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["files"][0]["path"], "notes.txt");
+    assert_eq!(result["files"][0]["newlineStyle"], "lf");
+    assert_eq!(result["files"][0]["finalNewline"], true);
+    assert!(
+        result["files"][0]["diff"]
+            .as_str()
+            .is_some_and(|diff| diff.contains("-before\n+after"))
+    );
+}
+
 #[test]
 fn persists_provider_neutral_thread_history_and_deduplicates_items() {
     let directory = tempfile::tempdir().expect("tempdir");

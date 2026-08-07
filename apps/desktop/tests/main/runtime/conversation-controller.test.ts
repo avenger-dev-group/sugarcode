@@ -338,7 +338,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     threadId: THREAD_ID,
     turnId: started.turnId,
     itemId: `${started.turnId}:commentary:1`,
-    phase: 'commentary',
+    phase: 'provisional',
     delta: 'The user wants ',
   });
   fixture.emit({
@@ -349,7 +349,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     threadId: THREAD_ID,
     turnId: started.turnId,
     itemId: `${started.turnId}:commentary:1`,
-    phase: 'commentary',
+    phase: 'provisional',
     delta: 'a project review.',
   });
   fixture.emit({
@@ -501,7 +501,17 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     succeeded: true,
     result: {
       ok: true,
-      files: [{ path: 'src/example.ts', kind: 'update' }],
+      files: [{
+        path: 'src/example.ts',
+        kind: 'update',
+        diff: '--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+        beforeSha256: 'a'.repeat(64),
+        afterSha256: 'b'.repeat(64),
+        beforeBytes: 4,
+        afterBytes: 4,
+        newlineStyle: 'lf',
+        finalNewline: true,
+      }],
     },
   });
   fixture.emit({
@@ -546,6 +556,17 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
   assert.deepEqual(commandActivities?.[0]?.activity.executionResult?.outcome, {
     type: 'workspacePatch',
     filesChanged: 1,
+    files: [{
+      path: 'src/example.ts',
+      kind: 'update',
+      diff: '--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+      beforeSha256: 'a'.repeat(64),
+      afterSha256: 'b'.repeat(64),
+      beforeBytes: 4,
+      afterBytes: 4,
+      newlineStyle: 'lf',
+      finalNewline: true,
+    }],
   });
   const commentary = snapshot.turns[0]?.activities?.filter(
     (activity) => activity.type === 'commentary',

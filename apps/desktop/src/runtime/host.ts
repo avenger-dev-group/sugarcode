@@ -57,7 +57,10 @@ import {
   createWorkspaceTools,
   executePrivilegedWorkspaceTool,
 } from './tools/workspace.ts';
-import { toolResultFailed } from './tool-result.ts';
+import {
+  toolResultFailed,
+  toolResultRequiresFinalRecovery,
+} from './tool-result.ts';
 import {
   RuntimeMcpManager,
   type McpToolApproval,
@@ -178,7 +181,7 @@ type InvalidArgumentGuard = {
   repeats: Map<string, number>;
   calls: Map<string, string>;
   toolErrors: Map<string, number>;
-  lastToolResponseFailed: boolean;
+  lastToolResponseRequiresRecovery: boolean;
   finalRecoveryUsed: boolean;
 };
 
@@ -1561,7 +1564,8 @@ export class RuntimeHost {
       }
       const result = part.functionResponse.response ?? {};
       const failed = toolResultFailed(result);
-      guard.lastToolResponseFailed = failed;
+      guard.lastToolResponseRequiresRecovery =
+        toolResultRequiresFinalRecovery(part.functionResponse.name, result);
       if (!failed) {
         continue;
       }
@@ -1575,7 +1579,7 @@ export class RuntimeHost {
   private consumeToolFailureFinalRecovery = (
     guard: InvalidArgumentGuard,
   ): boolean => {
-    if (!guard.lastToolResponseFailed || guard.finalRecoveryUsed) {
+    if (!guard.lastToolResponseRequiresRecovery || guard.finalRecoveryUsed) {
       return false;
     }
     guard.finalRecoveryUsed = true;
@@ -1842,7 +1846,7 @@ export class RuntimeHost {
         repeats: new Map<string, number>(),
         calls: new Map<string, string>(),
         toolErrors: new Map<string, number>(),
-        lastToolResponseFailed: false,
+        lastToolResponseRequiresRecovery: false,
         finalRecoveryUsed: false,
       };
       const agent = new LlmAgent({
@@ -2058,7 +2062,7 @@ export class RuntimeHost {
         repeats: new Map<string, number>(),
         calls: new Map<string, string>(),
         toolErrors: new Map<string, number>(),
-        lastToolResponseFailed: false,
+        lastToolResponseRequiresRecovery: false,
         finalRecoveryUsed: false,
       };
       const agent = new LlmAgent({

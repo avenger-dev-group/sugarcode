@@ -51,9 +51,9 @@ const AgentMessageView = ({
       (message.state === 'streaming' && message.text.length > 0) ? (
         <AgentMarkdown source={message.text} isStreaming={isStreaming} />
       ) : (
-        <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-process">
+        <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-foreground">
           {message.text || (
-            <span className="text-process">Thinking through the turn…</span>
+            <span>Thinking through the turn…</span>
           )}
         </p>
       )}

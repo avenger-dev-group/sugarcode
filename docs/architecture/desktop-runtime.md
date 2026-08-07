@@ -115,14 +115,18 @@ coordinator creates one bounded runtime auditor before the DAG is persisted and
 scheduled, avoiding repeated dispatch failures and repeated large task briefs.
 If the most recent tool result failed, the driver likewise demotes the first
 final candidate to commentary and grants one bounded recovery continuation.
-This retry is structural and provider-neutral; it does not classify the public
-answer text, and a successful later tool result permits normal completion.
+A `workspace_read` result whose only unsuccessful entries are `notFound` is an
+exception: confirmed absence is valid observational evidence, so it does not
+trigger recovery or move an otherwise accepted final summary into the process
+disclosure. This retry is otherwise structural and provider-neutral; it does
+not classify the public answer text, and a successful later tool result permits
+normal completion.
 Command results count as failed when their nested process outcome is a non-zero
 exit code, signal or timeout even though the durable operation status itself is
 `completed`. Workspace patch operations have a distinct provider-neutral
-`workspacePatch` success outcome carrying the changed-file count; Main and the
-Renderer must not run successful patch receipts through the Shell-process
-classifier or label them as failed commands.
+`workspacePatch` success outcome carrying the changed-file count and optional
+per-file review receipts; Main and the Renderer must not run successful patch
+receipts through the Shell-process classifier or label them as failed commands.
 
 ## UI compatibility
 
@@ -146,9 +150,16 @@ Renderer can show the transcript before the first model stream event arrives.
 Consecutive commentary deltas are coalesced into one process paragraph during
 live projection, and persisted commentary deltas are coalesced again on restore;
 provider chunk boundaries must never become visible paragraph spacing.
-Commentary uses the same streaming-safe GFM renderer as Agent responses, with
-the process-text tone, so headings, lists, emphasis and inline code have one
-consistent Markdown interpretation.
+Commentary uses the same streaming-safe GFM renderer and primary body-text tone
+as Agent responses, so headings, lists, emphasis and inline code have one
+consistent Markdown interpretation. Public model text uses that primary tone
+at full opacity from its first streaming frame, without a per-segment fade;
+only tool activity, command state, loading indicators and low-priority metadata
+use the process-text tone. A provisional
+live text Item begins in the process projection rather than briefly appearing
+as a final answer; its authoritative completed phase either keeps it as
+commentary or promotes that same Item to the final response without duplicate
+text or a process-to-primary color transition.
 Provider-neutral `turn.toolCall` and `turn.toolResult` events are projected by
 Main into ordered workspace read, list and search activities. Batched reads
 become one row per file, repeated delivery is idempotent by call and path, and
@@ -157,6 +168,13 @@ The process disclosure and compact tool copy derive Chinese or English from the
 original user message for that Turn; no provider-generated language guess is
 required. The repeated-tool-failure summary and recovery guidance use that same
 Turn language instead of exposing one fixed English status for Chinese Turns.
+Compact tool groups are independently collapsible and have a bounded internal
+scroll region. Each command row is a keyboard-operable disclosure of the full
+command, retained stdout/stderr and structured result. Successful workspace
+patch receipts also produce one end-of-Turn change summary with unique file
+paths, addition/deletion counts and inline review diffs; this summary remains
+visible for failed Turns that already changed files, so partial work is never
+hidden behind the terminal error.
 The private worker protocol is v2 and projects model text as
 `turn.textStarted`, `turn.textDelta`, and `turn.textCompleted`. Started and
 delta events are transient. A completed event carries the authoritative text,

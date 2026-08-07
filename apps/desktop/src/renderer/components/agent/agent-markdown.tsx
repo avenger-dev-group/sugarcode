@@ -15,7 +15,6 @@ import {
 } from './agent-markdown-parser';
 import type { AgentMarkdownProps } from './types';
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
 const FENCED_CODE_PATTERN = /^ {0,3}(?:`{3,}|~{3,})/u;
 
 const tableAlignmentClass = (
@@ -31,40 +30,16 @@ const tableAlignmentClass = (
   }
 };
 
-const renderText = (
-  text: string,
-  keyPrefix: string,
-  isStreaming: boolean,
-): ReactNode => {
-  if (!isStreaming) {
-    return text;
-  }
-  let offset = 0;
-  return Array.from(segmenter.segment(text), (segment) => {
-    const key = `${keyPrefix}:${offset}`;
-    offset += segment.segment.length;
-    return (
-      <span
-        key={key}
-        className={isStreaming ? 'agent-markdown-segment' : undefined}
-      >
-        {segment.segment}
-      </span>
-    );
-  });
-};
-
 const renderTokens = (
   tokens: readonly Token[],
   keyPrefix: string,
-  isStreaming: boolean,
 ): ReactNode[] => {
   let offset = 0;
   return tokens.flatMap((token, index): ReactNode[] => {
     const key = `${keyPrefix}:${offset}:${token.type}:${index}`;
     offset += token.raw.length;
     const children = (nested: readonly Token[]): ReactNode[] =>
-      renderTokens(nested, key, isStreaming);
+      renderTokens(nested, key);
 
     switch (token.type) {
       case 'space':
@@ -294,17 +269,11 @@ const renderTokens = (
       case 'text':
         return [
           <Fragment key={key}>
-            {token.tokens
-              ? children(token.tokens)
-              : renderText(token.text, key, isStreaming)}
+            {token.tokens ? children(token.tokens) : token.text}
           </Fragment>,
         ];
       case 'escape':
-        return [
-          <Fragment key={key}>
-            {renderText(token.text, key, isStreaming)}
-          </Fragment>,
-        ];
+        return [<Fragment key={key}>{token.text}</Fragment>];
       case 'del':
         return [
           <del key={key} className="decoration-secondary">
@@ -316,9 +285,7 @@ const renderTokens = (
         return [];
       default:
         return [
-          <Fragment key={key}>
-            {renderText(token.raw, key, isStreaming)}
-          </Fragment>,
+          <Fragment key={key}>{token.raw}</Fragment>,
         ];
     }
   });
@@ -327,7 +294,6 @@ const renderTokens = (
 const AgentMarkdownView = ({
   source,
   isStreaming,
-  tone = 'default',
 }: AgentMarkdownProps): ReactElement => {
   const cache = useRef<AgentMarkdownTokenCache | undefined>(undefined);
   const projection = useMemo(() => {
@@ -341,10 +307,8 @@ const AgentMarkdownView = ({
   }, [isStreaming, source]);
 
   return (
-    <div
-      className={`min-w-0 max-w-full font-normal ${tone === 'process' ? 'text-process' : 'text-foreground'}`}
-    >
-      {renderTokens(projection.tokens, 'root', isStreaming)}
+    <div className="min-w-0 max-w-full font-normal text-foreground">
+      {renderTokens(projection.tokens, 'root')}
     </div>
   );
 };

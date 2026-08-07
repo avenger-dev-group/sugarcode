@@ -1,4 +1,7 @@
+import type { ConversationWorkspacePatchFile } from '../../../shared/conversation.ts';
+
 import type {
+  FileChangeReviewFile,
   UnifiedDiffHunk,
   UnifiedDiffLine,
 } from './types';
@@ -61,4 +64,37 @@ export const parseUnifiedDiff = (
     hunks.push({ header, lines: hunkLines });
   }
   return hunks;
+};
+
+export const toWorkspacePatchReviewFile = (
+  id: string,
+  file: ConversationWorkspacePatchFile,
+): FileChangeReviewFile | undefined => {
+  if (
+    file.diff === undefined ||
+    file.newlineStyle === undefined ||
+    file.finalNewline === undefined
+  ) {
+    return undefined;
+  }
+  try {
+    const hunks = parseUnifiedDiff(file.diff);
+    const lines = hunks.flatMap((hunk) => hunk.lines);
+    return {
+      id,
+      path: file.path,
+      kind: file.kind,
+      hunks,
+      additions: lines.filter((line) => line.kind === 'addition').length,
+      deletions: lines.filter((line) => line.kind === 'deletion').length,
+      beforeSha256: file.beforeSha256,
+      afterSha256: file.afterSha256,
+      beforeBytes: file.beforeBytes,
+      afterBytes: file.afterBytes,
+      newlineStyle: file.newlineStyle,
+      finalNewline: file.finalNewline,
+    };
+  } catch {
+    return undefined;
+  }
 };

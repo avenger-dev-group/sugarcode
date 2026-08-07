@@ -17,6 +17,9 @@ or `maxOutputTokens`), or a typed failure. Lifecycle decisions consume only
 this structure; prompts and public text do not decide completion. When the most
 recent tool result failed, the shared Turn Driver rejects the first subsequent
 final candidate once and requests concrete recovery or an explicit blocker.
+The only observational exception is `workspace_read` when every unsuccessful
+entry is `notFound`: confirmed file absence is evidence rather than a failed
+execution and must not demote the final summary into commentary.
 
 ## Requests and streaming
 
@@ -127,6 +130,11 @@ accepts either one fully `+`-prefixed body or one fully unprefixed body, and the
 native parser tolerates unchanged file prelude before the first `@@`. A hunk
 whose removed and added text are identical remains rejected, preventing
 ambiguous whole-file replacement and no-op patches from entering approval.
+Freeform context matching also collapses repeated backslashes immediately
+before a quoted character. This is a matching-only compatibility rule for
+gateways that JSON-escape an already escaped quote; unrelated backslashes
+remain exact, and the applied replacement is still based on observed workspace
+content.
 Compatible gateways that cannot supply the declared structured tool wire fail
 explicitly as `wireMismatch` or `unsupportedToolArguments`; SugarCode does not
 parse generic `<tool_call>` text.

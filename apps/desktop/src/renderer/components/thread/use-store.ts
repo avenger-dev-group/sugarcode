@@ -678,6 +678,10 @@ export const toThreadViewModel = (
               id: entry.activity.id,
               command: entry.activity.command,
               argumentCount: entry.activity.argumentCount,
+              ...(entry.activity.fullAccess ? { fullAccess: true } : {}),
+              ...(entry.activity.liveOutput
+                ? { liveOutput: { ...entry.activity.liveOutput } }
+                : {}),
               state: toCommandApprovalPresentationState(
                 snapshot.phase,
                 turn.status,

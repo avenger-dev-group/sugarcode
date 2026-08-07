@@ -267,6 +267,12 @@ export type ProcessActivityGroupProps = Readonly<{
   children: ReactNode;
 }>;
 
+export type TurnChangeSummaryProps = Readonly<{
+  turnId: string;
+  activities: readonly TurnActivityViewModel[];
+  language: ProcessLanguage;
+}>;
+
 export type TranscriptFollow = Readonly<{
   transcriptContent: RefObject<HTMLDivElement | null>;
   transcriptEnd: RefObject<HTMLDivElement | null>;

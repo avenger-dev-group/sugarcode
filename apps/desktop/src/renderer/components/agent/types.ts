@@ -1,3 +1,5 @@
+import type { ConversationCommandExecutionResultOutcome } from '@/shared/conversation';
+
 export type AgentMessagePresentationState =
   'streaming' | 'stopping' | 'uncertain' | 'completed';
 
@@ -89,24 +91,7 @@ export type CommandExecutionResultPresentationState =
 export type CommandExecutionResultViewModel = Readonly<{
   id: string;
   state: CommandExecutionResultPresentationState;
-  outcome:
-    | Readonly<{ type: 'error'; kind: string }>
-    | Readonly<{ type: 'workspacePatch'; filesChanged: number }>
-    | Readonly<{
-        type: 'process';
-        stdoutBytes: number;
-        stderrBytes: number;
-        stdoutTruncated: boolean;
-        stderrTruncated: boolean;
-        encoding: 'utf8Lossy';
-        durationMs: number;
-        outcome:
-          | Readonly<{ type: 'exitCode'; code: number }>
-          | Readonly<{ type: 'signal'; signal: number }>
-          | Readonly<{ type: 'timedOut' }>;
-        sandboxPolicy?: 'filesystemReadOnlyV1';
-        networkPolicy?: 'networkDeniedV1';
-      }>;
+  outcome: ConversationCommandExecutionResultOutcome;
 }>;
 
 export type CommandApprovalActivityViewModel = Readonly<{
@@ -130,5 +115,4 @@ export type CommandApprovalActivityProps = Readonly<{
 export type AgentMarkdownProps = Readonly<{
   source: string;
   isStreaming: boolean;
-  tone?: 'default' | 'process';
 }>;

@@ -81,9 +81,17 @@ export const CommandExecutionResult = ({
         </span>
       </div>
       {result.outcome.type === 'error' ? (
-        <code className="mt-2 block min-w-0 break-all rounded-md border px-2 py-1.5 font-mono text-[10px] leading-normal text-destructive">
-          {result.outcome.kind}
-        </code>
+        <div className="mt-2 min-w-0 rounded-md border px-2 py-1.5 text-destructive">
+          <code className="block break-all font-mono text-[10px] leading-normal">
+            {result.outcome.kind}
+            {result.outcome.failedPath ? ` · ${result.outcome.failedPath}` : ''}
+          </code>
+          {result.outcome.message ? (
+            <p className="mt-1 break-words text-xs font-normal leading-normal">
+              {result.outcome.message}
+            </p>
+          ) : null}
+        </div>
       ) : result.outcome.type === 'workspacePatch' ? (
         <p className="mt-2 rounded-md border px-2 py-1.5 font-mono text-[10px] text-secondary">
           {result.outcome.filesChanged.toLocaleString('en-US')} file

@@ -210,3 +210,22 @@ fn accepts_unchanged_file_prelude_before_the_first_hunk_marker() {
     assert_eq!(chunks[0].old_lines, ["import alpha", "import beta", "old"]);
     assert_eq!(chunks[0].new_lines, ["import alpha", "import beta", "new"]);
 }
+
+#[test]
+fn matches_compatible_provider_overescaped_quotes_without_weakening_other_backslashes() {
+    let workspace = vec![
+        "const value = 'JSON.parse(\\\'payload\\\')';".to_string(),
+        "const expression = /a\\\\b/;".to_string(),
+    ];
+    let overescaped_quote = vec!["const value = 'JSON.parse(\\\\\\'payload\\\\\\')';".to_string()];
+    let different_expression = vec!["const expression = /a\\b/;".to_string()];
+
+    assert_eq!(
+        crate::workspace_patch::seek_freeform_sequence(&workspace, &overescaped_quote, 0, false,),
+        Some(0)
+    );
+    assert_eq!(
+        crate::workspace_patch::seek_freeform_sequence(&workspace, &different_expression, 0, false,),
+        None
+    );
+}

@@ -374,6 +374,60 @@ class RecoverAfterPrematureFinalLlm extends BaseLlm {
   }
 }
 
+class FinalAfterInformativeMissingReadLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  requestCount = 0;
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requestCount += 1;
+    const hasReadResult = request.contents.some((content) =>
+      (content.parts ?? []).some(
+        (part) => part.functionResponse?.name === 'workspace_read',
+      )
+    );
+    if (!hasReadResult) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-read-optional-files',
+              name: 'workspace_read',
+              args: {
+                paths: ['README.md', '.dockerignore', '.gitignore'],
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: {
+        role: 'model',
+        parts: [{
+          text: '分析完成：项目缺少 `.dockerignore`。',
+          partMetadata: modelItemMetadata('informative-miss-final', {
+            phase: 'final',
+            outcome: { kind: 'final' },
+          }),
+        }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class CollaborationLoopLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
@@ -1056,6 +1110,96 @@ test('RuntimeHost retries one premature final after a failed tool result', async
           event.type === 'turn.textCompleted' || event.type === 'turn.completed',
       ),
     ),
+  );
+});
+
+test('RuntimeHost keeps a summary final after workspace_read confirms a missing file', async () => {
+  const events: RuntimeEvent[] = [];
+  const requestedPaths: string[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const model = new FinalAfterInformativeMissingReadLlm({
+    model: 'fixture-model',
+  });
+  const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    listPendingApprovalsJson: () => '[]',
+    ensureThread: (): void => undefined,
+    loadThreadJson: () => emptyThreadSnapshot('thread-informative-read-miss'),
+    startTurn: (): void => undefined,
+    appendItem: () => true,
+    finishTurn: () => true,
+    workspaceRead: async (_workspaceId: string, path: string) => {
+      requestedPaths.push(path);
+      return path === '.dockerignore'
+        ? JSON.stringify({ ok: false, error: 'notFound' })
+        : JSON.stringify({ ok: true, content: `content:${path}` });
+    },
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => model,
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveTerminal?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-informative-read-miss',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-informative-read-miss-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-informative-read-miss',
+    workspaceId: 'workspace-informative-read-miss',
+    threadId: 'thread-informative-read-miss',
+    turnId: 'turn-informative-read-miss',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '分析项目可以优化的地方。' }],
+  });
+
+  await terminal;
+
+  assert.deepEqual(requestedPaths, [
+    'README.md',
+    '.dockerignore',
+    '.gitignore',
+  ]);
+  assert.equal(model.requestCount, 2);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '分析完成：项目缺少 `.dockerignore`。',
+    ),
+    true,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'commentary' &&
+        event.text === '分析完成：项目缺少 `.dockerignore`。',
+    ),
+    false,
   );
 });
 

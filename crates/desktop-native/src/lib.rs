@@ -581,17 +581,37 @@ impl NativeRuntime {
                 .map_err(|error| Error::from_reason(error.to_string()));
             }
         };
+        let reviews = prepared
+            .changes()
+            .iter()
+            .map(|change| {
+                (
+                    change.path().to_owned(),
+                    change.diff().to_owned(),
+                    change.newline().as_str(),
+                    change.final_newline(),
+                )
+            })
+            .collect::<Vec<_>>();
         let value = match workspace.commit_change_set(prepared, &cancellation).await {
             WorkspaceChangeSetCommitOutcome::Applied { receipts } => json!({
                 "ok": true,
-                "files": receipts.into_iter().map(|receipt| json!({
-                    "path": receipt.path,
-                    "kind": receipt.kind.as_str(),
-                    "beforeSha256": receipt.before_sha256,
-                    "afterSha256": receipt.after_sha256,
-                    "beforeBytes": receipt.before_bytes,
-                    "afterBytes": receipt.after_bytes,
-                })).collect::<Vec<_>>(),
+                "files": receipts.into_iter().zip(reviews).map(
+                    |(receipt, (path, diff, newline_style, final_newline))| {
+                        debug_assert_eq!(receipt.path, path);
+                        json!({
+                            "path": receipt.path,
+                            "kind": receipt.kind.as_str(),
+                            "diff": diff,
+                            "beforeSha256": receipt.before_sha256,
+                            "afterSha256": receipt.after_sha256,
+                            "beforeBytes": receipt.before_bytes,
+                            "afterBytes": receipt.after_bytes,
+                            "newlineStyle": newline_style,
+                            "finalNewline": final_newline,
+                        })
+                    }
+                ).collect::<Vec<_>>(),
             }),
             WorkspaceChangeSetCommitOutcome::Error { kind } => {
                 json!({ "ok": false, "error": format!("{kind:?}") })

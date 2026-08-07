@@ -20,6 +20,7 @@ import {
   type ConversationThreadNavigatorSnapshot,
   type ConversationTurn,
   type ConversationTurnError,
+  type ConversationWorkspacePatchFile,
 } from '../../shared/conversation.ts';
 import {
   isRuntimeAgentTask,
@@ -81,6 +82,41 @@ const addTokenUsage = (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const workspacePatchFile = (
+  value: unknown,
+): ConversationWorkspacePatchFile | undefined => {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== 'string' ||
+    !['create', 'update', 'delete'].includes(String(value.kind)) ||
+    typeof value.beforeSha256 !== 'string' ||
+    typeof value.afterSha256 !== 'string' ||
+    !Number.isSafeInteger(value.beforeBytes) ||
+    !Number.isSafeInteger(value.afterBytes)
+  ) {
+    return undefined;
+  }
+  const hasReview =
+    typeof value.diff === 'string' &&
+    (value.newlineStyle === 'lf' || value.newlineStyle === 'crLf') &&
+    typeof value.finalNewline === 'boolean';
+  return {
+    path: value.path,
+    kind: value.kind as 'create' | 'update' | 'delete',
+    beforeSha256: value.beforeSha256,
+    afterSha256: value.afterSha256,
+    beforeBytes: value.beforeBytes as number,
+    afterBytes: value.afterBytes as number,
+    ...(hasReview
+      ? {
+          diff: value.diff as string,
+          newlineStyle: value.newlineStyle as 'lf' | 'crLf',
+          finalNewline: value.finalNewline as boolean,
+        }
+      : {}),
+  };
+};
+
 const commandOutcome = (
   result: Readonly<Record<string, unknown>>,
 ): ConversationCommandExecutionResultOutcome => {
@@ -89,7 +125,15 @@ const commandOutcome = (
     Array.isArray(result.files) &&
     result.files.length >= 1
   ) {
-    return { type: 'workspacePatch', filesChanged: result.files.length };
+    const files = result.files.flatMap((file) => {
+      const projected = workspacePatchFile(file);
+      return projected ? [projected] : [];
+    });
+    return {
+      type: 'workspacePatch',
+      filesChanged: result.files.length,
+      ...(files.length === result.files.length ? { files } : {}),
+    };
   }
   const output = result.output;
   if (
@@ -108,7 +152,16 @@ const commandOutcome = (
       : typeof result.error === 'string'
         ? result.error
         : String(result.status ?? 'unavailable');
-    return { type: 'error', kind };
+    return {
+      type: 'error',
+      kind,
+      ...(typeof result.message === 'string' && result.message.length > 0
+        ? { message: result.message }
+        : {}),
+      ...(typeof result.failedPath === 'string' && result.failedPath.length > 0
+        ? { failedPath: result.failedPath }
+        : {}),
+    };
   }
   const processOutcome = output.outcome.type === 'exitCode' &&
     typeof output.outcome.code === 'number'
@@ -956,7 +1009,7 @@ export class RuntimeConversationController {
       case 'turn.textStarted':
         break;
       case 'turn.textDelta': {
-        if (event.phase === 'commentary') {
+        if (event.phase !== 'final') {
           const activities = [...(turn.activities ?? [])];
           const activityIndex = activities.findIndex(
             (activity) =>

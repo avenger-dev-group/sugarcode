@@ -1771,7 +1771,7 @@ fn seek_freeform_sequence(
 }
 
 fn normalize_freeform_context(value: &str) -> String {
-    value
+    let normalized: String = value
         .trim()
         .chars()
         .map(|character| match character {
@@ -1784,7 +1784,27 @@ fn normalize_freeform_context(value: &str) -> String {
             | '\u{3000}' => ' ',
             other => other,
         })
-        .collect()
+        .collect();
+    let characters = normalized.chars().collect::<Vec<_>>();
+    let mut compatible = String::with_capacity(normalized.len());
+    let mut index = 0usize;
+    while index < characters.len() {
+        if characters[index] != '\\' {
+            compatible.push(characters[index]);
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < characters.len() && characters[index] == '\\' {
+            index += 1;
+        }
+        let escaped_quote = characters
+            .get(index)
+            .is_some_and(|character| *character == '\'' || *character == '"');
+        let count = if escaped_quote { 1 } else { index - start };
+        compatible.extend(std::iter::repeat_n('\\', count));
+    }
+    compatible
 }
 
 fn apply_freeform_edits(

@@ -82,7 +82,12 @@ identical text is also rejected. These structural no-ops never become durable
 operations or approval requests. If native matching finds stale context, the
 result identifies the affected path and line, confirms that the atomic patch
 changed no files, and directs the Agent to re-read and retry a small patch for
-that file.
+that file. Matching tolerates a compatible provider doubling backslashes
+immediately before quotes, but does not normalize regular expression, path or
+other unrelated backslashes. A successful native receipt retains the bounded
+review diff, newline metadata and revision hashes for every changed file so the
+Desktop can disclose the exact change after execution without rereading a
+mutable workspace.
 
 `workspace_read` declares either one `path` or a bounded `paths` batch of 1
 through 8 files. Batch reads execute through the same read-only workspace

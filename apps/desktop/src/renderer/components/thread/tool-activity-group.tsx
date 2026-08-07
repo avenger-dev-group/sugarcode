@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
+import { CommandExecutionResult } from '@/renderer/components/agent/command-execution-result';
 
 import type { CompactToolActivity, ProcessLanguage } from './types';
 import {
@@ -254,39 +255,82 @@ const CommandRow = ({
     : active
       ? 'text-process'
       : 'text-secondary';
+  const stdout = entry.activity.liveOutput?.stdout ?? '';
+  const stderr = entry.activity.liveOutput?.stderr ?? '';
+  const workspacePatch = entry.activity.command.startsWith(
+    'workspace_apply_patch',
+  );
   return (
-    <div
-      className="flex min-w-0 items-start gap-2.5 py-1"
+    <details
+      className="group/command min-w-0"
       role={failed ? 'alert' : 'status'}
       aria-label={`${action}: ${entry.activity.command}`}
       data-state={entry.activity.state}
     >
-      <span
-        className={`mt-0.5 flex size-4 shrink-0 items-center justify-center ${tone}`}
-      >
-        {active ? (
-          <LoaderCircle
-            className="size-3.5 animate-spin motion-reduce:animate-none"
-            aria-hidden="true"
-          />
-        ) : failed ? (
-          <X className="size-3.5" aria-hidden="true" />
-        ) : (
-          <SquareTerminal className="size-3.5" aria-hidden="true" />
-        )}
-      </span>
-      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm leading-5">
-        <span className={tone}>{action}</span>
-        <code className="min-w-0 break-all font-mono text-[12px] text-secondary underline decoration-border underline-offset-2">
-          {entry.activity.command}
-        </code>
-        {metadata ? (
-          <span className="ml-auto whitespace-nowrap font-mono text-[10px] text-tertiary">
-            {metadata}
-          </span>
-        ) : null}
+      <summary className="flex min-w-0 cursor-pointer list-none items-start gap-2.5 rounded-md py-1 pr-1 outline-none transition-colors hover:bg-surface focus-visible:ring-2 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+        <span
+          className={`mt-0.5 flex size-4 shrink-0 items-center justify-center ${tone}`}
+        >
+          {active ? (
+            <LoaderCircle
+              className="size-3.5 animate-spin motion-reduce:animate-none"
+              aria-hidden="true"
+            />
+          ) : failed ? (
+            <X className="size-3.5" aria-hidden="true" />
+          ) : (
+            <SquareTerminal className="size-3.5" aria-hidden="true" />
+          )}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm leading-5">
+          <span className={tone}>{action}</span>
+          <code className="min-w-0 flex-1 truncate font-mono text-[12px] text-secondary underline decoration-border underline-offset-2">
+            {entry.activity.command}
+          </code>
+          {metadata ? (
+            <span className="whitespace-nowrap font-mono text-[10px] text-tertiary">
+              {metadata}
+            </span>
+          ) : null}
+        </span>
+        <ChevronDown
+          className="mt-0.5 size-3.5 shrink-0 text-tertiary transition-transform motion-reduce:transition-none group-open/command:rotate-180"
+          aria-hidden="true"
+        />
+      </summary>
+      <div className="mb-1.5 ml-6 mt-1 min-w-0 overflow-hidden rounded-lg border bg-surface">
+        <div className="border-b px-3 py-1.5 text-xs font-medium text-secondary">
+          {workspacePatch ? 'Patch' : 'Shell'}
+        </div>
+        <div
+          className="max-h-72 overflow-auto px-3 py-2.5 font-mono text-xs font-normal leading-5"
+          tabIndex={0}
+          role="region"
+          aria-label={`${workspacePatch ? 'Patch' : 'Shell'} execution detail`}
+        >
+          <pre className="whitespace-pre-wrap break-words text-secondary">
+            <span className="select-none text-tertiary">$ </span>
+            {entry.activity.command}
+          </pre>
+          {stdout ? (
+            <pre className="mt-2 whitespace-pre-wrap break-words text-secondary">
+              {stdout}
+            </pre>
+          ) : null}
+          {stderr ? (
+            <pre className="mt-2 whitespace-pre-wrap break-words text-destructive">
+              {stderr}
+            </pre>
+          ) : null}
+          {!stdout && !stderr && !result ? (
+            <p className="mt-2 text-tertiary">
+              {language === 'zh' ? '暂无执行输出' : 'No execution output'}
+            </p>
+          ) : null}
+          {result ? <CommandExecutionResult result={result} /> : null}
+        </div>
       </div>
-    </div>
+    </details>
   );
 };
 
@@ -400,7 +444,7 @@ export const ToolActivityGroup = ({
           aria-hidden="true"
         />
       </summary>
-      <ol className="relative ml-1.5 mt-0.5 border-l border-border/70 pl-3">
+      <ol className="relative ml-1.5 mt-0.5 max-h-80 overflow-y-auto overscroll-contain border-l border-border/70 pl-3 pr-1">
         {activities.map((entry) => (
           <li key={`${entry.type}:${entry.activity.id}`} className="min-w-0">
             {entry.type === 'fileChange' ? (

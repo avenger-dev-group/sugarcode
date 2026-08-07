@@ -195,7 +195,31 @@ test('conversation snapshots preserve a successful workspace patch result', () =
             command: 'workspace_apply_patch (324 bytes)',
             executionResult: {
               ...turn.commandApproval.executionResult,
-              outcome: { type: 'workspacePatch', filesChanged: 2 },
+              outcome: {
+                type: 'workspacePatch',
+                filesChanged: 2,
+                files: [
+                  {
+                    path: 'src/a.ts',
+                    kind: 'update',
+                    beforeSha256: 'a'.repeat(64),
+                    afterSha256: 'b'.repeat(64),
+                    beforeBytes: 4,
+                    afterBytes: 4,
+                    diff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n',
+                    newlineStyle: 'lf',
+                    finalNewline: true,
+                  },
+                  {
+                    path: 'src/b.ts',
+                    kind: 'create',
+                    beforeSha256: 'c'.repeat(64),
+                    afterSha256: 'd'.repeat(64),
+                    beforeBytes: 0,
+                    afterBytes: 2,
+                  },
+                ],
+              },
             },
           },
         },

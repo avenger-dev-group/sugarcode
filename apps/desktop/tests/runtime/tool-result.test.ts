@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { toolResultFailed } from '../../src/runtime/tool-result.ts';
+import {
+  toolResultFailed,
+  toolResultRequiresFinalRecovery,
+} from '../../src/runtime/tool-result.ts';
 
 test('tool result failure classification includes nested process outcomes', () => {
   assert.equal(
@@ -37,4 +40,35 @@ test('tool result failure classification includes nested process outcomes', () =
 test('tool result failure classification preserves direct tool results', () => {
   assert.equal(toolResultFailed({ ok: false, error: 'notFound' }), true);
   assert.equal(toolResultFailed({ ok: true, content: 'fixture' }), false);
+});
+
+test('a missing workspace_read path is evidence rather than a final-recovery failure', () => {
+  const partialRead = {
+    ok: false,
+    files: [
+      { ok: true, path: 'README.md', content: '# Fixture' },
+      { ok: false, path: '.dockerignore', error: 'notFound' },
+      { ok: true, path: '.gitignore', content: 'dist' },
+    ],
+  };
+
+  assert.equal(toolResultFailed(partialRead), true);
+  assert.equal(
+    toolResultRequiresFinalRecovery('workspace_read', partialRead),
+    false,
+  );
+  assert.equal(
+    toolResultRequiresFinalRecovery('workspace_read', {
+      ok: false,
+      files: [{ ok: false, path: '../secret', error: 'outsideWorkspace' }],
+    }),
+    true,
+  );
+  assert.equal(
+    toolResultRequiresFinalRecovery('workspace_apply_patch', {
+      ok: false,
+      error: 'notFound',
+    }),
+    true,
+  );
 });

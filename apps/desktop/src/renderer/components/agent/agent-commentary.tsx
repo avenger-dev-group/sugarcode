@@ -17,7 +17,6 @@ const AgentCommentaryView = ({
     <AgentMarkdown
       source={commentary.text}
       isStreaming={commentary.state === 'running'}
-      tone="process"
     />
   </div>
 );

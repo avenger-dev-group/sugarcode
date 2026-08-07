@@ -122,6 +122,55 @@ async fn workspace_freeform_patch_matches_codex_whitespace_fuzz() {
 }
 
 #[tokio::test]
+async fn workspace_freeform_patch_matches_provider_overescaped_quotes() {
+    let workspace = tempdir().expect("workspace");
+    fs::write(
+        workspace.path().join("vite.config.ts"),
+        r#"const appVersion = packageJson.version;
+
+const htmlPluginOpt = {
+  headScripts: [
+    'globalThis.import_meta_env = JSON.parse(\'"import_meta_env_placeholder"\')',
+  ],
+};
+
+// config
+"#,
+    )
+    .expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let patch = concat!(
+        "*** Begin Patch\n",
+        "*** Update File: vite.config.ts\n",
+        "@@\n",
+        " const appVersion = packageJson.version;\n",
+        " \n",
+        "-const htmlPluginOpt = {\n",
+        "-  headScripts: [\n",
+        "-    'globalThis.import_meta_env = JSON.parse(\\\\'\"import_meta_env_placeholder\"\\\\')',\n",
+        "-  ],\n",
+        "-};\n",
+        " \n",
+        " // config\n",
+        "*** End Patch",
+    );
+
+    let WorkspaceChangeSetPrepareOutcome::Prepared(prepared) =
+        tool.prepare_freeform_patch(patch, &cancellation()).await
+    else {
+        panic!("prepare overescaped compatible patch");
+    };
+    assert!(matches!(
+        tool.commit_change_set(prepared, &cancellation()).await,
+        WorkspaceChangeSetCommitOutcome::Applied { .. }
+    ));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("vite.config.ts")).expect("updated file"),
+        "const appVersion = packageJson.version;\n\n\n// config\n"
+    );
+}
+
+#[tokio::test]
 async fn workspace_freeform_patch_commits_unprefixed_add_and_update_prelude() {
     let workspace = tempdir().expect("workspace");
     fs::write(
