@@ -40,6 +40,24 @@ test('retryable failures retain retry guidance', () => {
   assert.equal(failure.guidance, 'You can send another message to retry.');
 });
 
+test('repeated tool failures follow the original user language', () => {
+  const chinese = toTurnFailureViewModel(
+    { kind: 'unsupportedToolArguments', retryable: false },
+    'openaiResponses',
+    'zh',
+  );
+  const english = toTurnFailureViewModel(
+    { kind: 'unsupportedToolArguments', retryable: false },
+    'anthropicMessages',
+    'en',
+  );
+
+  assert.equal(chinese.summary, '模型重复提交了相同的失败工具调用');
+  assert.match(chinese.guidance, /检查工具格式/u);
+  assert.equal(english.summary, 'The model repeated the same failing tool call');
+  assert.match(english.guidance, /structured-tool compatibility/u);
+});
+
 test('protocol failures direct users to the selected wire compatibility', () => {
   const failure = toTurnFailureViewModel({
     kind: 'protocol',

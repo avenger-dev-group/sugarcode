@@ -34,7 +34,6 @@ type TerminalControllerOptions = Readonly<{
   runtime: RuntimeSupervisor;
   getMainWindow: () => Electron.BrowserWindow | null;
   getWorkspace: () => WorkspaceLaunchContext | null;
-  getRuntimeWorkspaceId: () => string | null;
   isApprovalPending: () => boolean;
   createSessionId?: () => string;
 }>;
@@ -115,8 +114,7 @@ export class TerminalController {
       return actionResult('busy');
     }
     const workspace = this.options.getWorkspace();
-    const workspaceId = this.options.getRuntimeWorkspaceId();
-    if (!workspace || !workspaceId) {
+    if (!workspace) {
       return actionResult('unavailable');
     }
     if (request.generation !== workspace.generation) {
@@ -146,11 +144,10 @@ export class TerminalController {
         return actionResult('cancelled');
       }
       const confirmed = this.options.getWorkspace();
-      const confirmedId = this.options.getRuntimeWorkspaceId();
       if (
         !confirmed ||
         confirmed.generation !== request.generation ||
-        confirmedId !== workspaceId
+        confirmed.workspaceId !== workspace.workspaceId
       ) {
         return actionResult('stale');
       }
@@ -161,7 +158,7 @@ export class TerminalController {
       const active: ActiveTerminal = {
         generation: confirmed.generation,
         sessionId: this.createSessionId(),
-        workspaceId,
+        workspaceId: confirmed.workspaceId,
         workspaceName: confirmed.name,
         status: 'starting',
         expectedOutputSequence: 1,
@@ -181,7 +178,7 @@ export class TerminalController {
         this.options.runtime.send({
           type: 'terminal.create',
           requestId: randomUUID(),
-          workspaceId,
+          workspaceId: active.workspaceId,
           generation: active.generation,
           sessionId: active.sessionId,
           columns: request.columns,

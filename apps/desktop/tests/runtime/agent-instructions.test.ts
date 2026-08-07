@@ -18,6 +18,18 @@ test('base Agent instructions localize visible output and reject repetitive proc
   );
   assert.match(
     SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /Inside every `\*\*\* Update File:` operation/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /Never paste an unprefixed complete file body/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /never invent an absolute project path or prepend `cd`/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
     /future-action promise[\s\S]*is commentary, never a final answer/u,
   );
   assert.match(

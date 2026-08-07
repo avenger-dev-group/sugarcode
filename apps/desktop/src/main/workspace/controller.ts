@@ -72,6 +72,7 @@ type Listener = (snapshot: WorkspaceStateSnapshot) => void;
 
 export type WorkspaceLaunchContext = Readonly<{
   generation: number;
+  workspaceId: string;
   path: string;
   name: string;
 }>;
@@ -139,9 +140,11 @@ export class WorkspaceController {
   private projectPath: string | null = null;
   private activeProjectId: string | null = null;
   private readonly projects = new Map<string, ProjectRecord>();
+  private workspaceId: string | null = null;
   private workspacePath: string | null = null;
   private workspaceKind: WorkspaceKind | null = null;
   private activeChatThreadId: string | null = null;
+  private workspaceSwitchActive = false;
   private snapshot: WorkspaceStateSnapshot = {
     revision: 0,
     generation: 0,
@@ -153,7 +156,7 @@ export class WorkspaceController {
     this.options = options;
     this.options.threadRegistry.subscribe(this.handleRegistryChange);
     this.options.supervisor.subscribe((connection) => {
-      if (!this.workspacePath) {
+      if (!this.workspacePath || this.snapshot.status === 'selecting') {
         return;
       }
       if (connection.status === 'ready') {
@@ -173,9 +176,10 @@ export class WorkspaceController {
   getSnapshot = (): WorkspaceStateSnapshot => this.snapshot;
 
   getLaunchContext = (): WorkspaceLaunchContext | null =>
-    this.workspacePath && this.snapshot.status === 'ready'
+    this.workspaceId && this.workspacePath && this.snapshot.status === 'ready'
       ? {
           generation: this.generation,
+          workspaceId: this.workspaceId,
           path: this.workspacePath,
           name:
             this.workspaceKind === 'chat'
@@ -473,9 +477,23 @@ export class WorkspaceController {
   activateChat = async (
     request: WorkspaceChatRequest,
   ): Promise<WorkspaceSelectResult> => {
-    if (this.options.supervisor.getWorkspaceSwitchBlock()) {
+    if (
+      this.workspaceSwitchActive ||
+      this.options.supervisor.getWorkspaceSwitchBlock()
+    ) {
       return { accepted: false, reason: 'busy' };
     }
+    this.workspaceSwitchActive = true;
+    try {
+      return await this.activateChatUnlocked(request);
+    } finally {
+      this.workspaceSwitchActive = false;
+    }
+  };
+
+  private activateChatUnlocked = async (
+    request: WorkspaceChatRequest,
+  ): Promise<WorkspaceSelectResult> => {
     const threadId = request.threadId;
     if (
       threadId &&
@@ -507,6 +525,7 @@ export class WorkspaceController {
     }
 
     const previousPath = this.workspacePath;
+    const previousWorkspaceId = this.workspaceId;
     const previousKind = this.workspaceKind;
     const previousThreadId = this.activeChatThreadId;
     await this.options.beforeWorkspaceSwitch?.();
@@ -522,6 +541,7 @@ export class WorkspaceController {
       ))
     ) {
       this.workspacePath = previousPath;
+      this.workspaceId = previousWorkspaceId;
       this.workspaceKind = previousKind;
       this.activeChatThreadId = previousThreadId;
       this.publish(
@@ -533,6 +553,7 @@ export class WorkspaceController {
     const workspaceId = this.options.supervisor.getWorkspaceBindingId();
     if (!workspaceId) {
       this.workspacePath = previousPath;
+      this.workspaceId = previousWorkspaceId;
       this.workspaceKind = previousKind;
       this.activeChatThreadId = previousThreadId;
       this.publish(
@@ -541,6 +562,7 @@ export class WorkspaceController {
       );
       return { accepted: false, reason: 'failed' };
     }
+    this.workspaceId = workspaceId;
     const ownerKey = chatOwnerKey(directory);
     this.chatOwners.set(ownerKey, { ownerKey, directory });
     this.options.threadRegistry.registerWorkspaceOwner(
@@ -638,10 +660,31 @@ export class WorkspaceController {
     requestedProjectId?: string,
     preferredThreadId?: string,
   ): Promise<WorkspaceSelectResult> => {
-    if (this.options.supervisor.getWorkspaceSwitchBlock()) {
+    if (
+      this.workspaceSwitchActive ||
+      this.options.supervisor.getWorkspaceSwitchBlock()
+    ) {
       return { accepted: false, reason: 'busy' };
     }
+    this.workspaceSwitchActive = true;
+    try {
+      return await this.activateProjectPathUnlocked(
+        selected,
+        requestedProjectId,
+        preferredThreadId,
+      );
+    } finally {
+      this.workspaceSwitchActive = false;
+    }
+  };
+
+  private activateProjectPathUnlocked = async (
+    selected: string,
+    requestedProjectId?: string,
+    preferredThreadId?: string,
+  ): Promise<WorkspaceSelectResult> => {
     const previousPath = this.workspacePath;
+    const previousWorkspaceId = this.workspaceId;
     const previousKind = this.workspaceKind;
     const previousThreadId = this.activeChatThreadId;
     const previousProjectPath = this.projectPath;
@@ -667,6 +710,7 @@ export class WorkspaceController {
       ))
     ) {
       this.workspacePath = previousPath;
+      this.workspaceId = previousWorkspaceId;
       this.workspaceKind = previousKind;
       this.activeChatThreadId = previousThreadId;
       this.projectPath = previousProjectPath;
@@ -680,6 +724,7 @@ export class WorkspaceController {
     const workspaceId = this.options.supervisor.getWorkspaceBindingId();
     if (!workspaceId) {
       this.workspacePath = previousPath;
+      this.workspaceId = previousWorkspaceId;
       this.workspaceKind = previousKind;
       this.activeChatThreadId = previousThreadId;
       this.projectPath = previousProjectPath;
@@ -690,6 +735,7 @@ export class WorkspaceController {
       );
       return { accepted: false, reason: 'failed' };
     }
+    this.workspaceId = workspaceId;
     this.options.threadRegistry.registerWorkspaceOwner(
       workspaceId,
       projectOwnerKey(projectId),

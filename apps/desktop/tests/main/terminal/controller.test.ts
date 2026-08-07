@@ -42,10 +42,10 @@ test('terminal controller preserves the renderer contract over the v3 runtime', 
     getMainWindow: () => ({ isDestroyed: () => false }) as BrowserWindow,
     getWorkspace: () => ({
       generation: 7,
+      workspaceId: 'workspace-runtime',
       path: '/fixture/project',
       name: 'project',
     }),
-    getRuntimeWorkspaceId: () => 'workspace-runtime',
     isApprovalPending: () => false,
     createSessionId: () => SESSION_ID,
   });
@@ -191,8 +191,12 @@ test('terminal controller surfaces utility-process loss as the existing failure 
     } as Pick<Dialog, 'showMessageBox'>,
     runtime: runtime as unknown as RuntimeSupervisor,
     getMainWindow: () => ({ isDestroyed: () => false }) as BrowserWindow,
-    getWorkspace: () => ({ generation: 2, path: '/fixture', name: 'fixture' }),
-    getRuntimeWorkspaceId: () => 'workspace-runtime',
+    getWorkspace: () => ({
+      generation: 2,
+      workspaceId: 'workspace-runtime',
+      path: '/fixture',
+      name: 'fixture',
+    }),
     isApprovalPending: () => false,
     createSessionId: () => SESSION_ID,
   });
@@ -216,5 +220,40 @@ test('terminal controller surfaces utility-process loss as the existing failure 
     acknowledgeThrough: 0,
   }).status, 'failed');
   assert.equal(runtime.sent.at(-1)?.type, 'terminal.close');
+  controller.shutdown();
+});
+
+test('terminal controller rejects a launch when the foreground Workspace changes during confirmation', async () => {
+  const runtime = new FixtureRuntime();
+  let workspace = {
+    generation: 4,
+    workspaceId: 'workspace-a',
+    path: '/fixture/a',
+    name: 'a',
+  };
+  const controller = new TerminalController({
+    dialog: {
+      showMessageBox: async () => {
+        workspace = {
+          generation: 4,
+          workspaceId: 'workspace-b',
+          path: '/fixture/b',
+          name: 'b',
+        };
+        return { response: 0, checkboxChecked: false };
+      },
+    } as Pick<Dialog, 'showMessageBox'>,
+    runtime: runtime as unknown as RuntimeSupervisor,
+    getMainWindow: () => ({ isDestroyed: () => false }) as BrowserWindow,
+    getWorkspace: () => workspace,
+    isApprovalPending: () => false,
+    createSessionId: () => SESSION_ID,
+  });
+
+  assert.deepEqual(
+    await controller.create({ generation: 4, columns: 80, rows: 24 }),
+    { accepted: false, reason: 'stale' },
+  );
+  assert.deepEqual(runtime.sent, []);
   controller.shutdown();
 });

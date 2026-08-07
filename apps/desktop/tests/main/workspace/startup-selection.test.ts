@@ -14,6 +14,7 @@ import test from 'node:test';
 import type { BrowserWindow } from 'electron';
 
 import type { WorkspaceRuntimeBoundary } from '../../../src/main/workspace/controller.ts';
+import type { ConversationStateSnapshot } from '../../../src/shared/conversation.ts';
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -178,6 +179,12 @@ test('cold startup restores navigation without selecting or reordering projects'
   assert.equal((await controller.focusTask(PROJECT_THREAD_ID)).accepted, true);
   assert.equal(preferredThreadId, PROJECT_THREAD_ID);
   assert.equal(selectedThreadId, PROJECT_THREAD_ID);
+  assert.deepEqual(controller.getLaunchContext(), {
+    generation: 1,
+    workspaceId: 'a'.repeat(64),
+    path: await realpath(projectPath),
+    name: 'project-alpha',
+  });
   assert.deepEqual(
     controller.getSnapshot().projects?.map((project) => project.id),
     ['project-beta', 'project-alpha'],
@@ -207,4 +214,83 @@ test('cold startup restores navigation without selecting or reordering projects'
       workspaceId: 'a'.repeat(64),
     },
   );
+});
+
+test('chat activation creates a dated managed directory and one atomic launch binding', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-chat-workspace-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const chatRootPath = path.join(root, 'Documents', 'SugarCode');
+  const sessionPath = path.join(root, 'workspace-session.json');
+  const workspaceId = 'd'.repeat(64);
+  let openedPath: string | null = null;
+  let releaseSwitch: () => void = () => undefined;
+  const switchGate = new Promise<void>((resolve) => {
+    releaseSwitch = resolve;
+  });
+  const supervisor = {
+    subscribe: (): (() => void) => () => undefined,
+    getWorkspaceSwitchBlock: (): null => null,
+    switchWorkspace: async (
+      workspacePath: string,
+      kind: 'project' | 'chat',
+    ): Promise<boolean> => {
+      assert.equal(kind, 'chat');
+      openedPath = workspacePath;
+      await switchGate;
+      return true;
+    },
+    getWorkspaceBindingId: (): string => workspaceId,
+    conversation: {
+      getSnapshot: (): ConversationStateSnapshot => ({
+        revision: 0,
+        phase: 'idle' as const,
+        turns: [],
+        navigator: {
+          status: 'ready' as const,
+          activeThreadIds: [],
+          activeThreadTitles: {},
+          activeTruncated: false,
+          runningThreadIds: [],
+          search: {
+            query: '',
+            status: 'idle' as const,
+            threadIds: [],
+            threadTitles: {},
+            truncated: false,
+          },
+        },
+      }),
+    },
+  } as unknown as WorkspaceRuntimeBoundary;
+  const controller = new WorkspaceController({
+    threadRegistry: new ThreadRegistry(),
+    supervisor,
+    dialog: {
+      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
+    },
+    getMainWindow: () => ({}) as BrowserWindow,
+    sessionPath,
+    chatRootPath,
+    now: () => new Date(2026, 7, 7, 9, 10, 11),
+    randomId: () => 'fixture-id',
+  });
+
+  const activation = controller.activateChat({});
+  assert.deepEqual(await controller.activateChat({}), {
+    accepted: false,
+    reason: 'busy',
+  });
+  releaseSwitch();
+  assert.equal((await activation).accepted, true);
+  const expectedPath = await realpath(
+    path.join(chatRootPath, '2026-08-07', 'chat-091011-fixture-id'),
+  );
+  assert.equal(openedPath, expectedPath);
+  assert.deepEqual(controller.getLaunchContext(), {
+    generation: 1,
+    workspaceId,
+    path: expectedPath,
+    name: '聊天文件',
+  });
 });

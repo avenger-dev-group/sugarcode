@@ -31,6 +31,10 @@ SDK automatic retries are disabled. A retry is allowed only before the first
 semantic stream event; after any text, reasoning or tool-call output, failure is
 terminal for that request. Compatible gateways pass through a normalization
 layer for usage, reasoning, tool IDs and terminal event differences.
+ADK may convert a thrown model error into an ordinary error event; a private
+Runner plugin captures the adapter's provider-neutral classification before
+that conversion so timeout, transport, authentication and retryability survive
+unchanged at the Turn boundary instead of falling back to a protocol failure.
 
 OpenAI Responses reasoning and tool-call continuation items remain intact
 inside the live Turn. Portable cross-Turn history contains only verified
@@ -85,6 +89,11 @@ Tool and provider failures are distinct typed Turn outcomes. Cancellation
 propagates through the SDK AbortSignal and by `operationId` to active native
 processes. A malformed provider event or failed request terminates the affected
 Turn without converting it into a durable storage failure.
+Provider-neutral tool failure classification also inspects nested command
+outcomes: an outer `status: completed` records operation settlement, while only
+an inner `exitCode: 0` records process success. Non-zero exit codes, signals and
+timeouts therefore activate the same failed-tool completion guard as direct
+`ok: false` results.
 
 Tool arguments must parse as a JSON object. Malformed JSON is converted to a
 bounded internal error tool that cannot request approval or execute the target
@@ -99,6 +108,11 @@ non-empty strings; this covers compatible providers that double-encode an
 otherwise unambiguous array. Oversized, mixed, unrelated or ambiguous arguments
 are never truncated or guessed. OpenAI and Anthropic adapters use this same
 normalizer before ADK schema validation.
+Patch arguments receive a separate deterministic preflight: every
+`*** Update File:` section must contain at least one `-` or `+` change line
+unless it is a move-only operation. An unprefixed whole-file body is rejected
+with the exact hunk spelling before approval; SugarCode does not infer a
+destructive whole-file replacement.
 Compatible gateways that cannot supply the declared structured tool wire fail
 explicitly as `wireMismatch` or `unsupportedToolArguments`; SugarCode does not
 parse generic `<tool_call>` text.

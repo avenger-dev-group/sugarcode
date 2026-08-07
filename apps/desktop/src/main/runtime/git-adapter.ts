@@ -27,7 +27,7 @@ type GitCommitParams = Readonly<{
 export class RuntimeGitAdapter {
   private readonly runtime: RuntimeSupervisor;
   private workspaceId: string | null = null;
-  private transaction = false;
+  private transactionWorkspaceId: string | null = null;
 
   constructor(runtime: RuntimeSupervisor) {
     this.runtime = runtime;
@@ -41,16 +41,16 @@ export class RuntimeGitAdapter {
     if (!this.workspaceId) {
       return 'unavailable';
     }
-    if (this.transaction) {
+    if (this.transactionWorkspaceId) {
       return 'busy';
     }
-    this.transaction = true;
+    this.transactionWorkspaceId = this.workspaceId;
     let released = false;
     return {
       release: () => {
         if (!released) {
           released = true;
-          this.transaction = false;
+          this.transactionWorkspaceId = null;
         }
       },
     };
@@ -122,6 +122,9 @@ export class RuntimeGitAdapter {
   };
 
   private requireWorkspace = (): string => {
+    if (this.transactionWorkspaceId) {
+      return this.transactionWorkspaceId;
+    }
     if (!this.workspaceId) {
       throw new Error('No workspace is open for Git.');
     }

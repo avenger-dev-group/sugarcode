@@ -11,6 +11,7 @@ import {
 import { FinishReason } from '@google/genai';
 
 import { RuntimeHost } from '../../src/runtime/host.ts';
+import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
 import { modelItemMetadata } from '../../src/runtime/models/step-outcome.ts';
 import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
 import type { RuntimeEvent } from '../../src/runtime/protocol.ts';
@@ -86,6 +87,24 @@ class CommentaryOnlyLlm extends BaseLlm {
       turnComplete: true,
       finishReason: FinishReason.STOP,
     };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class ProviderTimeoutLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+    yield { customMetadata: { fixture: 'before-provider-timeout' } };
+    throw new ProviderAdapterError({
+      kind: 'timeout',
+      retryable: true,
+      message: 'The model stream exceeded the request deadline.',
+    });
   }
 
   connect(_request: LlmRequest): Promise<BaseLlmConnection> {
@@ -700,6 +719,57 @@ test('RuntimeHost never completes a commentary-only model response', async () =>
   );
 });
 
+test('RuntimeHost preserves typed provider failures caught by ADK', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => new ProviderTimeoutLlm({ model: 'fixture-model' }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveTerminal?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-provider-timeout',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-provider-timeout-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-provider-timeout',
+    workspaceId: 'workspace-provider-timeout',
+    threadId: 'thread-provider-timeout',
+    turnId: 'turn-provider-timeout',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: 'Review the project.' }],
+  });
+
+  await terminal;
+
+  const completed = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(completed?.status, 'failed');
+  assert.deepEqual(completed?.error, {
+    kind: 'timeout',
+    retryable: true,
+    message: 'The model stream exceeded the request deadline.',
+  });
+});
+
 test('RuntimeHost publishes provider summaries but keeps internal reasoning private', async () => {
   const events: RuntimeEvent[] = [];
   let resolveTerminal: (() => void) | undefined;
@@ -915,7 +985,10 @@ test('RuntimeHost retries one premature final after a failed tool result', async
     workspaceRead: async () => {
       readCount += 1;
       return readCount === 1
-        ? JSON.stringify({ ok: false, error: 'notFound' })
+        ? JSON.stringify({
+          status: 'completed',
+          output: { outcome: { type: 'exitCode', code: 1 } },
+        })
         : JSON.stringify({ ok: true, content: 'fixture' });
     },
   } as unknown as NativeRuntimeBinding;

@@ -789,7 +789,7 @@ export const toThreadViewModel = (
         ? previousTurn?.activities
         : nextActivities;
     const nextFailure = turn.error
-      ? toTurnFailureViewModel(turn.error, model?.wireApi)
+      ? toTurnFailureViewModel(turn.error, model?.wireApi, processLanguage)
       : undefined;
     const failure =
       nextFailure &&

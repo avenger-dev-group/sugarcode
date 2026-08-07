@@ -16,7 +16,10 @@ import {
   CollaborationCoordinator,
   type AgentTaskExecutionContext,
 } from './collaboration.ts';
-import { ProviderAdapterError } from './models/errors.ts';
+import {
+  ProviderAdapterError,
+  ProviderErrorCapturePlugin,
+} from './models/errors.ts';
 import { AnthropicLlm } from './models/anthropic-llm.ts';
 import { discoverModels } from './models/discovery.ts';
 import { OpenAiLlm } from './models/openai-llm.ts';
@@ -54,6 +57,7 @@ import {
   createWorkspaceTools,
   executePrivilegedWorkspaceTool,
 } from './tools/workspace.ts';
+import { toolResultFailed } from './tool-result.ts';
 import {
   RuntimeMcpManager,
   type McpToolApproval,
@@ -166,6 +170,7 @@ type TurnDriverOptions = Readonly<{
     accepted: boolean,
     textItems: Map<string, TextItemState>,
   ) => void;
+  takeProviderError?: () => RuntimeProviderError | undefined;
   validateInvocation?: () => void;
 }>;
 
@@ -1556,12 +1561,7 @@ export class RuntimeHost {
         continue;
       }
       const result = part.functionResponse.response ?? {};
-      const failed = isRecord(result) &&
-        (result.ok === false ||
-          result.status === 'error' ||
-          result.status === 'failed' ||
-          typeof result.error === 'string' ||
-          isRecord(result.error));
+      const failed = toolResultFailed(result);
       guard.lastToolResponseFailed = failed;
       if (!failed) {
         continue;
@@ -1645,6 +1645,10 @@ export class RuntimeHost {
         return;
       }
       options.validateInvocation?.();
+      const providerFailure = options.takeProviderError?.();
+      if (providerFailure) {
+        throw new ProviderAdapterError(providerFailure);
+      }
       if (!outcome) {
         throw new ProviderAdapterError({
           kind: 'protocol',
@@ -1886,10 +1890,12 @@ export class RuntimeHost {
             : []),
         ],
       });
+      const providerErrorCapture = new ProviderErrorCapturePlugin();
       const runner = new Runner({
         appName: APPLICATION_NAME,
         agent,
         sessionService: this.sessions,
+        plugins: [providerErrorCapture],
       });
       await this.runTurnDriver({
         runner,
@@ -1917,6 +1923,7 @@ export class RuntimeHost {
           this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
         settleFinalCandidate: (accepted, textItems) =>
           this.settleFinalCandidate(command, textItems, accepted),
+        takeProviderError: providerErrorCapture.takeCapturedError,
         validateInvocation: () =>
           this.assertInvalidArgumentProgress(invalidArgumentGuard),
       });
@@ -2090,10 +2097,12 @@ export class RuntimeHost {
           return undefined;
         },
       });
+      const providerErrorCapture = new ProviderErrorCapturePlugin();
       const runner = new Runner({
         appName: APPLICATION_NAME,
         agent,
         sessionService: this.sessions,
+        plugins: [providerErrorCapture],
       });
       await this.runTurnDriver({
         runner,
@@ -2156,6 +2165,7 @@ export class RuntimeHost {
         completionGate: () => !context.signal.aborted,
         retryFinalAfterToolFailure: () =>
           this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
+        takeProviderError: providerErrorCapture.takeCapturedError,
         validateInvocation: () =>
           this.assertInvalidArgumentProgress(invalidArgumentGuard),
       });

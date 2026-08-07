@@ -63,6 +63,60 @@ test('workspace_apply_patch rejects unsupported diff syntax before approval', as
   assert.equal(approvalRequests, 0);
 });
 
+test('workspace_apply_patch rejects an unprefixed whole-file update before approval', async () => {
+  let approvalRequests = 0;
+  const tools = createWorkspaceTools(
+    {} as NativeRuntimeBinding,
+    'workspace-fixture',
+    async () => {
+      approvalRequests += 1;
+      return { ok: true };
+    },
+  );
+  const patchTool = tools.find((tool) => tool.name === 'workspace_apply_patch');
+  assert.ok(patchTool);
+
+  const result = await patchTool.runAsync({
+    args: {
+      patch:
+        '*** Begin Patch\n*** Update File: src/example.ts\nconst value = "new";\n*** End Patch',
+    },
+    toolContext: {} as never,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: 'invalidPatchUpdate',
+    message:
+      'Each `*** Update File:` body must contain changed lines: prefix removed lines with `-` and added lines with `+` (an optional `@@` context marker may come first). Do not paste the complete file body without diff prefixes. Example: `*** Begin Patch\\n*** Update File: src/example.ts\\n@@\\n-old\\n+new\\n*** End Patch`.',
+  });
+  assert.equal(approvalRequests, 0);
+});
+
+test('workspace_apply_patch sends a valid update hunk to approval', async () => {
+  let approvalRequests = 0;
+  const tools = createWorkspaceTools(
+    {} as NativeRuntimeBinding,
+    'workspace-fixture',
+    async (_toolName, argumentsValue) => {
+      approvalRequests += 1;
+      return { ok: true, argumentsValue };
+    },
+  );
+  const patchTool = tools.find((tool) => tool.name === 'workspace_apply_patch');
+  assert.ok(patchTool);
+  const patch =
+    '*** Begin Patch\n*** Update File: src/example.ts\n@@\n-old\n+new\n*** End Patch';
+
+  const result = await patchTool.runAsync({
+    args: { patch },
+    toolContext: {} as never,
+  });
+
+  assert.deepEqual(result, { ok: true, argumentsValue: { patch } });
+  assert.equal(approvalRequests, 1);
+});
+
 test('shell_exec rejects sandboxed shell syntax with repair guidance before approval', async () => {
   let approvalRequests = 0;
   const tools = createWorkspaceTools(

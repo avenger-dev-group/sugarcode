@@ -32,7 +32,14 @@ root. Pipes, redirects, command chaining and other shell expressions belong to
 Full Access mode. The runtime validates these mode-specific arguments before it
 creates an operation or requests approval and returns actionable repair guidance
 to the Agent. Native validation repeats the absolute-path and bounded-argument
-checks as a defense-in-depth boundary.
+checks as a defense-in-depth boundary. Full Access also starts at the selected
+workspace root unless its `cwd` names a real workspace-relative subdirectory;
+the Agent must not invent an absolute project path or prepend a redundant `cd`.
+
+A completed command operation means its process outcome was durably observed,
+not that the command succeeded. Only `exitCode: 0` is successful; a non-zero
+exit code, signal or timeout remains a failed tool result for Turn recovery and
+completion gating.
 
 Writes, Git mutations, Full Access commands and MCP calls first create a durable
 operation and approval proposal. Approval atomically claims the operation
@@ -45,7 +52,11 @@ Workspace patches use the SugarCode `*** Begin Patch` / operation-marker /
 documents before creating an operation or asking for approval. Native parser
 failures remain execution failures after an approved operation and are returned
 to the Agent with actionable format guidance; they must never be presented as
-approval denial.
+approval denial. An `*** Update File:` body is a patch hunk, not whole-file
+replacement text: removed lines use `-`, added lines use `+`, and unchanged
+context may follow `@@`. A marker-correct update with no changed-line prefix is
+rejected before approval with a concrete example so a compatible model can
+repair it without asking the user to approve an operation that cannot run.
 
 `workspace_read` accepts either one `path` or a bounded `paths` batch of 1
 through 8 files. Batch reads execute through the same read-only workspace

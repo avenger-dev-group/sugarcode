@@ -96,7 +96,7 @@ const patchSchema = {
     patch: {
       type: Type.STRING,
       description:
-        'A complete SugarCode patch using exact `*** Begin Patch`, `*** Add File: path` / `*** Update File: path` / `*** Delete File: path`, and `*** End Patch` markers. GNU unified-diff `--- a/` and `+++ b/` headers are unsupported.',
+        'A complete SugarCode patch using exact `*** Begin Patch`, `*** Add File: path` / `*** Update File: path` / `*** Delete File: path`, and `*** End Patch` markers. Every Update File body is a patch hunk with removed lines prefixed by `-` and added lines prefixed by `+`; optional context may follow `@@`. Never paste an unprefixed complete file body after Update File. GNU unified-diff `--- a/` and `+++ b/` headers are unsupported. Example: `*** Begin Patch\\n*** Update File: src/example.ts\\n@@\\n-old\\n+new\\n*** End Patch`.',
     },
   },
   required: ['patch'],
@@ -114,7 +114,7 @@ const commandSchema = {
     command: {
       type: Type.STRING,
       description:
-        'For sandboxed mode, an absolute executable path such as /usr/bin/find. Never include arguments, pipes, redirects, or && here. For fullAccess mode, the complete shell command.',
+        'For sandboxed mode, an absolute executable path such as /usr/bin/find. Never include arguments, pipes, redirects, or && here. For fullAccess mode, the complete shell command. The selected workspace is already the working directory; never prepend `cd` to an invented absolute project path. Use the workspace-relative cwd field when a subdirectory is required.',
     },
     arguments: {
       type: Type.ARRAY,
@@ -125,7 +125,7 @@ const commandSchema = {
     cwd: {
       type: Type.STRING,
       description:
-        'Workspace-relative working directory for fullAccess mode. Sandboxed mode is fixed to the workspace root.',
+        'Workspace-relative working directory for fullAccess mode; omit it for the selected workspace root. Sandboxed mode is fixed to the workspace root.',
     },
     timeoutMs: {
       type: Type.INTEGER,
@@ -156,6 +156,55 @@ const validPatchDocument = (patch: string): boolean => {
   );
 };
 
+const updateSectionsHaveChanges = (patch: string): boolean => {
+  const lines = patch.replace(/\r\n/gu, '\n').trim().split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lines[index]?.startsWith('*** Update File: ')) {
+      continue;
+    }
+    let bodyIndex = index + 1;
+    if (lines[bodyIndex]?.startsWith('*** Move to: ')) {
+      bodyIndex += 1;
+      if (
+        bodyIndex >= lines.length ||
+        lines[bodyIndex]?.startsWith('*** Add File: ') ||
+        lines[bodyIndex]?.startsWith('*** Update File: ') ||
+        lines[bodyIndex]?.startsWith('*** Delete File: ') ||
+        lines[bodyIndex] === '*** End Patch'
+      ) {
+        continue;
+      }
+    }
+    let hasChangeLine = false;
+    while (bodyIndex < lines.length) {
+      const line = lines[bodyIndex] ?? '';
+      if (
+        line.startsWith('*** Add File: ') ||
+        line.startsWith('*** Update File: ') ||
+        line.startsWith('*** Delete File: ') ||
+        line === '*** End Patch'
+      ) {
+        break;
+      }
+      if (line.startsWith('+') || line.startsWith('-')) {
+        hasChangeLine = true;
+      }
+      bodyIndex += 1;
+    }
+    if (!hasChangeLine) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const invalidPatchUpdate = (): Readonly<Record<string, unknown>> => ({
+  ok: false,
+  error: 'invalidPatchUpdate',
+  message:
+    'Each `*** Update File:` body must contain changed lines: prefix removed lines with `-` and added lines with `+` (an optional `@@` context marker may come first). Do not paste the complete file body without diff prefixes. Example: `*** Begin Patch\\n*** Update File: src/example.ts\\n@@\\n-old\\n+new\\n*** End Patch`.',
+});
+
 const explainPatchFailure = (result: unknown): unknown => {
   if (
     isRecord(result) &&
@@ -165,7 +214,7 @@ const explainPatchFailure = (result: unknown): unknown => {
     return {
       ...result,
       message:
-        'The patch used unsupported diff syntax. Retry with exact SugarCode `*** Begin Patch` and `*** Add File:`, `*** Update File:`, or `*** Delete File:` operation markers; do not use GNU `--- a/` or `+++ b/` headers.',
+        'The patch used unsupported SugarCode syntax. Keep the exact `*** Begin Patch` / file-operation / `*** End Patch` markers. For `*** Update File:`, send a patch hunk with removed lines prefixed by `-` and added lines prefixed by `+`; never paste an unprefixed complete file body. Do not use GNU `--- a/` or `+++ b/` headers.',
     };
   }
   return result;
@@ -414,6 +463,9 @@ export const createWorkspaceTools = (
       const patch = input.patch;
       if (!validPatchDocument(patch)) {
         return invalidPatchFormat();
+      }
+      if (!updateSectionsHaveChanges(patch)) {
+        return invalidPatchUpdate();
       }
       return runPrivileged(
         'workspace_apply_patch',

@@ -34,6 +34,19 @@ cache with the authoritative runtime Thread index. Session entries begin as
 membership and fixes ownership. A Thread cannot move between runtime-confirmed
 workspaces.
 
+Each project workspace is bound to its canonical absolute project directory.
+Non-project chats receive a managed capability root at
+`Documents/SugarCode/<YYYY-MM-DD>/<conversation-directory>` and reuse that
+directory when reopened. Switching the foreground conversation changes only
+the active workspace view: Turns already running in another workspace retain
+their original `workspaceId` and capability root. Foreground workspace switch
+operations are serialized, while background Turns do not hold that switch
+lease. Foreground terminal launches
+capture `workspaceId`, canonical path and UI generation as one Main-owned
+snapshot and reject confirmation if that identity changed. A Git transaction
+likewise freezes its starting `workspaceId`, so a later foreground switch
+cannot redirect its follow-up status or reconciliation request.
+
 ## Agent and provider boundary
 
 The primary loop and every child task use ADK `LlmAgent`/`Runner` invocations.
@@ -41,6 +54,11 @@ The primary loop and every child task use ADK `LlmAgent`/`Runner` invocations.
 OpenAI and Anthropic TypeScript SDKs. The adapters normalize text, reasoning,
 media, tool calls, usage, request IDs, stop reasons and errors into SugarCode
 events. Provider types remain inside those adapters.
+Because ADK represents thrown model failures as error events, each Runner uses
+a private capture plugin to retain the adapter's provider-neutral error before
+ADK conversion. The Turn Driver consumes that captured error after the
+invocation, preserving its kind and retryability rather than misclassifying a
+timeout or transport failure as an invalid model response.
 
 Raw provider reasoning and thinking remain available to the live model loop and
 portable completed history but are not projected as user-visible process text.
@@ -87,6 +105,9 @@ If the most recent tool result failed, the driver likewise demotes the first
 final candidate to commentary and grants one bounded recovery continuation.
 This retry is structural and provider-neutral; it does not classify the public
 answer text, and a successful later tool result permits normal completion.
+Command results count as failed when their nested process outcome is a non-zero
+exit code, signal or timeout even though the durable operation status itself is
+`completed`.
 
 ## UI compatibility
 
@@ -112,7 +133,8 @@ become one row per file, repeated delivery is idempotent by call and path, and
 the same ordered Items rebuild the activity timeline after a Thread is reopened.
 The process disclosure and compact tool copy derive Chinese or English from the
 original user message for that Turn; no provider-generated language guess is
-required.
+required. The repeated-tool-failure summary and recovery guidance use that same
+Turn language instead of exposing one fixed English status for Chinese Turns.
 The private worker protocol is v2 and projects model text as
 `turn.textStarted`, `turn.textDelta`, and `turn.textCompleted`. Started and
 delta events are transient. A completed event carries the authoritative text,

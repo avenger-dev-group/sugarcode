@@ -206,7 +206,6 @@ const startApplication = async (): Promise<void> => {
   });
   runtimeGitAdapter = new RuntimeGitAdapter(runtimeSupervisor);
   const threadRegistry = new ThreadRegistry();
-  let activeRuntimeWorkspaceId: string | null = null;
   const workspaceRuntime = new RuntimeWorkspaceAdapter({
     runtime: runtimeSupervisor,
     connection: runtimeConnectionController,
@@ -214,7 +213,6 @@ const startApplication = async (): Promise<void> => {
     threadRegistry,
     getWorkspaceSwitchBlock: () => null,
     onWorkspaceOpened: (workspaceId, canonicalRoot) => {
-      activeRuntimeWorkspaceId = workspaceId;
       runtimeApprovalController?.openWorkspace(workspaceId, canonicalRoot);
       runtimeMcpApprovalController?.openWorkspace(workspaceId, canonicalRoot);
       runtimeGitAdapter?.openWorkspace(workspaceId);
@@ -238,7 +236,6 @@ const startApplication = async (): Promise<void> => {
     runtime: runtimeSupervisor,
     getMainWindow: () => mainWindow,
     getWorkspace: workspaceController.getLaunchContext,
-    getRuntimeWorkspaceId: () => activeRuntimeWorkspaceId,
     isApprovalPending: () =>
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
       runtimeMcpApprovalController?.getSnapshot().status === 'pending',
