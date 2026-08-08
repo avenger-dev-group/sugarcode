@@ -52,7 +52,7 @@ export const ContextRail = () => {
             aria-selected={workspaceActive}
             className={`flex h-8 shrink-0 items-center gap-1.5 border-b-2 px-2.5 text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               workspaceActive
-                ? 'border-primary text-foreground'
+                ? 'border-link text-link'
                 : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
             }`}
             onClick={() => setActiveTab('workspace')}
@@ -64,7 +64,7 @@ export const ContextRail = () => {
             <div
               className={`flex h-8 min-w-28 max-w-56 shrink-0 items-center border-b-2 transition-colors ${
                 activeTab === 'resource'
-                  ? 'border-primary text-foreground'
+                  ? 'border-link text-link'
                   : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
               }`}
             >
@@ -97,7 +97,7 @@ export const ContextRail = () => {
             <div
               className={`flex h-8 min-w-24 max-w-48 shrink-0 items-center border-b-2 transition-colors ${
                 activeTab === 'agent'
-                  ? 'border-primary text-foreground'
+                  ? 'border-link text-link'
                   : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
               }`}
             >
@@ -125,10 +125,15 @@ export const ContextRail = () => {
         </div>
       </div>
 
-      {workspaceActive ? (
-        <>
+      <div
+        className={`${workspaceActive ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col`}
+        aria-hidden={!workspaceActive}
+      >
           <div className="min-h-0 flex-1">
-            <WorkspaceWorkbench onOpenFile={openFile} />
+            <WorkspaceWorkbench
+              activePath={selectedResource?.path}
+              onOpenFile={openFile}
+            />
           </div>
           <section className="shrink-0 border-t p-2" aria-label="项目工具">
             <div className="flex gap-1">
@@ -143,9 +148,12 @@ export const ContextRail = () => {
               </RailAction>
             </div>
           </section>
-        </>
-      ) : activeTab === 'resource' && selectedResource ? (
-        <div className="min-h-0 flex-1">
+      </div>
+      {selectedResource ? (
+        <div
+          className={`${activeTab === 'resource' ? 'block' : 'hidden'} min-h-0 flex-1`}
+          aria-hidden={activeTab !== 'resource'}
+        >
           {selectedResource.kind === 'diff' ? (
             <FileDiffWorkbench
               path={selectedResource.path}
@@ -155,9 +163,10 @@ export const ContextRail = () => {
             <WorkspaceDocument path={selectedResource.path} />
           )}
         </div>
-      ) : (
+      ) : null}
+      {selectedTask ? (
         <ScrollArea
-          className="min-h-0 flex-1"
+          className={`${activeTab === 'agent' ? 'block' : 'hidden'} min-h-0 flex-1`}
           viewportProps={{
             'aria-label': `Agent details: ${selectedTask.title}`,
             tabIndex: 0,
@@ -165,7 +174,7 @@ export const ContextRail = () => {
         >
           <AgentDetail task={selectedTask} />
         </ScrollArea>
-      )}
+      ) : null}
     </div>
   );
 };

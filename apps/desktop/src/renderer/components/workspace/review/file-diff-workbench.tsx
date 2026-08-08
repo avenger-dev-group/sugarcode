@@ -1,4 +1,8 @@
 import { FileDiff } from 'lucide-react';
+import { useMemo } from 'react';
+
+import { codeLanguageForPath } from '@/renderer/utils/code-language';
+import { highlightCode } from '@/renderer/utils/syntax-highlighter';
 
 import type {
   FileChangeReviewFile,
@@ -8,9 +12,9 @@ import type {
 const lineClass = (line: UnifiedDiffLine): string => {
   switch (line.kind) {
     case 'addition':
-      return 'bg-success/10 text-success';
+      return 'bg-success/10 text-foreground';
     case 'deletion':
-      return 'bg-destructive/10 text-destructive';
+      return 'bg-destructive/10 text-foreground';
     case 'context':
       return 'text-secondary';
   }
@@ -25,6 +29,20 @@ export const FileDiffWorkbench = ({
 }>) => {
   const additions = changes.reduce((total, change) => total + change.additions, 0);
   const deletions = changes.reduce((total, change) => total + change.deletions, 0);
+  const language = codeLanguageForPath(path).highlight;
+  const highlightedLines = useMemo(
+    () => new Map<string, string | null>(
+      changes.flatMap((change) =>
+        change.hunks.flatMap((hunk, hunkIndex) =>
+          hunk.lines.map((line, lineIndex) => [
+            `${change.id}:${hunkIndex}:${lineIndex}`,
+            highlightCode(line.text, language),
+          ] as const),
+        ),
+      ),
+    ),
+    [changes, language],
+  );
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-background" aria-label={`变更审阅：${path}`}>
@@ -51,19 +69,43 @@ export const FileDiffWorkbench = ({
                 <div className="sticky top-0 z-10 border-y bg-surface px-3 py-1.5 font-mono text-[10px] text-tertiary">
                   {hunk.header}
                 </div>
-                {hunk.lines.map((line, lineIndex) => (
-                  <div
-                    key={`${hunk.header}:${lineIndex}`}
-                    className={`grid min-w-max grid-cols-[3.5rem_3.5rem_1fr] font-mono text-xs font-normal leading-5 ${lineClass(line)}`}
-                  >
-                    <span className="select-none border-r px-2 text-right text-tertiary">{line.oldLine ?? ''}</span>
-                    <span className="select-none border-r px-2 text-right text-tertiary">{line.newLine ?? ''}</span>
-                    <code className="whitespace-pre px-3">
-                      {line.kind === 'addition' ? '+' : line.kind === 'deletion' ? '-' : ' '}
-                      {line.text}
-                    </code>
-                  </div>
-                ))}
+                {hunk.lines.map((line, lineIndex) => {
+                  const lineKey = `${change.id}:${hunkIndex}:${lineIndex}`;
+                  const highlightedLine = highlightedLines.get(lineKey);
+                  const marker = line.kind === 'addition'
+                    ? '+'
+                    : line.kind === 'deletion'
+                      ? '-'
+                      : ' ';
+                  return (
+                    <div
+                      key={`${hunk.header}:${lineIndex}`}
+                      className={`grid min-w-max grid-cols-[3.5rem_3.5rem_1fr] font-mono text-xs font-normal leading-5 ${lineClass(line)}`}
+                    >
+                      <span className="select-none border-r px-2 text-right text-tertiary">{line.oldLine ?? ''}</span>
+                      <span className="select-none border-r px-2 text-right text-tertiary">{line.newLine ?? ''}</span>
+                      <code className="syntax-highlight whitespace-pre px-3">
+                        <span
+                          className={
+                            line.kind === 'addition'
+                              ? 'text-success'
+                              : line.kind === 'deletion'
+                                ? 'text-destructive'
+                                : undefined
+                          }
+                          aria-hidden="true"
+                        >
+                          {marker}
+                        </span>
+                        {highlightedLine === null || highlightedLine === undefined ? (
+                          line.text
+                        ) : (
+                          <span dangerouslySetInnerHTML={{ __html: highlightedLine }} />
+                        )}
+                      </code>
+                    </div>
+                  );
+                })}
               </div>
             ))}
           </div>

@@ -234,6 +234,21 @@ review state across workspace identities. Navigator and context-rail open/close
 transitions animate their clipped width and opacity while retaining mounted
 content; direct panel resizing disables those transitions so pointer movement
 remains exact.
+The project explorer itself remains mounted while a resource or Agent tab is
+active, so expanded directories and the last selected file or folder survive
+tab changes. Opening a resource from a transcript, change receipt or project
+tree synchronizes that selected path when the matching tree entry is visible.
+Active context tabs and tree rows use the shared link accent as their selection
+cue in both themes.
+
+Bounded text-file previews use the same escaped highlight.js projection as Agent
+code blocks, selected from the inspected file extension and falling back to
+plain text for unknown formats or oversized input. Diff review keeps addition
+and deletion row backgrounds as the change signal while rendering the line body
+with the original language's syntax colors; only the leading `+` or `-` marker
+uses a status foreground color. Turn change summaries retain exact
+project-relative paths, use a deliberately subtler neutral border, and do not
+add a pressed or selected visual state when a row opens its immutable review.
 Saved project and Thread rows expose their destructive navigation action on
 hover or keyboard focus without requiring prior selection. Removing a project
 forgets only its saved navigation owner and never deletes the project directory

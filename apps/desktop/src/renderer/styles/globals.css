@@ -26,6 +26,7 @@
   --color-destructive: var(--destructive);
   --color-success: var(--success);
   --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-link: var(--link);
@@ -120,6 +121,7 @@
   --accent: var(--surface-hover);
   --accent-foreground: var(--foreground);
   --border: rgb(from var(--primary) r g b / 12%);
+  --border-subtle: rgb(from var(--primary) r g b / 7%);
   --input: rgb(from var(--primary) r g b / 16%);
   --ring: var(--primary);
   --link-muted: rgb(from var(--link) r g b / 55%);
@@ -219,64 +221,64 @@
   border-color: rgb(from var(--destructive) r g b / 38%);
 }
 
-.agent-code-block .hljs-comment,
-.agent-code-block .hljs-quote {
+.syntax-highlight .hljs-comment,
+.syntax-highlight .hljs-quote {
   color: var(--syntax-comment);
   font-style: italic;
 }
 
-.agent-code-block .hljs-keyword,
-.agent-code-block .hljs-selector-tag,
-.agent-code-block .hljs-subst {
+.syntax-highlight .hljs-keyword,
+.syntax-highlight .hljs-selector-tag,
+.syntax-highlight .hljs-subst {
   color: var(--syntax-keyword);
 }
 
-.agent-code-block .hljs-doctag,
-.agent-code-block .hljs-regexp,
-.agent-code-block .hljs-string {
+.syntax-highlight .hljs-doctag,
+.syntax-highlight .hljs-regexp,
+.syntax-highlight .hljs-string {
   color: var(--syntax-string);
 }
 
-.agent-code-block .hljs-literal,
-.agent-code-block .hljs-meta,
-.agent-code-block .hljs-number {
+.syntax-highlight .hljs-literal,
+.syntax-highlight .hljs-meta,
+.syntax-highlight .hljs-number {
   color: var(--syntax-number);
 }
 
-.agent-code-block .hljs-section,
-.agent-code-block .hljs-selector-id,
-.agent-code-block .hljs-title {
+.syntax-highlight .hljs-section,
+.syntax-highlight .hljs-selector-id,
+.syntax-highlight .hljs-title {
   color: var(--syntax-title);
 }
 
-.agent-code-block .hljs-built_in,
-.agent-code-block .hljs-template-variable,
-.agent-code-block .hljs-type,
-.agent-code-block .hljs-variable {
+.syntax-highlight .hljs-built_in,
+.syntax-highlight .hljs-template-variable,
+.syntax-highlight .hljs-type,
+.syntax-highlight .hljs-variable {
   color: var(--syntax-variable);
 }
 
-.agent-code-block .hljs-attr,
-.agent-code-block .hljs-attribute,
-.agent-code-block .hljs-bullet,
-.agent-code-block .hljs-link,
-.agent-code-block .hljs-name,
-.agent-code-block .hljs-symbol {
+.syntax-highlight .hljs-attr,
+.syntax-highlight .hljs-attribute,
+.syntax-highlight .hljs-bullet,
+.syntax-highlight .hljs-link,
+.syntax-highlight .hljs-name,
+.syntax-highlight .hljs-symbol {
   color: var(--syntax-attribute);
 }
 
-.agent-code-block .hljs-addition {
+.syntax-highlight .hljs-addition {
   color: var(--syntax-attribute);
 }
 
-.agent-code-block .hljs-deletion {
+.syntax-highlight .hljs-deletion {
   color: var(--syntax-deletion);
 }
 
-.agent-code-block .hljs-emphasis {
+.syntax-highlight .hljs-emphasis {
   font-style: italic;
 }
 
-.agent-code-block .hljs-strong {
+.syntax-highlight .hljs-strong {
   font-weight: 500;
 }

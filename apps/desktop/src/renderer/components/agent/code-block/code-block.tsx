@@ -2,8 +2,8 @@ import { Check, Copy, TriangleAlert } from 'lucide-react';
 import { type ReactElement, useMemo } from 'react';
 
 import { Button } from '@/renderer/components/ui/button';
+import { highlightCode } from '@/renderer/utils/syntax-highlighter';
 
-import { highlightCode } from './syntax-highlighter';
 import type { AgentCodeBlockProps, CodeBlockCopyState } from './types';
 import { useStore } from './use-store';
 
@@ -66,7 +66,7 @@ export const AgentCodeBlock = ({
   return (
     <figure
       aria-label={captionLabel}
-      className="agent-code-block my-3.5 min-w-0 max-w-full overflow-hidden rounded-lg border bg-surface first:mt-0 last:mb-0"
+      className="agent-code-block syntax-highlight my-3.5 min-w-0 max-w-full overflow-hidden rounded-lg border bg-surface first:mt-0 last:mb-0"
     >
       <figcaption className="flex min-w-0 items-center gap-3 border-b px-2 py-1 font-mono text-[10px] text-tertiary">
         <span className="min-w-0 break-all px-1 uppercase tracking-[0.12em]">

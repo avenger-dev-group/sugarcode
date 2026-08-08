@@ -16,6 +16,7 @@ import type { WorkspaceWorkbenchStore } from './types';
 
 export const useStore = (
   onOpenFile?: (path: string) => void,
+  activePath?: string,
 ): WorkspaceWorkbenchStore => {
   const [open, setOpen] = useState(false);
   const state = useZustandStore(
@@ -81,6 +82,12 @@ export const useStore = (
     void loadDirectory('', state);
   }, [state.generation, state.status]);
 
+  useEffect(() => {
+    if (activePath) {
+      setSelectedPath(activePath);
+    }
+  }, [activePath]);
+
   const chooseWorkspace = async (): Promise<void> => {
     const result = await selectWorkspace().catch((): null => null);
     if (!result) {
@@ -95,6 +102,7 @@ export const useStore = (
   };
 
   const toggleDirectory = async (path: string): Promise<void> => {
+    setSelectedPath(path);
     if (expanded.has(path)) {
       setExpanded((current) => {
         const next = new Set(current);

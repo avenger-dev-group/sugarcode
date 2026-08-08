@@ -6,9 +6,13 @@ import { FileTree } from './file-tree';
 import { useStore } from './use-store';
 
 export const WorkspaceWorkbench = ({
+  activePath,
   onOpenFile,
-}: Readonly<{ onOpenFile?: (path: string) => void }>) => {
-  const store = useStore(onOpenFile);
+}: Readonly<{
+  activePath?: string;
+  onOpenFile?: (path: string) => void;
+}>) => {
+  const store = useStore(onOpenFile, activePath);
   const label =
     store.state.status === 'ready'
       ? store.state.name ?? 'Workspace'

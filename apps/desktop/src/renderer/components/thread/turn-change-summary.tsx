@@ -41,16 +41,14 @@ export const TurnChangeSummary = ({
     <details
       open={store.expanded}
       onToggle={(event) => store.setExpanded(event.currentTarget.open)}
-      className="group/changes min-w-0 overflow-hidden rounded-xl border bg-background shadow-[0_1px_2px_var(--shadow-soft)]"
+      className="group/changes min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background"
       aria-label={label}
     >
       <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3.5 py-2 outline-none transition-colors duration-200 hover:bg-surface focus-visible:ring-2 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border bg-background text-secondary">
-          <FileDiff className="size-3.5" aria-hidden="true" />
-        </span>
+        <FileDiff className="size-5 text-secondary" aria-hidden="true" />
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-medium text-primary">{label}</span>
-          <span className="mt-0.5 flex gap-2 font-mono text-[11px]">
+          <span className="mt-0.5 flex gap-2 font-mono text-xs">
             <span className="text-success">+{additions}</span>
             <span className="text-destructive">−{deletions}</span>
           </span>
@@ -62,7 +60,7 @@ export const TurnChangeSummary = ({
       </summary>
       <div className="grid grid-rows-[0fr] opacity-0 transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none group-open/changes:grid-rows-[1fr] group-open/changes:opacity-100">
         <div className="min-h-0 overflow-hidden">
-          <div className="max-h-64 divide-y overflow-y-auto overscroll-contain border-t px-1.5 py-1">
+          <div className="max-h-64 divide-y divide-border-subtle overflow-y-auto overscroll-contain border-t border-border-subtle px-1.5 py-1">
             {files.map((entry) => {
               const additions = entry.reviews.reduce(
                 (total, review) => total + review.additions,
@@ -76,7 +74,7 @@ export const TurnChangeSummary = ({
                 <button
                   key={entry.id}
                   type="button"
-                  className="group/file flex min-h-10 w-full min-w-0 items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm font-normal leading-normal transition-[background-color,transform,box-shadow] duration-200 ease-out hover:bg-surface active:scale-[0.995] active:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
+                  className="group/file flex min-h-10 w-full min-w-0 items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm font-normal leading-normal transition-colors duration-150 hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
                   onClick={() => {
                     if (entry.reviews.length > 0) {
                       openDiff(entry.file.path, entry.reviews);

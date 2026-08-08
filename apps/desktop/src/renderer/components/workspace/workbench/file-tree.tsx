@@ -60,17 +60,20 @@ const TreeEntry = ({
   const directory = entry.kind === 'directory';
   const isExpanded = directory && store.expanded.has(entry.path);
   const disabled = entry.kind === 'link' || entry.kind === 'other';
+  const selected = store.selectedPath === entry.path;
   return (
     <li
       role="treeitem"
       aria-expanded={directory ? isExpanded : undefined}
-      aria-selected={store.selectedPath === entry.path}
+      aria-selected={selected}
     >
       <button
         type="button"
         disabled={disabled}
-        className={`group flex w-full min-w-0 items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-xs transition-colors hover:bg-surface-hover focus-visible:bg-surface ${
-          store.selectedPath === entry.path ? 'bg-surface text-foreground' : 'text-secondary'
+        className={`group flex w-full min-w-0 items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${
+          selected
+            ? 'bg-link/10 text-link hover:bg-link/10'
+            : 'text-secondary hover:bg-surface-hover hover:text-foreground'
         } disabled:cursor-not-allowed disabled:opacity-45`}
         style={{ paddingLeft: `${depth * 14 + 8}px` }}
         title={disabled ? 'Links and special entries are not opened.' : entry.path}
