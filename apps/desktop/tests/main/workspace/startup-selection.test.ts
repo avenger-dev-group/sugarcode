@@ -125,7 +125,12 @@ test('cold startup restores navigation without selecting or reordering projects'
       preferredThreadId = requestedThreadId;
       bindingId = path.basename(workspacePath) === 'project-alpha'
         ? 'a'.repeat(64)
-        : 'c'.repeat(64);
+        : path.basename(workspacePath) === 'chat-a'
+          ? 'c'.repeat(64)
+          : 'b'.repeat(64);
+      if (requestedThreadId) {
+        selectedThreadId = requestedThreadId;
+      }
       return true;
     },
     getWorkspaceBindingId: (): string | null => bindingId,
@@ -226,6 +231,11 @@ test('cold startup restores navigation without selecting or reordering projects'
     controller.getSnapshot().projects?.map((project) => project.id),
     ['project-beta', 'project-alpha'],
   );
+
+  const chatFocus = await controller.focusTask(CHAT_THREAD_ID);
+  assert.equal(chatFocus.accepted, true);
+  assert.equal(chatFocus.commit?.selection.threadId, CHAT_THREAD_ID);
+  assert.equal(chatFocus.commit?.thread?.threadId, CHAT_THREAD_ID);
 
   assert.equal((await controller.select()).accepted, true);
   assert.equal(controller.getSnapshot().projects?.[0]?.name, 'project-gamma');

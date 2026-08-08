@@ -134,4 +134,6 @@ export type FileReferenceLinkProps = Readonly<{
   openFile: (path: string) => void;
   path: string;
   variant: 'code' | 'link';
+  workspaceGeneration: number;
+  workspaceReady: boolean;
 }>;

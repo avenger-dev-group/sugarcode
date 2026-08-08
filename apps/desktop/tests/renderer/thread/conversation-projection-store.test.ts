@@ -142,6 +142,28 @@ test('conversation selection overlay never exposes the previous transcript', () 
   );
 });
 
+test('an authoritative target snapshot completes a Chat selection overlay', () => {
+  conversationProjectionStore.setState({
+    snapshot: snapshot(1, 'thread-a'),
+    snapshotsByThread: new Map(),
+    sourceRevision: 1,
+    loadError: null,
+    selectionGeneration: 0,
+  });
+  beginConversationSelection('thread-b');
+
+  acceptConversationSnapshot(snapshot(2, 'thread-b'));
+
+  assert.equal(
+    conversationProjectionStore.getState().snapshot.navigator.pendingThreadId,
+    undefined,
+  );
+  assert.equal(
+    conversationProjectionStore.getState().snapshot.threadId,
+    'thread-b',
+  );
+});
+
 test('foreground commits are latest-wins across Workspace and Thread results', () => {
   const workspace = {
     revision: 3,

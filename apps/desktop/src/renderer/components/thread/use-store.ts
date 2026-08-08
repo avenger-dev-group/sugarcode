@@ -24,10 +24,12 @@ import {
 } from '@/renderer/services/model-config';
 import { focusWorkspaceTask } from '@/renderer/services/workspace';
 import {
+  acceptForegroundCommit,
   beginConversationSelection,
   conversationProjectionStore,
   failConversationSelection,
 } from '@/renderer/stores/conversation-projection-store';
+import { acceptWorkspaceSnapshot } from '@/renderer/stores/workspace-projection-store';
 import {
   MAX_CONVERSATION_INPUT_BYTES,
   MAX_CONVERSATION_ATTACHMENTS,
@@ -1335,7 +1337,10 @@ export const useStore = (): ThreadStore => {
     beginConversationSelection(threadId);
     try {
       const result = await focusWorkspaceTask(threadId);
-      if (!result.accepted && result.reason === 'busy') {
+      if (result.accepted && result.commit) {
+        acceptWorkspaceSnapshot(result.commit.workspace);
+        acceptForegroundCommit(result.commit);
+      } else if (!result.accepted && result.reason === 'busy') {
         failConversationSelection(
           threadId,
           'Stop the active Turn before switching Threads.',

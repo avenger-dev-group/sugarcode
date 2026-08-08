@@ -7,6 +7,9 @@ import {
   useMemo,
   useRef,
 } from 'react';
+import { useStore as useZustandStore } from 'zustand';
+
+import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 
 import { AgentCodeBlock } from './code-block/code-block';
 import { FileReferenceLink } from './file-reference-link';
@@ -37,13 +40,21 @@ const renderTokens = (
   tokens: readonly Token[],
   keyPrefix: string,
   openFile: (path: string) => void,
+  workspaceGeneration: number,
+  workspaceReady: boolean,
 ): ReactNode[] => {
   let offset = 0;
   return tokens.flatMap((token, index): ReactNode[] => {
     const key = `${keyPrefix}:${offset}:${token.type}:${index}`;
     offset += token.raw.length;
     const children = (nested: readonly Token[]): ReactNode[] =>
-      renderTokens(nested, key, openFile);
+      renderTokens(
+        nested,
+        key,
+        openFile,
+        workspaceGeneration,
+        workspaceReady,
+      );
 
     switch (token.type) {
       case 'space':
@@ -239,6 +250,8 @@ const renderTokens = (
               openFile={openFile}
               path={path}
               variant="code"
+              workspaceGeneration={workspaceGeneration}
+              workspaceReady={workspaceReady}
             >
               {token.text}
             </FileReferenceLink>,
@@ -266,6 +279,8 @@ const renderTokens = (
                 openFile={openFile}
                 path={path}
                 variant="link"
+                workspaceGeneration={workspaceGeneration}
+                workspaceReady={workspaceReady}
               >
                 {token.text}
               </FileReferenceLink>,
@@ -330,6 +345,14 @@ const AgentMarkdownView = ({
   isStreaming,
 }: AgentMarkdownProps): ReactElement => {
   const { openFile } = useOrchestrationStore();
+  const workspaceGeneration = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot.generation,
+  );
+  const workspaceReady = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot.status === 'ready',
+  );
   const cache = useRef<AgentMarkdownTokenCache | undefined>(undefined);
   const projection = useMemo(() => {
     const next = projectAgentMarkdownTokens(
@@ -343,7 +366,13 @@ const AgentMarkdownView = ({
 
   return (
     <div className="min-w-0 max-w-full font-normal text-foreground">
-      {renderTokens(projection.tokens, 'root', openFile)}
+      {renderTokens(
+        projection.tokens,
+        'root',
+        openFile,
+        workspaceGeneration,
+        workspaceReady,
+      )}
     </div>
   );
 };

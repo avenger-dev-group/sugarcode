@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useStore as useZustandStore } from 'zustand';
 
 import { resolveWorkspaceFile } from '@/renderer/services/workspace';
-import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 
 import type {
   FileReferenceLinkStore,
@@ -49,11 +47,9 @@ const requestResolution = (
 export const useStore = (
   path: string,
   openFile: (path: string) => void,
+  workspaceGeneration: number,
+  workspaceReady: boolean,
 ): FileReferenceLinkStore => {
-  const workspace = useZustandStore(
-    workspaceProjectionStore,
-    (projection) => projection.snapshot,
-  );
   const [resolution, setResolution] =
     useState<FileReferenceResolution>(() =>
       path.includes('/')
@@ -69,25 +65,25 @@ export const useStore = (
         ? { status: 'resolved', path }
         : { status: 'idle' },
     );
-  }, [path, workspace.generation]);
+  }, [path, workspaceGeneration]);
 
   const resolveLocation = useCallback(async (): Promise<FileReferenceResolution> => {
     if (resolution.status !== 'idle') {
       return resolution;
     }
-    if (workspace.status !== 'ready') {
+    if (!workspaceReady) {
       const unavailable = { status: 'unavailable' } as const;
       setResolution(unavailable);
       return unavailable;
     }
     const revision = ++requestRevision.current;
     setResolution({ status: 'loading' });
-    const result = await requestResolution(workspace.generation, path);
+    const result = await requestResolution(workspaceGeneration, path);
     if (revision === requestRevision.current) {
       setResolution(result);
     }
     return result;
-  }, [path, resolution, workspace.generation, workspace.status]);
+  }, [path, resolution, workspaceGeneration, workspaceReady]);
 
   const prepare = useCallback((): void => {
     void resolveLocation();

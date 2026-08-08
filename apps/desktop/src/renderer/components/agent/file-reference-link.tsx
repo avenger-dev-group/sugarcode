@@ -15,23 +15,35 @@ export const FileReferenceLink = ({
   openFile,
   path,
   variant,
+  workspaceGeneration,
+  workspaceReady,
 }: FileReferenceLinkProps) => {
-  const store = useStore(path, openFile);
+  const store = useStore(
+    path,
+    openFile,
+    workspaceGeneration,
+    workspaceReady,
+  );
 
   return (
-    <Tooltip>
+    <Tooltip
+      onOpenChange={(open) => {
+        if (open) {
+          store.prepare();
+        }
+      }}
+    >
       <TooltipTrigger asChild>
         <button
           type="button"
           className={cn(
-            'inline-flex max-w-full cursor-pointer items-baseline gap-1 text-link decoration-link underline-offset-[3px] transition-[color,background-color,text-decoration-color] hover:decoration-link focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'inline-flex max-w-full cursor-pointer items-baseline gap-1 text-link underline decoration-link-muted underline-offset-[3px] transition-[color,text-decoration-color] hover:text-link-hover hover:decoration-link focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             variant === 'code'
-              ? 'rounded-md bg-surface px-1.5 py-px font-mono text-[0.92em] font-normal no-underline hover:bg-surface-hover'
-              : 'underline decoration-link-muted hover:text-link-hover',
+              ? 'font-mono text-[0.92em] font-normal'
+              : undefined,
           )}
           onClick={() => void store.open()}
           onFocus={store.prepare}
-          onPointerEnter={store.prepare}
           aria-label={`在右侧打开 ${path}`}
         >
           <FileCode2

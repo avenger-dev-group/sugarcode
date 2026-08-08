@@ -52,7 +52,12 @@ export const acceptConversationSnapshot = (
   }
   const pendingThreadId = current.snapshot.navigator.pendingThreadId;
   const selectionNotice = current.snapshot.navigator.selectionNotice;
-  const navigator = pendingThreadId
+  const selectionCommittedBySnapshot =
+    pendingThreadId !== undefined &&
+    snapshot.threadId === pendingThreadId &&
+    snapshot.navigator.pendingThreadId === undefined &&
+    snapshot.navigator.selectionNotice === undefined;
+  const navigator = pendingThreadId && !selectionCommittedBySnapshot
     ? {
         ...snapshot.navigator,
         pendingThreadId,

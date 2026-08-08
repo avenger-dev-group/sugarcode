@@ -194,8 +194,11 @@ Agent Markdown or the project tree opens a fresh bounded workspace inspection.
 Agent Markdown file references use the dedicated link color and file glyph so
 they remain distinguishable from ordinary inline code in both themes. Hover or
 keyboard focus shows a delayed tooltip with the exact project-relative path;
-basename-only references resolve through the same bounded unique-match lookup
-used before opening, without opening the context rail as a hover side effect.
+basename-only references resolve only when that tooltip actually opens, through
+the same bounded unique-match lookup used before opening. Resolution promises
+are deduplicated per Workspace generation, and neither rendering a large
+transcript nor briefly crossing a reference starts a filesystem scan or opens
+the context rail.
 The Renderer never fabricates a diff by rereading mutable workspace content.
 
 The context rail owns one persistent project explorer tab plus transient file,
@@ -235,12 +238,14 @@ start independently even if the first startup has not returned. A background
 completion is retained until that Thread is selected, so navigation can replace
 its running marker with the terminal outcome.
 During a foreground Thread selection, Renderer-only pending state survives
-intermediate navigation snapshots and is cleared only by the matching atomic
-foreground commit. This keeps one continuous selection placeholder instead of
-briefly exposing the previous or empty transcript. A successful commit restores
-tail-following and re-anchors the transcript after its Markdown layout settles;
-a failed selection retains its retry surface without changing the visible
-transcript position.
+intermediate navigation snapshots and is cleared by either the matching atomic
+foreground commit or an authoritative conversation snapshot that already
+selects the pending target. This keeps one continuous selection placeholder
+instead of briefly exposing the previous or empty transcript while allowing a
+Chat switch whose target snapshot arrives before its Main response to complete.
+A successful selection restores tail-following and re-anchors the transcript
+after its Markdown layout settles; a failed selection retains its retry surface
+without changing the visible transcript position.
 Optional navigator fields are omitted when cleared rather than serialized with
 `undefined`; every snapshot published by Main must pass the same preload
 validation used at the Renderer boundary.
