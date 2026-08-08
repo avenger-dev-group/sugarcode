@@ -194,13 +194,16 @@ Agent Markdown or the project tree opens a fresh bounded workspace inspection.
 The Renderer never fabricates a diff by rereading mutable workspace content.
 
 The context rail owns one persistent project explorer tab plus transient file,
-diff and child-Agent detail tabs. Activating a saved project group binds that
-project before merely expanding its Thread list, so a project with no selected
-Thread still exposes its capability-scoped file tree. Switching the foreground
-Thread clears transient context tabs rather than carrying file or review state
-across workspace identities. Navigator and context-rail open/close transitions
-animate their clipped width and opacity while retaining mounted content; direct
-panel resizing disables those transitions so pointer movement remains exact.
+diff and child-Agent detail tabs. A saved project group is a local disclosure:
+selecting its folder row only expands or collapses the retained Thread list and
+does not bind a Workspace or initialize the conversation and context surfaces.
+Selecting its add action activates that project before creating a Thread, while
+selecting a retained Thread focuses its owning Workspace. Switching the
+foreground Thread clears transient context tabs rather than carrying file or
+review state across workspace identities. Navigator and context-rail open/close
+transitions animate their clipped width and opacity while retaining mounted
+content; direct panel resizing disables those transitions so pointer movement
+remains exact.
 Saved project and Thread rows expose their destructive navigation action on
 hover or keyboard focus without requiring prior selection. Removing a project
 forgets only its saved navigation owner and never deletes the project directory

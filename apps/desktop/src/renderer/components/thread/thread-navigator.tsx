@@ -188,22 +188,6 @@ export const ThreadNavigator = ({
     }
   };
 
-  const activateProjectOnly = async (
-    projectId: string,
-    expanded: boolean,
-  ): Promise<void> => {
-    const active =
-      projectActive && workspace.state.activeProjectId === projectId;
-    if (!active && !(await workspace.activateProject(projectId))) {
-      return;
-    }
-    if (!expanded) {
-      store.toggleProjectExpanded(projectId);
-    } else if (active) {
-      store.toggleProjectExpanded(projectId);
-    }
-  };
-
   const activateChat = async (threadId?: string): Promise<boolean> => {
     return threadId
       ? await workspace.activateChat(threadId)
@@ -385,23 +369,18 @@ export const ThreadNavigator = ({
                         >
                           <span
                             role="button"
-                            tabIndex={workspace.busy ? -1 : 0}
+                            tabIndex={0}
                             data-thread-item
                             aria-expanded={expanded}
-                            aria-disabled={workspace.busy}
-                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default"
-                            onClick={() => {
-                              if (!workspace.busy) {
-                                void activateProjectOnly(project.id, expanded);
-                              }
-                            }}
+                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            onClick={() =>
+                              store.toggleProjectExpanded(project.id)
+                            }
                             onKeyDown={(event) =>
                               activateNavigationItem(
                                 event,
-                                workspace.busy,
-                                () => {
-                                  void activateProjectOnly(project.id, expanded);
-                                },
+                                false,
+                                () => store.toggleProjectExpanded(project.id),
                               )
                             }
                           >
