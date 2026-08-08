@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore as useZustandStore } from 'zustand';
 
-import { inspectWorkspace } from '@/renderer/services/workspace';
+import {
+  inspectWorkspace,
+  resolveWorkspaceFile,
+} from '@/renderer/services/workspace';
 import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 import type { WorkspaceInspectDocument } from '@/shared/workspace';
 
@@ -28,9 +31,47 @@ export const useStore = (path: string): WorkspaceDocumentStore => {
     }
     setLoading(true);
     setError(null);
+    let resolvedPath = path;
+    if (!path.includes('/')) {
+      const resolution = await resolveWorkspaceFile({
+        generation: workspace.generation,
+        name: path,
+      }).catch((): null => null);
+      if (revision !== requestRevision.current) {
+        return;
+      }
+      if (
+        !resolution ||
+        !resolution.accepted ||
+        resolution.generation !== workspace.generation
+      ) {
+        setDocument(null);
+        setError('无法安全定位所选文件。');
+        setLoading(false);
+        return;
+      }
+      if (resolution.status === 'ambiguous') {
+        setDocument(null);
+        setError(`项目中存在多个 ${path}，请使用完整相对路径。`);
+        setLoading(false);
+        return;
+      }
+      if (resolution.status === 'unavailable') {
+        setDocument(null);
+        setError('项目文件搜索暂时不可用，请稍后重试。');
+        setLoading(false);
+        return;
+      }
+      if (resolution.status === 'notFound' || !resolution.path) {
+        setDocument({ status: 'error', path, kind: 'notFound' });
+        setLoading(false);
+        return;
+      }
+      resolvedPath = resolution.path;
+    }
     const result = await inspectWorkspace({
       generation: workspace.generation,
-      path,
+      path: resolvedPath,
     }).catch((): null => null);
     if (revision !== requestRevision.current) {
       return;

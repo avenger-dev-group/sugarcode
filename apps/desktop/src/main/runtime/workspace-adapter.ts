@@ -208,6 +208,36 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
     return event.document;
   };
 
+  resolveWorkspaceFile = async (
+    name: string,
+  ): Promise<{
+    name: string;
+    status: 'resolved' | 'notFound' | 'ambiguous' | 'unavailable';
+    path?: string;
+  }> => {
+    if (!this.workspaceId) {
+      throw new Error('Workspace unavailable.');
+    }
+    const workspaceId = this.workspaceId;
+    const event = await this.options.runtime.request(
+      {
+        type: 'workspace.resolve',
+        requestId: randomUUID(),
+        workspaceId,
+        name,
+      },
+      'workspace.resolved',
+    );
+    if (event.workspaceId !== workspaceId || event.name !== name) {
+      throw new Error('The runtime returned a mismatched Workspace resolution.');
+    }
+    return {
+      name: event.name,
+      status: event.status,
+      ...(event.path ? { path: event.path } : {}),
+    };
+  };
+
   private restoreAfterRestart = async (): Promise<void> => {
     if (this.recovering || !this.workspaceId || !this.canonicalRoot) {
       return;

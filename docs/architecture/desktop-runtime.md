@@ -191,6 +191,11 @@ row as the review target and omits duplicate edited-state and review-action
 labels. Selecting a receipt row opens its immutable review diff in the context
 rail, while selecting a safe relative file reference from workspace reads,
 Agent Markdown or the project tree opens a fresh bounded workspace inspection.
+Agent Markdown file references use the dedicated link color and file glyph so
+they remain distinguishable from ordinary inline code in both themes. Hover or
+keyboard focus shows a delayed tooltip with the exact project-relative path;
+basename-only references resolve through the same bounded unique-match lookup
+used before opening, without opening the context rail as a hover side effect.
 The Renderer never fabricates a diff by rereading mutable workspace content.
 
 The context rail owns one persistent project explorer tab plus transient file,
@@ -229,6 +234,13 @@ workspace and captures its original workspace authority, so another project may
 start independently even if the first startup has not returned. A background
 completion is retained until that Thread is selected, so navigation can replace
 its running marker with the terminal outcome.
+During a foreground Thread selection, Renderer-only pending state survives
+intermediate navigation snapshots and is cleared only by the matching atomic
+foreground commit. This keeps one continuous selection placeholder instead of
+briefly exposing the previous or empty transcript. A successful commit restores
+tail-following and re-anchors the transcript after its Markdown layout settles;
+a failed selection retains its retry surface without changing the visible
+transcript position.
 Optional navigator fields are omitted when cleared rather than serialized with
 `undefined`; every snapshot published by Main must pass the same preload
 validation used at the Renderer boundary.

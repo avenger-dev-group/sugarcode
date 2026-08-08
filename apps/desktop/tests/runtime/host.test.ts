@@ -1578,6 +1578,10 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
       lines: 1,
       hasUtf8Bom: false,
     }),
+    workspaceResolveJson: async (_workspaceId, name) => JSON.stringify({
+      status: 'resolved',
+      path: `src/${name}`,
+    }),
     workspaceSearch: async () => JSON.stringify({ ok: true, matches: [] }),
     workspaceApplyPatch: async () => JSON.stringify({ ok: true, files: [] }),
     gitStatusJson: () => '{}',
@@ -1626,6 +1630,12 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     path: 'fixture.txt',
   });
   host.handle({
+    type: 'workspace.resolve',
+    requestId: 'request-workspace-resolve',
+    workspaceId: 'workspace-fixture',
+    name: 'extension.tsx',
+  });
+  host.handle({
     type: 'turn.start',
     requestId: 'request-turn',
     workspaceId: 'workspace-fixture',
@@ -1658,6 +1668,18 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   assert.equal(
     events.find((event) => event.type === 'workspace.inspected')?.document.status,
     'complete',
+  );
+  assert.deepEqual(
+    events.find((event) => event.type === 'workspace.resolved'),
+    {
+      type: 'workspace.resolved',
+      sequence: events.find((event) => event.type === 'workspace.resolved')?.sequence,
+      requestId: 'request-workspace-resolve',
+      workspaceId: 'workspace-fixture',
+      name: 'extension.tsx',
+      status: 'resolved',
+      path: 'src/extension.tsx',
+    },
   );
   assert.ok(events.some((event) => event.type === 'turn.toolCall'));
   assert.ok(events.some((event) => event.type === 'turn.toolResult'));
@@ -1841,6 +1863,7 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     workspaceRead: async () => '{}',
     workspaceList: async () => '{}',
     workspaceInspectJson: () => '{}',
+    workspaceResolveJson: async () => '{"status":"notFound"}',
     workspaceSearch: async () => '{}',
     workspaceApplyPatch: async () => {
       applyCount += 1;
@@ -1969,6 +1992,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
     workspaceRead: async () => '{}',
     workspaceList: async () => '{}',
     workspaceInspectJson: () => '{}',
+    workspaceResolveJson: async () => '{"status":"notFound"}',
     workspaceSearch: async () => '{}',
     workspaceApplyPatch: async () => '{}',
     gitStatusJson: () => '{}',
@@ -2171,6 +2195,7 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     workspaceRead: async () => '{}',
     workspaceList: async () => '{}',
     workspaceInspectJson: () => '{}',
+    workspaceResolveJson: async () => '{"status":"notFound"}',
     workspaceSearch: async () => '{}',
     workspaceApplyPatch: async () => '{}',
     gitStatusJson: () => '{}',

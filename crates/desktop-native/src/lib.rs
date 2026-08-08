@@ -29,17 +29,21 @@ use sugarcode_tools::ShellCommandExecution;
 use sugarcode_tools::ShellCommandExecutor;
 use sugarcode_tools::ShellOutputChunk;
 use sugarcode_tools::ShellOutputStream;
+use sugarcode_tools::WorkspaceAdvancedSearchArguments;
+use sugarcode_tools::WorkspaceAdvancedSearchOutcome;
 use sugarcode_tools::WorkspaceChangeSetCommitOutcome;
 use sugarcode_tools::WorkspaceChangeSetPrepareOutcome;
 use sugarcode_tools::WorkspaceInspectArguments;
 use sugarcode_tools::WorkspaceInspectErrorKind;
 use sugarcode_tools::WorkspaceInspectOutcome;
 use sugarcode_tools::WorkspaceListArguments;
+use sugarcode_tools::WorkspaceListEntryKind;
 use sugarcode_tools::WorkspaceListOutcome;
 use sugarcode_tools::WorkspaceReadArguments;
 use sugarcode_tools::WorkspaceReadErrorKind;
 use sugarcode_tools::WorkspaceReadOutcome;
 use sugarcode_tools::WorkspaceSearchArguments;
+use sugarcode_tools::WorkspaceSearchMode;
 use sugarcode_tools::WorkspaceSearchOutcome;
 use sugarcode_tools::WorkspaceTool;
 use tokio_util::sync::CancellationToken;
@@ -831,6 +835,53 @@ impl NativeRuntime {
                 "path": path,
                 "kind": inspect_error_code(kind),
             }),
+        };
+        json_string(value)
+    }
+
+    #[napi]
+    pub async fn workspace_resolve_json(
+        &self,
+        workspace_id: String,
+        name: String,
+    ) -> Result<String> {
+        let workspace = self.workspace(&workspace_id)?;
+        let outcome = workspace
+            .search_advanced(
+                &WorkspaceAdvancedSearchArguments {
+                    path: ".".to_owned(),
+                    query: name.clone(),
+                    mode: WorkspaceSearchMode::Path,
+                    case_sensitive: true,
+                    regex: false,
+                    file_pattern: None,
+                },
+                &CancellationToken::new(),
+            )
+            .await;
+        let value = match outcome {
+            WorkspaceAdvancedSearchOutcome::Matches {
+                matches, truncated, ..
+            } => {
+                let paths = matches
+                    .into_iter()
+                    .filter(|entry| entry.kind == Some(WorkspaceListEntryKind::File))
+                    .map(|entry| entry.path)
+                    .filter(|path| path.rsplit('/').next() == Some(name.as_str()))
+                    .collect::<Vec<_>>();
+                if truncated {
+                    json!({ "status": "unavailable" })
+                } else if paths.len() == 1 {
+                    json!({ "status": "resolved", "path": paths[0] })
+                } else if paths.is_empty() {
+                    json!({ "status": "notFound" })
+                } else {
+                    json!({ "status": "ambiguous" })
+                }
+            }
+            WorkspaceAdvancedSearchOutcome::Error { .. } => {
+                json!({ "status": "unavailable" })
+            }
         };
         json_string(value)
     }

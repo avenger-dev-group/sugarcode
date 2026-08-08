@@ -4,10 +4,12 @@ import {
   isWorkspaceInspectRequest,
   isWorkspaceChatRequest,
   isWorkspaceListRequest,
+  isWorkspaceResolveRequest,
   WORKSPACE_CHAT_ACTIVATE_CHANNEL,
   WORKSPACE_CLEAR_CHANNEL,
   WORKSPACE_INSPECT_CHANNEL,
   WORKSPACE_LIST_CHANNEL,
+  WORKSPACE_RESOLVE_CHANNEL,
   WORKSPACE_PROJECT_RESUME_CHANNEL,
   WORKSPACE_PROJECT_ACTIVATE_CHANNEL,
   WORKSPACE_PROJECT_REMOVE_CHANNEL,
@@ -137,6 +139,12 @@ export const registerWorkspaceIpc = (
     }
     return options.controller.inspect(request);
   });
+  ipcMain.handle(WORKSPACE_RESOLVE_CHANNEL, (event, request: unknown) => {
+    if (!trusted(event) || !isWorkspaceResolveRequest(request)) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    return options.controller.resolve(request);
+  });
 
   const unsubscribe = options.controller.subscribe((snapshot) => {
     getTrustedMainWindow(options)?.webContents.send(
@@ -157,5 +165,6 @@ export const registerWorkspaceIpc = (
     ipcMain.removeHandler(WORKSPACE_CLEAR_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_LIST_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_INSPECT_CHANNEL);
+    ipcMain.removeHandler(WORKSPACE_RESOLVE_CHANNEL);
   };
 };

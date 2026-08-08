@@ -107,6 +107,18 @@ test('private Workspace protocol stays provider-neutral and bounds browser paylo
     workspaceId: 'workspace-fixture',
     path: 'x'.repeat(1_025),
   }), false);
+  assert.equal(isRuntimeCommand({
+    type: 'workspace.resolve',
+    requestId: 'request-resolve',
+    workspaceId: 'workspace-fixture',
+    name: 'extension.tsx',
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'workspace.resolve',
+    requestId: 'request-invalid-resolve',
+    workspaceId: 'workspace-fixture',
+    name: 'src/extension.tsx',
+  }), false);
   assert.equal(isRuntimeEvent({
     type: 'workspace.listResult',
     sequence: 1,
@@ -126,6 +138,15 @@ test('private Workspace protocol stays provider-neutral and bounds browser paylo
       kind: 'providerSpecificFailure',
     },
   }), false);
+  assert.equal(isRuntimeEvent({
+    type: 'workspace.resolved',
+    sequence: 3,
+    requestId: 'request-resolve',
+    workspaceId: 'workspace-fixture',
+    name: 'extension.tsx',
+    status: 'resolved',
+    path: 'src/components/extension.tsx',
+  }), true);
 });
 
 test('private terminal protocol requires UUID sessions and UTF-8 byte bounds', () => {

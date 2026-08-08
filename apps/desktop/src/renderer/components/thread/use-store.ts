@@ -81,6 +81,7 @@ import {
 import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
+  shouldResetTranscriptFollow,
 } from './transcript-follow';
 import {
   completedProcessDurationLabel,
@@ -925,6 +926,7 @@ const inputBytes = (value: string): number =>
 
 export const useTranscriptFollow = (
   thread: ThreadViewModel,
+  pendingThreadId: string | null,
 ): TranscriptFollow => {
   const transcriptContent = useRef<HTMLDivElement | null>(null);
   const transcriptEnd = useRef<HTMLDivElement | null>(null);
@@ -933,6 +935,7 @@ export const useTranscriptFollow = (
   const previousScrollTop = useRef<number>(0);
   const pointerScrollActive = useRef<boolean>(false);
   const previousThreadIdentity = useRef<string | null>(thread.threadIdentity);
+  const previousPendingThreadId = useRef<string | null>(pendingThreadId);
   const latestUserMessageId = (() => {
     for (
       let turnIndex = thread.turns.length - 1;
@@ -1006,25 +1009,38 @@ export const useTranscriptFollow = (
   };
 
   useLayoutEffect(() => {
-    const threadChanged =
-      previousThreadIdentity.current !== thread.threadIdentity;
     const userMessageAdded =
       latestUserMessageId !== null &&
       previousUserMessageId.current !== latestUserMessageId;
-    if (threadChanged || userMessageAdded) {
+    if (shouldResetTranscriptFollow({
+      previousThreadId: previousThreadIdentity.current,
+      threadId: thread.threadIdentity,
+      previousPendingThreadId: previousPendingThreadId.current,
+      pendingThreadId,
+      userMessageAdded,
+    })) {
       shouldFollowTranscript.current = true;
     }
     previousThreadIdentity.current = thread.threadIdentity;
+    previousPendingThreadId.current = pendingThreadId;
     previousUserMessageId.current = latestUserMessageId;
 
     if (shouldFollowTranscript.current) {
       scrollTranscriptToEnd();
-      const animationFrame = requestAnimationFrame(scrollTranscriptToEnd);
-      return () => cancelAnimationFrame(animationFrame);
+      let secondAnimationFrame = 0;
+      const firstAnimationFrame = requestAnimationFrame(() => {
+        scrollTranscriptToEnd();
+        secondAnimationFrame = requestAnimationFrame(scrollTranscriptToEnd);
+      });
+      return () => {
+        cancelAnimationFrame(firstAnimationFrame);
+        cancelAnimationFrame(secondAnimationFrame);
+      };
     }
     return undefined;
   }, [
     latestUserMessageId,
+    pendingThreadId,
     scrollTranscriptToEnd,
     thread.phase,
     thread.threadIdentity,

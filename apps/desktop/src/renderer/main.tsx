@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { App } from '@/renderer/app';
+import { TooltipProvider } from '@/renderer/components/ui/tooltip';
 import { startConversationProjection } from '@/renderer/services/conversation-projection';
 import { startWorkspaceProjection } from '@/renderer/services/workspace-projection';
 import '@/renderer/styles/globals.css';
@@ -23,6 +24,8 @@ if (import.meta.hot) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <TooltipProvider delayDuration={450} skipDelayDuration={100}>
+      <App />
+    </TooltipProvider>
   </StrictMode>,
 );

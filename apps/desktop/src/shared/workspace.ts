@@ -10,6 +10,7 @@ export const WORKSPACE_CHAT_ACTIVATE_CHANNEL = 'workspace:chat-activate';
 export const WORKSPACE_CLEAR_CHANNEL = 'workspace:clear';
 export const WORKSPACE_LIST_CHANNEL = 'workspace:list';
 export const WORKSPACE_INSPECT_CHANNEL = 'workspace:inspect';
+export const WORKSPACE_RESOLVE_CHANNEL = 'workspace:resolve';
 
 export type WorkspaceStatus =
   | 'unselected'
@@ -138,6 +139,24 @@ export type WorkspaceInspectResult =
       reason: 'stale' | 'unavailable' | 'invalid' | 'failed';
     }>;
 
+export type WorkspaceResolveRequest = Readonly<{
+  generation: number;
+  name: string;
+}>;
+
+export type WorkspaceResolveResult =
+  | Readonly<{
+      accepted: true;
+      generation: number;
+      name: string;
+      status: 'resolved' | 'notFound' | 'ambiguous' | 'unavailable';
+      path?: string;
+    }>
+  | Readonly<{
+      accepted: false;
+      reason: 'stale' | 'unavailable' | 'invalid' | 'failed';
+    }>;
+
 export type WorkspaceSelectResult = Readonly<{
   accepted: boolean;
   reason?: 'cancelled' | 'busy' | 'invalid' | 'failed';
@@ -169,6 +188,9 @@ export type WorkspaceApi = Readonly<{
   inspectWorkspace: (
     request: WorkspaceInspectRequest,
   ) => Promise<WorkspaceInspectResult>;
+  resolveWorkspaceFile: (
+    request: WorkspaceResolveRequest,
+  ) => Promise<WorkspaceResolveResult>;
 }>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -318,6 +340,19 @@ export const isWorkspaceInspectRequest = (
   Number.isSafeInteger(value.generation) &&
   (value.generation as number) >= 0 &&
   isSafeRelativePath(value.path, false);
+
+export const isWorkspaceResolveRequest = (
+  value: unknown,
+): value is WorkspaceResolveRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['generation', 'name']) &&
+  Number.isSafeInteger(value.generation) &&
+  (value.generation as number) >= 0 &&
+  typeof value.name === 'string' &&
+  value.name.length > 0 &&
+  new TextEncoder().encode(value.name).byteLength <= 255 &&
+  !value.name.includes('/') &&
+  !value.name.includes('\\');
 
 const isForegroundCommit = (value: unknown): value is ForegroundCommit => {
   if (
@@ -480,6 +515,44 @@ export const isWorkspaceInspectResult = (
     Number.isSafeInteger(document.returnedBytes) &&
     Number.isSafeInteger(document.lines) &&
     typeof document.hasUtf8Bom === 'boolean'
+  );
+};
+
+export const isWorkspaceResolveResult = (
+  value: unknown,
+): value is WorkspaceResolveResult => {
+  if (!isRecord(value) || typeof value.accepted !== 'boolean') {
+    return false;
+  }
+  if (!value.accepted) {
+    return (
+      hasOnlyKeys(value, ['accepted', 'reason']) &&
+      ['stale', 'unavailable', 'invalid', 'failed'].includes(
+        value.reason as string,
+      )
+    );
+  }
+  return (
+    hasOnlyKeys(value, [
+      'accepted',
+      'generation',
+      'name',
+      'status',
+      'path',
+    ]) &&
+    Number.isSafeInteger(value.generation) &&
+    (value.generation as number) >= 0 &&
+    typeof value.name === 'string' &&
+    value.name.length > 0 &&
+    new TextEncoder().encode(value.name).byteLength <= 255 &&
+    !value.name.includes('/') &&
+    !value.name.includes('\\') &&
+    ['resolved', 'notFound', 'ambiguous', 'unavailable'].includes(
+      value.status as string,
+    ) &&
+    (value.status === 'resolved'
+      ? isSafeRelativePath(value.path, false)
+      : value.path === undefined)
   );
 };
 import {

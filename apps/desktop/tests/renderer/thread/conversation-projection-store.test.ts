@@ -125,6 +125,12 @@ test('conversation selection overlay never exposes the previous transcript', () 
     undefined,
   );
 
+  acceptConversationSnapshot(snapshot(3, 'thread-a'));
+  assert.equal(
+    conversationProjectionStore.getState().snapshot.navigator.pendingThreadId,
+    'thread-b',
+  );
+
   failConversationSelection('thread-b', 'Load failed.');
   assert.equal(
     conversationProjectionStore.getState().snapshot.navigator.pendingThreadId,

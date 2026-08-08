@@ -28,6 +28,9 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-link: var(--link);
+  --color-link-hover: var(--link-hover);
+  --color-link-muted: var(--link-muted);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -64,6 +67,8 @@
   --user-message-foreground: var(--primary);
   --destructive: oklch(0.577 0.245 27.325);
   --success: oklch(0.627 0.194 149.214);
+  --link: #0969da;
+  --link-hover: #0550ae;
   --syntax-attribute: #116329;
   --syntax-comment: #57606a;
   --syntax-deletion: #82071e;
@@ -84,6 +89,8 @@
   --user-message-foreground: var(--background);
   --destructive: oklch(0.704 0.191 22.216);
   --success: oklch(0.792 0.209 151.711);
+  --link: #58a6ff;
+  --link-hover: #79c0ff;
   --syntax-attribute: #7ee787;
   --syntax-comment: #8b949e;
   --syntax-deletion: #ffdcd7;
@@ -115,6 +122,7 @@
   --border: rgb(from var(--primary) r g b / 12%);
   --input: rgb(from var(--primary) r g b / 16%);
   --ring: var(--primary);
+  --link-muted: rgb(from var(--link) r g b / 55%);
   --shadow-soft: rgb(from var(--primary) r g b / 8%);
 }
 

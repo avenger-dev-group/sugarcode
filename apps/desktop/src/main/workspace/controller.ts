@@ -8,6 +8,8 @@ import type {
   WorkspaceKind,
   WorkspaceListRequest,
   WorkspaceListResult,
+  WorkspaceResolveRequest,
+  WorkspaceResolveResult,
   WorkspaceSelectResult,
   WorkspaceStateSnapshot,
   ForegroundCommit,
@@ -47,6 +49,13 @@ export type WorkspaceRuntimeBoundary = Readonly<{
   inspectWorkspace: (
     path: string,
   ) => Promise<import('@/shared/workspace').WorkspaceInspectDocument>;
+  resolveWorkspaceFile: (
+    name: string,
+  ) => Promise<Readonly<{
+    name: string;
+    status: 'resolved' | 'notFound' | 'ambiguous' | 'unavailable';
+    path?: string;
+  }>>;
   conversation: Readonly<{
     getSnapshot: () => import('@/shared/conversation').ConversationStateSnapshot;
     selectThread: (
@@ -736,6 +745,34 @@ export class WorkspaceController {
         generation: this.generation,
         document,
       };
+    } catch {
+      return { accepted: false, reason: 'failed' };
+    }
+  };
+
+  resolve = async (
+    request: WorkspaceResolveRequest,
+  ): Promise<WorkspaceResolveResult> => {
+    if (
+      request.generation !== this.generation ||
+      this.snapshot.status !== 'ready'
+    ) {
+      return {
+        accepted: false,
+        reason:
+          request.generation !== this.generation
+            ? 'stale'
+            : 'unavailable',
+      };
+    }
+    try {
+      const result = await this.options.supervisor.resolveWorkspaceFile(
+        request.name,
+      );
+      if (request.generation !== this.generation) {
+        return { accepted: false, reason: 'stale' };
+      }
+      return { accepted: true, ...result, generation: this.generation };
     } catch {
       return { accepted: false, reason: 'failed' };
     }

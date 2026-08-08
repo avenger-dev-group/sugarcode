@@ -464,6 +464,10 @@ export class RuntimeHost {
           ),
         });
         break;
+      case 'workspace.resolve':
+        this.requireReady(command.requestId);
+        void this.resolveWorkspace(command);
+        break;
       case 'asset.import':
         this.requireReady(command.requestId);
         this.emit({
@@ -884,6 +888,40 @@ export class RuntimeHost {
         message: error instanceof Error
           ? error.message
           : 'The workspace directory could not be listed.',
+      });
+    }
+  };
+
+  private resolveWorkspace = async (
+    command: Extract<RuntimeCommand, { type: 'workspace.resolve' }>,
+  ): Promise<void> => {
+    try {
+      const result = this.parseNativeJson<{
+        status: 'resolved' | 'notFound' | 'ambiguous' | 'unavailable';
+        path?: string;
+      }>(
+        await this.requireNative().workspaceResolveJson(
+          command.workspaceId,
+          command.name,
+        ),
+      );
+      this.emit({
+        type: 'workspace.resolved',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        name: command.name,
+        status: result.status,
+        ...(result.status === 'resolved' && result.path
+          ? { path: result.path }
+          : {}),
+      });
+    } catch {
+      this.emit({
+        type: 'workspace.resolved',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        name: command.name,
+        status: 'unavailable',
       });
     }
   };

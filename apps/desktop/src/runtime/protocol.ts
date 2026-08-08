@@ -227,6 +227,12 @@ export type RuntimeCommand =
       path: string;
     }>
   | Readonly<{
+      type: 'workspace.resolve';
+      requestId: string;
+      workspaceId: string;
+      name: string;
+    }>
+  | Readonly<{
       type: 'asset.import';
       requestId: string;
       fileName: string;
@@ -474,6 +480,14 @@ export type RuntimeEvent =
         type: 'workspace.inspected';
         workspaceId: string;
         document: RuntimeWorkspaceDocument;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'workspace.resolved';
+        workspaceId: string;
+        name: string;
+        status: 'resolved' | 'notFound' | 'ambiguous' | 'unavailable';
+        path?: string;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -887,6 +901,15 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.workspaceId === 'string' &&
         isSafeWorkspacePath(value.path, false)
       );
+    case 'workspace.resolve':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.name === 'string' &&
+        value.name.length > 0 &&
+        utf8ByteLength(value.name) <= 255 &&
+        !value.name.includes('/') &&
+        !value.name.includes('\\')
+      );
     case 'asset.import':
       return (
         typeof value.fileName === 'string' &&
@@ -1173,6 +1196,21 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
               'changed',
               'unavailable',
             ].includes(String(value.document.kind))))
+      );
+    case 'workspace.resolved':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.name === 'string' &&
+        value.name.length > 0 &&
+        utf8ByteLength(value.name) <= 255 &&
+        !value.name.includes('/') &&
+        !value.name.includes('\\') &&
+        ['resolved', 'notFound', 'ambiguous', 'unavailable'].includes(
+          String(value.status),
+        ) &&
+        (value.status === 'resolved'
+          ? isSafeWorkspacePath(value.path, false)
+          : value.path === undefined)
       );
     case 'asset.imported':
       return isAssetDescriptor(value.asset);

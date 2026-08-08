@@ -50,8 +50,19 @@ export const acceptConversationSnapshot = (
   if (snapshot.revision <= current.sourceRevision) {
     return;
   }
+  const pendingThreadId = current.snapshot.navigator.pendingThreadId;
+  const selectionNotice = current.snapshot.navigator.selectionNotice;
+  const navigator = pendingThreadId
+    ? {
+        ...snapshot.navigator,
+        pendingThreadId,
+        ...(selectionNotice ? { selectionNotice } : {}),
+      }
+    : snapshot.navigator;
   conversationProjectionStore.setState({
-    snapshot,
+    snapshot: navigator === snapshot.navigator
+      ? snapshot
+      : { ...snapshot, navigator },
     sourceRevision: snapshot.revision,
     loadError: null,
   });

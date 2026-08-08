@@ -33,3 +33,22 @@ export const shouldFollowTranscriptAfterScroll = ({
   }
   return wasFollowing;
 };
+
+export const shouldResetTranscriptFollow = ({
+  previousThreadId,
+  threadId,
+  previousPendingThreadId,
+  pendingThreadId,
+  userMessageAdded,
+}: Readonly<{
+  previousThreadId: string | null;
+  threadId: string | null;
+  previousPendingThreadId: string | null;
+  pendingThreadId: string | null;
+  userMessageAdded: boolean;
+}>): boolean =>
+  previousThreadId !== threadId ||
+  userMessageAdded ||
+  (previousPendingThreadId !== null &&
+    pendingThreadId === null &&
+    threadId === previousPendingThreadId);

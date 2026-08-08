@@ -102,6 +102,12 @@ mutable workspace. Renderer review tabs consume only that frozen receipt;
 ordinary file tabs use the separately bounded workspace-inspection operation
 against the active generation and therefore cannot be confused with the
 historical review.
+Agent Markdown may reference a file by basename when the model did not include
+its workspace-relative directory. Before inspection, Desktop resolves that
+basename through Rust's bounded, capability-scoped path search and opens it only
+when exactly one regular file matches. No match remains `notFound`; multiple
+matches are reported as ambiguous and are never guessed. References that already
+contain a relative directory bypass this lookup and retain their exact path.
 
 `workspace_read` declares either one `path` or a bounded `paths` batch of 1
 through 8 files. Batch reads execute through the same read-only workspace

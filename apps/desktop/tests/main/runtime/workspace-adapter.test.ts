@@ -79,10 +79,20 @@ class FixtureRuntime {
                 hasUtf8Bom: false,
               },
             }
+          : command.type === 'workspace.resolve'
+            ? {
+                type: 'workspace.resolved',
+                sequence: 4,
+                requestId: command.requestId,
+                workspaceId: command.workspaceId,
+                name: command.name,
+                status: 'resolved',
+                path: `src/${command.name}`,
+              }
           : command.type === 'thread.delete'
             ? {
                 type: 'thread.mutated',
-                sequence: 4,
+                sequence: 5,
                 requestId: command.requestId,
                 workspaceId: command.workspaceId,
                 operation: 'delete',
@@ -194,6 +204,11 @@ test('RuntimeWorkspaceAdapter binds, browses, restores, and routes inactive dele
     path: '',
   });
   assert.equal((await adapter.inspectWorkspace('README.md')).status, 'complete');
+  assert.deepEqual(await adapter.resolveWorkspaceFile('extension.tsx'), {
+    name: 'extension.tsx',
+    status: 'resolved',
+    path: 'src/extension.tsx',
+  });
   assert.equal(
     await adapter.deleteThread('inactive-workspace', THREAD_ID),
     'deleted',

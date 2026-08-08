@@ -107,12 +107,14 @@ import {
 import {
   isWorkspaceInspectResult,
   isWorkspaceListResult,
+  isWorkspaceResolveResult,
   isWorkspaceSelectResult,
   isWorkspaceStateSnapshot,
   WORKSPACE_CHAT_ACTIVATE_CHANNEL,
   WORKSPACE_INSPECT_CHANNEL,
   WORKSPACE_CLEAR_CHANNEL,
   WORKSPACE_LIST_CHANNEL,
+  WORKSPACE_RESOLVE_CHANNEL,
   WORKSPACE_PROJECT_RESUME_CHANNEL,
   WORKSPACE_PROJECT_ACTIVATE_CHANNEL,
   WORKSPACE_PROJECT_REMOVE_CHANNEL,
@@ -126,6 +128,8 @@ import {
   type WorkspaceInspectResult,
   type WorkspaceListRequest,
   type WorkspaceListResult,
+  type WorkspaceResolveRequest,
+  type WorkspaceResolveResult,
   type WorkspaceSelectResult,
   type WorkspaceStateSnapshot,
 } from '@/shared/workspace';
@@ -1024,6 +1028,18 @@ export const createDesktopApi = (
     );
     if (!isWorkspaceInspectResult(result)) {
       throw new Error('Main returned an invalid workspace inspect result.');
+    }
+    return result;
+  },
+  resolveWorkspaceFile: async (
+    request: WorkspaceResolveRequest,
+  ): Promise<WorkspaceResolveResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_RESOLVE_CHANNEL,
+      request,
+    );
+    if (!isWorkspaceResolveResult(result)) {
+      throw new Error('Main returned an invalid workspace resolve result.');
     }
     return result;
   },

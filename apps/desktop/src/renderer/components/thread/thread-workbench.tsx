@@ -405,7 +405,7 @@ export const ThreadWorkbenchView = ({
     recordKeyScrollIntent,
     beginPointerScroll,
     endPointerScroll,
-  } = useTranscriptFollow(store.thread);
+  } = useTranscriptFollow(store.thread, store.navigator.pendingThreadId);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const workspace = useWorkspaceNavigationStore();
   const conversationTitle = resolveConversationTitle(

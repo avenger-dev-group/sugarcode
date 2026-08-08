@@ -1,4 +1,5 @@
 import type { ConversationCommandExecutionResultOutcome } from '@/shared/conversation';
+import type { ReactNode } from 'react';
 
 export type AgentMessagePresentationState =
   'streaming' | 'stopping' | 'uncertain' | 'completed';
@@ -116,4 +117,21 @@ export type CommandApprovalActivityProps = Readonly<{
 export type AgentMarkdownProps = Readonly<{
   source: string;
   isStreaming: boolean;
+}>;
+
+export type FileReferenceResolution =
+  | Readonly<{ status: 'idle' | 'loading' | 'notFound' | 'ambiguous' | 'unavailable' }>
+  | Readonly<{ status: 'resolved'; path: string }>;
+
+export type FileReferenceLinkStore = Readonly<{
+  locationLabel: string;
+  open: () => Promise<void>;
+  prepare: () => void;
+}>;
+
+export type FileReferenceLinkProps = Readonly<{
+  children: ReactNode;
+  openFile: (path: string) => void;
+  path: string;
+  variant: 'code' | 'link';
 }>;

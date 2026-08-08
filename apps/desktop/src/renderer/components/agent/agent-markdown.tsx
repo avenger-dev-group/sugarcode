@@ -9,6 +9,7 @@ import {
 } from 'react';
 
 import { AgentCodeBlock } from './code-block/code-block';
+import { FileReferenceLink } from './file-reference-link';
 import { useOrchestrationStore } from '../orchestration/use-store';
 import { toWorkspaceFileReference } from '../workspace/file-reference';
 import {
@@ -233,15 +234,14 @@ const renderTokens = (
         if (toWorkspaceFileReference(token.text)) {
           const path = toWorkspaceFileReference(token.text) as string;
           return [
-            <button
+            <FileReferenceLink
               key={key}
-              type="button"
-              className="rounded-md bg-surface px-1.5 py-px font-mono text-[0.92em] font-normal text-primary underline decoration-border underline-offset-2 transition-colors hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => openFile(path)}
-              title={`在右侧打开 ${path}`}
+              openFile={openFile}
+              path={path}
+              variant="code"
             >
               {token.text}
-            </button>,
+            </FileReferenceLink>,
           ];
         }
         return [
@@ -261,15 +261,14 @@ const renderTokens = (
             toWorkspaceFileReference(token.text);
           if (path) {
             return [
-              <button
+              <FileReferenceLink
                 key={key}
-                type="button"
-                className="text-primary underline decoration-border underline-offset-2 transition-colors hover:text-secondary focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => openFile(path)}
-                title={`在右侧打开 ${path}`}
+                openFile={openFile}
+                path={path}
+                variant="link"
               >
-                {children(token.tokens)}
-              </button>,
+                {token.text}
+              </FileReferenceLink>,
             ];
           }
         }

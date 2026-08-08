@@ -3,6 +3,8 @@ import type {
   WorkspaceInspectResult,
   WorkspaceListRequest,
   WorkspaceListResult,
+  WorkspaceResolveRequest,
+  WorkspaceResolveResult,
   WorkspaceSelectResult,
   WorkspaceStateSnapshot,
 } from '@/shared/workspace';
@@ -60,3 +62,8 @@ export const inspectWorkspace = (
   request: WorkspaceInspectRequest,
 ): Promise<WorkspaceInspectResult> =>
   window.sugarcode.inspectWorkspace(request);
+
+export const resolveWorkspaceFile = (
+  request: WorkspaceResolveRequest,
+): Promise<WorkspaceResolveResult> =>
+  window.sugarcode.resolveWorkspaceFile(request);
