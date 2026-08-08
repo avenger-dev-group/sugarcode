@@ -61,6 +61,7 @@ import {
   toolResultFailed,
   toolResultRequiresFinalRecovery,
 } from './tool-result.ts';
+import { toolProgressSummary } from './tool-progress-summary.ts';
 import {
   RuntimeMcpManager,
   type McpToolApproval,
@@ -199,82 +200,6 @@ const isVisibleModelTextPart = (part: Part): boolean =>
   part.text.trim().length > 0 &&
   (!part.thought ||
     readModelItemMetadata(part)?.reasoningVisibility === 'summary');
-
-const boundedProgressValue = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.trim().length > 0
-    ? value.trim().slice(0, 120)
-    : undefined;
-
-const progressPaths = (
-  argumentsValue: Readonly<Record<string, unknown>>,
-): readonly string[] => {
-  const path = boundedProgressValue(argumentsValue.path);
-  if (path) {
-    return [path];
-  }
-  return Array.isArray(argumentsValue.paths)
-    ? argumentsValue.paths
-      .map(boundedProgressValue)
-      .filter((entry): entry is string => Boolean(entry))
-    : [];
-};
-
-const toolProgressSummary = (
-  command: Extract<RuntimeCommand, { type: 'turn.start' }>,
-  toolName: string,
-  argumentsValue: Readonly<Record<string, unknown>>,
-): string | undefined => {
-  const userText = command.content
-    .filter((part) => part.type === 'text')
-    .map((part) => part.text)
-    .join('\n');
-  const chinese = /\p{Script=Han}/u.test(userText);
-  const paths = progressPaths(argumentsValue);
-  const pathSummary = paths.length > 0
-    ? paths.slice(0, 3).join(chinese ? '、' : ', ') +
-      (paths.length > 3
-        ? chinese ? ` 等 ${paths.length} 个文件` : ` and ${paths.length - 3} more`
-        : '')
-    : undefined;
-  if (chinese) {
-    switch (toolName) {
-      case 'workspace_list':
-        return `正在查看${paths[0] && paths[0] !== '.' ? ` ${paths[0]}` : '项目根目录'}的目录结构。`;
-      case 'workspace_read':
-        return pathSummary ? `正在读取 ${pathSummary}。` : '正在读取项目文件。';
-      case 'workspace_search': {
-        const query = boundedProgressValue(argumentsValue.query);
-        return query ? `正在项目中搜索“${query}”。` : '正在搜索项目代码。';
-      }
-      case 'workspace_apply_patch':
-        return '正在更新项目文件。';
-      case 'shell_exec':
-        return '正在运行项目命令。';
-      case INVALID_TOOL_ARGUMENTS_TOOL_NAME:
-        return '工具参数格式不正确，正在调整调用方式。';
-      default:
-        return undefined;
-    }
-  }
-  switch (toolName) {
-    case 'workspace_list':
-      return `Inspecting the ${paths[0] && paths[0] !== '.' ? `${paths[0]} directory` : 'project root'}.`;
-    case 'workspace_read':
-      return pathSummary ? `Reading ${pathSummary}.` : 'Reading project files.';
-    case 'workspace_search': {
-      const query = boundedProgressValue(argumentsValue.query);
-      return query ? `Searching the project for “${query}”.` : 'Searching the project code.';
-    }
-    case 'workspace_apply_patch':
-      return 'Updating project files.';
-    case 'shell_exec':
-      return 'Running a project command.';
-    case INVALID_TOOL_ARGUMENTS_TOOL_NAME:
-      return 'Adjusting an invalid tool argument format.';
-    default:
-      return undefined;
-  }
-};
 
 const stableJsonValue = (value: unknown): unknown => {
   if (Array.isArray(value)) {
@@ -2319,6 +2244,10 @@ export class RuntimeHost {
   ): void => {
     const parts = event.content?.parts ?? [];
     const hasVisibleModelText = parts.some(isVisibleModelTextPart);
+    const userText = command.content
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n');
     for (const [index, part] of parts.entries()) {
       if (isVisibleModelTextPart(part)) {
         const metadata = readModelItemMetadata(part);
@@ -2400,7 +2329,7 @@ export class RuntimeHost {
         const callId = part.functionCall.id ?? `${event.id}:${index}`;
         if (event.partial === false && !hasVisibleModelText) {
           const progress = toolProgressSummary(
-            command,
+            userText,
             part.functionCall.name,
             part.functionCall.args ?? {},
           );

@@ -128,6 +128,7 @@ export type ProcessLanguage = 'en' | 'zh';
 export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
+  verifiedFilePaths: readonly string[];
   processLanguage: ProcessLanguage;
   durationLabel?: string;
   model?: TurnModelViewModel;

@@ -14,7 +14,12 @@ import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection
 import { AgentCodeBlock } from './code-block/code-block';
 import { FileReferenceLink } from './file-reference-link';
 import { useOrchestrationStore } from '../orchestration/use-store';
-import { toWorkspaceFileReference } from '../workspace/file-reference';
+import { createVerifiedWorkspaceFileReferenceResolver } from '../workspace/file-reference';
+import {
+  createAgentMarkdownFileDisplayLabels,
+  toAgentMarkdownFileLink,
+  toAgentMarkdownLinkLabel,
+} from './agent-markdown-link';
 import {
   projectAgentMarkdownTokens,
   type AgentMarkdownTokenCache,
@@ -42,6 +47,8 @@ const renderTokens = (
   openFile: (path: string) => void,
   workspaceGeneration: number,
   workspaceReady: boolean,
+  resolveVerifiedFileReference: (value: string) => string | null,
+  fileDisplayLabels: ReadonlyMap<string, string>,
 ): ReactNode[] => {
   let offset = 0;
   return tokens.flatMap((token, index): ReactNode[] => {
@@ -54,6 +61,8 @@ const renderTokens = (
         openFile,
         workspaceGeneration,
         workspaceReady,
+        resolveVerifiedFileReference,
+        fileDisplayLabels,
       );
 
     switch (token.type) {
@@ -242,20 +251,22 @@ const renderTokens = (
       case 'em':
         return [<em key={key}>{children(token.tokens)}</em>];
       case 'codespan':
-        if (toWorkspaceFileReference(token.text)) {
-          const path = toWorkspaceFileReference(token.text) as string;
-          return [
-            <FileReferenceLink
-              key={key}
-              openFile={openFile}
-              path={path}
-              variant="code"
-              workspaceGeneration={workspaceGeneration}
-              workspaceReady={workspaceReady}
-            >
-              {token.text}
-            </FileReferenceLink>,
-          ];
+        {
+          const path = resolveVerifiedFileReference(token.text);
+          if (path) {
+            return [
+              <FileReferenceLink
+                key={key}
+                openFile={openFile}
+                path={path}
+                variant="code"
+                workspaceGeneration={workspaceGeneration}
+                workspaceReady={workspaceReady}
+              >
+                {fileDisplayLabels.get(path) ?? token.text}
+              </FileReferenceLink>,
+            ];
+          }
         }
         return [
           <code
@@ -269,20 +280,23 @@ const renderTokens = (
         return [<br key={key} />];
       case 'link':
         {
-          const path =
-            toWorkspaceFileReference(token.href) ??
-            toWorkspaceFileReference(token.text);
-          if (path) {
+          const fileLink = toAgentMarkdownFileLink(
+            token.href,
+            token.tokens,
+            token.text,
+            fileDisplayLabels,
+          );
+          if (fileLink) {
             return [
               <FileReferenceLink
                 key={key}
                 openFile={openFile}
-                path={path}
+                path={fileLink.path}
                 variant="link"
                 workspaceGeneration={workspaceGeneration}
                 workspaceReady={workspaceReady}
               >
-                {token.text}
+                {fileLink.label}
               </FileReferenceLink>,
             ];
           }
@@ -299,7 +313,7 @@ const renderTokens = (
                 : 'Link unavailable'
             }
           >
-            {children(token.tokens)}
+            {toAgentMarkdownLinkLabel(token.tokens, token.text)}
           </span>,
         ];
       case 'image':
@@ -343,6 +357,7 @@ const renderTokens = (
 const AgentMarkdownView = ({
   source,
   isStreaming,
+  verifiedFilePaths = [],
 }: AgentMarkdownProps): ReactElement => {
   const { openFile } = useOrchestrationStore();
   const workspaceGeneration = useZustandStore(
@@ -354,6 +369,10 @@ const AgentMarkdownView = ({
     (projection) => projection.snapshot.status === 'ready',
   );
   const cache = useRef<AgentMarkdownTokenCache | undefined>(undefined);
+  const resolveVerifiedFileReference = useMemo(
+    () => createVerifiedWorkspaceFileReferenceResolver(verifiedFilePaths),
+    [verifiedFilePaths],
+  );
   const projection = useMemo(() => {
     const next = projectAgentMarkdownTokens(
       source,
@@ -363,6 +382,14 @@ const AgentMarkdownView = ({
     cache.current = next.cache;
     return next;
   }, [isStreaming, source]);
+  const fileDisplayLabels = useMemo(
+    () =>
+      createAgentMarkdownFileDisplayLabels(
+        projection.tokens,
+        resolveVerifiedFileReference,
+      ),
+    [projection.tokens, resolveVerifiedFileReference],
+  );
 
   return (
     <div className="min-w-0 max-w-full font-normal text-foreground">
@@ -372,6 +399,8 @@ const AgentMarkdownView = ({
         openFile,
         workspaceGeneration,
         workspaceReady,
+        resolveVerifiedFileReference,
+        fileDisplayLabels,
       )}
     </div>
   );

@@ -44,4 +44,12 @@ test('base Agent instructions localize visible output and reject repetitive proc
     SUGARCODE_BASE_AGENT_PROMPT_V1,
     /never present an intention to retry as a completed outcome/u,
   );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /preserve the exact workspace-relative path returned by tools in the Markdown link target/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /Keep the visible label concise/u,
+  );
 });

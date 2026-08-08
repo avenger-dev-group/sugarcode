@@ -11,11 +11,18 @@ import {
   SquareTerminal,
   X,
 } from 'lucide-react';
+import { useMemo } from 'react';
 
 import { CommandExecutionResult } from '@/renderer/components/agent/command-execution-result';
 import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/renderer/components/ui/tooltip';
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 import { toWorkspacePatchReviewFile } from '@/renderer/components/workspace/unified-diff';
+import { createShortestUniquePathLabels } from '@/renderer/utils/file-display-name';
 
 import type { CompactToolActivity, ProcessLanguage } from './types';
 import {
@@ -183,9 +190,11 @@ const metadata = (
 const WorkspaceRow = ({
   entry,
   language,
+  pathLabel,
 }: Readonly<{
   entry: WorkspaceActivity;
   language: ProcessLanguage;
+  pathLabel?: string;
 }>) => {
   const { openFile } = useOrchestrationStore();
   const detail =
@@ -214,13 +223,20 @@ const WorkspaceRow = ({
           {actionCopy(entry, language)}
         </span>
         {entry.type === 'workspaceRead' ? (
-          <button
-            type="button"
-            className="min-w-0 break-all text-left font-mono text-[12px] text-secondary underline decoration-border underline-offset-2 hover:text-primary focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => openFile(entry.activity.path)}
-          >
-            {detail}
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="min-w-0 break-all text-left font-mono text-[12px] text-secondary underline decoration-border underline-offset-2 hover:text-primary focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => openFile(entry.activity.path)}
+              >
+                {pathLabel ?? detail}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="break-all font-mono" side="top">
+              {entry.activity.path}
+            </TooltipContent>
+          </Tooltip>
         ) : (
           <code className="min-w-0 break-all font-mono text-[12px] text-secondary">
             {detail}
@@ -467,6 +483,14 @@ export const ToolActivityGroup = ({
   language: ProcessLanguage;
 }>) => {
   const store = useActivityDisclosureStore(activities[0]?.activity.id ?? '');
+  const readPathLabels = useMemo(
+    () => createShortestUniquePathLabels(
+      activities.flatMap((entry) =>
+        entry.type === 'workspaceRead' ? [entry.activity.path] : [],
+      ),
+    ),
+    [activities],
+  );
 
   return (
     <details
@@ -506,7 +530,15 @@ export const ToolActivityGroup = ({
             ) : entry.type === 'mcp' ? (
               <McpRow entry={entry} language={language} />
             ) : (
-              <WorkspaceRow entry={entry} language={language} />
+              <WorkspaceRow
+                entry={entry}
+                language={language}
+                pathLabel={
+                  entry.type === 'workspaceRead'
+                    ? readPathLabels.get(entry.activity.path)
+                    : undefined
+                }
+              />
             )}
           </li>
         ))}

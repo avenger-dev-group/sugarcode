@@ -91,6 +91,7 @@ import {
 } from './activity-disclosure';
 import { toTurnFailureViewModel } from './turn-failure';
 import { toActiveTurnProgress } from './turn-progress';
+import { collectTurnVerifiedFilePaths } from './verified-file-paths';
 
 export const useActivityDisclosureStore = (
   groupId: string,
@@ -320,6 +321,12 @@ export const toThreadViewModel = (
   );
   const turns = snapshot.turns.map((turn): TurnViewModel => {
     const previousTurn = previousTurns.get(turn.id);
+    const nextVerifiedFilePaths = collectTurnVerifiedFilePaths(turn);
+    const verifiedFilePaths =
+      JSON.stringify(previousTurn?.verifiedFilePaths) ===
+      JSON.stringify(nextVerifiedFilePaths)
+        ? previousTurn?.verifiedFilePaths ?? nextVerifiedFilePaths
+        : nextVerifiedFilePaths;
     const processLanguage = processLanguageFromText(
       turn.messages
         .filter((message) => message.role === 'user')
@@ -362,7 +369,8 @@ export const toThreadViewModel = (
         if (
           previousMessage?.role === 'agent' &&
           previousMessage.message.text === message.text &&
-          previousMessage.message.state === state
+          previousMessage.message.state === state &&
+          previousMessage.message.verifiedFilePaths === verifiedFilePaths
         ) {
           return previousMessage;
         }
@@ -372,6 +380,7 @@ export const toThreadViewModel = (
             id: message.id,
             text: message.text,
             state,
+            verifiedFilePaths,
           },
         };
       },
@@ -388,6 +397,7 @@ export const toThreadViewModel = (
       id: `agent-output:${turn.id}:${output.responseOrdinal}:${output.outputIndex}`,
       text: output.text,
       state: 'streaming' as const,
+      verifiedFilePaths,
     }));
     const pendingAgentOutputs =
       JSON.stringify(previousTurn?.pendingAgentOutputs) ===
@@ -809,6 +819,7 @@ export const toThreadViewModel = (
     const isError = turn.status === 'failed';
     if (
       previousTurn?.status === turn.status &&
+      previousTurn.verifiedFilePaths === verifiedFilePaths &&
       previousTurn.processLanguage === processLanguage &&
       previousTurn.durationLabel === durationLabel &&
       previousTurn.model?.displayName === model?.displayName &&
@@ -832,6 +843,7 @@ export const toThreadViewModel = (
       id: turn.id,
       status: turn.status,
       processLanguage,
+      verifiedFilePaths,
       ...(durationLabel ? { durationLabel } : {}),
       ...(model ? { model } : {}),
       messages: stableMessages,

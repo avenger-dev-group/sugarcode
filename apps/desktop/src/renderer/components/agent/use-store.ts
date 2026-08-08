@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { resolveWorkspaceFile } from '@/renderer/services/workspace';
+import { isAbsoluteWorkspaceFileReference } from '@/shared/workspace-file-reference';
 
 import type {
   FileReferenceLinkStore,
@@ -16,7 +17,10 @@ const requestResolution = (
   generation: number,
   path: string,
 ): Promise<FileReferenceResolution> => {
-  if (path.includes('/')) {
+  if (
+    path.includes('/') &&
+    !isAbsoluteWorkspaceFileReference(path)
+  ) {
     return Promise.resolve({ status: 'resolved', path });
   }
   const key = `${generation}:${path}`;
@@ -27,7 +31,7 @@ const requestResolution = (
   if (resolutionCache.size >= 128) {
     resolutionCache.clear();
   }
-  const request = resolveWorkspaceFile({ generation, name: path })
+  const request = resolveWorkspaceFile({ generation, reference: path })
     .then((result): FileReferenceResolution => {
       if (!result.accepted || result.generation !== generation) {
         return { status: 'unavailable' };
@@ -50,22 +54,20 @@ export const useStore = (
   workspaceGeneration: number,
   workspaceReady: boolean,
 ): FileReferenceLinkStore => {
+  const requiresResolution =
+    isAbsoluteWorkspaceFileReference(path) || !path.includes('/');
   const [resolution, setResolution] =
     useState<FileReferenceResolution>(() =>
-      path.includes('/')
-        ? { status: 'resolved', path }
-        : { status: 'idle' },
+      requiresResolution ? { status: 'idle' } : { status: 'resolved', path },
     );
   const requestRevision = useRef<number>(0);
 
   useEffect(() => {
     requestRevision.current += 1;
     setResolution(
-      path.includes('/')
-        ? { status: 'resolved', path }
-        : { status: 'idle' },
+      requiresResolution ? { status: 'idle' } : { status: 'resolved', path },
     );
-  }, [path, workspaceGeneration]);
+  }, [path, requiresResolution, workspaceGeneration, workspaceReady]);
 
   const resolveLocation = useCallback(async (): Promise<FileReferenceResolution> => {
     if (resolution.status !== 'idle') {
@@ -91,17 +93,23 @@ export const useStore = (
 
   const open = useCallback(async (): Promise<void> => {
     const result = await resolveLocation();
-    openFile(result.status === 'resolved' ? result.path : path);
-  }, [openFile, path, resolveLocation]);
+    if (result.status === 'resolved') {
+      openFile(result.path);
+    }
+  }, [openFile, resolveLocation]);
 
   const locationLabel = (() => {
     switch (resolution.status) {
       case 'resolved':
-        return resolution.path;
+        return isAbsoluteWorkspaceFileReference(path)
+          ? path
+          : resolution.path;
       case 'loading':
         return `正在项目中定位 ${path}…`;
       case 'ambiguous':
         return `项目中存在多个 ${path}，请使用完整相对路径`;
+      case 'outsideWorkspace':
+        return '该文件引用不属于当前项目';
       case 'notFound':
         return `未在当前项目中找到 ${path}`;
       case 'unavailable':

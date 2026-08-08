@@ -231,6 +231,42 @@ test('cold startup restores navigation without selecting or reordering projects'
     controller.getSnapshot().projects?.map((project) => project.id),
     ['project-beta', 'project-alpha'],
   );
+  const canonicalProjectPath = await realpath(projectPath);
+  assert.deepEqual(
+    await controller.resolve({
+      generation: 1,
+      reference: path.join(
+        canonicalProjectPath,
+        'src',
+        'components',
+        'sidebar.tsx',
+      ),
+    }),
+    {
+      accepted: true,
+      generation: 1,
+      reference: path.join(
+        canonicalProjectPath,
+        'src',
+        'components',
+        'sidebar.tsx',
+      ),
+      status: 'resolved',
+      path: 'src/components/sidebar.tsx',
+    },
+  );
+  assert.deepEqual(
+    await controller.resolve({
+      generation: 1,
+      reference: path.join(await realpath(root), 'outside', 'sidebar.tsx'),
+    }),
+    {
+      accepted: true,
+      generation: 1,
+      reference: path.join(await realpath(root), 'outside', 'sidebar.tsx'),
+      status: 'outsideWorkspace',
+    },
+  );
 
   const chatFocus = await controller.focusTask(CHAT_THREAD_ID);
   assert.equal(chatFocus.accepted, true);

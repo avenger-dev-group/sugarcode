@@ -1,3 +1,5 @@
+import { isAbsoluteWorkspaceFileReference } from './workspace-file-reference';
+
 export const WORKSPACE_STATE_GET_CHANNEL = 'workspace-state:get';
 export const WORKSPACE_STATE_CHANGED_CHANNEL = 'workspace-state:changed';
 export const WORKSPACE_SELECT_CHANNEL = 'workspace:select';
@@ -141,15 +143,20 @@ export type WorkspaceInspectResult =
 
 export type WorkspaceResolveRequest = Readonly<{
   generation: number;
-  name: string;
+  reference: string;
 }>;
 
 export type WorkspaceResolveResult =
   | Readonly<{
       accepted: true;
       generation: number;
-      name: string;
-      status: 'resolved' | 'notFound' | 'ambiguous' | 'unavailable';
+      reference: string;
+      status:
+        | 'resolved'
+        | 'notFound'
+        | 'ambiguous'
+        | 'outsideWorkspace'
+        | 'unavailable';
       path?: string;
     }>
   | Readonly<{
@@ -345,14 +352,16 @@ export const isWorkspaceResolveRequest = (
   value: unknown,
 ): value is WorkspaceResolveRequest =>
   isRecord(value) &&
-  hasOnlyKeys(value, ['generation', 'name']) &&
+  hasOnlyKeys(value, ['generation', 'reference']) &&
   Number.isSafeInteger(value.generation) &&
   (value.generation as number) >= 0 &&
-  typeof value.name === 'string' &&
-  value.name.length > 0 &&
-  new TextEncoder().encode(value.name).byteLength <= 255 &&
-  !value.name.includes('/') &&
-  !value.name.includes('\\');
+  typeof value.reference === 'string' &&
+  value.reference.length > 0 &&
+  new TextEncoder().encode(value.reference).byteLength <= 1_024 &&
+  !value.reference.includes('://') &&
+  !Array.from(value.reference).some((character) => /\p{Cc}/u.test(character)) &&
+  (isAbsoluteWorkspaceFileReference(value.reference) ||
+    (!value.reference.includes('/') && !value.reference.includes('\\')));
 
 const isForegroundCommit = (value: unknown): value is ForegroundCommit => {
   if (
@@ -536,18 +545,28 @@ export const isWorkspaceResolveResult = (
     hasOnlyKeys(value, [
       'accepted',
       'generation',
-      'name',
+      'reference',
       'status',
       'path',
     ]) &&
     Number.isSafeInteger(value.generation) &&
     (value.generation as number) >= 0 &&
-    typeof value.name === 'string' &&
-    value.name.length > 0 &&
-    new TextEncoder().encode(value.name).byteLength <= 255 &&
-    !value.name.includes('/') &&
-    !value.name.includes('\\') &&
-    ['resolved', 'notFound', 'ambiguous', 'unavailable'].includes(
+    typeof value.reference === 'string' &&
+    value.reference.length > 0 &&
+    new TextEncoder().encode(value.reference).byteLength <= 1_024 &&
+    !value.reference.includes('://') &&
+    !Array.from(value.reference).some((character) =>
+      /\p{Cc}/u.test(character),
+    ) &&
+    (isAbsoluteWorkspaceFileReference(value.reference) ||
+      (!value.reference.includes('/') && !value.reference.includes('\\'))) &&
+    [
+      'resolved',
+      'notFound',
+      'ambiguous',
+      'outsideWorkspace',
+      'unavailable',
+    ].includes(
       value.status as string,
     ) &&
     (value.status === 'resolved'

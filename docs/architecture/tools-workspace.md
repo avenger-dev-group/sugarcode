@@ -102,12 +102,28 @@ mutable workspace. Renderer review tabs consume only that frozen receipt;
 ordinary file tabs use the separately bounded workspace-inspection operation
 against the active generation and therefore cannot be confused with the
 historical review.
-Agent Markdown may reference a file by basename when the model did not include
-its workspace-relative directory. Before inspection, Desktop resolves that
-basename through Rust's bounded, capability-scoped path search and opens it only
-when exactly one regular file matches. No match remains `notFound`; multiple
-matches are reported as ambiguous and are never guessed. References that already
-contain a relative directory bypass this lookup and retain their exact path.
+An explicit Agent Markdown href may reference a file by basename when the model
+did not include its workspace-relative directory. Before inspection, Desktop
+resolves that basename through Rust's bounded, capability-scoped path search and
+opens it only when exactly one regular file matches. No match remains
+`notFound`; multiple matches are reported as ambiguous and are never guessed.
+References that already contain a relative directory bypass this lookup and
+retain their exact path. A code span does not independently request this search:
+the Renderer promotes it to a file reference only when it uniquely matches a
+successful read or non-deleted change recorded in the same Turn. This keeps
+member expressions and package identifiers as code and prevents transcript size
+from causing filesystem work. The exact path remains the reference identity;
+the Renderer may present a basename or shortest unique suffix in the transcript
+and expanded read rows while exposing the full path in their tooltip and
+accessible label. A generated read-progress sentence likewise uses compact
+basenames for small batches and a count for larger batches instead of repeating
+full directories in prose.
+An explicit absolute Markdown citation is preserved until Electron Main compares
+it with the active workspace's canonical root. A contained citation is converted
+to the existing workspace-relative inspection contract; an outside, foreign-OS
+or traversal-bearing citation is rejected and never downgraded to a basename
+search. Rust inspection still applies component, traversal and no-follow checks
+to the converted relative path, so model text never selects a capability root.
 
 `workspace_read` declares either one `path` or a bounded `paths` batch of 1
 through 8 files. Batch reads execute through the same read-only workspace

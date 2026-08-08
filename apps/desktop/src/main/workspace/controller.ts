@@ -14,6 +14,7 @@ import type {
   WorkspaceStateSnapshot,
   ForegroundCommit,
 } from '@/shared/workspace';
+import { isAbsoluteWorkspaceFileReference } from '@/shared/workspace-file-reference';
 import type { BrowserWindow, Dialog, OpenDialogOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
 import {
@@ -28,6 +29,7 @@ import {
 import path from 'node:path';
 
 import { ThreadRegistry } from '../navigation/thread-registry';
+import { resolveAbsoluteWorkspaceFileReference } from './file-reference';
 
 export type WorkspaceRuntimeBoundary = Readonly<{
   subscribe: (listener: ConnectionStateListener) => () => void;
@@ -765,14 +767,35 @@ export class WorkspaceController {
             : 'unavailable',
       };
     }
+    if (isAbsoluteWorkspaceFileReference(request.reference)) {
+      if (!this.workspacePath) {
+        return { accepted: false, reason: 'unavailable' };
+      }
+      const result = resolveAbsoluteWorkspaceFileReference(
+        this.workspacePath,
+        request.reference,
+      );
+      return {
+        accepted: true,
+        generation: this.generation,
+        reference: request.reference,
+        ...result,
+      };
+    }
     try {
       const result = await this.options.supervisor.resolveWorkspaceFile(
-        request.name,
+        request.reference,
       );
       if (request.generation !== this.generation) {
         return { accepted: false, reason: 'stale' };
       }
-      return { accepted: true, ...result, generation: this.generation };
+      return {
+        accepted: true,
+        generation: this.generation,
+        reference: request.reference,
+        status: result.status,
+        ...(result.path ? { path: result.path } : {}),
+      };
     } catch {
       return { accepted: false, reason: 'failed' };
     }

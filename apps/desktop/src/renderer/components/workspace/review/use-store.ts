@@ -7,6 +7,7 @@ import {
 } from '@/renderer/services/workspace';
 import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 import type { WorkspaceInspectDocument } from '@/shared/workspace';
+import { isAbsoluteWorkspaceFileReference } from '@/shared/workspace-file-reference';
 
 import type { WorkspaceDocumentStore } from './types';
 
@@ -32,10 +33,10 @@ export const useStore = (path: string): WorkspaceDocumentStore => {
     setLoading(true);
     setError(null);
     let resolvedPath = path;
-    if (!path.includes('/')) {
+    if (isAbsoluteWorkspaceFileReference(path) || !path.includes('/')) {
       const resolution = await resolveWorkspaceFile({
         generation: workspace.generation,
-        name: path,
+        reference: path,
       }).catch((): null => null);
       if (revision !== requestRevision.current) {
         return;
@@ -53,6 +54,12 @@ export const useStore = (path: string): WorkspaceDocumentStore => {
       if (resolution.status === 'ambiguous') {
         setDocument(null);
         setError(`项目中存在多个 ${path}，请使用完整相对路径。`);
+        setLoading(false);
+        return;
+      }
+      if (resolution.status === 'outsideWorkspace') {
+        setDocument(null);
+        setError('该文件引用不属于当前项目。');
         setLoading(false);
         return;
       }

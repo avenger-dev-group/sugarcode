@@ -193,13 +193,35 @@ rail, while selecting a safe relative file reference from workspace reads,
 Agent Markdown or the project tree opens a fresh bounded workspace inspection.
 Agent Markdown file references use the dedicated link color and file glyph so
 they remain distinguishable from ordinary inline code in both themes. Hover or
-keyboard focus shows a delayed tooltip with the exact project-relative path;
-basename-only references resolve only when that tooltip actually opens, through
-the same bounded unique-match lookup used before opening. Resolution promises
-are deduplicated per Workspace generation, and neither rendering a large
-transcript nor briefly crossing a reference starts a filesystem scan or opens
-the context rail.
+keyboard focus shows a delayed tooltip with the exact project-relative path, or
+the original absolute location for an explicit contained citation. Main converts
+that citation to a safe project-relative path before the context rail opens it;
+outside-workspace citations remain closed and never fall back to their visible
+basename. A Markdown link derives file identity only from its href; its visible
+label is flattened to plain link text, so a code-formatted label neither keeps
+literal backticks nor adds an inline-code background. Path-shaped labels use
+the basename when unique within the rendered message and expand only to the
+shortest distinguishing suffix when names collide; intentional semantic labels
+remain unchanged. Ordinary code spans are
+promoted to file references only when their file-like text uniquely matches a
+successful workspace read or non-deleted file change from the same Turn by
+exact path, suffix or basename. Member expressions, package and lint-rule names,
+unverified paths and ambiguous suffixes remain ordinary inline code. The
+Renderer builds one suffix index per Turn projection, so transcript rendering
+does not repeatedly scan the workspace or linearly search every known path.
+Explicit basename-only href references resolve only when their tooltip actually
+opens, through the same bounded unique-match lookup used before opening.
+Resolution promises are deduplicated per Workspace generation, and neither
+rendering a large transcript nor briefly crossing a reference starts a
+filesystem scan or opens the context rail.
 The Renderer never fabricates a diff by rereading mutable workspace content.
+
+When a tool step contains no public model commentary, the runtime's synthesized
+workspace-read summary uses basenames for batches of up to three files and only
+the file count for larger batches. The durable tool activity retains every full
+path. Its expanded read rows apply the same shortest-unique-suffix presentation,
+with the exact path available on hover, keyboard focus and the open-file action.
+This keeps process prose compact without weakening path identity or audit data.
 
 The context rail owns one persistent project explorer tab plus transient file,
 diff and child-Agent detail tabs. A saved project group is a local disclosure:

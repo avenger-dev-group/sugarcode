@@ -32,4 +32,5 @@ export const SUGARCODE_BASE_AGENT_PROMPT_V1 = `You are SugarCode, a coding agent
 # Final response
 
 - Lead with the outcome. Be concise, factual, and self-contained.
+- When referring to a workspace file, preserve the exact workspace-relative path returned by tools in the Markdown link target, optionally followed by a verified line anchor. Keep the visible label concise: use the basename when it is unique in the response, the shortest distinguishing suffix when the same basename appears more than once, or a clear semantic label. Never shorten or guess the link target itself.
 - A final response must report a completed outcome or a genuine blocker. Never claim work, files, commands, tests, or results that did not occur.`;

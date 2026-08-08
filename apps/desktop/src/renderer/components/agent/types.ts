@@ -8,6 +8,7 @@ export type AgentMessageViewModel = Readonly<{
   id: string;
   text: string;
   state: AgentMessagePresentationState;
+  verifiedFilePaths: readonly string[];
 }>;
 
 export type AgentMessageProps = Readonly<{
@@ -117,10 +118,19 @@ export type CommandApprovalActivityProps = Readonly<{
 export type AgentMarkdownProps = Readonly<{
   source: string;
   isStreaming: boolean;
+  verifiedFilePaths?: readonly string[];
 }>;
 
 export type FileReferenceResolution =
-  | Readonly<{ status: 'idle' | 'loading' | 'notFound' | 'ambiguous' | 'unavailable' }>
+  | Readonly<{
+      status:
+        | 'idle'
+        | 'loading'
+        | 'notFound'
+        | 'ambiguous'
+        | 'outsideWorkspace'
+        | 'unavailable';
+    }>
   | Readonly<{ status: 'resolved'; path: string }>;
 
 export type FileReferenceLinkStore = Readonly<{
