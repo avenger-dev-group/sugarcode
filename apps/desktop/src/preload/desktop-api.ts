@@ -115,6 +115,7 @@ import {
   WORKSPACE_LIST_CHANNEL,
   WORKSPACE_PROJECT_RESUME_CHANNEL,
   WORKSPACE_PROJECT_ACTIVATE_CHANNEL,
+  WORKSPACE_PROJECT_REMOVE_CHANNEL,
   WORKSPACE_SELECT_CHANNEL,
   WORKSPACE_STATE_CHANGED_CHANNEL,
   WORKSPACE_STATE_GET_CHANNEL,
@@ -942,6 +943,18 @@ export const createDesktopApi = (
     );
     if (!isWorkspaceSelectResult(result)) {
       throw new Error('Main returned an invalid project activation result.');
+    }
+    return result;
+  },
+  removeWorkspaceProject: async (
+    projectId: string,
+  ): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_PROJECT_REMOVE_CHANNEL,
+      projectId,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid project removal result.');
     }
     return result;
   },

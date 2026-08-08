@@ -186,18 +186,26 @@ timeline projects one concise edited-file row per receipt with its
 addition/deletion counts. The same receipts also produce one end-of-Turn change
 summary with unique file paths and aggregate counts; this summary remains
 visible for failed Turns that already changed files, so partial work is never
-hidden behind the terminal error. Selecting a receipt row opens its immutable
-review diff in the context rail, while selecting a safe relative file reference
-from workspace reads, Agent Markdown or the project tree opens a fresh bounded
-workspace inspection. The Renderer never fabricates a diff by rereading mutable
-workspace content.
+hidden behind the terminal error. Its 14px summary list treats the complete file
+row as the review target and omits duplicate edited-state and review-action
+labels. Selecting a receipt row opens its immutable review diff in the context
+rail, while selecting a safe relative file reference from workspace reads,
+Agent Markdown or the project tree opens a fresh bounded workspace inspection.
+The Renderer never fabricates a diff by rereading mutable workspace content.
 
 The context rail owns one persistent project explorer tab plus transient file,
 diff and child-Agent detail tabs. Activating a saved project group binds that
 project before merely expanding its Thread list, so a project with no selected
 Thread still exposes its capability-scoped file tree. Switching the foreground
 Thread clears transient context tabs rather than carrying file or review state
-across workspace identities.
+across workspace identities. Navigator and context-rail open/close transitions
+animate their clipped width and opacity while retaining mounted content; direct
+panel resizing disables those transitions so pointer movement remains exact.
+Saved project and Thread rows expose their destructive navigation action on
+hover or keyboard focus without requiring prior selection. Removing a project
+forgets only its saved navigation owner and never deletes the project directory
+or durable Threads; a project with a running Thread cannot be removed, and
+reopening the same directory can bind its retained runtime Thread index again.
 The private worker protocol is v2 and projects model text as
 `turn.textStarted`, `turn.textDelta`, and `turn.textCompleted`. Started and
 delta events are transient. A completed event carries the authoritative text,

@@ -6,6 +6,7 @@ import {
   activateWorkspaceProject,
   deleteWorkspaceTask,
   focusWorkspaceTask,
+  removeWorkspaceProject,
   resumeWorkspaceProject,
   selectWorkspace,
 } from '@/renderer/services/workspace';
@@ -78,6 +79,11 @@ export const useStore = (): WorkspaceNavigationStore => {
         () => activateWorkspaceProject(projectId),
         '无法打开所选项目。',
       ),
+    removeProject: (projectId: string) =>
+      runSelection(
+        () => removeWorkspaceProject(projectId),
+        '无法从列表移除所选项目。',
+      ),
     focusTask: async (threadId: string) => {
       beginConversationSelection(threadId);
       const accepted = await runSelection(
@@ -100,10 +106,10 @@ export const useStore = (): WorkspaceNavigationStore => {
       setFailedChatThreadId(accepted ? null : threadId ?? null);
       return accepted;
     },
-    deleteFailedChat: async (threadId: string) => {
+    deleteTask: async (threadId: string) => {
       const accepted = await runSelection(
         () => deleteWorkspaceTask(threadId),
-        '无法永久删除异常聊天。',
+        '无法删除所选会话。',
       );
       if (accepted && failedChatThreadId === threadId) {
         setFailedChatThreadId(null);

@@ -26,6 +26,11 @@ export const activateWorkspaceProject = (
 ): Promise<WorkspaceSelectResult> =>
   window.sugarcode.activateWorkspaceProject(projectId);
 
+export const removeWorkspaceProject = (
+  projectId: string,
+): Promise<WorkspaceSelectResult> =>
+  window.sugarcode.removeWorkspaceProject(projectId);
+
 export const focusWorkspaceTask = (
   threadId: string,
 ): Promise<WorkspaceSelectResult> =>

@@ -3,6 +3,7 @@ export const WORKSPACE_STATE_CHANGED_CHANNEL = 'workspace-state:changed';
 export const WORKSPACE_SELECT_CHANNEL = 'workspace:select';
 export const WORKSPACE_PROJECT_RESUME_CHANNEL = 'workspace:project-resume';
 export const WORKSPACE_PROJECT_ACTIVATE_CHANNEL = 'workspace:project-activate';
+export const WORKSPACE_PROJECT_REMOVE_CHANNEL = 'workspace:project-remove';
 export const WORKSPACE_TASK_FOCUS_CHANNEL = 'workspace:task-focus';
 export const WORKSPACE_TASK_DELETE_CHANNEL = 'workspace:task-delete';
 export const WORKSPACE_CHAT_ACTIVATE_CHANNEL = 'workspace:chat-activate';
@@ -151,6 +152,9 @@ export type WorkspaceApi = Readonly<{
   selectWorkspace: () => Promise<WorkspaceSelectResult>;
   resumeWorkspaceProject: () => Promise<WorkspaceSelectResult>;
   activateWorkspaceProject: (
+    projectId: string,
+  ) => Promise<WorkspaceSelectResult>;
+  removeWorkspaceProject: (
     projectId: string,
   ) => Promise<WorkspaceSelectResult>;
   focusWorkspaceTask: (threadId: string) => Promise<WorkspaceSelectResult>;

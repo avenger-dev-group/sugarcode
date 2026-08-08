@@ -10,6 +10,7 @@ import {
   WORKSPACE_LIST_CHANNEL,
   WORKSPACE_PROJECT_RESUME_CHANNEL,
   WORKSPACE_PROJECT_ACTIVATE_CHANNEL,
+  WORKSPACE_PROJECT_REMOVE_CHANNEL,
   WORKSPACE_SELECT_CHANNEL,
   WORKSPACE_STATE_CHANGED_CHANNEL,
   WORKSPACE_STATE_GET_CHANNEL,
@@ -65,6 +66,20 @@ export const registerWorkspaceIpc = (
         return { accepted: false, reason: 'invalid' };
       }
       return options.controller.activateProject(projectId);
+    },
+  );
+  ipcMain.handle(
+    WORKSPACE_PROJECT_REMOVE_CHANNEL,
+    (event, projectId: unknown) => {
+      if (
+        !trusted(event) ||
+        typeof projectId !== 'string' ||
+        projectId.length === 0 ||
+        projectId.length > 128
+      ) {
+        return { accepted: false, reason: 'invalid' };
+      }
+      return options.controller.removeProject(projectId);
     },
   );
   ipcMain.handle(
@@ -135,6 +150,7 @@ export const registerWorkspaceIpc = (
     ipcMain.removeHandler(WORKSPACE_SELECT_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_PROJECT_RESUME_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_PROJECT_ACTIVATE_CHANNEL);
+    ipcMain.removeHandler(WORKSPACE_PROJECT_REMOVE_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_TASK_FOCUS_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_TASK_DELETE_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_CHAT_ACTIVATE_CHANNEL);

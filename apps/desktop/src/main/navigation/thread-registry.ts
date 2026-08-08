@@ -216,6 +216,33 @@ export class ThreadRegistry {
     this.notify();
   };
 
+  removeOwner = (ownerKey: string): void => {
+    const workspaceId = this.ownerWorkspaces.get(ownerKey)?.value;
+    this.ownerWorkspaces.delete(ownerKey);
+    if (workspaceId && this.workspaceOwners.get(workspaceId)?.value === ownerKey) {
+      this.workspaceOwners.delete(workspaceId);
+    }
+    this.cachedOwnerIndexes.delete(ownerKey);
+    for (const [threadId, entry] of this.entries) {
+      if (entry.ownerKey !== ownerKey) {
+        continue;
+      }
+      if (entry.source === 'sessionCache') {
+        if (entry.workspaceId) {
+          this.removeFromIndex(
+            this.workspaceIndexes,
+            entry.workspaceId,
+            threadId,
+          );
+        }
+        this.entries.delete(threadId);
+      } else {
+        delete entry.ownerKey;
+      }
+    }
+    this.notify();
+  };
+
   private createView = (threadIds: readonly string[]): ThreadRegistryView => ({
     threadIds: [...threadIds],
     threadTitles: Object.fromEntries(

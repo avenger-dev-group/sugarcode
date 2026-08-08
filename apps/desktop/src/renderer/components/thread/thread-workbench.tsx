@@ -421,28 +421,45 @@ export const ThreadWorkbenchView = ({
   const selectionError = pendingThreadId
     ? store.navigator.selectionNotice
     : undefined;
+  const navigatorWidth = navigatorResize?.width ?? 286;
+  const contextRailWidth = contextRailResize?.width ?? 760;
+  const contextRailTargetWidth = `min(${contextRailWidth}px, 60vw, calc(100vw - 720px))`;
+  const navigatorTransition = navigatorResize?.dragging
+    ? 'transition-none'
+    : 'transition-[width,opacity] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none';
+  const contextRailTransition = contextRailResize?.dragging
+    ? 'transition-none'
+    : 'transition-[width,opacity] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none';
 
   return (
     <>
       <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-      {navigatorOpen ? (
         <aside
           id="task-navigator"
-          className="hidden min-h-0 shrink-0 md:block"
-          style={{ width: navigatorResize?.width ?? 286 }}
+          className={`hidden min-h-0 shrink-0 overflow-hidden md:block ${navigatorTransition} ${
+            navigatorOpen
+              ? 'opacity-100'
+              : 'pointer-events-none opacity-0'
+          }`}
+          style={{ width: navigatorOpen ? navigatorWidth : 0 }}
+          aria-hidden={!navigatorOpen}
+          inert={navigatorOpen ? undefined : true}
         >
-          <ThreadNavigator
-            store={store}
-            footer={navigationFooter}
-            onToggleNavigator={onToggleNavigator}
-            approvalThreadIds={approvalThreadIds}
-          />
+          <div className="h-full" style={{ width: navigatorWidth }}>
+            <ThreadNavigator
+              store={store}
+              footer={navigationFooter}
+              onToggleNavigator={onToggleNavigator}
+              approvalThreadIds={approvalThreadIds}
+            />
+          </div>
         </aside>
-      ) : null}
-      {navigatorOpen && navigatorResize ? (
+      {navigatorResize ? (
         <div
           className={`panel-resizer hidden md:block ${
             navigatorResize.dragging ? 'panel-resizer--active' : ''
+          } ${
+            navigatorOpen ? '' : 'panel-resizer--collapsed'
           }`}
           role="separator"
           aria-label="调整任务导航宽度"
@@ -457,21 +474,26 @@ export const ThreadWorkbenchView = ({
       ) : null}
       <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <header
-          className={`window-drag-region relative flex h-[52px] shrink-0 items-center pr-5 ${
+          className={`window-drag-region relative flex h-[52px] shrink-0 items-center pr-5 transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
             navigatorOpen ? 'pl-5' : 'pl-32'
           }`}
         >
-          {!navigatorOpen && onToggleNavigator ? (
+          {onToggleNavigator ? (
             <Button
               type="button"
               size="icon-sm"
               variant="ghost"
-              className="window-no-drag absolute left-[84px] top-1.5 hidden text-tertiary md:inline-flex"
+              className={`window-no-drag absolute left-[84px] top-1.5 hidden text-tertiary transition-opacity duration-150 md:inline-flex motion-reduce:transition-none ${
+                navigatorOpen
+                  ? 'pointer-events-none opacity-0'
+                  : 'opacity-100'
+              }`}
               onClick={onToggleNavigator}
               aria-controls="task-navigator"
-              aria-expanded="false"
+              aria-expanded={navigatorOpen}
               aria-label="展开左侧任务栏"
               title="展开左侧任务栏"
+              tabIndex={navigatorOpen ? -1 : 0}
             >
               <PanelLeftOpen aria-hidden="true" />
             </Button>
@@ -807,12 +829,14 @@ export const ThreadWorkbenchView = ({
           </div>
         </div>
       </section>
-      {contextRail && contextRailOpen ? (
+      {contextRail ? (
         <>
           {contextRailResize ? (
             <div
               className={`panel-resizer hidden min-[1100px]:block ${
                 contextRailResize.dragging ? 'panel-resizer--active' : ''
+              } ${
+                contextRailOpen ? '' : 'panel-resizer--collapsed'
               }`}
               role="separator"
               aria-label="调整上下文栏宽度"
@@ -827,13 +851,19 @@ export const ThreadWorkbenchView = ({
           ) : null}
           <aside
             id="workspace-tools"
-            className="hidden min-h-0 shrink-0 overflow-hidden bg-background min-[1100px]:block min-[1100px]:[max-width:min(60vw,calc(100vw_-_720px))]"
+            className={`hidden min-h-0 shrink-0 overflow-hidden bg-background min-[1100px]:block ${contextRailTransition} ${
+              contextRailOpen
+                ? 'opacity-100'
+                : 'pointer-events-none opacity-0'
+            }`}
             style={{
-              width: contextRailResize?.width ?? 760,
+              width: contextRailOpen ? contextRailTargetWidth : 0,
             }}
             aria-label="Workspace tools"
+            aria-hidden={!contextRailOpen}
+            inert={contextRailOpen ? undefined : true}
           >
-            {contextRail}
+            <div className="h-full w-full">{contextRail}</div>
           </aside>
         </>
       ) : null}

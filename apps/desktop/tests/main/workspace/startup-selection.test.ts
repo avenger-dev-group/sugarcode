@@ -109,6 +109,7 @@ test('cold startup restores navigation without selecting or reordering projects'
   let bindingId: string | null = null;
   let preferredThreadId: string | undefined;
   let selectedThreadId: string | null = null;
+  let runningThreadIds: string[] = [];
   const supervisor = {
     subscribe: (): (() => void) => () => undefined,
     configureInitialWorkspace: (): boolean => {
@@ -140,6 +141,7 @@ test('cold startup restores navigation without selecting or reordering projects'
           activeThreadIds: selectedThreadId ? [selectedThreadId] : [],
           activeThreadTitles: {},
           activeTruncated: false,
+          runningThreadIds,
           search: {
             query: '',
             status: 'idle',
@@ -248,6 +250,56 @@ test('cold startup restores navigation without selecting or reordering projects'
       lastOpenedAtMs: 1,
       workspaceId: 'a'.repeat(64),
     },
+  );
+
+  runningThreadIds = [PROJECT_THREAD_ID];
+  assert.deepEqual(await controller.removeProject('project-alpha'), {
+    accepted: false,
+    reason: 'busy',
+  });
+  runningThreadIds = [];
+  assert.deepEqual(await controller.removeProject('project-alpha'), {
+    accepted: true,
+  });
+  assert.equal(
+    controller.getSnapshot().projects?.some(
+      (project) => project.id === 'project-alpha',
+    ),
+    false,
+  );
+  await assert.doesNotReject(() => realpath(projectPath));
+  const afterRemoval = JSON.parse(await readFile(sessionPath, 'utf8')) as {
+    projects?: readonly { id: string }[];
+  };
+  assert.equal(
+    afterRemoval.projects?.some((project) => project.id === 'project-alpha'),
+    false,
+  );
+
+  const activeImportedProjectId = controller.getSnapshot().activeProjectId;
+  assert.ok(activeImportedProjectId);
+  assert.deepEqual(await controller.removeProject(activeImportedProjectId), {
+    accepted: true,
+  });
+  assert.equal(controller.getSnapshot().activeProjectId, undefined);
+  assert.equal(
+    controller.getSnapshot().projects?.some(
+      (project) => project.name === 'project-gamma',
+    ),
+    false,
+  );
+  await assert.doesNotReject(() => realpath(importedProjectPath));
+
+  assert.deepEqual(await controller.select(), { accepted: true });
+  assert.notEqual(
+    controller.getSnapshot().activeProjectId,
+    activeImportedProjectId,
+  );
+  assert.equal(
+    controller.getSnapshot().projects?.some(
+      (project) => project.name === 'project-gamma',
+    ),
+    true,
   );
 });
 

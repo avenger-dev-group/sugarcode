@@ -64,3 +64,34 @@ test('removing a thread clears owner navigation state', () => {
   });
   assert.equal(registry.getWorkspaceId(THREAD_ID), null);
 });
+
+test('removing a project owner preserves runtime threads for a later rebind', () => {
+  const registry = new ThreadRegistry();
+  registry.registerWorkspaceOwner(
+    WORKSPACE_ID,
+    'project:alpha',
+    'runtime',
+  );
+  registry.replaceRuntimeWorkspaceIndex(WORKSPACE_ID, [
+    { id: THREAD_ID, workspaceId: WORKSPACE_ID, title: 'Retained task' },
+  ]);
+
+  registry.removeOwner('project:alpha');
+
+  assert.deepEqual(registry.getOwnerView('project:alpha'), {
+    threadIds: [],
+    threadTitles: {},
+  });
+  assert.equal(registry.getOwnerKey(THREAD_ID), null);
+  assert.equal(registry.getWorkspaceId(THREAD_ID), WORKSPACE_ID);
+
+  registry.registerWorkspaceOwner(
+    WORKSPACE_ID,
+    'project:reopened',
+    'runtime',
+  );
+  assert.deepEqual(registry.getOwnerView('project:reopened'), {
+    threadIds: [THREAD_ID],
+    threadTitles: { [THREAD_ID]: 'Retained task' },
+  });
+});

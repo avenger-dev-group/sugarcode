@@ -49,10 +49,17 @@ type ThreadNavigatorProps = Readonly<{
 
 type ThreadLabelKind = 'project' | 'chat';
 
-type DeleteRequest = Readonly<{
-  threadId: string;
-  source: 'conversation' | 'failedChat';
-}>;
+type DeleteRequest =
+  | Readonly<{
+      kind: 'project';
+      projectId: string;
+      name: string;
+    }>
+  | Readonly<{
+      kind: 'thread';
+      threadId: string;
+      title: string;
+    }>;
 
 const focusThreadAt = (
   container: HTMLElement,
@@ -104,7 +111,9 @@ export const ThreadNavigator = ({
     workspace.state.kind === 'chat';
   const projectName =
     workspace.state.projectName ??
-    (projectActive ? workspace.state.name : undefined);
+    (workspace.state.projects === undefined && projectActive
+      ? workspace.state.name
+      : undefined);
   const projectThreadIds =
     workspace.state.projectThreadIds ??
     (projectActive ? store.navigator.threadIds : []);
@@ -112,7 +121,7 @@ export const ThreadNavigator = ({
     workspace.state.chatThreadIds ??
     (chatActive ? store.navigator.threadIds : []);
   const projects =
-    workspace.state.projects && workspace.state.projects.length > 0
+    workspace.state.projects !== undefined
       ? workspace.state.projects
       : projectName
         ? [
@@ -257,22 +266,22 @@ export const ThreadNavigator = ({
               (threadId === displayedThreadId && selectedTurnActive)
             }
             actionsEnabled={active}
-            failedDeleteEnabled={
-              kind === 'chat' &&
-              workspace.failedChatThreadId === threadId
+            deleteDisabled={
+              workspace.busy ||
+              navigationDisabled ||
+              store.navigator.runningThreadIds.includes(threadId)
             }
-            failedDeleteDisabled={workspace.busy}
             onSelect={onSelect}
             onFork={store.forkThread}
             onArchive={store.archiveThread}
             onRequestDelete={(requestedThreadId) =>
               setDeleteRequest({
+                kind: 'thread',
                 threadId: requestedThreadId,
-                source:
-                  kind === 'chat' &&
-                  workspace.failedChatThreadId === requestedThreadId
-                    ? 'failedChat'
-                    : 'conversation',
+                title:
+                  threadTitles[requestedThreadId] ??
+                  workspace.state.chatTitles?.[requestedThreadId] ??
+                  '未命名会话',
               })
             }
             pendingMutation={store.navigator.pendingMutation}
@@ -411,20 +420,46 @@ export const ThreadNavigator = ({
                               {project.name}
                             </span>
                           </span>
-                          <Button
-                            type="button"
-                            size="icon-xs"
-                            variant="ghost"
-                            className="mr-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 disabled:opacity-0 group-hover:disabled:opacity-100 group-focus-within:disabled:opacity-100"
-                            disabled={
-                              workspace.busy || (active && navigationDisabled)
-                            }
-                            onClick={() => void startProjectTask(project.id)}
-                            aria-label={`在 ${project.name} 中新建任务`}
-                            title={`在 ${project.name} 中新建任务`}
-                          >
-                            <Plus aria-hidden="true" />
-                          </Button>
+                          <div className="mr-1 flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                            <Button
+                              type="button"
+                              size="icon-xs"
+                              variant="ghost"
+                              disabled={
+                                workspace.busy || (active && navigationDisabled)
+                              }
+                              onClick={() => void startProjectTask(project.id)}
+                              aria-label={`在 ${project.name} 中新建任务`}
+                              title={`在 ${project.name} 中新建任务`}
+                            >
+                              <Plus aria-hidden="true" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon-xs"
+                              variant="ghost"
+                              className="text-tertiary hover:text-destructive"
+                              disabled={
+                                workspace.busy ||
+                                project.threadIds.some((threadId) =>
+                                  store.navigator.runningThreadIds.includes(
+                                    threadId,
+                                  ),
+                                )
+                              }
+                              onClick={() =>
+                                setDeleteRequest({
+                                  kind: 'project',
+                                  projectId: project.id,
+                                  name: project.name,
+                                })
+                              }
+                              aria-label={`从列表移除项目：${project.name}`}
+                              title={`从列表移除项目：${project.name}`}
+                            >
+                              <Trash2 aria-hidden="true" />
+                            </Button>
+                          </div>
                         </div>
                         {expanded
                           ? renderThreadList(
@@ -542,9 +577,15 @@ export const ThreadNavigator = ({
           }}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle>删除这个对话？</AlertDialogTitle>
+            <AlertDialogTitle>
+              {deleteRequest?.kind === 'project'
+                ? '从列表移除这个项目？'
+                : '删除这个对话？'}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              删除后无法恢复，确定要继续吗？
+              {deleteRequest?.kind === 'project'
+                ? `只会从项目列表移除“${deleteRequest.name}”，不会删除本地文件或历史会话。重新打开该文件夹即可恢复。`
+                : `删除“${deleteRequest?.title ?? '未命名会话'}”后无法恢复，确定要继续吗？`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="mt-5">
@@ -562,14 +603,14 @@ export const ThreadNavigator = ({
                 type="button"
                 variant="destructive"
                 onClick={() => {
-                  if (deleteRequest?.source === 'failedChat') {
-                    void workspace.deleteFailedChat(deleteRequest.threadId);
-                  } else if (deleteRequest) {
-                    void store.deleteThread(deleteRequest.threadId);
+                  if (deleteRequest?.kind === 'project') {
+                    void workspace.removeProject(deleteRequest.projectId);
+                  } else if (deleteRequest?.kind === 'thread') {
+                    void workspace.deleteTask(deleteRequest.threadId);
                   }
                 }}
               >
-                删除
+                {deleteRequest?.kind === 'project' ? '移除' : '删除'}
               </Button>
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -628,8 +669,7 @@ type ThreadButtonProps = Readonly<{
   disabled: boolean;
   mutationDisabled: boolean;
   actionsEnabled: boolean;
-  failedDeleteEnabled: boolean;
-  failedDeleteDisabled: boolean;
+  deleteDisabled: boolean;
   pendingMutation: ThreadStore['navigator']['pendingMutation'];
   onSelect: (threadId: string) => Promise<void>;
   onFork: (threadId: string) => Promise<void>;
@@ -645,8 +685,7 @@ const ThreadButton = ({
   disabled,
   mutationDisabled,
   actionsEnabled,
-  failedDeleteEnabled,
-  failedDeleteDisabled,
+  deleteDisabled,
   pendingMutation,
   onSelect,
   onFork,
@@ -680,7 +719,7 @@ const ThreadButton = ({
         })
       }
       className={`flex h-9 min-w-0 flex-1 cursor-pointer items-center px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default ${
-        actionsEnabled || failedDeleteEnabled ? 'rounded-l-lg' : 'rounded-lg'
+        actionsEnabled ? 'rounded-l-lg' : 'rounded-lg'
       }`}
     >
       <span
@@ -689,59 +728,46 @@ const ThreadButton = ({
         {title ?? (status === 'running' ? '新会话' : '未命名会话')}
       </span>
     </span>
-    {actionsEnabled || failedDeleteEnabled ? (
-      <div
-        data-thread-actions
-        className={`flex min-w-fit shrink-0 items-center pr-1 transition-opacity ${
-          failedDeleteEnabled
-            ? 'opacity-100'
-            : 'opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100'
-        }`}
+    <div
+      data-thread-actions
+      className="flex min-w-fit shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100"
+    >
+      {actionsEnabled ? (
+        <>
+          <ThreadActionButton
+            label={`创建会话分支：${title ?? '未命名会话'}`}
+            active={
+              pendingMutation?.kind === 'fork' &&
+              pendingMutation.threadId === threadId
+            }
+            disabled={mutationDisabled}
+            onClick={() => void onFork(threadId)}
+          >
+            <GitFork aria-hidden="true" />
+          </ThreadActionButton>
+          <ThreadActionButton
+            label={`归档会话：${title ?? '未命名会话'}`}
+            active={
+              pendingMutation?.kind === 'archive' &&
+              pendingMutation.threadId === threadId
+            }
+            disabled={mutationDisabled}
+            onClick={() => void onArchive(threadId)}
+          >
+            <Archive aria-hidden="true" />
+          </ThreadActionButton>
+        </>
+      ) : null}
+      <ThreadActionButton
+        label={`删除会话：${title ?? '未命名会话'}`}
+        active={false}
+        disabled={deleteDisabled}
+        destructive
+        onClick={() => onRequestDelete(threadId)}
       >
-        {actionsEnabled ? (
-          <>
-            <ThreadActionButton
-              label={`创建会话分支：${title ?? '未命名会话'}`}
-              active={
-                pendingMutation?.kind === 'fork' &&
-                pendingMutation.threadId === threadId
-              }
-              disabled={mutationDisabled}
-              onClick={() => void onFork(threadId)}
-            >
-              <GitFork aria-hidden="true" />
-            </ThreadActionButton>
-            <ThreadActionButton
-              label={`归档会话：${title ?? '未命名会话'}`}
-              active={
-                pendingMutation?.kind === 'archive' &&
-                pendingMutation.threadId === threadId
-              }
-              disabled={mutationDisabled}
-              onClick={() => void onArchive(threadId)}
-            >
-              <Archive aria-hidden="true" />
-            </ThreadActionButton>
-          </>
-        ) : null}
-        <ThreadActionButton
-          label={`删除会话：${title ?? '未命名会话'}`}
-          active={
-            pendingMutation?.kind === 'delete' &&
-            pendingMutation.threadId === threadId
-          }
-          disabled={
-            failedDeleteEnabled ? failedDeleteDisabled : mutationDisabled
-          }
-          destructive
-          onClick={() => onRequestDelete(threadId)}
-        >
-          <Trash2 aria-hidden="true" />
-        </ThreadActionButton>
-      </div>
-    ) : (
-      <span />
-    )}
+        <Trash2 aria-hidden="true" />
+      </ThreadActionButton>
+    </div>
     <ThreadStatusIndicator status={status} />
   </div>
 );

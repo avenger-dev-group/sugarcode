@@ -293,7 +293,9 @@ export class WorkspaceController {
     }
     if (
       selected === this.workspacePath &&
-      this.workspaceKind === 'project'
+      this.workspaceKind === 'project' &&
+      this.activeProjectId !== null &&
+      this.projects.has(this.activeProjectId)
     ) {
       this.publish('ready');
       return { accepted: true };
@@ -348,6 +350,50 @@ export class WorkspaceController {
       projectId,
       preferredThreadId,
     );
+  };
+
+  removeProject = async (
+    projectId: string,
+  ): Promise<WorkspaceSelectResult> => {
+    const project = this.projects.get(projectId);
+    if (!project) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    const ownerKey = projectOwnerKey(projectId);
+    const projectThreadIds = this.options.threadRegistry.getOwnerView(
+      ownerKey,
+    ).threadIds;
+    const runningThreadIds =
+      this.options.supervisor.conversation.getSnapshot().navigator
+        .runningThreadIds ?? [];
+    if (projectThreadIds.some((threadId) => runningThreadIds.includes(threadId))) {
+      return { accepted: false, reason: 'busy' };
+    }
+
+    this.projects.delete(projectId);
+    if (this.activeProjectId === projectId) {
+      this.activeProjectId = null;
+      this.projectPath = null;
+    }
+    if (
+      this.persistedActive?.kind === 'project' &&
+      this.persistedActive.projectId === projectId
+    ) {
+      this.persistedActive = this.getFallbackPersistedActive();
+    }
+    this.options.threadRegistry.removeOwner(ownerKey);
+
+    try {
+      await this.persist();
+    } catch {
+      this.publish(
+        this.workspacePath ? 'failed' : 'unselected',
+        'The project was removed, but its navigation record could not be saved.',
+      );
+      return { accepted: false, reason: 'failed' };
+    }
+    this.publish(this.workspacePath ? 'ready' : 'unselected');
+    return { accepted: true };
   };
 
   focusTask = async (threadId: string): Promise<WorkspaceSelectResult> => {
@@ -1009,6 +1055,14 @@ export class WorkspaceController {
             }
           : this.persistedActive;
     if (!active) {
+      await unlink(this.options.sessionPath).catch(
+        (error: NodeJS.ErrnoException): undefined => {
+          if (error.code !== 'ENOENT') {
+            throw error;
+          }
+          return undefined;
+        },
+      );
       return;
     }
     await mkdir(path.dirname(this.options.sessionPath), {
@@ -1060,6 +1114,21 @@ export class WorkspaceController {
       await unlink(temporary).catch((): undefined => undefined);
       throw error;
     }
+  };
+
+  private getFallbackPersistedActive = (): StoredSession['active'] | null => {
+    const project = [...this.projects.values()].sort(
+      (left, right) => right.lastOpenedAtMs - left.lastOpenedAtMs,
+    )[0];
+    if (project) {
+      return { kind: 'project', projectId: project.id };
+    }
+    const chat = [...this.chatOwners.values()].find(
+      (owner) => owner.directory !== undefined,
+    );
+    return chat?.directory
+      ? { kind: 'chat', directory: chat.directory }
+      : null;
   };
 }
 

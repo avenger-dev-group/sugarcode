@@ -1,6 +1,5 @@
 import { ChevronDown, FileDiff } from 'lucide-react';
 
-import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
 
 import { collectTurnChangeSummaryFiles } from './turn-change-summary-data';
@@ -12,7 +11,7 @@ export const TurnChangeSummary = ({
   activities,
   language,
 }: TurnChangeSummaryProps) => {
-  const { openFile } = useOrchestrationStore();
+  const { openDiff, openFile } = useOrchestrationStore();
   const files = collectTurnChangeSummaryFiles(activities);
   const store = useActivityDisclosureStore(`turn-changes:${turnId}`, true);
   if (files.length === 0) {
@@ -42,10 +41,10 @@ export const TurnChangeSummary = ({
     <details
       open={store.expanded}
       onToggle={(event) => store.setExpanded(event.currentTarget.open)}
-      className="group/changes min-w-0 overflow-hidden rounded-xl border bg-surface"
+      className="group/changes min-w-0 overflow-hidden rounded-xl border bg-background shadow-[0_1px_2px_var(--shadow-soft)]"
       aria-label={label}
     >
-      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3.5 py-2 outline-none transition-colors hover:bg-background/60 focus-visible:ring-2 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3.5 py-2 outline-none transition-colors duration-200 hover:bg-surface focus-visible:ring-2 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
         <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border bg-background text-secondary">
           <FileDiff className="size-3.5" aria-hidden="true" />
         </span>
@@ -56,49 +55,56 @@ export const TurnChangeSummary = ({
             <span className="text-destructive">−{deletions}</span>
           </span>
         </span>
-        <span className="text-xs font-medium text-secondary">
-          {language === 'zh' ? '审核' : 'Review'}
-        </span>
         <ChevronDown
-          className="size-3.5 shrink-0 text-tertiary transition-transform motion-reduce:transition-none group-open/changes:rotate-180"
+          className="size-3.5 shrink-0 text-tertiary transition-transform duration-200 motion-reduce:transition-none group-open/changes:rotate-180"
           aria-hidden="true"
         />
       </summary>
-      <div className="max-h-64 overflow-y-auto overscroll-contain border-t px-3 py-1.5">
-        {files.map((entry) =>
-          entry.reviews.length > 0 ? (
-            <FileChangeReview
-              key={entry.id}
-              review={{
-                id: entry.id,
-                path: entry.file.path,
-                state: 'applied',
-                change: entry.reviews[0],
-                files: entry.reviews,
-              }}
-              variant="compact"
-              language={language}
-            />
-          ) : (
-            <div
-              key={entry.id}
-              className="flex min-w-0 items-center gap-2.5 py-2 text-sm text-secondary"
-            >
-              <FileDiff className="size-3.5 shrink-0 text-tertiary" aria-hidden="true" />
-              <button
-                type="button"
-                className="min-w-0 flex-1 truncate text-left font-mono text-xs underline decoration-border underline-offset-2 hover:text-primary focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => openFile(entry.file.path)}
-                title={entry.file.path}
-              >
-                {entry.file.path}
-              </button>
-              <span className="text-xs text-tertiary">
-                {language === 'zh' ? '已编辑' : 'Edited'}
-              </span>
-            </div>
-          ),
-        )}
+      <div className="grid grid-rows-[0fr] opacity-0 transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none group-open/changes:grid-rows-[1fr] group-open/changes:opacity-100">
+        <div className="min-h-0 overflow-hidden">
+          <div className="max-h-64 divide-y overflow-y-auto overscroll-contain border-t px-1.5 py-1">
+            {files.map((entry) => {
+              const additions = entry.reviews.reduce(
+                (total, review) => total + review.additions,
+                0,
+              );
+              const deletions = entry.reviews.reduce(
+                (total, review) => total + review.deletions,
+                0,
+              );
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  className="group/file flex min-h-10 w-full min-w-0 items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm font-normal leading-normal transition-[background-color,transform,box-shadow] duration-200 ease-out hover:bg-surface active:scale-[0.995] active:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none"
+                  onClick={() => {
+                    if (entry.reviews.length > 0) {
+                      openDiff(entry.file.path, entry.reviews);
+                    } else {
+                      openFile(entry.file.path);
+                    }
+                  }}
+                  title={entry.file.path}
+                  aria-label={
+                    language === 'zh'
+                      ? `查看 ${entry.file.path} 的差异`
+                      : `Review changes for ${entry.file.path}`
+                  }
+                >
+                  <code className="min-w-0 flex-1 truncate font-mono text-sm font-normal text-primary">
+                    {entry.file.path}
+                  </code>
+                  {entry.reviews.length > 0 ? (
+                    <span className="flex shrink-0 items-center gap-2 font-mono text-sm tabular-nums">
+                      <span className="text-success">+{additions}</span>
+                      <span className="text-destructive">−{deletions}</span>
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </details>
   );
