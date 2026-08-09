@@ -81,6 +81,69 @@ async fn searches_content_recursively_with_stable_literal_semantics() {
 }
 
 #[tokio::test]
+async fn search_skips_dependencies_generated_runtime_and_temporary_content() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    for directory in [
+        "src",
+        "node_modules/pkg",
+        "vendor/pkg",
+        "dist/assets",
+        "storage/logs",
+    ] {
+        fs::create_dir_all(workspace.path().join(directory)).expect("fixture directory");
+    }
+    fs::write(workspace.path().join("src/main.ts"), "needle\n").expect("source");
+    for path in [
+        "node_modules/pkg/index.js",
+        "vendor/pkg/library.php",
+        "dist/assets/bundle.js",
+        "storage/logs/runtime.log",
+        "src/debug.log",
+        "src/bundle.min.js",
+        "src/bundle.js.map",
+        "src/draft.ts.tmp",
+    ] {
+        fs::write(workspace.path().join(path), "needle\n").expect("noise fixture");
+    }
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
+
+    assert_eq!(
+        tool.search(
+            &WorkspaceSearchArguments {
+                path: ".".to_string(),
+                query: "needle".to_string(),
+            },
+            &CancellationToken::new(),
+        )
+        .await,
+        WorkspaceSearchOutcome::Matches {
+            matches: vec![WorkspaceSearchMatch {
+                path: "src/main.ts".to_string(),
+                line: 1,
+            }],
+            truncated: false,
+        }
+    );
+    assert_eq!(
+        tool.search(
+            &WorkspaceSearchArguments {
+                path: "vendor".to_string(),
+                query: "needle".to_string(),
+            },
+            &CancellationToken::new(),
+        )
+        .await,
+        WorkspaceSearchOutcome::Matches {
+            matches: vec![WorkspaceSearchMatch {
+                path: "vendor/pkg/library.php".to_string(),
+                line: 1,
+            }],
+            truncated: false,
+        }
+    );
+}
+
+#[tokio::test]
 async fn advanced_search_unifies_path_regex_case_and_glob_modes() {
     let workspace = tempfile::tempdir().expect("workspace");
     fs::create_dir_all(workspace.path().join("src/Nested")).expect("nested");

@@ -17,6 +17,7 @@ use crate::workspace_list::validate_list_path;
 use crate::workspace_read::READ_CHUNK_BYTES;
 use crate::workspace_read::WorkspaceReadArguments;
 use crate::workspace_read::WorkspaceReadOutcome;
+use crate::workspace_traversal_policy::{is_recursive_noise_directory, is_transient_search_file};
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 use std::fmt;
@@ -597,9 +598,17 @@ async fn build_directory_frame(
             if file_type.is_symlink() || cap_metadata_is_reparse_point(&metadata) {
                 SearchEntryKind::Skip
             } else if file_type.is_dir() {
-                SearchEntryKind::Directory
+                if is_recursive_noise_directory(&relative_path, &name) {
+                    SearchEntryKind::Skip
+                } else {
+                    SearchEntryKind::Directory
+                }
             } else if file_type.is_file() {
-                SearchEntryKind::File
+                if is_transient_search_file(&name) {
+                    SearchEntryKind::Skip
+                } else {
+                    SearchEntryKind::File
+                }
             } else {
                 SearchEntryKind::Skip
             }

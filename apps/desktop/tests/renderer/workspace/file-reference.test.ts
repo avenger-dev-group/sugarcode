@@ -50,12 +50,22 @@ test('workspace file references reject URLs and unsafe paths', () => {
 
 test('code spans resolve only through one verified workspace path', () => {
   const verifiedPaths = [
+    '.env',
+    'Dockerfile',
     'src/components/data-table/utils.ts',
     'src/pages/call-management/call-record/utils.ts',
     'src/pages/organization-management/company/use-store.ts',
     'src/components/layout/components/progress-bar.tsx',
   ];
 
+  assert.equal(
+    resolveVerifiedWorkspaceFileReference('.env', verifiedPaths),
+    '.env',
+  );
+  assert.equal(
+    resolveVerifiedWorkspaceFileReference('Dockerfile', verifiedPaths),
+    'Dockerfile',
+  );
   assert.equal(
     resolveVerifiedWorkspaceFileReference(
       'company/use-store.ts',

@@ -19,6 +19,15 @@ Rust provides bounded file listing/inspection/search, content-addressed asset
 import, atomic multi-file patches, Git status/diff/stage/unstage/commit,
 sandboxed commands and PTY/ConPTY. Git uses libgit2 and does not invoke system
 Git, hooks, filters, signing, remotes, credentials or network access.
+Recursive listing and content/path search share one traversal policy. They do
+not descend into VCS metadata, dependency trees, generated output, coverage,
+cache, runtime-log or temporary directories, including ecosystem-specific
+locations such as `vendor`, `node_modules`, `target`, `storage/logs` and
+`bootstrap/cache`. Recursive listing and search also skip editor backups,
+temporary files, logs, source maps and minified bundles. Direct listing still reports a skipped
+directory itself, and direct file reads remain capability-safe and available
+for an explicit task; the policy narrows broad discovery rather than removing
+the user's ability to inspect a named path.
 The Desktop private runtime protocol preserves the explorer's empty root key.
 Only the runtime host's native-list boundary maps that key to the tool's
 canonical `.` path, then projects returned children without a `./` prefix;
@@ -137,6 +146,13 @@ direct, unambiguous array of 9 through 16 paths is preserved and executed in
 waves of at most 8 native reads. Larger batches are rejected with instructions
 to split the request; the UI projects the actual requested path count rather
 than silently presenting only the first 8.
+The schema and base Agent contract identify these arguments as regular files,
+not directories. Broad review starts with `workspace_list`, reads only entries
+reported as files, avoids duplicate unchanged reads, prefers checked-in examples
+over secret-bearing files such as `.env`, and skips low-value dependency,
+generated, cache and temporary content unless the request specifically needs it.
+If a provider still passes a directory, the bounded `notRegularFile` result now
+directs it back to `workspace_list` instead of leaving an opaque failed read.
 
 ## MCP and collaboration
 

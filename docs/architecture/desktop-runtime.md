@@ -209,11 +209,16 @@ exact path, suffix or basename. Member expressions, package and lint-rule names,
 unverified paths and ambiguous suffixes remain ordinary inline code. The
 Renderer builds one suffix index per Turn projection, so transcript rendering
 does not repeatedly scan the workspace or linearly search every known path.
+The resulting verified path is already exact even when it names a root-level
+file such as `Dockerfile` or `.env`, so its click bypasses basename lookup.
 Explicit basename-only href references resolve only when their tooltip actually
 opens, through the same bounded unique-match lookup used before opening.
 Resolution promises are deduplicated per Workspace generation, and neither
 rendering a large transcript nor briefly crossing a reference starts a
 filesystem scan or opens the context rail.
+Focus, tooltip preparation and click share the same in-flight resolution; a
+click waits for that promise and opens the resolved file instead of treating
+the intermediate loading state as a completed no-op.
 The Renderer never fabricates a diff by rereading mutable workspace content.
 
 When a tool step contains no public model commentary, the runtime's synthesized

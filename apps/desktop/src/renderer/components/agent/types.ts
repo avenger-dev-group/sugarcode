@@ -141,6 +141,7 @@ export type FileReferenceLinkStore = Readonly<{
 
 export type FileReferenceLinkProps = Readonly<{
   children: ReactNode;
+  exactPath?: boolean;
   openFile: (path: string) => void;
   path: string;
   variant: 'code' | 'link';

@@ -12,6 +12,12 @@ const pathProperty = {
   description: 'Workspace-relative path. Use . for the workspace root.',
 } satisfies Schema;
 
+const readPathProperty = {
+  type: Type.STRING,
+  description:
+    'Workspace-relative path to one UTF-8 regular file. Never pass a directory; use workspace_list for an entry whose kind is directory.',
+} satisfies Schema;
+
 const pathSchema = {
   type: Type.OBJECT,
   properties: { path: pathProperty },
@@ -21,10 +27,10 @@ const pathSchema = {
 const readSchema = {
   type: Type.OBJECT,
   properties: {
-    path: pathProperty,
+    path: readPathProperty,
     paths: {
       type: Type.ARRAY,
-      items: pathProperty,
+      items: readPathProperty,
       minItems: '1',
       maxItems: String(MAX_DECLARED_WORKSPACE_READ_PATHS),
       description:
@@ -147,6 +153,14 @@ const parseNativeResult = (value: string): unknown => JSON.parse(value) as unkno
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const workspaceReadResult = (result: unknown, path: string): unknown =>
+  isRecord(result) && result.ok === false && result.error === 'notRegularFile'
+    ? {
+        ...result,
+        message: `${path} is not a regular file. If it is a directory, inspect it with workspace_list and read only returned entries whose kind is file.`,
+      }
+    : result;
 
 const invalidPatchFormat = (): Readonly<Record<string, unknown>> => ({
   ok: false,
@@ -533,13 +547,17 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'workspace_read',
     description:
-      `Read one UTF-8 text file, or up to ${MAX_DECLARED_WORKSPACE_READ_PATHS} files with paths, inside the open workspace without following symlinks.`,
+      `Read one UTF-8 regular text file, or up to ${MAX_DECLARED_WORKSPACE_READ_PATHS} regular files with paths, inside the open workspace without following symlinks. Directories are invalid; inspect them with workspace_list first.`,
     parameters: readSchema,
     execute: async (input) => {
       const paths = readPathArguments(input);
       if (paths.length === 1) {
-        return parseNativeResult(
-          await nativeRuntime.workspaceRead(workspaceId, paths[0] ?? ''),
+        const path = paths[0] ?? '';
+        return workspaceReadResult(
+          parseNativeResult(
+            await nativeRuntime.workspaceRead(workspaceId, path),
+          ),
+          path,
         );
       }
       const files: Readonly<Record<string, unknown>>[] = [];
@@ -554,8 +572,11 @@ export const createWorkspaceTools = (
         );
         files.push(...await Promise.all(
           batch.map(async (path) => {
-            const result = parseNativeResult(
-              await nativeRuntime.workspaceRead(workspaceId, path),
+            const result = workspaceReadResult(
+              parseNativeResult(
+                await nativeRuntime.workspaceRead(workspaceId, path),
+              ),
+              path,
             );
             return isRecord(result)
               ? { ...result, path }
@@ -582,7 +603,7 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'workspace_search',
     description:
-      'Search UTF-8 files under a workspace directory for literal text.',
+      'Search relevant UTF-8 source files under a workspace directory for literal text. Dependency, generated, cache, runtime-log, coverage, temporary, source-map, and minified content is skipped during recursive traversal.',
     parameters: searchSchema,
     execute: async (input) => {
       const { path, query } = searchArguments(input);

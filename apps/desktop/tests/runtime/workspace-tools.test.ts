@@ -36,6 +36,36 @@ test('workspace_read accepts a bounded batch and preserves each path', async () 
   });
 });
 
+test('workspace_read explains that directory paths belong to workspace_list', async () => {
+  const tools = createWorkspaceTools(
+    {
+      workspaceRead: async (workspaceId, path) => {
+        void workspaceId;
+        void path;
+        return JSON.stringify({
+          ok: false,
+          error: 'notRegularFile',
+        });
+      },
+    } as NativeRuntimeBinding,
+    'workspace-fixture',
+  );
+  const readTool = tools.find((tool) => tool.name === 'workspace_read');
+  assert.ok(readTool);
+
+  const result = await readTool.runAsync({
+    args: { path: 'src/components' },
+    toolContext: {} as never,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: 'notRegularFile',
+    message:
+      'src/components is not a regular file. If it is a directory, inspect it with workspace_list and read only returned entries whose kind is file.',
+  });
+});
+
 test('workspace_read partitions one compatible oversized batch without hiding paths', async () => {
   const requestedPaths: string[] = [];
   let activeReads = 0;

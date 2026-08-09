@@ -50,28 +50,36 @@ const requestResolution = (
 
 export const useStore = (
   path: string,
+  exactPath: boolean,
   openFile: (path: string) => void,
   workspaceGeneration: number,
   workspaceReady: boolean,
 ): FileReferenceLinkStore => {
   const requiresResolution =
-    isAbsoluteWorkspaceFileReference(path) || !path.includes('/');
+    !exactPath &&
+    (isAbsoluteWorkspaceFileReference(path) || !path.includes('/'));
   const [resolution, setResolution] =
     useState<FileReferenceResolution>(() =>
       requiresResolution ? { status: 'idle' } : { status: 'resolved', path },
     );
   const requestRevision = useRef<number>(0);
+  const pendingResolution =
+    useRef<Promise<FileReferenceResolution> | null>(null);
 
   useEffect(() => {
     requestRevision.current += 1;
+    pendingResolution.current = null;
     setResolution(
       requiresResolution ? { status: 'idle' } : { status: 'resolved', path },
     );
   }, [path, requiresResolution, workspaceGeneration, workspaceReady]);
 
   const resolveLocation = useCallback(async (): Promise<FileReferenceResolution> => {
-    if (resolution.status !== 'idle') {
+    if (resolution.status !== 'idle' && resolution.status !== 'loading') {
       return resolution;
+    }
+    if (pendingResolution.current) {
+      return pendingResolution.current;
     }
     if (!workspaceReady) {
       const unavailable = { status: 'unavailable' } as const;
@@ -80,11 +88,23 @@ export const useStore = (
     }
     const revision = ++requestRevision.current;
     setResolution({ status: 'loading' });
-    const result = await requestResolution(workspaceGeneration, path);
-    if (revision === requestRevision.current) {
-      setResolution(result);
-    }
-    return result;
+    const nativeRequest = requestResolution(workspaceGeneration, path);
+    const guardedRequest = nativeRequest.then(
+      (result): FileReferenceResolution => {
+        if (revision !== requestRevision.current) {
+          return { status: 'unavailable' };
+        }
+        setResolution(result);
+        return result;
+      },
+    );
+    pendingResolution.current = guardedRequest;
+    void guardedRequest.finally(() => {
+      if (pendingResolution.current === guardedRequest) {
+        pendingResolution.current = null;
+      }
+    });
+    return guardedRequest;
   }, [path, resolution, workspaceGeneration, workspaceReady]);
 
   const prepare = useCallback((): void => {

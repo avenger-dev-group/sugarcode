@@ -5,6 +5,7 @@ use crate::workspace_capability::is_nofollow_error;
 use crate::workspace_capability::map_io_error;
 use crate::workspace_capability::validate_directory_handle;
 use crate::workspace_capability::validate_relative_path;
+use crate::workspace_traversal_policy::{is_recursive_noise_directory, is_transient_search_file};
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 use std::fmt;
@@ -210,6 +211,10 @@ impl WorkspaceTool {
                 truncated = true;
                 break;
             }
+            if entry.kind == WorkspaceListEntryKind::File && is_transient_search_file(&entry.name) {
+                tokio::task::yield_now().await;
+                continue;
+            }
             let path = if frame.relative_path.is_empty() {
                 entry.name.clone()
             } else {
@@ -232,7 +237,7 @@ impl WorkspaceTool {
                 kind: entry.kind,
             });
             if entry.kind == WorkspaceListEntryKind::Directory
-                && !is_recursive_noise_directory(&entry.name)
+                && !is_recursive_noise_directory(&frame.relative_path, &entry.name)
             {
                 if frame.depth >= MAX_WORKSPACE_RECURSIVE_LIST_DEPTH {
                     truncated = true;
@@ -463,13 +468,6 @@ impl WorkspaceTool {
             name_bytes,
         }
     }
-}
-
-fn is_recursive_noise_directory(name: &str) -> bool {
-    matches!(
-        name,
-        ".git" | ".hg" | ".svn" | ".next" | ".turbo" | "build" | "dist" | "node_modules" | "target"
-    )
 }
 
 fn collect_directory_entries_now(

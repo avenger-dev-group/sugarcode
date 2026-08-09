@@ -18,6 +18,18 @@ test('base Agent instructions localize visible output and reject repetitive proc
   );
   assert.match(
     SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /pass only entries whose kind is file to workspace_read/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /Skip dependencies, generated output, caches, runtime logs, coverage, temporary\/editor backups/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /Do not inspect secret-bearing files such as .env/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
     /Inside every `\*\*\* Update File:` operation/u,
   );
   assert.match(

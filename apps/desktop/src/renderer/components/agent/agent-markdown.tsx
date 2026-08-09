@@ -256,6 +256,7 @@ const renderTokens = (
           if (path) {
             return [
               <FileReferenceLink
+                exactPath
                 key={key}
                 openFile={openFile}
                 path={path}

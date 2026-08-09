@@ -10,6 +10,7 @@ mod workspace_read;
 mod workspace_search;
 mod workspace_skills;
 mod workspace_snapshot;
+mod workspace_traversal_policy;
 
 pub use shell_command::DEFAULT_FULL_ACCESS_SHELL_TIMEOUT_MS;
 pub use shell_command::EmbeddedShellCommandExecutor;

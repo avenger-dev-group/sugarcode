@@ -12,6 +12,7 @@ import { useStore } from './use-store';
 
 export const FileReferenceLink = ({
   children,
+  exactPath = false,
   openFile,
   path,
   variant,
@@ -20,6 +21,7 @@ export const FileReferenceLink = ({
 }: FileReferenceLinkProps) => {
   const store = useStore(
     path,
+    exactPath,
     openFile,
     workspaceGeneration,
     workspaceReady,
