@@ -174,7 +174,9 @@ export const CommandApprovalActivity = ({
             <ShieldCheck className="size-3" aria-hidden="true" />
             {activity.approvalSource === 'policy'
               ? 'Inherited access'
-              : activity.fullAccess
+              : activity.operationKind === 'workspacePatch'
+                ? 'Workspace files'
+                : activity.fullAccess
                 ? 'Full Access Shell'
                 : 'shell/exec'}
           </span>

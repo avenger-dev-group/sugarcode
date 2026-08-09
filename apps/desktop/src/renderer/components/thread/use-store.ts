@@ -90,7 +90,10 @@ import {
   processLanguageFromText,
 } from './activity-disclosure';
 import { toTurnFailureViewModel } from './turn-failure';
-import { toActiveTurnProgress } from './turn-progress';
+import {
+  activeTurnOperationProgress,
+  toActiveTurnProgress,
+} from './turn-progress';
 import { collectTurnVerifiedFilePaths } from './verified-file-paths';
 
 export const useActivityDisclosureStore = (
@@ -138,6 +141,30 @@ const toAgentMessagePresentationState = (
         'An active AgentMessage did not match the conversation phase.',
       );
   }
+};
+
+const commandOperationKind = (
+  activity: ConversationCommandApprovalActivity,
+): CommandApprovalActivityViewModel['operationKind'] =>
+  activity.operationKind === 'workspacePatch' ||
+  activity.command.startsWith('workspace_apply_patch') ||
+  activity.executionResult?.outcome.type === 'workspacePatch'
+    ? 'workspacePatch'
+    : 'shell';
+
+const commandDisplaySummary = (
+  activity: ConversationCommandApprovalActivity,
+): string => {
+  if (!activity.command.startsWith('workspace_apply_patch')) {
+    return activity.command;
+  }
+  const filesChanged =
+    activity.executionResult?.outcome.type === 'workspacePatch'
+      ? activity.executionResult.outcome.filesChanged
+      : undefined;
+  return filesChanged === undefined
+    ? 'Workspace file changes'
+    : `${filesChanged} workspace file ${filesChanged === 1 ? 'change' : 'changes'}`;
 };
 
 const toWorkspaceReadPresentationState = (
@@ -513,7 +540,8 @@ export const toThreadViewModel = (
     const nextCommandApproval = turn.commandApproval
       ? ({
           id: turn.commandApproval.id,
-          command: turn.commandApproval.command,
+          operationKind: commandOperationKind(turn.commandApproval),
+          command: commandDisplaySummary(turn.commandApproval),
           argumentCount: turn.commandApproval.argumentCount,
           ...(turn.commandApproval.fullAccess
             ? { fullAccess: true }
@@ -559,6 +587,8 @@ export const toThreadViewModel = (
     const commandApproval =
       nextCommandApproval &&
       previousTurn?.commandApproval?.id === nextCommandApproval.id &&
+      previousTurn.commandApproval.operationKind ===
+        nextCommandApproval.operationKind &&
       previousTurn.commandApproval.command === nextCommandApproval.command &&
       previousTurn.commandApproval.argumentCount ===
         nextCommandApproval.argumentCount &&
@@ -694,7 +724,8 @@ export const toThreadViewModel = (
             type: entry.type,
             activity: {
               id: entry.activity.id,
-              command: entry.activity.command,
+              operationKind: commandOperationKind(entry.activity),
+              command: commandDisplaySummary(entry.activity),
               argumentCount: entry.activity.argumentCount,
               ...(entry.activity.fullAccess ? { fullAccess: true } : {}),
               ...(entry.activity.liveOutput
@@ -1559,6 +1590,7 @@ export const useStore = (): ThreadStore => {
         activeTurnView.model?.displayName,
         snapshot.phase,
         activeQuietSeconds,
+        activeTurnOperationProgress(activeTurnView),
       )
     : null;
 

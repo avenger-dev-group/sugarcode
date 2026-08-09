@@ -98,6 +98,7 @@ export type CommandExecutionResultViewModel = Readonly<{
 
 export type CommandApprovalActivityViewModel = Readonly<{
   id: string;
+  operationKind: 'workspacePatch' | 'shell';
   command: string;
   argumentCount: number;
   fullAccess?: boolean;

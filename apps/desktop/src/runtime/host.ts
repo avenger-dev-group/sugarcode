@@ -56,6 +56,7 @@ import {
 import {
   createWorkspaceTools,
   executePrivilegedWorkspaceTool,
+  workspacePatchApprovalSummary,
 } from './tools/workspace.ts';
 import {
   toolResultFailed,
@@ -2847,9 +2848,13 @@ export class RuntimeHost {
       if (payload === null || payload === undefined) {
         return computed;
       }
+      const legacyArgumentsSummary =
+        `${record.toolName} (${Buffer.byteLength(record.argumentsJson, 'utf8')} bytes)`;
       return isRecord(payload) &&
         payload.kind === 'command' &&
-        payload.argumentsSummary === computed.argumentsSummary &&
+        (payload.argumentsSummary === computed.argumentsSummary ||
+          (record.toolName === 'workspace_apply_patch' &&
+            payload.argumentsSummary === legacyArgumentsSummary)) &&
         payload.fullAccess === computed.fullAccess
         ? computed
         : null;
@@ -3093,6 +3098,12 @@ export class RuntimeHost {
     argumentsValue: Readonly<Record<string, unknown>>,
     argumentsJson: string,
   ): string => {
+    if (
+      toolName === 'workspace_apply_patch' &&
+      typeof argumentsValue.patch === 'string'
+    ) {
+      return workspacePatchApprovalSummary(argumentsValue.patch);
+    }
     if (toolName !== 'shell_exec' || typeof argumentsValue.command !== 'string') {
       return `${toolName} (${Buffer.byteLength(argumentsJson, 'utf8')} bytes)`;
     }

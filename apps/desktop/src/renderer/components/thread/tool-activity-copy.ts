@@ -25,7 +25,7 @@ export const toolActivityGroupSummary = (
   const failedPatchCount = activities.filter(
     (entry) =>
       entry.type === 'commandApproval' &&
-      entry.activity.command.startsWith('workspace_apply_patch') &&
+      entry.activity.operationKind === 'workspacePatch' &&
       (entry.activity.executionResult?.outcome.type === 'error' ||
         entry.activity.state === 'denied' ||
         entry.activity.state === 'timedOut' ||
@@ -34,13 +34,13 @@ export const toolActivityGroupSummary = (
   const ranCommandCount = activities.filter(
     (entry) =>
       entry.type === 'commandApproval' &&
-      !entry.activity.command.startsWith('workspace_apply_patch') &&
+      entry.activity.operationKind === 'shell' &&
       entry.activity.executionResult !== undefined,
   ).length;
   const reviewedCommandCount = activities.filter(
     (entry) =>
       entry.type === 'commandApproval' &&
-      !entry.activity.command.startsWith('workspace_apply_patch') &&
+      entry.activity.operationKind === 'shell' &&
       entry.activity.executionResult === undefined,
   ).length;
   const calledMcpCount = activities.filter(

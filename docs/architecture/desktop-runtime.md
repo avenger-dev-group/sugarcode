@@ -111,6 +111,14 @@ profile defaults that deadline to five minutes, while a Turn has no wall-clock
 or tool-count success threshold. Provider adapters never infer tools from
 ordinary prose, reasoning, language, or generic markup.
 
+The primary Turn progress surface derives its current stage from the latest
+verified live activity instead of treating every quiet interval as model work.
+It distinguishes workspace inspection, approval wait, privileged execution and
+MCP execution; only a Turn with no active operation becomes an explicit model
+wait after 15 quiet seconds. That wait discloses the five-minute per-request
+deadline and retains the user's immediate stop action, so a slow provider is
+not presented as an unexplained unbounded Agent run.
+
 The same Turn Driver and completion gate run child Agents. A child without a
 non-empty final answer fails instead of receiving a fabricated completion
 summary. If the parent submits a final candidate before child results are
@@ -152,6 +160,14 @@ from the composer. Child tasks delay their `waitingApproval` projection briefly;
 an immediately inherited policy decision therefore stays in the running state,
 while a real unresolved prompt still becomes visible. Resolved policy activity
 is labeled as inherited access in the command audit.
+Workspace-patch approvals are projected as a file operation, never as a shell
+or sandbox command. Their bounded presentation lists the proposed create,
+update, delete or move path effects and omits the private Agent tool name and
+raw patch payload. The live audit carries an explicit `workspacePatch`
+operation kind; legacy summaries containing the former internal name are
+sanitized at the Renderer boundary, while recovered pending approvals are
+revalidated against their stored arguments and republished with the safe
+summary.
 
 Conversation snapshots preserve the optimistic first-Turn projection while the
 runtime acknowledges startup: `starting` may contain the newly allocated active
@@ -186,9 +202,12 @@ timeline projects one concise edited-file row per receipt with its
 addition/deletion counts. The same receipts also produce one end-of-Turn change
 summary with unique file paths and aggregate counts; this summary remains
 visible for failed Turns that already changed files, so partial work is never
-hidden behind the terminal error. Its 14px summary list treats the complete file
-row as the review target and omits duplicate edited-state and review-action
-labels. Selecting a receipt row opens its immutable review diff in the context
+hidden behind the terminal error. Its compact summary header keeps the file
+count and aggregate diff statistics on one line. Each 12px monospaced path
+de-emphasizes the directory with the tertiary tone, retains the filename in the
+secondary tone, and restores primary emphasis only on row hover. The complete
+file row remains the review target and omits duplicate edited-state and
+review-action labels. Selecting a receipt row opens its immutable review diff in the context
 rail, while selecting a safe relative file reference from workspace reads,
 Agent Markdown or the project tree opens a fresh bounded workspace inspection.
 Agent Markdown file references use the dedicated link color and file glyph so

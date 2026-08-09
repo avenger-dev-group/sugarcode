@@ -1179,6 +1179,10 @@ export class RuntimeConversationController {
             id: `${event.approvalId}:request`,
             callId: event.operationId,
             approvalId: event.approvalId,
+            operationKind:
+              event.toolName === 'workspace_apply_patch'
+                ? 'workspacePatch'
+                : 'shell',
             command: event.argumentsSummary,
             argumentCount: 0,
             fullAccess: event.fullAccess,

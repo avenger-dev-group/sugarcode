@@ -2,6 +2,7 @@ import {
   Check,
   Clock3,
   FolderCheck,
+  FilePenLine,
   Hand,
   ShieldCheck,
   SquareTerminal,
@@ -156,7 +157,11 @@ export const CommandApprovalView = ({
               <AlertDialogHeader>
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <AlertDialogTitle>SugarCode 如何执行命令？</AlertDialogTitle>
+                    <AlertDialogTitle>
+                      {request.operationKind === 'workspacePatch'
+                        ? '允许修改项目文件？'
+                        : 'SugarCode 如何执行命令？'}
+                    </AlertDialogTitle>
                     <AlertDialogDescription className="mt-1">
                       {request.sourceAgent
                         ? `由 ${request.sourceAgent.role} Agent ${request.sourceAgent.taskId} 请求。`
@@ -197,8 +202,16 @@ export const CommandApprovalView = ({
                   {request.description}
                 </p>
                 <div className="mt-2 flex items-center gap-1.5 text-[11px] text-tertiary">
-                  <SquareTerminal className="size-3.5" aria-hidden="true" />
-                  {request.fullAccess ? 'Full Access Shell' : '只读禁网沙箱'} · cwd {request.cwd}
+                  {request.operationKind === 'workspacePatch' ? (
+                    <FilePenLine className="size-3.5" aria-hidden="true" />
+                  ) : (
+                    <SquareTerminal className="size-3.5" aria-hidden="true" />
+                  )}
+                  {request.operationKind === 'workspacePatch'
+                    ? '项目文件修改'
+                    : request.fullAccess
+                      ? 'Full Access Shell'
+                      : '只读禁网沙箱'} · cwd {request.cwd}
                   {request.platformShell ? ` · ${request.platformShell}` : ''}
                 </div>
                 <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-background px-2.5 py-2 font-mono text-xs leading-5 text-foreground">

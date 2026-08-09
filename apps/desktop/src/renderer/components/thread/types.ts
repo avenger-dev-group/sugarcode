@@ -76,9 +76,21 @@ export type TurnModelViewModel = Readonly<{
 
 export type ActiveTurnProgressViewModel = Readonly<{
   turnId: string;
-  state: 'working' | 'waitingForModel' | 'stopping' | 'uncertain';
+  state:
+    | 'working'
+    | 'waitingForModel'
+    | 'waitingForApproval'
+    | 'runningTool'
+    | 'stopping'
+    | 'uncertain';
   label: string;
   elapsedLabel?: string;
+  detail?: string;
+}>;
+
+export type ActiveTurnOperationProgress = Readonly<{
+  state: 'waitingForApproval' | 'runningTool';
+  label: string;
   detail?: string;
 }>;
 

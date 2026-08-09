@@ -231,12 +231,14 @@ export class RuntimeApprovalController {
     const root = this.workspaceRoots.get(pending.workspaceId) ?? 'Local workspace';
     return {
       presentationId: pending.approvalId,
+      operationKind:
+        pending.toolName === 'workspace_apply_patch' ? 'workspacePatch' : 'shell',
       description:
         pending.toolName === 'workspace_apply_patch'
-          ? 'Allow the Agent to modify workspace files?'
+          ? 'Agent 请求修改以下项目文件。批准后，这批更改会原子应用。'
           : pending.fullAccess
             ? 'Allow this command to run with Full Access?'
-          : `Allow ${pending.toolName}?`,
+            : 'Allow this sandboxed command to run?',
       command: pending.argumentsSummary,
       cwd: root,
       fullAccess: pending.fullAccess,

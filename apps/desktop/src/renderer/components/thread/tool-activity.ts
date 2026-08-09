@@ -34,9 +34,7 @@ export const commandActivityAction = (
   active: boolean,
   language: ProcessLanguage,
 ): string => {
-  const workspacePatch = entry.activity.command.startsWith(
-    'workspace_apply_patch',
-  );
+  const workspacePatch = entry.activity.operationKind === 'workspacePatch';
   if (language === 'zh') {
     switch (entry.activity.state) {
       case 'denied':

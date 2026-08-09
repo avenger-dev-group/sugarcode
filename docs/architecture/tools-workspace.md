@@ -95,11 +95,16 @@ retained as matching context rather than rejected as a context-only hunk. A
 marker-correct update with no changed-line prefix is
 rejected before approval with a concrete example so a compatible model can
 repair it without asking the user to approve an operation that cannot run.
-Preflight unwraps a bounded heredoc and collapses repeated unprefixed
-Begin/End envelope markers into one document before approval; malformed
-content markers and hunks remain rejected. A hunk that removes and re-adds
-identical text is also rejected. These structural no-ops never become durable
-operations or approval requests. If native matching finds stale context, the
+Preflight unwraps a bounded patch/diff Markdown fence or a conventional
+`apply_patch` heredoc and collapses repeated unprefixed Begin/End envelope
+markers into one document before approval; malformed content markers and hunks
+remain rejected. A hunk that removes and re-adds identical text is also
+rejected. These structural no-ops never become durable operations or approval
+requests. Before a valid proposal crosses the approval boundary, the runtime
+derives a bounded create/update/delete/move path summary from the normalized
+document. Approval and process UI use that summary plus an explicit workspace
+patch kind, not the private tool name, byte count or raw patch body. If native
+matching finds stale context, the
 result identifies the affected path and line, confirms that the atomic patch
 changed no files, and directs the Agent to re-read and retry a small patch for
 that file. Matching tolerates a compatible provider doubling backslashes

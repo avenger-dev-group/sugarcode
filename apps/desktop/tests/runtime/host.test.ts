@@ -1791,6 +1791,11 @@ test('RuntimeHost restores a pending approval without replay and executes only a
   );
   assert.ok(approval);
   assert.equal(approval.recovered, true);
+  assert.equal(
+    approval.argumentsSummary,
+    '1 workspace file change\nCreate recovered.txt',
+  );
+  assert.doesNotMatch(approval.argumentsSummary, /workspace_apply_patch/u);
   assert.equal(applyCount, 0);
   assert.equal(approvalStatus, 'pending');
   assert.ok(!persistedKinds.includes('approval.requested'));

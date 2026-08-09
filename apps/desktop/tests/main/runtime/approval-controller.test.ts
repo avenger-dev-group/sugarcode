@@ -51,6 +51,11 @@ test('runtime approvals preserve the existing approval UI contract', async () =>
   assert.equal(pending.status, 'pending');
   assert.equal(pending.request?.cwd, '/fixture/project');
   assert.equal(pending.request?.workspaceId, 'workspace-1');
+  assert.equal(pending.request?.operationKind, 'workspacePatch');
+  assert.equal(
+    pending.request?.description,
+    'Agent 请求修改以下项目文件。批准后，这批更改会原子应用。',
+  );
 
   assert.equal((await controller.approve('approval-1', 'thread')).accepted, true);
   const decision = fixture.sent.at(-1);

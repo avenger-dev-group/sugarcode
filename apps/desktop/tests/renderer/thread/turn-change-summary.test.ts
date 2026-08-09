@@ -13,7 +13,8 @@ const patchActivity = (
   type: 'commandApproval',
   activity: {
     id,
-    command: 'workspace_apply_patch (120 bytes)',
+    operationKind: 'workspacePatch',
+    command: 'Update src/file.ts',
     argumentCount: 0,
     state: 'approved',
     executionResult: {

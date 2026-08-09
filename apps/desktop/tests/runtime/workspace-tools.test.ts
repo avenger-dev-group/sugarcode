@@ -5,7 +5,30 @@ import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
 import {
   createWorkspaceTools,
   executePrivilegedWorkspaceTool,
+  workspacePatchApprovalSummary,
 } from '../../src/runtime/tools/workspace.ts';
+
+test('workspace patch approval summary describes file effects without internal tool names', () => {
+  assert.equal(
+    workspacePatchApprovalSummary(
+      '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** Add File: src/b.ts\n+new\n*** Update File: src/old.ts\n*** Move to: src/new.ts\n@@\n-old\n+new\n*** End Patch',
+    ),
+    '3 workspace file changes\nUpdate src/a.ts\nCreate src/b.ts\nMove src/old.ts -> src/new.ts',
+  );
+  assert.doesNotMatch(
+    workspacePatchApprovalSummary(
+      '*** Begin Patch\n*** Delete File: obsolete.txt\n*** End Patch',
+    ),
+    /workspace_apply_patch/u,
+  );
+  const unicodeSummary = workspacePatchApprovalSummary(
+    `*** Begin Patch\n${Array.from(
+      { length: 12 },
+      (_, index) => `*** Add File: src/${'界'.repeat(120)}-${index}.txt\n+new`,
+    ).join('\n')}\n*** End Patch`,
+  );
+  assert.ok(Buffer.byteLength(unicodeSummary, 'utf8') <= 1_024);
+});
 
 test('workspace_read accepts a bounded batch and preserves each path', async () => {
   const requestedPaths: string[] = [];
@@ -183,6 +206,33 @@ test('workspace_apply_patch normalizes repeated file envelopes before approval',
     approvedPatch,
     '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** Update File: src/b.ts\n@@\n-old\n+new\n*** End Patch',
   );
+});
+
+test('workspace_apply_patch unwraps common fenced and heredoc documents before approval', async () => {
+  const approved: string[] = [];
+  const tools = createWorkspaceTools(
+    {} as NativeRuntimeBinding,
+    'workspace-fixture',
+    async (_toolName, argumentsValue) => {
+      approved.push(String(argumentsValue.patch));
+      return { ok: true };
+    },
+  );
+  const patchTool = tools.find((tool) => tool.name === 'workspace_apply_patch');
+  assert.ok(patchTool);
+  const patch =
+    '*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** End Patch';
+
+  await patchTool.runAsync({
+    args: { patch: `\`\`\`patch\n${patch}\n\`\`\`` },
+    toolContext: {} as never,
+  });
+  await patchTool.runAsync({
+    args: { patch: `apply_patch <<'PATCH'\n${patch}\nPATCH` },
+    toolContext: {} as never,
+  });
+
+  assert.deepEqual(approved, [patch, patch]);
 });
 
 test('workspace_apply_patch explains the exact stale file without mutating any file', async () => {

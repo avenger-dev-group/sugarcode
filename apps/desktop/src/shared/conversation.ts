@@ -246,6 +246,7 @@ export type ConversationCommandApprovalActivity = Readonly<{
   id: string;
   callId: string;
   approvalId: string;
+  operationKind?: 'workspacePatch' | 'shell';
   command: string;
   argumentCount: number;
   fullAccess?: boolean;
@@ -1309,6 +1310,9 @@ const isCommandApprovalActivity = (
     value.callItemId === value.id ||
     !isId(value.callId) ||
     !isId(value.approvalId) ||
+    (Object.hasOwn(value, 'operationKind') &&
+      value.operationKind !== 'workspacePatch' &&
+      value.operationKind !== 'shell') ||
     typeof value.command !== 'string' ||
     value.command.length === 0 ||
     new TextEncoder().encode(value.command).byteLength >

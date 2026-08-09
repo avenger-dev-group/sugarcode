@@ -286,9 +286,7 @@ const CommandRow = ({
       : 'text-secondary';
   const stdout = entry.activity.liveOutput?.stdout ?? '';
   const stderr = entry.activity.liveOutput?.stderr ?? '';
-  const workspacePatch = entry.activity.command.startsWith(
-    'workspace_apply_patch',
-  );
+  const workspacePatch = entry.activity.operationKind === 'workspacePatch';
   if (
     workspacePatch &&
     result?.outcome.type === 'workspacePatch' &&

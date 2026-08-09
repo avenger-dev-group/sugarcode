@@ -172,8 +172,18 @@ const invalidPatchFormat = (): Readonly<Record<string, unknown>> => ({
 const normalizePatchDocument = (patch: string): string => {
   let lines = patch.replace(/\r\n/gu, '\n').trim().split('\n');
   if (
-    ["<<EOF", "<<'EOF'", '<<"EOF"'].includes(lines[0]?.trim() ?? '') &&
-    lines.at(-1)?.trim() === 'EOF' &&
+    /^```(?:patch|diff)?$/iu.test(lines[0]?.trim() ?? '') &&
+    lines.at(-1)?.trim() === '```' &&
+    lines.length >= 4
+  ) {
+    lines = lines.slice(1, -1);
+  }
+  const heredoc = /^(?:(?:workspace_apply_patch|apply_patch)\s+)?<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1$/u.exec(
+    lines[0]?.trim() ?? '',
+  );
+  if (
+    heredoc?.[2] &&
+    lines.at(-1)?.trim() === heredoc[2] &&
     lines.length >= 4
   ) {
     lines = lines.slice(1, -1);
@@ -317,6 +327,92 @@ const patchPathAtOperation = (
       );
       return match?.[1] ? [match[1].trim()] : [];
     })[operationIndex];
+
+type WorkspacePatchApprovalOperation = Readonly<{
+  kind: 'create' | 'update' | 'delete' | 'move';
+  path: string;
+  destination?: string;
+}>;
+
+const workspacePatchApprovalOperations = (
+  patch: string,
+): readonly WorkspacePatchApprovalOperation[] => {
+  const operations: WorkspacePatchApprovalOperation[] = [];
+  const lines = patch.replace(/\r\n/gu, '\n').split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^\*\*\* (Add|Update|Delete) File: (.+)$/u.exec(
+      lines[index]?.trim() ?? '',
+    );
+    if (!match?.[1] || !match[2]) {
+      continue;
+    }
+    const path = match[2].trim();
+    const destination = match[1] === 'Update'
+      ? /^\*\*\* Move to: (.+)$/u.exec(lines[index + 1]?.trim() ?? '')?.[1]
+      : undefined;
+    operations.push({
+      kind: destination
+        ? 'move'
+        : match[1] === 'Add'
+          ? 'create'
+          : match[1] === 'Delete'
+            ? 'delete'
+            : 'update',
+      path,
+      ...(destination ? { destination: destination.trim() } : {}),
+    });
+  }
+  return operations;
+};
+
+const safeApprovalPath = (value: string): string => {
+  let result = '';
+  for (const character of value) {
+    if (/\p{Cc}/u.test(character)) {
+      continue;
+    }
+    if (Buffer.byteLength(result + character, 'utf8') > 240) {
+      break;
+    }
+    result += character;
+  }
+  return result;
+};
+
+export const workspacePatchApprovalSummary = (patch: string): string => {
+  const operations = workspacePatchApprovalOperations(patch);
+  if (operations.length === 0) {
+    return 'Modify workspace files';
+  }
+  const labels: Record<WorkspacePatchApprovalOperation['kind'], string> = {
+    create: 'Create',
+    update: 'Update',
+    delete: 'Delete',
+    move: 'Move',
+  };
+  const heading = `${operations.length} workspace file ${operations.length === 1 ? 'change' : 'changes'}`;
+  const lines: string[] = [heading];
+  for (const [index, operation] of operations.entries()) {
+    const source = safeApprovalPath(operation.path);
+    const destination = operation.destination
+      ? safeApprovalPath(operation.destination)
+      : undefined;
+    const line = destination
+      ? `${labels[operation.kind]} ${source} -> ${destination}`
+      : `${labels[operation.kind]} ${source}`;
+    const remaining = operations.length - index;
+    const suffix = remaining > 1 ? `\n...and ${remaining} more` : '';
+    if (
+      Buffer.byteLength(`${lines.join('\n')}\n${line}${suffix}`, 'utf8') >
+      1_024
+    ) {
+      lines.push(`...and ${remaining} more`);
+      break;
+    }
+    lines.push(line);
+  }
+  return lines.join('\n');
+};
 
 const explainPatchFailure = (result: unknown, patch: string): unknown => {
   if (
