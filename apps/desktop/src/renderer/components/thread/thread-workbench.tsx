@@ -41,7 +41,10 @@ import {
 import { Textarea } from '@/renderer/components/ui/textarea';
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline';
-import { OrchestrationActivity } from '@/renderer/components/orchestration/orchestration-activity';
+import {
+  AgentTaskDock,
+  OrchestrationActivity,
+} from '@/renderer/components/orchestration/orchestration-activity';
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
 
 import type {
@@ -59,6 +62,23 @@ import { ToolActivityGroup } from './tool-activity-group';
 import { TurnChangeSummary } from './turn-change-summary';
 import { toTranscriptTurnBoundary } from './turn-boundary';
 import { useStore, useTranscriptFollow } from './use-store';
+
+const currentOrchestrationActivity = (
+  store: ThreadWorkbenchViewProps['store'],
+) => {
+  const activeTurnId = store.activeTurnProgress?.turnId;
+  const activeTurn = store.thread.turns.find(
+    (turn) => turn.id === activeTurnId,
+  );
+  const activities = activeTurn?.activities ?? [];
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const entry = activities[index];
+    if (entry?.type === 'orchestration') {
+      return entry.activity;
+    }
+  }
+  return null;
+};
 
 const TranscriptMessage = ({
   entry,
@@ -386,6 +406,7 @@ export const ThreadWorkbenchView = ({
   permissionControl,
   approvalThreadIds = [],
 }: ThreadWorkbenchViewProps) => {
+  const agentTaskActivity = currentOrchestrationActivity(store);
   const {
     transcriptContent,
     transcriptEnd,
@@ -607,6 +628,9 @@ export const ThreadWorkbenchView = ({
           className="relative z-10 shrink-0 bg-background px-4 pb-4 pt-2 sm:px-8"
         >
           <div className="mx-auto max-w-3xl">
+            {agentTaskActivity ? (
+              <AgentTaskDock activity={agentTaskActivity} />
+            ) : null}
             {(store.actionError || store.thread.notice) && (
               <p className="mb-2 px-1 text-xs text-destructive" role="alert">
                 {store.actionError ?? store.thread.notice}

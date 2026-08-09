@@ -2,22 +2,70 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  agentTaskGroupForStatus,
+  agentTaskWaves,
   formatAgentTaskDuration,
+  queuedAgentTaskReason,
 } from '../../../src/renderer/components/orchestration/presentation.ts';
+import type { AgentTaskViewModel } from '../../../src/renderer/components/orchestration/types.ts';
 
-test('child Agent statuses map to the task inbox groups', () => {
-  assert.equal(agentTaskGroupForStatus('waitingApproval'), 'attention');
-  assert.equal(agentTaskGroupForStatus('failed'), 'attention');
-  assert.equal(agentTaskGroupForStatus('interrupted'), 'attention');
-  assert.equal(agentTaskGroupForStatus('running'), 'active');
-  assert.equal(agentTaskGroupForStatus('queued'), 'queued');
-  assert.equal(agentTaskGroupForStatus('completed'), 'finished');
-  assert.equal(agentTaskGroupForStatus('cancelled'), 'finished');
+const task = (
+  clientTaskKey: string,
+  dependsOn: readonly string[] = [],
+  overrides: Partial<AgentTaskViewModel> = {},
+): AgentTaskViewModel => ({
+  id: `activity-${clientTaskKey}`,
+  taskId: `task-${clientTaskKey}`,
+  clientTaskKey,
+  childThreadId: `thread-${clientTaskKey}`,
+  title: clientTaskKey,
+  role: 'explorer',
+  access: 'readOnly',
+  dependsOn,
+  taskMarkdown: `Run ${clientTaskKey}`,
+  status: 'queued',
+  amendments: [],
+  ...overrides,
 });
 
 test('child Agent durations stay compact in task cards and traces', () => {
   assert.equal(formatAgentTaskDuration(950), '950 ms');
   assert.equal(formatAgentTaskDuration(2_450), '2.5 s');
   assert.equal(formatAgentTaskDuration(156_320), '2m 36s');
+});
+
+test('child Agent dependency depth becomes reviewable execution waves', () => {
+  const tasks = [
+    task('research'),
+    task('tests'),
+    task('implement', ['research', 'tests']),
+    task('audit', ['implement']),
+  ];
+
+  assert.deepEqual(
+    agentTaskWaves(tasks).map((wave) =>
+      wave.tasks.map((candidate) => candidate.clientTaskKey),
+    ),
+    [['research', 'tests'], ['implement'], ['audit']],
+  );
+});
+
+test('queued child Agents explain dependency, write lock, and capacity waits', () => {
+  const completed = task('research', [], { status: 'completed' });
+  const running = task('tests', [], { status: 'running' });
+  const dependent = task('implement', ['research', 'tests'], {
+    access: 'workspaceWrite',
+  });
+
+  assert.equal(
+    queuedAgentTaskReason(dependent, [completed, running, dependent]),
+    'Waiting for 1 dependency',
+  );
+  assert.equal(
+    queuedAgentTaskReason(task('writer', [], { access: 'workspaceWrite' }), []),
+    'Waiting for write access or capacity',
+  );
+  assert.equal(
+    queuedAgentTaskReason(task('reader'), []),
+    'Waiting for workspace access or capacity',
+  );
 });

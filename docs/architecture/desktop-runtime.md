@@ -117,15 +117,23 @@ It distinguishes workspace inspection, approval wait, privileged execution and
 MCP execution. A Turn with no active operation remains a calm `thinking` state;
 normal provider latency never escalates into a synthetic warning, model-name
 diagnosis or elapsed-time counter. The live state uses a subtle motion-safe text
-shimmer, while the composer retains the immediate stop action. Process activity
-starts collapsed so it stays inspectable without displacing the conversation;
-only activity that requires approval or another user decision auto-expands.
+shimmer, while the composer retains the immediate stop action. Active process
+activity starts expanded so public commentary and tool progress remain visible
+while the Agent works; completed activity collapses by default, while activity
+that requires approval or another user decision also auto-expands.
 
 The same Turn Driver and completion gate run child Agents. A child without a
 non-empty final answer fails instead of receiving a fabricated completion
 summary. If the parent submits a final candidate before child results are
 consumed, the gate waits for bounded results, classifies that candidate as
 commentary, injects the results, and requires one new final answer.
+The coordinator schedules dependency-ready child tasks concurrently through a
+process-wide four-slot semaphore. Independent read-only tasks in one Workspace
+may share a wave and run together. Workspace-writing tasks take an exclusive
+per-Workspace gate, so they never overlap another reader or writer against the
+same mutable tree; parallel write-heavy work requires a future isolated
+worktree boundary rather than weakening that invariant. A dependent task stays
+queued until its prerequisites reach the required terminal state.
 Workspace-writing child waves always end in a dependent read-only audit. The
 parent may describe that auditor explicitly; otherwise the collaboration
 coordinator creates one bounded runtime auditor before the DAG is persisted and
@@ -346,12 +354,21 @@ one Thread-local reload, leaving every other active Thread untouched.
 
 Child-Agent task snapshots include bounded live progress with an explicit stage
 (`waitingForModel`, `streaming` or `runningTool`), a public Markdown summary and
-an update timestamp. The orchestration workbench uses compact task rows grouped
-as needs-attention, active, dependency-blocked next and finished work. Approval
-requests plus failed or interrupted results are routed to the attention group,
-while aggregate completion and attention counts stay visible above the list.
-Selecting a task opens a detail rail that renders the
-durable public execution trace in order: frozen task brief, amendments, latest
-live progress and terminal result. Dependency and access metadata remain
-visible without exposing an internal graph or provider log. The terminal task
-result remains the durable completion contract.
+an update timestamp. The orchestration workbench projects the validated DAG as
+bounded execution-wave rows instead of a freeform canvas: tasks at the same
+dependency depth share a responsive grid row, later rows expose dependency
+order, and queued cards distinguish dependency waits from bounded
+Workspace-access or execution-capacity waits, including the exclusive write
+boundary. Task summaries are height-bounded so one verbose child cannot turn a
+parallel wave into a narrow vertical tower. While the parent Turn is active, a
+compact Agent-task dock stays directly above the composer with prioritized
+role/status avatars and aggregate progress. Its anchored popover expands upward
+to the same wave grid, so current child progress remains reachable when newer
+commentary has moved the durable orchestration activity above the viewport.
+Completed Turns remove the dock and retain the orchestration record only in the
+transcript. Live, attention and aggregate completion counts remain visible.
+Selecting a task opens a detail rail that renders the durable public execution
+trace in order: frozen task brief, amendments, latest live progress and terminal
+result. Dependency and access metadata remain visible without exposing a
+provider log or implying that every ready write can run concurrently. The
+terminal task result remains the durable completion contract.

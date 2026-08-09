@@ -29,6 +29,16 @@ const callTool = async (
 const nextTurn = (): Promise<void> =>
   new Promise((resolve) => setImmediate(resolve));
 
+const waitUntil = async (predicate: () => boolean): Promise<void> => {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+    await nextTurn();
+  }
+  assert.fail('Timed out waiting for collaboration state.');
+};
+
 test('CollaborationCoordinator schedules a persisted DAG, delivers amendments, waits and interrupts', async () => {
   const coordinator = new CollaborationCoordinator(2);
   const published: RuntimeAgentTask[] = [];
@@ -215,4 +225,100 @@ test('CollaborationCoordinator adds a runtime auditor and still rejects cycles',
     }),
     /cycle/u,
   );
+});
+
+test('CollaborationCoordinator runs independent read-only tasks concurrently', async () => {
+  const coordinator = new CollaborationCoordinator(2);
+  const releases: Array<() => void> = [];
+  let running = 0;
+  let peakRunning = 0;
+  const tools = coordinator.toolsForTurn(
+    { ...turn, turnId: 'turn-parallel-reads' },
+    {
+      createTasks: () => undefined,
+      updateTask: () => undefined,
+      publishTask: () => undefined,
+      executeTask: async () => {
+        running += 1;
+        peakRunning = Math.max(peakRunning, running);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        running -= 1;
+        return {
+          status: 'completed',
+          summaryMarkdown: 'Read completed.',
+          durationMs: 1,
+        };
+      },
+    },
+    new AbortController().signal,
+  );
+
+  await callTool(tools, 'collaboration_dispatch', {
+    tasks: ['left', 'right'].map((key) => ({
+      clientTaskKey: key,
+      title: key,
+      role: 'explorer',
+      access: 'readOnly',
+      dependsOn: [] as readonly string[],
+      taskMarkdown: `Explore ${key}.`,
+    })),
+  });
+  await waitUntil(() => running === 2);
+  assert.equal(peakRunning, 2);
+  releases.splice(0).forEach((release) => release());
+  await callTool(tools, 'collaboration_wait', { clientTaskKeys: [] });
+});
+
+test('CollaborationCoordinator serializes writes that share one workspace', async () => {
+  const coordinator = new CollaborationCoordinator(2);
+  const releases: Array<() => void> = [];
+  const started: string[] = [];
+  let runningWriters = 0;
+  let peakWriters = 0;
+  const tools = coordinator.toolsForTurn(
+    { ...turn, turnId: 'turn-serialized-writes' },
+    {
+      createTasks: () => undefined,
+      updateTask: () => undefined,
+      publishTask: () => undefined,
+      executeTask: async (context) => {
+        if (context.task.role === 'auditor') {
+          return {
+            status: 'completed',
+            summaryMarkdown: 'Audit completed.',
+            durationMs: 1,
+          };
+        }
+        started.push(context.task.clientTaskKey);
+        runningWriters += 1;
+        peakWriters = Math.max(peakWriters, runningWriters);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        runningWriters -= 1;
+        return {
+          status: 'completed',
+          summaryMarkdown: 'Write completed.',
+          durationMs: 1,
+        };
+      },
+    },
+    new AbortController().signal,
+  );
+
+  await callTool(tools, 'collaboration_dispatch', {
+    tasks: ['left', 'right'].map((key) => ({
+      clientTaskKey: key,
+      title: key,
+      role: 'worker',
+      access: 'workspaceWrite',
+      dependsOn: [] as readonly string[],
+      taskMarkdown: `Implement ${key}.`,
+    })),
+  });
+  await waitUntil(() => started.length === 1);
+  assert.equal(runningWriters, 1);
+  releases.shift()?.();
+  await waitUntil(() => started.length === 2);
+  assert.equal(peakWriters, 1);
+  releases.shift()?.();
+  await callTool(tools, 'collaboration_wait', { clientTaskKeys: [] });
 });

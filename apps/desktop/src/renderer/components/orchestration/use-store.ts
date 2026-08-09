@@ -20,6 +20,7 @@ type OrchestrationStore = Readonly<{
   activeTab: ContextRailTab;
   selectedResource: ContextRailResource | null;
   selectedTask: AgentTaskViewModel | null;
+  taskDockOpen: boolean;
   closeAgentTab: () => void;
   closeResourceTab: () => void;
   openDiff: (
@@ -30,6 +31,7 @@ type OrchestrationStore = Readonly<{
   selectTask: (task: AgentTaskViewModel) => void;
   refreshTask: (task: AgentTaskViewModel) => void;
   setActiveTab: (tab: ContextRailTab) => void;
+  setTaskDockOpen: (open: boolean) => void;
 }>;
 
 const OrchestrationContext = createContext<OrchestrationStore | null>(null);
@@ -48,10 +50,12 @@ export const OrchestrationStoreProvider = ({
     useState<AgentTaskViewModel | null>(null);
   const [selectedResource, setSelectedResource] =
     useState<ContextRailResource | null>(null);
+  const [taskDockOpen, setTaskDockOpen] = useState(false);
 
   const selectTask = useCallback(
     (task: AgentTaskViewModel) => {
       setSelectedTask(task);
+      setTaskDockOpen(false);
       setActiveTab('agent');
       onRequestOpen();
     },
@@ -92,6 +96,7 @@ export const OrchestrationStoreProvider = ({
   useEffect(() => {
     setSelectedTask(null);
     setSelectedResource(null);
+    setTaskDockOpen(false);
     setActiveTab('workspace');
   }, [scopeKey]);
 
@@ -113,6 +118,8 @@ export const OrchestrationStoreProvider = ({
       selectTask,
       refreshTask,
       setActiveTab,
+      setTaskDockOpen,
+      taskDockOpen,
     }),
     [
       activeTab,
@@ -124,6 +131,7 @@ export const OrchestrationStoreProvider = ({
       selectTask,
       selectedResource,
       selectedTask,
+      taskDockOpen,
     ],
   );
 
