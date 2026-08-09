@@ -221,6 +221,38 @@
   border-color: rgb(from var(--destructive) r g b / 38%);
 }
 
+.agent-status-shimmer {
+  width: fit-content;
+  max-width: 100%;
+  color: var(--process);
+  background-image: linear-gradient(
+    100deg,
+    var(--process) 28%,
+    var(--primary) 46%,
+    var(--process) 64%
+  );
+  background-position: 135% 0;
+  background-size: 260% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: agent-status-shimmer 2.8s ease-in-out infinite;
+}
+
+@keyframes agent-status-shimmer {
+  to {
+    background-position: -85% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-status-shimmer {
+    background-image: none;
+    animation: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
 .syntax-highlight .hljs-comment,
 .syntax-highlight .hljs-quote {
   color: var(--syntax-comment);

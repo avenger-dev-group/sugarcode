@@ -63,9 +63,9 @@ export const completedProcessDurationLabel = (
 };
 
 export const shouldAutoExpandActivityGroup = (
-  status: ConversationTurnStatus,
+  _status: ConversationTurnStatus,
   requiresAttention: boolean,
-): boolean => status === 'inProgress' || requiresAttention;
+): boolean => requiresAttention;
 
 export const processActivityLabel = (
   status: ConversationTurnStatus,

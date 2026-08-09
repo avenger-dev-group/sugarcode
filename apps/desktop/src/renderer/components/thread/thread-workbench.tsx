@@ -141,11 +141,13 @@ const TurnActivityTimeline = ({
   activities,
   turnStatus,
   language,
+  progress,
   durationLabel,
 }: Readonly<{
   activities: readonly TurnActivityViewModel[];
   turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
   language: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['processLanguage'];
+  progress?: TranscriptTurnProps['progress'];
   durationLabel?: string;
 }>) => {
   const requiresAttention = activities.some(
@@ -162,6 +164,8 @@ const TurnActivityTimeline = ({
       status={turnStatus}
       requiresAttention={requiresAttention}
       language={language}
+      activeLabel={progress?.label}
+      animateActive={progress?.state !== 'uncertain'}
       durationLabel={durationLabel}
     >
       {activities.map((entry, index) => {
@@ -202,7 +206,6 @@ const TranscriptTurnView = ({
   turnNumber,
   boundary,
   progress,
-  onStop,
 }: TranscriptTurnProps) => (
   <section
     aria-label={`第 ${turnNumber} 轮对话`}
@@ -224,11 +227,12 @@ const TranscriptTurnView = ({
         .map((entry) => (
           <TranscriptMessage key={entry.message.id} entry={entry} />
         ))}
-      {turn.activities ? (
+      {turn.activities?.length ? (
         <TurnActivityTimeline
           activities={turn.activities}
           turnStatus={turn.status}
           language={turn.processLanguage}
+          progress={progress}
           durationLabel={turn.durationLabel}
         />
       ) : null}
@@ -269,7 +273,8 @@ const TranscriptTurnView = ({
         />
       ) : null}
       {turn.status === 'inProgress' &&
-      !turn.pendingAgentOutputs?.length ? (
+      !turn.pendingAgentOutputs?.length &&
+      !turn.activities?.length ? (
         <div
           className="flex items-start gap-2 text-sm font-normal text-process"
           role="status"
@@ -277,36 +282,21 @@ const TranscriptTurnView = ({
         >
           {progress?.state === 'uncertain' ? (
             <CircleAlert className="mt-0.5 size-3.5" aria-hidden="true" />
-          ) : (
-            <LoaderCircle
-              className="mt-0.5 size-3.5 animate-spin"
-              aria-hidden="true"
-            />
-          )}
+          ) : null}
           <div className="min-w-0">
-            <p>
-              {progress?.label ?? 'Agent 正在处理…'}
-              {progress?.elapsedLabel ? (
-                <span aria-hidden="true"> · {progress.elapsedLabel}</span>
-              ) : null}
+            <p
+              className={
+                progress?.state === 'uncertain'
+                  ? undefined
+                  : 'agent-status-shimmer'
+              }
+            >
+              {progress?.label ?? '思考中'}
             </p>
             {progress?.detail ? (
               <p className="mt-1 max-w-xl text-xs leading-normal text-secondary">
                 {progress.detail}
               </p>
-            ) : null}
-            {progress?.state === 'waitingForModel' ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-2"
-                onClick={onStop}
-                aria-label="停止当前任务"
-              >
-                <Square className="size-3 fill-current" aria-hidden="true" />
-                停止任务
-              </Button>
             ) : null}
           </div>
         </div>
@@ -591,7 +581,6 @@ export const ThreadWorkbenchView = ({
                         ? store.activeTurnProgress
                         : undefined
                     }
-                    onStop={() => void store.stop()}
                   />
                 ))}
               </div>
@@ -766,14 +755,17 @@ export const ThreadWorkbenchView = ({
                       </SelectContent>
                     </Select>
                     {permissionControl}
-                    <p className="min-w-0 truncate text-xs text-secondary">
-                      {store.activeTurnProgress
-                        ? `${store.activeTurnProgress.label}${
-                            store.activeTurnProgress.elapsedLabel
-                              ? ` · ${store.activeTurnProgress.elapsedLabel}`
-                              : ''
-                          }`
-                        : store.thread.statusLabel}
+                    <p
+                      className={`min-w-0 truncate text-xs ${
+                        store.activeTurnProgress?.state === 'uncertain'
+                          ? 'text-process'
+                          : store.activeTurnProgress
+                            ? 'agent-status-shimmer'
+                            : 'text-secondary'
+                      }`}
+                    >
+                      {store.activeTurnProgress?.label ??
+                        store.thread.statusLabel}
                     </p>
                   </div>
                   <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-1.5 text-[11px]">

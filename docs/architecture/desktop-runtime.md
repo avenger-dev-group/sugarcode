@@ -114,10 +114,12 @@ ordinary prose, reasoning, language, or generic markup.
 The primary Turn progress surface derives its current stage from the latest
 verified live activity instead of treating every quiet interval as model work.
 It distinguishes workspace inspection, approval wait, privileged execution and
-MCP execution; only a Turn with no active operation becomes an explicit model
-wait after 15 quiet seconds. That wait discloses the five-minute per-request
-deadline and retains the user's immediate stop action, so a slow provider is
-not presented as an unexplained unbounded Agent run.
+MCP execution. A Turn with no active operation remains a calm `thinking` state;
+normal provider latency never escalates into a synthetic warning, model-name
+diagnosis or elapsed-time counter. The live state uses a subtle motion-safe text
+shimmer, while the composer retains the immediate stop action. Process activity
+starts collapsed so it stays inspectable without displacing the conversation;
+only activity that requires approval or another user decision auto-expands.
 
 The same Turn Driver and completion gate run child Agents. A child without a
 non-empty final answer fails instead of receiving a fabricated completion

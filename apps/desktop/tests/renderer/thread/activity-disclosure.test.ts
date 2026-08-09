@@ -29,8 +29,8 @@ test('process copy follows the language of the original user message', () => {
   assert.equal(processActivityLabel('inProgress', true, 'zh'), '需要操作');
 });
 
-test('active and attention-required activity groups start expanded', () => {
-  assert.equal(shouldAutoExpandActivityGroup('inProgress', false), true);
+test('only attention-required activity groups start expanded', () => {
+  assert.equal(shouldAutoExpandActivityGroup('inProgress', false), false);
   assert.equal(shouldAutoExpandActivityGroup('completed', true), true);
   assert.equal(shouldAutoExpandActivityGroup('completed', false), false);
 });

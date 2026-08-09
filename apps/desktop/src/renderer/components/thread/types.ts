@@ -77,14 +77,12 @@ export type TurnModelViewModel = Readonly<{
 export type ActiveTurnProgressViewModel = Readonly<{
   turnId: string;
   state:
-    | 'working'
-    | 'waitingForModel'
+    | 'thinking'
     | 'waitingForApproval'
     | 'runningTool'
     | 'stopping'
     | 'uncertain';
   label: string;
-  elapsedLabel?: string;
   detail?: string;
 }>;
 
@@ -263,7 +261,6 @@ export type TranscriptTurnProps = Readonly<{
   turnNumber: number;
   boundary: 'none' | 'divider' | 'precedingTerminal';
   progress?: ActiveTurnProgressViewModel;
-  onStop: () => void;
 }>;
 
 export type ActivityDisclosureStore = Readonly<{
@@ -276,6 +273,8 @@ export type ProcessActivityGroupProps = Readonly<{
   status: ConversationTurnStatus;
   requiresAttention: boolean;
   language: ProcessLanguage;
+  activeLabel?: string;
+  animateActive?: boolean;
   durationLabel?: string;
   children: ReactNode;
 }>;

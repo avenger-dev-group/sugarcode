@@ -6,20 +6,6 @@ import type {
   TurnViewModel,
 } from './types';
 
-export const MODEL_WAIT_NOTICE_SECONDS = 15;
-
-export const formatWaitDuration = (seconds: number): string => {
-  const bounded = Math.max(0, Math.floor(seconds));
-  if (bounded < 60) {
-    return `${bounded}s`;
-  }
-  const minutes = Math.floor(bounded / 60);
-  const remainingSeconds = bounded % 60;
-  return remainingSeconds > 0
-    ? `${minutes}m ${remainingSeconds}s`
-    : `${minutes}m`;
-};
-
 export const activeTurnOperationProgress = (
   turn: TurnViewModel | undefined,
 ): ActiveTurnOperationProgress | undefined => {
@@ -109,9 +95,7 @@ export const activeTurnOperationProgress = (
 
 export const toActiveTurnProgress = (
   turnId: string,
-  modelDisplayName: string | undefined,
   phase: ConversationPhase,
-  quietSeconds: number,
   operation?: ActiveTurnOperationProgress,
 ): ActiveTurnProgressViewModel => {
   if (phase === 'stopping') {
@@ -132,19 +116,9 @@ export const toActiveTurnProgress = (
   if (operation) {
     return { turnId, ...operation };
   }
-  if (quietSeconds >= MODEL_WAIT_NOTICE_SECONDS) {
-    return {
-      turnId,
-      state: 'waitingForModel',
-      label: `${modelDisplayName ?? '所选模型'} 暂无可见响应`,
-      elapsedLabel: `已等待 ${formatWaitDuration(quietSeconds)}`,
-      detail:
-        '当前正在等待模型服务；单次请求最长约 5 分钟，超时会自动结束。你也可以立即停止后切换模型。',
-    };
-  }
   return {
     turnId,
-    state: 'working',
-    label: 'Agent 正在处理…',
+    state: 'thinking',
+    label: '思考中',
   };
 };

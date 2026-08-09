@@ -1129,11 +1129,6 @@ export const useStore = (): ThreadStore => {
     useState<readonly string[]>([]);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [activeQuietSeconds, setActiveQuietSeconds] = useState<number>(0);
-  const activeProgressClock = useRef<{
-    turnId: string;
-    observedAt: number;
-  } | null>(null);
   const [modelInspection, setModelInspection] =
     useState<Awaited<ReturnType<typeof getModelConfig>> | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] =
@@ -1478,43 +1473,9 @@ export const useStore = (): ThreadStore => {
     previousThread.current = next;
     return next;
   }, [snapshot]);
-  const activeTurnSnapshot = snapshot.activeTurnId
-    ? snapshot.turns.find((turn) => turn.id === snapshot.activeTurnId)
-    : undefined;
   const activeTurnView = snapshot.activeTurnId
     ? thread.turns.find((turn) => turn.id === snapshot.activeTurnId)
     : undefined;
-  const activeUsageKey = activeTurnSnapshot?.usage
-    ? JSON.stringify(activeTurnSnapshot.usage)
-    : '';
-
-  useEffect(() => {
-    const turnId = activeTurnView?.id;
-    if (!turnId || snapshot.phase !== 'inProgress') {
-      activeProgressClock.current = null;
-      setActiveQuietSeconds(0);
-      return;
-    }
-    activeProgressClock.current = {
-      turnId,
-      observedAt: window.performance.now(),
-    };
-    setActiveQuietSeconds(0);
-    const updateElapsed = (): void => {
-      const clock = activeProgressClock.current;
-      if (!clock || clock.turnId !== turnId) {
-        return;
-      }
-      setActiveQuietSeconds(
-        Math.max(
-          0,
-          Math.floor((window.performance.now() - clock.observedAt) / 1_000),
-        ),
-      );
-    };
-    const interval = window.setInterval(updateElapsed, 1_000);
-    return () => window.clearInterval(interval);
-  }, [activeTurnView, activeUsageKey, snapshot.phase]);
   const inputHint =
     bytes > MAX_CONVERSATION_INPUT_BYTES
       ? 'Message exceeds the 64 KiB limit'
@@ -1587,9 +1548,7 @@ export const useStore = (): ThreadStore => {
   const activeTurnProgress = activeTurnView
     ? toActiveTurnProgress(
         activeTurnView.id,
-        activeTurnView.model?.displayName,
         snapshot.phase,
-        activeQuietSeconds,
         activeTurnOperationProgress(activeTurnView),
       )
     : null;

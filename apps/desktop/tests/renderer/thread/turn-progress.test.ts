@@ -3,33 +3,25 @@ import test from 'node:test';
 
 import {
   activeTurnOperationProgress,
-  formatWaitDuration,
-  MODEL_WAIT_NOTICE_SECONDS,
   toActiveTurnProgress,
 } from '../../../src/renderer/components/thread/turn-progress.ts';
 import type { TurnViewModel } from '../../../src/renderer/components/thread/types.ts';
 
-test('quiet active turns identify the model wait and its bounded deadline', () => {
+test('quiet active turns stay in a calm thinking state', () => {
   const progress = toActiveTurnProgress(
     '00000000-0001-7000-8000-000000000001',
-    'metis-coder',
     'inProgress',
-    MODEL_WAIT_NOTICE_SECONDS,
   );
 
-  assert.equal(progress.state, 'waitingForModel');
-  assert.match(progress.label, /metis-coder/);
-  assert.equal(progress.elapsedLabel, '已等待 15s');
-  assert.match(progress.detail ?? '', /最长约 5 分钟/);
-  assert.match(progress.detail ?? '', /超时会自动结束/);
+  assert.equal(progress.state, 'thinking');
+  assert.equal(progress.label, '思考中');
+  assert.equal(progress.detail, undefined);
 });
 
-test('active operation progress takes precedence over a quiet model wait', () => {
+test('active operation progress takes precedence over thinking', () => {
   const progress = toActiveTurnProgress(
     'turn_1',
-    'fixture-model',
     'inProgress',
-    60,
     {
       state: 'waitingForApproval',
       label: '等待你确认文件修改',
@@ -40,7 +32,6 @@ test('active operation progress takes precedence over a quiet model wait', () =>
   assert.equal(progress.state, 'waitingForApproval');
   assert.equal(progress.label, '等待你确认文件修改');
   assert.equal(progress.detail, 'Update src/example.ts');
-  assert.equal(progress.elapsedLabel, undefined);
 });
 
 test('active Turn activity identifies approval and tool stages', () => {
@@ -87,17 +78,11 @@ test('active Turn activity identifies approval and tool stages', () => {
 
 test('progress labels distinguish stopping and unavailable ownership', () => {
   assert.equal(
-    toActiveTurnProgress('turn_1', undefined, 'stopping', 100).state,
+    toActiveTurnProgress('turn_1', 'stopping').state,
     'stopping',
   );
   assert.equal(
-    toActiveTurnProgress('turn_1', undefined, 'unavailable', 100).state,
+    toActiveTurnProgress('turn_1', 'unavailable').state,
     'uncertain',
   );
-});
-
-test('wait duration remains compact', () => {
-  assert.equal(formatWaitDuration(12), '12s');
-  assert.equal(formatWaitDuration(60), '1m');
-  assert.equal(formatWaitDuration(125), '2m 5s');
 });
