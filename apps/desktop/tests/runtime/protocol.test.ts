@@ -8,6 +8,30 @@ import {
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
+test('private runtime validates bounded workspace path suggestions', () => {
+  assert.equal(
+    isRuntimeCommand({
+      type: 'workspace.pathSearch',
+      requestId: 'request-path-search',
+      workspaceId: 'workspace-fixture',
+      query: 'composer',
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeEvent({
+      type: 'workspace.pathSearchResult',
+      sequence: 1,
+      requestId: 'request-path-search',
+      workspaceId: 'workspace-fixture',
+      query: 'composer',
+      paths: ['apps/desktop/src/renderer/components/composer/composer-input.tsx'],
+      truncated: false,
+    }),
+    true,
+  );
+});
+
 test('private Thread protocol accepts bounded rename metadata', () => {
   assert.equal(
     isRuntimeCommand({

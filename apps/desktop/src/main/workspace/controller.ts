@@ -9,6 +9,8 @@ import type {
   WorkspaceKind,
   WorkspaceListRequest,
   WorkspaceListResult,
+  WorkspacePathSearchRequest,
+  WorkspacePathSearchResult,
   WorkspaceResolveRequest,
   WorkspaceResolveResult,
   WorkspaceSelectResult,
@@ -54,6 +56,11 @@ export type WorkspaceRuntimeBoundary = Readonly<{
     path: string;
     entries: readonly import('@/shared/workspace').WorkspaceEntry[];
   }>;
+  searchWorkspacePaths: (query: string) => Promise<Readonly<{
+    query: string;
+    paths: readonly string[];
+    truncated: boolean;
+  }>>;
   inspectWorkspace: (
     path: string,
   ) => Promise<import('@/shared/workspace').WorkspaceInspectDocument>;
@@ -796,6 +803,40 @@ export class WorkspaceController {
         generation: this.generation,
         path: response.path,
         entries: response.entries,
+      };
+    } catch {
+      return { accepted: false, reason: 'failed' };
+    }
+  };
+
+  searchPaths = async (
+    request: WorkspacePathSearchRequest,
+  ): Promise<WorkspacePathSearchResult> => {
+    if (
+      request.generation !== this.generation ||
+      this.snapshot.status !== 'ready'
+    ) {
+      return {
+        accepted: false,
+        reason:
+          request.generation !== this.generation
+            ? 'stale'
+            : 'unavailable',
+      };
+    }
+    try {
+      const response = await this.options.supervisor.searchWorkspacePaths(
+        request.query,
+      );
+      if (request.generation !== this.generation) {
+        return { accepted: false, reason: 'stale' };
+      }
+      return {
+        accepted: true,
+        generation: this.generation,
+        query: response.query,
+        paths: response.paths,
+        truncated: response.truncated,
       };
     } catch {
       return { accepted: false, reason: 'failed' };

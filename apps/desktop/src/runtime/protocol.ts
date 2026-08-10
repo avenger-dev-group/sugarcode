@@ -230,6 +230,12 @@ export type RuntimeCommand =
       path: string;
     }>
   | Readonly<{
+      type: 'workspace.pathSearch';
+      requestId: string;
+      workspaceId: string;
+      query: string;
+    }>
+  | Readonly<{
       type: 'workspace.inspect';
       requestId: string;
       workspaceId: string;
@@ -525,6 +531,14 @@ export type RuntimeEvent =
         workspaceId: string;
         path: string;
         entries: readonly RuntimeWorkspaceEntry[];
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'workspace.pathSearchResult';
+        workspaceId: string;
+        query: string;
+        paths: readonly string[];
+        truncated: boolean;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -966,6 +980,14 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.workspaceId === 'string' &&
         isSafeWorkspacePath(value.path, true)
       );
+    case 'workspace.pathSearch':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.query === 'string' &&
+        value.query.trim().length > 0 &&
+        utf8ByteLength(value.query) <= 512 &&
+        !/[\r\n]/u.test(value.query)
+      );
     case 'workspace.inspect':
       return (
         typeof value.workspaceId === 'string' &&
@@ -1266,6 +1288,17 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
             isSafeWorkspacePath(entry.path, false) &&
             ['file', 'directory', 'link', 'other'].includes(String(entry.kind)),
         )
+      );
+    case 'workspace.pathSearchResult':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.query === 'string' &&
+        value.query.trim().length > 0 &&
+        utf8ByteLength(value.query) <= 512 &&
+        Array.isArray(value.paths) &&
+        value.paths.length <= 64 &&
+        value.paths.every((path) => isSafeWorkspacePath(path, false)) &&
+        typeof value.truncated === 'boolean'
       );
     case 'workspace.inspected':
       return (

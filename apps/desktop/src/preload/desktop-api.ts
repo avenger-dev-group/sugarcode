@@ -118,6 +118,7 @@ import {
 import {
   isWorkspaceInspectResult,
   isWorkspaceListResult,
+  isWorkspacePathSearchResult,
   isWorkspaceResolveResult,
   isWorkspaceSelectResult,
   isWorkspaceStateSnapshot,
@@ -125,6 +126,7 @@ import {
   WORKSPACE_INSPECT_CHANNEL,
   WORKSPACE_CLEAR_CHANNEL,
   WORKSPACE_LIST_CHANNEL,
+  WORKSPACE_PATH_SEARCH_CHANNEL,
   WORKSPACE_RESOLVE_CHANNEL,
   WORKSPACE_PROJECT_RESUME_CHANNEL,
   WORKSPACE_PROJECT_ACTIVATE_CHANNEL,
@@ -140,6 +142,8 @@ import {
   type WorkspaceInspectResult,
   type WorkspaceListRequest,
   type WorkspaceListResult,
+  type WorkspacePathSearchRequest,
+  type WorkspacePathSearchResult,
   type WorkspaceResolveRequest,
   type WorkspaceResolveResult,
   type WorkspaceSelectResult,
@@ -1063,6 +1067,18 @@ export const createDesktopApi = (
     );
     if (!isWorkspaceListResult(result)) {
       throw new Error('Main returned an invalid workspace list result.');
+    }
+    return result;
+  },
+  searchWorkspacePaths: async (
+    request: WorkspacePathSearchRequest,
+  ): Promise<WorkspacePathSearchResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_PATH_SEARCH_CHANNEL,
+      request,
+    );
+    if (!isWorkspacePathSearchResult(result)) {
+      throw new Error('Main returned an invalid workspace path search result.');
     }
     return result;
   },

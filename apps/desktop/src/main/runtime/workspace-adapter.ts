@@ -225,6 +225,32 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
     return { path: event.path, entries: event.entries };
   };
 
+  searchWorkspacePaths = async (
+    query: string,
+  ): Promise<{ query: string; paths: readonly string[]; truncated: boolean }> => {
+    if (!this.workspaceId) {
+      throw new Error('Workspace unavailable.');
+    }
+    const workspaceId = this.workspaceId;
+    const event = await this.options.runtime.request(
+      {
+        type: 'workspace.pathSearch',
+        requestId: randomUUID(),
+        workspaceId,
+        query,
+      },
+      'workspace.pathSearchResult',
+    );
+    if (event.workspaceId !== workspaceId || event.query !== query) {
+      throw new Error('The runtime returned a mismatched Workspace path search.');
+    }
+    return {
+      query: event.query,
+      paths: event.paths,
+      truncated: event.truncated,
+    };
+  };
+
   inspectWorkspace = async (path: string): Promise<WorkspaceInspectDocument> => {
     if (!this.workspaceId) {
       throw new Error('Workspace unavailable.');

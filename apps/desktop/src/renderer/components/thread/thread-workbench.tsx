@@ -16,6 +16,7 @@ import { memo, useRef } from 'react';
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
 import { CommandApprovalActivity } from '@/renderer/components/agent/command-approval-activity';
+import { ComposerInput } from '@/renderer/components/composer/composer-input';
 import { WorkspaceReadActivity } from '@/renderer/components/agent/workspace-read-activity';
 import { WorkspaceListActivity } from '@/renderer/components/agent/workspace-list-activity';
 import { WorkspaceSearchActivity } from '@/renderer/components/agent/workspace-search-activity';
@@ -38,7 +39,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/renderer/components/ui/select';
-import { Textarea } from '@/renderer/components/ui/textarea';
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
 import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline';
 import {
@@ -89,41 +89,66 @@ const TranscriptMessage = ({
     <AgentMessage message={entry.message} />
   ) : (
     <div className="ml-auto w-fit max-w-[82%]">
-      <article
-        className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
-        aria-label="Your message"
-      >
-        {entry.message.attachments.length > 0 ? (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {entry.message.attachments.map((attachment) => (
-              <div
-                key={attachment.assetId}
-                className="flex max-w-56 items-center gap-2 rounded-xl bg-background/70 px-2.5 py-2"
-              >
-                {attachment.kind === 'image' && attachment.previewUrl ? (
-                  <img
-                    src={attachment.previewUrl}
-                    alt=""
-                    className="size-8 shrink-0 rounded-md object-cover"
-                  />
-                ) : attachment.kind === 'image' ? (
-                  <ImageIcon className="size-4 shrink-0" aria-hidden="true" />
-                ) : (
-                  <FileText className="size-4 shrink-0" aria-hidden="true" />
-                )}
-                <span className="truncate text-xs font-medium">
-                  {attachment.originalName}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {entry.message.text ? (
-          <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
-            {entry.message.text}
-          </p>
-        ) : null}
-      </article>
+      {entry.message.text || entry.message.attachments.length > 0 ? (
+        <article
+          className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
+          aria-label="Your message"
+        >
+          {entry.message.attachments.length > 0 ? (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {entry.message.attachments.map((attachment) => (
+                <div
+                  key={attachment.assetId}
+                  className="flex max-w-56 items-center gap-2 rounded-xl bg-background/70 px-2.5 py-2"
+                >
+                  {attachment.kind === 'image' && attachment.previewUrl ? (
+                    <img
+                      src={attachment.previewUrl}
+                      alt=""
+                      className="size-8 shrink-0 rounded-md object-cover"
+                    />
+                  ) : attachment.kind === 'image' ? (
+                    <ImageIcon className="size-4 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <FileText className="size-4 shrink-0" aria-hidden="true" />
+                  )}
+                  <span className="truncate text-xs font-medium">
+                    {attachment.originalName}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {entry.message.text ? (
+            <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
+              {entry.message.text}
+            </p>
+          ) : null}
+        </article>
+      ) : null}
+      {entry.message.references.length > 0 ? (
+        <div
+          className="mt-2 flex flex-wrap justify-end gap-1.5 px-1"
+          aria-label="已选择的能力和引用"
+        >
+          {entry.message.references.map((reference) => (
+            <span
+              key={`${reference.kind}:${reference.target}`}
+              className="inline-flex max-w-64 items-center gap-1.5 rounded-lg border bg-background px-2.5 py-1 text-xs text-link shadow-sm"
+              title={reference.target}
+            >
+              <span className="text-tertiary">
+                {reference.kind === 'command'
+                  ? '命令'
+                  : reference.kind === 'skill'
+                    ? 'Skill'
+                    : '文件'}
+              </span>
+              <span className="truncate font-medium">{reference.value}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 
@@ -624,7 +649,7 @@ export const ThreadWorkbenchView = ({
               </p>
             )}
             <div
-              className="overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] transition-[border-color,box-shadow] focus-within:border-input focus-within:ring-2 focus-within:ring-ring/10"
+              className="relative rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] transition-[border-color,box-shadow] focus-within:border-input focus-within:ring-2 focus-within:ring-ring/10"
               onDragOver={(event) => {
                 if (event.dataTransfer.types.includes('Files')) {
                   event.preventDefault();
@@ -691,10 +716,11 @@ export const ThreadWorkbenchView = ({
                   ))}
                 </div>
               ) : null}
-              <Textarea
-                rows={1}
+              <ComposerInput
                 value={store.draft}
-                onChange={(event) => store.setDraft(event.target.value)}
+                onValueChange={store.setDraft}
+                workspaceGeneration={store.workspaceGeneration}
+                workspaceReady={store.workspaceReady}
                 onPaste={(event) => {
                   const files = Array.from(event.clipboardData.files).filter(
                     (file) => file.type.startsWith('image/'),
@@ -704,16 +730,7 @@ export const ThreadWorkbenchView = ({
                     void store.addAttachments(files);
                   }
                 }}
-                onKeyDown={(event) => {
-                  if (
-                    event.key === 'Enter' &&
-                    !event.shiftKey &&
-                    !event.nativeEvent.isComposing
-                  ) {
-                    event.preventDefault();
-                    void store.send();
-                  }
-                }}
+                onSubmit={() => void store.send()}
                 disabled={
                   store.thread.phase === 'inProgress' ||
                   store.thread.phase === 'stopping' ||
@@ -723,9 +740,6 @@ export const ThreadWorkbenchView = ({
                   store.isSending ||
                   store.navigator.pendingThreadId !== null
                 }
-                aria-label="Message SugarCode"
-                placeholder="描述你想完成的任务…"
-                className="min-h-16 max-h-64 overflow-y-auto px-4 pt-3 pb-2 [field-sizing:content]"
               />
               <div className="flex items-end justify-between gap-3 px-3 pt-1 pb-3">
                 <div className="min-w-0 flex-1">

@@ -120,6 +120,10 @@ export type NativeRuntimeBinding = Readonly<{
     path: string,
     query: string,
   ) => Promise<string>;
+  workspacePathSearchJson: (
+    workspaceId: string,
+    query: string,
+  ) => Promise<string>;
   workspaceApplyPatch: (workspaceId: string, patch: string) => Promise<string>;
   gitStatusJson: (workspaceId: string) => string;
   gitDiffJson: (

@@ -14,6 +14,7 @@ import type {
   ConversationTurnError,
   ConversationTurnStatus,
 } from '@/shared/conversation';
+import type { ComposerReference } from '@/shared/composer';
 
 import type {
   AgentMessageViewModel,
@@ -31,6 +32,7 @@ import type { PanelResizeHandle } from '../foundation/types';
 export type UserMessageViewModel = Readonly<{
   id: string;
   text: string;
+  references: readonly ComposerReference[];
   attachments: readonly ConversationAttachment[];
 }>;
 
@@ -222,6 +224,8 @@ export type ThreadStore = Readonly<{
   thread: ThreadViewModel;
   navigator: ThreadNavigatorViewModel;
   expandedProjectIds: readonly string[];
+  workspaceGeneration: number;
+  workspaceReady: boolean;
   draft: string;
   attachments: readonly DraftAttachmentViewModel[];
   canSend: boolean;

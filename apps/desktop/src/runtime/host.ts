@@ -12,6 +12,10 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { SUGARCODE_BASE_AGENT_PROMPT_V1 } from './agent-instructions.ts';
 import {
+  composerIntentInstruction,
+  composerModelText,
+} from './composer-intent.ts';
+import {
   COLLABORATION_AGENT_INSTRUCTION,
   CollaborationCoordinator,
   type AgentTaskExecutionContext,
@@ -412,6 +416,10 @@ export class RuntimeHost {
       case 'workspace.list':
         this.requireReady(command.requestId);
         void this.listWorkspace(command);
+        break;
+      case 'workspace.pathSearch':
+        this.requireReady(command.requestId);
+        void this.searchWorkspacePaths(command);
         break;
       case 'workspace.inspect':
         this.requireReady(command.requestId);
@@ -905,6 +913,43 @@ export class RuntimeHost {
     }
   };
 
+  private searchWorkspacePaths = async (
+    command: Extract<RuntimeCommand, { type: 'workspace.pathSearch' }>,
+  ): Promise<void> => {
+    try {
+      const result = this.parseNativeJson<{
+        ok: boolean;
+        paths?: readonly string[];
+        truncated?: boolean;
+      }>(
+        await this.requireNative().workspacePathSearchJson(
+          command.workspaceId,
+          command.query,
+        ),
+      );
+      if (!result.ok || !result.paths) {
+        throw new Error('Workspace files could not be searched.');
+      }
+      this.emit({
+        type: 'workspace.pathSearchResult',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        query: command.query,
+        paths: result.paths,
+        truncated: result.truncated === true,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'runtime.log',
+        requestId: command.requestId,
+        level: 'error',
+        message: error instanceof Error
+          ? error.message
+          : 'Workspace files could not be searched.',
+      });
+    }
+  };
+
   private resolveWorkspace = async (
     command: Extract<RuntimeCommand, { type: 'workspace.resolve' }>,
   ): Promise<void> => {
@@ -1218,7 +1263,7 @@ export class RuntimeHost {
     }
     const parts: Part[] = content.flatMap((part): readonly Part[] => {
       if (part.type === 'text') {
-        return [{ text: part.text }];
+        return [{ text: composerModelText(part.text) }];
       }
       const stored = this.parseNativeJson<StoredAssetContent>(
         this.requireNative().readAssetJson(part.asset.assetId),
@@ -1965,11 +2010,13 @@ export class RuntimeHost {
             command.content,
           )
         : { instruction: '', tools: [] };
+      const composerInstruction = composerIntentInstruction(command.content);
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
         instruction:
           `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}` +
+          (composerInstruction ? `\n\n${composerInstruction}` : '') +
           (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
         model: this.createModel(resolved.provider),
         beforeModelCallback: ({ request }) => {

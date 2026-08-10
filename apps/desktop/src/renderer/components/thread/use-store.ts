@@ -52,6 +52,7 @@ import {
   type ConversationWorkspaceReadActivity,
   type ConversationWorkspaceSearchActivity,
 } from '@/shared/conversation';
+import { parseComposerSubmission } from '@/shared/composer';
 
 import type {
   AgentMessagePresentationState,
@@ -402,9 +403,12 @@ export const toThreadViewModel = (
           (entry) => entry.message.id === message.id,
         );
         if (message.role === 'user') {
+          const submission = parseComposerSubmission(message.text);
           if (
             previousMessage?.role === 'user' &&
-            previousMessage.message.text === message.text &&
+            previousMessage.message.text === submission.text &&
+            JSON.stringify(previousMessage.message.references) ===
+              JSON.stringify(submission.references) &&
             JSON.stringify(previousMessage.message.attachments) ===
               JSON.stringify(message.attachments ?? [])
           ) {
@@ -414,7 +418,8 @@ export const toThreadViewModel = (
             role: 'user',
             message: {
               id: message.id,
-              text: message.text,
+              text: submission.text,
+              references: submission.references,
               attachments: message.attachments ?? [],
             },
           };
@@ -1637,6 +1642,8 @@ export const useStore = (): ThreadStore => {
     thread,
     navigator,
     expandedProjectIds,
+    workspaceGeneration: workspaceSnapshot.generation,
+    workspaceReady: workspaceSnapshot.status === 'ready',
     draft,
     attachments,
     canSend,

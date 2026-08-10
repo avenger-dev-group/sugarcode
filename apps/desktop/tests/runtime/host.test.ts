@@ -1706,6 +1706,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
     workspaceList: async () => '{}',
     workspaceInspectJson: () => '{}',
     workspaceSearch: async () => '{}',
+    workspacePathSearchJson: async () => '{}',
     workspaceApplyPatch: async () => '{}',
   } as unknown as NativeRuntimeBinding;
   const host = new RuntimeHost({
@@ -1846,6 +1847,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
       path: `src/${name}`,
     }),
     workspaceSearch: async () => JSON.stringify({ ok: true, matches: [] }),
+    workspacePathSearchJson: async () => JSON.stringify({ ok: true, paths: [] }),
     workspaceApplyPatch: async () => JSON.stringify({ ok: true, files: [] }),
     gitStatusJson: () => '{}',
     gitDiffJson: () => '{}',
@@ -2138,6 +2140,7 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     workspaceInspectJson: () => '{}',
     workspaceResolveJson: async () => '{"status":"notFound"}',
     workspaceSearch: async () => '{}',
+    workspacePathSearchJson: async () => '{}',
     workspaceApplyPatch: async () => {
       applyCount += 1;
       return JSON.stringify({ ok: true, files: [{ path: 'fixture.txt' }] });
@@ -2272,6 +2275,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
     workspaceInspectJson: () => '{}',
     workspaceResolveJson: async () => '{"status":"notFound"}',
     workspaceSearch: async () => '{}',
+    workspacePathSearchJson: async () => '{}',
     workspaceApplyPatch: async () => '{}',
     gitStatusJson: () => '{}',
     gitDiffJson: () => '{}',
@@ -2480,6 +2484,7 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     workspaceInspectJson: () => '{}',
     workspaceResolveJson: async () => '{"status":"notFound"}',
     workspaceSearch: async () => '{}',
+    workspacePathSearchJson: async () => '{}',
     workspaceApplyPatch: async () => '{}',
     gitStatusJson: () => '{}',
     gitDiffJson: () => '{}',

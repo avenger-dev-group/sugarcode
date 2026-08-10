@@ -205,6 +205,59 @@ async fn advanced_search_unifies_path_regex_case_and_glob_modes() {
 }
 
 #[tokio::test]
+async fn path_search_excludes_common_cache_directories_and_files() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    for directory in [
+        "src",
+        ".parcel-cache",
+        ".pytest_cache",
+        ".vite",
+        ".gradle",
+        ".dart_tool",
+        ".venv",
+        ".yarn/cache",
+        "DerivedData",
+    ] {
+        fs::create_dir_all(workspace.path().join(directory)).expect("fixture directory");
+    }
+    fs::write(workspace.path().join("src/mention-result.ts"), "source").expect("source");
+    for path in [
+        ".parcel-cache/mention-result.json",
+        ".pytest_cache/mention-result",
+        ".vite/mention-result.js",
+        ".gradle/mention-result.bin",
+        ".dart_tool/mention-result.json",
+        ".venv/mention-result.py",
+        ".yarn/cache/mention-result.zip",
+        "DerivedData/mention-result.swiftmodule",
+        "mention-result.tsbuildinfo",
+    ] {
+        fs::write(workspace.path().join(path), "cache").expect("cache fixture");
+    }
+    let tool = WorkspaceTool::open(workspace.path()).expect("tool");
+
+    let WorkspaceAdvancedSearchOutcome::Matches { matches, .. } = tool
+        .search_advanced(
+            &WorkspaceAdvancedSearchArguments {
+                path: ".".to_string(),
+                query: "mention-result".to_string(),
+                mode: WorkspaceSearchMode::Path,
+                case_sensitive: false,
+                regex: false,
+                file_pattern: None,
+            },
+            &CancellationToken::new(),
+        )
+        .await
+    else {
+        panic!("path matches");
+    };
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].path, "src/mention-result.ts");
+}
+
+#[tokio::test]
 async fn advanced_search_rejects_invalid_regex_and_glob() {
     let workspace = tempfile::tempdir().expect("workspace");
     let tool = WorkspaceTool::open(workspace.path()).expect("tool");

@@ -21,8 +21,41 @@ registerHooks({
 const {
   isWorkspaceResolveRequest,
   isWorkspaceResolveResult,
+  isWorkspacePathSearchRequest,
+  isWorkspacePathSearchResult,
   isWorkspaceTaskRenameRequest,
 } = await import('../../src/shared/workspace.ts');
+
+test('workspace path suggestions keep search bounded to safe relative files', () => {
+  assert.equal(
+    isWorkspacePathSearchRequest({ generation: 2, query: 'composer' }),
+    true,
+  );
+  assert.equal(
+    isWorkspacePathSearchRequest({ generation: 2, query: 'bad\nquery' }),
+    false,
+  );
+  assert.equal(
+    isWorkspacePathSearchResult({
+      accepted: true,
+      generation: 2,
+      query: 'composer',
+      paths: ['apps/desktop/src/renderer/components/composer/composer-input.tsx'],
+      truncated: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isWorkspacePathSearchResult({
+      accepted: true,
+      generation: 2,
+      query: 'composer',
+      paths: ['../outside.ts'],
+      truncated: false,
+    }),
+    false,
+  );
+});
 
 test('workspace Thread rename requests are bounded and explicit', () => {
   assert.equal(

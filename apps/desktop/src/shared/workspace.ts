@@ -12,6 +12,7 @@ export const WORKSPACE_TASK_RENAME_CHANNEL = 'workspace:task-rename';
 export const WORKSPACE_CHAT_ACTIVATE_CHANNEL = 'workspace:chat-activate';
 export const WORKSPACE_CLEAR_CHANNEL = 'workspace:clear';
 export const WORKSPACE_LIST_CHANNEL = 'workspace:list';
+export const WORKSPACE_PATH_SEARCH_CHANNEL = 'workspace:path-search';
 export const WORKSPACE_INSPECT_CHANNEL = 'workspace:inspect';
 export const WORKSPACE_RESOLVE_CHANNEL = 'workspace:resolve';
 
@@ -90,6 +91,24 @@ export type WorkspaceListResult =
       generation: number;
       path: string;
       entries: readonly WorkspaceEntry[];
+    }>
+  | Readonly<{
+      accepted: false;
+      reason: 'stale' | 'unavailable' | 'invalid' | 'failed';
+    }>;
+
+export type WorkspacePathSearchRequest = Readonly<{
+  generation: number;
+  query: string;
+}>;
+
+export type WorkspacePathSearchResult =
+  | Readonly<{
+      accepted: true;
+      generation: number;
+      query: string;
+      paths: readonly string[];
+      truncated: boolean;
     }>
   | Readonly<{
       accepted: false;
@@ -201,6 +220,9 @@ export type WorkspaceApi = Readonly<{
   listWorkspace: (
     request: WorkspaceListRequest,
   ) => Promise<WorkspaceListResult>;
+  searchWorkspacePaths: (
+    request: WorkspacePathSearchRequest,
+  ) => Promise<WorkspacePathSearchResult>;
   inspectWorkspace: (
     request: WorkspaceInspectRequest,
   ) => Promise<WorkspaceInspectResult>;
@@ -356,6 +378,18 @@ export const isWorkspaceListRequest = (
   (value.generation as number) >= 0 &&
   isSafeRelativePath(value.path, true);
 
+export const isWorkspacePathSearchRequest = (
+  value: unknown,
+): value is WorkspacePathSearchRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['generation', 'query']) &&
+  Number.isSafeInteger(value.generation) &&
+  (value.generation as number) >= 0 &&
+  typeof value.query === 'string' &&
+  value.query.trim().length > 0 &&
+  new TextEncoder().encode(value.query).byteLength <= 512 &&
+  !/[\r\n]/u.test(value.query);
+
 export const isWorkspaceInspectRequest = (
   value: unknown,
 ): value is WorkspaceInspectRequest =>
@@ -462,6 +496,40 @@ export const isWorkspaceListResult = (
         isSafeRelativePath(entry.path, false) &&
         ENTRY_KINDS.includes(entry.kind as string),
     )
+  );
+};
+
+export const isWorkspacePathSearchResult = (
+  value: unknown,
+): value is WorkspacePathSearchResult => {
+  if (!isRecord(value) || typeof value.accepted !== 'boolean') {
+    return false;
+  }
+  if (!value.accepted) {
+    return (
+      hasOnlyKeys(value, ['accepted', 'reason']) &&
+      ['stale', 'unavailable', 'invalid', 'failed'].includes(
+        value.reason as string,
+      )
+    );
+  }
+  return (
+    hasOnlyKeys(value, [
+      'accepted',
+      'generation',
+      'query',
+      'paths',
+      'truncated',
+    ]) &&
+    Number.isSafeInteger(value.generation) &&
+    (value.generation as number) >= 0 &&
+    typeof value.query === 'string' &&
+    value.query.trim().length > 0 &&
+    new TextEncoder().encode(value.query).byteLength <= 512 &&
+    Array.isArray(value.paths) &&
+    value.paths.length <= 64 &&
+    value.paths.every((path) => isSafeRelativePath(path, false)) &&
+    typeof value.truncated === 'boolean'
   );
 };
 

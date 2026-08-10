@@ -22,12 +22,20 @@ Git, hooks, filters, signing, remotes, credentials or network access.
 Recursive listing and content/path search share one traversal policy. They do
 not descend into VCS metadata, dependency trees, generated output, coverage,
 cache, runtime-log or temporary directories, including ecosystem-specific
-locations such as `vendor`, `node_modules`, `target`, `storage/logs` and
+locations such as `vendor`, `node_modules`, `target`, `.vite`, `.parcel-cache`,
+`.pytest_cache`, `.gradle`, `.dart_tool`, `.venv`, `storage/logs` and
 `bootstrap/cache`. Recursive listing and search also skip editor backups,
-temporary files, logs, source maps and minified bundles. Direct listing still reports a skipped
+temporary files, logs, source maps, TypeScript build metadata, platform/editor
+cache files and minified bundles. Direct listing still reports a skipped
 directory itself, and direct file reads remain capability-safe and available
 for an explicit task; the policy narrows broad discovery rather than removing
 the user's ability to inspect a named path.
+The Renderer may request a bounded, case-insensitive path-only search to power
+Composer `@` suggestions. The request is generation-scoped, accepts one
+bounded literal query, returns at most 64 regular-file paths and crosses the
+same preload, Main, utility-runtime and native capability boundary as Workspace
+listing. It uses the recursive traversal exclusions above, returns no file
+content, and becomes stale when the foreground Workspace generation changes.
 The Desktop private runtime protocol preserves the explorer's empty root key.
 Only the runtime host's native-list boundary maps that key to the tool's
 canonical `.` path, then projects returned children without a `./` prefix;

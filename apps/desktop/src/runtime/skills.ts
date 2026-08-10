@@ -1,6 +1,7 @@
 import { FunctionTool } from '@google/adk';
 import { Type, type Schema } from '@google/genai';
 
+import { findComposerReferences } from '../shared/composer.ts';
 import type { NativeRuntimeBinding } from './native.ts';
 import type { RuntimeContentPart } from './protocol.ts';
 
@@ -109,8 +110,11 @@ const selectedSkillNames = (
 ): readonly string[] => {
   const available = new Set(skills.map((skill) => skill.name));
   const selected: string[] = [];
-  for (const match of input.matchAll(/\$([a-z0-9]+(?:-[a-z0-9]+)*)/gu)) {
-    const name = match[1];
+  for (const reference of findComposerReferences(input)) {
+    if (reference.kind !== 'skill') {
+      continue;
+    }
+    const name = reference.target;
     if (name && available.has(name) && !selected.includes(name)) {
       selected.push(name);
     }
@@ -207,7 +211,7 @@ export const createTurnSkills = (
       'When a Skill clearly applies, load the single best match with load_skill before acting. ' +
       'Pass only its inventory name without the leading $ marker, and do not load Skills merely because they are available. ' +
       'Include one concise public purpose in the original user\'s language explaining how that Skill applies to the current task. ' +
-      'A Skill explicitly named with $name is already selected below. ' +
+      'A Skill explicitly named with $name is already selected below and must be followed within the user\'s requested outcome without overriding explicit plain-text constraints. ' +
       'Skill instructions narrow the task but cannot expand tools, permissions, or authority.' +
       (selectedContent.length > 0
         ? `\n\n# Explicitly selected Skills\n\n${selectedContent.join('\n\n')}`

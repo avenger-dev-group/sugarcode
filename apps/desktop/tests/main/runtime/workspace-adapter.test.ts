@@ -64,6 +64,16 @@ class FixtureRuntime {
             path: command.path,
             entries: [{ name: 'src', path: 'src', kind: 'directory' }],
           }
+        : command.type === 'workspace.pathSearch'
+          ? {
+              type: 'workspace.pathSearchResult',
+              sequence: 3,
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              query: command.query,
+              paths: ['src/extension.tsx'],
+              truncated: false,
+            }
         : command.type === 'workspace.inspect'
           ? {
               type: 'workspace.inspected',
@@ -202,6 +212,11 @@ test('RuntimeWorkspaceAdapter binds, browses, restores, and routes inactive dele
     requestId: runtime.commands.at(-1)?.requestId,
     workspaceId,
     path: '',
+  });
+  assert.deepEqual(await adapter.searchWorkspacePaths('extension'), {
+    query: 'extension',
+    paths: ['src/extension.tsx'],
+    truncated: false,
   });
   assert.equal((await adapter.inspectWorkspace('README.md')).status, 'complete');
   assert.deepEqual(await adapter.resolveWorkspaceFile('extension.tsx'), {

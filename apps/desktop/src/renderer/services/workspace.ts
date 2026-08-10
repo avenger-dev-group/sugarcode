@@ -3,6 +3,8 @@ import type {
   WorkspaceInspectResult,
   WorkspaceListRequest,
   WorkspaceListResult,
+  WorkspacePathSearchRequest,
+  WorkspacePathSearchResult,
   WorkspaceResolveRequest,
   WorkspaceResolveResult,
   WorkspaceSelectResult,
@@ -63,6 +65,11 @@ export const listWorkspace = (
   request: WorkspaceListRequest,
 ): Promise<WorkspaceListResult> =>
   window.sugarcode.listWorkspace(request);
+
+export const searchWorkspacePaths = (
+  request: WorkspacePathSearchRequest,
+): Promise<WorkspacePathSearchResult> =>
+  window.sugarcode.searchWorkspacePaths(request);
 
 export const inspectWorkspace = (
   request: WorkspaceInspectRequest,

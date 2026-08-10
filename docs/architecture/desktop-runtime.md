@@ -233,6 +233,28 @@ attachment, model, permission and send actions in one compact toolbar. Normal
 idle readiness, draft byte counters and token-usage summaries are not rendered
 there; shared request validation continues to enforce the bounded cross-process
 input contract.
+The Composer also exposes one keyboard-first suggestion surface for three
+explicit user notations. A line-leading `/` filters SugarCode-owned task
+commands, `$` filters the enabled Skill inventory, and `@` searches regular
+files in the active Workspace. Arrow keys move the active option, Enter or Tab
+inserts it, and Escape closes the surface without changing the draft. Task
+commands remain provider-neutral user intent, `$name` retains the frozen Skill
+selection contract, and file mentions never grant access outside the active
+Workspace. Once inserted, all three notations are mirrored in the input using
+the existing blue, non-underlined reference treatment while the native textarea
+remains the editing and accessibility surface. The mirror never rewrites the
+underlying plain-text Turn input, so selection styling cannot change runtime
+semantics or persisted drafts. After submission the Renderer derives the plain
+message and selected references from that persisted input: the message remains
+inside the user bubble while deduplicated command, Skill and file references
+appear as compact metadata below it. The runtime independently parses the same
+bounded notation, maps commands to explicit task intent, makes an explicit Skill
+binding within the plain-text request when its verified snapshot is present,
+and directs the Agent to read referenced Workspace files before relevant
+substantive work. The model-facing user content likewise separates the selected
+metadata from the plain request, while explicit plain-text constraints remain
+authoritative. This presentation and prompt enrichment does not grant new
+authority or change stored user text.
 Workspace-patch approvals are projected as a file operation, never as a shell
 or sandbox command. Their bounded presentation lists the proposed create,
 update, delete or move path effects and omits the private Agent tool name and

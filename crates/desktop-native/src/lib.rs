@@ -1036,6 +1036,50 @@ impl NativeRuntime {
         };
         serde_json::to_string(&value).map_err(|error| Error::from_reason(error.to_string()))
     }
+
+    #[napi]
+    pub async fn workspace_path_search_json(
+        &self,
+        workspace_id: String,
+        query: String,
+    ) -> Result<String> {
+        let workspace = self.workspace(&workspace_id)?;
+        let outcome = workspace
+            .search_advanced(
+                &WorkspaceAdvancedSearchArguments {
+                    path: ".".to_owned(),
+                    query,
+                    mode: WorkspaceSearchMode::Path,
+                    case_sensitive: false,
+                    regex: false,
+                    file_pattern: None,
+                },
+                &CancellationToken::new(),
+            )
+            .await;
+        let value = match outcome {
+            WorkspaceAdvancedSearchOutcome::Matches {
+                matches, truncated, ..
+            } => {
+                let mut paths = matches
+                    .into_iter()
+                    .filter(|entry| entry.kind == Some(WorkspaceListEntryKind::File))
+                    .map(|entry| entry.path)
+                    .collect::<Vec<_>>();
+                let overflow = paths.len() > 64;
+                paths.truncate(64);
+                json!({
+                    "ok": true,
+                    "paths": paths,
+                    "truncated": truncated || overflow,
+                })
+            }
+            WorkspaceAdvancedSearchOutcome::Error { kind } => {
+                json!({ "ok": false, "error": format!("{kind:?}") })
+            }
+        };
+        json_string(value)
+    }
 }
 
 impl NativeRuntime {
