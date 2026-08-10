@@ -13,7 +13,7 @@ const ContextMenuContent = ({
   <ContextMenuPrimitive.Portal>
     <ContextMenuPrimitive.Content
       className={cn(
-        'z-50 min-w-40 overflow-hidden rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 motion-reduce:animate-none',
+        'z-50 min-w-36 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-xl outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 motion-reduce:animate-none',
         className,
       )}
       {...props}
@@ -27,7 +27,7 @@ const ContextMenuItem = ({
 }: React.ComponentProps<typeof ContextMenuPrimitive.Item>) => (
   <ContextMenuPrimitive.Item
     className={cn(
-      'flex cursor-default select-none items-center gap-2 rounded-md px-2 py-2 text-sm text-secondary outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-primary [&_svg]:size-4 [&_svg]:shrink-0',
+      'flex h-7 cursor-default select-none items-center rounded px-2.5 text-sm font-normal text-primary outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[highlighted]:text-primary',
       className,
     )}
     {...props}

@@ -360,8 +360,8 @@ is disabled only while its Turn is running, the Workspace is switching, or
 another lifecycle mutation is pending; a global conversation loading or
 unavailable status does not independently disable the action, and an actual
 backend failure remains visible in the confirmation.
-Every saved Thread row exposes a plain-text rename option through a
-keyboard-accessible shadcn context menu opened from the row's native
+Every saved Thread row exposes a compact Codex-density plain-text rename option
+through a keyboard-accessible shadcn context menu opened from the row's native
 context-menu gesture. Renaming resolves the Thread's registered Workspace owner
 and does not select the Thread or change the foreground Workspace. Hover and
 keyboard focus reveal only the destructive delete action; fork and archive are

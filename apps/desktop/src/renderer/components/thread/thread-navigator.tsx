@@ -791,7 +791,7 @@ const ThreadButton = ({
           disabled={renameDisabled}
           onSelect={() => onRequestRename(threadId)}
         >
-          重命名
+          重命名聊天
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
