@@ -15,6 +15,7 @@ import {
 import {
   type KeyboardEvent,
   type ReactNode,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -78,13 +79,39 @@ type DeleteRequest =
       title: string;
     }>;
 
+const EAGER_PROJECT_THREAD_COUNT = 8;
+const DEFERRED_PROJECT_THREAD_DELAY_MS = 180;
+
 type DeferredThreadListProps = Readonly<{
-  render: () => ReactNode;
+  open: boolean;
+  threadCount: number;
+  render: (renderedThreadCount: number) => ReactNode;
 }>;
 
 const DeferredThreadList = ({
+  open,
+  threadCount,
   render,
-}: DeferredThreadListProps): ReactNode => render();
+}: DeferredThreadListProps): ReactNode => {
+  const [fullyRendered, setFullyRendered] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!open || threadCount <= EAGER_PROJECT_THREAD_COUNT) {
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setFullyRendered(true),
+      DEFERRED_PROJECT_THREAD_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [open, threadCount]);
+
+  return render(
+    fullyRendered
+      ? threadCount
+      : Math.min(threadCount, EAGER_PROJECT_THREAD_COUNT),
+  );
+};
 
 const focusThreadAt = (
   container: HTMLElement,
@@ -313,7 +340,10 @@ export const ThreadNavigator = ({
     active: boolean,
     onSelect: (threadId: string) => Promise<void>,
     nested = false,
+    renderedThreadCount = threadIds.length,
   ): ReactNode => {
+    const visibleThreadIds = threadIds.slice(0, renderedThreadCount);
+    const deferredThreadCount = threadIds.length - visibleThreadIds.length;
     const displayedThreadId = active
       ? store.navigator.pendingThreadId ??
         store.navigator.selectedThreadId
@@ -321,13 +351,14 @@ export const ThreadNavigator = ({
     const itemDisabled = workspace.busy || (active && navigationDisabled);
     return (
       <div
+        aria-busy={deferredThreadCount > 0}
         className={`space-y-0.5 py-1 ${
           nested
             ? 'ml-3 border-l border-border-subtle pl-2'
             : ''
         }`}
       >
-        {threadIds.map((threadId) => (
+        {visibleThreadIds.map((threadId) => (
           <ThreadButton
             key={threadId}
             threadId={threadId}
@@ -382,6 +413,15 @@ export const ThreadNavigator = ({
             pendingMutation={store.navigator.pendingMutation}
           />
         ))}
+        {deferredThreadCount > 0 ? (
+          <div
+            className="pointer-events-none"
+            style={{
+              height: `calc(${deferredThreadCount} * 2.375rem - 0.125rem)`,
+            }}
+            aria-hidden="true"
+          />
+        ) : null}
         {threadIds.length === 0 ? (
           <p className="px-2 py-1 text-sm font-normal leading-normal text-tertiary">
             {nested ? '还没有任务' : '还没有聊天'}
@@ -573,7 +613,9 @@ export const ThreadNavigator = ({
                         </div>
                         <CollapsibleContent className="project-disclosure-content">
                           <DeferredThreadList
-                            render={() =>
+                            open={expanded}
+                            threadCount={project.threadIds.length}
+                            render={(renderedThreadCount) =>
                               renderThreadList(
                                 project.threadIds,
                                 project.threadTitles,
@@ -581,6 +623,7 @@ export const ThreadNavigator = ({
                                 (threadId) =>
                                   selectProjectThread(project.id, threadId),
                                 true,
+                                renderedThreadCount,
                               )
                             }
                           />
