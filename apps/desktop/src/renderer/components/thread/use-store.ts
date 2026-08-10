@@ -22,16 +22,22 @@ import {
   getModelConfig,
   MODEL_CONFIG_CHANGED_EVENT,
 } from '@/renderer/services/model-config';
-import { focusWorkspaceTask } from '@/renderer/services/workspace';
+import {
+  activateWorkspaceChat,
+  focusWorkspaceTask,
+  getWorkspaceState,
+} from '@/renderer/services/workspace';
 import {
   acceptForegroundCommit,
   beginConversationSelection,
   conversationProjectionStore,
   failConversationSelection,
 } from '@/renderer/stores/conversation-projection-store';
-import { acceptWorkspaceSnapshot } from '@/renderer/stores/workspace-projection-store';
 import {
-  MAX_CONVERSATION_INPUT_BYTES,
+  acceptWorkspaceSnapshot,
+  workspaceProjectionStore,
+} from '@/renderer/stores/workspace-projection-store';
+import {
   MAX_CONVERSATION_ATTACHMENTS,
   MAX_CONVERSATION_ATTACHMENT_BYTES,
   type ConversationActionResult,
@@ -80,6 +86,7 @@ import {
   latestDurableModelProfileId,
   resolveModelProfileId,
 } from './model-selection';
+import { shouldStartChatOnSend } from './composer-state';
 import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
@@ -898,30 +905,12 @@ export const toThreadViewModel = (
       ? previous.turns
       : turns;
 
-  const statusLabel = (() => {
-    switch (snapshot.phase) {
-      case 'starting':
-        return 'Starting turn';
-      case 'inProgress':
-        return 'Agent working';
-      case 'stopping':
-        return 'Stopping safely';
-      case 'unavailable':
-        return 'Runtime unavailable';
-      case 'ready':
-        return 'Ready for the next turn';
-      default:
-        return 'Ready for a first turn';
-    }
-  })();
-
   return {
     phase: snapshot.phase,
     workspaceIdentity: snapshot.workspaceId ?? null,
     threadIdentity: snapshot.threadId ?? null,
     turns: stableTurns,
     isEmpty: stableTurns.length === 0,
-    statusLabel,
     ...(snapshot.notice ? { notice: snapshot.notice.summary } : {}),
   };
 };
@@ -965,9 +954,6 @@ export const toThreadNavigatorViewModel = (
       : {}),
   };
 };
-
-const inputBytes = (value: string): number =>
-  new TextEncoder().encode(value).byteLength;
 
 export const useTranscriptFollow = (
   thread: ThreadViewModel,
@@ -1123,6 +1109,10 @@ export const useStore = (): ThreadStore => {
     conversationProjectionStore,
     (projection) => projection.loadError,
   );
+  const workspaceSnapshot = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot,
+  );
   const [draft, setDraft] = useState<string>('');
   const [attachments, setAttachments] = useState<DraftAttachmentViewModel[]>([]);
   const [expandedProjectIds, setExpandedProjectIds] =
@@ -1240,20 +1230,21 @@ export const useStore = (): ThreadStore => {
     );
   };
 
-  const bytes = inputBytes(draft);
   const attachmentBytes = attachments.reduce(
     (total, attachment) => total + attachment.sizeBytes,
     0,
   );
+  const startsChatOnSend = shouldStartChatOnSend(workspaceSnapshot);
   const phaseAllowsSend =
-    snapshot.phase === 'idle' || snapshot.phase === 'ready';
+    snapshot.phase === 'idle' ||
+    snapshot.phase === 'ready' ||
+    startsChatOnSend;
   const canSend =
     phaseAllowsSend &&
     !snapshot.navigator.pendingThreadId &&
     !snapshot.navigator.pendingMutation &&
     !isSending &&
     (draft.trim().length > 0 || attachments.length > 0) &&
-    bytes <= MAX_CONVERSATION_INPUT_BYTES &&
     selectedModelProfileId.length > 0 &&
     Boolean(
       modelInspection?.config?.profiles.some(
@@ -1323,6 +1314,25 @@ export const useStore = (): ThreadStore => {
     setIsSending(true);
     setActionError(null);
     try {
+      if (startsChatOnSend) {
+        const activation = await activateWorkspaceChat();
+        if (!activation.accepted) {
+          setActionError(
+            activation.reason === 'busy'
+              ? '正在切换会话，请稍后重试。'
+              : '无法开始聊天，请重试。',
+          );
+          return;
+        }
+        if (activation.commit) {
+          acceptWorkspaceSnapshot(activation.commit.workspace);
+          acceptForegroundCommit(activation.commit);
+        } else {
+          await getWorkspaceState()
+            .then(acceptWorkspaceSnapshot)
+            .catch((): undefined => undefined);
+        }
+      }
       const result = await sendConversationMessage({
         input: draft,
         ...(attachments.length > 0
@@ -1344,7 +1354,7 @@ export const useStore = (): ThreadStore => {
       } else {
         setActionError(
           result.reason === 'invalidInput'
-            ? 'Enter a message within the 64 KiB limit.'
+            ? '消息内容无效，请调整后重试。'
             : 'The local Agent is not ready for another Turn.',
         );
       }
@@ -1476,12 +1486,6 @@ export const useStore = (): ThreadStore => {
   const activeTurnView = snapshot.activeTurnId
     ? thread.turns.find((turn) => turn.id === snapshot.activeTurnId)
     : undefined;
-  const inputHint =
-    bytes > MAX_CONVERSATION_INPUT_BYTES
-      ? 'Message exceeds the 64 KiB limit'
-      : attachments.length > 0
-        ? `${attachments.length} attachment${attachments.length === 1 ? '' : 's'} · ${Math.ceil(attachmentBytes / 1024)} KiB`
-        : `${Math.ceil(bytes / 1024)} / 64 KiB`;
   const latestUsage = latestTurnUsage(snapshot.turns);
   const contextBudgetHint = latestUsage
     ? formatTokenUsageHint(latestUsage)
@@ -1498,9 +1502,7 @@ export const useStore = (): ThreadStore => {
       );
       return {
         profileId: profile.id,
-        label: `${profile.displayName} · ${
-          connection?.displayName ?? 'Unavailable'
-        }`,
+        label: profile.displayName,
         available: connection?.enabled === true,
       };
     });
@@ -1512,7 +1514,7 @@ export const useStore = (): ThreadStore => {
     ) {
       available.push({
         profileId: selectedModelProfileId,
-        label: `${selectedModelProfileId} · unavailable`,
+        label: '当前模型不可用',
         available: false,
       });
     }
@@ -1523,26 +1525,15 @@ export const useStore = (): ThreadStore => {
     if (!catalog || !pendingModelProfileId) {
       return null;
     }
-    const profileDetails = (profileId: string) => {
+    const profileName = (profileId: string): string => {
       const profile = catalog.profiles.find(
         (candidate) => candidate.id === profileId,
       );
-      const connection = catalog.connections.find(
-        (candidate) => candidate.id === profile?.connectionId,
-      );
-      return {
-        name: profile?.displayName ?? profileId,
-        wireApi: connection?.wireApi ?? 'unavailable',
-      };
+      return profile?.displayName ?? profileId;
     };
-    const source = profileDetails(selectedModelProfileId);
-    const target = profileDetails(pendingModelProfileId);
     return {
-      sourceName: source.name,
-      sourceWireApi: source.wireApi,
-      targetName: target.name,
-      targetWireApi: target.wireApi,
-      protocolChanges: source.wireApi !== target.wireApi,
+      sourceName: profileName(selectedModelProfileId),
+      targetName: profileName(pendingModelProfileId),
     };
   }, [modelInspection, pendingModelProfileId, selectedModelProfileId]);
   const activeTurnProgress = activeTurnView
@@ -1559,12 +1550,10 @@ export const useStore = (): ThreadStore => {
     expandedProjectIds,
     draft,
     attachments,
-    inputBytes: bytes,
-    inputLimitBytes: MAX_CONVERSATION_INPUT_BYTES,
-    inputHint,
     contextBudgetHint,
     canSend,
     canStop,
+    startsChatOnSend,
     activeTurnProgress,
     isSending,
     actionError: actionError ?? projectionError,

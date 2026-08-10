@@ -162,7 +162,6 @@ export type ThreadViewModel = Readonly<{
   threadIdentity: string | null;
   turns: readonly TurnViewModel[];
   isEmpty: boolean;
-  statusLabel: string;
   notice?: string;
 }>;
 
@@ -202,12 +201,10 @@ export type ThreadStore = Readonly<{
   expandedProjectIds: readonly string[];
   draft: string;
   attachments: readonly DraftAttachmentViewModel[];
-  inputBytes: number;
-  inputLimitBytes: number;
-  inputHint: string;
   contextBudgetHint: string | null;
   canSend: boolean;
   canStop: boolean;
+  startsChatOnSend: boolean;
   activeTurnProgress: ActiveTurnProgressViewModel | null;
   isSending: boolean;
   actionError: string | null;
@@ -220,10 +217,7 @@ export type ThreadStore = Readonly<{
   modelSelectionDisabled: boolean;
   modelSwitchConfirmation: Readonly<{
     sourceName: string;
-    sourceWireApi: string;
     targetName: string;
-    targetWireApi: string;
-    protocolChanges: boolean;
   }> | null;
   setDraft: (value: string) => void;
   addAttachments: (files: readonly File[]) => Promise<void>;

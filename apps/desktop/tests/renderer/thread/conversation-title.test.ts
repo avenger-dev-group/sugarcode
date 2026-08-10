@@ -46,7 +46,6 @@ const thread: ThreadViewModel = {
   threadIdentity: CURRENT_THREAD_ID,
   turns: [],
   isEmpty: true,
-  statusLabel: 'Runtime unavailable',
 };
 
 const navigator: ThreadNavigatorViewModel = {
@@ -102,18 +101,54 @@ test('a switching project task uses the persisted project title', () => {
   );
 });
 
-test('a genuinely empty conversation keeps the new-conversation title', () => {
+test('an empty conversation has no heading in every workspace mode', () => {
+  const workspaces: readonly WorkspaceStateSnapshot[] = [
+    {
+      revision: 1,
+      generation: 0,
+      status: 'unselected',
+    },
+    {
+      revision: 2,
+      generation: 1,
+      status: 'ready',
+      kind: 'chat',
+    },
+    {
+      revision: 3,
+      generation: 1,
+      status: 'ready',
+      kind: 'project',
+      name: 'sugarcode',
+    },
+  ];
+
+  for (const workspace of workspaces) {
+    assert.equal(
+      resolveConversationTitle(
+        { ...thread, threadIdentity: null },
+        { ...navigator, pendingThreadId: null },
+        workspace,
+      ),
+      null,
+    );
+  }
+});
+
+test('an existing conversation shows its title directly', () => {
   assert.equal(
     resolveConversationTitle(
-      { ...thread, threadIdentity: null },
+      thread,
       { ...navigator, pendingThreadId: null },
       {
         revision: 1,
         generation: 1,
         status: 'ready',
         kind: 'chat',
+        chatThreadIds: [CURRENT_THREAD_ID],
+        chatTitles: { [CURRENT_THREAD_ID]: '已有会话' },
       },
     ),
-    '新对话',
+    '已有会话',
   );
 });

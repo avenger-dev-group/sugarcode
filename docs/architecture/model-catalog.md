@@ -19,6 +19,10 @@ URLs, unsupported capability combinations and discovery failures remain typed
 configuration outcomes; they do not prevent workspace or Thread history from
 opening.
 
+The Composer model selector presents only each profile's user-facing display
+name. Connection names and wire-family details remain configuration concerns
+and are not repeated in the conversation surface.
+
 SugarCode advertises only tools supported by the current local authority and
 runtime state. Model capability hints constrain requests but never authorize a
 filesystem, process, Git or MCP action.

@@ -46,6 +46,12 @@ capture `workspaceId`, canonical path and UI generation as one Main-owned
 snapshot and reject confirmation if that identity changed. A Git transaction
 likewise freezes its starting `workspaceId`, so a later foreground switch
 cannot redirect its follow-up status or reconciliation request.
+On a cold start with no selected workspace, the empty Composer remains writable.
+Its first send activates one managed Chat workspace before starting the Turn, so
+the user does not need to select a project or explicitly create a Chat first.
+Existing project and Chat destinations are never redirected by this fallback.
+Regardless of workspace kind, an empty Composer renders no conversation heading;
+after a Thread exists, the header renders only that conversation's title.
 
 Main also owns the process-local approval mode and its scope identity. A
 conversation grant is paired with one `threadId`; a project grant is paired
@@ -160,6 +166,9 @@ terminal and orchestration keep their existing Renderer/preload surfaces.
 Private Main adapters translate these calls to the utility runtime. The old
 app-server public protocol, CLI supervisor and sidecar executable no longer
 exist.
+Runtime readiness is reflected through conversation availability and the
+settings diagnostic rather than a persistent window footer. Removing that
+duplicate presentation does not remove Main's handshake or supervision.
 
 The composer exposes the approval mode as a descriptive permission panel rather
 than an unlabeled compact menu. It names the access boundary, explains each
@@ -170,6 +179,10 @@ from the composer. Child tasks delay their `waitingApproval` projection briefly;
 an immediately inherited policy decision therefore stays in the running state,
 while a real unresolved prompt still becomes visible. Resolved policy activity
 is labeled as inherited access in the command audit.
+The conversation input grows with the draft to a bounded height and keeps its
+attachment, model, permission and send actions in one compact toolbar. Normal
+idle readiness and draft byte counters are not rendered there; shared request
+validation continues to enforce the bounded cross-process input contract.
 Workspace-patch approvals are projected as a file operation, never as a shell
 or sandbox command. Their bounded presentation lists the proposed create,
 update, delete or move path effects and omits the private Agent tool name and

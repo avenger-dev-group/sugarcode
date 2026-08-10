@@ -3,7 +3,6 @@ import {
   CommandApprovalView,
 } from '@/renderer/components/command-approval/command-approval-surface';
 import { useStore as useCommandApprovalStore } from '@/renderer/components/command-approval/use-store';
-import { ConnectionStatusBar } from '@/renderer/components/connection/connection-status';
 import { McpApprovalSurface } from '@/renderer/components/mcp/approval-surface';
 import { useStore as useMcpStore } from '@/renderer/components/mcp/use-store';
 import { SettingsDialog } from '@/renderer/components/settings/settings-dialog';
@@ -35,7 +34,7 @@ export const FoundationScreen = () => {
 
   return (
     <div
-      className={`flex h-screen min-h-[30rem] flex-col overflow-hidden bg-background text-foreground ${
+      className={`flex h-screen min-h-120 flex-col overflow-hidden bg-background text-foreground ${
         foundation.isDark ? 'dark' : ''
       }`}
     >
@@ -73,7 +72,6 @@ export const FoundationScreen = () => {
           />
         </main>
       </OrchestrationStoreProvider>
-      <ConnectionStatusBar />
       <CommandApprovalView
         store={commandApprovalStore}
         activeThreadId={activeThreadId}

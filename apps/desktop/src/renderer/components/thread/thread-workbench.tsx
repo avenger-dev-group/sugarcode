@@ -426,10 +426,6 @@ export const ThreadWorkbenchView = ({
     store.navigator,
     workspace.state,
   );
-  const conversationSubtitle =
-    workspace.state.kind === 'chat'
-      ? '独立 Chat'
-      : workspace.state.name ?? workspace.state.projectName ?? '项目对话';
   const pendingThreadId = store.navigator.pendingThreadId;
   const selectionError = pendingThreadId
     ? store.navigator.selectionNotice
@@ -511,17 +507,14 @@ export const ThreadWorkbenchView = ({
               <PanelLeftOpen aria-hidden="true" />
             </Button>
           ) : null}
-          <div className="window-no-drag min-w-0 select-text">
+          {conversationTitle ? (
             <p
-              className="truncate text-sm font-normal tracking-[-0.015em]"
+              className="window-no-drag min-w-0 truncate text-sm font-normal tracking-[-0.015em]"
               title={conversationTitle}
             >
               {conversationTitle}
             </p>
-            <p className="truncate text-xs font-normal text-tertiary">
-              {conversationSubtitle}
-            </p>
-          </div>
+          ) : null}
           {contextRail && onToggleContextRail ? (
             <Button
               type="button"
@@ -639,7 +632,7 @@ export const ThreadWorkbenchView = ({
               </p>
             )}
             <div
-              className="overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)]"
+              className="overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] transition-[border-color,box-shadow] focus-within:border-input focus-within:ring-2 focus-within:ring-ring/10"
               onDragOver={(event) => {
                 if (event.dataTransfer.types.includes('Files')) {
                   event.preventDefault();
@@ -707,6 +700,7 @@ export const ThreadWorkbenchView = ({
                 </div>
               ) : null}
               <Textarea
+                rows={1}
                 value={store.draft}
                 onChange={(event) => store.setDraft(event.target.value)}
                 onPaste={(event) => {
@@ -732,22 +726,28 @@ export const ThreadWorkbenchView = ({
                   store.thread.phase === 'inProgress' ||
                   store.thread.phase === 'stopping' ||
                   store.thread.phase === 'starting' ||
-                  store.thread.phase === 'unavailable' ||
+                  (store.thread.phase === 'unavailable' &&
+                    !store.startsChatOnSend) ||
+                  store.isSending ||
                   store.navigator.pendingThreadId !== null
                 }
                 aria-label="Message SugarCode"
-                aria-describedby="conversation-input-hint"
+                aria-describedby={
+                  store.contextBudgetHint
+                    ? 'conversation-context-hint'
+                    : undefined
+                }
                 placeholder="描述你想完成的任务…"
-                className="min-h-24 max-h-52 px-4 pt-3.5"
+                className="min-h-16 max-h-64 overflow-y-auto px-4 pt-3 pb-2 [field-sizing:content]"
               />
-              <div className="flex items-center justify-between gap-3 border-t px-3 py-2">
+              <div className="flex items-end justify-between gap-3 px-3 pt-1 pb-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <Button
                       type="button"
                       size="icon"
                       variant="ghost"
-                      className="size-7"
+                      className="size-8"
                       aria-label="Attach files"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={store.modelSelectionDisabled}
@@ -763,7 +763,7 @@ export const ThreadWorkbenchView = ({
                       }
                     >
                       <SelectTrigger
-                        className="h-7 w-auto max-w-64 border-0 bg-transparent px-1.5 text-xs shadow-none"
+                        className="h-8 w-auto max-w-56 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-surface"
                         aria-label="Model for next turn"
                       >
                         <SelectValue placeholder="No model configured" />
@@ -781,41 +781,15 @@ export const ThreadWorkbenchView = ({
                       </SelectContent>
                     </Select>
                     {permissionControl}
-                    <p
-                      className={`min-w-0 truncate text-xs ${
-                        store.activeTurnProgress?.state === 'uncertain'
-                          ? 'text-process'
-                          : store.activeTurnProgress
-                            ? 'agent-status-shimmer'
-                            : 'text-secondary'
-                      }`}
-                    >
-                      {store.activeTurnProgress?.label ??
-                        store.thread.statusLabel}
-                    </p>
                   </div>
-                  <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-1.5 text-[11px]">
+                  {store.contextBudgetHint ? (
                     <span
-                      id="conversation-input-hint"
-                      className={
-                        store.inputBytes > store.inputLimitBytes
-                          ? 'text-destructive'
-                          : 'text-tertiary'
-                      }
+                      id="conversation-context-hint"
+                      className="mt-1 block pl-2 text-[11px] text-tertiary"
                     >
-                      {store.inputHint}
+                      {store.contextBudgetHint}
                     </span>
-                    {store.contextBudgetHint ? (
-                      <>
-                        <span className="text-tertiary" aria-hidden="true">
-                          ·
-                        </span>
-                        <span className="text-tertiary">
-                          {store.contextBudgetHint}
-                        </span>
-                      </>
-                    ) : null}
-                  </div>
+                  ) : null}
                 </div>
                 {store.canStop ? (
                   <Button
@@ -835,6 +809,7 @@ export const ThreadWorkbenchView = ({
                   <Button
                     type="button"
                     size="icon"
+                    className="size-9 rounded-xl"
                     onClick={() => void store.send()}
                     disabled={!store.canSend}
                     aria-label="Send message"
@@ -892,46 +867,49 @@ export const ThreadWorkbenchView = ({
           if (!open) store.cancelModelSwitch();
         }}
       >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>切换下一轮使用的模型？</AlertDialogTitle>
-            <AlertDialogDescription>
-              此对话已有持久化 Turn。切换只影响下一轮，不会改写已经完成或正在运行的内容。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {store.modelSwitchConfirmation ? (
-            <div className="grid gap-2 rounded-xl border bg-surface/50 p-3 text-sm">
-              <div className="grid grid-cols-[4rem_1fr] gap-2">
-                <span className="text-tertiary">来源</span>
-                <span className="min-w-0 break-words">
-                  {store.modelSwitchConfirmation.sourceName} ·{' '}
-                  <span className="font-mono text-xs text-secondary">
-                    {store.modelSwitchConfirmation.sourceWireApi}
-                  </span>
-                </span>
+        <AlertDialogContent className="max-w-xl grid-rows-[auto_minmax(0,1fr)_auto]">
+          <div className="border-b px-5 py-4 sm:px-6">
+            <AlertDialogHeader>
+              <AlertDialogTitle>切换模型？</AlertDialogTitle>
+              <AlertDialogDescription>
+                新模型将从下一条消息开始使用，已有对话内容不会改变。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+          </div>
+          <div className="min-h-0 overflow-y-auto px-5 py-5 sm:px-6">
+            {store.modelSwitchConfirmation ? (
+              <div className="rounded-lg border bg-surface p-4">
+                <dl className="grid gap-4 text-sm">
+                  <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3">
+                    <dt className="text-secondary">当前</dt>
+                    <dd className="min-w-0">
+                      <p className="break-words font-medium text-foreground">
+                        {store.modelSwitchConfirmation.sourceName}
+                      </p>
+                    </dd>
+                  </div>
+                  <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3">
+                    <dt className="text-secondary">切换为</dt>
+                    <dd className="min-w-0">
+                      <p className="break-words font-medium text-foreground">
+                        {store.modelSwitchConfirmation.targetName}
+                      </p>
+                    </dd>
+                  </div>
+                </dl>
               </div>
-              <div className="grid grid-cols-[4rem_1fr] gap-2">
-                <span className="text-tertiary">目标</span>
-                <span className="min-w-0 break-words">
-                  {store.modelSwitchConfirmation.targetName} ·{' '}
-                  <span className="font-mono text-xs text-secondary">
-                    {store.modelSwitchConfirmation.targetWireApi}
-                  </span>
-                </span>
-              </div>
-              {store.modelSwitchConfirmation.protocolChanges ? (
-                <p className="mt-1 text-xs leading-5 text-secondary">
-                  Wire API 将发生变化；SugarCode 会把可移植历史转换到目标协议。
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={store.cancelModelSwitch}>
-              取消
+            ) : null}
+          </div>
+          <AlertDialogFooter className="border-t bg-surface px-5 py-4 sm:items-center sm:px-6">
+            <AlertDialogCancel asChild>
+              <Button type="button" variant="outline">
+                取消
+              </Button>
             </AlertDialogCancel>
-            <AlertDialogAction onClick={store.confirmModelSwitch}>
-              确认切换
+            <AlertDialogAction asChild>
+              <Button type="button" onClick={store.confirmModelSwitch}>
+                确认切换
+              </Button>
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
