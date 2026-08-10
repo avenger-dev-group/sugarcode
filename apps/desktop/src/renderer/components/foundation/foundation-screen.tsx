@@ -63,7 +63,6 @@ export const FoundationScreen = () => {
               <SettingsDialog
                 isDark={foundation.isDark}
                 themeLabel={foundation.themeLabel}
-                turnBusy={turnBusy}
                 toggleTheme={foundation.toggleTheme}
               />
             }

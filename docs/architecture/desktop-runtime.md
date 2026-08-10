@@ -166,6 +166,9 @@ terminal and orchestration keep their existing Renderer/preload surfaces.
 Private Main adapters translate these calls to the utility runtime. The old
 app-server public protocol, CLI supervisor and sidecar executable no longer
 exist.
+The Settings navigation currently rollout-gates MCP: its entry remains visible
+as a disabled forthcoming item, and the Renderer does not mount the MCP session
+or registry configuration surface while that gate is active.
 Runtime readiness is reflected through conversation availability and the
 settings diagnostic rather than a persistent window footer. Removing that
 duplicate presentation does not remove Main's handshake or supervision.

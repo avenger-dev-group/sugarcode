@@ -10,7 +10,6 @@ import {
 } from 'lucide-react';
 
 import { ConnectionStatus } from '@/renderer/components/connection/connection-status';
-import { McpSessionPanel } from '@/renderer/components/mcp/session-panel';
 import { ModelConfigSettingsPanel } from '@/renderer/components/model-config/model-config-workbench';
 import { Button } from '@/renderer/components/ui/button';
 import {
@@ -29,14 +28,22 @@ import type {
 import { useStore } from './use-store';
 
 const SETTINGS_SECTIONS: readonly Readonly<{
-  id: SettingsSection;
+  id: SettingsSection | 'mcp';
   label: string;
   icon: typeof Monitor;
+  disabled?: boolean;
+  notice?: string;
 }>[] = [
   { id: 'general', label: 'General', icon: Monitor },
   { id: 'model', label: 'Model', icon: Cpu },
   { id: 'skills', label: 'Skills', icon: Sparkles },
-  { id: 'mcp', label: 'MCP', icon: PlugZap },
+  {
+    id: 'mcp',
+    label: 'MCP',
+    icon: PlugZap,
+    disabled: true,
+    notice: '即将推出',
+  },
 ];
 
 const SettingsPageHeader = ({
@@ -166,7 +173,6 @@ const SkillsSettings = () => (
 export const SettingsDialog = ({
   isDark,
   themeLabel,
-  turnBusy,
   toggleTheme,
 }: SettingsDialogProps) => {
   const store = useStore();
@@ -214,21 +220,36 @@ export const SettingsDialog = ({
             <div className="grid grid-cols-4 gap-1 sm:block sm:space-y-1">
               {SETTINGS_SECTIONS.map((section) => {
                 const Icon = section.icon;
-                const current = store.section === section.id;
+                const current =
+                  section.id !== 'mcp' && store.section === section.id;
                 return (
                   <button
                     key={section.id}
                     type="button"
+                    disabled={section.disabled}
                     aria-current={current ? 'page' : undefined}
-                    onClick={() => store.setSection(section.id)}
+                    onClick={() => {
+                      if (section.id !== 'mcp') {
+                        store.setSection(section.id);
+                      }
+                    }}
                     className={`flex w-full min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:justify-start sm:gap-2.5 sm:px-3 sm:text-left ${
-                      current
+                      section.disabled
+                        ? 'cursor-not-allowed border-transparent text-tertiary'
+                        : current
                         ? 'border-border bg-background text-foreground shadow-sm'
                         : 'border-transparent text-secondary hover:bg-surface-hover hover:text-foreground'
                     }`}
                   >
                     <Icon className="size-4 text-tertiary" aria-hidden="true" />
-                    {section.label}
+                    <span className="min-w-0 leading-5">
+                      <span className="block">{section.label}</span>
+                      {section.notice ? (
+                        <span className="block text-[10px] leading-3 font-medium text-warning">
+                          {section.notice}
+                        </span>
+                      ) : null}
+                    </span>
                   </button>
                 );
               })}
@@ -247,18 +268,6 @@ export const SettingsDialog = ({
               <ModelConfigSettingsPanel active={store.open} />
             ) : null}
             {store.section === 'skills' ? <SkillsSettings /> : null}
-            {store.section === 'mcp' ? (
-              <>
-                <SettingsPageHeader
-                  icon={PlugZap}
-                  title="MCP"
-                  description="Choose the bounded local servers available to this process and manage the saved registry."
-                />
-                <div className="px-3 pb-5">
-                  <McpSessionPanel turnBusy={turnBusy} embedded />
-                </div>
-              </>
-            ) : null}
           </section>
         </div>
       </DialogContent>

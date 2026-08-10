@@ -25,6 +25,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-success: var(--success);
+  --color-warning: var(--warning);
   --color-border: var(--border);
   --color-border-subtle: var(--border-subtle);
   --color-input: var(--input);
@@ -68,6 +69,7 @@
   --user-message-foreground: var(--primary);
   --destructive: oklch(0.577 0.245 27.325);
   --success: oklch(0.627 0.194 149.214);
+  --warning: #a66b00;
   --link: #0969da;
   --link-hover: #0550ae;
   --syntax-attribute: #116329;
@@ -90,6 +92,7 @@
   --user-message-foreground: var(--background);
   --destructive: oklch(0.704 0.191 22.216);
   --success: oklch(0.792 0.209 151.711);
+  --warning: #f2bd45;
   --link: #58a6ff;
   --link-hover: #79c0ff;
   --syntax-attribute: #7ee787;
