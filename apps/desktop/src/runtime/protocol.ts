@@ -256,6 +256,7 @@ export type RuntimeCommand =
       turnId: string;
       provider?: RuntimeProviderConfig;
       modelProfileId?: string;
+      generateTitle?: boolean;
       content: readonly RuntimeContentPart[];
     }>
   | Readonly<{
@@ -333,6 +334,13 @@ export type RuntimeCommand =
       requestId: string;
       workspaceId: string;
       title?: string;
+    }>
+  | Readonly<{
+      type: 'thread.rename';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      title: string;
     }>
   | Readonly<{
       type: 'thread.fork' | 'thread.archive' | 'thread.unarchive' | 'thread.delete';
@@ -815,7 +823,14 @@ export type RuntimeEvent =
       Readonly<{
         type: 'thread.mutated';
         workspaceId: string;
-        operation: 'create' | 'fork' | 'archive' | 'unarchive' | 'delete';
+        operation:
+          | 'create'
+          | 'rename'
+          | 'generateTitle'
+          | 'fork'
+          | 'archive'
+          | 'unarchive'
+          | 'delete';
         threadId: string;
         snapshot?: RuntimeThreadSnapshot;
         deleted?: boolean;
@@ -990,6 +1005,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
             (value.modelProfileId === undefined ||
               (typeof value.modelProfileId === 'string' &&
                 /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))))) &&
+        (value.generateTitle === undefined ||
+          typeof value.generateTitle === 'boolean') &&
         Array.isArray(value.content) &&
         value.content.length > 0 &&
         value.content.every(isRuntimeContentPart)
@@ -1059,10 +1076,16 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.workspaceId === 'string' &&
         typeof value.threadId === 'string'
       );
+    case 'thread.rename':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        isThreadTitle(value.title)
+      );
     case 'thread.create':
       return (
         typeof value.workspaceId === 'string' &&
-        (value.title === undefined || typeof value.title === 'string')
+        (value.title === undefined || isThreadTitle(value.title))
       );
     case 'git.status':
       return typeof value.workspaceId === 'string';
@@ -1502,9 +1525,15 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
     case 'thread.mutated':
       return (
         typeof value.workspaceId === 'string' &&
-        ['create', 'fork', 'archive', 'unarchive', 'delete'].includes(
-          String(value.operation),
-        ) &&
+        [
+          'create',
+          'rename',
+          'generateTitle',
+          'fork',
+          'archive',
+          'unarchive',
+          'delete',
+        ].includes(String(value.operation)) &&
         typeof value.threadId === 'string' &&
         (value.deleted === undefined ||
           (value.operation === 'delete' && typeof value.deleted === 'boolean')) &&
@@ -1529,11 +1558,17 @@ const isThreadRecord = (value: unknown): value is RuntimeThreadRecord =>
   isRecord(value) &&
   typeof value.id === 'string' &&
   typeof value.workspaceId === 'string' &&
-  (value.title === null || typeof value.title === 'string') &&
+  (value.title === null || isThreadTitle(value.title)) &&
   Number.isInteger(value.createdAt) &&
   Number.isInteger(value.updatedAt) &&
   (value.archivedAt === null || Number.isInteger(value.archivedAt)) &&
   (value.parentThreadId === null || typeof value.parentThreadId === 'string');
+
+const isThreadTitle = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  utf8ByteLength(value) <= 256 &&
+  !Array.from(value).some((character) => /\p{Cc}/u.test(character));
 
 const isThreadSnapshot = (value: unknown): value is RuntimeThreadSnapshot =>
   isRecord(value) &&

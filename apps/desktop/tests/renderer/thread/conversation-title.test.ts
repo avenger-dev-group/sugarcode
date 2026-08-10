@@ -152,3 +152,21 @@ test('an existing conversation shows its title directly', () => {
     '已有会话',
   );
 });
+
+test('an untitled durable conversation displays the new conversation label', () => {
+  assert.equal(
+    resolveConversationTitle(
+      thread,
+      { ...navigator, pendingThreadId: null },
+      {
+        revision: 1,
+        generation: 1,
+        status: 'ready',
+        kind: 'chat',
+        chatThreadIds: [CURRENT_THREAD_ID],
+        chatTitles: {},
+      },
+    ),
+    '新对话',
+  );
+});

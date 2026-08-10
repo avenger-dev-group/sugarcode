@@ -17,6 +17,38 @@ fn seeded_store(directory: &tempfile::TempDir) -> Store {
 }
 
 #[test]
+fn thread_title_generation_is_conditional_and_manual_rename_is_authoritative() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let mut store = seeded_store(&directory);
+    let unchanged: Value = serde_json::from_str(
+        &store
+            .update_thread_title_json("thread-1", "workspace-1", "Generated", true)
+            .expect("conditional title"),
+    )
+    .expect("unchanged snapshot");
+    assert_eq!(unchanged["thread"]["title"], "Fixture");
+
+    let renamed: Value = serde_json::from_str(
+        &store
+            .update_thread_title_json("thread-1", "workspace-1", "Manual title", false)
+            .expect("manual title"),
+    )
+    .expect("renamed snapshot");
+    assert_eq!(renamed["thread"]["title"], "Manual title");
+
+    store
+        .ensure_thread("thread-untitled", "workspace-1", None)
+        .expect("untitled thread");
+    let generated: Value = serde_json::from_str(
+        &store
+            .update_thread_title_json("thread-untitled", "workspace-1", "Generated title", true)
+            .expect("generated title"),
+    )
+    .expect("generated snapshot");
+    assert_eq!(generated["thread"]["title"], "Generated title");
+}
+
+#[test]
 fn skill_preferences_are_durable_and_reject_malformed_identifiers() {
     let directory = tempfile::tempdir().expect("tempdir");
     let skill_id = format!("skl_{}", "a".repeat(64));

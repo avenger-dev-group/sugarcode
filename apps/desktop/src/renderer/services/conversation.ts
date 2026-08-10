@@ -78,3 +78,9 @@ export const deleteConversationThread = (
   threadId: string,
 ): Promise<ConversationActionResult> =>
   desktopApi().deleteConversationThread(threadId);
+
+export const renameConversationThread = (
+  threadId: string,
+  title: string,
+): Promise<ConversationActionResult> =>
+  desktopApi().renameConversationThread(threadId, title);

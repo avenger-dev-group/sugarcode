@@ -39,6 +39,15 @@ Runner plugin captures the adapter's provider-neutral classification before
 that conversion so timeout, transport, authentication and retryability survive
 unchanged at the Turn boundary instead of falling back to a protocol failure.
 
+Conversation-title generation is a separate provider-neutral metadata request
+using the first task-bearing user content and the Turn's resolved model profile.
+It carries a fixed prompt-injection-resistant instruction, exposes no tools,
+limits output to 64 tokens and accepts only one bounded plain-text title in the
+user's language. It does not join ADK Agent history or the Turn usage
+projection. Greetings without task content are skipped, attachment-only Turns
+use the bounded attachment name as source material, and malformed, generic or
+failed output is discarded without affecting the Agent Turn.
+
 OpenAI Responses reasoning and tool-call continuation items remain intact
 inside the live Turn. Portable cross-Turn history contains only verified
 provider-neutral content. Anthropic thinking/tool-use/tool-result blocks follow

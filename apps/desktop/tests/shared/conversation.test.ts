@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isConversationStateSnapshot } from '../../src/shared/conversation.ts';
+import {
+  isConversationStateSnapshot,
+  isValidConversationTitle,
+} from '../../src/shared/conversation.ts';
 
 const THREAD_WEB = '00000000-0001-7000-8000-000000000001';
 const THREAD_ADMIN = '00000000-0001-7000-8000-000000000002';
@@ -38,6 +41,13 @@ test('conversation snapshots accept global navigation statuses outside the foreg
 
 test('conversation snapshots reject non-terminal unread states', () => {
   assert.equal(isConversationStateSnapshot(snapshot('inProgress')), false);
+});
+
+test('conversation titles are non-empty, control-free, and byte bounded', () => {
+  assert.equal(isValidConversationTitle('修复会话标题'), true);
+  assert.equal(isValidConversationTitle('   '), false);
+  assert.equal(isValidConversationTitle('修复\n标题'), false);
+  assert.equal(isValidConversationTitle('改'.repeat(86)), false);
 });
 
 test('conversation snapshots accept an optimistic Turn while runtime startup is pending', () => {

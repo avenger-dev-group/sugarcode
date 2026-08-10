@@ -17,11 +17,13 @@ export const CONVERSATION_THREAD_ARCHIVE_CHANNEL =
 export const CONVERSATION_THREAD_UNARCHIVE_CHANNEL =
   'conversation-thread:unarchive';
 export const CONVERSATION_THREAD_DELETE_CHANNEL = 'conversation-thread:delete';
+export const CONVERSATION_THREAD_RENAME_CHANNEL = 'conversation-thread:rename';
 
 export const MAX_CONVERSATION_INPUT_BYTES = 64 * 1024;
 export const MAX_CONVERSATION_ATTACHMENTS = 10;
 export const MAX_CONVERSATION_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_THREAD_SEARCH_BYTES = 256;
+export const MAX_CONVERSATION_TITLE_BYTES = 256;
 export const MAX_FILE_CHANGE_DIFF_BYTES = 192 * 1024;
 export const MAX_FILE_CHANGE_DIFF_LINES = 5_000;
 
@@ -555,7 +557,7 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
   }>;
   pendingThreadId?: string;
   pendingMutation?: Readonly<{
-    kind: 'fork' | 'archive' | 'unarchive' | 'delete';
+    kind: 'rename' | 'fork' | 'archive' | 'unarchive' | 'delete';
     threadId: string;
   }>;
   archivedUndoThreadId?: string;
@@ -661,6 +663,10 @@ export type ConversationApi = Readonly<{
   ) => Promise<ConversationActionResult>;
   deleteConversationThread: (
     threadId: string,
+  ) => Promise<ConversationActionResult>;
+  renameConversationThread: (
+    threadId: string,
+    title: string,
   ) => Promise<ConversationActionResult>;
 }>;
 
@@ -1751,7 +1757,7 @@ const isThreadNavigator = (
     (Object.hasOwn(value, 'pendingThreadId') && !isId(value.pendingThreadId)) ||
     (Object.hasOwn(value, 'pendingMutation') &&
       (!isRecord(pendingMutation) ||
-        !['fork', 'archive', 'unarchive', 'delete'].includes(
+        !['rename', 'fork', 'archive', 'unarchive', 'delete'].includes(
           pendingMutation.kind as string,
         ) ||
         !isId(pendingMutation.threadId))) ||
@@ -1968,3 +1974,9 @@ export const isValidThreadSearchInput = (value: unknown): value is string => {
   const query = value.trim();
   return query.length === 0 || query.split(/\s+/u).length <= 16;
 };
+
+export const isValidConversationTitle = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  new TextEncoder().encode(value).byteLength <= MAX_CONVERSATION_TITLE_BYTES &&
+  !Array.from(value).some((character) => /\p{Cc}/u.test(character));

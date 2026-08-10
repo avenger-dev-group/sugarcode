@@ -61,6 +61,11 @@ the user does not need to select a project or explicitly create a Chat first.
 Existing project and Chat destinations are never redirected by this fallback.
 Regardless of workspace kind, an empty Composer renders no conversation heading;
 after a Thread exists, the header renders only that conversation's title.
+An untitled durable Thread renders the localized `新对话` placeholder in the
+header and navigator while the utility runtime performs the independent title
+metadata request. A successful generated-title event updates Main's Thread
+record, the process-local registry and every Renderer navigation projection
+without reloading the transcript.
 
 Main also owns the process-local approval mode and its scope identity. A
 conversation grant is paired with one `threadId`; a project grant is paired
@@ -355,6 +360,12 @@ is disabled only while its Turn is running, the Workspace is switching, or
 another lifecycle mutation is pending; a global conversation loading or
 unavailable status does not independently disable the action, and an actual
 backend failure remains visible in the confirmation.
+Active-workspace Thread rows also expose a keyboard-accessible rename action.
+The shadcn Dialog and Input collect one trimmed, bounded title and keep failure
+feedback in place. Rename is safe while a Turn is running because it changes
+only Thread metadata; lifecycle mutations retain their existing running-Turn
+guard. Rust SQLite remains authoritative, and a manual rename wins over any
+in-flight generated title through the conditional persistence boundary.
 The private worker protocol is v2 and projects model text as
 `turn.textStarted`, `turn.textDelta`, and `turn.textCompleted`. Started and
 delta events are transient. A completed event carries the authoritative text,

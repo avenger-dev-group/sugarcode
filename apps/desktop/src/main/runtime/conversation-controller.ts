@@ -5,6 +5,7 @@ import {
   isConversationThreadProjectionSnapshot,
   isConversationStateSnapshot,
   isConversationSendRequest,
+  isValidConversationTitle,
   isValidThreadSearchInput,
   type ConversationActionResult,
   type ConversationActivity,
@@ -220,11 +221,6 @@ const withoutNavigatorFields = (
     delete next[field];
   }
   return next;
-};
-
-const titleFromInput = (input: string): string | undefined => {
-  const title = input.trim().replace(/\s+/gu, ' ').slice(0, 80);
-  return title || undefined;
 };
 
 const runtimeError = (error: RuntimeProviderError): ConversationTurnError => {
@@ -565,6 +561,9 @@ export class RuntimeConversationController {
     }
     const workspaceId = this.workspaceId;
     let threadId = this.threadId;
+    let generateTitle = threadId
+      ? this.threadRecords.get(threadId)?.title === null
+      : true;
     if (
       this.pendingTurnStartWorkspaces.has(workspaceId) ||
       (threadId && this.activeTurnsByThread.has(threadId)) ||
@@ -606,7 +605,6 @@ export class RuntimeConversationController {
             type: 'thread.create',
             requestId: randomUUID(),
             workspaceId,
-            ...(titleFromInput(input.input) ? { title: titleFromInput(input.input) } : {}),
           },
           'thread.mutated',
         );
@@ -614,6 +612,7 @@ export class RuntimeConversationController {
           throw new Error('The local runtime did not return the new Thread.');
         }
         threadId = created.threadId;
+        generateTitle = true;
         this.threadRecords.set(created.threadId, created.snapshot.thread);
         this.turnsByThread.set(created.threadId, []);
         if (this.workspaceId === workspaceId && !this.threadId) {
@@ -650,6 +649,7 @@ export class RuntimeConversationController {
         threadId,
         turnId,
         ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
+        ...(generateTitle ? { generateTitle: true } : {}),
         content,
       });
       this.publishThreadProjection(threadId, true);
@@ -883,6 +883,73 @@ export class RuntimeConversationController {
   deleteThread = async (threadId: unknown): Promise<ConversationActionResult> =>
     this.mutateThread('delete', threadId);
 
+  renameThread = async (
+    threadId: unknown,
+    title: unknown,
+  ): Promise<ConversationActionResult> => {
+    if (
+      typeof threadId !== 'string' ||
+      !isValidConversationTitle(title) ||
+      !this.threadRecords.has(threadId)
+    ) {
+      return rejected('invalidInput');
+    }
+    const thread = this.threadRecords.get(threadId);
+    if (
+      !thread ||
+      thread.workspaceId !== this.workspaceId ||
+      !this.workspaceId ||
+      this.navigator.pendingMutation
+    ) {
+      return rejected('unavailable');
+    }
+    const workspaceId = this.workspaceId;
+    const normalizedTitle = title.trim();
+    this.navigator = {
+      ...this.navigator,
+      pendingMutation: { kind: 'rename', threadId },
+    };
+    this.publish();
+    try {
+      const event = await this.runtime.request(
+        {
+          type: 'thread.rename',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId,
+          title: normalizedTitle,
+        },
+        'thread.mutated',
+      );
+      if (
+        event.operation !== 'rename' ||
+        event.workspaceId !== workspaceId ||
+        !event.snapshot
+      ) {
+        throw new Error('Thread rename returned a mismatched snapshot.');
+      }
+      this.threadRecords.set(threadId, event.snapshot.thread);
+      if (this.workspaceId === workspaceId) {
+        this.navigator = withoutNavigatorFields(this.navigator, [
+          'pendingMutation',
+          'mutationNotice',
+        ]);
+        this.refreshNavigator();
+        this.publish();
+      }
+      return accepted();
+    } catch {
+      if (this.workspaceId === workspaceId) {
+        this.navigator = {
+          ...withoutNavigatorFields(this.navigator, ['pendingMutation']),
+          mutationNotice: '会话名称修改失败，请重试。',
+        };
+        this.publish();
+      }
+      return rejected('unavailable');
+    }
+  };
+
   private mutateThread = async (
     operation: 'fork' | 'archive' | 'unarchive' | 'delete',
     threadId: unknown,
@@ -965,6 +1032,21 @@ export class RuntimeConversationController {
   };
 
   private handleRuntimeEvent = (event: RuntimeEvent): void => {
+    if (
+      event.type === 'thread.mutated' &&
+      (event.operation === 'rename' || event.operation === 'generateTitle') &&
+      event.snapshot
+    ) {
+      const current = this.threadRecords.get(event.threadId);
+      if (current?.workspaceId === event.workspaceId) {
+        this.threadRecords.set(event.threadId, event.snapshot.thread);
+        if (this.workspaceId === event.workspaceId) {
+          this.refreshNavigator();
+          this.publish();
+        }
+      }
+      return;
+    }
     if (
       (!event.type.startsWith('turn.') &&
         !event.type.startsWith('agent.') &&

@@ -35,6 +35,7 @@ const emptyThreadSnapshot = (threadId = 'thread-fixture'): string =>
 const turnNativeFixture = (options: Readonly<{
   appendItem?: NativeRuntimeBinding['appendItem'];
   finishTurn?: NativeRuntimeBinding['finishTurn'];
+  updateThreadTitleJson?: NativeRuntimeBinding['updateThreadTitleJson'];
 }> = {}): NativeRuntimeBinding => ({
   inspectMcpConfigJson: () => JSON.stringify({
     contractVersion: 1,
@@ -45,6 +46,9 @@ const turnNativeFixture = (options: Readonly<{
   listPendingApprovalsJson: () => '[]',
   ensureThread: (): void => undefined,
   loadThreadJson: (threadId: string): string => emptyThreadSnapshot(threadId),
+  updateThreadTitleJson:
+    options.updateThreadTitleJson ??
+    ((threadId: string) => emptyThreadSnapshot(threadId)),
   startTurn: (): void => undefined,
   appendItem: options.appendItem ?? (() => true),
   finishTurn: options.finishTurn ?? (() => true),
@@ -768,6 +772,97 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
   assert.equal(terminal?.status, 'completed');
+});
+
+test('RuntimeHost generates and conditionally persists an untitled Thread title', async () => {
+  const events: RuntimeEvent[] = [];
+  let generatedTitle = '';
+  let conditional = false;
+  let turnCompleted = false;
+  let titleCompleted = false;
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const finishIfReady = (): void => {
+    if (turnCompleted && titleCompleted) {
+      resolveCompleted?.();
+    }
+  };
+  const native = turnNativeFixture({
+    updateThreadTitleJson: (threadId, workspaceId, title, onlyIfUnset) => {
+      generatedTitle = title;
+      conditional = onlyIfUnset;
+      const snapshot = JSON.parse(emptyThreadSnapshot(threadId)) as Record<
+        string,
+        unknown
+      >;
+      (snapshot.thread as Record<string, unknown>).workspaceId = workspaceId;
+      (snapshot.thread as Record<string, unknown>).title = title;
+      return JSON.stringify(snapshot);
+    },
+  });
+  const host = new RuntimeHost({
+    createModel: () => new FixtureLlm({ model: 'fixture-model' }),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        turnCompleted = true;
+      }
+      if (
+        event.type === 'thread.mutated' &&
+        event.operation === 'generateTitle'
+      ) {
+        titleCompleted = true;
+      }
+      finishIfReady();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-title-initialize',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-title-fixture',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-title-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-title-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    generateTitle: true,
+    content: [{ type: 'text', text: '修复会话标题' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(
+        () => reject(new Error('Timed out waiting for generated title.')),
+        2_000,
+      ),
+    ),
+  ]);
+
+  assert.equal(generatedTitle, 'Fixture response');
+  assert.equal(conditional, true);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === 'thread.mutated' &&
+        event.operation === 'generateTitle' &&
+        event.snapshot?.thread.title === 'Fixture response',
+    ),
+  );
 });
 
 test('RuntimeHost scopes durable Item IDs to each Turn across worker restarts', async () => {
@@ -1712,6 +1807,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     ensureWorkspace: () => undefined,
     ensureThread: () => undefined,
     createThreadJson: () => '{}',
+    updateThreadTitleJson: () => '{}',
     listThreadsJson: () => '[]',
     setThreadArchivedJson: () => '{}',
     deleteThread: () => true,
@@ -2024,6 +2120,7 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     ensureWorkspace: () => undefined,
     ensureThread: () => undefined,
     createThreadJson: () => '{}',
+    updateThreadTitleJson: () => '{}',
     listThreadsJson: () => '[]',
     setThreadArchivedJson: () => '{}',
     deleteThread: () => true,
@@ -2157,6 +2254,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
     ensureWorkspace: () => undefined,
     ensureThread: () => undefined,
     createThreadJson: () => emptyThreadSnapshot(),
+    updateThreadTitleJson: () => emptyThreadSnapshot(),
     listThreadsJson: () => '[]',
     setThreadArchivedJson: () => emptyThreadSnapshot(),
     deleteThread: () => true,
@@ -2371,6 +2469,7 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     ensureWorkspace: () => undefined,
     ensureThread: () => undefined,
     createThreadJson: () => emptyThreadSnapshot(),
+    updateThreadTitleJson: () => emptyThreadSnapshot(),
     listThreadsJson: () => '[]',
     setThreadArchivedJson: () => emptyThreadSnapshot(),
     deleteThread: () => true,

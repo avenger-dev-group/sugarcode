@@ -200,7 +200,7 @@ export type ThreadNavigatorViewModel = Readonly<{
   selectedThreadId: string | null;
   pendingThreadId: string | null;
   pendingMutation: Readonly<{
-    kind: 'fork' | 'archive' | 'unarchive' | 'delete';
+    kind: 'rename' | 'fork' | 'archive' | 'unarchive' | 'delete';
     threadId: string;
   }> | null;
   archivedUndoThreadId: string | null;
@@ -231,6 +231,13 @@ export type ThreadStore = Readonly<{
   activeTurnProgress: ActiveTurnProgressViewModel | null;
   isSending: boolean;
   actionError: string | null;
+  rename: Readonly<{
+    request: Readonly<{ threadId: string; title: string }> | null;
+    draft: string;
+    pending: boolean;
+    error: string | null;
+    canSave: boolean;
+  }>;
   modelOptions: readonly Readonly<{
     profileId: string;
     label: string;
@@ -255,6 +262,10 @@ export type ThreadStore = Readonly<{
   archiveThread: (threadId: string) => Promise<void>;
   unarchiveThread: (threadId: string) => Promise<void>;
   deleteThread: (threadId: string) => Promise<void>;
+  requestThreadRename: (threadId: string, title: string) => void;
+  setRenameDraft: (title: string) => void;
+  cancelThreadRename: () => void;
+  confirmThreadRename: () => Promise<void>;
   send: () => Promise<void>;
   stop: () => Promise<void>;
 }>;

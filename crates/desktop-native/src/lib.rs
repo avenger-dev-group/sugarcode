@@ -488,6 +488,19 @@ impl NativeRuntime {
     }
 
     #[napi]
+    pub fn update_thread_title_json(
+        &self,
+        thread_id: String,
+        workspace_id: String,
+        title: String,
+        only_if_unset: bool,
+    ) -> Result<String> {
+        self.with_store(|store| {
+            store.update_thread_title_json(&thread_id, &workspace_id, &title, only_if_unset)
+        })
+    }
+
+    #[napi]
     pub fn list_threads_json(&self, workspace_id: String, query: Option<String>) -> Result<String> {
         self.with_store(|store| store.list_threads_json(&workspace_id, query.as_deref()))
     }

@@ -9,6 +9,7 @@ import {
   GitFork,
   LoaderCircle,
   PanelLeftClose,
+  Pencil,
   Plus,
   RotateCcw,
   ShieldQuestion,
@@ -31,6 +32,13 @@ import {
   AlertDialogTitle,
 } from '@/renderer/components/ui/alert-dialog';
 import { Button } from '@/renderer/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from '@/renderer/components/ui/dialog';
+import { Input } from '@/renderer/components/ui/input';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
 
@@ -262,6 +270,7 @@ export const ThreadNavigator = ({
               (threadId === displayedThreadId && selectedTurnActive)
             }
             actionsEnabled={active}
+            renameDisabled={navigationDisabled || workspace.busy}
             deleteDisabled={
               isThreadDeleteDisabled({
                 workspaceBusy: workspace.busy,
@@ -275,6 +284,16 @@ export const ThreadNavigator = ({
             onSelect={onSelect}
             onFork={store.forkThread}
             onArchive={store.archiveThread}
+            onRequestRename={(requestedThreadId) => {
+              const currentTitle =
+                (active
+                  ? store.navigator.threadTitles[requestedThreadId]
+                  : undefined) ??
+                threadTitles[requestedThreadId] ??
+                workspace.state.chatTitles?.[requestedThreadId] ??
+                '新对话';
+              store.requestThreadRename(requestedThreadId, currentTitle);
+            }}
             onRequestDelete={(requestedThreadId) => {
               setDeleteError(null);
               setDeleteRequest({
@@ -283,7 +302,7 @@ export const ThreadNavigator = ({
                 title:
                   threadTitles[requestedThreadId] ??
                   workspace.state.chatTitles?.[requestedThreadId] ??
-                  '未命名会话',
+                  '新对话',
               });
             }}
             pendingMutation={store.navigator.pendingMutation}
@@ -545,6 +564,72 @@ export const ThreadNavigator = ({
         ) : null}
       </nav>
 
+      <Dialog
+        open={store.rename.request !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            store.cancelThreadRename();
+          }
+        }}
+      >
+        <DialogContent className="max-w-md p-5">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void store.confirmThreadRename();
+            }}
+          >
+            <DialogTitle className="text-sm font-medium">
+              重命名对话
+            </DialogTitle>
+            <DialogDescription className="mt-1 text-sm text-secondary">
+              使用一个简短、可识别的名称，方便稍后找回这个对话。
+            </DialogDescription>
+            <Input
+              className="mt-4"
+              value={store.rename.draft}
+              maxLength={80}
+              disabled={store.rename.pending}
+              autoFocus
+              aria-label="对话名称"
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) => {
+                store.setRenameDraft(event.currentTarget.value);
+              }}
+            />
+            {store.rename.error ? (
+              <p className="mt-2 text-sm text-destructive" role="alert">
+                {store.rename.error}
+              </p>
+            ) : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={store.rename.pending}
+                onClick={store.cancelThreadRename}
+              >
+                取消
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  store.rename.pending || !store.rename.canSave
+                }
+              >
+                {store.rename.pending ? (
+                  <LoaderCircle
+                    className="animate-spin motion-reduce:animate-none"
+                    aria-hidden="true"
+                  />
+                ) : null}
+                {store.rename.pending ? '正在保存…' : '保存'}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog
         open={deleteRequest !== null}
         onOpenChange={(open) => {
@@ -570,7 +655,7 @@ export const ThreadNavigator = ({
             <AlertDialogDescription>
               {deleteRequest?.kind === 'project'
                 ? `只会从项目列表移除“${deleteRequest.name}”，不会删除本地文件或历史会话。重新打开该文件夹即可恢复。`
-                : `删除“${deleteRequest?.title ?? '未命名会话'}”后无法恢复，确定要继续吗？`}
+                : `删除“${deleteRequest?.title ?? '新对话'}”后无法恢复，确定要继续吗？`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {deleteError ? (
@@ -664,12 +749,14 @@ type ThreadButtonProps = Readonly<{
   status: ThreadNavigationStatus;
   disabled: boolean;
   mutationDisabled: boolean;
+  renameDisabled: boolean;
   actionsEnabled: boolean;
   deleteDisabled: boolean;
   pendingMutation: ThreadStore['navigator']['pendingMutation'];
   onSelect: (threadId: string) => Promise<void>;
   onFork: (threadId: string) => Promise<void>;
   onArchive: (threadId: string) => Promise<void>;
+  onRequestRename: (threadId: string) => void;
   onRequestDelete: (threadId: string) => void;
 }>;
 
@@ -680,12 +767,14 @@ const ThreadButton = ({
   status,
   disabled,
   mutationDisabled,
+  renameDisabled,
   actionsEnabled,
   deleteDisabled,
   pendingMutation,
   onSelect,
   onFork,
   onArchive,
+  onRequestRename,
   onRequestDelete,
 }: ThreadButtonProps) => (
   <div
@@ -702,7 +791,7 @@ const ThreadButton = ({
       data-thread-item
       aria-current={current ? 'page' : undefined}
       aria-busy={status === 'opening' || status === 'running'}
-      aria-label={`${current ? 'Current ' : ''}${title ?? 'Untitled conversation'}`}
+      aria-label={`${current ? 'Current ' : ''}${title ?? '新对话'}`}
       aria-disabled={disabled}
       onClick={() => {
         if (!disabled) {
@@ -716,7 +805,7 @@ const ThreadButton = ({
       <span
         className={`min-w-0 flex-1 truncate text-sm ${current ? 'font-medium' : 'font-normal'}`}
       >
-        {title ?? (status === 'running' ? '新会话' : '未命名会话')}
+        {title ?? '新对话'}
       </span>
     </button>
     <div
@@ -726,7 +815,18 @@ const ThreadButton = ({
       {actionsEnabled ? (
         <>
           <ThreadActionButton
-            label={`创建会话分支：${title ?? '未命名会话'}`}
+            label={`重命名对话：${title ?? '新对话'}`}
+            active={
+              pendingMutation?.kind === 'rename' &&
+              pendingMutation.threadId === threadId
+            }
+            disabled={renameDisabled}
+            onClick={() => onRequestRename(threadId)}
+          >
+            <Pencil aria-hidden="true" />
+          </ThreadActionButton>
+          <ThreadActionButton
+            label={`创建会话分支：${title ?? '新对话'}`}
             active={
               pendingMutation?.kind === 'fork' &&
               pendingMutation.threadId === threadId
@@ -737,7 +837,7 @@ const ThreadButton = ({
             <GitFork aria-hidden="true" />
           </ThreadActionButton>
           <ThreadActionButton
-            label={`归档会话：${title ?? '未命名会话'}`}
+            label={`归档会话：${title ?? '新对话'}`}
             active={
               pendingMutation?.kind === 'archive' &&
               pendingMutation.threadId === threadId
@@ -750,7 +850,7 @@ const ThreadButton = ({
         </>
       ) : null}
       <ThreadActionButton
-        label={`删除会话：${title ?? '未命名会话'}`}
+        label={`删除会话：${title ?? '新对话'}`}
         active={false}
         disabled={deleteDisabled}
         destructive

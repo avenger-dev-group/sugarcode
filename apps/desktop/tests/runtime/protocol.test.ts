@@ -8,6 +8,29 @@ import {
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
+test('private Thread protocol accepts bounded rename metadata', () => {
+  assert.equal(
+    isRuntimeCommand({
+      type: 'thread.rename',
+      requestId: 'request-rename',
+      workspaceId: 'workspace-fixture',
+      threadId: 'thread-fixture',
+      title: '修复会话标题',
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'thread.rename',
+      requestId: 'request-rename-invalid',
+      workspaceId: 'workspace-fixture',
+      threadId: 'thread-fixture',
+      title: '',
+    }),
+    false,
+  );
+});
+
 test('private runtime v2 validates stable text Item lifecycle events', () => {
   const coordinates = {
     sequence: 1,

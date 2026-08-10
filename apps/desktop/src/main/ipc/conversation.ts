@@ -10,6 +10,7 @@ import {
   CONVERSATION_THREAD_DELETE_CHANNEL,
   CONVERSATION_THREAD_FORK_CHANNEL,
   CONVERSATION_THREAD_NEW_CHANNEL,
+  CONVERSATION_THREAD_RENAME_CHANNEL,
   CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
   CONVERSATION_THREAD_PROJECTION_GET_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
@@ -47,6 +48,10 @@ type ConversationControllerBoundary = Readonly<{
   archiveThread: (threadId: unknown) => Promise<ConversationActionResult>;
   unarchiveThread: (threadId: unknown) => Promise<ConversationActionResult>;
   deleteThread: (threadId: unknown) => Promise<ConversationActionResult>;
+  renameThread: (
+    threadId: unknown,
+    title: unknown,
+  ) => Promise<ConversationActionResult>;
 }>;
 import {
   getTrustedMainWindow,
@@ -131,6 +136,16 @@ export const registerConversationIpc = (
     return options.controller.startNewThread();
   });
 
+  ipcMain.handle(
+    CONVERSATION_THREAD_RENAME_CHANNEL,
+    async (event, threadId: unknown, title: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error('Thread rename came from an untrusted frame.');
+      }
+      return options.controller.renameThread(threadId, title);
+    },
+  );
+
   for (const [channel, action] of [
     [CONVERSATION_THREAD_FORK_CHANNEL, options.controller.forkThread],
     [CONVERSATION_THREAD_ARCHIVE_CHANNEL, options.controller.archiveThread],
@@ -178,6 +193,7 @@ export const registerConversationIpc = (
     ipcMain.removeHandler(CONVERSATION_THREAD_SEARCH_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SELECT_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_NEW_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_THREAD_RENAME_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_FORK_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_ARCHIVE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_UNARCHIVE_CHANNEL);

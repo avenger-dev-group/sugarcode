@@ -61,6 +61,12 @@ export type NativeRuntimeBinding = Readonly<{
     title?: string,
   ) => void;
   createThreadJson: (workspaceId: string, title?: string) => string;
+  updateThreadTitleJson: (
+    threadId: string,
+    workspaceId: string,
+    title: string,
+    onlyIfUnset: boolean,
+  ) => string;
   listThreadsJson: (workspaceId: string, query?: string) => string;
   setThreadArchivedJson: (
     threadId: string,

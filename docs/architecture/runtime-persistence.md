@@ -44,6 +44,14 @@ recovered by rebuilding only that Thread projection from the current Main cache
 or its durable snapshot; no schema migration or global foreground reload is
 required.
 
+New Threads are created without deriving a title from the opening words of the
+first user message. Their absent durable title projects as the localized
+`新对话` placeholder until metadata generation succeeds. The utility runtime
+persists an automatically generated title only while the SQLite title remains
+unset. An explicit user rename is an unconditional bounded metadata update, so
+a late automatic result can never overwrite the user's chosen title. Title
+generation or persistence failure does not change the owning Turn outcome.
+
 ## Recovery
 
 On open, unfinished Turns and active Agent tasks become `interrupted`.

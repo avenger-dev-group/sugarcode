@@ -52,6 +52,7 @@ import {
   CONVERSATION_THREAD_DELETE_CHANNEL,
   CONVERSATION_THREAD_FORK_CHANNEL,
   CONVERSATION_THREAD_NEW_CHANNEL,
+  CONVERSATION_THREAD_RENAME_CHANNEL,
   CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
   CONVERSATION_THREAD_PROJECTION_GET_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
@@ -805,6 +806,20 @@ export const createDesktopApi = (
       threadId,
       'delete',
     ),
+  renameConversationThread: async (
+    threadId: string,
+    title: string,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_THREAD_RENAME_CHANNEL,
+      threadId,
+      title,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid Thread rename result.');
+    }
+    return result;
+  },
   getMcpSessionState: async (): Promise<McpSessionStateSnapshot> => {
     const snapshot: unknown = await ipcRenderer.invoke(
       MCP_SESSION_STATE_GET_CHANNEL,

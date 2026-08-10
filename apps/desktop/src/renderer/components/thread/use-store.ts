@@ -13,6 +13,7 @@ import {
   archiveConversationThread,
   deleteConversationThread,
   forkConversationThread,
+  renameConversationThread,
   sendConversationMessage,
   startNewConversationThread,
   stopConversationTurn,
@@ -40,6 +41,7 @@ import {
 import {
   MAX_CONVERSATION_ATTACHMENTS,
   MAX_CONVERSATION_ATTACHMENT_BYTES,
+  isValidConversationTitle,
   type ConversationActionResult,
   type ConversationMessageStatus,
   type ConversationCommandApprovalActivity,
@@ -1170,6 +1172,13 @@ export const useStore = (): ThreadStore => {
     useState<readonly string[]>([]);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [renameRequest, setRenameRequest] = useState<Readonly<{
+    threadId: string;
+    title: string;
+  }> | null>(null);
+  const [renameDraft, setRenameDraftState] = useState<string>('');
+  const [renamePending, setRenamePending] = useState<boolean>(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [modelInspection, setModelInspection] =
     useState<Awaited<ReturnType<typeof getModelConfig>> | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] =
@@ -1529,6 +1538,64 @@ export const useStore = (): ThreadStore => {
       'That durable Thread could not be deleted safely.',
     );
 
+  const persistThreadRename = async (
+    threadId: string,
+    title: string,
+  ): Promise<boolean> => {
+    setActionError(null);
+    try {
+      const result = await renameConversationThread(threadId, title);
+      if (result.accepted) {
+        return true;
+      }
+      setActionError('That conversation could not be renamed.');
+      return false;
+    } catch {
+      setActionError('Desktop could not rename that conversation safely.');
+      return false;
+    }
+  };
+
+  const requestThreadRename = (threadId: string, title: string): void => {
+    setRenameRequest({ threadId, title });
+    setRenameDraftState(title);
+    setRenameError(null);
+  };
+
+  const setRenameDraft = (title: string): void => {
+    setRenameDraftState(title);
+    setRenameError(null);
+  };
+
+  const cancelThreadRename = (): void => {
+    if (renamePending) {
+      return;
+    }
+    setRenameRequest(null);
+    setRenameDraftState('');
+    setRenameError(null);
+  };
+
+  const confirmThreadRename = async (): Promise<void> => {
+    if (!renameRequest || renamePending) {
+      return;
+    }
+    const title = renameDraft.trim();
+    if (!isValidConversationTitle(title)) {
+      setRenameError('请输入不超过 80 个字符的有效名称。');
+      return;
+    }
+    setRenamePending(true);
+    setRenameError(null);
+    if (await persistThreadRename(renameRequest.threadId, title)) {
+      setRenameRequest(null);
+      setRenameDraftState('');
+    } else {
+      setRenameError('无法重命名这个对话，请稍后重试。');
+    }
+    setRenamePending(false);
+  };
+
   const thread = useMemo<ThreadViewModel>(() => {
     const next = toThreadViewModel(snapshot, previousThread.current);
     previousThread.current = next;
@@ -1603,6 +1670,15 @@ export const useStore = (): ThreadStore => {
     activeTurnProgress,
     isSending,
     actionError: actionError ?? projectionError,
+    rename: {
+      request: renameRequest,
+      draft: renameDraft,
+      pending: renamePending,
+      error: renameError,
+      canSave:
+        isValidConversationTitle(renameDraft.trim()) &&
+        renameDraft.trim() !== renameRequest?.title,
+    },
     modelOptions,
     selectedModelProfileId,
     modelSelectionDisabled:
@@ -1624,6 +1700,10 @@ export const useStore = (): ThreadStore => {
     archiveThread,
     unarchiveThread,
     deleteThread,
+    requestThreadRename,
+    setRenameDraft,
+    cancelThreadRename,
+    confirmThreadRename,
     send,
     stop,
   };

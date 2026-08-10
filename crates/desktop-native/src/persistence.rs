@@ -256,6 +256,46 @@ impl Store {
         self.load_thread_json(&thread_id)
     }
 
+    pub(super) fn update_thread_title_json(
+        &mut self,
+        thread_id: &str,
+        workspace_id: &str,
+        title: &str,
+        only_if_unset: bool,
+    ) -> Result<String> {
+        validate_id("thread_id", thread_id)?;
+        validate_id("workspace_id", workspace_id)?;
+        validate_title(Some(title))?;
+        if title.trim().is_empty() {
+            return Err(PersistenceError::InvalidInput(
+                "thread title cannot be empty".to_owned(),
+            ));
+        }
+        let changed = self.connection.execute(
+            "UPDATE threads SET title = ?3, updated_at = unixepoch() \
+             WHERE id = ?1 AND workspace_id = ?2 \
+             AND (?4 = 0 OR title IS NULL)",
+            params![thread_id, workspace_id, title, only_if_unset],
+        )?;
+        if changed == 0 {
+            let exists = self
+                .connection
+                .query_row(
+                    "SELECT 1 FROM threads WHERE id = ?1 AND workspace_id = ?2",
+                    params![thread_id, workspace_id],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !exists {
+                return Err(PersistenceError::InvalidInput(format!(
+                    "thread {thread_id} was not found in workspace {workspace_id}"
+                )));
+            }
+        }
+        self.load_thread_json(thread_id)
+    }
+
     pub(super) fn list_threads_json(
         &mut self,
         workspace_id: &str,

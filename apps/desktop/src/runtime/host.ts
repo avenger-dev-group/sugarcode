@@ -65,6 +65,10 @@ import {
 } from './tool-result.ts';
 import { toolProgressSummary } from './tool-progress-summary.ts';
 import {
+  generateThreadTitle,
+  titleSourceFromContent,
+} from './thread-title.ts';
+import {
   RuntimeMcpManager,
   type McpToolApproval,
 } from './mcp.ts';
@@ -694,6 +698,26 @@ export class RuntimeHost {
           workspaceId: command.workspaceId,
           operation: 'create',
           threadId: snapshot.thread.id,
+          snapshot,
+        });
+        break;
+      }
+      case 'thread.rename': {
+        this.requireReady(command.requestId);
+        const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+          this.requireNative().updateThreadTitleJson(
+            command.threadId,
+            command.workspaceId,
+            command.title.trim(),
+            false,
+          ),
+        );
+        this.emit({
+          type: 'thread.mutated',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'rename',
+          threadId: command.threadId,
           snapshot,
         });
         break;
@@ -1923,6 +1947,9 @@ export class RuntimeHost {
         itemId: `${command.turnId}:user`,
         content: command.content,
       });
+      if (command.generateTitle) {
+        void this.generateTitle(command, resolved, controller.signal);
+      }
       const collaborationTools = this.nativeRuntime
         ? this.collaboration.toolsForTurn(
             command,
@@ -2084,6 +2111,48 @@ export class RuntimeHost {
     } finally {
       this.collaboration.releaseTurn(command.turnId);
       this.activeTurns.delete(command.turnId);
+    }
+  };
+
+  private generateTitle = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    resolved: ResolvedProfile,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const source = titleSourceFromContent(command.content);
+    if (!source || !this.nativeRuntime) {
+      return;
+    }
+    const title = await generateThreadTitle(
+      this.createModel(resolved.provider),
+      source,
+      signal,
+    );
+    if (!title || signal.aborted || !this.nativeRuntime) {
+      return;
+    }
+    try {
+      const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+        this.nativeRuntime.updateThreadTitleJson(
+          command.threadId,
+          command.workspaceId,
+          title,
+          true,
+        ),
+      );
+      if (snapshot.thread.title !== title) {
+        return;
+      }
+      this.emit({
+        type: 'thread.mutated',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        operation: 'generateTitle',
+        threadId: command.threadId,
+        snapshot,
+      });
+    } catch {
+      // Title metadata failure never changes the owning Turn outcome.
     }
   };
 

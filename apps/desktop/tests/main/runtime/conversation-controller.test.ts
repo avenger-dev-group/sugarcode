@@ -84,6 +84,30 @@ class FixtureRuntime {
         },
       } as RuntimeEvent;
     }
+    if (command.type === 'thread.rename') {
+      return {
+        type: 'thread.mutated',
+        requestId: command.requestId,
+        sequence: 3,
+        workspaceId: command.workspaceId,
+        operation: 'rename',
+        threadId: command.threadId,
+        snapshot: {
+          thread: {
+            id: command.threadId,
+            workspaceId: command.workspaceId,
+            title: command.title,
+            createdAt: 1,
+            updatedAt: 2,
+            archivedAt: null,
+            parentThreadId: null,
+          },
+          turns: [],
+          items: [],
+          agentTasks: [],
+        },
+      } as RuntimeEvent;
+    }
     if (command.type === 'asset.import') {
       const sha256 = 'a'.repeat(64);
       return {
@@ -218,6 +242,12 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     throw new Error('Turn was not sent.');
   }
   assert.equal(started.content[1]?.type, 'asset');
+  assert.equal(started.generateTitle, true);
+  const created = fixture.sent.find((command) => command.type === 'thread.create');
+  assert.equal(created?.type, 'thread.create');
+  if (created?.type === 'thread.create') {
+    assert.equal(created.title, undefined);
+  }
   const startingSnapshot = controller.getSnapshot();
   assert.equal(isConversationStateSnapshot(startingSnapshot), true);
   assert.equal(startingSnapshot.phase, 'starting');
@@ -602,6 +632,58 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     true,
   );
   assert.ok(publishedThreadDeltas.some((delta) => delta.turn.usage));
+});
+
+test('runtime conversation controller projects generated and user-edited titles', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+  assert.equal((await controller.startTurn({ input: '修复会话标题' })).accepted, true);
+  const started = fixture.sent.find(
+    (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
+      command.type === 'turn.start',
+  );
+  assert.ok(started);
+  assert.equal(
+    controller.getSnapshot().navigator.activeThreadTitles[THREAD_ID],
+    undefined,
+  );
+  fixture.emit({
+    type: 'thread.mutated',
+    requestId: started.requestId,
+    sequence: 10,
+    workspaceId: WORKSPACE_ID,
+    operation: 'generateTitle',
+    threadId: THREAD_ID,
+    snapshot: {
+      thread: {
+        id: THREAD_ID,
+        workspaceId: WORKSPACE_ID,
+        title: '修复会话标题',
+        createdAt: 1,
+        updatedAt: 2,
+        archivedAt: null,
+        parentThreadId: null,
+      },
+      turns: [],
+      items: [],
+      agentTasks: [],
+    },
+  });
+  assert.equal(
+    controller.getSnapshot().navigator.activeThreadTitles[THREAD_ID],
+    '修复会话标题',
+  );
+  assert.equal(
+    (await controller.renameThread(THREAD_ID, '自定义名称')).accepted,
+    true,
+  );
+  assert.equal(
+    controller.getSnapshot().navigator.activeThreadTitles[THREAD_ID],
+    '自定义名称',
+  );
 });
 
 test('runtime conversation controller commits only the latest Thread selection', async () => {
