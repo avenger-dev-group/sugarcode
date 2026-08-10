@@ -184,8 +184,9 @@ while a real unresolved prompt still becomes visible. Resolved policy activity
 is labeled as inherited access in the command audit.
 The conversation input grows with the draft to a bounded height and keeps its
 attachment, model, permission and send actions in one compact toolbar. Normal
-idle readiness and draft byte counters are not rendered there; shared request
-validation continues to enforce the bounded cross-process input contract.
+idle readiness, draft byte counters and token-usage summaries are not rendered
+there; shared request validation continues to enforce the bounded cross-process
+input contract.
 Workspace-patch approvals are projected as a file operation, never as a shell
 or sandbox command. Their bounded presentation lists the proposed create,
 update, delete or move path effects and omits the private Agent tool name and

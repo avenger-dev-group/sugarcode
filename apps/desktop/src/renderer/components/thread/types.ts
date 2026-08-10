@@ -201,7 +201,6 @@ export type ThreadStore = Readonly<{
   expandedProjectIds: readonly string[];
   draft: string;
   attachments: readonly DraftAttachmentViewModel[];
-  contextBudgetHint: string | null;
   canSend: boolean;
   canStop: boolean;
   startsChatOnSend: boolean;

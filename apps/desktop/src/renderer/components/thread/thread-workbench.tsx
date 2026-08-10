@@ -732,11 +732,6 @@ export const ThreadWorkbenchView = ({
                   store.navigator.pendingThreadId !== null
                 }
                 aria-label="Message SugarCode"
-                aria-describedby={
-                  store.contextBudgetHint
-                    ? 'conversation-context-hint'
-                    : undefined
-                }
                 placeholder="描述你想完成的任务…"
                 className="min-h-16 max-h-64 overflow-y-auto px-4 pt-3 pb-2 [field-sizing:content]"
               />
@@ -782,14 +777,6 @@ export const ThreadWorkbenchView = ({
                     </Select>
                     {permissionControl}
                   </div>
-                  {store.contextBudgetHint ? (
-                    <span
-                      id="conversation-context-hint"
-                      className="mt-1 block pl-2 text-[11px] text-tertiary"
-                    >
-                      {store.contextBudgetHint}
-                    </span>
-                  ) : null}
                 </div>
                 {store.canStop ? (
                   <Button

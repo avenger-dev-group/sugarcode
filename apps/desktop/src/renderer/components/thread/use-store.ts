@@ -79,10 +79,6 @@ import type {
   TurnViewModel,
 } from './types';
 import {
-  formatTokenUsageHint,
-  latestTurnUsage,
-} from './context-budget';
-import {
   latestDurableModelProfileId,
   resolveModelProfileId,
 } from './model-selection';
@@ -1486,10 +1482,6 @@ export const useStore = (): ThreadStore => {
   const activeTurnView = snapshot.activeTurnId
     ? thread.turns.find((turn) => turn.id === snapshot.activeTurnId)
     : undefined;
-  const latestUsage = latestTurnUsage(snapshot.turns);
-  const contextBudgetHint = latestUsage
-    ? formatTokenUsageHint(latestUsage)
-    : null;
   const navigator = useMemo(
     () => toThreadNavigatorViewModel(snapshot),
     [snapshot],
@@ -1550,7 +1542,6 @@ export const useStore = (): ThreadStore => {
     expandedProjectIds,
     draft,
     attachments,
-    contextBudgetHint,
     canSend,
     canStop,
     startsChatOnSend,
