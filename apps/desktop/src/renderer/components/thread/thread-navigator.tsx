@@ -9,6 +9,7 @@ import {
   PanelLeftClose,
   Plus,
   ShieldQuestion,
+  SquarePen,
   Trash2,
 } from 'lucide-react';
 import {
@@ -235,6 +236,7 @@ export const ThreadNavigator = ({
     threadTitles: Readonly<Record<string, string>>,
     active: boolean,
     onSelect: (threadId: string) => Promise<void>,
+    nested = false,
   ): ReactNode => {
     const displayedThreadId = active
       ? store.navigator.pendingThreadId ??
@@ -242,7 +244,13 @@ export const ThreadNavigator = ({
       : null;
     const itemDisabled = workspace.busy || (active && navigationDisabled);
     return (
-      <div className="space-y-0.5 pb-1 pl-6 pt-1">
+      <div
+        className={`space-y-0.5 py-1 ${
+          nested
+            ? 'ml-3 border-l border-border-subtle pl-2'
+            : ''
+        }`}
+      >
         {threadIds.map((threadId) => (
           <ThreadButton
             key={threadId}
@@ -299,8 +307,8 @@ export const ThreadNavigator = ({
           />
         ))}
         {threadIds.length === 0 ? (
-          <p className="px-2 py-1.5 text-sm font-normal leading-normal text-tertiary">
-            没有会话
+          <p className="px-2 py-1 text-sm font-normal leading-normal text-tertiary">
+            {nested ? '还没有任务' : '还没有聊天'}
           </p>
         ) : null}
       </div>
@@ -313,7 +321,7 @@ export const ThreadNavigator = ({
         aria-label="Threads"
         className="flex h-full min-h-0 w-full flex-col bg-navigation-background"
       >
-        <div className="window-drag-region relative shrink-0 px-3 pb-2 pt-10">
+        <div className="window-drag-region relative shrink-0 px-3 pb-3 pt-10">
           {onToggleNavigator ? (
             <Button
               type="button"
@@ -329,16 +337,40 @@ export const ThreadNavigator = ({
               <PanelLeftClose aria-hidden="true" />
             </Button>
           ) : null}
-          <div className="flex h-8 items-center gap-2 px-1">
+          <div className="flex h-10 items-center gap-2.5 px-1">
             <img
               src={appIcon}
               alt=""
-              className="size-6 shrink-0"
+              className="size-9 shrink-0 rounded-xl shadow-sm"
               aria-hidden="true"
             />
             <p className="min-w-0 flex-1 truncate text-sm font-semibold tracking-[-0.02em]">
               SugarCode
             </p>
+          </div>
+          <div className="window-no-drag mt-4 flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-9 min-w-0 flex-1 justify-start px-2 text-navigation"
+              disabled={workspace.busy || (chatActive && navigationDisabled)}
+              onClick={() => void startChat()}
+            >
+              <SquarePen className="size-4" aria-hidden="true" />
+              新建会话
+            </Button>
+            <Button
+              type="button"
+              size="icon-lg"
+              variant="ghost"
+              className="size-9 text-tertiary"
+              disabled={workspace.busy}
+              onClick={() => void workspace.chooseProject()}
+              aria-label="打开项目"
+              title="打开项目"
+            >
+              <FolderPlus className="size-4" aria-hidden="true" />
+            </Button>
           </div>
         </div>
 
@@ -357,22 +389,14 @@ export const ThreadNavigator = ({
         <ScrollArea className="min-h-0 flex-1">
           <div
             ref={listRef}
-            className="space-y-3 p-2"
+            className="space-y-5 p-2"
             onKeyDown={handleListKeyDown}
           >
             <section aria-labelledby="project-section-title">
-              <SectionHeading
-                id="project-section-title"
-                label="项目"
-                actionLabel="打开项目"
-                disabled={workspace.busy}
-                onAction={() => void workspace.chooseProject()}
-              >
-                <FolderPlus aria-hidden="true" />
-              </SectionHeading>
+              <SectionHeading id="project-section-title" label="项目" />
 
               {projects.length > 0 ? (
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   {projects.map((project) => {
                     const active =
                       projectActive &&
@@ -390,7 +414,7 @@ export const ThreadNavigator = ({
                             type="button"
                             data-thread-item
                             aria-expanded={expanded}
-                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             onClick={() =>
                               store.toggleProjectExpanded(project.id)
                             }
@@ -461,6 +485,7 @@ export const ThreadNavigator = ({
                               active,
                               (threadId) =>
                                 selectProjectThread(project.id, threadId),
+                              true,
                             )
                           : null}
                       </div>
@@ -468,32 +493,14 @@ export const ThreadNavigator = ({
                   })}
                 </div>
               ) : (
-                <button
-                  type="button"
-                  className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-secondary transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  disabled={workspace.busy}
-                  onClick={() => void workspace.chooseProject()}
-                >
-                  <span className="w-3.5 shrink-0" aria-hidden="true" />
-                  <FolderOpen
-                    className="size-4 shrink-0"
-                    aria-hidden="true"
-                  />
-                  <span className="text-sm">打开项目</span>
-                </button>
+                <p className="px-2 py-1 text-sm font-normal leading-normal text-tertiary">
+                  还没有项目
+                </p>
               )}
             </section>
 
             <section aria-labelledby="chat-section-title">
-              <SectionHeading
-                id="chat-section-title"
-                label="聊天"
-                actionLabel="新建聊天"
-                disabled={workspace.busy || (chatActive && navigationDisabled)}
-                onAction={() => void startChat()}
-              >
-                <Plus aria-hidden="true" />
-              </SectionHeading>
+              <SectionHeading id="chat-section-title" label="聊天" />
               {renderThreadList(
                 chatThreadIds,
                 workspace.state.chatTitles ?? {},
@@ -666,36 +673,16 @@ export const ThreadNavigator = ({
 type SectionHeadingProps = Readonly<{
   id: string;
   label: string;
-  actionLabel: string;
-  disabled: boolean;
-  onAction: () => void;
-  children: ReactNode;
 }>;
 
 const SectionHeading = ({
   id,
   label,
-  actionLabel,
-  disabled,
-  onAction,
-  children,
 }: SectionHeadingProps) => (
   <div className="mb-1 flex h-7 items-center px-2 text-sm font-normal">
     <span id={id} className="text-navigation-heading">
       {label}
     </span>
-    <Button
-      type="button"
-      size="icon-xs"
-      variant="ghost"
-      className="ml-auto disabled:opacity-100"
-      disabled={disabled}
-      onClick={onAction}
-      aria-label={actionLabel}
-      title={actionLabel}
-    >
-      {children}
-    </Button>
   </div>
 );
 

@@ -321,9 +321,12 @@ with the exact path available on hover, keyboard focus and the open-file action.
 This keeps process prose compact without weakening path identity or audit data.
 
 The context rail owns one persistent project explorer tab plus transient file,
-diff and child-Agent detail tabs. A saved project group is a local disclosure:
-selecting its folder row only expands or collapses the retained Thread list and
-does not bind a Workspace or initialize the conversation and context surfaces.
+diff and child-Agent detail tabs. The navigator header keeps flat
+new-conversation and open-project actions available independently of list scroll
+position, while section headings describe hierarchy without duplicating those
+actions. A saved project group is a local disclosure: selecting its folder row
+only expands or collapses the retained Thread list and does not bind a Workspace
+or initialize the conversation and context surfaces.
 Selecting its add action activates that project before creating a Thread, while
 selecting a retained Thread focuses its owning Workspace. Switching the
 foreground Thread clears transient context tabs rather than carrying file or
