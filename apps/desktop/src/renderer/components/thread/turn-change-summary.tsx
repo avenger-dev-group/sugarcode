@@ -64,7 +64,7 @@ export const TurnChangeSummary = ({
       </summary>
       <div className="grid grid-rows-[0fr] opacity-0 transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none group-open/changes:grid-rows-[1fr] group-open/changes:opacity-100">
         <div className="min-h-0 overflow-hidden">
-          <div className="max-h-64 overflow-y-auto overscroll-contain border-t border-border-subtle">
+          <div className="max-h-64 overflow-y-auto overscroll-y-auto border-t border-border-subtle">
             {files.map((entry) => {
               const additions = entry.reviews.reduce(
                 (total, review) => total + review.additions,

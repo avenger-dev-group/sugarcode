@@ -104,6 +104,11 @@ commentary and the final answer in the original user's language, treats internal
 continuations as language-neutral, and discourages repeated process narration
 that carries no new decision, result or blocker.
 
+Bounded vertically scrollable regions inside the conversation transcript keep
+the browser's default vertical overscroll chaining. Once a nested activity or
+file-change list reaches either boundary, continued wheel or trackpad input
+scrolls the transcript instead of being trapped by the nested region.
+
 When a tool step has no non-whitespace public commentary, the runtime projects
 one bounded provider-neutral progress summary from the verified tool name and
 safe arguments. The summary follows the original user's Chinese or English

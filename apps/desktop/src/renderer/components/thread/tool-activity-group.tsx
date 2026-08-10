@@ -514,7 +514,7 @@ export const ToolActivityGroup = ({
           aria-hidden="true"
         />
       </summary>
-      <ol className="relative ml-1.5 mt-0.5 max-h-80 overflow-y-auto overscroll-contain border-l border-border/70 pl-3 pr-1">
+      <ol className="relative ml-1.5 mt-0.5 max-h-80 overflow-y-auto overscroll-y-auto border-l border-border/70 pl-3 pr-1">
         {activities.map((entry) => (
           <li key={`${entry.type}:${entry.activity.id}`} className="min-w-0">
             {entry.type === 'fileChange' ? (
