@@ -7,6 +7,7 @@ import type {
   WorkspaceResolveResult,
   WorkspaceSelectResult,
   WorkspaceStateSnapshot,
+  WorkspaceTaskRenameRequest,
 } from '@/shared/workspace';
 
 export const getWorkspaceState = (): Promise<WorkspaceStateSnapshot> =>
@@ -42,6 +43,11 @@ export const deleteWorkspaceTask = (
   threadId: string,
 ): Promise<WorkspaceSelectResult> =>
   window.sugarcode.deleteWorkspaceTask(threadId);
+
+export const renameWorkspaceTask = (
+  request: WorkspaceTaskRenameRequest,
+): Promise<WorkspaceSelectResult> =>
+  window.sugarcode.renameWorkspaceTask(request);
 
 export const activateWorkspaceChat = (
   threadId?: string,

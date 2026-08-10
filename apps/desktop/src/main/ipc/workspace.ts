@@ -5,6 +5,7 @@ import {
   isWorkspaceChatRequest,
   isWorkspaceListRequest,
   isWorkspaceResolveRequest,
+  isWorkspaceTaskRenameRequest,
   WORKSPACE_CHAT_ACTIVATE_CHANNEL,
   WORKSPACE_CLEAR_CHANNEL,
   WORKSPACE_INSPECT_CHANNEL,
@@ -18,6 +19,7 @@ import {
   WORKSPACE_STATE_GET_CHANNEL,
   WORKSPACE_TASK_FOCUS_CHANNEL,
   WORKSPACE_TASK_DELETE_CHANNEL,
+  WORKSPACE_TASK_RENAME_CHANNEL,
 } from '@/shared/workspace';
 
 import type { WorkspaceController } from '../workspace/controller';
@@ -113,6 +115,15 @@ export const registerWorkspaceIpc = (
     },
   );
   ipcMain.handle(
+    WORKSPACE_TASK_RENAME_CHANNEL,
+    (event, request: unknown) => {
+      if (!trusted(event) || !isWorkspaceTaskRenameRequest(request)) {
+        return { accepted: false, reason: 'invalid' };
+      }
+      return options.controller.renameTask(request.threadId, request.title);
+    },
+  );
+  ipcMain.handle(
     WORKSPACE_CHAT_ACTIVATE_CHANNEL,
     (event, request: unknown) => {
       if (!trusted(event) || !isWorkspaceChatRequest(request)) {
@@ -161,6 +172,7 @@ export const registerWorkspaceIpc = (
     ipcMain.removeHandler(WORKSPACE_PROJECT_REMOVE_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_TASK_FOCUS_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_TASK_DELETE_CHANNEL);
+    ipcMain.removeHandler(WORKSPACE_TASK_RENAME_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_CHAT_ACTIVATE_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_CLEAR_CHANNEL);
     ipcMain.removeHandler(WORKSPACE_LIST_CHANNEL);

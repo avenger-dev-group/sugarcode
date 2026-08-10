@@ -207,7 +207,6 @@ const emptyNavigator = (): ConversationThreadNavigatorSnapshot => ({
 type ClearableNavigatorField =
   | 'pendingThreadId'
   | 'pendingMutation'
-  | 'archivedUndoThreadId'
   | 'selectionNotice'
   | 'mutationNotice'
   | 'unreadThreadStatuses';
@@ -859,7 +858,6 @@ export class RuntimeConversationController {
     this.threadSelectionGeneration += 1;
     this.threadId = null;
     this.navigator = withoutNavigatorFields(this.navigator, [
-      'archivedUndoThreadId',
       'pendingThreadId',
       'selectionNotice',
     ]);
@@ -867,21 +865,8 @@ export class RuntimeConversationController {
     return accepted();
   };
 
-  forkThread = async (threadId: unknown): Promise<ConversationActionResult> =>
-    this.mutateThread('fork', threadId);
-
-  archiveThread = async (threadId: unknown): Promise<ConversationActionResult> =>
-    this.mutateThread('archive', threadId);
-
-  unarchiveThread = async (threadId: unknown): Promise<ConversationActionResult> => {
-    if (threadId !== this.navigator.archivedUndoThreadId) {
-      return rejected('unknownThread');
-    }
-    return this.mutateThread('unarchive', threadId);
-  };
-
   deleteThread = async (threadId: unknown): Promise<ConversationActionResult> =>
-    this.mutateThread('delete', threadId);
+    this.deleteThreadRecord(threadId);
 
   renameThread = async (
     threadId: unknown,
@@ -950,11 +935,10 @@ export class RuntimeConversationController {
     }
   };
 
-  private mutateThread = async (
-    operation: 'fork' | 'archive' | 'unarchive' | 'delete',
+  private deleteThreadRecord = async (
     threadId: unknown,
   ): Promise<ConversationActionResult> => {
-    if (typeof threadId !== 'string' || (!this.threadRecords.has(threadId) && operation !== 'unarchive')) {
+    if (typeof threadId !== 'string' || !this.threadRecords.has(threadId)) {
       return rejected('unknownThread');
     }
     if (
@@ -971,11 +955,19 @@ export class RuntimeConversationController {
       );
     }
     const workspaceId = this.workspaceId;
-    this.navigator = { ...this.navigator, pendingMutation: { kind: operation, threadId } };
+    this.navigator = {
+      ...this.navigator,
+      pendingMutation: { kind: 'delete', threadId },
+    };
     this.publish();
     try {
       const event = await this.runtime.request(
-        { type: `thread.${operation}`, requestId: randomUUID(), workspaceId, threadId } as const,
+        {
+          type: 'thread.delete',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId,
+        },
         'thread.mutated',
       );
       if (event.workspaceId !== workspaceId) {
@@ -984,37 +976,20 @@ export class RuntimeConversationController {
       if (this.workspaceId !== workspaceId) {
         return accepted();
       }
-      if (operation === 'fork' && event.snapshot) {
-        this.threadRecords.set(event.threadId, event.snapshot.thread);
-        this.turnsByThread.set(event.threadId, [...projectThread(event.snapshot)]);
-        this.threadSelectionGeneration += 1;
-        this.threadId = event.threadId;
-        this.publishThreadProjection(event.threadId, true);
-      } else if (operation === 'unarchive' && event.snapshot) {
-        this.threadRecords.set(threadId, event.snapshot.thread);
-        this.turnsByThread.set(threadId, [...projectThread(event.snapshot)]);
-        this.threadSelectionGeneration += 1;
-        this.threadId = threadId;
-        this.publishThreadProjection(threadId, true);
-      } else if (operation === 'archive' || operation === 'delete') {
-        this.threadRecords.delete(threadId);
-        this.turnsByThread.delete(threadId);
-        this.threadRevisions.delete(threadId);
-        this.unreadThreadStatuses.delete(threadId);
-        if (this.threadId === threadId) {
-          this.threadSelectionGeneration += 1;
-          this.threadId = null;
-        }
+      if (event.operation !== 'delete' || event.deleted !== true) {
+        throw new Error('The runtime did not confirm Thread deletion.');
       }
-      this.navigator = {
-        ...withoutNavigatorFields(this.navigator, [
-          'pendingMutation',
-          'archivedUndoThreadId',
-        ]),
-        ...(operation === 'archive'
-          ? { archivedUndoThreadId: threadId }
-          : {}),
-      };
+      this.threadRecords.delete(threadId);
+      this.turnsByThread.delete(threadId);
+      this.threadRevisions.delete(threadId);
+      this.unreadThreadStatuses.delete(threadId);
+      if (this.threadId === threadId) {
+        this.threadSelectionGeneration += 1;
+        this.threadId = null;
+      }
+      this.navigator = withoutNavigatorFields(this.navigator, [
+        'pendingMutation',
+      ]);
       this.refreshNavigator();
       this.publish();
       return accepted();
@@ -1024,7 +999,7 @@ export class RuntimeConversationController {
       }
       this.navigator = {
         ...withoutNavigatorFields(this.navigator, ['pendingMutation']),
-        mutationNotice: 'The Thread lifecycle change was rejected.',
+        mutationNotice: 'The Thread deletion was rejected.',
       };
       this.publish();
       return rejected('unavailable');

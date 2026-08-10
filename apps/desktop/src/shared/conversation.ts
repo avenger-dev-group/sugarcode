@@ -11,13 +11,7 @@ export const CONVERSATION_STOP_CHANNEL = 'conversation:stop';
 export const CONVERSATION_THREAD_SEARCH_CHANNEL = 'conversation-thread:search';
 export const CONVERSATION_THREAD_SELECT_CHANNEL = 'conversation-thread:select';
 export const CONVERSATION_THREAD_NEW_CHANNEL = 'conversation-thread:new';
-export const CONVERSATION_THREAD_FORK_CHANNEL = 'conversation-thread:fork';
-export const CONVERSATION_THREAD_ARCHIVE_CHANNEL =
-  'conversation-thread:archive';
-export const CONVERSATION_THREAD_UNARCHIVE_CHANNEL =
-  'conversation-thread:unarchive';
 export const CONVERSATION_THREAD_DELETE_CHANNEL = 'conversation-thread:delete';
-export const CONVERSATION_THREAD_RENAME_CHANNEL = 'conversation-thread:rename';
 
 export const MAX_CONVERSATION_INPUT_BYTES = 64 * 1024;
 export const MAX_CONVERSATION_ATTACHMENTS = 10;
@@ -557,10 +551,9 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
   }>;
   pendingThreadId?: string;
   pendingMutation?: Readonly<{
-    kind: 'rename' | 'fork' | 'archive' | 'unarchive' | 'delete';
+    kind: 'rename' | 'delete';
     threadId: string;
   }>;
-  archivedUndoThreadId?: string;
   selectionNotice?: string;
   mutationNotice?: string;
 }>;
@@ -652,21 +645,8 @@ export type ConversationApi = Readonly<{
     threadId: string,
   ) => Promise<ConversationActionResult>;
   startNewConversationThread: () => Promise<ConversationActionResult>;
-  forkConversationThread: (
-    threadId: string,
-  ) => Promise<ConversationActionResult>;
-  archiveConversationThread: (
-    threadId: string,
-  ) => Promise<ConversationActionResult>;
-  unarchiveConversationThread: (
-    threadId: string,
-  ) => Promise<ConversationActionResult>;
   deleteConversationThread: (
     threadId: string,
-  ) => Promise<ConversationActionResult>;
-  renameConversationThread: (
-    threadId: string,
-    title: string,
   ) => Promise<ConversationActionResult>;
 }>;
 
@@ -1757,14 +1737,12 @@ const isThreadNavigator = (
     (Object.hasOwn(value, 'pendingThreadId') && !isId(value.pendingThreadId)) ||
     (Object.hasOwn(value, 'pendingMutation') &&
       (!isRecord(pendingMutation) ||
-        !['rename', 'fork', 'archive', 'unarchive', 'delete'].includes(
+        !['rename', 'delete'].includes(
           pendingMutation.kind as string,
         ) ||
         !isId(pendingMutation.threadId))) ||
     (Object.hasOwn(value, 'pendingThreadId') &&
       Object.hasOwn(value, 'pendingMutation')) ||
-    (Object.hasOwn(value, 'archivedUndoThreadId') &&
-      !isId(value.archivedUndoThreadId)) ||
     (Object.hasOwn(value, 'selectionNotice') &&
       (typeof value.selectionNotice !== 'string' ||
         value.selectionNotice.length === 0)) ||

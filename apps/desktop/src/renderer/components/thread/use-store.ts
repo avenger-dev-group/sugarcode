@@ -10,14 +10,10 @@ import {
 import { useStore as useZustandStore } from 'zustand';
 
 import {
-  archiveConversationThread,
   deleteConversationThread,
-  forkConversationThread,
-  renameConversationThread,
   sendConversationMessage,
   startNewConversationThread,
   stopConversationTurn,
-  unarchiveConversationThread,
 } from '@/renderer/services/conversation';
 import {
   getModelConfig,
@@ -27,6 +23,7 @@ import {
   activateWorkspaceChat,
   focusWorkspaceTask,
   getWorkspaceState,
+  renameWorkspaceTask,
 } from '@/renderer/services/workspace';
 import {
   acceptForegroundCommit,
@@ -996,7 +993,6 @@ export const toThreadNavigatorViewModel = (
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
     pendingMutation: snapshot.navigator.pendingMutation ?? null,
-    archivedUndoThreadId: snapshot.navigator.archivedUndoThreadId ?? null,
     truncated: snapshot.navigator.activeTruncated,
     statusLabel,
     ...(snapshot.navigator.selectionNotice
@@ -1510,27 +1506,6 @@ export const useStore = (): ThreadStore => {
     }
   };
 
-  const forkThread = (threadId: string): Promise<void> =>
-    runThreadMutation(
-      forkConversationThread,
-      threadId,
-      'That durable Thread could not be forked safely.',
-    );
-
-  const archiveThread = (threadId: string): Promise<void> =>
-    runThreadMutation(
-      archiveConversationThread,
-      threadId,
-      'That durable Thread could not be archived safely.',
-    );
-
-  const unarchiveThread = (threadId: string): Promise<void> =>
-    runThreadMutation(
-      unarchiveConversationThread,
-      threadId,
-      'That archived Thread could not be restored safely.',
-    );
-
   const deleteThread = (threadId: string): Promise<void> =>
     runThreadMutation(
       deleteConversationThread,
@@ -1544,7 +1519,7 @@ export const useStore = (): ThreadStore => {
   ): Promise<boolean> => {
     setActionError(null);
     try {
-      const result = await renameConversationThread(threadId, title);
+      const result = await renameWorkspaceTask({ threadId, title });
       if (result.accepted) {
         return true;
       }
@@ -1696,9 +1671,6 @@ export const useStore = (): ThreadStore => {
     cancelModelSwitch,
     startNewThread,
     selectThread,
-    forkThread,
-    archiveThread,
-    unarchiveThread,
     deleteThread,
     requestThreadRename,
     setRenameDraft,

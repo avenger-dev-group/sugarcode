@@ -57,7 +57,6 @@ const navigator: ThreadNavigatorViewModel = {
   selectedThreadId: null,
   pendingThreadId: TARGET_THREAD_ID,
   pendingMutation: null,
-  archivedUndoThreadId: null,
   truncated: false,
   statusLabel: 'Loading Thread',
 };

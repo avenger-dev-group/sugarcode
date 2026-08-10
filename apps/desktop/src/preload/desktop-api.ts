@@ -47,17 +47,13 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
-  CONVERSATION_THREAD_ARCHIVE_CHANNEL,
   CONVERSATION_THREAD_DELTA_CHANNEL,
   CONVERSATION_THREAD_DELETE_CHANNEL,
-  CONVERSATION_THREAD_FORK_CHANNEL,
   CONVERSATION_THREAD_NEW_CHANNEL,
-  CONVERSATION_THREAD_RENAME_CHANNEL,
   CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
   CONVERSATION_THREAD_PROJECTION_GET_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
-  CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
   isConversationActionResult,
   isConversationStateSnapshot,
   isConversationThreadProjectionDelta,
@@ -138,6 +134,7 @@ import {
   WORKSPACE_STATE_GET_CHANNEL,
   WORKSPACE_TASK_FOCUS_CHANNEL,
   WORKSPACE_TASK_DELETE_CHANNEL,
+  WORKSPACE_TASK_RENAME_CHANNEL,
   type WorkspaceChatRequest,
   type WorkspaceInspectRequest,
   type WorkspaceInspectResult,
@@ -147,6 +144,7 @@ import {
   type WorkspaceResolveResult,
   type WorkspaceSelectResult,
   type WorkspaceStateSnapshot,
+  type WorkspaceTaskRenameRequest,
 } from '@/shared/workspace';
 import {
   isPreviewActionResult,
@@ -770,33 +768,6 @@ export const createDesktopApi = (
       }
       return result;
     },
-  forkConversationThread: async (
-    threadId: string,
-  ): Promise<ConversationActionResult> =>
-    invokeConversationThreadAction(
-      ipcRenderer,
-      CONVERSATION_THREAD_FORK_CHANNEL,
-      threadId,
-      'fork',
-    ),
-  archiveConversationThread: async (
-    threadId: string,
-  ): Promise<ConversationActionResult> =>
-    invokeConversationThreadAction(
-      ipcRenderer,
-      CONVERSATION_THREAD_ARCHIVE_CHANNEL,
-      threadId,
-      'archive',
-    ),
-  unarchiveConversationThread: async (
-    threadId: string,
-  ): Promise<ConversationActionResult> =>
-    invokeConversationThreadAction(
-      ipcRenderer,
-      CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
-      threadId,
-      'unarchive',
-    ),
   deleteConversationThread: async (
     threadId: string,
   ): Promise<ConversationActionResult> =>
@@ -806,20 +777,6 @@ export const createDesktopApi = (
       threadId,
       'delete',
     ),
-  renameConversationThread: async (
-    threadId: string,
-    title: string,
-  ): Promise<ConversationActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(
-      CONVERSATION_THREAD_RENAME_CHANNEL,
-      threadId,
-      title,
-    );
-    if (!isConversationActionResult(result)) {
-      throw new Error('Main returned an invalid Thread rename result.');
-    }
-    return result;
-  },
   getMcpSessionState: async (): Promise<McpSessionStateSnapshot> => {
     const snapshot: unknown = await ipcRenderer.invoke(
       MCP_SESSION_STATE_GET_CHANNEL,
@@ -1061,6 +1018,18 @@ export const createDesktopApi = (
     );
     if (!isWorkspaceSelectResult(result)) {
       throw new Error('Main returned an invalid task deletion result.');
+    }
+    return result;
+  },
+  renameWorkspaceTask: async (
+    request: WorkspaceTaskRenameRequest,
+  ): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_TASK_RENAME_CHANNEL,
+      request,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid task rename result.');
     }
     return result;
   },

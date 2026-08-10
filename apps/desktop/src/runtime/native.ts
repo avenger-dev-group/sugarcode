@@ -68,13 +68,7 @@ export type NativeRuntimeBinding = Readonly<{
     onlyIfUnset: boolean,
   ) => string;
   listThreadsJson: (workspaceId: string, query?: string) => string;
-  setThreadArchivedJson: (
-    threadId: string,
-    workspaceId: string,
-    archived: boolean,
-  ) => string;
   deleteThread: (threadId: string, workspaceId: string) => boolean;
-  forkThreadJson: (threadId: string, workspaceId: string) => string;
   startTurn: (
     turnId: string,
     threadId: string,

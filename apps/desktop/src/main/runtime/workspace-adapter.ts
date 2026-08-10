@@ -163,6 +163,46 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
     return event.deleted === false ? 'missing' : 'deleted';
   };
 
+  renameThread = async (
+    workspaceId: string,
+    threadId: string,
+    title: string,
+  ): Promise<void> => {
+    let snapshotTitle: string | null = null;
+    if (workspaceId === this.workspaceId) {
+      const result = await this.conversation.renameThread(threadId, title);
+      if (result.accepted) {
+        snapshotTitle = title;
+      } else if (result.reason !== 'invalidInput') {
+        throw new Error('The active Thread could not be renamed.');
+      }
+    }
+    if (snapshotTitle === null) {
+      const event = await this.options.runtime.request(
+        {
+          type: 'thread.rename',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId,
+          title,
+        },
+        'thread.mutated',
+      );
+      if (
+        event.workspaceId !== workspaceId ||
+        event.threadId !== threadId ||
+        event.operation !== 'rename' ||
+        event.snapshot?.thread.title !== title
+      ) {
+        throw new Error('The runtime returned a mismatched Thread rename.');
+      }
+      snapshotTitle = event.snapshot.thread.title;
+    }
+    if (!this.options.threadRegistry.updateTitle(threadId, snapshotTitle)) {
+      throw new Error('The renamed Thread is missing from navigation.');
+    }
+  };
+
   listWorkspace = async (
     path: string,
   ): Promise<{ path: string; entries: readonly WorkspaceEntry[] }> => {

@@ -43,6 +43,29 @@ test('conversation snapshots reject non-terminal unread states', () => {
   assert.equal(isConversationStateSnapshot(snapshot('inProgress')), false);
 });
 
+test('conversation snapshots accept only rename and delete Thread mutations', () => {
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      navigator: {
+        ...snapshot('completed').navigator,
+        pendingMutation: { kind: 'delete', threadId: THREAD_WEB },
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      navigator: {
+        ...snapshot('completed').navigator,
+        pendingMutation: { kind: 'archive', threadId: THREAD_WEB },
+      },
+    }),
+    false,
+  );
+});
+
 test('conversation titles are non-empty, control-free, and byte bounded', () => {
   assert.equal(isValidConversationTitle('修复会话标题'), true);
   assert.equal(isValidConversationTitle('   '), false);

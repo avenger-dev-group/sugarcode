@@ -343,7 +343,7 @@ export type RuntimeCommand =
       title: string;
     }>
   | Readonly<{
-      type: 'thread.fork' | 'thread.archive' | 'thread.unarchive' | 'thread.delete';
+      type: 'thread.delete';
       requestId: string;
       workspaceId: string;
       threadId: string;
@@ -827,9 +827,6 @@ export type RuntimeEvent =
           | 'create'
           | 'rename'
           | 'generateTitle'
-          | 'fork'
-          | 'archive'
-          | 'unarchive'
           | 'delete';
         threadId: string;
         snapshot?: RuntimeThreadSnapshot;
@@ -1068,9 +1065,6 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         (value.query === undefined || typeof value.query === 'string')
       );
     case 'thread.load':
-    case 'thread.fork':
-    case 'thread.archive':
-    case 'thread.unarchive':
     case 'thread.delete':
       return (
         typeof value.workspaceId === 'string' &&
@@ -1529,9 +1523,6 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
           'create',
           'rename',
           'generateTitle',
-          'fork',
-          'archive',
-          'unarchive',
           'delete',
         ].includes(String(value.operation)) &&
         typeof value.threadId === 'string' &&

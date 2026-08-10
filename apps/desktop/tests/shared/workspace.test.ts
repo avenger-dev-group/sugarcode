@@ -21,7 +21,25 @@ registerHooks({
 const {
   isWorkspaceResolveRequest,
   isWorkspaceResolveResult,
+  isWorkspaceTaskRenameRequest,
 } = await import('../../src/shared/workspace.ts');
+
+test('workspace Thread rename requests are bounded and explicit', () => {
+  assert.equal(
+    isWorkspaceTaskRenameRequest({
+      threadId: '00000000-0000-7000-8000-000000000001',
+      title: '无需选中即可重命名',
+    }),
+    true,
+  );
+  assert.equal(
+    isWorkspaceTaskRenameRequest({
+      threadId: '00000000-0000-7000-8000-000000000001',
+      title: '   ',
+    }),
+    false,
+  );
+});
 
 test('workspace reference resolution accepts bounded absolute citations', () => {
   assert.equal(

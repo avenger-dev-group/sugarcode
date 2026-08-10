@@ -192,7 +192,7 @@ fn persists_provider_neutral_thread_history_and_deduplicates_items() {
 }
 
 #[test]
-fn thread_index_mutations_are_workspace_bound_and_durable() {
+fn thread_index_delete_is_workspace_bound_and_durable() {
     let directory = tempfile::tempdir().expect("tempdir");
     let mut store = seeded_store(&directory);
     store
@@ -217,46 +217,21 @@ fn thread_index_mutations_are_workspace_bound_and_durable() {
         .finish_turn("turn-1", "completed", None)
         .expect("finish turn");
 
-    let fork: Value = serde_json::from_str(
-        &store
-            .fork_thread_json("thread-1", "workspace-1")
-            .expect("fork thread"),
-    )
-    .expect("fork JSON");
-    let fork_id = fork["thread"]["id"].as_str().expect("fork id");
-    assert_ne!(fork_id, "thread-1");
-    assert_eq!(fork["thread"]["parentThreadId"], "thread-1");
-    assert_eq!(fork["turns"].as_array().map(Vec::len), Some(1));
-
     let listed: Value = serde_json::from_str(
         &store
             .list_threads_json("workspace-1", Some("Fixture"))
             .expect("list threads"),
     )
     .expect("list JSON");
-    assert_eq!(listed.as_array().map(Vec::len), Some(2));
-
-    store
-        .set_thread_archived_json(fork_id, "workspace-1", true)
-        .expect("archive thread");
-    let listed: Value = serde_json::from_str(
-        &store
-            .list_threads_json("workspace-1", None)
-            .expect("list active threads"),
-    )
-    .expect("list JSON");
     assert_eq!(listed.as_array().map(Vec::len), Some(1));
-    store
-        .set_thread_archived_json(fork_id, "workspace-1", false)
-        .expect("restore thread");
     assert!(
         store
-            .delete_thread(fork_id, "workspace-1")
+            .delete_thread("thread-1", "workspace-1")
             .expect("delete thread")
     );
     assert!(
         !store
-            .delete_thread(fork_id, "workspace-1")
+            .delete_thread("thread-1", "workspace-1")
             .expect("idempotent absent delete")
     );
 }

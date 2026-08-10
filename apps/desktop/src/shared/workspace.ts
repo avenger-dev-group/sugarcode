@@ -8,6 +8,7 @@ export const WORKSPACE_PROJECT_ACTIVATE_CHANNEL = 'workspace:project-activate';
 export const WORKSPACE_PROJECT_REMOVE_CHANNEL = 'workspace:project-remove';
 export const WORKSPACE_TASK_FOCUS_CHANNEL = 'workspace:task-focus';
 export const WORKSPACE_TASK_DELETE_CHANNEL = 'workspace:task-delete';
+export const WORKSPACE_TASK_RENAME_CHANNEL = 'workspace:task-rename';
 export const WORKSPACE_CHAT_ACTIVATE_CHANNEL = 'workspace:chat-activate';
 export const WORKSPACE_CLEAR_CHANNEL = 'workspace:clear';
 export const WORKSPACE_LIST_CHANNEL = 'workspace:list';
@@ -59,6 +60,11 @@ export type ForegroundCommit = Readonly<{
 
 export type WorkspaceChatRequest = Readonly<{
   threadId?: string;
+}>;
+
+export type WorkspaceTaskRenameRequest = Readonly<{
+  threadId: string;
+  title: string;
 }>;
 
 export type WorkspaceEntryKind =
@@ -185,6 +191,9 @@ export type WorkspaceApi = Readonly<{
   ) => Promise<WorkspaceSelectResult>;
   focusWorkspaceTask: (threadId: string) => Promise<WorkspaceSelectResult>;
   deleteWorkspaceTask: (threadId: string) => Promise<WorkspaceSelectResult>;
+  renameWorkspaceTask: (
+    request: WorkspaceTaskRenameRequest,
+  ) => Promise<WorkspaceSelectResult>;
   activateWorkspaceChat: (
     request: WorkspaceChatRequest,
   ) => Promise<WorkspaceSelectResult>;
@@ -329,6 +338,14 @@ export const isWorkspaceChatRequest = (
   isRecord(value) &&
   hasOnlyKeys(value, ['threadId']) &&
   (value.threadId === undefined || isThreadId(value.threadId));
+
+export const isWorkspaceTaskRenameRequest = (
+  value: unknown,
+): value is WorkspaceTaskRenameRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['threadId', 'title']) &&
+  isThreadId(value.threadId) &&
+  isValidConversationTitle(value.title);
 
 export const isWorkspaceListRequest = (
   value: unknown,
@@ -576,5 +593,6 @@ export const isWorkspaceResolveResult = (
 };
 import {
   isConversationThreadProjectionSnapshot,
+  isValidConversationTitle,
   type ConversationThreadProjectionSnapshot,
 } from './conversation';

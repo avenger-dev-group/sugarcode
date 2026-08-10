@@ -360,12 +360,17 @@ is disabled only while its Turn is running, the Workspace is switching, or
 another lifecycle mutation is pending; a global conversation loading or
 unavailable status does not independently disable the action, and an actual
 backend failure remains visible in the confirmation.
-Active-workspace Thread rows also expose a keyboard-accessible rename action.
-The shadcn Dialog and Input collect one trimmed, bounded title and keep failure
-feedback in place. Rename is safe while a Turn is running because it changes
-only Thread metadata; lifecycle mutations retain their existing running-Turn
-guard. Rust SQLite remains authoritative, and a manual rename wins over any
-in-flight generated title through the conditional persistence boundary.
+Every saved Thread row exposes a plain-text rename option through a
+keyboard-accessible shadcn context menu opened from the row's native
+context-menu gesture. Renaming resolves the Thread's registered Workspace owner
+and does not select the Thread or change the foreground Workspace. Hover and
+keyboard focus reveal only the destructive delete action; fork and archive are
+not Desktop actions. The shadcn Dialog and Input collect one trimmed, bounded
+title and keep failure feedback in place. Rename is safe while a Turn is
+running because it changes only Thread metadata, while delete retains its
+running-Turn guard. Rust SQLite remains authoritative, and a manual rename wins
+over any in-flight generated title through the conditional persistence
+boundary.
 The private worker protocol is v2 and projects model text as
 `turn.textStarted`, `turn.textDelta`, and `turn.textCompleted`. Started and
 delta events are transient. A completed event carries the authoritative text,

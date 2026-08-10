@@ -192,6 +192,16 @@ export class ThreadRegistry {
   getTitle = (threadId: string): string | null =>
     this.entries.get(threadId)?.title ?? null;
 
+  updateTitle = (threadId: string, title: string): boolean => {
+    const entry = this.entries.get(threadId);
+    if (!entry) {
+      return false;
+    }
+    entry.title = title;
+    this.notify();
+    return true;
+  };
+
   getOwnerView = (ownerKey: string): ThreadRegistryView => {
     const workspaceId = this.ownerWorkspaces.get(ownerKey)?.value;
     return this.createView(

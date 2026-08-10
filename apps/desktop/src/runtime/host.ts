@@ -722,45 +722,6 @@ export class RuntimeHost {
         });
         break;
       }
-      case 'thread.fork': {
-        this.requireReady(command.requestId);
-        const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
-          this.requireNative().forkThreadJson(
-            command.threadId,
-            command.workspaceId,
-          ),
-        );
-        this.emit({
-          type: 'thread.mutated',
-          requestId: command.requestId,
-          workspaceId: command.workspaceId,
-          operation: 'fork',
-          threadId: snapshot.thread.id,
-          snapshot,
-        });
-        break;
-      }
-      case 'thread.archive':
-      case 'thread.unarchive': {
-        this.requireReady(command.requestId);
-        const operation = command.type === 'thread.archive' ? 'archive' : 'unarchive';
-        const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
-          this.requireNative().setThreadArchivedJson(
-            command.threadId,
-            command.workspaceId,
-            operation === 'archive',
-          ),
-        );
-        this.emit({
-          type: 'thread.mutated',
-          requestId: command.requestId,
-          workspaceId: command.workspaceId,
-          operation,
-          threadId: command.threadId,
-          snapshot,
-        });
-        break;
-      }
       case 'thread.delete': {
         this.requireReady(command.requestId);
         const deleted = this.requireNative().deleteThread(

@@ -1,17 +1,13 @@
 import {
-  Archive,
   CircleAlert,
   CircleCheck,
   CircleStop,
   Folder,
   FolderOpen,
   FolderPlus,
-  GitFork,
   LoaderCircle,
   PanelLeftClose,
-  Pencil,
   Plus,
-  RotateCcw,
   ShieldQuestion,
   Trash2,
 } from 'lucide-react';
@@ -32,6 +28,12 @@ import {
   AlertDialogTitle,
 } from '@/renderer/components/ui/alert-dialog';
 import { Button } from '@/renderer/components/ui/button';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/renderer/components/ui/context-menu';
 import {
   Dialog,
   DialogContent,
@@ -97,10 +99,6 @@ export const ThreadNavigator = ({
     store.navigator.status === 'unavailable' ||
     store.navigator.status === 'loading' ||
     Boolean(store.navigator.pendingMutation);
-  const selectedTurnActive =
-    store.thread.phase === 'starting' ||
-    store.thread.phase === 'inProgress' ||
-    store.thread.phase === 'stopping';
   const projectActive =
     workspace.state.status === 'ready' &&
     workspace.state.kind === 'project';
@@ -264,13 +262,7 @@ export const ThreadNavigator = ({
                 store.navigator.unreadThreadStatuses[threadId],
             })}
             disabled={itemDisabled}
-            mutationDisabled={
-              navigationDisabled ||
-              workspace.busy ||
-              (threadId === displayedThreadId && selectedTurnActive)
-            }
-            actionsEnabled={active}
-            renameDisabled={navigationDisabled || workspace.busy}
+            renameDisabled={workspace.busy}
             deleteDisabled={
               isThreadDeleteDisabled({
                 workspaceBusy: workspace.busy,
@@ -282,8 +274,6 @@ export const ThreadNavigator = ({
               })
             }
             onSelect={onSelect}
-            onFork={store.forkThread}
-            onArchive={store.archiveThread}
             onRequestRename={(requestedThreadId) => {
               const currentTitle =
                 (active
@@ -359,8 +349,7 @@ export const ThreadNavigator = ({
         >
           {store.navigator.statusLabel}
           {store.navigator.truncated ? ' · First 50 shown' : ''}
-          {!store.navigator.archivedUndoThreadId &&
-          store.navigator.mutationNotice
+          {store.navigator.mutationNotice
             ? ` · ${store.navigator.mutationNotice}`
             : ''}
         </p>
@@ -533,31 +522,6 @@ export const ThreadNavigator = ({
           >
             {store.navigator.selectionNotice}
           </p>
-        ) : null}
-        {store.navigator.archivedUndoThreadId ? (
-          <div
-            className="flex items-center gap-2 border-t px-4 py-3"
-            role="status"
-            aria-live="polite"
-          >
-            <p className="min-w-0 flex-1 text-xs leading-5 text-secondary">
-              对话已归档，可在下一次生命周期操作或重连前撤销。
-            </p>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={Boolean(store.navigator.pendingMutation)}
-              onClick={() =>
-                void store.unarchiveThread(
-                  store.navigator.archivedUndoThreadId as string,
-                )
-              }
-            >
-              <RotateCcw aria-hidden="true" />
-              撤销
-            </Button>
-          </div>
         ) : null}
         {footer ? (
           <div className="shrink-0 border-t p-2">{footer}</div>
@@ -748,14 +712,10 @@ type ThreadButtonProps = Readonly<{
   current: boolean;
   status: ThreadNavigationStatus;
   disabled: boolean;
-  mutationDisabled: boolean;
   renameDisabled: boolean;
-  actionsEnabled: boolean;
   deleteDisabled: boolean;
   pendingMutation: ThreadStore['navigator']['pendingMutation'];
   onSelect: (threadId: string) => Promise<void>;
-  onFork: (threadId: string) => Promise<void>;
-  onArchive: (threadId: string) => Promise<void>;
   onRequestRename: (threadId: string) => void;
   onRequestDelete: (threadId: string) => void;
 }>;
@@ -766,102 +726,77 @@ const ThreadButton = ({
   current,
   status,
   disabled,
-  mutationDisabled,
   renameDisabled,
-  actionsEnabled,
   deleteDisabled,
   pendingMutation,
   onSelect,
-  onFork,
-  onArchive,
   onRequestRename,
   onRequestDelete,
-}: ThreadButtonProps) => (
-  <div
-    data-thread-row
-    className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-stretch overflow-hidden rounded-lg ${
-      current
-        ? 'bg-surface text-foreground'
-        : 'text-navigation hover:bg-surface hover:text-foreground'
-    }`}
-  >
-    <button
-      type="button"
-      tabIndex={disabled ? -1 : 0}
-      data-thread-item
-      aria-current={current ? 'page' : undefined}
-      aria-busy={status === 'opening' || status === 'running'}
-      aria-label={`${current ? 'Current ' : ''}${title ?? '新对话'}`}
-      aria-disabled={disabled}
-      onClick={() => {
-        if (!disabled) {
-          void onSelect(threadId);
-        }
-      }}
-      className={`flex h-9 min-w-0 flex-1 cursor-pointer items-center px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default ${
-        actionsEnabled ? 'rounded-l-lg' : 'rounded-lg'
-      }`}
-    >
-      <span
-        className={`min-w-0 flex-1 truncate text-sm ${current ? 'font-medium' : 'font-normal'}`}
-      >
-        {title ?? '新对话'}
-      </span>
-    </button>
-    <div
-      data-thread-actions
-      className="flex min-w-fit shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100"
-    >
-      {actionsEnabled ? (
-        <>
-          <ThreadActionButton
-            label={`重命名对话：${title ?? '新对话'}`}
-            active={
-              pendingMutation?.kind === 'rename' &&
-              pendingMutation.threadId === threadId
-            }
-            disabled={renameDisabled}
-            onClick={() => onRequestRename(threadId)}
+}: ThreadButtonProps) => {
+  const label = title ?? '新对话';
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          data-thread-row
+          className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-stretch overflow-hidden rounded-lg ${
+            current
+              ? 'bg-surface text-foreground'
+              : 'text-navigation hover:bg-surface hover:text-foreground'
+          }`}
+        >
+          <button
+            type="button"
+            tabIndex={disabled ? -1 : 0}
+            data-thread-item
+            aria-current={current ? 'page' : undefined}
+            aria-busy={status === 'opening' || status === 'running'}
+            aria-label={`${current ? 'Current ' : ''}${label}`}
+            aria-disabled={disabled}
+            onClick={() => {
+              if (!disabled) {
+                void onSelect(threadId);
+              }
+            }}
+            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center rounded-l-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default"
           >
-            <Pencil aria-hidden="true" />
-          </ThreadActionButton>
-          <ThreadActionButton
-            label={`创建会话分支：${title ?? '新对话'}`}
-            active={
-              pendingMutation?.kind === 'fork' &&
-              pendingMutation.threadId === threadId
-            }
-            disabled={mutationDisabled}
-            onClick={() => void onFork(threadId)}
+            <span
+              className={`min-w-0 flex-1 truncate text-sm ${current ? 'font-medium' : 'font-normal'}`}
+            >
+              {label}
+            </span>
+          </button>
+          <div
+            data-thread-actions
+            className="flex min-w-fit shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100"
           >
-            <GitFork aria-hidden="true" />
-          </ThreadActionButton>
-          <ThreadActionButton
-            label={`归档会话：${title ?? '新对话'}`}
-            active={
-              pendingMutation?.kind === 'archive' &&
-              pendingMutation.threadId === threadId
-            }
-            disabled={mutationDisabled}
-            onClick={() => void onArchive(threadId)}
-          >
-            <Archive aria-hidden="true" />
-          </ThreadActionButton>
-        </>
-      ) : null}
-      <ThreadActionButton
-        label={`删除会话：${title ?? '新对话'}`}
-        active={false}
-        disabled={deleteDisabled}
-        destructive
-        onClick={() => onRequestDelete(threadId)}
-      >
-        <Trash2 aria-hidden="true" />
-      </ThreadActionButton>
-    </div>
-    <ThreadStatusIndicator status={status} />
-  </div>
-);
+            <ThreadActionButton
+              label={`删除会话：${label}`}
+              active={
+                pendingMutation?.kind === 'delete' &&
+                pendingMutation.threadId === threadId
+              }
+              disabled={deleteDisabled}
+              destructive
+              onClick={() => onRequestDelete(threadId)}
+            >
+              <Trash2 aria-hidden="true" />
+            </ThreadActionButton>
+          </div>
+          <ThreadStatusIndicator status={status} />
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-44">
+        <ContextMenuItem
+          disabled={renameDisabled}
+          onSelect={() => onRequestRename(threadId)}
+        >
+          重命名
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+};
 
 const ThreadStatusIndicator = ({
   status,

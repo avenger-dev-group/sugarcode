@@ -1,6 +1,7 @@
 import type {
   ConnectionStateListener,
 } from '@/shared/connection';
+import { isValidConversationTitle } from '@/shared/conversation';
 import type {
   WorkspaceChatRequest,
   WorkspaceInspectRequest,
@@ -16,7 +17,7 @@ import type {
 } from '@/shared/workspace';
 import { isAbsoluteWorkspaceFileReference } from '@/shared/workspace-file-reference';
 import type { BrowserWindow, Dialog, OpenDialogOptions } from 'electron';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   lstat,
   mkdir,
@@ -44,6 +45,11 @@ export type WorkspaceRuntimeBoundary = Readonly<{
     workspaceId: string,
     threadId: string,
   ) => Promise<'deleted' | 'missing'>;
+  renameThread: (
+    workspaceId: string,
+    threadId: string,
+    title: string,
+  ) => Promise<void>;
   listWorkspace: (path: string) => Promise<{
     path: string;
     entries: readonly import('@/shared/workspace').WorkspaceEntry[];
@@ -564,6 +570,82 @@ export class WorkspaceController {
       this.publish(
         this.workspacePath ? 'failed' : 'unselected',
         'The Thread was deleted, but its navigation record could not be saved.',
+      );
+      return { accepted: false, reason: 'failed' };
+    }
+    this.publish(this.workspacePath ? 'ready' : 'unselected');
+    return { accepted: true };
+  };
+
+  renameTask = async (
+    threadId: string,
+    title: string,
+  ): Promise<WorkspaceSelectResult> => {
+    const normalizedTitle = title.trim();
+    if (!isThreadId(threadId) || !isValidConversationTitle(normalizedTitle)) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    const ownerKey = this.options.threadRegistry.getOwnerKey(threadId);
+    if (!ownerKey) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    const projectOwner = [...this.projects.values()].find(
+      (project) => projectOwnerKey(project.id) === ownerKey,
+    );
+    const chatOwner = this.chatOwners.get(ownerKey);
+    const ownerPath = projectOwner?.path ?? chatOwner?.directory;
+    const boundWorkspaceId = this.options.threadRegistry.getWorkspaceId(threadId);
+    const workspaceIds = [
+      boundWorkspaceId,
+      this.options.threadRegistry.getWorkspaceIdForOwner(ownerKey),
+      ownerPath
+        ? createHash('sha256').update(ownerPath).digest('hex')
+        : null,
+    ];
+    if (
+      this.options.threadRegistry.getBindingSource(threadId) === 'sessionCache'
+    ) {
+      workspaceIds.push(
+        ...[...this.projects.values()].map((project) =>
+          this.options.threadRegistry.getWorkspaceIdForOwner(
+            projectOwnerKey(project.id),
+          ),
+        ),
+      );
+    }
+    const candidates = [
+      ...new Set(
+        workspaceIds.filter(
+          (workspaceId): workspaceId is string => Boolean(workspaceId),
+        ),
+      ),
+    ];
+    if (candidates.length === 0) {
+      return { accepted: false, reason: 'failed' };
+    }
+    let renamed = false;
+    for (const workspaceId of candidates) {
+      try {
+        await this.options.supervisor.renameThread(
+          workspaceId,
+          threadId,
+          normalizedTitle,
+        );
+        renamed = true;
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!renamed) {
+      return { accepted: false, reason: 'failed' };
+    }
+    try {
+      await this.persist();
+    } catch {
+      this.publish(
+        this.workspacePath ? 'failed' : 'unselected',
+        'The Thread was renamed, but its navigation record could not be saved.',
       );
       return { accepted: false, reason: 'failed' };
     }

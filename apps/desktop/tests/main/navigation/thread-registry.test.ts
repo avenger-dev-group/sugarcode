@@ -45,6 +45,24 @@ test('runtime index rejects cross-workspace thread bindings', () => {
   );
 });
 
+test('updating a title preserves Thread ownership and order', () => {
+  const registry = new ThreadRegistry();
+  registry.hydrateSessionCache([
+    {
+      threadId: THREAD_ID,
+      ownerKey: 'project:alpha',
+      title: 'Before rename',
+    },
+  ]);
+
+  assert.equal(registry.updateTitle(THREAD_ID, 'After rename'), true);
+  assert.deepEqual(registry.getOwnerView('project:alpha'), {
+    threadIds: [THREAD_ID],
+    threadTitles: { [THREAD_ID]: 'After rename' },
+  });
+  assert.equal(registry.updateTitle('missing-thread', 'Ignored'), false);
+});
+
 test('removing a thread clears owner navigation state', () => {
   const registry = new ThreadRegistry();
   registry.registerWorkspaceOwner(

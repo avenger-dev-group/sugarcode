@@ -506,23 +506,8 @@ impl NativeRuntime {
     }
 
     #[napi]
-    pub fn set_thread_archived_json(
-        &self,
-        thread_id: String,
-        workspace_id: String,
-        archived: bool,
-    ) -> Result<String> {
-        self.with_store(|store| store.set_thread_archived_json(&thread_id, &workspace_id, archived))
-    }
-
-    #[napi]
     pub fn delete_thread(&self, thread_id: String, workspace_id: String) -> Result<bool> {
         self.with_store(|store| store.delete_thread(&thread_id, &workspace_id))
-    }
-
-    #[napi]
-    pub fn fork_thread_json(&self, thread_id: String, workspace_id: String) -> Result<String> {
-        self.with_store(|store| store.fork_thread_json(&thread_id, &workspace_id))
     }
 
     #[napi]

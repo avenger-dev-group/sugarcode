@@ -200,10 +200,9 @@ export type ThreadNavigatorViewModel = Readonly<{
   selectedThreadId: string | null;
   pendingThreadId: string | null;
   pendingMutation: Readonly<{
-    kind: 'rename' | 'fork' | 'archive' | 'unarchive' | 'delete';
+    kind: 'rename' | 'delete';
     threadId: string;
   }> | null;
-  archivedUndoThreadId: string | null;
   truncated: boolean;
   statusLabel: string;
   selectionNotice?: string;
@@ -258,9 +257,6 @@ export type ThreadStore = Readonly<{
   cancelModelSwitch: () => void;
   startNewThread: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
-  forkThread: (threadId: string) => Promise<void>;
-  archiveThread: (threadId: string) => Promise<void>;
-  unarchiveThread: (threadId: string) => Promise<void>;
   deleteThread: (threadId: string) => Promise<void>;
   requestThreadRename: (threadId: string, title: string) => void;
   setRenameDraft: (title: string) => void;

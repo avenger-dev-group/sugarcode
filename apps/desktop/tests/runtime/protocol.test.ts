@@ -31,6 +31,35 @@ test('private Thread protocol accepts bounded rename metadata', () => {
   );
 });
 
+test('private Thread protocol rejects removed fork and archive mutations', () => {
+  for (const type of [
+    'thread.fork',
+    'thread.archive',
+    'thread.unarchive',
+  ]) {
+    assert.equal(
+      isRuntimeCommand({
+        type,
+        requestId: `request-${type}`,
+        workspaceId: 'workspace-fixture',
+        threadId: 'thread-fixture',
+      }),
+      false,
+    );
+  }
+  assert.equal(
+    isRuntimeEvent({
+      type: 'thread.mutated',
+      sequence: 1,
+      requestId: 'request-archive',
+      workspaceId: 'workspace-fixture',
+      operation: 'archive',
+      threadId: 'thread-fixture',
+    }),
+    false,
+  );
+});
+
 test('private runtime v2 validates stable text Item lifecycle events', () => {
   const coordinates = {
     sequence: 1,

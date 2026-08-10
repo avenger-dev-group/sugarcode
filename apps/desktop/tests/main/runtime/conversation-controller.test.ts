@@ -686,6 +686,57 @@ test('runtime conversation controller projects generated and user-edited titles'
   );
 });
 
+test('runtime conversation controller keeps delete as the only Thread lifecycle mutation', async () => {
+  const sent: Exclude<RuntimeCommand, { type: 'initialize' | 'shutdown' }>[] = [];
+  const thread: RuntimeThreadRecord = {
+    id: THREAD_ID,
+    workspaceId: WORKSPACE_ID,
+    title: 'Delete fixture',
+    createdAt: 1,
+    updatedAt: 1,
+    archivedAt: null,
+    parentThreadId: null,
+  };
+  const runtime = {
+    subscribe: (): (() => void) => () => undefined,
+    send: (): void => undefined,
+    request: async (
+      command: Exclude<RuntimeCommand, { type: 'initialize' | 'shutdown' }>,
+    ): Promise<RuntimeEvent> => {
+      sent.push(command);
+      if (command.type === 'thread.list') {
+        return {
+          type: 'thread.listResult',
+          requestId: command.requestId,
+          sequence: 1,
+          workspaceId: WORKSPACE_ID,
+          query: '',
+          threads: [thread],
+        };
+      }
+      if (command.type === 'thread.delete') {
+        return {
+          type: 'thread.mutated',
+          requestId: command.requestId,
+          sequence: 2,
+          workspaceId: WORKSPACE_ID,
+          operation: 'delete',
+          threadId: THREAD_ID,
+          deleted: true,
+        };
+      }
+      throw new Error(`Unexpected delete fixture request ${command.type}.`);
+    },
+  };
+  const controller = new RuntimeConversationController(
+    runtime as unknown as RuntimeSupervisor,
+  );
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+  assert.equal((await controller.deleteThread(THREAD_ID)).accepted, true);
+  assert.deepEqual(controller.getSnapshot().navigator.activeThreadIds, []);
+  assert.ok(sent.some((command) => command.type === 'thread.delete'));
+});
+
 test('runtime conversation controller commits only the latest Thread selection', async () => {
   const loadResolvers: Array<{
     threadId: string;

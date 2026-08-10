@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -110,6 +111,12 @@ test('cold startup restores navigation without selecting or reordering projects'
   let preferredThreadId: string | undefined;
   let selectedThreadId: string | null = null;
   let runningThreadIds: string[] = [];
+  const threadRegistry = new ThreadRegistry();
+  const renameRequests: Array<{
+    workspaceId: string;
+    threadId: string;
+    title: string;
+  }> = [];
   const supervisor = {
     subscribe: (): (() => void) => () => undefined,
     configureInitialWorkspace: (): boolean => {
@@ -134,6 +141,14 @@ test('cold startup restores navigation without selecting or reordering projects'
       return true;
     },
     getWorkspaceBindingId: (): string | null => bindingId,
+    renameThread: async (
+      workspaceId: string,
+      threadId: string,
+      title: string,
+    ): Promise<void> => {
+      renameRequests.push({ workspaceId, threadId, title });
+      assert.equal(threadRegistry.updateTitle(threadId, title), true);
+    },
     conversation: {
       getSnapshot: (): ConversationStateSnapshot => ({
         revision: 0,
@@ -175,7 +190,7 @@ test('cold startup restores navigation without selecting or reordering projects'
     },
   } as unknown as WorkspaceRuntimeBoundary;
   const controller = new WorkspaceController({
-    threadRegistry: new ThreadRegistry(),
+    threadRegistry,
     supervisor,
     dialog: {
       showOpenDialog: async () => ({
@@ -217,6 +232,29 @@ test('cold startup restores navigation without selecting or reordering projects'
   ]);
   assert.deepEqual(snapshot.chatThreadIds, [CHAT_THREAD_ID]);
   assert.equal(snapshot.chatTitles?.[CHAT_THREAD_ID], 'Saved chat');
+
+  assert.deepEqual(
+    await controller.renameTask(PROJECT_THREAD_ID, 'Renamed without selection'),
+    { accepted: true },
+  );
+  assert.equal(selectedThreadId, null);
+  assert.equal(controller.getLaunchContext(), null);
+  assert.deepEqual(renameRequests, [
+    {
+      workspaceId: createHash('sha256')
+        .update(await realpath(projectPath))
+        .digest('hex'),
+      threadId: PROJECT_THREAD_ID,
+      title: 'Renamed without selection',
+    },
+  ]);
+  assert.equal(
+    controller
+      .getSnapshot()
+      .projects?.find((project) => project.id === 'project-alpha')
+      ?.threadTitles[PROJECT_THREAD_ID],
+    'Renamed without selection',
+  );
 
   assert.equal((await controller.focusTask(PROJECT_THREAD_ID)).accepted, true);
   assert.equal(preferredThreadId, PROJECT_THREAD_ID);
@@ -292,7 +330,7 @@ test('cold startup restores navigation without selecting or reordering projects'
       path: await realpath(projectPath),
       name: 'project-alpha',
       threadIds: [PROJECT_THREAD_ID],
-      threadTitles: { [PROJECT_THREAD_ID]: 'Saved project task' },
+      threadTitles: { [PROJECT_THREAD_ID]: 'Renamed without selection' },
       lastOpenedAtMs: 1,
       workspaceId: 'a'.repeat(64),
     },

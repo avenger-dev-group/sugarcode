@@ -51,6 +51,16 @@ persists an automatically generated title only while the SQLite title remains
 unset. An explicit user rename is an unconditional bounded metadata update, so
 a late automatic result can never overwrite the user's chosen title. Title
 generation or persistence failure does not change the owning Turn outcome.
+Manual rename resolves the durable Workspace binding from the global Thread
+registry and can update a background Thread without selecting it or switching
+the foreground Workspace; the updated title is then persisted back into the
+navigation session projection.
+The current Desktop exposes delete and rename as its only explicit Thread
+metadata or lifecycle mutations. Historical `archived_at` and
+`parent_thread_id` columns remain readable for schema compatibility, and active
+Thread listings continue to omit rows archived by an earlier build, but no
+private runtime or native mutation API can create a fork or change archive
+state.
 
 ## Recovery
 
