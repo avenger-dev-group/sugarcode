@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  activeAgentTaskDockTasks,
   agentTaskWaves,
   formatAgentTaskDuration,
   queuedAgentTaskReason,
@@ -67,5 +68,29 @@ test('queued child Agents explain dependency, write lock, and capacity waits', (
   assert.equal(
     queuedAgentTaskReason(task('reader'), []),
     'Waiting for workspace access or capacity',
+  );
+});
+
+test('Agent task dock keeps only live and attention-worthy work', () => {
+  const tasks = [
+    task('completed', [], { status: 'completed' }),
+    task('queued'),
+    task('running', [], { status: 'running' }),
+    task('approval', [], { status: 'waitingApproval' }),
+    task('failed', [], { status: 'failed' }),
+    task('cancelled', [], { status: 'cancelled' }),
+  ];
+
+  assert.deepEqual(
+    activeAgentTaskDockTasks(tasks).map((candidate) => candidate.clientTaskKey),
+    ['approval', 'failed', 'running', 'queued'],
+  );
+
+  assert.deepEqual(
+    activeAgentTaskDockTasks([
+      task('completed', [], { status: 'completed' }),
+      task('cancelled', [], { status: 'cancelled' }),
+    ]),
+    [],
   );
 });

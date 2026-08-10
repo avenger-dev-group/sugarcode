@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { toThreadNavigationStatus } from '../../../src/renderer/components/thread/navigation-status.ts';
+import {
+  isThreadDeleteDisabled,
+  toThreadNavigationStatus,
+} from '../../../src/renderer/components/thread/navigation-status.ts';
 
 const status = (
   overrides: Partial<Parameters<typeof toThreadNavigationStatus>[0]> = {},
@@ -34,4 +37,39 @@ test('approval takes precedence over running and completed state', () => {
 
 test('opening takes precedence over a projected running state', () => {
   assert.equal(status({ pending: true, running: true }), 'opening');
+});
+
+test('saved Thread deletion is blocked only by a real conflicting operation', () => {
+  assert.equal(
+    isThreadDeleteDisabled({
+      workspaceBusy: false,
+      lifecycleMutationPending: false,
+      running: false,
+    }),
+    false,
+  );
+  assert.equal(
+    isThreadDeleteDisabled({
+      workspaceBusy: true,
+      lifecycleMutationPending: false,
+      running: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isThreadDeleteDisabled({
+      workspaceBusy: false,
+      lifecycleMutationPending: true,
+      running: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isThreadDeleteDisabled({
+      workspaceBusy: false,
+      lifecycleMutationPending: false,
+      running: true,
+    }),
+    true,
+  );
 });

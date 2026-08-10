@@ -2,6 +2,16 @@ import type { ConversationTerminalTurnStatus } from '@/shared/conversation';
 
 import type { ThreadNavigationStatus } from './types';
 
+export const isThreadDeleteDisabled = ({
+  lifecycleMutationPending,
+  running,
+  workspaceBusy,
+}: Readonly<{
+  lifecycleMutationPending: boolean;
+  running: boolean;
+  workspaceBusy: boolean;
+}>): boolean => workspaceBusy || lifecycleMutationPending || running;
+
 export const toThreadNavigationStatus = ({
   approvalRequired,
   pending,

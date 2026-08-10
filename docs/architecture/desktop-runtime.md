@@ -288,6 +288,18 @@ hover or keyboard focus without requiring prior selection. Removing a project
 forgets only its saved navigation owner and never deletes the project directory
 or durable Threads; a project with a running Thread cannot be removed, and
 reopening the same directory can bind its retained runtime Thread index again.
+Project and Thread selection use native button boundaries beside their sibling
+actions, so activating a destructive control cannot fall through to row
+selection. The confirmation remains open while the mutation is pending, closes
+only after an accepted result, and renders a retryable failure in place instead
+of dismissing before an unsuccessful deletion becomes visible. Accepted
+navigation mutations without a foreground commit perform one authoritative
+Workspace snapshot read as a projection fallback instead of relying only on the
+asynchronous change broadcast to remove the row. A saved Thread's delete action
+is disabled only while its Turn is running, the Workspace is switching, or
+another lifecycle mutation is pending; a global conversation loading or
+unavailable status does not independently disable the action, and an actual
+backend failure remains visible in the confirmation.
 The private worker protocol is v2 and projects model text as
 `turn.textStarted`, `turn.textDelta`, and `turn.textCompleted`. Started and
 delta events are transient. A completed event carries the authoritative text,
@@ -361,12 +373,19 @@ order, and queued cards distinguish dependency waits from bounded
 Workspace-access or execution-capacity waits, including the exclusive write
 boundary. Task summaries are height-bounded so one verbose child cannot turn a
 parallel wave into a narrow vertical tower. While the parent Turn is active, a
-compact Agent-task dock stays directly above the composer with prioritized
-role/status avatars and aggregate progress. Its anchored popover expands upward
-to the same wave grid, so current child progress remains reachable when newer
-commentary has moved the durable orchestration activity above the viewport.
-Completed Turns remove the dock and retain the orchestration record only in the
-transcript. Live, attention and aggregate completion counts remain visible.
+compact Agent-task status strip stays directly above the composer with the
+highest-priority task, aggregate progress and one thin progress rail. Its
+anchored popover is a bounded, divided live-work list rather than a second copy
+of the durable wave grid: approval and failed tasks come first, followed by
+running and queued tasks, while completed or cancelled tasks stay out of the
+live list. Each live-list row exposes only the task title and status; task
+briefs, progress summaries, dependency waits and results remain in the selected
+task's detail rail. While the parent Turn is active,
+the transcript suppresses the durable wave grid so the dock is the only task
+status surface; once the Turn reaches a terminal state, the dock disappears and
+the transcript exposes the complete orchestration record. This keeps current
+progress reachable without duplicating the same tasks or repainting the full
+dashboard on every progress event.
 Selecting a task opens a detail rail that renders the durable public execution
 trace in order: frozen task brief, amendments, latest live progress and terminal
 result. Dependency and access metadata remain visible without exposing a

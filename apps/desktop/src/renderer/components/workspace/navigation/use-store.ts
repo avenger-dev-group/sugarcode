@@ -6,6 +6,7 @@ import {
   activateWorkspaceProject,
   deleteWorkspaceTask,
   focusWorkspaceTask,
+  getWorkspaceState,
   removeWorkspaceProject,
   resumeWorkspaceProject,
   selectWorkspace,
@@ -48,6 +49,10 @@ export const useStore = (): WorkspaceNavigationStore => {
       if (result.accepted && result.commit) {
         acceptWorkspaceSnapshot(result.commit.workspace);
         acceptForegroundCommit(result.commit);
+      } else if (result.accepted) {
+        await getWorkspaceState()
+          .then(acceptWorkspaceSnapshot)
+          .catch((): undefined => undefined);
       }
       if (!result.accepted && result.reason !== 'cancelled') {
         setError(

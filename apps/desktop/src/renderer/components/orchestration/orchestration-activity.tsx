@@ -24,6 +24,7 @@ import {
 import { cn } from '@/renderer/utils/class-name';
 
 import {
+  activeAgentTaskDockTasks,
   agentTaskWaves,
   formatAgentTaskDuration,
   queuedAgentTaskReason,
@@ -265,7 +266,10 @@ const AgentTaskWaveGrid = ({
             >
               Wave {wave.index + 1}
             </h3>
-            <span className="h-px min-w-4 flex-1 bg-border" aria-hidden="true" />
+            <span
+              className="h-px min-w-4 flex-1 bg-border"
+              aria-hidden="true"
+            />
             <span className="shrink-0 text-[11px] text-tertiary">
               {wave.tasks.length === 1
                 ? '1 task'
@@ -291,57 +295,48 @@ const AgentTaskWaveGrid = ({
   );
 };
 
-const settledTaskCount = (
-  tasks: readonly AgentTaskViewModel[],
-): number =>
+const settledTaskCount = (tasks: readonly AgentTaskViewModel[]): number =>
   tasks.filter((task) =>
     ['completed', 'failed', 'interrupted', 'cancelled'].includes(task.status),
   ).length;
 
-const taskDisplayPriority = (task: AgentTaskViewModel): number => {
-  switch (task.status) {
-    case 'waitingApproval':
-      return 0;
-    case 'failed':
-    case 'interrupted':
-      return 0;
-    case 'running':
-      return 1;
-    case 'queued':
-      return 2;
-    case 'completed':
-    case 'cancelled':
-      return 3;
-  }
-};
-
-const AgentAvatarStack = ({
-  tasks,
-}: Readonly<{ tasks: readonly AgentTaskViewModel[] }>) => {
-  const visibleTasks = [...tasks]
-    .sort((left, right) => taskDisplayPriority(left) - taskDisplayPriority(right))
-    .slice(0, 4);
-
+const AgentTaskDockRow = ({
+  task,
+  onSelect,
+}: Readonly<{
+  task: AgentTaskViewModel;
+  onSelect: (task: AgentTaskViewModel) => void;
+}>) => {
   return (
-    <span className="flex shrink-0 items-center pl-1" aria-hidden="true">
-      {visibleTasks.map((task, index) => (
+    <li>
+      <button
+        type="button"
+        onClick={() => onSelect(task)}
+        className="group flex w-full min-w-0 items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        aria-label={`${task.title}, ${STATUS_LABELS[task.status]}. Open details.`}
+      >
         <span
-          key={task.taskId}
           className={cn(
-            'flex size-7 items-center justify-center rounded-full border-2 border-background bg-surface shadow-sm [&>svg]:size-3.5',
-            index > 0 && '-ml-2',
+            'flex size-6 shrink-0 items-center justify-center rounded-full bg-surface [&>svg]:size-3',
             statusTone(task.status),
           )}
         >
-          <RoleIcon role={task.role} />
+          <StatusIcon status={task.status} />
         </span>
-      ))}
-      {tasks.length > visibleTasks.length ? (
-        <span className="-ml-2 flex size-7 items-center justify-center rounded-full border-2 border-background bg-surface font-mono text-[10px] text-secondary shadow-sm">
-          +{tasks.length - visibleTasks.length}
+        <span className="min-w-0 flex-1 truncate text-sm font-medium leading-5 text-primary">
+          {task.title}
         </span>
-      ) : null}
-    </span>
+        <span
+          className={cn(
+            'shrink-0 text-[11px] font-medium',
+            statusTone(task.status),
+            task.status === 'running' && 'agent-status-shimmer',
+          )}
+        >
+          {STATUS_LABELS[task.status]}
+        </span>
+      </button>
+    </li>
   );
 };
 
@@ -349,18 +344,25 @@ export const AgentTaskDock = ({
   activity,
 }: Readonly<{ activity: OrchestrationActivityViewModel }>) => {
   const {
-    selectTask,
+    refreshTask,
     selectedTask,
+    selectTask,
     setTaskDockOpen,
     taskDockOpen,
   } = useOrchestrationStore();
+  const dockTasks = activeAgentTaskDockTasks(activity.tasks);
+  const primaryTask = dockTasks[0];
   const activeCount = activity.tasks.filter(
     (task) => task.status === 'running',
+  ).length;
+  const queuedCount = activity.tasks.filter(
+    (task) => task.status === 'queued',
   ).length;
   const attentionCount = activity.tasks.filter((task) =>
     ['waitingApproval', 'failed', 'interrupted'].includes(task.status),
   ).length;
   const settledCount = settledTaskCount(activity.tasks);
+  const progress = Math.round((settledCount / activity.tasks.length) * 100);
   const triggerStatus =
     attentionCount > 0
       ? attentionCount === 1
@@ -368,32 +370,65 @@ export const AgentTaskDock = ({
         : `${attentionCount} need attention`
       : activeCount > 0
         ? `${activeCount} active`
-        : `${settledCount} of ${activity.tasks.length} settled`;
+        : queuedCount > 0
+          ? `${queuedCount} waiting`
+          : `${settledCount} of ${activity.tasks.length} settled`;
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    if (dockTasks.length === 0) {
       setTaskDockOpen(false);
-    },
-    [setTaskDockOpen],
-  );
+    }
+  }, [dockTasks.length, setTaskDockOpen]);
+
+  useEffect(() => {
+    const current = activity.tasks.find(
+      (task) => task.taskId === selectedTask?.taskId,
+    );
+    if (current) {
+      refreshTask(current);
+    }
+  }, [activity.tasks, refreshTask, selectedTask?.taskId]);
+
+  useEffect(() => {
+    return () => {
+      setTaskDockOpen(false);
+    };
+  }, [setTaskDockOpen]);
+
+  if (dockTasks.length === 0) {
+    return null;
+  }
 
   return (
-    <div className="mb-2 flex justify-end px-1">
+    <div className="mb-2 px-1">
       <Popover open={taskDockOpen} onOpenChange={setTaskDockOpen}>
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="group flex min-w-0 max-w-full items-center gap-2 rounded-full border bg-background py-1.5 pl-1.5 pr-2.5 text-left shadow-sm transition-[border-color,background-color,box-shadow] hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            className="group relative flex w-full min-w-0 items-center gap-3 overflow-hidden rounded-xl border bg-background px-3 py-2 text-left transition-[border-color,background-color] hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             aria-label={`Agent tasks, ${triggerStatus}. Show current task details.`}
           >
-            <AgentAvatarStack tasks={activity.tasks} />
-            <span className="min-w-0">
-              <span className="block truncate text-xs font-medium text-primary">
-                Agent tasks
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-surface">
+              <ListChecks
+                className="size-4 text-secondary"
+                aria-hidden="true"
+              />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="shrink-0 text-xs font-medium text-primary">
+                  Agent tasks
+                </span>
+                <span className="text-tertiary" aria-hidden="true">
+                  ·
+                </span>
+                <span className="min-w-0 flex-1 truncate text-xs text-secondary">
+                  {primaryTask?.title}
+                </span>
               </span>
               <span
                 className={cn(
-                  'block truncate text-[11px] leading-4',
+                  'mt-0.5 block truncate text-[11px] leading-4',
                   attentionCount > 0
                     ? 'text-primary'
                     : activeCount > 0
@@ -404,10 +439,22 @@ export const AgentTaskDock = ({
                 {triggerStatus}
               </span>
             </span>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-tertiary">
+              {settledCount}/{activity.tasks.length}
+            </span>
             <ChevronDown
               className="size-3.5 shrink-0 text-tertiary transition-transform group-aria-expanded:rotate-180 motion-reduce:transition-none"
               aria-hidden="true"
             />
+            <span
+              className="absolute inset-x-0 bottom-0 h-px bg-border"
+              aria-hidden="true"
+            >
+              <span
+                className="block h-full bg-primary transition-[width] duration-300 motion-reduce:transition-none"
+                style={{ width: `${progress}%` }}
+              />
+            </span>
           </button>
         </PopoverTrigger>
         <PopoverContent
@@ -415,29 +462,62 @@ export const AgentTaskDock = ({
           align="end"
           sideOffset={8}
           collisionPadding={16}
-          className="flex max-h-[min(30rem,calc(100vh-10rem))] w-[min(42rem,calc(100vw-2rem))] flex-col overflow-hidden p-0"
+          className="flex max-h-[min(24rem,calc(100vh-10rem))] w-[min(28rem,calc(100vw-2rem))] flex-col overflow-hidden p-0"
           aria-label="Current Agent tasks"
         >
-          <header className="flex min-w-0 items-start justify-between gap-3 border-b px-3.5 py-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-primary">
-                Current Agent tasks
-              </p>
-              <p className="mt-0.5 text-xs text-secondary">
-                Independent work shares a row; later waves wait for dependencies.
-              </p>
+          <header className="border-b px-4 py-3.5">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-surface">
+                <ListChecks
+                  className="size-4 text-secondary"
+                  aria-hidden="true"
+                />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-primary">Agent tasks</p>
+                <p className="mt-0.5 text-[11px] text-tertiary">
+                  {attentionCount > 0
+                    ? `${attentionCount} attention`
+                    : 'No blockers'}
+                  {' · '}
+                  {activeCount} working{' · '}
+                  {queuedCount} waiting
+                </p>
+              </div>
+              <span className="shrink-0 font-mono text-[11px] tabular-nums text-tertiary">
+                {settledCount} / {activity.tasks.length}
+              </span>
             </div>
-            <span className="shrink-0 font-mono text-[11px] tabular-nums text-tertiary">
-              {settledCount} / {activity.tasks.length} settled
-            </span>
+            <div
+              className="mt-3 h-1 overflow-hidden rounded-full bg-border"
+              role="progressbar"
+              aria-label="Agent task progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progress}
+            >
+              <div
+                className="h-full rounded-full bg-primary transition-[width] duration-300 motion-reduce:transition-none"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
           </header>
-          <div className="min-h-0 overflow-y-auto bg-surface p-3">
-            <AgentTaskWaveGrid
-              activity={activity}
-              selectedTaskId={selectedTask?.taskId}
-              onSelect={selectTask}
-            />
+          <div className="min-h-0 overflow-y-auto">
+            <ol className="divide-y divide-border">
+              {dockTasks.map((task) => (
+                <AgentTaskDockRow
+                  key={task.taskId}
+                  task={task}
+                  onSelect={selectTask}
+                />
+              ))}
+            </ol>
           </div>
+          {settledCount > 0 ? (
+            <footer className="border-t bg-surface px-4 py-2.5 text-[11px] text-tertiary">
+              Completed task details appear in the conversation history.
+            </footer>
+          ) : null}
         </PopoverContent>
       </Popover>
     </div>
@@ -451,9 +531,7 @@ export const OrchestrationActivity = ({
   const activeTasks = activity.tasks.filter(
     (task) => task.status === 'running',
   );
-  const queuedTasks = activity.tasks.filter(
-    (task) => task.status === 'queued',
-  );
+  const queuedTasks = activity.tasks.filter((task) => task.status === 'queued');
   const attentionTasks = activity.tasks.filter((task) =>
     ['waitingApproval', 'failed', 'interrupted'].includes(task.status),
   );

@@ -23,7 +23,6 @@ import {
 
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -37,7 +36,10 @@ import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/w
 
 import appIcon from '../../../../assets/icon.png';
 
-import { toThreadNavigationStatus } from './navigation-status';
+import {
+  isThreadDeleteDisabled,
+  toThreadNavigationStatus,
+} from './navigation-status';
 import type { ThreadNavigationStatus, ThreadStore } from './types';
 
 type ThreadNavigatorProps = Readonly<{
@@ -71,18 +73,6 @@ const focusThreadAt = (
   items.at(index)?.focus();
 };
 
-const activateNavigationItem = (
-  event: KeyboardEvent<HTMLElement>,
-  disabled: boolean,
-  activate: () => void,
-): void => {
-  if (disabled || (event.key !== 'Enter' && event.key !== ' ')) {
-    return;
-  }
-  event.preventDefault();
-  activate();
-};
-
 export const ThreadNavigator = ({
   store,
   footer,
@@ -92,6 +82,8 @@ export const ThreadNavigator = ({
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(
     null,
   );
+  const [deletePending, setDeletePending] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const cancelDeleteRef = useRef<HTMLButtonElement | null>(null);
   const workspace = useWorkspaceNavigationStore();
@@ -200,6 +192,29 @@ export const ThreadNavigator = ({
     }
   };
 
+  const confirmDelete = async (): Promise<void> => {
+    const request = deleteRequest;
+    if (!request || deletePending) {
+      return;
+    }
+    setDeletePending(true);
+    setDeleteError(null);
+    const deleted =
+      request.kind === 'project'
+        ? await workspace.removeProject(request.projectId)
+        : await workspace.deleteTask(request.threadId);
+    if (deleted) {
+      setDeleteRequest(null);
+    } else {
+      setDeleteError(
+        request.kind === 'project'
+          ? '无法从列表移除这个项目，请稍后重试。'
+          : '无法删除这个对话，请确认任务已经停止后重试。',
+      );
+    }
+    setDeletePending(false);
+  };
+
   const selectProjectThread = async (
     _projectId: string,
     threadId: string,
@@ -251,14 +266,20 @@ export const ThreadNavigator = ({
             }
             actionsEnabled={active}
             deleteDisabled={
-              workspace.busy ||
-              navigationDisabled ||
-              store.navigator.runningThreadIds.includes(threadId)
+              isThreadDeleteDisabled({
+                workspaceBusy: workspace.busy,
+                lifecycleMutationPending: Boolean(
+                  store.navigator.pendingMutation,
+                ),
+                running:
+                  store.navigator.runningThreadIds.includes(threadId),
+              })
             }
             onSelect={onSelect}
             onFork={store.forkThread}
             onArchive={store.archiveThread}
-            onRequestDelete={(requestedThreadId) =>
+            onRequestDelete={(requestedThreadId) => {
+              setDeleteError(null);
               setDeleteRequest({
                 kind: 'thread',
                 threadId: requestedThreadId,
@@ -266,8 +287,8 @@ export const ThreadNavigator = ({
                   threadTitles[requestedThreadId] ??
                   workspace.state.chatTitles?.[requestedThreadId] ??
                   '未命名会话',
-              })
-            }
+              });
+            }}
             pendingMutation={store.navigator.pendingMutation}
           />
         ))}
@@ -367,21 +388,13 @@ export const ThreadNavigator = ({
                           data-project-row
                           className="group flex items-center rounded-lg"
                         >
-                          <span
-                            role="button"
-                            tabIndex={0}
+                          <button
+                            type="button"
                             data-thread-item
                             aria-expanded={expanded}
                             className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             onClick={() =>
                               store.toggleProjectExpanded(project.id)
-                            }
-                            onKeyDown={(event) =>
-                              activateNavigationItem(
-                                event,
-                                false,
-                                () => store.toggleProjectExpanded(project.id),
-                              )
                             }
                           >
                             {expanded ? (
@@ -398,7 +411,7 @@ export const ThreadNavigator = ({
                             <span className="min-w-0 flex-1 truncate text-sm font-normal">
                               {project.name}
                             </span>
-                          </span>
+                          </button>
                           <div className="mr-1 flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                             <Button
                               type="button"
@@ -426,13 +439,16 @@ export const ThreadNavigator = ({
                                   ),
                                 )
                               }
-                              onClick={() =>
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setDeleteError(null);
                                 setDeleteRequest({
                                   kind: 'project',
                                   projectId: project.id,
                                   name: project.name,
-                                })
-                              }
+                                });
+                              }}
                               aria-label={`从列表移除项目：${project.name}`}
                               title={`从列表移除项目：${project.name}`}
                             >
@@ -543,8 +559,9 @@ export const ThreadNavigator = ({
       <AlertDialog
         open={deleteRequest !== null}
         onOpenChange={(open) => {
-          if (!open) {
+          if (!open && !deletePending) {
             setDeleteRequest(null);
+            setDeleteError(null);
           }
         }}
       >
@@ -567,31 +584,42 @@ export const ThreadNavigator = ({
                 : `删除“${deleteRequest?.title ?? '未命名会话'}”后无法恢复，确定要继续吗？`}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteError ? (
+            <p className="mt-3 text-sm text-destructive" role="alert">
+              {deleteError}
+            </p>
+          ) : null}
           <AlertDialogFooter className="mt-5">
             <AlertDialogCancel asChild>
               <Button
                 ref={cancelDeleteRef}
                 type="button"
                 variant="outline"
+                disabled={deletePending}
               >
                 取消
               </Button>
             </AlertDialogCancel>
-            <AlertDialogAction asChild>
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() => {
-                  if (deleteRequest?.kind === 'project') {
-                    void workspace.removeProject(deleteRequest.projectId);
-                  } else if (deleteRequest?.kind === 'thread') {
-                    void workspace.deleteTask(deleteRequest.threadId);
-                  }
-                }}
-              >
-                {deleteRequest?.kind === 'project' ? '移除' : '删除'}
-              </Button>
-            </AlertDialogAction>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deletePending}
+              onClick={() => void confirmDelete()}
+            >
+              {deletePending ? (
+                <LoaderCircle
+                  className="animate-spin motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
+              ) : null}
+              {deletePending
+                ? deleteRequest?.kind === 'project'
+                  ? '正在移除…'
+                  : '正在删除…'
+                : deleteRequest?.kind === 'project'
+                  ? '移除'
+                  : '删除'}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -679,8 +707,8 @@ const ThreadButton = ({
         : 'text-navigation hover:bg-surface hover:text-foreground'
     }`}
   >
-    <span
-      role="link"
+    <button
+      type="button"
       tabIndex={disabled ? -1 : 0}
       data-thread-item
       aria-current={current ? 'page' : undefined}
@@ -692,11 +720,6 @@ const ThreadButton = ({
           void onSelect(threadId);
         }
       }}
-      onKeyDown={(event) =>
-        activateNavigationItem(event, disabled, () => {
-          void onSelect(threadId);
-        })
-      }
       className={`flex h-9 min-w-0 flex-1 cursor-pointer items-center px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default ${
         actionsEnabled ? 'rounded-l-lg' : 'rounded-lg'
       }`}
@@ -706,7 +729,7 @@ const ThreadButton = ({
       >
         {title ?? (status === 'running' ? '新会话' : '未命名会话')}
       </span>
-    </span>
+    </button>
     <div
       data-thread-actions
       className="flex min-w-fit shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100"
@@ -843,7 +866,11 @@ const ThreadActionButton = ({
     aria-label={label}
     title={label}
     disabled={disabled}
-    onClick={onClick}
+    onPointerDown={(event) => event.stopPropagation()}
+    onClick={(event) => {
+      event.stopPropagation();
+      onClick();
+    }}
     className={`rounded p-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${
       destructive
         ? 'text-tertiary hover:bg-destructive/10 hover:text-destructive'

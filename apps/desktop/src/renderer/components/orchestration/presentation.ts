@@ -77,3 +77,34 @@ export const queuedAgentTaskReason = (
     ? 'Waiting for write access or capacity'
     : 'Waiting for workspace access or capacity';
 };
+
+const dockTaskPriority = (task: AgentTaskViewModel): number => {
+  switch (task.status) {
+    case 'waitingApproval':
+    case 'failed':
+    case 'interrupted':
+      return 0;
+    case 'running':
+      return 1;
+    case 'queued':
+      return 2;
+    case 'completed':
+    case 'cancelled':
+      return 3;
+  }
+};
+
+export const activeAgentTaskDockTasks = (
+  tasks: readonly AgentTaskViewModel[],
+): readonly AgentTaskViewModel[] =>
+  tasks
+    .filter(
+      (task) => task.status !== 'completed' && task.status !== 'cancelled',
+    )
+    .map((task, index) => ({ index, task }))
+    .sort(
+      (left, right) =>
+        dockTaskPriority(left.task) - dockTaskPriority(right.task) ||
+        left.index - right.index,
+    )
+    .map(({ task }) => task);

@@ -153,7 +153,9 @@ const TurnActivity = ({
         />
       );
     case 'orchestration':
-      return <OrchestrationActivity activity={entry.activity} />;
+      return turnStatus === 'inProgress' ? null : (
+        <OrchestrationActivity activity={entry.activity} />
+      );
   }
 };
 
