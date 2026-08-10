@@ -224,7 +224,34 @@ const stableJsonValue = (value: unknown): unknown => {
 
 const capabilityEnabled = (value: unknown): boolean => value !== 'disabled';
 
+class RuntimeStateUnavailableError extends Error {
+  constructor(error: unknown) {
+    super(
+      error instanceof Error
+        ? error.message
+        : 'SugarCode could not persist local Turn state.',
+      { cause: error },
+    );
+    this.name = 'RuntimeStateUnavailableError';
+  }
+}
+
+const withDurableStateWrite = <Value>(write: () => Value): Value => {
+  try {
+    return write();
+  } catch (error) {
+    throw new RuntimeStateUnavailableError(error);
+  }
+};
+
 const providerError = (error: unknown): RuntimeProviderError => {
+  if (error instanceof RuntimeStateUnavailableError) {
+    return {
+      kind: 'stateUnavailable',
+      retryable: true,
+      message: error.message,
+    };
+  }
   if (error instanceof ProviderAdapterError) {
     return error.details;
   }
@@ -1262,13 +1289,14 @@ export class RuntimeHost {
       return;
     }
     this.sequence += 1;
-    this.nativeRuntime.appendItem(
-      `history:${command.turnId}:${event.id}`,
-      command.turnId,
-      this.sequence,
-      'turn.modelHistory',
-      JSON.stringify({ history }),
-    );
+    withDurableStateWrite(() =>
+      this.nativeRuntime?.appendItem(
+        `history:${command.turnId}:${event.id}`,
+        command.turnId,
+        this.sequence,
+        'turn.modelHistory',
+        JSON.stringify({ history }),
+      ));
   };
 
   private storedModelHistory = (content: Content): StoredModelHistory => ({
@@ -1864,18 +1892,20 @@ export class RuntimeHost {
     this.activeTurns.set(command.turnId, controller);
     try {
       const resolved = this.resolveProfile(command);
-      this.nativeRuntime?.ensureThread(
-        command.threadId,
-        command.workspaceId,
-      );
+      withDurableStateWrite(() =>
+        this.nativeRuntime?.ensureThread(
+          command.threadId,
+          command.workspaceId,
+        ));
       await this.ensureSession(command, resolved.selection);
-      this.nativeRuntime?.startTurn(
-        command.turnId,
-        command.threadId,
-        command.requestId,
-        resolved.provider.wireApi,
-        resolved.provider.model,
-      );
+      withDurableStateWrite(() =>
+        this.nativeRuntime?.startTurn(
+          command.turnId,
+          command.threadId,
+          command.requestId,
+          resolved.provider.wireApi,
+          resolved.provider.model,
+        ));
       this.emit({
         type: 'turn.started',
         requestId: command.requestId,
@@ -3258,8 +3288,9 @@ export class RuntimeHost {
   ): void => {
     this.sequence += 1;
     const normalized = { ...event, sequence: this.sequence } as RuntimeEvent;
+    const nativeRuntime = this.nativeRuntime;
     if (
-      this.nativeRuntime &&
+      nativeRuntime &&
       normalized.type !== 'runtime.ready' &&
       normalized.type !== 'runtime.log' &&
       normalized.type !== 'turn.completed' &&
@@ -3273,15 +3304,16 @@ export class RuntimeHost {
             : 'approvalId' in normalized
               ? normalized.approvalId
               : String(normalized.sequence);
-      this.nativeRuntime.appendItem(
-        normalized.type === 'turn.textCompleted'
-          ? `${normalized.type}:${normalized.turnId}:${itemId}`
-          : `${normalized.type}:${itemId}:${normalized.sequence}`,
-        normalized.turnId,
-        normalized.sequence,
-        normalized.type,
-        JSON.stringify(normalized),
-      );
+      withDurableStateWrite(() =>
+        nativeRuntime.appendItem(
+          normalized.type === 'turn.textCompleted'
+            ? `${normalized.type}:${normalized.turnId}:${itemId}`
+            : `${normalized.type}:${normalized.turnId}:${itemId}:${normalized.sequence}`,
+          normalized.turnId,
+          normalized.sequence,
+          normalized.type,
+          JSON.stringify(normalized),
+        ));
     }
     this.postEvent(normalized);
   };

@@ -478,6 +478,7 @@ export type RuntimeProviderError = Readonly<{
     | 'outputTooLarge'
     | 'server'
     | 'cancelled'
+    | 'stateUnavailable'
     | 'unknown';
   retryable: boolean;
   message: string;

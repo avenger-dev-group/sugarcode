@@ -34,8 +34,8 @@ import {
   type RuntimeTurnItemRecord,
 } from '../../runtime/protocol.ts';
 import {
-  appendWorkspaceToolCall,
-  applyWorkspaceToolResult,
+  appendToolCallActivity,
+  applyToolResultActivity,
   projectTurnActivities,
 } from './conversation-tool-activities.ts';
 import { createUuidV7 } from './id.ts';
@@ -248,6 +248,7 @@ const runtimeError = (error: RuntimeProviderError): ConversationTurnError => {
                     'filtered',
                     'unsupportedToolArguments',
                     'outputTooLarge',
+                    'stateUnavailable',
                   ].includes(kind)
                 ? kind as ConversationTurnError['kind']
                 : 'stateUnavailable',
@@ -1094,7 +1095,7 @@ export class RuntimeConversationController {
       }
       case 'turn.toolCall': {
         const activities = [...(turn.activities ?? [])];
-        appendWorkspaceToolCall(
+        appendToolCallActivity(
           activities,
           event.itemId,
           event.callId,
@@ -1106,7 +1107,7 @@ export class RuntimeConversationController {
       }
       case 'turn.toolResult': {
         const activities = [...(turn.activities ?? [])];
-        applyWorkspaceToolResult(
+        applyToolResultActivity(
           activities,
           event.itemId,
           event.callId,

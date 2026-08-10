@@ -13,6 +13,13 @@ port, expose JSON-RPC or start an external service. Main supervises startup,
 bounded logs, monotonic event sequencing, crash backoff and active-workspace
 restoration.
 
+The worker's event sequence is process-local and may restart after worker
+replacement. Every durable Turn Item identity is therefore scoped by its
+`turnId`; worker-local sequence values provide ordering but can never be used
+alone as a database-wide identity. A durable state write failure terminates the
+affected Turn as `stateUnavailable`. It is not classified or presented as a
+model-service failure.
+
 `RuntimeCommand` and `RuntimeEvent` are private discriminated unions. Requests
 carry stable request, workspace, Thread, Turn and operation identifiers where
 applicable. Events carry a Main-normalized monotonic sequence. SDK objects and
@@ -107,6 +114,11 @@ share a 128 KiB per-Turn bound. A Skill can narrow the requested workflow but
 cannot expand tools, filesystem authority, approvals or user intent. Changes
 made from Settings therefore affect later Turns and never mutate the active
 Turn's instruction or tool inventory.
+An on-demand `load_skill` call is projected as a durable provider-neutral
+`skill` activity for both the live Turn and restored history. The Renderer
+presents its normalized name without the `$` invocation marker in a dedicated
+localized status card (`applying`, `applied`, `failed` or interrupted), instead
+of duplicating it as synthesized commentary.
 
 The primary `LlmAgent` follows ADK's structured tool loop. SugarCode Turn
 Driver outside ADK consumes the provider-normalized `ModelStepOutcome`

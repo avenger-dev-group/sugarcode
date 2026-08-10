@@ -40,6 +40,17 @@ test('retryable failures retain retry guidance', () => {
   assert.equal(failure.guidance, 'You can send another message to retry.');
 });
 
+test('local persistence failures are not presented as model service failures', () => {
+  const failure = toTurnFailureViewModel({
+    kind: 'stateUnavailable',
+    retryable: true,
+  });
+
+  assert.equal(failure.summary, 'SugarCode could not save this Turn safely');
+  assert.doesNotMatch(failure.summary, /model service/iu);
+  assert.match(failure.guidance, /Restart SugarCode/u);
+});
+
 test('repeated tool failures follow the original user language', () => {
   const chinese = toTurnFailureViewModel(
     { kind: 'unsupportedToolArguments', retryable: false },

@@ -1,9 +1,9 @@
 import type { ConversationActivity } from '../../shared/conversation.ts';
 import type { RuntimeTurnItemRecord } from '../../runtime/protocol.ts';
 
-type WorkspaceToolActivity = Extract<
+type ProjectedToolActivity = Extract<
   ConversationActivity,
-  { type: 'workspaceRead' | 'workspaceList' | 'workspaceSearch' }
+  { type: 'skill' | 'workspaceRead' | 'workspaceList' | 'workspaceSearch' }
 >;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -12,12 +12,37 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const nonEmptyString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.length > 0 ? value : undefined;
 
-const workspaceToolCallActivities = (
+const skillName = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const name = value.startsWith('$') ? value.slice(1) : value;
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name) &&
+    new TextEncoder().encode(name).byteLength <= 64
+    ? name
+    : undefined;
+};
+
+const toolCallActivities = (
   itemId: string,
   callId: string,
   name: string,
   argumentsValue: Readonly<Record<string, unknown>>,
-): readonly WorkspaceToolActivity[] => {
+): readonly ProjectedToolActivity[] => {
+  if (name === 'load_skill') {
+    const selected = skillName(argumentsValue.name);
+    return selected
+      ? [{
+          type: 'skill',
+          activity: {
+            id: itemId,
+            callId,
+            name: selected,
+            callStatus: 'inProgress',
+          },
+        }]
+      : [];
+  }
   if (name === 'workspace_read') {
     const paths = Array.isArray(argumentsValue.paths)
       ? argumentsValue.paths
@@ -71,25 +96,41 @@ const workspaceToolCallActivities = (
   return [];
 };
 
-export const appendWorkspaceToolCall = (
+export const appendToolCallActivity = (
   activities: ConversationActivity[],
   itemId: string,
   callId: string,
   name: string,
   argumentsValue: Readonly<Record<string, unknown>>,
 ): void => {
-  for (const projected of workspaceToolCallActivities(
+  for (const projected of toolCallActivities(
     itemId,
     callId,
     name,
     argumentsValue,
   )) {
-    const duplicate = activities.some(
-      (activity) =>
-        activity.type === projected.type &&
-        activity.activity.callId === projected.activity.callId &&
-        activity.activity.path === projected.activity.path,
-    );
+    const duplicate = activities.some((activity) => {
+      if (
+        !('callId' in activity.activity) ||
+        activity.activity.callId !== projected.activity.callId
+      ) {
+        return false;
+      }
+      switch (projected.type) {
+        case 'skill':
+          return (
+            activity.type === 'skill' &&
+            activity.activity.name === projected.activity.name
+          );
+        case 'workspaceRead':
+        case 'workspaceList':
+        case 'workspaceSearch':
+          return (
+            activity.type === projected.type &&
+            activity.activity.path === projected.activity.path
+          );
+      }
+    });
     if (!duplicate) {
       activities.push(projected);
     }
@@ -112,14 +153,15 @@ const errorKind = (result: Readonly<Record<string, unknown>>): string => {
 const completedResultId = (itemId: string, activityId: string): string =>
   itemId === activityId ? `${itemId}:result` : `${itemId}:result:${activityId}`;
 
-export const applyWorkspaceToolResult = (
+export const applyToolResultActivity = (
   activities: ConversationActivity[],
   itemId: string,
   callId: string,
   result: Readonly<Record<string, unknown>>,
 ): void => {
   const matchingIndexes = activities.flatMap((activity, index) =>
-    (activity.type === 'workspaceRead' ||
+    (activity.type === 'skill' ||
+      activity.type === 'workspaceRead' ||
       activity.type === 'workspaceList' ||
       activity.type === 'workspaceSearch') &&
     activity.activity.callId === callId
@@ -133,6 +175,7 @@ export const applyWorkspaceToolResult = (
   matchingIndexes.forEach((activityIndex, matchingIndex) => {
     const entry = activities[activityIndex];
     if (
+      entry?.type !== 'skill' &&
       entry?.type !== 'workspaceRead' &&
       entry?.type !== 'workspaceList' &&
       entry?.type !== 'workspaceSearch'
@@ -145,6 +188,20 @@ export const applyWorkspaceToolResult = (
         result
       : result;
     const resultId = completedResultId(itemId, entry.activity.id);
+    if (entry.type === 'skill') {
+      const outcome = activityResult.ok === true
+        ? { type: 'success' as const }
+        : { type: 'error' as const, kind: errorKind(activityResult) };
+      activities[activityIndex] = {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          callStatus: 'completed',
+          result: { id: resultId, status: 'completed', outcome },
+        },
+      };
+      return;
+    }
     if (entry.type === 'workspaceRead') {
       const outcome = activityResult.ok === true &&
           Number.isSafeInteger(activityResult.bytes) &&
@@ -271,7 +328,7 @@ export const projectTurnActivities = (
       typeof item.payload.name === 'string' &&
       isRecord(item.payload.arguments)
     ) {
-      appendWorkspaceToolCall(
+      appendToolCallActivity(
         activities,
         item.payload.itemId,
         item.payload.callId,
@@ -286,7 +343,7 @@ export const projectTurnActivities = (
       typeof item.payload.callId === 'string' &&
       isRecord(item.payload.result)
     ) {
-      applyWorkspaceToolResult(
+      applyToolResultActivity(
         activities,
         item.payload.itemId,
         item.payload.callId,

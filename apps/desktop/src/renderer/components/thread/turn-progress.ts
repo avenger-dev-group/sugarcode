@@ -59,6 +59,13 @@ export const activeTurnOperationProgress = (
         detail: `“${entry.activity.query}” · ${entry.activity.path}`,
       };
     }
+    if (entry.type === 'skill' && entry.activity.state === 'running') {
+      return {
+        state: 'runningTool',
+        label: '正在应用 Skill',
+        detail: entry.activity.name,
+      };
+    }
     if (
       entry.type === 'fileChange' &&
       (entry.activity.state === 'preparing' ||

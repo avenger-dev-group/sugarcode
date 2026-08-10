@@ -76,6 +76,33 @@ test('active Turn activity identifies approval and tool stages', () => {
   );
 });
 
+test('active Skill activity uses a clear name without a dollar marker', () => {
+  const turn = {
+    id: 'turn_1',
+    status: 'inProgress',
+    verifiedFilePaths: [] as readonly string[],
+    processLanguage: 'zh',
+    messages: [] as const,
+    activities: [
+      {
+        type: 'skill',
+        activity: {
+          id: 'skill_1',
+          name: 'frontend-design',
+          state: 'running',
+        },
+      },
+    ],
+    isError: false,
+  } satisfies TurnViewModel;
+
+  assert.deepEqual(activeTurnOperationProgress(turn), {
+    state: 'runningTool',
+    label: '正在应用 Skill',
+    detail: 'frontend-design',
+  });
+});
+
 test('progress labels distinguish stopping and unavailable ownership', () => {
   assert.equal(
     toActiveTurnProgress('turn_1', 'stopping').state,

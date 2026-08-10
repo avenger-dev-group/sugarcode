@@ -142,6 +142,22 @@ export type ConversationWorkspaceSearchActivity = Readonly<{
   }>;
 }>;
 
+export type ConversationSkillOutcome =
+  | Readonly<{ type: 'success' }>
+  | Readonly<{ type: 'error'; kind: string }>;
+
+export type ConversationSkillActivity = Readonly<{
+  id: string;
+  callId: string;
+  name: string;
+  callStatus: ConversationMessageStatus;
+  result?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    outcome: ConversationSkillOutcome;
+  }>;
+}>;
+
 export type ConversationFileChangeProposal = Readonly<{
   id: string;
   status: ConversationMessageStatus;
@@ -372,6 +388,10 @@ export type ConversationActivity =
   | Readonly<{
       type: 'workspaceSearch';
       activity: ConversationWorkspaceSearchActivity;
+    }>
+  | Readonly<{
+      type: 'skill';
+      activity: ConversationSkillActivity;
     }>
   | Readonly<{
       type: 'fileChange';

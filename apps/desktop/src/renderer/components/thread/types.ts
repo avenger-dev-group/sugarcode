@@ -92,6 +92,26 @@ export type ActiveTurnOperationProgress = Readonly<{
   detail?: string;
 }>;
 
+export type SkillActivityPresentationState =
+  | 'running'
+  | 'stopping'
+  | 'uncertain'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted';
+
+export type SkillActivityViewModel = Readonly<{
+  id: string;
+  name: string;
+  state: SkillActivityPresentationState;
+  errorKind?: string;
+}>;
+
+export type SkillActivityProps = Readonly<{
+  activity: SkillActivityViewModel;
+  language: ProcessLanguage;
+}>;
+
 export type TurnActivityViewModel =
   | Readonly<{
       type: 'commentary';
@@ -109,6 +129,7 @@ export type TurnActivityViewModel =
       type: 'workspaceSearch';
       activity: WorkspaceSearchActivityViewModel;
     }>
+  | Readonly<{ type: 'skill'; activity: SkillActivityViewModel }>
   | Readonly<{ type: 'fileChange'; activity: FileChangeReviewViewModel }>
   | Readonly<{
       type: 'commandApproval';

@@ -56,6 +56,7 @@ import type {
 } from './types';
 import { resolveConversationTitle } from './conversation-title';
 import { ProcessActivityGroup } from './process-activity-group';
+import { SkillActivity } from './skill-activity';
 import { ThreadNavigator } from './thread-navigator';
 import { isCompactToolActivity } from './tool-activity';
 import { ToolActivityGroup } from './tool-activity-group';
@@ -127,9 +128,11 @@ const TranscriptMessage = ({
 
 const TurnActivity = ({
   entry,
+  language,
   turnStatus,
 }: Readonly<{
   entry: TurnActivityViewModel;
+  language: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['processLanguage'];
   turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
 }>) => {
   switch (entry.type) {
@@ -141,6 +144,8 @@ const TurnActivity = ({
       return <WorkspaceListActivity activity={entry.activity} />;
     case 'workspaceSearch':
       return <WorkspaceSearchActivity activity={entry.activity} />;
+    case 'skill':
+      return <SkillActivity activity={entry.activity} language={language} />;
     case 'fileChange':
       return <FileChangeReview review={entry.activity} />;
     case 'commandApproval':
@@ -196,6 +201,7 @@ const TurnActivityTimeline = ({
             <TurnActivity
               key={`${entry.type}:${entry.activity.id}`}
               entry={entry}
+              language={language}
               turnStatus={turnStatus}
             />
           );

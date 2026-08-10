@@ -25,6 +25,10 @@ IDs and `(turn_id, sequence)` positions are unique. Repeating an identical
 write is idempotent; reusing an identity for different content is a conflict.
 Rust SQLite is authoritative. The ADK session and enabled MCP transports are
 temporary process state rebuilt from durable records.
+Durable Turn Item IDs include their owning Turn identity. The utility worker's
+monotonic event sequence is ordering metadata within one worker lifetime and
+may restart from zero after worker replacement; it is never sufficient as a
+cross-Turn durable identity by itself.
 
 Runtime protocol v2 text streaming separates transient rendering from durable
 Items. `turn.textStarted` and `turn.textDelta` are never written per token.

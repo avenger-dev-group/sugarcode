@@ -45,6 +45,7 @@ import {
   type ConversationCommandApprovalActivity,
   type ConversationMcpActivity,
   type ConversationPhase,
+  type ConversationSkillActivity,
   type ConversationStateSnapshot,
   type ConversationThreadNavigatorSnapshot,
   type ConversationTurnStatus,
@@ -74,6 +75,7 @@ import type {
   ThreadNavigatorViewModel,
   ThreadViewModel,
   DraftAttachmentViewModel,
+  SkillActivityPresentationState,
   TranscriptFollow,
   TranscriptMessageViewModel,
   TurnViewModel,
@@ -247,6 +249,32 @@ const toWorkspaceSearchPresentationState = (
       throw new Error(
         'Workspace search activity did not match its Turn phase.',
       );
+  }
+};
+
+const toSkillPresentationState = (
+  phase: ConversationPhase,
+  turnStatus: ConversationTurnStatus,
+  activity: ConversationSkillActivity,
+): SkillActivityPresentationState => {
+  if (activity.result?.status === 'completed') {
+    return activity.result.outcome.type === 'success' ? 'succeeded' : 'failed';
+  }
+  if (turnStatus === 'interrupted') {
+    return 'interrupted';
+  }
+  if (turnStatus !== 'inProgress') {
+    throw new Error('A terminal Skill activity has no durable result.');
+  }
+  switch (phase) {
+    case 'inProgress':
+      return 'running';
+    case 'stopping':
+      return 'stopping';
+    case 'unavailable':
+      return 'uncertain';
+    default:
+      throw new Error('Skill activity did not match its Turn phase.');
   }
 };
 
@@ -709,6 +737,22 @@ export const toThreadViewModel = (
                     truncated: outcome.truncated,
                   }
                 : {}),
+              ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
+            },
+          } as const;
+        }
+        case 'skill': {
+          const outcome = entry.activity.result?.outcome;
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              name: entry.activity.name,
+              state: toSkillPresentationState(
+                snapshot.phase,
+                turn.status,
+                entry.activity,
+              ),
               ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
             },
           } as const;

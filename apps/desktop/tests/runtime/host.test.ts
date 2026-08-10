@@ -32,6 +32,24 @@ const emptyThreadSnapshot = (threadId = 'thread-fixture'): string =>
     agentTasks: [],
   });
 
+const turnNativeFixture = (options: Readonly<{
+  appendItem?: NativeRuntimeBinding['appendItem'];
+  finishTurn?: NativeRuntimeBinding['finishTurn'];
+}> = {}): NativeRuntimeBinding => ({
+  inspectMcpConfigJson: () => JSON.stringify({
+    contractVersion: 1,
+    revision: '0'.repeat(64),
+    servers: [],
+  }),
+  skillsContextJson: () => '{"skills":[]}',
+  listPendingApprovalsJson: () => '[]',
+  ensureThread: (): void => undefined,
+  loadThreadJson: (threadId: string): string => emptyThreadSnapshot(threadId),
+  startTurn: (): void => undefined,
+  appendItem: options.appendItem ?? (() => true),
+  finishTurn: options.finishTurn ?? (() => true),
+} as unknown as NativeRuntimeBinding);
+
 class FixtureLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
@@ -750,6 +768,146 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
   assert.equal(terminal?.status, 'completed');
+});
+
+test('RuntimeHost scopes durable Item IDs to each Turn across worker restarts', async () => {
+  const persisted = new Map<string, string>();
+  const native = turnNativeFixture({
+    appendItem: (itemId, turnId) => {
+      if (persisted.has(itemId)) {
+        throw new Error(`duplicate durable Item ID: ${itemId}`);
+      }
+      persisted.set(itemId, turnId);
+      return true;
+    },
+  });
+  const runTurn = async (suffix: string): Promise<RuntimeEvent[]> => {
+    const events: RuntimeEvent[] = [];
+    let resolveCompleted: (() => void) | undefined;
+    const completed = new Promise<void>((resolve) => {
+      resolveCompleted = resolve;
+    });
+    const host = new RuntimeHost({
+      createModel: () => new FixtureLlm({ model: 'fixture-model' }),
+      loadNative: () => native,
+      postEvent: (event) => {
+        events.push(event);
+        if (event.type === 'turn.completed') {
+          resolveCompleted?.();
+        }
+      },
+    });
+    host.handle({
+      type: 'initialize',
+      requestId: `request-initialize-${suffix}`,
+      protocolVersion: 2,
+      dataDirectory: `/tmp/sugarcode-v3-restart-${suffix}`,
+      nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+    });
+    host.handle({
+      type: 'turn.start',
+      requestId: `request-turn-${suffix}`,
+      workspaceId: `workspace-${suffix}`,
+      threadId: `thread-${suffix}`,
+      turnId: `turn-${suffix}`,
+      provider: {
+        wireApi: 'openaiResponses',
+        model: 'fixture-model',
+        baseUrl: 'http://127.0.0.1:1/v1',
+        timeoutMs: 5_000,
+        parallelTools: false,
+      },
+      content: [{ type: 'text', text: 'Hello' }],
+    });
+    await completed;
+    return events;
+  };
+
+  const first = await runTurn('first');
+  const second = await runTurn('second');
+  const firstTerminal = first.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  const secondTerminal = second.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+
+  assert.equal(firstTerminal?.status, 'completed');
+  assert.equal(secondTerminal?.status, 'completed');
+  assert.equal(
+    [...persisted].every(([itemId, turnId]) => itemId.includes(`:${turnId}:`)),
+    true,
+  );
+  assert.equal(
+    [...persisted.keys()].filter((itemId) => itemId.startsWith('turn.usage:')).length,
+    2,
+  );
+});
+
+test('RuntimeHost classifies durable Item write failures as local state failures', async () => {
+  const events: RuntimeEvent[] = [];
+  let terminalErrorJson: string | undefined;
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = turnNativeFixture({
+    appendItem: (_itemId, _turnId, _sequence, kind) => {
+      if (kind === 'turn.usage') {
+        throw new Error('fixture durable Item conflict');
+      }
+      return true;
+    },
+    finishTurn: (_turnId, _status, errorJson) => {
+      terminalErrorJson = errorJson;
+      return true;
+    },
+  });
+  const host = new RuntimeHost({
+    createModel: () => new FixtureLlm({ model: 'fixture-model' }),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-state-failure',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-state-failure',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-state-failure',
+    workspaceId: 'workspace-state-failure',
+    threadId: 'thread-state-failure',
+    turnId: 'turn-state-failure',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: 'Hello' }],
+  });
+
+  await completed;
+
+  const terminal = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(terminal?.status, 'failed');
+  assert.equal(terminal?.error?.kind, 'stateUnavailable');
+  assert.equal(terminal?.error?.retryable, true);
+  assert.deepEqual(JSON.parse(terminalErrorJson ?? '{}'), terminal?.error);
 });
 
 test('RuntimeHost never completes a commentary-only model response', async () => {
