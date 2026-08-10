@@ -49,8 +49,6 @@ type ThreadNavigatorProps = Readonly<{
   approvalThreadIds?: readonly string[];
 }>;
 
-type ThreadLabelKind = 'project' | 'chat';
-
 type DeleteRequest =
   | Readonly<{
       kind: 'project';
@@ -229,7 +227,6 @@ export const ThreadNavigator = ({
   const renderThreadList = (
     threadIds: readonly string[],
     threadTitles: Readonly<Record<string, string>>,
-    kind: ThreadLabelKind,
     active: boolean,
     onSelect: (threadId: string) => Promise<void>,
   ): ReactNode => {
@@ -293,15 +290,9 @@ export const ThreadNavigator = ({
           />
         ))}
         {threadIds.length === 0 ? (
-          kind === 'project' ? (
-            <p className="px-2 py-1.5 text-sm font-normal leading-normal text-tertiary">
-              没有会话
-            </p>
-          ) : (
-            <p className="px-2 py-2 leading-5 text-secondary">
-              点击栏目右侧的 + 新建聊天。
-            </p>
-          )
+          <p className="px-2 py-1.5 text-sm font-normal leading-normal text-tertiary">
+            没有会话
+          </p>
         ) : null}
       </div>
     );
@@ -460,7 +451,6 @@ export const ThreadNavigator = ({
                           ? renderThreadList(
                               project.threadIds,
                               project.threadTitles,
-                              'project',
                               active,
                               (threadId) =>
                                 selectProjectThread(project.id, threadId),
@@ -501,7 +491,6 @@ export const ThreadNavigator = ({
               {renderThreadList(
                 chatThreadIds,
                 workspace.state.chatTitles ?? {},
-                'chat',
                 chatActive,
                 selectChatThread,
               )}
