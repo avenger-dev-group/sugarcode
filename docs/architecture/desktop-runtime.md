@@ -326,7 +326,13 @@ new-conversation and open-project actions available independently of list scroll
 position, while section headings describe hierarchy without duplicating those
 actions. A saved project group is a local disclosure: selecting its folder row
 only expands or collapses the retained Thread list and does not bind a Workspace
-or initialize the conversation and context surfaces.
+or initialize the conversation and context surfaces. Expanding or collapsing a
+project performs one layout update; the affected navigator groups interpolate
+their previous positions with compositor transforms while the task list uses a
+short clipped reveal. The collapsed task list unmounts after exit so closed
+projects do not retain large hidden DOM trees or rebuild their Thread elements
+during unrelated navigator renders. Reduced-motion preferences disable those
+animations.
 Selecting its add action activates that project before creating a Thread, while
 selecting a retained Thread focuses its owning Workspace. Switching the
 foreground Thread clears transient context tabs rather than carrying file or
@@ -338,8 +344,10 @@ Direct panel resizing disables those transitions so pointer movement remains
 exact.
 The project explorer itself remains mounted while a resource or Agent tab is
 active, so expanded directories and the last selected file or folder survive
-tab changes. Opening a resource from a transcript, change receipt or project
-tree synchronizes that selected path when the matching tree entry is visible.
+tab changes. Every loaded directory is presented with folders first, followed
+by regular files, links and special entries; each group uses case-insensitive
+natural filename ordering. Opening a resource from a transcript, change receipt
+or project tree synchronizes that selected path when the matching tree entry is visible.
 Active context tabs and tree rows use the shared link accent as their selection
 cue in both themes.
 

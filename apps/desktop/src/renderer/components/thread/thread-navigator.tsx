@@ -15,6 +15,7 @@ import {
 import {
   type KeyboardEvent,
   type ReactNode,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -29,6 +30,11 @@ import {
   AlertDialogTitle,
 } from '@/renderer/components/ui/alert-dialog';
 import { Button } from '@/renderer/components/ui/button';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/renderer/components/ui/collapsible';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -72,6 +78,14 @@ type DeleteRequest =
       title: string;
     }>;
 
+type DeferredThreadListProps = Readonly<{
+  render: () => ReactNode;
+}>;
+
+const DeferredThreadList = ({
+  render,
+}: DeferredThreadListProps): ReactNode => render();
+
 const focusThreadAt = (
   container: HTMLElement,
   index: number,
@@ -94,6 +108,9 @@ export const ThreadNavigator = ({
   const [deletePending, setDeletePending] = useState<boolean>(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const projectLayoutRef = useRef<ReadonlyMap<string, number> | null>(
+    null,
+  );
   const cancelDeleteRef = useRef<HTMLButtonElement | null>(null);
   const workspace = useWorkspaceNavigationStore();
   const navigationDisabled =
@@ -163,6 +180,65 @@ export const ThreadNavigator = ({
       focusThreadAt(event.currentTarget, -1);
     }
   };
+
+  const captureProjectLayout = (): void => {
+    const list = listRef.current;
+    if (!list) {
+      return;
+    }
+    const positions = new Map<string, number>();
+    list
+      .querySelectorAll<HTMLElement>('[data-project-layout-item]')
+      .forEach((item) => {
+        const key = item.dataset.projectLayoutItem;
+        if (!key) {
+          return;
+        }
+        positions.set(key, item.getBoundingClientRect().top);
+        item.getAnimations().forEach((animation) => animation.cancel());
+      });
+    projectLayoutRef.current = positions;
+  };
+
+  useLayoutEffect(() => {
+    const previousPositions = projectLayoutRef.current;
+    const list = listRef.current;
+    projectLayoutRef.current = null;
+    if (
+      !previousPositions ||
+      !list ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      return;
+    }
+    list
+      .querySelectorAll<HTMLElement>('[data-project-layout-item]')
+      .forEach((item) => {
+        const key = item.dataset.projectLayoutItem;
+        const previousTop = key ? previousPositions.get(key) : undefined;
+        if (previousTop === undefined) {
+          return;
+        }
+        const deltaY = previousTop - item.getBoundingClientRect().top;
+        if (Math.abs(deltaY) < 0.5) {
+          return;
+        }
+        const animation = item.animate(
+          [
+            { transform: `translate3d(0, ${deltaY}px, 0)` },
+            { transform: 'translate3d(0, 0, 0)' },
+          ],
+          {
+            duration: 160,
+            easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+            fill: 'both',
+          },
+        );
+        animation.addEventListener('finish', () => animation.cancel(), {
+          once: true,
+        });
+      });
+  }, [store.expandedProjectIds]);
 
   const startProjectTask = async (projectId?: string): Promise<void> => {
     const activated =
@@ -405,35 +481,52 @@ export const ThreadNavigator = ({
                       project.id,
                     );
                     return (
-                      <div key={project.id}>
+                      <Collapsible
+                        key={project.id}
+                        data-project-layout-item={project.id}
+                        className="relative"
+                        open={expanded}
+                        onOpenChange={(open) => {
+                          if (open !== expanded) {
+                            captureProjectLayout();
+                            store.toggleProjectExpanded(project.id);
+                          }
+                        }}
+                      >
                         <div
                           data-project-row
                           className="group flex items-center rounded-lg"
                         >
-                          <button
-                            type="button"
-                            data-thread-item
-                            aria-expanded={expanded}
-                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            onClick={() =>
-                              store.toggleProjectExpanded(project.id)
-                            }
-                          >
-                            {expanded ? (
-                              <FolderOpen
-                                className="size-4 shrink-0 text-navigation"
+                          <CollapsibleTrigger asChild>
+                            <button
+                              type="button"
+                              data-thread-item
+                              className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                              <span
+                                className="relative size-4 shrink-0"
                                 aria-hidden="true"
-                              />
-                            ) : (
-                              <Folder
-                                className="size-4 shrink-0 text-navigation"
-                                aria-hidden="true"
-                              />
-                            )}
-                            <span className="min-w-0 flex-1 truncate text-sm font-normal">
-                              {project.name}
-                            </span>
-                          </button>
+                              >
+                                <FolderOpen
+                                  className={`absolute inset-0 size-4 text-navigation transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
+                                    expanded
+                                      ? 'scale-100 opacity-100'
+                                      : 'scale-75 opacity-0'
+                                  }`}
+                                />
+                                <Folder
+                                  className={`absolute inset-0 size-4 text-navigation transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
+                                    expanded
+                                      ? 'scale-75 opacity-0'
+                                      : 'scale-100 opacity-100'
+                                  }`}
+                                />
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-sm font-normal">
+                                {project.name}
+                              </span>
+                            </button>
+                          </CollapsibleTrigger>
                           <div className="mr-1 flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                             <Button
                               type="button"
@@ -478,17 +571,21 @@ export const ThreadNavigator = ({
                             </Button>
                           </div>
                         </div>
-                        {expanded
-                          ? renderThreadList(
-                              project.threadIds,
-                              project.threadTitles,
-                              active,
-                              (threadId) =>
-                                selectProjectThread(project.id, threadId),
-                              true,
-                            )
-                          : null}
-                      </div>
+                        <CollapsibleContent className="project-disclosure-content">
+                          <DeferredThreadList
+                            render={() =>
+                              renderThreadList(
+                                project.threadIds,
+                                project.threadTitles,
+                                active,
+                                (threadId) =>
+                                  selectProjectThread(project.id, threadId),
+                                true,
+                              )
+                            }
+                          />
+                        </CollapsibleContent>
+                      </Collapsible>
                     );
                   })}
                 </div>
@@ -499,7 +596,10 @@ export const ThreadNavigator = ({
               )}
             </section>
 
-            <section aria-labelledby="chat-section-title">
+            <section
+              data-project-layout-item="chat-section"
+              aria-labelledby="chat-section-title"
+            >
               <SectionHeading id="chat-section-title" label="聊天" />
               {renderThreadList(
                 chatThreadIds,

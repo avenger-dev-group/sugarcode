@@ -12,6 +12,7 @@ import type {
   WorkspaceInspectDocument,
 } from '@/shared/workspace';
 
+import { orderWorkspaceEntries } from './file-entry-order';
 import type { WorkspaceWorkbenchStore } from './types';
 
 export const useStore = (
@@ -60,7 +61,7 @@ export const useStore = (
     }
     setEntries((current) => {
       const next = new Map(current);
-      next.set(path, result.entries);
+      next.set(path, orderWorkspaceEntries(result.entries));
       return next;
     });
     setError(null);
