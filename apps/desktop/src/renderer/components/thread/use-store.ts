@@ -753,6 +753,17 @@ export const toThreadViewModel = (
                 turn.status,
                 entry.activity,
               ),
+              ...(outcome?.type === 'success' && outcome.purpose
+                ? { purpose: outcome.purpose }
+                : entry.activity.purpose
+                  ? { purpose: entry.activity.purpose }
+                  : {}),
+              ...(outcome?.type === 'success' && outcome.description
+                ? { description: outcome.description }
+                : {}),
+              ...(outcome?.type === 'success' && outcome.content
+                ? { content: outcome.content }
+                : {}),
               ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
             },
           } as const;

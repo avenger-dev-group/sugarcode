@@ -1,9 +1,17 @@
 import type { ReactNode } from 'react';
-import { FileCode2, FileDiff, FolderTree, GitBranch, X } from 'lucide-react';
+import {
+  BookOpenText,
+  FileCode2,
+  FileDiff,
+  FolderTree,
+  GitBranch,
+  X,
+} from 'lucide-react';
 
 import { AgentDetail } from '@/renderer/components/orchestration/agent-detail';
 import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
+import { SkillDocument } from '@/renderer/components/skills/skill-document';
 import { GitWorkbench } from '@/renderer/components/workspace/git/git-workbench';
 import { PreviewWorkbench } from '@/renderer/components/workspace/preview/preview-workbench';
 import { TerminalWorkbench } from '@/renderer/components/workspace/terminal/terminal-workbench';
@@ -37,6 +45,16 @@ export const ContextRail = () => {
     setActiveTab,
   } = useOrchestrationStore();
   const workspaceActive = activeTab === 'workspace';
+  const resourceTitle = selectedResource
+    ? selectedResource.kind === 'skill'
+      ? `${selectedResource.name} Skill`
+      : selectedResource.path
+    : '';
+  const resourceLabel = selectedResource
+    ? selectedResource.kind === 'skill'
+      ? `${selectedResource.name} Skill`
+      : selectedResource.path.split('/').at(-1)
+    : '';
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -73,19 +91,24 @@ export const ContextRail = () => {
                 role="tab"
                 aria-selected={activeTab === 'resource'}
                 className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                title={selectedResource.path}
+                title={resourceTitle}
                 onClick={() => setActiveTab('resource')}
               >
-                {selectedResource.kind === 'diff' ? (
+                {selectedResource.kind === 'skill' ? (
+                  <BookOpenText
+                    className="size-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                ) : selectedResource.kind === 'diff' ? (
                   <FileDiff className="size-3.5 shrink-0" aria-hidden="true" />
                 ) : (
                   <FileCode2 className="size-3.5 shrink-0" aria-hidden="true" />
                 )}
-                <span className="truncate">{selectedResource.path.split('/').at(-1)}</span>
+                <span className="truncate">{resourceLabel}</span>
               </button>
               <button
                 type="button"
-                aria-label={`关闭 ${selectedResource.path}`}
+                aria-label={`关闭 ${resourceTitle}`}
                 className="mr-1 flex size-5 shrink-0 items-center justify-center rounded text-tertiary hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={closeResourceTab}
               >
@@ -131,7 +154,11 @@ export const ContextRail = () => {
       >
           <div className="min-h-0 flex-1">
             <WorkspaceWorkbench
-              activePath={selectedResource?.path}
+              activePath={
+                selectedResource && selectedResource.kind !== 'skill'
+                  ? selectedResource.path
+                  : undefined
+              }
               onOpenFile={openFile}
             />
           </div>
@@ -154,7 +181,13 @@ export const ContextRail = () => {
           className={`${activeTab === 'resource' ? 'block' : 'hidden'} min-h-0 flex-1`}
           aria-hidden={activeTab !== 'resource'}
         >
-          {selectedResource.kind === 'diff' ? (
+          {selectedResource.kind === 'skill' ? (
+            <SkillDocument
+              name={selectedResource.name}
+              description={selectedResource.description}
+              content={selectedResource.content}
+            />
+          ) : selectedResource.kind === 'diff' ? (
             <FileDiffWorkbench
               path={selectedResource.path}
               changes={selectedResource.changes}

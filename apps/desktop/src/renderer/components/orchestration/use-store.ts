@@ -28,6 +28,9 @@ type OrchestrationStore = Readonly<{
     changes: readonly import('../workspace/types').FileChangeReviewFile[],
   ) => void;
   openFile: (path: string) => void;
+  openSkill: (
+    skill: Extract<ContextRailResource, { kind: 'skill' }>,
+  ) => void;
   selectTask: (task: AgentTaskViewModel) => void;
   refreshTask: (task: AgentTaskViewModel) => void;
   setActiveTab: (tab: ContextRailTab) => void;
@@ -93,6 +96,15 @@ export const OrchestrationStoreProvider = ({
     [onRequestOpen],
   );
 
+  const openSkill = useCallback(
+    (skill: Extract<ContextRailResource, { kind: 'skill' }>) => {
+      setSelectedResource(skill);
+      setActiveTab('resource');
+      onRequestOpen();
+    },
+    [onRequestOpen],
+  );
+
   useEffect(() => {
     setSelectedTask(null);
     setSelectedResource(null);
@@ -113,6 +125,7 @@ export const OrchestrationStoreProvider = ({
       closeResourceTab,
       openDiff,
       openFile,
+      openSkill,
       selectedResource,
       selectedTask,
       selectTask,
@@ -127,6 +140,7 @@ export const OrchestrationStoreProvider = ({
       closeResourceTab,
       openDiff,
       openFile,
+      openSkill,
       refreshTask,
       selectTask,
       selectedResource,

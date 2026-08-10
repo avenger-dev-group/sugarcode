@@ -189,6 +189,16 @@ selection or the read-only `load_skill` tool may expose up to four Skill bodies
 and 128 KiB total from that snapshot. Refreshing, importing or toggling a Skill
 cannot change an already-running Turn, and Skill text never grants additional
 filesystem, process, network or approval authority.
+The `load_skill` schema enumerates the exact frozen names and instructs the
+model to choose the single best match. Its execution boundary also normalizes
+ASCII case, surrounding whitespace and one optional leading `$`, because `$name`
+is the user-facing invocation notation and must not create a false
+`skillNotFound` failure when copied into the tool argument. A genuinely unknown
+name returns the bounded frozen name list for one informed recovery attempt.
+The call may also carry one bounded public purpose sentence in the original
+user's language. That sentence explains how the selected Skill applies to the
+current task and becomes process presentation only; it does not change the
+Skill snapshot, tool result or authority.
 
 ## MCP and collaboration
 

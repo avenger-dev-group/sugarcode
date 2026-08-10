@@ -29,3 +29,9 @@ export type SkillsStore = Readonly<{
 export type SkillsSettingsPanelProps = Readonly<{
   active: boolean;
 }>;
+
+export type SkillDocumentProps = Readonly<{
+  name: string;
+  description?: string;
+  content: string;
+}>;

@@ -89,8 +89,11 @@ Durable `turn.toolCall` and `turn.toolResult` Items also rebuild the visible
 provider-neutral process timeline. Main pairs them by `callId`, preserves Item
 sequence relative to completed commentary and expands every retained
 `workspace_read.paths` entry into a per-file activity. Tool result content is
-not copied into the conversation snapshot; only bounded presentation receipts
-such as byte, entry and match counts or an error kind cross to the Renderer.
+not copied into the conversation snapshot by default; only bounded presentation
+receipts such as byte, entry and match counts or an error kind cross to the
+Renderer. A successful `load_skill` receipt is the narrow exception: its frozen
+description, digest and at-most-32-KiB Skill body may cross so the user can
+inspect the exact instructions applied by that historical Turn.
 
 Restore prefers v2 `turn.textCompleted` Items. For databases created by the v3
 schema before protocol v2, a Turn with no completed text Items still coalesces

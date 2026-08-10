@@ -143,13 +143,20 @@ export type ConversationWorkspaceSearchActivity = Readonly<{
 }>;
 
 export type ConversationSkillOutcome =
-  | Readonly<{ type: 'success' }>
+  | Readonly<{
+      type: 'success';
+      purpose?: string;
+      description?: string;
+      content?: string;
+      sha256?: string;
+    }>
   | Readonly<{ type: 'error'; kind: string }>;
 
 export type ConversationSkillActivity = Readonly<{
   id: string;
   callId: string;
   name: string;
+  purpose?: string;
   callStatus: ConversationMessageStatus;
   result?: Readonly<{
     id: string;

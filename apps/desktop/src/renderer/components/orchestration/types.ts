@@ -52,4 +52,10 @@ export type ContextRailResource =
       kind: 'diff';
       path: string;
       changes: readonly FileChangeReviewFile[];
+    }>
+  | Readonly<{
+      kind: 'skill';
+      name: string;
+      description?: string;
+      content: string;
     }>;

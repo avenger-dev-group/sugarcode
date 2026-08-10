@@ -30,15 +30,21 @@ test('Turn Skills freeze inventory and inline an explicit selection', async () =
 
   assert.match(turn.instruction, /\$review: review instructions/u);
   assert.match(turn.instruction, /Selected Skill: \$review/u);
+  assert.match(turn.instruction, /without the leading \$ marker/u);
   assert.equal(turn.tools.length, 1);
   assert.deepEqual(
     await turn.tools[0].runAsync({
-      args: { name: 'testing' },
+      args: {
+        name: ' $Testing ',
+        purpose: 'Use its focused checks to verify the current change.',
+      },
       toolContext: {} as never,
     }),
     {
       ok: true,
       name: 'testing',
+      description: 'testing instructions',
+      purpose: 'Use its focused checks to verify the current change.',
       sha256: 'a'.repeat(64),
       content: runtimeSkill('testing').content,
     },
@@ -71,5 +77,25 @@ test('Turn Skills reject over-selection and cap on-demand loads', async () => {
       toolContext: {} as never,
     }),
     { ok: false, error: 'tooManySkills' },
+  );
+});
+
+test('Turn Skills return the frozen inventory when a requested name is unknown', async () => {
+  const turn = createTurnSkills(
+    nativeWithSkills(['frontend-design', 'testing']),
+    'workspace-1',
+    [{ type: 'text', text: 'Improve the interface.' }],
+  );
+
+  assert.deepEqual(
+    await turn.tools[0].runAsync({
+      args: { name: '$missing-skill' },
+      toolContext: {} as never,
+    }),
+    {
+      ok: false,
+      error: 'skillNotFound',
+      availableSkills: ['frontend-design', 'testing'],
+    },
   );
 });

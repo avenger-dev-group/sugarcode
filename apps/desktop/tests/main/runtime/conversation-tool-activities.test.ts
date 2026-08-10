@@ -30,6 +30,7 @@ test('workspace_read projection preserves every requested path', () => {
 });
 
 test('load_skill projects a durable activity without the invocation marker', () => {
+  const content = '---\nname: frontend-design\n---\n\nDesign carefully.\n';
   const items: readonly RuntimeTurnItemRecord[] = [
     {
       id: 'item-skill-call',
@@ -40,7 +41,10 @@ test('load_skill projects a durable activity without the invocation marker', () 
         itemId: 'item-skill-call',
         callId: 'call-skill',
         name: 'load_skill',
-        arguments: { name: '$frontend-design' },
+        arguments: {
+          name: '$frontend-design',
+          purpose: '优化登录页的视觉层级和交互反馈。',
+        },
       },
     },
     {
@@ -51,7 +55,14 @@ test('load_skill projects a durable activity without the invocation marker', () 
       payload: {
         itemId: 'item-skill-result',
         callId: 'call-skill',
-        result: { ok: true, name: 'frontend-design' },
+        result: {
+          ok: true,
+          name: 'frontend-design',
+          purpose: '优化登录页的视觉层级和交互反馈。',
+          description: 'Design polished interfaces.',
+          content,
+          sha256: 'a'.repeat(64),
+        },
       },
     },
   ];
@@ -63,11 +74,86 @@ test('load_skill projects a durable activity without the invocation marker', () 
         id: 'item-skill-call',
         callId: 'call-skill',
         name: 'frontend-design',
+        purpose: '优化登录页的视觉层级和交互反馈。',
         callStatus: 'completed',
         result: {
           id: 'item-skill-result:result:item-skill-call',
           status: 'completed',
-          outcome: { type: 'success' },
+          outcome: {
+            type: 'success',
+            purpose: '优化登录页的视觉层级和交互反馈。',
+            description: 'Design polished interfaces.',
+            content,
+            sha256: 'a'.repeat(64),
+          },
+        },
+      },
+    },
+  ]);
+});
+
+test('load_skill replaces a recovered transient failure for the same Skill', () => {
+  const items: readonly RuntimeTurnItemRecord[] = [
+    {
+      id: 'item-skill-call-failed',
+      turnId: 'turn-fixture',
+      sequence: 1,
+      kind: 'turn.toolCall',
+      payload: {
+        itemId: 'item-skill-call-failed',
+        callId: 'call-skill-failed',
+        name: 'load_skill',
+        arguments: { name: '$frontend-design' },
+      },
+    },
+    {
+      id: 'item-skill-result-failed',
+      turnId: 'turn-fixture',
+      sequence: 2,
+      kind: 'turn.toolResult',
+      payload: {
+        itemId: 'item-skill-result-failed',
+        callId: 'call-skill-failed',
+        result: { ok: false, error: 'skillNotFound' },
+      },
+    },
+    {
+      id: 'item-skill-call-retry',
+      turnId: 'turn-fixture',
+      sequence: 3,
+      kind: 'turn.toolCall',
+      payload: {
+        itemId: 'item-skill-call-retry',
+        callId: 'call-skill-retry',
+        name: 'load_skill',
+        arguments: { name: 'frontend-design' },
+      },
+    },
+    {
+      id: 'item-skill-result-retry',
+      turnId: 'turn-fixture',
+      sequence: 4,
+      kind: 'turn.toolResult',
+      payload: {
+        itemId: 'item-skill-result-retry',
+        callId: 'call-skill-retry',
+        result: { ok: true, name: 'frontend-design', content: 'Use restraint.' },
+      },
+    },
+  ];
+
+  assert.deepEqual(projectTurnActivities(items), [
+    {
+      type: 'skill',
+      activity: {
+        id: 'item-skill-call-retry',
+        callId: 'call-skill-retry',
+        name: 'frontend-design',
+        callStatus: 'completed',
+        result: {
+          id: 'item-skill-result-retry:result:item-skill-call-retry',
+          status: 'completed',
+          outcome: { type: 'success', content: 'Use restraint.' },
         },
       },
     },

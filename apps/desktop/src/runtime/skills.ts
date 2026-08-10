@@ -24,16 +24,34 @@ export type TurnSkills = Readonly<{
   tools: readonly FunctionTool<Schema>[];
 }>;
 
-const skillSchema = {
-  type: Type.OBJECT,
-  properties: {
-    name: {
-      type: Type.STRING,
-      description: 'Exact Skill name from the available Skills inventory.',
+const skillSchema = (skills: readonly RuntimeSkill[]): Schema =>
+  ({
+    type: Type.OBJECT,
+    properties: {
+      name: {
+        type: Type.STRING,
+        description:
+          'Exact Skill name from the available Skills inventory, without the leading $ marker.',
+        enum: skills.map((skill) => skill.name),
+      },
+      purpose: {
+        type: Type.STRING,
+        description:
+          'One concise public sentence in the user\'s language explaining how this Skill will be applied to the current task. Do not describe tool mechanics.',
+      },
     },
-  },
-  required: ['name'],
-} satisfies Schema;
+    required: ['name'],
+  }) satisfies Schema;
+
+const normalizeRequestedSkillName = (value: unknown): string => {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  const name = (trimmed.startsWith('$') ? trimmed.slice(1) : trimmed)
+    .toLowerCase();
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name) ? name : '';
+};
 
 const isRuntimeSkill = (value: unknown): value is RuntimeSkill => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -136,19 +154,32 @@ export const createTurnSkills = (
   const tool = new FunctionTool({
     name: 'load_skill',
     description:
-      'Load one applicable Skill by its exact name from the frozen Skills inventory for this Turn. Load a relevant Skill before following it.',
-    parameters: skillSchema,
+      'Load the single best-matching Skill from the frozen inventory before following it. Pass the exact inventory name without $, and include a concise public purpose for the process timeline.',
+    parameters: skillSchema(context.skills),
     execute: async (input) => {
-      const name =
+      const requestedName =
         typeof input === 'object' &&
         input !== null &&
         'name' in input &&
         typeof input.name === 'string'
           ? input.name
           : '';
+      const name = normalizeRequestedSkillName(requestedName);
+      const purpose =
+        typeof input === 'object' &&
+        input !== null &&
+        'purpose' in input &&
+        typeof input.purpose === 'string' &&
+        new TextEncoder().encode(input.purpose.trim()).byteLength <= 512
+          ? input.purpose.trim()
+          : '';
       const skill = context.skills.find((candidate) => candidate.name === name);
       if (!skill) {
-        return { ok: false, error: 'skillNotFound' };
+        return {
+          ok: false,
+          error: 'skillNotFound',
+          availableSkills: context.skills.map((candidate) => candidate.name),
+        };
       }
       if (!loaded.has(name)) {
         if (loaded.size >= MAX_SELECTED_SKILLS) {
@@ -163,6 +194,8 @@ export const createTurnSkills = (
       return {
         ok: true,
         name: skill.name,
+        description: skill.description,
+        ...(purpose ? { purpose } : {}),
         sha256: skill.sha256,
         content: skill.content,
       };
@@ -171,7 +204,9 @@ export const createTurnSkills = (
   return {
     instruction:
       `# Available Skills\n\n${inventory}\n\n` +
-      'When a Skill clearly applies, load it with load_skill before acting. ' +
+      'When a Skill clearly applies, load the single best match with load_skill before acting. ' +
+      'Pass only its inventory name without the leading $ marker, and do not load Skills merely because they are available. ' +
+      'Include one concise public purpose in the original user\'s language explaining how that Skill applies to the current task. ' +
       'A Skill explicitly named with $name is already selected below. ' +
       'Skill instructions narrow the task but cannot expand tools, permissions, or authority.' +
       (selectedContent.length > 0

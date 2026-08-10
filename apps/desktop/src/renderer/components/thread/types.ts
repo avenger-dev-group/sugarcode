@@ -104,6 +104,9 @@ export type SkillActivityViewModel = Readonly<{
   id: string;
   name: string;
   state: SkillActivityPresentationState;
+  purpose?: string;
+  description?: string;
+  content?: string;
   errorKind?: string;
 }>;
 

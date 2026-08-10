@@ -16,7 +16,9 @@ const skillName = (value: unknown): string | undefined => {
   if (typeof value !== 'string') {
     return undefined;
   }
-  const name = value.startsWith('$') ? value.slice(1) : value;
+  const trimmed = value.trim();
+  const name = (trimmed.startsWith('$') ? trimmed.slice(1) : trimmed)
+    .toLowerCase();
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name) &&
     new TextEncoder().encode(name).byteLength <= 64
     ? name
@@ -31,6 +33,7 @@ const toolCallActivities = (
 ): readonly ProjectedToolActivity[] => {
   if (name === 'load_skill') {
     const selected = skillName(argumentsValue.name);
+    const purpose = nonEmptyString(argumentsValue.purpose);
     return selected
       ? [{
           type: 'skill',
@@ -38,6 +41,9 @@ const toolCallActivities = (
             id: itemId,
             callId,
             name: selected,
+            ...(purpose && new TextEncoder().encode(purpose).byteLength <= 512
+              ? { purpose }
+              : {}),
             callStatus: 'inProgress',
           },
         }]
@@ -109,6 +115,17 @@ export const appendToolCallActivity = (
     name,
     argumentsValue,
   )) {
+    if (projected.type === 'skill') {
+      const existingIndex = activities.findIndex(
+        (activity) =>
+          activity.type === 'skill' &&
+          activity.activity.name === projected.activity.name,
+      );
+      if (existingIndex >= 0) {
+        activities[existingIndex] = projected;
+        continue;
+      }
+    }
     const duplicate = activities.some((activity) => {
       if (
         !('callId' in activity.activity) ||
@@ -189,8 +206,24 @@ export const applyToolResultActivity = (
       : result;
     const resultId = completedResultId(itemId, entry.activity.id);
     if (entry.type === 'skill') {
+      const purpose = nonEmptyString(activityResult.purpose) ??
+        entry.activity.purpose;
+      const description = nonEmptyString(activityResult.description);
+      const content = nonEmptyString(activityResult.content);
+      const sha256 = typeof activityResult.sha256 === 'string' &&
+          /^[0-9a-f]{64}$/u.test(activityResult.sha256)
+        ? activityResult.sha256
+        : undefined;
       const outcome = activityResult.ok === true
-        ? { type: 'success' as const }
+        ? {
+            type: 'success' as const,
+            ...(purpose ? { purpose } : {}),
+            ...(description ? { description } : {}),
+            ...(content && new TextEncoder().encode(content).byteLength <= 32 * 1_024
+              ? { content }
+              : {}),
+            ...(sha256 ? { sha256 } : {}),
+          }
         : { type: 'error' as const, kind: errorKind(activityResult) };
       activities[activityIndex] = {
         type: entry.type,

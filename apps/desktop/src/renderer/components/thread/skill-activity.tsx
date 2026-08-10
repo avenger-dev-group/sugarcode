@@ -1,127 +1,142 @@
+import { BookOpenText, LoaderCircle } from 'lucide-react';
+
 import {
-  Check,
-  CircleHelp,
-  LoaderCircle,
-  Sparkles,
-  Square,
-  X,
-} from 'lucide-react';
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/renderer/components/ui/tooltip';
+import { useOrchestrationStore } from '../orchestration/use-store';
+import type { SkillActivityProps } from './types';
 
-import type {
-  SkillActivityPresentationState,
-  SkillActivityProps,
-} from './types';
-
-const stateCopy = (
-  state: SkillActivityPresentationState,
-  language: SkillActivityProps['language'],
-): string => {
-  if (language === 'zh') {
-    switch (state) {
-      case 'running':
-        return '正在应用';
-      case 'stopping':
-        return '正在停止';
-      case 'uncertain':
-        return '状态未知';
-      case 'succeeded':
-        return '已应用';
-      case 'failed':
-        return '加载失败';
-      case 'interrupted':
-        return '已停止';
-    }
-  }
-  switch (state) {
-    case 'running':
-      return 'Applying';
-    case 'stopping':
-      return 'Stopping';
-    case 'uncertain':
-      return 'Status unknown';
-    case 'succeeded':
-      return 'Applied';
-    case 'failed':
-      return 'Load failed';
-    case 'interrupted':
-      return 'Stopped';
-  }
+const terminalSentence = (value: string, language: SkillActivityProps['language']): string => {
+  const trimmed = value.trim();
+  return /[.!?。！？]$/u.test(trimmed)
+    ? trimmed
+    : `${trimmed}${language === 'zh' ? '。' : '.'}`;
 };
 
-const stateTone = (state: SkillActivityPresentationState): string => {
-  if (state === 'failed') {
-    return 'text-destructive';
+const appliedPurpose = ({
+  activity,
+  language,
+}: SkillActivityProps): string => {
+  if (activity.purpose) {
+    return terminalSentence(activity.purpose, language);
   }
-  if (state === 'succeeded') {
-    return 'text-success';
+  const descriptionMatchesLanguage = activity.description &&
+    (language === 'zh'
+      ? /\p{Script=Han}/u.test(activity.description)
+      : !/\p{Script=Han}/u.test(activity.description));
+  if (descriptionMatchesLanguage && activity.description) {
+    return terminalSentence(activity.description, language);
   }
-  if (state === 'running' || state === 'stopping') {
-    return 'text-process';
-  }
-  return 'text-tertiary';
+  return language === 'zh'
+    ? '按照该 Skill 的专用流程处理当前任务。'
+    : 'Applied its specialized workflow to the current task.';
 };
 
-const StateIcon = ({
-  state,
-}: Readonly<{ state: SkillActivityPresentationState }>) => {
-  switch (state) {
-    case 'running':
-    case 'stopping':
-      return (
-        <LoaderCircle
-          className="size-3.5 animate-spin motion-reduce:animate-none"
-          aria-hidden="true"
-        />
-      );
-    case 'succeeded':
-      return <Check className="size-3.5" aria-hidden="true" />;
-    case 'failed':
-      return <X className="size-3.5" aria-hidden="true" />;
-    case 'interrupted':
-      return <Square className="size-3.5" aria-hidden="true" />;
-    case 'uncertain':
-      return <CircleHelp className="size-3.5" aria-hidden="true" />;
-  }
+const SkillReference = ({
+  activity,
+  language,
+}: Pick<SkillActivityProps, 'activity' | 'language'>) => {
+  const { openSkill } = useOrchestrationStore();
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex max-w-full cursor-pointer items-baseline gap-1 text-link underline decoration-link-muted underline-offset-[3px] transition-[color,text-decoration-color] hover:text-link-hover hover:decoration-link focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => {
+            if (!activity.content) {
+              return;
+            }
+            openSkill({
+              kind: 'skill',
+              name: activity.name,
+              ...(activity.description
+                ? { description: activity.description }
+                : {}),
+              content: activity.content,
+            });
+          }}
+          aria-label={
+            language === 'zh'
+              ? `在右侧打开 ${activity.name} Skill`
+              : `Open ${activity.name} Skill on the right`
+          }
+        >
+          <BookOpenText
+            className="size-3 shrink-0 self-center"
+            strokeWidth={1.8}
+            aria-hidden="true"
+          />
+          <span className="font-mono text-[0.92em] font-normal">
+            {activity.name}
+          </span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        {language === 'zh' ? '在右侧查看' : 'Open on the right:'}{' '}
+        {activity.name} Skill
+      </TooltipContent>
+    </Tooltip>
+  );
 };
 
 export const SkillActivity = ({ activity, language }: SkillActivityProps) => {
-  const copy = stateCopy(activity.state, language);
-  const failed = activity.state === 'failed';
+  if (activity.state === 'succeeded' && activity.content) {
+    return (
+      <p className="my-1 min-w-0 text-sm font-normal leading-[22px] text-primary">
+        {language === 'zh' ? '本次使用 ' : 'Used '}
+        <SkillReference activity={activity} language={language} />
+        {' Skill'}
+        {language === 'zh' ? '，' : ' — '}
+        {appliedPurpose({ activity, language })}
+      </p>
+    );
+  }
+
+  if (activity.state === 'failed') {
+    return (
+      <p
+        className="my-1 text-sm font-normal leading-[22px] text-destructive"
+        role="alert"
+      >
+        {language === 'zh' ? '加载 ' : 'Could not load '}
+        <code className="font-mono text-[0.92em]">{activity.name} Skill</code>
+        {activity.errorKind ? ` · ${activity.errorKind}` : null}
+      </p>
+    );
+  }
+
+  const loading = activity.state === 'running' || activity.state === 'stopping';
+  const copy = language === 'zh'
+    ? activity.state === 'interrupted'
+      ? '已停止加载'
+      : activity.state === 'uncertain'
+        ? 'Skill 加载状态未知'
+        : '正在加载'
+    : activity.state === 'interrupted'
+      ? 'Stopped loading'
+      : activity.state === 'uncertain'
+        ? 'Skill load status unknown'
+        : 'Loading';
 
   return (
-    <section
-      className="my-1 flex min-w-0 items-center gap-3 rounded-xl border border-l-2 border-l-primary bg-surface px-3 py-2.5 shadow-sm"
-      role={failed ? 'alert' : 'status'}
-      aria-label={`${copy} Skill：${activity.name}`}
-      data-state={activity.state}
+    <p
+      className="my-1 flex min-w-0 items-center gap-1.5 text-sm font-normal leading-[22px] text-process"
+      role="status"
     >
-      <span className="grid size-9 shrink-0 place-items-center rounded-lg border bg-background text-primary shadow-sm">
-        <Sparkles className="size-4" aria-hidden="true" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2">
-          <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-tertiary">
-            Skill
-          </span>
-          <span className={`text-xs font-medium ${stateTone(activity.state)}`}>
-            {copy}
-          </span>
-        </span>
-        <strong className="mt-0.5 block truncate text-sm font-medium text-primary">
-          {activity.name}
-        </strong>
-        {activity.errorKind ? (
-          <span className="mt-0.5 block truncate font-mono text-[10px] text-destructive">
-            {activity.errorKind}
-          </span>
-        ) : null}
-      </span>
-      <span
-        className={`grid size-7 shrink-0 place-items-center rounded-full border bg-background ${stateTone(activity.state)}`}
-        aria-hidden="true"
-      >
-        <StateIcon state={activity.state} />
-      </span>
-    </section>
+      {loading ? (
+        <LoaderCircle
+          className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none"
+          aria-hidden="true"
+        />
+      ) : null}
+      <span>{copy}</span>
+      <code className="truncate font-mono text-[0.92em] text-primary">
+        {activity.name} Skill
+      </code>
+    </p>
   );
 };

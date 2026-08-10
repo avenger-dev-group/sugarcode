@@ -116,9 +116,16 @@ made from Settings therefore affect later Turns and never mutate the active
 Turn's instruction or tool inventory.
 An on-demand `load_skill` call is projected as a durable provider-neutral
 `skill` activity for both the live Turn and restored history. The Renderer
-presents its normalized name without the `$` invocation marker in a dedicated
-localized status card (`applying`, `applied`, `failed` or interrupted), instead
-of duplicating it as synthesized commentary.
+presents its normalized name without the `$` invocation marker as one compact
+localized Agent-process sentence (`using`, `used`, `failed` or interrupted),
+instead of a prominent status card or duplicated synthesized commentary. The
+successful sentence includes the Agent's bounded task-specific purpose, while
+only the exact Skill name is a blue reference matching file citations; the
+following plain-text `Skill` suffix is not part of the link. Activating the name
+opens the exact bounded frozen Skill body in the right context rail;
+it does not expand inside the transcript. A recovered retry for the same
+normalized Skill replaces its transient failed activity rather than leaving
+contradictory rows.
 
 The primary `LlmAgent` follows ADK's structured tool loop. SugarCode Turn
 Driver outside ADK consumes the provider-normalized `ModelStepOutcome`
