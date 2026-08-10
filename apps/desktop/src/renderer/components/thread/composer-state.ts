@@ -5,3 +5,11 @@ export const shouldStartChatOnSend = (
 ): boolean =>
   workspace.kind === undefined &&
   (workspace.status === 'unselected' || workspace.status === 'failed');
+
+export const canRemoveDraftProject = (
+  workspace: WorkspaceStateSnapshot,
+  threadIdentity: string | null,
+): boolean =>
+  workspace.status === 'ready' &&
+  workspace.kind === 'project' &&
+  threadIdentity === null;

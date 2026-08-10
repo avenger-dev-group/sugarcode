@@ -2,6 +2,7 @@ import {
   ArrowUp,
   CircleAlert,
   FileText,
+  Folder,
   Image as ImageIcon,
   LoaderCircle,
   Paperclip,
@@ -55,6 +56,7 @@ import type {
   TranscriptMessageViewModel,
   TranscriptTurnProps,
 } from './types';
+import { canRemoveDraftProject } from './composer-state';
 import { resolveConversationTitle } from './conversation-title';
 import { EmptyThreadState } from './empty-thread-state';
 import { ProcessActivityGroup } from './process-activity-group';
@@ -465,6 +467,15 @@ export const ThreadWorkbenchView = ({
   } = useTranscriptFollow(store.thread, store.navigator.pendingThreadId);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const workspace = useWorkspaceNavigationStore();
+  const composerProjectName =
+    workspace.state.status === 'ready' &&
+    workspace.state.kind === 'project'
+      ? workspace.state.projectName ?? workspace.state.name
+      : undefined;
+  const draftProjectRemovable = canRemoveDraftProject(
+    workspace.state,
+    store.thread.threadIdentity,
+  );
   const conversationTitle = resolveConversationTitle(
     store.thread,
     store.navigator,
@@ -656,9 +667,9 @@ export const ThreadWorkbenchView = ({
             {agentTaskActivity ? (
               <AgentTaskDock activity={agentTaskActivity} />
             ) : null}
-            {(store.actionError || store.thread.notice) && (
+            {(store.actionError || store.thread.notice || workspace.error) && (
               <p className="mb-2 px-1 text-xs text-destructive" role="alert">
-                {store.actionError ?? store.thread.notice}
+                {store.actionError ?? store.thread.notice ?? workspace.error}
               </p>
             )}
             <div
@@ -689,6 +700,37 @@ export const ThreadWorkbenchView = ({
                   event.target.value = '';
                 }}
               />
+              {composerProjectName ? (
+                <div className="group/project mx-3 mt-3 flex h-8 w-fit max-w-[calc(100%_-_1.5rem)] items-center rounded-lg bg-surface">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="flex h-full min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm font-normal text-navigation transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={workspace.busy}
+                    onClick={() => void workspace.chooseProject()}
+                    aria-label={`重新选择项目文件夹，当前为 ${composerProjectName}`}
+                    title="重新选择项目文件夹"
+                  >
+                    <Folder className="size-4 shrink-0 text-tertiary" aria-hidden="true" />
+                    <span className="truncate">{composerProjectName}</span>
+                  </Button>
+                  {draftProjectRemovable ? (
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      className="mr-1 shrink-0 text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={workspace.busy}
+                      onClick={() => void workspace.activateChat()}
+                      aria-label={`移除项目 ${composerProjectName} 并切换到聊天模式`}
+                      title="移除项目并切换到聊天模式"
+                    >
+                      <X className="size-3.5" aria-hidden="true" />
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
               {store.attachments.length > 0 ? (
                 <div className="flex gap-2 overflow-x-auto px-3 pt-3">
                   {store.attachments.map((attachment) => (

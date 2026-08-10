@@ -4,12 +4,10 @@ import {
   CircleStop,
   Folder,
   FolderOpen,
-  FolderPlus,
   LoaderCircle,
   PanelLeftClose,
   Plus,
   ShieldQuestion,
-  SquarePen,
   Trash2,
 } from 'lucide-react';
 import {
@@ -464,30 +462,6 @@ export const ThreadNavigator = ({
               SugarCode
             </p>
           </div>
-          <div className="window-no-drag mt-4 flex items-center gap-1">
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-9 min-w-0 flex-1 justify-start px-2 text-navigation"
-              disabled={workspace.busy || (chatActive && navigationDisabled)}
-              onClick={() => void startChat()}
-            >
-              <SquarePen className="size-4" aria-hidden="true" />
-              新建会话
-            </Button>
-            <Button
-              type="button"
-              size="icon-lg"
-              variant="ghost"
-              className="size-9 text-tertiary"
-              disabled={workspace.busy}
-              onClick={() => void workspace.chooseProject()}
-              aria-label="打开项目"
-              title="打开项目"
-            >
-              <FolderPlus className="size-4" aria-hidden="true" />
-            </Button>
-          </div>
         </div>
 
         <p
@@ -509,7 +483,13 @@ export const ThreadNavigator = ({
             onKeyDown={handleListKeyDown}
           >
             <section aria-labelledby="project-section-title">
-              <SectionHeading id="project-section-title" label="项目" />
+              <SectionHeading
+                id="project-section-title"
+                label="项目"
+                actionLabel="选择项目文件夹"
+                disabled={workspace.busy}
+                onAction={() => void workspace.chooseProject()}
+              />
 
               {projects.length > 0 ? (
                 <div className="space-y-1.5">
@@ -643,7 +623,15 @@ export const ThreadNavigator = ({
               data-project-layout-item="chat-section"
               aria-labelledby="chat-section-title"
             >
-              <SectionHeading id="chat-section-title" label="聊天" />
+              <SectionHeading
+                id="chat-section-title"
+                label="聊天"
+                actionLabel="新建聊天"
+                disabled={
+                  workspace.busy || (chatActive && navigationDisabled)
+                }
+                onAction={() => void startChat()}
+              />
               {renderThreadList(
                 chatThreadIds,
                 workspace.state.chatTitles ?? {},
@@ -816,16 +804,34 @@ export const ThreadNavigator = ({
 type SectionHeadingProps = Readonly<{
   id: string;
   label: string;
+  actionLabel: string;
+  disabled: boolean;
+  onAction: () => void;
 }>;
 
 const SectionHeading = ({
   id,
   label,
+  actionLabel,
+  disabled,
+  onAction,
 }: SectionHeadingProps) => (
   <div className="mb-1 flex h-7 items-center px-2 text-sm font-normal">
-    <span id={id} className="text-navigation-heading">
+    <span id={id} className="min-w-0 flex-1 text-navigation-heading">
       {label}
     </span>
+    <Button
+      type="button"
+      size="icon-xs"
+      variant="ghost"
+      className="text-tertiary hover:text-foreground"
+      disabled={disabled}
+      onClick={onAction}
+      aria-label={actionLabel}
+      title={actionLabel}
+    >
+      <Plus aria-hidden="true" />
+    </Button>
   </div>
 );
 

@@ -363,10 +363,10 @@ with the exact path available on hover, keyboard focus and the open-file action.
 This keeps process prose compact without weakening path identity or audit data.
 
 The context rail owns one persistent project explorer tab plus transient file,
-diff and child-Agent detail tabs. The navigator header keeps flat
-new-conversation and open-project actions available independently of list scroll
-position, while section headings describe hierarchy without duplicating those
-actions. A saved project group is a local disclosure: selecting its folder row
+diff and child-Agent detail tabs. The navigator keeps a persistent add action at
+the right edge of both the project and chat section headings. Project add opens
+the folder picker; chat add starts an independent chat draft. A saved project
+group is a local disclosure: selecting its folder row
 only expands or collapses the retained Thread list and does not bind a Workspace
 or initialize the conversation and context surfaces. Expanding or collapsing a
 project performs one layout update; the affected navigator groups interpolate
@@ -386,6 +386,12 @@ content. On a fresh installation the navigator starts open and the context rail
 starts closed; later launches restore the user's saved open/close choices.
 Direct panel resizing disables those transitions so pointer movement remains
 exact.
+The composer identifies a project destination with a compact folder control
+above the prompt. Selecting that control reopens the folder picker. Before the
+first Turn creates a durable Thread, the control reveals a remove action on
+hover or keyboard focus; removing the project activates a fresh chat draft.
+Existing project Threads continue to show their project folder but never expose
+this destination-removal action.
 The project explorer itself remains mounted while a resource or Agent tab is
 active, so expanded directories and the last selected file or folder survive
 tab changes. Every loaded directory is presented with folders first, followed
