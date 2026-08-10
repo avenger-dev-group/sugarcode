@@ -58,6 +58,9 @@ cannot redirect its follow-up status or reconciliation request.
 On a cold start with no selected workspace, the empty Composer remains writable.
 Its first send activates one managed Chat workspace before starting the Turn, so
 the user does not need to select a project or explicitly create a Chat first.
+The empty conversation presents concise, user-facing examples of the work
+SugarCode can help complete without exposing managed-directory implementation
+details.
 Existing project and Chat destinations are never redirected by this fallback.
 Regardless of workspace kind, an empty Composer renders no conversation heading;
 after a Thread exists, the header renders only that conversation's title.
@@ -326,8 +329,10 @@ selecting a retained Thread focuses its owning Workspace. Switching the
 foreground Thread clears transient context tabs rather than carrying file or
 review state across workspace identities. Navigator and context-rail open/close
 transitions animate their clipped width and opacity while retaining mounted
-content; direct panel resizing disables those transitions so pointer movement
-remains exact.
+content. On a fresh installation the navigator starts open and the context rail
+starts closed; later launches restore the user's saved open/close choices.
+Direct panel resizing disables those transitions so pointer movement remains
+exact.
 The project explorer itself remains mounted while a resource or Agent tab is
 active, so expanded directories and the last selected file or folder survive
 tab changes. Opening a resource from a transcript, change receipt or project

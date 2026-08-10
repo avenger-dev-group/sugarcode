@@ -364,7 +364,6 @@ export const ThreadNavigator = ({
               <SectionHeading
                 id="project-section-title"
                 label="项目"
-                count={projects.length}
                 actionLabel="打开项目"
                 disabled={workspace.busy}
                 onAction={() => void workspace.chooseProject()}
@@ -489,7 +488,6 @@ export const ThreadNavigator = ({
               <SectionHeading
                 id="chat-section-title"
                 label="聊天"
-                count={chatThreadIds.length}
                 actionLabel="新建聊天"
                 disabled={workspace.busy || (chatActive && navigationDisabled)}
                 onAction={() => void startChat()}
@@ -668,7 +666,6 @@ export const ThreadNavigator = ({
 type SectionHeadingProps = Readonly<{
   id: string;
   label: string;
-  count: number;
   actionLabel: string;
   disabled: boolean;
   onAction: () => void;
@@ -678,7 +675,6 @@ type SectionHeadingProps = Readonly<{
 const SectionHeading = ({
   id,
   label,
-  count,
   actionLabel,
   disabled,
   onAction,
@@ -688,14 +684,11 @@ const SectionHeading = ({
     <span id={id} className="text-navigation-heading">
       {label}
     </span>
-    <span className="ml-auto text-xs tabular-nums text-tertiary">
-      {count}
-    </span>
     <Button
       type="button"
       size="icon-xs"
       variant="ghost"
-      className="ml-1 disabled:opacity-100"
+      className="ml-auto disabled:opacity-100"
       disabled={disabled}
       onClick={onAction}
       aria-label={actionLabel}

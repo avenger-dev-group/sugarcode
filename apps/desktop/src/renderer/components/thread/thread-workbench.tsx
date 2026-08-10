@@ -55,6 +55,7 @@ import type {
   TranscriptTurnProps,
 } from './types';
 import { resolveConversationTitle } from './conversation-title';
+import { EmptyThreadState } from './empty-thread-state';
 import { ProcessActivityGroup } from './process-activity-group';
 import { SkillActivity } from './skill-activity';
 import { ThreadNavigator } from './thread-navigator';
@@ -405,7 +406,7 @@ export const ThreadWorkbenchView = ({
   store,
   navigatorOpen = true,
   navigatorResize,
-  contextRailOpen = true,
+  contextRailOpen = false,
   contextRailResize,
   onToggleNavigator,
   onToggleContextRail,
@@ -568,22 +569,7 @@ export const ThreadWorkbenchView = ({
             ) : pendingThreadId ? (
               <ThreadSelectionSkeleton />
             ) : store.thread.isEmpty ? (
-              <div className="my-auto py-16 text-center">
-                <div className="mx-auto grid size-11 place-items-center rounded-2xl border bg-surface shadow-sm">
-                  <span className="text-lg text-secondary" aria-hidden="true">
-                    S
-                  </span>
-                </div>
-                <p className="mt-5 text-sm text-secondary">
-                  SugarCode · 本地 Agent
-                </p>
-                <h1 className="mt-3 text-[1.75rem] font-medium leading-[1.2] tracking-[-0.035em]">
-                  想让 SugarCode 做什么？
-                </h1>
-                <p className="mx-auto mt-3 max-w-md text-sm font-normal leading-[22px] text-secondary">
-                  描述目标、问题或想完成的改动。项目任务使用项目工作区；聊天不绑定项目，并把需要生成的文件隔离到专属聊天目录。
-                </p>
-              </div>
+              <EmptyThreadState />
             ) : (
               <div>
                 {store.thread.turns.map((turn, index) => (
