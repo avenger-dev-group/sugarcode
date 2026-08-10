@@ -14,7 +14,7 @@ use sugarcode_state::validate_mcp_stdio_server;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
 
@@ -179,6 +179,36 @@ impl Store {
             )
             .optional()
             .map_err(PersistenceError::from)
+    }
+
+    pub(super) fn skill_preferences(&mut self) -> Result<std::collections::HashMap<String, bool>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT skill_id, enabled FROM skill_preferences")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+        })?;
+        rows.collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(super) fn set_skill_enabled(&mut self, skill_id: &str, enabled: bool) -> Result<()> {
+        if !skill_id.starts_with("skl_")
+            || skill_id.len() != 68
+            || !skill_id[4..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(PersistenceError::InvalidInput(
+                "skill identifier is invalid".to_owned(),
+            ));
+        }
+        self.connection.execute(
+            "INSERT INTO skill_preferences (skill_id, enabled, updated_at) VALUES (?1, ?2, unixepoch()) \
+             ON CONFLICT(skill_id) DO UPDATE SET enabled = excluded.enabled, updated_at = unixepoch()",
+            params![skill_id, enabled],
+        )?;
+        Ok(())
     }
 
     pub(super) fn ensure_thread(
@@ -1736,6 +1766,18 @@ fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute_batch(
             "ALTER TABLE approvals ADD COLUMN payload_json TEXT;
              PRAGMA user_version = 7;",
+        )?;
+        transaction.commit()?;
+        version = 7;
+    }
+    if version == 7 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE skill_preferences (\
+               skill_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             PRAGMA user_version = 8;",
         )?;
         transaction.commit()?;
     }

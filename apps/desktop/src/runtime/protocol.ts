@@ -29,6 +29,15 @@ import {
   type McpConfigSaveRequest,
   type McpSessionActionResult,
 } from '../shared/mcp.ts';
+import {
+  isSkillContent,
+  isSkillId,
+  isSkillsActionResult,
+  isSkillsInspection,
+  type SkillContent,
+  type SkillsActionResult,
+  type SkillsInspection,
+} from '../shared/skills.ts';
 
 export const RUNTIME_PROTOCOL_VERSION = 2 as const;
 
@@ -388,6 +397,39 @@ export type RuntimeCommand =
       requestId: string;
       serverIds: readonly string[];
     }>
+  | Readonly<{
+      type: 'skills.inspect';
+      requestId: string;
+      workspaceId?: string;
+    }>
+  | Readonly<{
+      type: 'skills.content';
+      requestId: string;
+      workspaceId?: string;
+      skillId: string;
+      expectedSha256: string;
+    }>
+  | Readonly<{
+      type: 'skills.setEnabled';
+      requestId: string;
+      workspaceId?: string;
+      skillId: string;
+      enabled: boolean;
+    }>
+  | Readonly<{
+      type: 'skills.import';
+      requestId: string;
+      workspaceId?: string;
+      sourcePath: string;
+      scope: 'user' | 'project';
+    }>
+  | Readonly<{
+      type: 'skills.export';
+      requestId: string;
+      workspaceId?: string;
+      skillId: string;
+      destinationPath: string;
+    }>
   | Readonly<{ type: 'shutdown'; requestId: string }>;
 
 export type RuntimeUsage = Readonly<{
@@ -742,6 +784,21 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'skills.inspection';
+        inspection: SkillsInspection;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'skills.content';
+        content: SkillContent;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'skills.action';
+        action: SkillsActionResult;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'thread.listResult';
         workspaceId: string;
         query: string;
@@ -1059,6 +1116,37 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
           (id) => typeof id === 'string' && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(id),
         ) &&
         new Set(value.serverIds).size === value.serverIds.length
+      );
+    case 'skills.inspect':
+      return value.workspaceId === undefined || typeof value.workspaceId === 'string';
+    case 'skills.content':
+      return (
+        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        isSkillId(value.skillId) &&
+        typeof value.expectedSha256 === 'string' &&
+        /^[0-9a-f]{64}$/u.test(value.expectedSha256)
+      );
+    case 'skills.setEnabled':
+      return (
+        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        isSkillId(value.skillId) &&
+        typeof value.enabled === 'boolean'
+      );
+    case 'skills.import':
+      return (
+        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        typeof value.sourcePath === 'string' &&
+        value.sourcePath.length > 0 &&
+        value.sourcePath.length <= 4_096 &&
+        (value.scope === 'user' || value.scope === 'project')
+      );
+    case 'skills.export':
+      return (
+        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        isSkillId(value.skillId) &&
+        typeof value.destinationPath === 'string' &&
+        value.destinationPath.length > 0 &&
+        value.destinationPath.length <= 4_096
       );
     case 'shutdown':
       return true;
@@ -1392,6 +1480,12 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         Array.isArray(value.activeServerIds) &&
         value.activeServerIds.every((id) => typeof id === 'string')
       );
+    case 'skills.inspection':
+      return isSkillsInspection(value.inspection);
+    case 'skills.content':
+      return isSkillContent(value.content);
+    case 'skills.action':
+      return isSkillsActionResult(value.action);
     case 'thread.listResult':
       return (
         typeof value.workspaceId === 'string' &&

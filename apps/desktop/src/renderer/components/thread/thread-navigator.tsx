@@ -298,7 +298,7 @@ export const ThreadNavigator = ({
               没有会话
             </p>
           ) : (
-            <p className="px-2 py-2 text-xs leading-5 text-secondary">
+            <p className="px-2 py-2 leading-5 text-secondary">
               点击栏目右侧的 + 新建聊天。
             </p>
           )

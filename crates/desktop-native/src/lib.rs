@@ -1,9 +1,11 @@
 mod persistence;
+mod skills;
 
 use base64::Engine;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -59,6 +61,7 @@ pub struct NativeRuntime {
     command_cancellations: Mutex<HashMap<String, CancellationToken>>,
     command_output: Arc<Mutex<HashMap<String, VecDeque<ShellOutputChunk>>>>,
     terminals: Mutex<HashMap<String, EmbeddedTerminal>>,
+    skills_root: PathBuf,
 }
 
 #[napi]
@@ -68,6 +71,9 @@ impl NativeRuntime {
         let store = Store::open(&data_directory).map_err(native_error)?;
         let content_store = ContentStore::open_at(Path::new(&data_directory))
             .map_err(|error| Error::from_reason(error.to_string()))?;
+        let skills_root = Path::new(&data_directory).join("skills");
+        std::fs::create_dir_all(&skills_root)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         Ok(Self {
             store: Mutex::new(store),
             content_store,
@@ -75,7 +81,124 @@ impl NativeRuntime {
             command_cancellations: Mutex::new(HashMap::new()),
             command_output: Arc::new(Mutex::new(HashMap::new())),
             terminals: Mutex::new(HashMap::new()),
+            skills_root,
         })
+    }
+
+    #[napi]
+    pub fn inspect_skills_json(&self, workspace_id: Option<String>) -> Result<String> {
+        let workspace = workspace_id
+            .as_deref()
+            .map(|workspace_id| self.workspace(workspace_id))
+            .transpose()?;
+        let preferences = self.with_store(Store::skill_preferences)?;
+        skills::inspect_skills_json(
+            &self.skills_root,
+            workspace.as_deref().map(WorkspaceTool::canonical_root),
+            &preferences,
+        )
+        .map_err(native_error_message)
+    }
+
+    #[napi]
+    pub fn skills_context_json(&self, workspace_id: String) -> Result<String> {
+        let workspace = self.workspace(&workspace_id)?;
+        let preferences = self.with_store(Store::skill_preferences)?;
+        skills::skills_context_json(
+            &self.skills_root,
+            Some(workspace.canonical_root()),
+            &preferences,
+        )
+        .map_err(native_error_message)
+    }
+
+    #[napi]
+    pub fn read_skill_content_json(
+        &self,
+        workspace_id: Option<String>,
+        skill_id: String,
+        expected_sha256: String,
+    ) -> Result<String> {
+        let workspace = workspace_id
+            .as_deref()
+            .map(|workspace_id| self.workspace(workspace_id))
+            .transpose()?;
+        let preferences = self.with_store(Store::skill_preferences)?;
+        skills::read_skill_content_json(
+            &self.skills_root,
+            workspace.as_deref().map(WorkspaceTool::canonical_root),
+            &preferences,
+            &skill_id,
+            &expected_sha256,
+        )
+        .map_err(native_error_message)
+    }
+
+    #[napi]
+    pub fn set_skill_enabled_json(
+        &self,
+        workspace_id: Option<String>,
+        skill_id: String,
+        enabled: bool,
+    ) -> Result<String> {
+        let workspace = workspace_id
+            .as_deref()
+            .map(|workspace_id| self.workspace(workspace_id))
+            .transpose()?;
+        let preferences = self.with_store(Store::skill_preferences)?;
+        skills::ensure_skill(
+            &self.skills_root,
+            workspace.as_deref().map(WorkspaceTool::canonical_root),
+            &preferences,
+            &skill_id,
+        )
+        .map_err(native_error_message)?;
+        self.with_store(|store| store.set_skill_enabled(&skill_id, enabled))?;
+        self.inspect_skills_json(workspace_id)
+    }
+
+    #[napi]
+    pub fn import_skill_json(
+        &self,
+        workspace_id: Option<String>,
+        source_path: String,
+        scope: String,
+    ) -> Result<String> {
+        let workspace = workspace_id
+            .as_deref()
+            .map(|workspace_id| self.workspace(workspace_id))
+            .transpose()?;
+        skills::import_skill(
+            &self.skills_root,
+            workspace.as_deref().map(WorkspaceTool::canonical_root),
+            Path::new(&source_path),
+            &scope,
+        )
+        .map_err(native_error_message)?;
+        self.inspect_skills_json(workspace_id)
+    }
+
+    #[napi]
+    pub fn export_skill_json(
+        &self,
+        workspace_id: Option<String>,
+        skill_id: String,
+        destination_path: String,
+    ) -> Result<String> {
+        let workspace = workspace_id
+            .as_deref()
+            .map(|workspace_id| self.workspace(workspace_id))
+            .transpose()?;
+        let preferences = self.with_store(Store::skill_preferences)?;
+        skills::export_skill(
+            &self.skills_root,
+            workspace.as_deref().map(WorkspaceTool::canonical_root),
+            &preferences,
+            &skill_id,
+            Path::new(&destination_path),
+        )
+        .map(|value| value.to_string())
+        .map_err(native_error_message)
     }
 
     #[napi]
@@ -991,6 +1114,10 @@ fn native_error(error: persistence::PersistenceError) -> Error {
     Error::from_reason(error.to_string())
 }
 
+fn native_error_message(error: impl ToString) -> Error {
+    Error::from_reason(error.to_string())
+}
+
 fn asset_row(asset: &ContentAsset) -> AssetRow {
     AssetRow {
         asset_id: asset.asset_id.clone(),
@@ -1077,6 +1204,10 @@ fn git_error(kind: GitErrorKind) -> serde_json::Value {
 #[cfg(test)]
 #[path = "tests/persistence.rs"]
 mod persistence_tests;
+
+#[cfg(test)]
+#[path = "tests/skills.rs"]
+mod skills_tests;
 
 #[cfg(test)]
 #[path = "tests/workspace.rs"]

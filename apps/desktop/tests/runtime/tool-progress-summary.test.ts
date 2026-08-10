@@ -30,3 +30,14 @@ test('workspace read progress collapses a large batch to its count', () => {
     'Reading 8 project files.',
   );
 });
+
+test('Skill progress discloses only the bounded selected name', () => {
+  assert.equal(
+    toolProgressSummary('请使用 Skill', 'load_skill', { name: 'code-review' }),
+    '正在加载 Skill：code-review。',
+  );
+  assert.equal(
+    toolProgressSummary('Use a Skill', 'load_skill', { name: null }),
+    'Loading a Skill.',
+  );
+});

@@ -11,6 +11,7 @@ import {
 
 import { ConnectionStatus } from '@/renderer/components/connection/connection-status';
 import { ModelConfigSettingsPanel } from '@/renderer/components/model-config/model-config-workbench';
+import { SkillsSettingsPanel } from '@/renderer/components/skills/skills-settings-panel';
 import { Button } from '@/renderer/components/ui/button';
 import {
   Dialog,
@@ -129,47 +130,6 @@ const GeneralSettings = ({
   </>
 );
 
-const SkillsSettings = () => (
-  <>
-    <SettingsPageHeader
-      icon={Sparkles}
-      title="Skills"
-      description="Workspace Skills customize a Turn without changing SugarCode's authority or safety boundaries."
-    />
-    <div className="px-6 py-6">
-      <div className="rounded-xl border bg-surface p-5">
-        <div className="flex items-start gap-3">
-          <span className="rounded-lg border bg-background p-2 text-secondary">
-            <Sparkles className="size-4" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <h3 className="text-sm font-medium">
-              Discovered from the active workspace
-            </h3>
-            <p className="mt-1.5 text-sm font-normal leading-[22px] text-secondary">
-              SugarCode loads bounded Skill definitions from the workspace when
-              the local Agent starts. Mention a Skill by name in your request
-              to select it for that Turn.
-            </p>
-          </div>
-        </div>
-        <div className="mt-4 rounded-lg border bg-background px-3 py-2.5">
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
-            Workspace location
-          </p>
-          <p className="mt-1 break-all font-mono text-xs text-secondary">
-            .agents/skills/&lt;name&gt;/SKILL.md
-          </p>
-        </div>
-      </div>
-      <p className="mt-4 text-xs leading-5 text-tertiary">
-        Skill inventory is read-only in Desktop. Add or edit Skill files in the
-        workspace, then restart the local Agent to refresh discovery.
-      </p>
-    </div>
-  </>
-);
-
 export const SettingsDialog = ({
   isDark,
   themeLabel,
@@ -256,7 +216,12 @@ export const SettingsDialog = ({
             </div>
           </nav>
 
-          <section className="min-h-0 overflow-y-auto" aria-live="polite">
+          <section
+            className={`relative min-h-0 ${
+              store.section === 'skills' ? 'overflow-hidden' : 'overflow-y-auto'
+            }`}
+            aria-live="polite"
+          >
             {store.section === 'general' ? (
               <GeneralSettings
                 isDark={isDark}
@@ -267,7 +232,9 @@ export const SettingsDialog = ({
             {store.section === 'model' ? (
               <ModelConfigSettingsPanel active={store.open} />
             ) : null}
-            {store.section === 'skills' ? <SkillsSettings /> : null}
+            {store.section === 'skills' ? (
+              <SkillsSettingsPanel active={store.open} />
+            ) : null}
           </section>
         </div>
       </DialogContent>

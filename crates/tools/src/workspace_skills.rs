@@ -71,6 +71,19 @@ struct WorkspaceSkill {
     sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSkillDefinition {
+    pub name: String,
+    pub description: String,
+}
+
+pub fn parse_workspace_skill_definition(
+    content: &str,
+) -> Result<WorkspaceSkillDefinition, WorkspaceSkillsErrorKind> {
+    let (name, description) = parse_frontmatter(content)?;
+    Ok(WorkspaceSkillDefinition { name, description })
+}
+
 impl std::fmt::Debug for WorkspaceSkill {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

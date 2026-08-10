@@ -10,6 +10,7 @@ import { registerConversationIpc } from '@/main/ipc/conversation';
 import { registerGitIpc } from '@/main/ipc/git';
 import { registerMcpIpc } from '@/main/ipc/mcp';
 import { registerModelConfigIpc } from '@/main/ipc/model-config';
+import { registerSkillsIpc } from '@/main/ipc/skills';
 import { registerWorkspaceIpc } from '@/main/ipc/workspace';
 import { GitController } from '@/main/git/controller';
 import { McpSessionController } from '@/main/mcp/session-controller';
@@ -27,6 +28,7 @@ import { RuntimeApprovalController } from '@/main/runtime/approval-controller';
 import { RuntimeGitAdapter } from '@/main/runtime/git-adapter';
 import { RuntimeMcpConfigController } from '@/main/runtime/mcp-config-controller';
 import { RuntimeMcpApprovalController } from '@/main/runtime/mcp-approval-controller';
+import { RuntimeSkillsController } from '@/main/runtime/skills-controller';
 import { RuntimeWorkspaceAdapter } from '@/main/runtime/workspace-adapter';
 
 let mainWindow: BrowserWindow | null = null;
@@ -36,6 +38,7 @@ let disposeCommandApprovalIpc: (() => void) | null = null;
 let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
+let disposeSkillsIpc: (() => void) | null = null;
 let disposeWorkspaceIpc: (() => void) | null = null;
 let disposeGitIpc: (() => void) | null = null;
 let previewController: PreviewController | null = null;
@@ -279,6 +282,17 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
+  disposeSkillsIpc = registerSkillsIpc({
+    controller: new RuntimeSkillsController({
+      runtime: runtimeSupervisor,
+      dialog,
+      getMainWindow: () => mainWindow,
+      getWorkspace: workspaceController.getLaunchContext,
+      getWorkspaceState: workspaceController.getSnapshot,
+    }),
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
   disposeWorkspaceIpc = registerWorkspaceIpc({
     controller: workspaceController,
     getMainWindow: () => mainWindow,
@@ -373,6 +387,8 @@ if (started) {
     disposeMcpIpc = null;
     disposeModelConfigIpc?.();
     disposeModelConfigIpc = null;
+    disposeSkillsIpc?.();
+    disposeSkillsIpc = null;
     disposeWorkspaceIpc?.();
     disposeWorkspaceIpc = null;
     disposeGitIpc?.();

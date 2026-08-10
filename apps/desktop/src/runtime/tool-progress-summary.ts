@@ -48,6 +48,10 @@ export const toolProgressSummary = (
         return '正在更新项目文件。';
       case 'shell_exec':
         return '正在运行项目命令。';
+      case 'load_skill': {
+        const name = boundedProgressValue(argumentsValue.name);
+        return name ? `正在加载 Skill：${name}。` : '正在加载 Skill。';
+      }
       case INVALID_TOOL_ARGUMENTS_TOOL_NAME:
         return '工具参数格式不正确，正在调整调用方式。';
       default:
@@ -67,6 +71,10 @@ export const toolProgressSummary = (
       return 'Updating project files.';
     case 'shell_exec':
       return 'Running a project command.';
+    case 'load_skill': {
+      const name = boundedProgressValue(argumentsValue.name);
+      return name ? `Loading the ${name} Skill.` : 'Loading a Skill.';
+    }
     case INVALID_TOOL_ARGUMENTS_TOOL_NAME:
       return 'Adjusting an invalid tool argument format.';
     default:

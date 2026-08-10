@@ -17,6 +17,31 @@ fn seeded_store(directory: &tempfile::TempDir) -> Store {
 }
 
 #[test]
+fn skill_preferences_are_durable_and_reject_malformed_identifiers() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let skill_id = format!("skl_{}", "a".repeat(64));
+    {
+        let mut store = Store::open(directory.path()).expect("open store");
+        store
+            .set_skill_enabled(&skill_id, false)
+            .expect("disable Skill");
+        assert!(
+            store
+                .set_skill_enabled(&format!("skl_{}", "z".repeat(64)), true)
+                .is_err()
+        );
+    }
+    let mut reopened = Store::open(directory.path()).expect("reopen store");
+    assert_eq!(
+        reopened
+            .skill_preferences()
+            .expect("preferences")
+            .get(&skill_id),
+        Some(&false)
+    );
+}
+
+#[test]
 fn native_asset_store_persists_metadata_and_verifies_content() {
     let directory = tempfile::tempdir().expect("tempdir");
     let runtime = NativeRuntime::open(directory.path().to_string_lossy().into_owned())
@@ -600,6 +625,7 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
              DROP TABLE model_config;
              DROP TABLE content_assets;
              DROP TABLE mcp_config;
+             DROP TABLE skill_preferences;
              ALTER TABLE approvals DROP COLUMN payload_json;
              DROP INDEX threads_workspace_archive_updated;
              CREATE TABLE threads_v1 (
@@ -629,5 +655,5 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }

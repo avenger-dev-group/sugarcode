@@ -159,6 +159,37 @@ generated, cache and temporary content unless the request specifically needs it.
 If a provider still passes a directory, the bounded `notRegularFile` result now
 directs it back to `workspace_list` instead of leaving an opaque failed read.
 
+## Skills
+
+Desktop discovers personal Skills from its managed application data `skills`
+directory and workspace Skills from `.sugarcode/skills`, `.agents/skills` and
+`.claude/skills`. Each immediate child must be a real directory containing a
+regular UTF-8 `SKILL.md` with the bounded `name` and `description` frontmatter
+contract shared with the workspace tools crate. Symbolic links and special
+files are not followed. When names collide, workspace sources override the
+personal source in scan order, with `.claude`, then `.agents`, then
+`.sugarcode` as the effective precedence. The stable source-directory digest
+identifies the enabled preference, which is durable in the v3 SQLite store and
+defaults to enabled.
+
+Import accepts any directory explicitly selected through Electron's native
+picker, rather than restricting the source to one legacy configuration root.
+Personal imports are copied to the managed application directory; current-
+project imports are copied to `.sugarcode/skills/<name>`. Export copies the
+selected complete Skill directory to a user-selected destination. Both flows
+reject destination conflicts, links, special files, recursive self-copy and
+project-root escape. A copy is bounded to 512 files and 16 MiB and removes only
+its newly-created partial destination after failure. Discovery is bounded to
+256 entries per source, 64 valid Skills overall and 32 KiB per `SKILL.md`; the
+enabled native snapshot is capped at 1 MiB.
+
+At a Turn boundary the runtime freezes the enabled inventory and contents.
+Names and descriptions are always available to the Agent; an explicit `$name`
+selection or the read-only `load_skill` tool may expose up to four Skill bodies
+and 128 KiB total from that snapshot. Refreshing, importing or toggling a Skill
+cannot change an already-running Turn, and Skill text never grants additional
+filesystem, process, network or approval authority.
+
 ## MCP and collaboration
 
 MCP uses ADK `MCPToolset`. Configuration is durable, but enabled selections,

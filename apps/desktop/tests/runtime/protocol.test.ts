@@ -255,6 +255,56 @@ test('private MCP protocol keeps configuration and approval events provider-neut
   assert.equal(isRuntimeEvent({ ...recoveredApproval, recovered: false }), false);
 });
 
+test('private Skills protocol bounds native inventory and directory requests', () => {
+  const skill = {
+    id: `skl_${'a'.repeat(64)}`,
+    name: 'code-review',
+    description: 'Review a focused change.',
+    source: 'project',
+    path: '.agents/skills/code-review/SKILL.md',
+    sha256: 'b'.repeat(64),
+    bytes: 7,
+    enabled: true,
+  };
+  assert.equal(
+    isRuntimeCommand({
+      type: 'skills.import',
+      requestId: 'request-skill-import',
+      workspaceId: 'workspace-fixture',
+      sourcePath: '/tmp/code-review',
+      scope: 'project',
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'skills.export',
+      requestId: 'request-skill-export',
+      skillId: skill.id,
+      destinationPath: '',
+    }),
+    false,
+  );
+  assert.equal(
+    isRuntimeEvent({
+      type: 'skills.inspection',
+      sequence: 1,
+      requestId: 'request-skills',
+      inspection: { skills: [skill], workspaceAvailable: true },
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeEvent({
+      type: 'skills.content',
+      sequence: 2,
+      requestId: 'request-skill-content',
+      content: { skill, content: 'too short' },
+    }),
+    false,
+  );
+});
+
 test('private Agent task events carry a complete provider-neutral DAG snapshot', () => {
   const event = {
     type: 'agent.task',

@@ -2,6 +2,28 @@ import { createRequire } from 'node:module';
 
 export type NativeRuntimeBinding = Readonly<{
   inspectMcpConfigJson: () => string;
+  inspectSkillsJson: (workspaceId?: string) => string;
+  skillsContextJson: (workspaceId: string) => string;
+  readSkillContentJson: (
+    workspaceId: string | undefined,
+    skillId: string,
+    expectedSha256: string,
+  ) => string;
+  setSkillEnabledJson: (
+    workspaceId: string | undefined,
+    skillId: string,
+    enabled: boolean,
+  ) => string;
+  importSkillJson: (
+    workspaceId: string | undefined,
+    sourcePath: string,
+    scope: 'user' | 'project',
+  ) => string;
+  exportSkillJson: (
+    workspaceId: string | undefined,
+    skillId: string,
+    destinationPath: string,
+  ) => string;
   saveMcpConfigJson: (expectedRevision: string, serversJson: string) => string;
   importAssetJson: (
     fileName: string,

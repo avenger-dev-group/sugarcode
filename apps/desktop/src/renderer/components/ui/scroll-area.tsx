@@ -6,9 +6,11 @@ import { cn } from '@/renderer/utils/class-name';
 const ScrollArea = ({
   className,
   children,
+  scrollbars = 'vertical',
   viewportProps,
   ...props
 }: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & {
+  scrollbars?: 'both' | 'horizontal' | 'vertical';
   viewportProps?: React.ComponentProps<
     typeof ScrollAreaPrimitive.Viewport
   >;
@@ -28,7 +30,10 @@ const ScrollArea = ({
     >
       {children}
     </ScrollAreaPrimitive.Viewport>
-    <ScrollBar />
+    {scrollbars === 'vertical' || scrollbars === 'both' ? <ScrollBar /> : null}
+    {scrollbars === 'horizontal' || scrollbars === 'both' ? (
+      <ScrollBar orientation="horizontal" />
+    ) : null}
     <ScrollAreaPrimitive.Corner />
   </ScrollAreaPrimitive.Root>
 );

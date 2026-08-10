@@ -58,6 +58,7 @@ import {
   executePrivilegedWorkspaceTool,
   workspacePatchApprovalSummary,
 } from './tools/workspace.ts';
+import { createTurnSkills } from './skills.ts';
 import {
   toolResultFailed,
   toolResultRequiresFinalRecovery,
@@ -71,6 +72,11 @@ import type {
   McpConfigActionResult,
   McpConfigInspection,
 } from '../shared/mcp.ts';
+import type {
+  SkillContent,
+  SkillsActionResult,
+  SkillsInspection,
+} from '../shared/skills.ts';
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
@@ -552,6 +558,75 @@ export class RuntimeHost {
         this.requireReady(command.requestId);
         void this.setMcpSession(command);
         break;
+      case 'skills.inspect': {
+        this.requireReady(command.requestId);
+        const inspection = this.parseNativeJson<SkillsInspection>(
+          this.requireNative().inspectSkillsJson(command.workspaceId),
+        );
+        this.emit({
+          type: 'skills.inspection',
+          requestId: command.requestId,
+          inspection,
+        });
+        break;
+      }
+      case 'skills.content': {
+        this.requireReady(command.requestId);
+        const content = this.parseNativeJson<SkillContent>(
+          this.requireNative().readSkillContentJson(
+            command.workspaceId,
+            command.skillId,
+            command.expectedSha256,
+          ),
+        );
+        this.emit({ type: 'skills.content', requestId: command.requestId, content });
+        break;
+      }
+      case 'skills.setEnabled': {
+        this.requireReady(command.requestId);
+        const inspection = this.parseNativeJson<SkillsInspection>(
+          this.requireNative().setSkillEnabledJson(
+            command.workspaceId,
+            command.skillId,
+            command.enabled,
+          ),
+        );
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action: { accepted: true, inspection },
+        });
+        break;
+      }
+      case 'skills.import': {
+        this.requireReady(command.requestId);
+        const inspection = this.parseNativeJson<SkillsInspection>(
+          this.requireNative().importSkillJson(
+            command.workspaceId,
+            command.sourcePath,
+            command.scope,
+          ),
+        );
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action: { accepted: true, inspection },
+        });
+        break;
+      }
+      case 'skills.export': {
+        this.requireReady(command.requestId);
+        const result = this.parseNativeJson<{ path: string }>(
+          this.requireNative().exportSkillJson(
+            command.workspaceId,
+            command.skillId,
+            command.destinationPath,
+          ),
+        );
+        const action: SkillsActionResult = { accepted: true, path: result.path };
+        this.emit({ type: 'skills.action', requestId: command.requestId, action });
+        break;
+      }
       case 'thread.list':
         this.requireReady(command.requestId);
         this.emit({
@@ -1865,10 +1940,19 @@ export class RuntimeHost {
         lastToolResponseRequiresRecovery: false,
         finalRecoveryUsed: false,
       };
+      const turnSkills = this.nativeRuntime
+        ? createTurnSkills(
+            this.nativeRuntime,
+            command.workspaceId,
+            command.content,
+          )
+        : { instruction: '', tools: [] };
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
-        instruction: `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}`,
+        instruction:
+          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}` +
+          (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
         model: this.createModel(resolved.provider),
         beforeModelCallback: ({ request }) => {
           this.assertInvalidArgumentProgress(invalidArgumentGuard);
@@ -1912,6 +1996,7 @@ export class RuntimeHost {
               ...this.mcp.toolsForTurn((request) =>
                 this.runMcpTool(command, request),
               ),
+              ...turnSkills.tools,
               ...collaborationTools,
             ]
             : []),
@@ -2096,6 +2181,13 @@ export class RuntimeHost {
         lastToolResponseRequiresRecovery: false,
         finalRecoveryUsed: false,
       };
+      const turnSkills = this.nativeRuntime
+        ? createTurnSkills(
+            this.nativeRuntime,
+            command.workspaceId,
+            command.content,
+          )
+        : { instruction: '', tools: [] };
       const agent = new LlmAgent({
         name: `sugarcode_${context.task.role}_agent`,
         description: `${context.task.role} subagent for ${context.task.title}`,
@@ -2103,9 +2195,14 @@ export class RuntimeHost {
           `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n` +
           `# Subagent boundary\n\n` +
           `You are a ${context.task.role} subagent with ${context.task.access} access. ` +
-          `Complete only the assigned task. Use targeted search and representative entry points instead of exhaustive whole-repository reading; if the brief is overly broad, state the bounded coverage you chose. You cannot create subagents. Return a concise Markdown result for the parent Agent.`,
+          `Complete only the assigned task. Use targeted search and representative entry points instead of exhaustive whole-repository reading; if the brief is overly broad, state the bounded coverage you chose. You cannot create subagents. Return a concise Markdown result for the parent Agent.` +
+          (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
         model: this.createModel(resolved.provider),
-        tools: [this.invalidArgumentsTool(invalidArgumentGuard), ...tools],
+        tools: [
+          this.invalidArgumentsTool(invalidArgumentGuard),
+          ...tools,
+          ...turnSkills.tools,
+        ],
         includeContents: 'none',
         beforeModelCallback: ({ request }) => {
           this.assertInvalidArgumentProgress(invalidArgumentGuard);

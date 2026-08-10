@@ -25,8 +25,10 @@ provider-native messages never cross this boundary.
 - Main owns trusted-sender checks, native pickers, workspace navigation,
   approval presentation, terminal flow control and runtime supervision.
 - The worker owns ADK sessions, provider adapters, tool dispatch, MCP sessions
-  and dynamic child-Agent scheduling.
-- Rust owns durable v3 state and privileged local capabilities.
+  and dynamic child-Agent scheduling. It also freezes the enabled Skills
+  inventory at each primary or child Turn boundary.
+- Rust owns durable v3 state, Skill discovery/preferences and privileged local
+  capabilities.
 
 The process-local `ThreadRegistry` combines the hidden-path Desktop navigation
 cache with the authoritative runtime Thread index. Session entries begin as
@@ -95,6 +97,16 @@ discarded, and identical synthesized summaries are not repeated.
 ADK sessions are process-local caches. Before a new Turn, provider-neutral
 completed history is rebuilt from Rust SQLite. Worker loss interrupts active
 Turns and child tasks; it never resumes an incomplete tool call or side effect.
+
+Enabled Skills are snapshotted from Rust before each primary or child ADK
+invocation. The Agent instruction receives the bounded name/description
+inventory. Up to four Skills explicitly named as `$name` in the user content
+are included directly, while the read-only `load_skill` tool can load another
+applicable Skill from that same frozen snapshot. Explicit and on-demand content
+share a 128 KiB per-Turn bound. A Skill can narrow the requested workflow but
+cannot expand tools, filesystem authority, approvals or user intent. Changes
+made from Settings therefore affect later Turns and never mutate the active
+Turn's instruction or tool inventory.
 
 The primary `LlmAgent` follows ADK's structured tool loop. SugarCode Turn
 Driver outside ADK consumes the provider-normalized `ModelStepOutcome`
@@ -166,6 +178,13 @@ terminal and orchestration keep their existing Renderer/preload surfaces.
 Private Main adapters translate these calls to the utility runtime. The old
 app-server public protocol, CLI supervisor and sidecar executable no longer
 exist.
+The Skills Settings surface follows the 1.0 inventory/detail hierarchy while
+using the 3.0 process boundary: Renderer owns loading and selection state,
+preload exposes a fixed validated API, Main owns trusted IPC plus native
+directory pickers, and the runtime delegates discovery/import/export to Rust.
+It supports refresh, enable/disable, SKILL.md preview, personal or current-
+project import and directory export. Current-project import is disabled for a
+managed non-project Chat workspace.
 The Settings navigation currently rollout-gates MCP: its entry remains visible
 as a disabled forthcoming item, and the Renderer does not mount the MCP session
 or registry configuration surface while that gate is active.

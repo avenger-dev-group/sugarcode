@@ -105,6 +105,20 @@ import {
   type ModelConfigSaveRequest,
 } from '@/shared/model-config';
 import {
+  isSkillContent,
+  isSkillsActionResult,
+  isSkillsInspection,
+  SKILLS_CONTENT_CHANNEL,
+  SKILLS_EXPORT_CHANNEL,
+  SKILLS_GET_CHANNEL,
+  SKILLS_IMPORT_CHANNEL,
+  SKILLS_SET_ENABLED_CHANNEL,
+  type SkillContent,
+  type SkillScope,
+  type SkillsActionResult,
+  type SkillsInspection,
+} from '@/shared/skills';
+import {
   isWorkspaceInspectResult,
   isWorkspaceListResult,
   isWorkspaceResolveResult,
@@ -197,6 +211,55 @@ const invokeConversationThreadAction = async (
 export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
 ): DesktopApi => ({
+  getSkills: async (): Promise<SkillsInspection> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_GET_CHANNEL);
+    if (!isSkillsInspection(result)) {
+      throw new Error('Main returned an invalid Skills inventory.');
+    }
+    return result;
+  },
+  getSkillContent: async (
+    id: string,
+    expectedSha256: string,
+  ): Promise<SkillContent> => {
+    const result: unknown = await ipcRenderer.invoke(
+      SKILLS_CONTENT_CHANNEL,
+      id,
+      expectedSha256,
+    );
+    if (!isSkillContent(result)) {
+      throw new Error('Main returned invalid Skill content.');
+    }
+    return result;
+  },
+  setSkillEnabled: async (
+    id: string,
+    enabled: boolean,
+  ): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      SKILLS_SET_ENABLED_CHANNEL,
+      id,
+      enabled,
+    );
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill state action.');
+    }
+    return result;
+  },
+  importSkill: async (scope: SkillScope): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_CHANNEL, scope);
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill import action.');
+    }
+    return result;
+  },
+  exportSkill: async (id: string): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_EXPORT_CHANNEL, id);
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill export action.');
+    }
+    return result;
+  },
   getTerminalSnapshot: async (
     request: TerminalSnapshotRequest,
   ): Promise<TerminalStateSnapshot> => {

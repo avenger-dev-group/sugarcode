@@ -993,6 +993,7 @@ test('RuntimeHost gives repeated execution failures one guided recovery attempt'
       revision: '0'.repeat(64),
       servers: [],
     }),
+    skillsContextJson: () => '{"skills":[]}',
     listPendingApprovalsJson: () => '[]',
     ensureThread: (): void => undefined,
     loadThreadJson: () => emptyThreadSnapshot('thread-tool-error'),
@@ -1065,6 +1066,7 @@ test('RuntimeHost stops a third identical execution failure without progress', a
       revision: '0'.repeat(64),
       servers: [],
     }),
+    skillsContextJson: () => '{"skills":[]}',
     listPendingApprovalsJson: () => '[]',
     ensureThread: (): void => undefined,
     loadThreadJson: () => emptyThreadSnapshot('thread-persistent-tool-error'),
@@ -1134,6 +1136,7 @@ test('RuntimeHost retries one premature final after a failed tool result', async
       revision: '0'.repeat(64),
       servers: [],
     }),
+    skillsContextJson: () => '{"skills":[]}',
     listPendingApprovalsJson: () => '[]',
     ensureThread: (): void => undefined,
     loadThreadJson: () => emptyThreadSnapshot('thread-final-recovery'),
@@ -1233,6 +1236,7 @@ test('RuntimeHost keeps a summary final after workspace_read confirms a missing 
       revision: '0'.repeat(64),
       servers: [],
     }),
+    skillsContextJson: () => '{"skills":[]}',
     listPendingApprovalsJson: () => '[]',
     ensureThread: (): void => undefined,
     loadThreadJson: () => emptyThreadSnapshot('thread-informative-read-miss'),
@@ -1430,6 +1434,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
       revision: '0'.repeat(64),
       servers: [],
     }),
+    skillsContextJson: () => '{"skills":[]}',
     listPendingApprovalsJson: () => '[]',
     ensureThread: (): void => undefined,
     startTurn: (): void => undefined,
@@ -1521,6 +1526,12 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     resolveCompleted = resolve;
   });
   const native: NativeRuntimeBinding = {
+    inspectSkillsJson: () => '{"skills":[],"workspaceAvailable":true}',
+    skillsContextJson: () => '{"skills":[]}',
+    readSkillContentJson: () => '{}',
+    setSkillEnabledJson: () => '{"skills":[],"workspaceAvailable":true}',
+    importSkillJson: () => '{"skills":[],"workspaceAvailable":true}',
+    exportSkillJson: () => '{"path":"/fixture/export"}',
     inspectMcpConfigJson: () => JSON.stringify({
       contractVersion: 1,
       revision: '0'.repeat(64),
@@ -1827,6 +1838,12 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     resolveCompleted = resolve;
   });
   const native: NativeRuntimeBinding = {
+    inspectSkillsJson: () => '{"skills":[],"workspaceAvailable":true}',
+    skillsContextJson: () => '{"skills":[]}',
+    readSkillContentJson: () => '{}',
+    setSkillEnabledJson: () => '{"skills":[],"workspaceAvailable":true}',
+    importSkillJson: () => '{"skills":[],"workspaceAvailable":true}',
+    exportSkillJson: () => '{"path":"/fixture/export"}',
     inspectMcpConfigJson: () => JSON.stringify({
       contractVersion: 1,
       revision: '0'.repeat(64),
@@ -1949,6 +1966,12 @@ test('RuntimeHost approves and persists command execution before native dispatch
     resolveCompleted = resolve;
   });
   const native: NativeRuntimeBinding = {
+    inspectSkillsJson: () => '{"skills":[],"workspaceAvailable":true}',
+    skillsContextJson: () => '{"skills":[]}',
+    readSkillContentJson: () => '{}',
+    setSkillEnabledJson: () => '{"skills":[],"workspaceAvailable":true}',
+    importSkillJson: () => '{"skills":[],"workspaceAvailable":true}',
+    exportSkillJson: () => '{"path":"/fixture/export"}',
     inspectMcpConfigJson: () => JSON.stringify({
       contractVersion: 1,
       revision: '0'.repeat(64),
@@ -2162,6 +2185,12 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     ],
   });
   const native: NativeRuntimeBinding = {
+    inspectSkillsJson: () => '{"skills":[],"workspaceAvailable":true}',
+    skillsContextJson: () => '{"skills":[]}',
+    readSkillContentJson: () => '{}',
+    setSkillEnabledJson: () => '{"skills":[],"workspaceAvailable":true}',
+    importSkillJson: () => '{"skills":[],"workspaceAvailable":true}',
+    exportSkillJson: () => '{"path":"/fixture/export"}',
     inspectMcpConfigJson: () => JSON.stringify({
       contractVersion: 1,
       revision: '0'.repeat(64),
